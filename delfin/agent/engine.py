@@ -2520,6 +2520,13 @@ class AgentEngine:
         except Exception:
             pass
 
+        # ...and where each request's timing goes (turn_metrics
+        # record_request), under the same key as this turn's entry.
+        try:
+            self.client.metrics_session = self.trace_session()
+        except Exception:
+            pass
+
         # Resolve max_tokens: caller override > role default > global default
         effective_max = max_tokens or self.max_tokens_for_role(self.current_role)
 

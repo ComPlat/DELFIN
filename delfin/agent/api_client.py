@@ -18305,6 +18305,9 @@ class OpenAIClient(_BaseClient):
             # Emitted as message_start below so the engine's compaction floor
             # and input accounting run on provider truth, not chars//4.
             _round_in = 0
+            _round_out = 0
+            _round_cached = 0
+            _round_ttft: Optional[float] = None
 
             finish_reason = None
             _round_t0 = time.monotonic()
@@ -18317,12 +18320,19 @@ class OpenAIClient(_BaseClient):
                             _round_in += chunk.usage.prompt_tokens or 0
                             _total_out += chunk.usage.completion_tokens or 0
                             _total_cached += _cached_tokens_of(chunk.usage)
+                            _round_out += chunk.usage.completion_tokens or 0
+                            _round_cached += _cached_tokens_of(chunk.usage)
 
                         if not chunk.choices:
                             continue
 
                         choice = chunk.choices[0]
                         delta = choice.delta
+                        # The first token of any kind ends the prefill.
+                        if _round_ttft is None and delta is not None and (
+                                getattr(delta, "reasoning_content", None)
+                                or delta.content or delta.tool_calls):
+                            _round_ttft = time.monotonic()
 
                         # Reasoning channel: some backends (Ollama for qwen3/
                         # gpt-oss, vLLM for r1) stream the model's thinking in a
@@ -18439,6 +18449,8 @@ class OpenAIClient(_BaseClient):
                 _round_in += _ti
                 _total_out += _to
                 _total_cached += _tc_cached
+                _round_out += _to
+                _round_cached += _tc_cached
                 if _c:
                     _text_chunks.append(_c)
                     yield StreamEvent(type="text_delta", text=_c)
@@ -18489,6 +18501,8 @@ class OpenAIClient(_BaseClient):
                     _round_in += _ti
                     _total_out += _to
                     _total_cached += _cch
+                    _round_out += _to
+                    _round_cached += _cch
                     if _c:
                         _text_chunks.append(_c)
                         yield StreamEvent(type="text_delta", text=_c)
@@ -18500,6 +18514,29 @@ class OpenAIClient(_BaseClient):
             # budget so a later hiccup in this same (possibly long) turn gets a
             # fresh set of retries rather than inheriting an exhausted count.
             _stream_attempt = 0
+
+            # One line per request, written now rather than at the turn's
+            # end, so a report filed mid-turn has it (turn_metrics).
+            _metrics_session = getattr(self, "metrics_session", "")
+            if isinstance(_metrics_session, str) and _metrics_session:
+                try:
+                    from . import turn_metrics as _tm_req
+                    _round_end = time.monotonic()
+                    # A non-streamed answer arrives whole: its first token
+                    # is its last.
+                    _first = (_round_ttft if _round_ttft is not None
+                              else _round_end if (_text_chunks or _tool_calls)
+                              else None)
+                    _tm_req.record_request(
+                        _metrics_session, model=self.model,
+                        ttft_ms=(int((_first - _round_t0) * 1000)
+                                 if _first is not None else None),
+                        total_ms=int((_round_end - _round_t0) * 1000),
+                        input_tokens=_round_in, cached_tokens=_round_cached,
+                        output_tokens=_round_out, tool_calls=len(_tool_calls),
+                        finish_reason=str(finish_reason or ""))
+                except Exception:
+                    pass
 
             # Authoritative per-round input count -> message_start, so the
             # engine's compaction floor and token accounting run on the

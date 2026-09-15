@@ -400,6 +400,7 @@ def _render_markdown(
     referenced_files: list | None = None,
     tool_trace: list | None = None,
     turn_metrics: list | None = None,
+    request_metrics: list | None = None,
 ) -> str:
     lines = ["# DELFIN Agent — Bug Report", ""]
     if meta.get("description"):
@@ -450,6 +451,17 @@ def _render_markdown(
         try:
             from .turn_metrics import format_summary as _fmt_tm
             lines += ["```", _fmt_tm(turn_metrics, limit=40), "```"]
+        except Exception:
+            pass
+    if request_metrics:
+        lines += ["", "## Requests", "",
+                  "One line per model request — full data in "
+                  "`request_metrics.jsonl`. `cold` = 60 s or more to the "
+                  "first token (the prompt was not served from the cache).",
+                  ""]
+        try:
+            from .turn_metrics import format_requests as _fmt_req
+            lines += ["```", _fmt_req(request_metrics, limit=40), "```"]
         except Exception:
             pass
     if system_prompt and system_prompt.strip():
@@ -619,6 +631,21 @@ def write_bug_report(
     except Exception:
         turn_metrics = []
 
+    # Per request: which ones re-read their prompt cold, and how much of it
+    # came from the cache. Written as each request ends, so a report filed
+    # during a turn has it too.
+    request_metrics: list = []
+    try:
+        from . import turn_metrics as _tm_req
+        request_metrics = _tm_req.read_requests(trace_session or session_id)
+        if request_metrics:
+            _guarded_write(
+                report_dir / "request_metrics.jsonl",
+                "\n".join(json.dumps(e, ensure_ascii=False)
+                          for e in request_metrics) + "\n")
+    except Exception:
+        request_metrics = []
+
     payload = {
         **meta,
         "system_prompt": system_prompt or "",
@@ -627,6 +654,7 @@ def write_bug_report(
         "referenced_files": bundled_files,
         "tool_trace": tool_trace,
         "turn_metrics": turn_metrics,
+        "request_metrics": request_metrics,
         "settings": settings_snapshot(settings),
         "recent_outcomes": recent_outcomes(),
         "chat_messages": chat_messages or [],
@@ -650,6 +678,7 @@ def write_bug_report(
             referenced_files=bundled_files,
             tool_trace=tool_trace,
             turn_metrics=turn_metrics,
+            request_metrics=request_metrics,
         ),
     )
     if n_redacted:
