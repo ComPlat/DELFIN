@@ -1710,6 +1710,40 @@ class AgentEngine:
                 f"{str(t.get('subject', ''))[:80]} ({t.get('age_days', 0)}d)")
         return "\n".join(lines)
 
+    def _build_other_sessions_block(self) -> str:
+        """Other open sessions working in this repository.
+
+        Two agents in one repository edit and commit side by side -- on
+        2026-09-15 the DELFIN agent and Claude Code changed the same tree at
+        the same time. Knowing where the others work is what lets an agent
+        leave their changes alone. Empty when it works alone.
+        """
+        try:
+            perms = self.kit_permissions
+            workspace = str(getattr(perms, "workspace", "") or "") if perms else ""
+            if not workspace:
+                return ""
+            from .session_presence import in_same_repository
+            others = in_same_repository(
+                workspace,
+                exclude_key=str(getattr(perms, "presence_key", "") or ""))
+        except Exception:
+            return ""
+        if not others:
+            return ""
+        lines = ["# Other sessions in this repository"]
+        for record in others[:6]:
+            lines.append(
+                f"- {record.get('title') or 'untitled session'} "
+                f"[{record.get('key')}]: {record.get('workspace') or '?'} "
+                f"(branch {record.get('branch') or '?'})")
+        lines.append(
+            "They edit and commit here too. Before changing a file, check "
+            "`git status`; leave changes you did not make alone (no revert, "
+            "no staging, no commit of them), and never `git stash` a checkout "
+            "another session works in.")
+        return "\n".join(lines)
+
     def _build_answered_attention_block(self) -> str:
         """Late answers to parked questions/confirms (attention inbox).
 
@@ -1936,6 +1970,7 @@ class AgentEngine:
         pairs.append(("machine_grant", self._build_machine_grant_block()))
         pairs.append(("open_tasks", self._build_open_tasks_block()))
         pairs.append(("foreign_tasks", self._build_open_foreign_tasks_block()))
+        pairs.append(("other_sessions", self._build_other_sessions_block()))
         pairs.append(("unmet_delegation", self._build_unmet_delegation_block()))
         pairs.append(("unmet_tasklist", self._build_unmet_tasklist_block()))
         pairs.append(("finished_jobs", self._build_finished_jobs_block()))
