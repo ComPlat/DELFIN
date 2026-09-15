@@ -316,7 +316,13 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
     ctx.remote_archive_refs = refs7
     tab_lit, _ = tab_literature.create_tab(ctx)
-    tab_ag, _ = tab_agent.create_tab(ctx)
+    # The agent tab is a list of sessions, each a whole agent tab. Should the
+    # list itself fail to build, the single tab it wraps still works.
+    try:
+        from . import agent_sessions
+        tab_ag, _ = agent_sessions.create_tab(ctx)
+    except Exception:
+        tab_ag, _ = tab_agent.create_tab(ctx)
     tab_ag_act = tab_agent_activity.create_tab(ctx)
     # Tools & Platform tab (defensive: never let it break dashboard startup)
     try:

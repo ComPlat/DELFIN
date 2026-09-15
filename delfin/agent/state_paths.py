@@ -570,6 +570,10 @@ USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     # ~/.delfin and their next landing page then offered a session that
     # was a test fixture.
     ("delfin.dashboard.session", "RECORD_DIR", "kept_sessions"),
+    # Which agent sessions the session list had open, so the next dashboard
+    # reopens them. A test's list would reopen fixtures in the real one.
+    ("delfin.dashboard.agent_sessions", "_OPEN_SESSIONS_PATH",
+     "agent_open_sessions.json"),
     # The benchmark's per-checkout run lock. It lived under tests/fixtures
     # first, where the checkout-leak guard would have caught it, and the
     # move to ~/.delfin brought it into this table's scope instead.
