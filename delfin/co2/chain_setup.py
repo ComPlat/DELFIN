@@ -145,6 +145,12 @@ _CO2_DEFAULTS = {
     "no_place_co2": "false",
     "parallel_orientation_scan": "true",
     "max_workers": "4",
+    # Inverse RSS (dissociation scan) — empty/False keeps the classic inward scan
+    "binding": "",
+    "adduct_xyz": "",
+    "scan_dissoc": "false",
+    "dissoc_distance": "6.0",
+    "substrate_atom_index": "",
 }
 
 # Fields that DELFIN's main CONTROL.txt may set and that should be
@@ -241,6 +247,10 @@ def _build_co2_control(
             "orientation_job", "scan_job",
         ]),
         ("# Relaxed Distance Scan", ["scan_end", "scan_steps"]),
+        ("# Inverse RSS (dissociation scan)", [
+            "binding", "adduct_xyz", "scan_dissoc", "dissoc_distance",
+            "substrate_atom_index",
+        ]),
         ("# Alignment (0-based indices)", ["metal", "metal_index", "align_bond_index", "neighbors"]),
         ("# CO2 placement", [
             "place_axis", "mode", "perp_axis",

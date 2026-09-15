@@ -253,6 +253,36 @@ def Rz(angle_deg):
                      [s,  c, 0.0],
                      [0.0, 0.0, 1.0]])
 
+def rotation_about_axis(axis, angle_deg):
+    """Rodrigues rotation matrix about an arbitrary axis through the origin."""
+    axis = np.asarray(axis, dtype=float)
+    n = np.linalg.norm(axis)
+    if n < 1e-12:
+        raise ValueError("rotation_about_axis: zero-length axis")
+    axis = axis / n
+    th = np.deg2rad(angle_deg)
+    c, s = np.cos(th), np.sin(th)
+    K = np.array([[0.0, -axis[2], axis[1]],
+                  [axis[2], 0.0, -axis[0]],
+                  [-axis[1], axis[0], 0.0]])
+    return np.eye(3) * c + s * K + (1.0 - c) * (np.outer(axis, axis))
+
+def _rotation_axis_for_scan(combined_atoms, co2_indices):
+    """Axis for the orientation scan: metal (at/near origin after alignment)
+    to the substrate centre of mass. Falls back to the z-axis when the
+    direction is degenerate (substrate COM at the metal)."""
+    try:
+        metal_idx = detect_metal_index(combined_atoms)
+        com = np.mean([combined_atoms.positions[i] for i in co2_indices], axis=0)
+        origin = (combined_atoms.positions[metal_idx]
+                  if metal_idx is not None else np.zeros(3))
+        axis = com - origin
+        if np.linalg.norm(axis) < 1e-8:
+            return None
+        return axis / np.linalg.norm(axis)
+    except Exception:
+        return None
+
 def project_to_plane(v, n):
     n = n / np.linalg.norm(n)
     return v - np.dot(v, n) * n
@@ -1266,14 +1296,17 @@ def plot_orientation_result(csv_path, png_path):
     print(f"[OK] Orientation plot saved: {png_path}")
 
 def _calculate_single_angle(ang, base_atoms, co2_indices, charge, multiplicity, PAL, maxcore,
-                           orca_keywords, broken_sym, metal_symbol, metal_basis, control_args,
-                           qmmm_range, qm_separator, recalc_mode=False):
+                            orca_keywords, broken_sym, metal_symbol, metal_basis, control_args,
+                            qmmm_range, qm_separator, recalc_mode=False, rotation_axis=None):
     """
     Worker function to calculate energy for a single angle.
     Returns (angle_deg, energy_Eh, xyz_path) or (angle_deg, np.nan, None) on failure.
     """
     atoms = base_atoms.copy()
-    R = Rz(ang)
+    # Rotation about the given axis (through the origin) instead of the fixed
+    # z-axis: after generalised placement the substrate is not necessarily on
+    # +z, so rotating about z would tilt it off its anchor direction.
+    R = rotation_about_axis(rotation_axis, ang) if rotation_axis is not None else Rz(ang)
     pos = atoms.positions.copy()
     pos[co2_indices] = (pos[co2_indices] @ R.T)  # rotate only CO2
     atoms.positions = pos
@@ -1325,16 +1358,25 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
                                        angle_step_deg=10, angle_range_deg=180,
                                        metal_symbol=None, metal_basis=None,
                                        control_args=None, qmmm_range=None, qm_separator="$",
-                                       parallel=True, max_workers=None):
+                                         parallel=True, max_workers=None, rotation_axis=None):
     """
     Rotates ONLY the CO2 atoms about the z-axis (through the origin) at their position (z=const),
-    runs an SP calculation for each angle and returns the best geometry.
+    or — if rotation_axis is given (unit vector) — about that axis (also through the origin).
+    Runs an SP calculation for each angle and returns the best geometry.
 
     Args:
         parallel: If True, run angle calculations in parallel (default: True)
         max_workers: Maximum number of parallel workers (default: auto-detect)
+        rotation_axis: Optional unit vector for the rotation axis (default: z-axis)
     """
     base_atoms = base_atoms.copy() if base_atoms is not None else _read_xyz_robust(combined_xyz_path)
+
+    # Single-atom substrate: no rotational degree of freedom about the bond
+    # axis — the orientation scan would compute identical structures.
+    if len(co2_indices) < 2:
+        print("[INFO] Single-atom substrate: orientation scan has no DOF, skipping.")
+        return combined_xyz_path, 0.0, None
+
     os.makedirs("orientation_scan", exist_ok=True)
 
     # Check recalc mode
@@ -1356,7 +1398,8 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
                             orca_keywords=orca_keywords, broken_sym=broken_sym,
                             metal_symbol=metal_symbol, metal_basis=metal_basis,
                             control_args=control_args, qmmm_range=qmmm_range,
-                            qm_separator=qm_separator, recalc_mode=recalc_mode)
+                            qm_separator=qm_separator, recalc_mode=recalc_mode,
+                            rotation_axis=rotation_axis)
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             future_to_angle = {executor.submit(worker_func, ang): ang for ang in angles}
@@ -1373,7 +1416,7 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
             ang, E, xyz_path = _calculate_single_angle(
                 ang, base_atoms, co2_indices, charge, multiplicity, PAL, maxcore,
                 orca_keywords, broken_sym, metal_symbol, metal_basis, control_args,
-                qmmm_range, qm_separator, recalc_mode
+                qmmm_range, qm_separator, recalc_mode, rotation_axis=rotation_axis
             )
             results.append((ang, E, xyz_path))
 
@@ -1526,6 +1569,65 @@ def main():
             raise ValueError(f"dissoc_distance must be positive, got {dissoc_distance}")
         print(f"[INFO] Inverse RSS mode: scan from adduct r0 ({adduct_xyz}) outward to {dissoc_distance} A.")
 
+    # --- Inverse RSS: dissociation scan from the optimised adduct ---
+    # Skips alignment, placement and orientation scan: the adduct geometry
+    # already IS the quantum-chemically optimised binding situation, so the
+    # scan simply walks outward from its M–substrate distance r0 to
+    # dissoc_distance. No orientation freedom, no jumps between scan points.
+    if scan_dissoc:
+        atoms_adduct = _read_xyz_robust(adduct_xyz)
+        metal_idx = detect_metal_index(atoms_adduct)
+        if metal_idx is None:
+            raise ValueError(f"No metal atom found in adduct_xyz '{adduct_xyz}'.")
+        substrate_idx_raw = args.get("substrate_atom_index")
+        if substrate_idx_raw is None or str(substrate_idx_raw).strip() == "":
+            raise ValueError(
+                "scan_dissoc=true requires substrate_atom_index "
+                "(0-based index of the substrate atom bonded to the metal, "
+                "e.g. the CO2 carbon in the adduct)."
+            )
+        co2_c_idx = int(str(substrate_idx_raw).strip())
+        if not (0 <= co2_c_idx < len(atoms_adduct)) or co2_c_idx == metal_idx:
+            raise ValueError(
+                f"substrate_atom_index={co2_c_idx} is invalid for "
+                f"'{adduct_xyz}' ({len(atoms_adduct)} atoms, metal at {metal_idx})."
+            )
+        qm_atom_count = len(atoms_adduct)
+        co2_indices = [co2_c_idx]
+        qmmm_range = (0, qm_atom_count - 1)
+        start_distance = float(np.linalg.norm(
+            atoms_adduct.positions[metal_idx] - atoms_adduct.positions[co2_c_idx]
+        ))
+        print(f"[INFO] Inverse RSS: adduct r0 (M–substrate) = {start_distance:.3f} A, "
+              f"scanning outward to {dissoc_distance} A in {scan_steps} steps.")
+        if dissoc_distance <= start_distance:
+            print(f"[WARN] dissoc_distance ({dissoc_distance} A) <= r0 "
+                  f"({start_distance:.3f} A) — scan will move inward, not dissociate.")
+
+        metal_symbol_scan = metal_symbol or atoms_adduct[metal_idx].symbol
+        write_orca_input_and_run(
+            atoms_adduct,
+            adduct_xyz,
+            metal_idx,
+            co2_c_idx,
+            start_distance=start_distance,
+            end_distance=float(dissoc_distance),
+            steps=int(scan_steps),
+            orca_keywords=scan_orca_keywords,
+            broken_sym=broken_sym,
+            charge=charge,
+            multiplicity=multiplicity,
+            PAL=PAL,
+            maxcore=maxcore,
+            metal_symbol=metal_symbol_scan,
+            metal_basis=metal_basis,
+            control_args=args,
+            qmmm_range=qmmm_range,
+            co2_indices=co2_indices,
+        )
+        plot_scan_result(os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat"))
+        return
+
     # --- 1) Align complex ---
     neighbors = [int(i) for i in args["neighbors"].split(",")] if args.get("neighbors") else None
     aligned = align_complex(
@@ -1614,7 +1716,8 @@ def main():
             qmmm_range=qmmm_range,
             qm_separator=qm_separator,
             parallel=parallel_orientation,
-            max_workers=max_workers
+            max_workers=max_workers,
+            rotation_axis=_rotation_axis_for_scan(combined_atoms, co2_indices)
         )
     else:
         print("[INFO] Orientation scan disabled via CONTROL (perform_orientation_scan=false).")
