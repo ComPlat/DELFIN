@@ -437,6 +437,14 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                                    workspace=rec["workspace"])
             except Exception:
                 pass
+            # Messages from other sessions, for every open session -- also
+            # one that has not built an engine yet.
+            try:
+                deliver = rec["refs"].get("deliver_messages")
+                if callable(deliver):
+                    deliver()
+            except Exception:
+                pass
         active = _find(view["active"])
         if active is not None:
             try:

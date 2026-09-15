@@ -136,7 +136,20 @@ _BASELINE_TOKENS = 11_422
 # repository's own tool-surface test passes it) and silently ignored, so
 # `list_files(path="src")` answered with every file in the workspace.
 # Now it is optional, documented, and it works.
-_TOKEN_BUDGET = 9_401
+#
+# Raised an eighth time, 9_401 -> 9_450, for session_message. 73 measured
+# for the first draft; its description was cut to 17 tokens (63 left, 46 of
+# them structure: a name, two string properties), and 13 more came back from
+# subagent's `isolation` text, which said the same thing in twice the words.
+# 49 remain.
+#
+# What they buy: several agent sessions run side by side, often in one
+# repository, and had no way to reach each other. On 2026-09-15 the DELFIN
+# agent and Claude Code edited the same checkout at once, and neither could
+# say "leave that file to me" or "I pushed, rebase first". One tool lists the
+# other open sessions and leaves a message for one; the receiver takes it
+# between rounds or as its next turn, marked as not coming from the user.
+_TOKEN_BUDGET = 9_450
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -146,6 +159,7 @@ _POST_COMPACTION_TOOLS = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
     "fill_docx_template", "create_docx", "compare_tables", "sum_column",
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
+    "session_message",
 })
 
 

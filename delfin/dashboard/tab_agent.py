@@ -6140,6 +6140,35 @@ def create_tab(ctx):
             subagent_panel_html.value = ""
             background_rows_box.children = ()
 
+    def _deliver_session_messages() -> None:
+        """Hand this session the messages other sessions left for it.
+
+        During a turn they join it between rounds, like a steered message;
+        an idle session is woken by them. A draft in the input box is the
+        user's: the messages wait until it is sent.
+        """
+        key = str(getattr(ctx, "presence_key", "") or "")
+        if not key or state.get("_closed"):
+            return
+        streaming = bool(state.get("streaming"))
+        if not streaming and (input_textarea.value or "").strip():
+            return
+        from delfin.agent import session_messages as _msgs
+        messages = _msgs.take(key)
+        if not messages:
+            return
+        for message in messages:
+            sender = message.get("from_title") or message.get("from") or "a session"
+            _append_system_message(
+                f"✉ Message from {sender}: {str(message.get('text') or '')[:300]}")
+        text = "\n\n".join(_msgs.render(m) for m in messages)
+        engine = state.get("engine")
+        if streaming and engine is not None and hasattr(engine.client, "push_steer"):
+            engine.client.push_steer(text)
+        else:
+            input_textarea.value = text
+            _on_send(None)
+
     def _stop_background(workspace, group, item_id):
         """The × on a Background row: stop that item and say what happened."""
         from delfin.agent import background_view as _bgv
@@ -19052,6 +19081,7 @@ def create_tab(ctx):
         "load_session": _load_saved_session,
         "save": _auto_save_session,
         "refresh_background": _refresh_subagent_panel,
+        "deliver_messages": _deliver_session_messages,
     }
 
 

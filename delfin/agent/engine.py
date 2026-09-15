@@ -1741,7 +1741,8 @@ class AgentEngine:
             "They edit and commit here too. Before changing a file, check "
             "`git status`; leave changes you did not make alone (no revert, "
             "no staging, no commit of them), and never `git stash` a checkout "
-            "another session works in.")
+            "another session works in. To agree on something with one, use "
+            "session_message(to=<key>, message=...).")
         return "\n".join(lines)
 
     def _build_answered_attention_block(self) -> str:
