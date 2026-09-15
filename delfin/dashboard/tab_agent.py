@@ -6078,7 +6078,8 @@ def create_tab(ctx):
         try:
             from delfin.agent import background_view as _bgv
             subagent_panel_html.value = _bgv.render_html(
-                _bgv.collect(_agent_workspace_path()))
+                _bgv.collect(_agent_workspace_path(),
+                             session_id=_ensure_task_session_id() or None))
         except Exception:
             subagent_panel_html.value = ""
 
@@ -6612,7 +6613,11 @@ def create_tab(ctx):
                 except Exception:
                     pass
 
-            sch.set_fire_callback(_on_wake)
+            # One listener per open session: a wake-up goes to the session
+            # that scheduled it, not to whichever was built last.
+            sch.add_fire_listener(
+                id(state), _on_wake,
+                lambda owner: owner == _ensure_task_session_id())
         except Exception:
             pass
 
@@ -6637,7 +6642,8 @@ def create_tab(ctx):
                     if _ws and _jm_wake.load_watched(
                             _jm_wake._agent_watch_path(_ws)).get("jobs"):
                         _done.extend(_jm_wake.check_agent_jobs(
-                            _ws, consume=False, marker="wake_notified"))
+                            _ws, consume=False, marker="wake_notified",
+                            session_id=_ensure_task_session_id() or None))
                     # A background sub-agent that finished wakes the agent
                     # the same way; the turn it starts drains its report.
                     _done.extend(_bgv_wake.finished_background_agents(

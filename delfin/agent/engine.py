@@ -1413,7 +1413,9 @@ class AgentEngine:
             pass
         try:
             from delfin.agent.job_monitor import check_agent_jobs
-            for ev in check_agent_jobs(ws) or []:
+            _sid = str(getattr(perms, "task_session_id", "") or "")
+            _own = {"session_id": _sid} if _sid else {}
+            for ev in check_agent_jobs(ws, **_own) or []:
                 sig = ", ".join(ev.get("signatures") or [])
                 degraded = str(ev.get("degraded") or "")
                 events.append(

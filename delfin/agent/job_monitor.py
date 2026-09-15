@@ -601,8 +601,14 @@ def check_agent_jobs(
     consume: bool = True,
     fetch_fn: Optional[Callable[[str], Optional[dict]]] = None,
     marker: str = "daemon_notified",
+    session_id: Optional[str] = None,
 ) -> list[dict]:
     """Report agent-registered jobs that reached a terminal state — once.
+
+    ``session_id`` limits the report to that session's watches and the ones
+    nobody owns: several sessions can work in one workspace, and a job
+    belongs to the conversation that is waiting for it. None (the daemon)
+    reads them all.
 
     LLM-free like :func:`check_once`. Terminal entries are removed from the
     persistent watch file (atomic write), so each completion/failure is
@@ -640,6 +646,9 @@ def check_agent_jobs(
     now = time.time()
     for jid, entry in list(jobs.items()):
         entry = entry or {}
+        if (session_id is not None and entry.get("session_id")
+                and entry.get("session_id") != session_id):
+            continue      # another session's watch
         if float(entry.get("added_at") or now) < now - _AGENT_WATCH_MAX_AGE_S:
             # Only an entry that never got an answer is worth an alarm. One
             # the daemon already reported on is being pruned as bookkeeping.

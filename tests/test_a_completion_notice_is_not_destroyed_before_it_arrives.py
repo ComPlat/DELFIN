@@ -350,7 +350,7 @@ def test_the_engine_confirms_the_events_it_put_in_the_prompt(
                      "runtime_s": 3600.0, "stdout_tail": "done",
                      "stderr_tail": ""}])
     monkeypatch.setattr("delfin.agent.job_monitor.check_agent_jobs",
-                        lambda ws: [])
+                        lambda ws, **kw: [])
 
     block = _engine(tmp_path)._build_finished_jobs_block()
 
@@ -369,7 +369,7 @@ def test_a_turn_that_never_built_the_block_confirms_nothing(
     monkeypatch.setattr("delfin.agent.bash_jobs.drain_all_finished_events",
                         lambda ws: [])
     monkeypatch.setattr("delfin.agent.job_monitor.check_agent_jobs",
-                        lambda ws: [])
+                        lambda ws, **kw: [])
 
     assert _engine(tmp_path)._build_finished_jobs_block() == ""
     assert confirmed == []
@@ -386,7 +386,7 @@ def test_a_wrapper_shell_that_left_children_says_so_in_the_prompt(
                      "children_running": True,
                      "watched_slurm_jobs": ["99123"]}])
     monkeypatch.setattr("delfin.agent.job_monitor.check_agent_jobs",
-                        lambda ws: [])
+                        lambda ws, **kw: [])
 
     block = _engine(tmp_path)._build_finished_jobs_block()
 
@@ -403,7 +403,7 @@ def test_a_job_killed_at_its_cap_is_not_reported_as_a_clean_exit(
                      "runtime_s": 86400.0, "stdout_tail": "",
                      "stderr_tail": "", "timed_out": True}])
     monkeypatch.setattr("delfin.agent.job_monitor.check_agent_jobs",
-                        lambda ws: [])
+                        lambda ws, **kw: [])
 
     assert "wall-clock cap" in _engine(tmp_path)._build_finished_jobs_block()
 
@@ -414,7 +414,8 @@ def test_an_unreachable_queue_reaches_the_prompt_as_a_degradation(
                         lambda ws: [])
     monkeypatch.setattr(
         "delfin.agent.job_monitor.check_agent_jobs",
-        lambda ws: [{"job_id": "555", "kind": "slurm", "state": "UNAVAILABLE",
+        lambda ws, **kw: [{"job_id": "555", "kind": "slurm",
+                           "state": "UNAVAILABLE",
                      "description": "twelve-hour opt", "ok": False,
                      "exit_code": None, "signatures": [],
                      "degraded": "the scheduler could not be asked about "
