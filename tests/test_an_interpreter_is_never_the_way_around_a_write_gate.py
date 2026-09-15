@@ -285,7 +285,7 @@ def test_the_unattended_profile_gains_the_most(tmp_path):
     assert not outside.exists()
 
 
-def test_a_scratch_sink_is_decided_by_where_the_workspace_is(tmp_path):
+def test_a_scratch_sink_is_decided_by_where_the_workspace_is():
     """The exemption that must survive the change, stated the way the code
     states it: /tmp is scratch only for a workspace that does not LIVE
     there. A workspace under /tmp has its own neighbourhood, and gating
@@ -295,6 +295,11 @@ def test_a_scratch_sink_is_decided_by_where_the_workspace_is(tmp_path):
     Measured directly rather than assumed: an earlier draft of this test
     asserted the opposite and was wrong about which side of the rule it
     was on.
+
+    The workspace-under-/tmp case needs a directory that really is under
+    /tmp. pytest's tmp_path follows TMPDIR, and on a cluster node TMPDIR
+    is a scratch mount (/scratch) that the rule does not name -- there
+    the assertion would test a different rule than the one it states.
     """
     real_project = Path("/home/someone/projects/thing")
     assert A._is_ephemeral_sink(Path("/tmp/scratch.txt"), real_project) is True
@@ -302,4 +307,7 @@ def test_a_scratch_sink_is_decided_by_where_the_workspace_is(tmp_path):
         real_project / "out.txt", real_project) is False
 
     # ...and for a workspace that IS under /tmp, /tmp is not scratch.
-    assert A._is_ephemeral_sink(Path("/tmp/scratch.txt"), tmp_path) is False
+    with tempfile.TemporaryDirectory(prefix="delfin-test-",
+                                     dir="/tmp") as under_tmp:
+        assert A._is_ephemeral_sink(
+            Path("/tmp/scratch.txt"), Path(under_tmp)) is False

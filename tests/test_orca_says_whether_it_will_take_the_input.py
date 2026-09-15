@@ -143,9 +143,16 @@ def builder_tab(tmp_path, monkeypatch):
     pytest.importorskip("ipywidgets")
 
     (tmp_path / "calc").mkdir()
+    # notebook_dir defaults to Path.cwd() (DashboardContext) and repo_dir to
+    # None, so the resolver walks up from the checkout and finds the real
+    # software/orca_* shipped beside it on a machine that has one. Pointing
+    # every directory it walks at tmp_path keeps the check answering from the
+    # resolvers the tests patch, on any machine.
     ctx = DashboardContext(calc_dir=tmp_path / "calc",
                            archive_dir=tmp_path / "calc",
-                           office_dir=tmp_path / "calc")
+                           office_dir=tmp_path / "calc",
+                           notebook_dir=tmp_path,
+                           repo_dir=tmp_path)
     ctx.run_js = lambda _script: None
     _widget, refs = builder.create_tab(ctx)
     refs["orca_coords"].value = (
