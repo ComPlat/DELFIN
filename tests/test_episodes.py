@@ -191,6 +191,47 @@ def test_recall_no_match_or_empty_task_returns_empty(repo):
     assert ep.recall_episodes(repo, "") == ""
 
 
+def test_recall_leaves_out_the_session_that_is_asking(repo):
+    """Report 20260915-084010: the dashboard saves an episode before the
+    first turn runs, so the request being answered matched itself best and
+    came back as a past session with no outcome. The model went looking for
+    that earlier attempt and wrote "asked for twice" into a commit."""
+    ep.save_episode(
+        "99697602-live", repo_root=repo,
+        goal="move the orca builder preview notice to the bottom left",
+        outcome="", decisions=[], open_items=[],
+    )
+    ep.save_episode(
+        "eeee5555", repo_root=repo,
+        goal="orca builder preview notice wording",
+        outcome="reworded the notice",
+        decisions=[], open_items=[],
+    )
+    task = "move the orca builder preview notice"
+
+    assert "bottom left" in ep.recall_episodes(repo, task)
+    block = ep.recall_episodes(repo, task, exclude_session_id="99697602-live")
+    assert "bottom left" not in block
+    assert "reworded the notice" in block
+
+
+def test_the_prompt_passes_the_session_to_the_recall(repo, monkeypatch):
+    from delfin.agent import prompt_loader as pl
+
+    seen: dict = {}
+
+    def _recall(root, task_text, **kw):
+        seen.update(kw)
+        return ""
+
+    monkeypatch.setattr(ep, "recall_episodes", _recall)
+    loader = pl.PromptLoader.__new__(pl.PromptLoader)
+    loader.workspace_root = repo
+    loader.repo_root = repo
+    loader._load_episode_recall_context("a task", "99697602-live")
+    assert seen.get("exclude_session_id") == "99697602-live"
+
+
 # ---------------------------------------------------------------------------
 # pruning
 # ---------------------------------------------------------------------------
