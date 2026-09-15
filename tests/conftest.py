@@ -445,13 +445,17 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
     # An explicit path, or a test that moved Path.home itself, is left alone.
     from delfin import user_settings as _user_settings
     _original_settings_path = _user_settings.get_settings_path
+    # Beside tmp_path, not in it: merely reading settings creates this
+    # directory, and tests that list their tmp_path (test_bug_report's
+    # report listing) must not find an extra entry there.
+    settings_home = tmp_path.parent / f"{tmp_path.name}-settings"
 
     def _settings_path(base_path=None, _o=_original_settings_path):
         if base_path or _already_isolated():
             return _o(base_path)
         # The real home always exists; save_settings creates no parents.
-        fallback.mkdir(parents=True, exist_ok=True)
-        return fallback / _user_settings.SETTINGS_FILE_NAME
+        settings_home.mkdir(parents=True, exist_ok=True)
+        return settings_home / _user_settings.SETTINGS_FILE_NAME
 
     monkeypatch.setattr(_user_settings, "get_settings_path", _settings_path)
 
