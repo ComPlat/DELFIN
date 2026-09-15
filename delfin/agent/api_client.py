@@ -8116,6 +8116,78 @@ def _observe_shell_reads(
         _bash_read_targets(str(fn_args.get("command") or ""), base))
 
 
+# Shell commands that print a file's text. _BASH_READERS also holds wc, stat,
+# sort and the like, which prove a file was opened, not that it was seen --
+# and a baseline for editing needs the text seen.
+_BASH_CONTENT_VIEWERS = frozenset({
+    "cat", "head", "tail", "nl", "tac", "less", "more",
+})
+
+
+def _baseline_shell_reads(perms: Any, fn_args: Any, result: Any) -> None:
+    """A file printed through the shell counts as read for edit_file.
+
+    Report 20260915-112305: the agent read a fixture with
+    ``sed -n '122,175p'`` and edit_file refused ("call read_file before
+    editing") -- two rounds, four minutes on GLM, to print the same lines
+    again. The baseline exists so an edit does not land on a file that
+    changed since it was looked at, and a file whose lines were printed has
+    been looked at. Only a command that exited 0 and printed something,
+    only viewers that print text (``sed`` only with ``-n`` and without
+    ``-i``), only existing files, and never a redirection target.
+    """
+    tracker = getattr(perms, "read_tracker", None)
+    if not isinstance(tracker, dict) or not isinstance(fn_args, dict):
+        return
+    try:
+        payload = json.loads(result) if isinstance(result, str) else result
+    except (TypeError, ValueError):
+        return
+    if (not isinstance(payload, dict) or payload.get("exit_code") != 0
+            or not str(payload.get("stdout") or "").strip()):
+        return
+    import shlex
+
+    workspace = getattr(perms, "workspace", None)
+    base = Path(workspace) if workspace else None
+    cwd_arg = str(fn_args.get("cwd") or "").strip()
+    if cwd_arg:
+        c = Path(cwd_arg)
+        base = c if c.is_absolute() else (base / c if base else None)
+    for segment in _split_shell_segments(str(fn_args.get("command") or "")):
+        try:
+            argv = shlex.split(segment.strip(), comments=True)
+        except ValueError:
+            continue
+        while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+            argv = argv[1:]
+        if not argv:
+            continue
+        head = Path(argv[0]).name
+        if head == "sed":
+            if ("-n" not in argv[1:]
+                    or any(a.startswith(("-i", "--in-place")) for a in argv[1:])):
+                continue
+        elif head not in _BASH_CONTENT_VIEWERS:
+            continue
+        for tok in argv[1:]:
+            if tok.startswith((">", "<")) or (tok[:1].isdigit() and ">" in tok):
+                break
+            if not tok or tok.startswith("-") or any(c in tok for c in "*?[]$"):
+                continue
+            try:
+                p = Path(tok)
+                if not p.is_absolute():
+                    if base is None:
+                        continue
+                    p = base / p
+                if p.is_file():
+                    r = p.resolve()
+                    tracker[str(r)] = r.stat().st_mtime
+            except OSError:
+                continue
+
+
 def _observe_read_files(
     observed: set, fn_name: str, fn_args: Any, result: str,
     *, workspace: Path | None = None,
@@ -18768,6 +18840,11 @@ class OpenAIClient(_BaseClient):
                     # A push that went through spends the user's grant for it
                     # and arms a watch on the CI it started.
                     if fn_name.rsplit("__", 1)[-1] == "bash":
+                        try:
+                            _baseline_shell_reads(
+                                self._permissions, fn_args, _raw_result)
+                        except Exception:
+                            pass
                         try:
                             _push_note = _after_push(
                                 fn_args, _raw_result, self._permissions)

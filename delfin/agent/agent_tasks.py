@@ -292,17 +292,14 @@ class TaskStore:
                             t["started_at"] = _now_iso()
                     if new_status == "completed" and t.get("status") not in (
                             "in_progress", "completed"):
-                        # No silent pending -> completed. The step is what
-                        # makes the work window exist at all; without it a
-                        # completion claim has nothing to be checked
-                        # against, and the list never showed the user what
-                        # was being worked on.
-                        raise ValueError(
-                            f"task #{task_id} is '{t.get('status')}' — mark "
-                            "it in_progress before completed, so the list "
-                            "shows what you are on and the work has a "
-                            "recorded window"
-                        )
+                        # A task finished without being marked started is a
+                        # task finished. Refusing it cost report
+                        # 20260915-112305 a round per refusal: two tasks
+                        # worked together through parallel sub-agents could
+                        # not both be in_progress, so the second could not
+                        # be completed either. Its work window is empty,
+                        # and a completion check against it says so.
+                        t["started_at"] = t.get("started_at") or _now_iso()
                     t.update({k: v for k, v in fields.items() if v is not None})
                     # Apply dependency edits + keep reverse index in sync
                     if add_blockers or rem_blockers:
