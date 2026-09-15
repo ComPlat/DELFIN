@@ -2197,6 +2197,107 @@ _MCP_BASH_TOOL_BASES: frozenset[str] = frozenset({
 # MCP-server conventions so a differently-named shell tool is still gated.
 _MCP_BASH_CMD_KEYS: tuple[str, ...] = ("command", "cmd", "script", "code")
 
+# `git push` in a shell command, with any `-C dir` / `-c k=v` / `--flag`
+# ahead of the subcommand.
+_GIT_PUSH_RE = re.compile(
+    r"(?:^|[\s;&|(`])git(?:\s+-[Cc]\s+\S+|\s+--[\w-]+(?:=\S+)?)*\s+push\b")
+# A user message that asks for a push ("push", "pushen", "puschen"), and
+# one that says not to.
+_ASKS_FOR_PUSH_RE = re.compile(r"\bpu(?:sh|sch)", re.IGNORECASE)
+_REFUSES_PUSH_RE = re.compile(
+    r"\b(?:nicht|kein\w*|nie|never|don'?t|do\s+not|no)\W+(?:\w+\W+){0,2}"
+    r"pu(?:sh|sch)", re.IGNORECASE)
+# What a push to GitHub prints: the remote, then one line per updated ref.
+_PUSH_TO_RE = re.compile(
+    r"^To\s+(?:ssh://|https?://)?(?:[^@/\s]+@)?github\.com[:/]"
+    r"([\w.-]+/[\w.-]+?)(?:\.git)?/?$")
+_PUSH_REF_RE = re.compile(
+    r"^\s*\+?\s*[0-9a-f]{7,40}\.\.\.?([0-9a-f]{7,40})\s+\S+\s+->\s+(\S+)")
+
+
+def _is_git_push(cmd: str) -> bool:
+    return bool(_GIT_PUSH_RE.search(cmd or ""))
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(str(b.get("text", "")) for b in content
+                        if isinstance(b, dict))
+    return ""
+
+
+def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
+    """Record whether a user message asks for a push.
+
+    A new request replaces the grant: what the user asked for earlier is not
+    what they are asking now. A message steered into a running turn can
+    only add one -- "use a shorter commit message" does not take back the
+    push the turn was started for."""
+    grants = getattr(perms, "push_grants", None)
+    if not isinstance(grants, dict):
+        return
+    text = _message_text(content)
+    if _ASKS_FOR_PUSH_RE.search(text) and not _REFUSES_PUSH_RE.search(text):
+        grants["push"] = 1
+    elif new_request:
+        grants["push"] = 0
+
+
+def _pushed_refs(output: str) -> list[tuple[str, str, str]]:
+    """(owner/repo, new sha, branch) for every ref a GitHub push updated."""
+    repo = ""
+    refs: list[tuple[str, str, str]] = []
+    for line in (output or "").splitlines():
+        to = _PUSH_TO_RE.match(line.strip())
+        if to:
+            repo = to.group(1)
+            continue
+        ref = _PUSH_REF_RE.match(line)
+        if ref and repo:
+            refs.append((repo, ref.group(1), ref.group(2)))
+    return refs
+
+
+def _after_push(arguments: Any, raw_result: Any, perms: Any) -> str:
+    """What a push that went through leaves behind, as a note for the model.
+
+    It spends the user's grant, and it arms a watch on the CI the push
+    started (job_monitor.register_ci_watch), so the result reaches a later
+    turn instead of nobody. "" when the call was not a push that succeeded.
+    """
+    cmd = str(arguments.get("command") or "") if isinstance(arguments, dict) else ""
+    if not _is_git_push(cmd):
+        return ""
+    try:
+        res = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(res, dict) or res.get("exit_code") != 0:
+        return ""
+    grants = getattr(perms, "push_grants", None)
+    if isinstance(grants, dict) and grants.get("push"):
+        grants["push"] -= 1
+    spent = ("It used up the user's request for a push; another push needs "
+             "them to ask again.")
+    workspace = getattr(perms, "workspace", None)
+    watched: list[str] = []
+    refs = _pushed_refs(f"{res.get('stdout') or ''}\n{res.get('stderr') or ''}")
+    if refs and workspace:
+        from .job_monitor import register_ci_watch
+        for repo, sha, branch in refs:
+            try:
+                watched.append(register_ci_watch(workspace, repo, sha, branch))
+            except Exception:
+                continue
+    if not watched:
+        return f"[Push went through.] {spent}"
+    return ("[Push went through.] Its CI is being watched ("
+            + ", ".join(watched) + "); the result is delivered to a later "
+            "turn. Until then CI is pending — do not report it green. To wait "
+            "for it, schedule_wakeup and end the turn; do not poll. " + spent)
+
 # File-mutating MCP tools mapped to the native tool whose permission gate
 # governs them. Like the shell tools above, these dispatch straight to the
 # remote server and would otherwise bypass the write gate (sandbox +
@@ -3465,6 +3566,13 @@ class KitToolPermissions:
     # (``dataclasses.replace`` copies field values) -- deliberately: a child
     # must not be a way around what the parent was refused.
     denied_actions: dict[str, str] = field(default_factory=dict)
+    # Pushes the user has asked for that have not gone through yet. A push
+    # publishes: report 20260915-085107 pushed the change it was asked to,
+    # then chained a second commit and push onto a fix nobody asked for, in
+    # the same turn. One request grants one push (_grant_push_from); a push
+    # that went through spends it (_after_push). Shared by reference with
+    # sub-agents, like denied_actions, so a child is no way to a second one.
+    push_grants: dict[str, int] = field(default_factory=dict)
     # Directories a single approved outside-workspace READ opened for the
     # rest of the session. Readable, never writable, never persisted -- see
     # ``add_session_read_dir``.
@@ -5993,9 +6101,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "watch_job",
             "description": (
-                "Register a SLURM or bash_background job for watching; the "
-                "result is injected into a later turn. After submitting a "
-                "multi-hour job, call this and END your turn, do not poll."
+                "Watch a SLURM, bash_background or CI (ci:owner/repo@sha) "
+                "job; the result is injected into a later turn. After "
+                "starting a long job, call this and END your turn, do not poll."
             ),
             "parameters": {
                 "type": "object",
@@ -12398,6 +12506,45 @@ class _DocToolExecutor:
                     "the same result another way — ask the user what to do "
                     "instead."
                 )
+            # A push publishes. Report 20260915-085107 pushed the change it
+            # was asked to, then chained a second commit and push onto a fix
+            # nobody asked for -- in all_free, which asks nothing, so nothing
+            # stood in the way. One request grants one push; without a grant
+            # a human is asked when one can be, and the unattended profile
+            # refuses, the line it already draws for sending data out.
+            _asked = perms.confirm_callback is not None
+            if (_is_git_push(cmd) and not (perms.push_grants or {}).get("push")
+                    and (_asked or mode == "bypassPermissions"
+                         or perms.matches_bash_auto_allow(cmd))):
+                # Head-less and not auto-allowed falls through to the
+                # ordinary refusal below, which already names the way in.
+                if mode == "bypassPermissions" or not _asked:
+                    _record_security_event("push_unrequested", "bash", cmd[:80])
+                    return (
+                        "blocked: `git push` publishes to a shared remote, and "
+                        "the user has not asked for a push since their last "
+                        "message (a push they asked for is spent once it went "
+                        "through). Ask them first: say what would be pushed, "
+                        "to which branch, and whether its tests are green. Do "
+                        "not reach the remote another way.")
+                preview = (f"$ {cmd}\n(the user has not asked for a push "
+                           "since their last message)")
+                try:
+                    ok = bool(perms.confirm_callback(
+                        "bash", {"command": cmd}, preview))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval for this push TIMED OUT — the user is "
+                            "away, this is not a refusal. Do not push now; "
+                            "say in your answer what is ready to be pushed.")
+                    _record_security_event("push_unrequested", "bash", cmd[:80])
+                    return ("the user did not approve this push. Do not retry "
+                            "it or reach the remote another way.")
+                perms.push_grants["push"] = 1
+                return None
             if mode == "bypassPermissions":
                 # Bypass: only the deny-list still applies; everything else
                 # runs unattended. Use this only inside trusted workflows.
@@ -17097,6 +17244,15 @@ class OpenAIClient(_BaseClient):
         except Exception:
             _memory_cap = 0
         api_messages: list[dict[str, Any]] = []
+        # Whether this turn may push is decided by the request it answers.
+        try:
+            _grant_push_from(
+                self._permissions,
+                next((m.get("content") for m in reversed(messages or [])
+                      if isinstance(m, dict) and m.get("role") == "user"), ""),
+                new_request=True)
+        except Exception:
+            pass
         # Detect reasoning models. Two families today:
         # - o-series (o1, o3, o4-mini, azure.o3, azure.o4-mini)
         # - GPT-5 family (Azure ships gpt-5 / gpt-5.1 / gpt-5.4 / gpt-5-mini
@@ -18577,6 +18733,17 @@ class OpenAIClient(_BaseClient):
                             except Exception:
                                 pass
 
+                    # A push that went through spends the user's grant for it
+                    # and arms a watch on the CI it started.
+                    if fn_name.rsplit("__", 1)[-1] == "bash":
+                        try:
+                            _push_note = _after_push(
+                                fn_args, _raw_result, self._permissions)
+                            if _push_note:
+                                self.push_run_note(_push_note)
+                        except Exception:
+                            pass
+
                 # All futures resolved in the loop above — release threads.
                 if _sub_executor is not None:
                     _sub_executor.shutdown(wait=False)
@@ -18613,6 +18780,8 @@ class OpenAIClient(_BaseClient):
                 # was running, inject it now as a user turn so the model reacts
                 # to it on the very next round (no waiting for the turn to end).
                 for _steer in self._drain_steer():
+                    _grant_push_from(self._permissions, _steer,
+                                     new_request=False)
                     api_messages.append({"role": "user", "content": _steer})
                     yield StreamEvent(
                         type="notice", text="\n\n💬 [you, mid-run]: " + _steer + "\n")
@@ -18886,6 +19055,7 @@ class OpenAIClient(_BaseClient):
                 if _final.strip():
                     api_messages.append({"role": "assistant", "content": _final})
                 for _s in _steer_end:
+                    _grant_push_from(self._permissions, _s, new_request=False)
                     api_messages.append({"role": "user", "content": _s})
                     yield StreamEvent(
                         type="notice", text="\n\n💬 [you, mid-run]: " + _s + "\n")

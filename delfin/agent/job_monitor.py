@@ -402,6 +402,8 @@ def _classify_job_id(jid: str, workspace: str | Path) -> str:
     own jobs, so ask it first and keep the heuristic only for ids it does
     not know (SLURM ids, or bash jobs from a process that is gone).
     """
+    if jid.startswith("ci:"):
+        return "ci"
     try:
         from delfin.agent import bash_jobs as _bj
         if _bj.get_registry().get(jid, workspace) is not None:
@@ -415,6 +417,7 @@ def register_agent_job(
     workspace: str | Path,
     job_id_or_slurm_id: str,
     description: str = "",
+    extra: Optional[dict] = None,
 ) -> dict:
     """Add a watch entry for a job the agent itself started. LLM-free.
 
@@ -436,6 +439,7 @@ def register_agent_job(
         "added_at": time.time(),
         "last_state": "",
     }
+    entry.update(extra or {})
     data.setdefault("jobs", {})[jid] = entry
     save_watched(data, path)
     _note_agent_watch_workspace(workspace)
@@ -453,11 +457,121 @@ def _emit_watch_attention(kind: str, title: str, detail: str,
         pass
 
 
+# ---------------------------------------------------------------------------
+# CI of a pushed commit (GitHub Actions)
+# ---------------------------------------------------------------------------
+#
+# After report 20260915-085107 pushed to main, CI went red and nobody
+# looked: the agent had no way to read it -- `gh` is not installed on the
+# cluster nodes -- and when the user pasted the log it guessed at a licence
+# header. The runs of a pushed commit are now a watched job like a cluster
+# job, answered by the public API (or GITHUB_TOKEN / GH_TOKEN when set).
+
+_CI_ID_RE = re.compile(r"^ci:([\w.-]+/[\w.-]+)@([0-9a-f]{7,40})$")
+# Unauthenticated, the API allows sixty calls an hour per address, and every
+# turn and the daemon come through check_agent_jobs.
+_CI_MIN_INTERVAL_S = 60.0
+# A push whose commit has no run after this long will not get one.
+_CI_NO_RUN_AFTER_S = 30 * 60.0
+_CI_OK_CONCLUSIONS = frozenset({"success", "skipped", "neutral"})
+
+
+def _default_fetch(url: str) -> Optional[dict]:
+    """GET a GitHub API URL as JSON; None when it cannot be had."""
+    import urllib.request
+
+    headers = {"Accept": "application/vnd.github+json",
+               "User-Agent": "delfin-agent"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def query_ci_runs(
+    repo: str,
+    sha: str,
+    branch: str = "",
+    fetch: Callable[[str], Optional[dict]] = _default_fetch,
+) -> dict:
+    """State of the GitHub Actions runs of one commit. LLM-free.
+
+    ``state`` is PENDING (no run yet, or one still going), SUCCESS, FAILURE
+    or :data:`STATE_UNAVAILABLE`. ``failed`` names what went red as
+    ``<workflow> › <job> › <first failed step>``, and ``url`` links the
+    first failed run (the first run when all passed)."""
+    import urllib.parse
+
+    base = f"https://api.github.com/repos/{repo}/actions/runs"
+    if len(sha) == 40:
+        url = f"{base}?head_sha={sha}&per_page=50"
+    elif branch:
+        url = f"{base}?branch={urllib.parse.quote(branch)}&per_page=50"
+    else:
+        url = f"{base}?per_page=50"
+    data = fetch(url)
+    if not isinstance(data, dict) or "workflow_runs" not in data:
+        detail = data.get("message", "") if isinstance(data, dict) else ""
+        return {"state": STATE_UNAVAILABLE, "runs": [], "failed": [],
+                "url": "", "detail": str(detail or "no answer")[:120]}
+    runs = [r for r in data["workflow_runs"]
+            if str(r.get("head_sha", "")).startswith(sha)]
+    summary = [{"name": r.get("name", ""), "status": r.get("status", ""),
+                "conclusion": r.get("conclusion"),
+                "url": r.get("html_url", "")} for r in runs]
+    if not runs or any(r.get("status") != "completed" for r in runs):
+        return {"state": "PENDING", "runs": summary, "failed": [], "url": ""}
+    bad = [r for r in runs if r.get("conclusion") not in _CI_OK_CONCLUSIONS]
+    if not bad:
+        return {"state": "SUCCESS", "runs": summary, "failed": [],
+                "url": summary[0]["url"]}
+    failed: list[str] = []
+    for run in bad:
+        jobs = fetch(str(run["jobs_url"])) if run.get("jobs_url") else None
+        names = []
+        for job in (jobs or {}).get("jobs", []) if isinstance(jobs, dict) else []:
+            if job.get("conclusion") in _CI_OK_CONCLUSIONS:
+                continue
+            steps = [s.get("name", "") for s in job.get("steps") or []
+                     if s.get("conclusion")
+                     and s.get("conclusion") not in _CI_OK_CONCLUSIONS]
+            names.append(f"{run.get('name', '')} › {job.get('name', '')}"
+                         + (f" › {steps[0]}" if steps else ""))
+        failed.extend(names or [f"{run.get('name', '')}: {run.get('conclusion')}"])
+    return {"state": "FAILURE", "runs": summary, "failed": failed[:6],
+            "url": str(bad[0].get("html_url", ""))}
+
+
+def register_ci_watch(
+    workspace: str | Path,
+    repo: str,
+    sha: str,
+    branch: str = "",
+    description: str = "",
+) -> str:
+    """Watch the CI runs of a pushed commit. Returns the watch id,
+    ``ci:<owner>/<repo>@<sha>``."""
+    jid = f"ci:{repo}@{sha}"
+    if not _CI_ID_RE.match(jid):
+        raise ValueError(f"not a GitHub repository and commit: {repo}@{sha}")
+    register_agent_job(
+        workspace, jid,
+        description or (f"CI for {sha[:8]}" + (f" on {branch}" if branch else "")),
+        extra={"branch": branch})
+    return jid
+
+
 def check_agent_jobs(
     workspace: str | Path,
     run_fn: Callable[[list[str]], Optional[str]] = _default_run,
     *,
     consume: bool = True,
+    fetch_fn: Optional[Callable[[str], Optional[dict]]] = None,
 ) -> list[dict]:
     """Report agent-registered jobs that reached a terminal state — once.
 
@@ -560,6 +674,55 @@ def check_agent_jobs(
                 else:
                     entry["daemon_notified"] = True
                 changed = True
+        elif _kind(jid, entry) == "ci":
+            if now - float(entry.get("last_checked") or 0) < _CI_MIN_INTERVAL_S:
+                continue
+            entry["last_checked"] = now
+            changed = True
+            match = _CI_ID_RE.match(jid)
+            if not match:
+                jobs.pop(jid)
+                continue
+            ci = query_ci_runs(match.group(1), match.group(2),
+                               str(entry.get("branch") or ""),
+                               fetch_fn or _default_fetch)
+            state = ci["state"]
+            if state == STATE_UNAVAILABLE:
+                # Said once, and the watch goes on: an answer that did not
+                # come is not a green run.
+                if not entry.get("unavailable_since"):
+                    entry["unavailable_since"] = now
+                    done.append({
+                        "job_id": jid, "kind": "ci",
+                        "description": entry.get("description", ""),
+                        "state": STATE_UNAVAILABLE, "ok": False,
+                        "exit_code": None, "signatures": [],
+                        "degraded": (
+                            "GitHub could not be asked about this commit's "
+                            f"CI ({ci.get('detail', '')}) — its state is "
+                            "unknown, not green"),
+                    })
+                continue
+            entry.pop("unavailable_since", None)
+            if state == "PENDING":
+                entry["last_state"] = "PENDING"
+                waited = now - float(entry.get("added_at") or now)
+                if ci["runs"] or waited < _CI_NO_RUN_AFTER_S:
+                    continue
+                state = "NO CI RUN"
+            if not consume and entry.get("daemon_notified"):
+                continue
+            done.append({
+                "job_id": jid, "kind": "ci",
+                "description": entry.get("description", ""),
+                "state": state, "ok": state == "SUCCESS",
+                "exit_code": None, "signatures": ci.get("failed", []),
+                "url": ci.get("url", ""),
+            })
+            if consume:
+                jobs.pop(jid)
+            else:
+                entry["daemon_notified"] = True
         else:
             # Background-bash job: the bash_jobs registry is the source of
             # truth — in-memory in the same process, re-attached from
