@@ -26,6 +26,9 @@ _PUSH_OUTPUT = ("To github.com:ComPlat/DELFIN.git\n"
 @pytest.fixture(autouse=True)
 def _watch_index(tmp_path, monkeypatch):
     monkeypatch.setattr(jm, "_AGENT_WATCH_INDEX_PATH", tmp_path / "index.json")
+    # These tests are about the grant; the role has its own file
+    # (test_a_contributor_goes_through_a_pull_request).
+    monkeypatch.setattr(A, "_git_role", lambda: "maintainer")
 
 
 def _perms(tmp_path, mode="bypassPermissions"):

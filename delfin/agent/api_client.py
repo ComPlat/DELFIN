@@ -2213,6 +2213,73 @@ _PUSH_TO_RE = re.compile(
     r"([\w.-]+/[\w.-]+?)(?:\.git)?/?$")
 _PUSH_REF_RE = re.compile(
     r"^\s*\+?\s*[0-9a-f]{7,40}\.\.\.?([0-9a-f]{7,40})\s+\S+\s+->\s+(\S+)")
+_PUSH_NEW_BRANCH_RE = re.compile(r"^\s*\*\s+\[new branch\]\s+\S+\s+->\s+(\S+)")
+
+
+def _git_role() -> str:
+    """This installation's git role: ``maintainer`` or ``contributor``.
+
+    Asked for on 2026-09-15: only the maintainer pushes to main; everyone
+    else pushes a branch and opens a pull request the maintainer accepts.
+    The repository's branch rule says the same on GitHub, but an agent
+    learned it only from a rejected push. Contributor is the default.
+    """
+    try:
+        from delfin import user_settings
+        role = str(((user_settings.load_settings() or {}).get("agent") or {})
+                   .get("git_role", "contributor") or "contributor")
+    except Exception:
+        return "contributor"
+    role = role.strip().lower()
+    return role if role in ("maintainer", "contributor") else "contributor"
+
+
+def _git_out(cwd: Any, *args: str) -> str:
+    """stdout of a read-only git command in ``cwd``; "" when it fails."""
+    try:
+        r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
+                           text=True, timeout=5)
+    except Exception:
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _default_branches(cwd: Any) -> set[str]:
+    """Branch names that count as the default branch for ``cwd``."""
+    names = {"main", "master"}
+    head = _git_out(cwd, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if head:
+        names.add(head.split("/", 1)[-1])
+    return names
+
+
+def _push_targets(cmd: str, cwd: Any) -> set[str]:
+    """The branches a shell command pushes to; empty when it cannot tell.
+
+    ``git push`` and ``git push origin`` push the current branch; a refspec
+    ``src:dst`` pushes to ``dst``; ``HEAD`` is the current branch.
+    """
+    import shlex
+
+    targets: set[str] = set()
+    current: Optional[str] = None
+    for match in _GIT_PUSH_RE.finditer(cmd or ""):
+        rest = re.split(r"[;&|]", cmd[match.end():], maxsplit=1)[0]
+        try:
+            positional = [a for a in shlex.split(rest) if not a.startswith("-")]
+        except ValueError:
+            continue
+        specs = positional[1:] or ["HEAD"]
+        for spec in specs:
+            dst = spec.lstrip("+").split(":", 1)[-1]
+            if dst in ("", "HEAD"):
+                if current is None:
+                    current = _git_out(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+                if current and current != "HEAD":
+                    targets.add(current)
+                continue
+            targets.add(dst[len("refs/heads/"):] if dst.startswith("refs/heads/") else dst)
+    return targets
 
 
 def _is_git_push(cmd: str) -> bool:
@@ -2281,6 +2348,10 @@ def _pushed_refs(output: str) -> list[tuple[str, str, str]]:
         ref = _PUSH_REF_RE.match(line)
         if ref and repo:
             refs.append((repo, ref.group(1), ref.group(2)))
+            continue
+        new = _PUSH_NEW_BRANCH_RE.match(line)
+        if new and repo:
+            refs.append((repo, "", new.group(1)))    # no sha printed
     return refs
 
 
@@ -2337,16 +2408,31 @@ def _after_push(arguments: Any, raw_result: Any, perms: Any) -> str:
     if refs and workspace:
         from .job_monitor import register_ci_watch
         for repo, sha, branch in refs:
+            if not sha:
+                continue
             try:
                 watched.append(register_ci_watch(workspace, repo, sha, branch))
             except Exception:
                 continue
+    # A branch that is not the default one is on its way to a pull request:
+    # hand over the link that opens it.
+    base = "main"
+    if workspace:
+        head = _git_out(workspace, "symbolic-ref", "--short",
+                        "refs/remotes/origin/HEAD")
+        base = head.split("/", 1)[-1] if head else "main"
+    links = [f"https://github.com/{repo}/compare/{base}...{branch}?expand=1"
+             for repo, _sha, branch in refs
+             if branch not in ({"main", "master"} | {base})]
+    pr = (" Give the user this link to open the pull request: "
+          + " ".join(links) + ".") if links else ""
     if not watched:
-        return f"[Push went through.] {spent}"
+        return f"[Push went through.]{pr} {spent}"
     return ("[Push went through.] Its CI is being watched ("
             + ", ".join(watched) + "); the result is delivered to a later "
             "turn. Until then CI is pending — do not report it green. To wait "
-            "for it, schedule_wakeup and end the turn; do not poll. " + spent)
+            "for it, schedule_wakeup and end the turn; do not poll." + pr
+            + " " + spent)
 
 # File-mutating MCP tools mapped to the native tool whose permission gate
 # governs them. Like the shell tools above, these dispatch straight to the
@@ -12668,6 +12754,29 @@ class _DocToolExecutor:
             # stood in the way. One request grants one push; without a grant
             # a human is asked when one can be, and the unattended profile
             # refuses, the line it already draws for sending data out.
+            # A contributor's change reaches the default branch through a
+            # pull request. No grant covers that push: it is the maintainer's
+            # decision, made on the PR, not the contributor's to request.
+            if _is_git_push(cmd) and _git_role() == "contributor":
+                _cwd_arg = str(args.get("cwd") or "").strip()
+                _where = Path(perms.workspace)
+                if _cwd_arg:
+                    _where = (Path(_cwd_arg) if Path(_cwd_arg).is_absolute()
+                              else _where / _cwd_arg)
+                _onto = sorted(_push_targets(cmd, _where)
+                               & _default_branches(_where))
+                if _onto:
+                    _record_security_event("push_default_branch", "bash",
+                                           cmd[:80])
+                    return (
+                        f"blocked: this installation's git role is "
+                        f"contributor, and `{_onto[0]}` is the default branch. "
+                        "Changes reach it through a pull request, not a push: "
+                        "commit on a branch of your own (`git switch -c "
+                        "<user>/<topic>`), push that branch (`git push -u "
+                        "origin <branch>`), and give the user the link to "
+                        "open the pull request. A maintainer sets "
+                        "agent.git_role = maintainer.")
             _asked = perms.confirm_callback is not None
             if (_is_git_push(cmd) and not (perms.push_grants or {}).get("push")
                     and (_asked or mode == "bypassPermissions"

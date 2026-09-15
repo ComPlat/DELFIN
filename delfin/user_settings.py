@@ -172,6 +172,11 @@ DEFAULT_SETTINGS = {
         #   "off"             — disable.
         "auto_verify": "smart",
         "auto_verify_command": "",
+        # Who may push to the default branch. "contributor" (default): the
+        # agent pushes a branch and hands over the pull-request link; a push
+        # to main/master is refused. "maintainer": pushes to the default
+        # branch are allowed, one per user request.
+        "git_role": "contributor",
         # Directory the "Bug Report" button writes reproducible bug
         # bundles into. Empty = per-user fallback (~/.delfin/agent_bugs).
         # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE

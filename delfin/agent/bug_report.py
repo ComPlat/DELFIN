@@ -131,6 +131,7 @@ _AGENT_SETTINGS_ALLOWED = frozenset({
     "max_tool_rounds", "output_guard", "permission_mode",
     "permission_profile", "provider", "model", "role_models", "routing",
     "session_retention_days", "state_retention_days", "subagents",
+    "commit_coauthor", "git_role", "wake_on_job_end",
 })
 
 # Key names whose VALUE is never published, at any depth. The allow-list

@@ -83,9 +83,11 @@ def test_it_says_why_that_is_not_a_workaround(repo):
     assert "cannot destroy work" in err
 
 
-def test_the_hint_does_not_fire_on_unrelated_git(repo):
+def test_the_hint_does_not_fire_on_unrelated_git(repo, monkeypatch):
     """A hint attached to everything is noise, and noise is what people
-    learn to skip."""
+    learn to skip. As the maintainer: a contributor's push to main gets its
+    own refusal (test_a_contributor_goes_through_a_pull_request)."""
+    monkeypatch.setattr(A, "_git_role", lambda: "maintainer")
     err = _err("git push origin main", repo)
     assert "not on the auto-allow list" in err
     assert "enter_worktree" not in err

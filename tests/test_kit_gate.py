@@ -311,10 +311,14 @@ def test_git_normal_ops_auto_allowed_default_mode(workspace, cmd):
 
 
 @pytest.mark.parametrize("cmd", ["git push", "git push origin main"])
-def test_git_push_needs_confirm_not_auto(workspace, cmd):
+def test_git_push_needs_confirm_not_auto(workspace, cmd, monkeypatch):
     """Pushing publishes to a remote (can hit a shared/protected branch) — it
     must NEVER auto-run. Head-less (no confirm callback) → blocked with a
-    guidance message; with a callback → routed through the confirm dialog."""
+    guidance message; with a callback → routed through the confirm dialog.
+
+    As the maintainer: a contributor's push to main is refused outright
+    (test_a_contributor_goes_through_a_pull_request)."""
+    monkeypatch.setattr("delfin.agent.api_client._git_role", lambda: "maintainer")
     perms = KitToolPermissions(workspace=workspace, mode="default")
     err = _gate(perms, "bash", {"command": cmd, "description": cmd})
     assert err is not None and "auto-allow" in err
