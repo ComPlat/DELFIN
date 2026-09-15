@@ -3721,6 +3721,31 @@ def _format_solo_domain_state(snapshot: dict) -> str:
     return "--- Domain State ---\n" + "\n".join(lines)
 
 
+def _subagent_report_text(raw: str) -> str:
+    """What a delegate reported, for a person to read.
+
+    The tool result is the payload the parent model gets: a verification
+    notice, bookkeeping fields, and the report inside untrusted-content
+    markers. The chat showed its first 600 characters -- the notice and the
+    start of the wrapper -- and none of the report (report 20260915-110358).
+    Anything that is not such a payload comes back as it was.
+    """
+    import json as _json
+    try:
+        payload = _json.loads(raw)
+    except (TypeError, ValueError):
+        return str(raw or "")
+    if not isinstance(payload, dict):
+        return str(raw or "")
+    text = str(payload.get("result") or payload.get("error") or "")
+    report = "\n".join(
+        ln for ln in text.splitlines()
+        if not ln.startswith(("[UNTRUSTED EXTERNAL CONTENT",
+                              "[END UNTRUSTED EXTERNAL CONTENT"))).strip()
+    notice = str(payload.get("verification_notice") or "").strip()
+    return (f"⚠ {notice}\n\n{report}" if notice else report) or str(raw or "")
+
+
 def _render_subagent_pane_html(calls: list[dict]) -> str:
     """Render the active/completed subagent calls as a compact panel.
 
@@ -3746,14 +3771,15 @@ def _render_subagent_pane_html(calls: list[dict]) -> str:
         output = call.get("output") or ""
         details = ""
         if output:
-            output_preview = _html.escape(str(output)[:600])
+            output_preview = _html.escape(
+                _subagent_report_text(str(output))[:32_000])
             details = (
                 '<details style="margin-top:4px;">'
                 '<summary style="cursor:pointer;font-size:11px;color:#6b7280;">'
                 f'Result ({len(str(output))} chars)</summary>'
                 '<pre style="margin:4px 0 0 0;padding:6px 8px;'
                 'background:#f3f4f6;border-radius:4px;font-size:11px;'
-                'white-space:pre-wrap;max-height:160px;overflow-y:auto;">'
+                'white-space:pre-wrap;max-height:320px;overflow-y:auto;">'
                 f'{output_preview}</pre></details>'
             )
         rows.append(
@@ -16040,10 +16066,15 @@ def create_tab(ctx):
                         _refresh_security_panel()
                     except Exception:
                         pass
-                    # Truncate for display
+                    # Truncate for display -- except a delegate's report: it
+                    # is the answer, and it is shown whole (collapsed).
                     output = tool_output
                     _MAX_LINES = 8
                     _MAX_CHARS = 600
+                    if tool_name in ("subagent", "subagent_result", "orchestrate"):
+                        output = _subagent_report_text(tool_output)
+                        _MAX_LINES = 2000
+                        _MAX_CHARS = 32_000
                     lines = output.split("\n")
                     truncated = False
                     if len(lines) > _MAX_LINES:

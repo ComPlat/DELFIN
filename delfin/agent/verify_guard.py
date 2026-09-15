@@ -289,6 +289,14 @@ def _iter_path_citations(text: str):
         ext = raw.rsplit(".", 1)[-1].lower() if "." in raw else ""
         if "/" not in raw and ext not in _CODE_FILE_EXTS:
             continue
+        # "d.h" (German "that is") ends in a C header's extension, and
+        # "tests/.../x" is a path with its middle left out; neither names a
+        # file. Report 20260915-110358 flagged both as files a sub-agent had
+        # invented.
+        if "/" not in raw and len(raw.rsplit(".", 1)[0]) <= 1:
+            continue
+        if any(seg in ("...", "…") for seg in raw.split("/")):
+            continue
         if "/" in raw and "." in raw.rsplit("/", 1)[-1]:
             tail_ext = raw.rsplit(".", 1)[-1].lower()
             if tail_ext not in _CODE_FILE_EXTS:
@@ -369,7 +377,11 @@ def scan_for_ungrounded_code_claims(
             if key in seen or len(flags) >= max_flags:
                 continue
             seen.add(key)
-            if _is_observed(path, obs):
+            # "delfin/agent/api_client" is how a module is named in prose;
+            # the file it names is api_client.py.
+            _module = "." not in path.rsplit("/", 1)[-1]
+            if _is_observed(path, obs) or (
+                    _module and _is_observed(path + ".py", obs)):
                 continue
             # A bare file name is a name, not a place. "chain_setup.py"
             # lives in delfin/co2/, "CONTROL.txt" in every run folder --
@@ -415,7 +427,8 @@ def scan_for_ungrounded_code_claims(
                     target = root / path
                 else:
                     target = Path(path)
-                exists = target.is_file()
+                exists = target.is_file() or (
+                    _module and target.with_name(target.name + ".py").is_file())
                 if not exists:
                     is_dir = target.is_dir()
             except OSError:

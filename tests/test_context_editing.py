@@ -56,6 +56,28 @@ def test_assistant_and_user_never_elided():
     assert msgs[1]["content"] == big            # assistant huge -> untouched
 
 
+def test_one_deep_cut_then_the_start_of_the_conversation_stays_put():
+    """Report 20260915-084010: once over budget, each round elided one more
+    old result -- a change EARLIER in the conversation every round, so the
+    endpoint's prefix cache missed on every request after it (49 % of four
+    million input tokens cold, 200-270 s each on GLM). One pass now cuts
+    well under the budget, and the next round's growth changes nothing
+    that came before it."""
+    msgs = [{"role": "system", "content": "s"}]
+    for i in range(10):
+        msgs.append({"role": "assistant", "content": f"r{i}",
+                     "tool_calls": [{"id": f"c{i}"}]})
+        msgs.append(_tool(i, 1000))
+    assert _elide_old_tool_results(msgs, char_budget=8000, keep_recent=2) >= 1
+
+    before = [dict(m) for m in msgs]
+    msgs.append({"role": "assistant", "content": "r10",
+                 "tool_calls": [{"id": "c10"}]})
+    msgs.append(_tool(10, 1000))
+    assert _elide_old_tool_results(msgs, char_budget=8000, keep_recent=2) == 0
+    assert msgs[:len(before)] == before
+
+
 def test_already_elided_not_doubled():
     msgs = [_tool(1, 2000), _tool(2, 2000), _tool(3, 2000)]
     _elide_old_tool_results(msgs, char_budget=1500, keep_recent=0)

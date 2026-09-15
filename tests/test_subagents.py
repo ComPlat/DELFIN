@@ -125,6 +125,44 @@ def test_run_subagent_clones_perms_with_correct_mode():
     assert parent.mode == "bypassPermissions"
 
 
+def _client_streaming(events):
+    client = MagicMock()
+    client.stream_message = MagicMock(return_value=iter(
+        events + [_fake_event(type="message_delta", input_tokens=1,
+                              output_tokens=1)]))
+    client._permissions = None
+    client.set_permissions = MagicMock()
+    return client
+
+
+def test_the_report_is_the_last_word_not_the_narration():
+    """Report 20260915-110358: the delegate's text between tool calls --
+    "Now let me find ..." -- came back as its report, and the answer at the
+    end was cut off on the way to the parent."""
+    client = _client_streaming([
+        _fake_event(type="text_delta", text="Now let me find the test.\n"),
+        _fake_event(type="tool_use", tool_name="grep_file", tool_input="{}"),
+        _fake_event(type="text_delta", text="Let me read the resolver.\n"),
+        _fake_event(type="tool_use", tool_name="read_file", tool_input="{}"),
+        _fake_event(type="text_delta", text="Ursache: api_client.py:1782."),
+    ])
+    res = SA.run_subagent(subagent_type="explore", description="t",
+                          prompt="hi there test prompt",
+                          parent_client=client, parent_perms=None)
+    assert res.final_text == "Ursache: api_client.py:1782."
+
+
+def test_a_run_that_ended_on_a_tool_call_keeps_what_it_said():
+    client = _client_streaming([
+        _fake_event(type="text_delta", text="Found it in api_client.py."),
+        _fake_event(type="tool_use", tool_name="read_file", tool_input="{}"),
+    ])
+    res = SA.run_subagent(subagent_type="explore", description="t",
+                          prompt="hi there test prompt",
+                          parent_client=client, parent_perms=None)
+    assert res.final_text == "Found it in api_client.py."
+
+
 def test_run_subagent_truncates_on_tool_call_budget():
     # 35 tool calls > the default 30 budget
     client = _fake_client("too many", tool_calls=35)

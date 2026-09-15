@@ -2872,6 +2872,7 @@ def run_subagent(
     messages.append({"role": "user", "content": prompt})
 
     final_text_parts: list[str] = []
+    _final_from = 0      # where the text after the last tool call starts
     tool_calls_seen: list[dict] = []
     in_tokens = out_tokens = 0
     t0 = time.monotonic()
@@ -2960,6 +2961,7 @@ def run_subagent(
                 final_text_parts.append(event.text)
                 _sa_text_buf.append(event.text)
             elif event.type == "tool_use":
+                _final_from = len(final_text_parts)
                 tool_calls_seen.append({
                     "name": event.tool_name,
                     "input": event.tool_input,
@@ -3045,7 +3047,13 @@ def run_subagent(
         # Surface as a soft warning when nothing else went wrong.
         worktree_summary["warning"] = isolation_warning
 
-    final_text = "".join(final_text_parts).strip()
+    # The report is what the delegate said after its last tool call. Its
+    # text between calls -- "Now let me find ..." -- is narration, and handed
+    # back whole it pushed the answer past every cap on the way to the
+    # parent (report 20260915-110358). A run that ended on a tool call has
+    # no last word; then everything it said is all there is.
+    final_text = ("".join(final_text_parts[_final_from:]).strip()
+                  or "".join(final_text_parts).strip())
     if not final_text and not error:
         error = "sub-agent returned no text"
 
