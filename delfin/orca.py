@@ -345,6 +345,23 @@ def _ensure_openmpi_subdir(base_path: Path) -> None:
         logger.debug("Could not create OpenMPI scratch subdir %s", subdir, exc_info=True)
 
 
+def _user_scratch_name() -> str:
+    """The default scratch directory's name, one per user.
+
+    It was ``delfin_orca_scratch`` for everybody. On a shared node the first
+    user to run creates it with their umask (0755), and every other user's
+    ORCA run then failed with "Permission denied" creating its run folder
+    inside -- seen on a login node where it belonged to another account.
+    """
+    try:
+        import getpass
+        user = getpass.getuser()
+    except Exception:
+        user = str(os.getuid()) if hasattr(os, "getuid") else "user"
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in user)
+    return f"delfin_orca_scratch-{safe or 'user'}"
+
+
 def _ensure_orca_scratch_dir() -> Path:
     """Create (once) and return a run-specific scratch directory for ORCA."""
     global _RUN_SCRATCH_DIR
@@ -372,7 +389,7 @@ def _ensure_orca_scratch_dir() -> Path:
             base_path = Path(candidate).expanduser()
             break
     else:
-        base_path = Path(tempfile.gettempdir()).joinpath("delfin_orca_scratch")
+        base_path = Path(tempfile.gettempdir()).joinpath(_user_scratch_name())
 
     base_path.mkdir(parents=True, exist_ok=True)
 
