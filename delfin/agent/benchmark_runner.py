@@ -705,7 +705,10 @@ class _PristineWorkspace:
         self._lock_handle = None
         try:
             import fcntl
-            lock_path = Path(tempfile.gettempdir()) / "delfin-bench-ws.lock"
+            # Suffix the lock file with the uid: on shared cluster scratch
+            # (world-writable, sticky) a fixed name may be owned by another
+            # user, making open() fail silently and dropping mutual exclusion.
+            lock_path = Path(tempfile.gettempdir()) / f"delfin-bench-ws-{os.getuid()}.lock"
             self._lock_handle = open(lock_path, "w")
             fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_EX)
         except Exception:
