@@ -437,6 +437,24 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
                 return fallback / ".delfin" / _rel
         monkeypatch.setattr(mod, attr, _resolve)
 
+    # The settings file is ``~/.delfin_settings.json``, beside ``~/.delfin``
+    # rather than in it, so neither list above reached it. On 2026-09-15 a
+    # run wrote the real file: save_settings merges every missing default
+    # into what it writes, and a new default (agent.git_role) appeared in
+    # the user's own settings, where it would have refused their pushes.
+    # An explicit path, or a test that moved Path.home itself, is left alone.
+    from delfin import user_settings as _user_settings
+    _original_settings_path = _user_settings.get_settings_path
+
+    def _settings_path(base_path=None, _o=_original_settings_path):
+        if base_path or _already_isolated():
+            return _o(base_path)
+        # The real home always exists; save_settings creates no parents.
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback / _user_settings.SETTINGS_FILE_NAME
+
+    monkeypatch.setattr(_user_settings, "get_settings_path", _settings_path)
+
 
 # ---------------------------------------------------------------------------
 # The sandbox-escape gate
