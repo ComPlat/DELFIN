@@ -1574,9 +1574,21 @@ def create_tab(ctx):
         return {'output_type': 'display_data',
                 'data': {'text/html': markup}, 'metadata': {}}
 
-    def _as_text(message):
-        return {'output_type': 'stream', 'name': 'stdout',
-                'text': str(message) + '\n'}
+    def _as_notice(message):
+        """The line a viewer with nothing to show says, as HTML.
+
+        Stream text lands at the top left of the box, the way console output
+        does -- and in a 560 px tall frame that one small line in the far top
+        corner read as a picture that failed to arrive, not as the invitation
+        it was.  It is what the box is waiting for, so it goes where a
+        picture keeps its caption: the bottom left corner of the frame.  The
+        rule that puts it there is in this tab's sheet, under
+        ``.orca-mol-note``.
+        """
+        return {'output_type': 'display_data',
+                'data': {'text/html':
+                         f'<div class="orca-mol-note">{html.escape(str(message))}</div>'},
+                'metadata': {}}
 
     def _refresh_mol_view(reset_view=False):
         """Re-render the molecule viewer, preserving orientation unless *reset_view*."""
@@ -1637,11 +1649,11 @@ def create_tab(ctx):
                         _forget_the_camera()
                     _draw_through_the_editor(full_xyz)
             except Exception as e:
-                _show_in_viewer(_as_text(f'Could not visualize: {e}'))
+                _show_in_viewer(_as_notice(f'Could not visualize: {e}'))
             return
         raw = orca_coords.value.strip()
         if not raw:
-            _show_in_viewer(_as_text('Paste XYZ coordinates to see 3D preview.'))
+            _show_in_viewer(_as_notice('Paste XYZ coordinates to see 3D preview.'))
             _hand_to_editor('')
             return
         # A SMILES is not coordinates. Read as some, "c1ccccc1" became a
@@ -1649,14 +1661,14 @@ def create_tab(ctx):
         # plainly filled the box the viewer still showed that atom -- which is
         # what "it does not show it" looked like from the outside.
         if clean_input_data(raw)[1] == 'smiles':
-            _show_in_viewer(_as_text(
+            _show_in_viewer(_as_notice(
                 'SMILES detected. Use CONVERT SMILES, QUICK CONVERT or '
                 'CONVERT SMILES + UFF to turn it into coordinates.'))
             _hand_to_editor('')
             return
         coords = strip_xyz_header(raw)
         if not coords:
-            _show_in_viewer(_as_text('No valid coordinates.'))
+            _show_in_viewer(_as_notice('No valid coordinates.'))
             _hand_to_editor('')
             return
         try:
@@ -1666,7 +1678,7 @@ def create_tab(ctx):
                 _forget_the_camera()
             _draw_through_the_editor(xyz_data)
         except Exception as e:
-            _show_in_viewer(_as_text(f'Could not visualize: {e}'))
+            _show_in_viewer(_as_notice(f'Could not visualize: {e}'))
 
     def update_orca_molecule_view(change=None):
         # An edit from the editor has already put itself in the box and told
@@ -2969,6 +2981,31 @@ def create_tab(ctx):
         .orca-mol-output [id^="orca-mol-"] {
             display: block !important;
             margin: 0 !important;
+        }
+        /* The frame the border draws is the positioning frame for what it
+           frames: the note below anchors to the box itself, whatever the
+           output area in between is or is not. */
+        .orca-mol-output {
+            position: relative !important;
+        }
+        /* What a viewer with nothing to show says, at the bottom left
+           corner where a picture keeps its caption -- see _as_notice.
+           Console text put the line at the top left, one small thing far
+           up in a 560 px empty frame.  It takes no mouse: there is no
+           structure under it to drag, and a click is not its to eat. */
+        .orca-mol-output .orca-mol-note {
+            position: absolute !important;
+            left: 12px !important;
+            bottom: 12px !important;
+            max-width: calc(100% - 24px) !important;
+            margin: 0 !important;
+            padding: 6px 10px !important;
+            border-radius: 4px !important;
+            background: rgba(255, 255, 255, 0.86) !important;
+            font-family: sans-serif !important;
+            font-size: 13px !important;
+            color: #555 !important;
+            pointer-events: none !important;
         }
         """
         + structure_viewer_fullscreen_css()
