@@ -95,6 +95,17 @@ def test_a_push_that_failed_keeps_the_grant(tmp_path):
     assert _gate(perms, "git push origin main") is None
 
 
+def test_a_rejected_push_behind_a_pipe_keeps_the_grant(tmp_path):
+    """`git push origin main 2>&1 | tail -3` exits 0 when the remote refuses
+    (report 20260915-132613 pushed that way)."""
+    perms = _perms(tmp_path)
+    A._grant_push_from(perms, "push it", new_request=True)
+    assert _pushed(perms, output=(
+        " ! [rejected]        main -> main (fetch first)\n"
+        "error: failed to push some refs to 'github.com:o/r.git'\n")) == ""
+    assert _gate(perms, "git push origin main") is None
+
+
 def test_a_steered_request_adds_a_grant_and_a_steered_remark_keeps_it(tmp_path):
     perms = _perms(tmp_path)
     A._grant_push_from(perms, "fix the viewer", new_request=True)

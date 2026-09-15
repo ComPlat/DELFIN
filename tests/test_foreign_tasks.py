@@ -51,7 +51,7 @@ def test_helper_empty_for_empty_session_id(tmp_path):
     # Empty current id → task_list already shows every workspace task, so
     # nothing is invisible and the summary must stay empty.
     assert open_foreign_tasks(tmp_path, "") == {
-        "count": 0, "oldest_age_days": 0, "tasks": [],
+        "count": 0, "oldest_age_days": 0, "tasks": [], "stale_count": 0,
     }
 
 
@@ -67,26 +67,47 @@ def test_helper_caps_list_but_counts_all(tmp_path):
     assert len(out2["tasks"]) == 2
 
 
-def test_helper_age_math_and_oldest_first(tmp_path):
+def _age(store, task_id, days):
+    """Rewrite one task's on-disk timestamp to a known age (the store
+    re-reads the file on every list, so this is authoritative)."""
+    now = datetime.now(timezone.utc)
+    stamp = (now - timedelta(days=days, hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    data = json.loads(store.path.read_text(encoding="utf-8"))
+    for t in data["tasks"]:
+        if t["id"] == task_id:
+            t["updated_at"] = stamp
+    store.path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_helper_age_math_and_newest_first(tmp_path):
     s = get_store(tmp_path)
     a = s.create("three days old", session_id="old")
     b = s.create("fresh", session_id="old")
-    # Rewrite the on-disk timestamps to known ages (the store re-reads the
-    # file on every list, so this is authoritative).
-    now = datetime.now(timezone.utc)
-    stamp = (now - timedelta(days=3, hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    data = json.loads(s.path.read_text(encoding="utf-8"))
-    for t in data["tasks"]:
-        if t["id"] == a["id"]:
-            t["updated_at"] = stamp
-    s.path.write_text(json.dumps(data), encoding="utf-8")
+    _age(s, a["id"], 3)
 
     out = open_foreign_tasks(tmp_path, "cur")
     assert out["count"] == 2
     assert out["oldest_age_days"] == 3
-    # Oldest first; the fresh task ages 0 days.
-    assert [t["id"] for t in out["tasks"]] == [a["id"], b["id"]]
-    assert [t["age_days"] for t in out["tasks"]] == [3, 0]
+    # Newest first: work parked this morning is the likeliest to matter.
+    assert [t["id"] for t in out["tasks"]] == [b["id"], a["id"]]
+    assert [t["age_days"] for t in out["tasks"]] == [0, 3]
+
+
+def test_months_old_tasks_are_counted_but_not_listed(tmp_path):
+    """Reports 20260915-085107 and -110358 opened every session on 28
+    tasks, the five listed 81 to 127 days old."""
+    s = get_store(tmp_path)
+    old = s.create("Create tetris_app/ directory structure", session_id="old")
+    _age(s, old["id"], 126)
+    fresh = s.create("Finish the collector fix", session_id="old")
+
+    out = open_foreign_tasks(tmp_path, "cur")
+    assert [t["id"] for t in out["tasks"]] == [fresh["id"]]
+    assert (out["count"], out["stale_count"]) == (1, 1)
+    # Nothing but stale work: no notice at all.
+    s.update(fresh["id"], session_id="cur")
+    assert open_foreign_tasks(tmp_path, "cur")["count"] == 0
+    assert open_foreign_tasks(tmp_path, "cur", max_age_days=None)["count"] == 1
 
 
 def test_helper_never_raises(tmp_path):
@@ -132,6 +153,19 @@ def test_foreign_block_on_first_build_only(tmp_path, monkeypatch):
     assert "task_adopt" in block and "task_list(all_sessions=true)" in block
     assert f"id {t1['id']}" in block and "Finish BoTorch wrapper" in block
     # One-shot: the very next build stays silent.
+    assert eng._build_open_foreign_tasks_block() == ""
+
+
+def test_foreign_block_stays_silent_about_months_old_work(tmp_path, monkeypatch):
+    s = get_store(tmp_path)
+    old = s.create("DECIMER PNG-to-SMILES script", session_id="prev")
+    _age(s, old["id"], 127)
+
+    eng = _bare_engine()
+    monkeypatch.setattr(
+        AgentEngine, "kit_permissions",
+        property(lambda self: _perms_for(tmp_path, "cur")),
+    )
     assert eng._build_open_foreign_tasks_block() == ""
 
 
