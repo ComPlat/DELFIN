@@ -4946,6 +4946,12 @@ def create_tab(ctx):
     _controls_hbox.children = (
         session_dropdown, load_session_btn, fork_session_btn, delete_session_btn,
     ) + tuple(_controls_hbox.children)
+    # A session list beside the tab opens, resumes and closes sessions; the
+    # tab's own selector would be a second way to switch conversations.
+    if getattr(ctx, "sessions_managed", False):
+        for _session_control in (session_dropdown, load_session_btn,
+                                 fork_session_btn, delete_session_btn):
+            _session_control.layout.display = "none"
 
     # Search bar (toggle visibility with Ctrl+K or /search)
     search_input = widgets.Text(

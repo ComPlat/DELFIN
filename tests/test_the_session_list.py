@@ -158,6 +158,38 @@ def test_only_the_first_session_adds_the_page_scripts(home):
     assert "second();" not in ctx.init_js_parts
 
 
+def test_the_list_marks_the_session_on_screen_and_the_ones_working(home):
+    tmp, _saved = home
+    build = _Build()
+    _widget, refs = AS.create_tab(_ctx(tmp), build=build)
+    refs["open"](str(tmp / "calc"))
+    first, second = refs["sessions"]()
+    assert "delfin-session-active" in second["row"]._dom_classes
+    assert "delfin-session-active" not in first["row"]._dom_classes
+
+    first["refs"]["state"]["streaming"] = True
+    refs["refresh"]()
+    assert "delfin-session-busy" in first["row"]._dom_classes
+    first["refs"]["state"]["streaming"] = False
+    refs["refresh"]()
+    assert "delfin-session-busy" not in first["row"]._dom_classes
+
+
+def test_a_long_working_directory_fits_on_one_line():
+    shown = AS._display_path(
+        "/pfs/data6/home/ka/project/software/delfin/.delfin/worktrees/"
+        "delfin-wt-1a2b3c4d")
+    assert shown == "…/worktrees/delfin-wt-1a2b3c4d"
+    assert AS._display_path("/tmp/project") == "/tmp/project"
+
+
+def test_the_list_cannot_scroll_sideways(home):
+    """Widgets at 100% width plus their own padding made the column scroll
+    horizontally; the column clips and sizes everything border-box."""
+    assert "overflow-x: hidden" in AS._SIDEBAR_CSS
+    assert ".delfin-sessions * { box-sizing: border-box; }" in AS._SIDEBAR_CSS
+
+
 def test_two_real_agent_tabs_live_side_by_side(home):
     tmp, _saved = home
     ctx = _ctx(tmp)
