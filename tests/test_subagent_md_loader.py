@@ -60,6 +60,28 @@ def test_user_md_preset_discovered(fake_home, tmp_path):
     assert "chemistry audit" in p.system_prompt
 
 
+@pytest.mark.parametrize("value, expected", [
+    ("cheap", "cheap"), ("Parent", "parent"), ("kit.glm-5.3", ""), ("", ""),
+])
+def test_a_definition_names_its_model_tier(fake_home, tmp_path, value, expected):
+    """Claude Code's agent definitions carry a model; DELFIN's carry a tier
+    (parent / cheap), so one definition works with any provider."""
+    user_dir = tmp_path / ".delfin" / "subagents"
+    user_dir.mkdir(parents=True)
+    (user_dir / "tiered_subagent.md").write_text(
+        "---\n"
+        "name: tiered\n"
+        "description: A preset with a model line.\n"
+        "mode: plan\n"
+        f"model: {value}\n"
+        "---\n\n"
+        "You read and report.\n",
+        encoding="utf-8",
+    )
+    sa.reload_subagent_presets()
+    assert sa.SUBAGENT_PRESETS["tiered"].model == expected
+
+
 def test_user_md_can_override_builtin(fake_home, tmp_path):
     user_dir = tmp_path / ".delfin" / "subagents"
     user_dir.mkdir(parents=True)

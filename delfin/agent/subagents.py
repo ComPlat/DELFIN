@@ -969,6 +969,11 @@ class SubagentPreset:
     # ``mode`` still applies on top: a "plan" preset refuses writes whatever
     # this list says, and this list binds in the modes where "plan" does not.
     tools: tuple[str, ...] = ()
+    # The model tier this preset runs on when a call names none: "parent",
+    # "cheap", or "" for the routing default. A tier rather than a model
+    # name, so a definition works with any provider. Writer presets keep
+    # the parent model whatever this says (see _resolve_subagent_model).
+    model: str = ""
 
 
 # Tools that cannot mutate anything: they read files, code, documents,
@@ -1140,6 +1145,17 @@ def _md_preset_search_dirs() -> list[Path]:
     ]
 
 
+def _parse_preset_model(value: object) -> str:
+    """Read a ``model:`` frontmatter value: ``parent``, ``cheap`` or "".
+
+    Claude Code's agent definitions name a model; DELFIN's name a tier, so
+    the same definition works on KIT, Anthropic or a local server. Anything
+    else is ignored rather than guessed at.
+    """
+    tier = str(value or "").strip().lower()
+    return tier if tier in ("parent", "cheap") else ""
+
+
 def _load_md_presets() -> dict[str, SubagentPreset]:
     """Discover ``*_subagent.md`` presets with YAML frontmatter.
 
@@ -1181,6 +1197,7 @@ def _load_md_presets() -> dict[str, SubagentPreset]:
                 system_prompt=system_prompt,
                 mode=mode,
                 tools=_parse_preset_tools(meta.get("tools")),
+                model=_parse_preset_model(meta.get("model")),
             )
     return discovered
 
@@ -1227,6 +1244,7 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
                 system_prompt=system_prompt,
                 mode=mode,
                 tools=_parse_preset_tools(meta.get("tools")),
+                model=_parse_preset_model(meta.get("model")),
             )
     return registry
 
@@ -2626,7 +2644,10 @@ def _resolve_subagent_model(
     """
     parent_model = str(getattr(parent_client, "model", "") or "")
     try:
-        override = (model_override or "").strip().lower()
+        # A call's own choice wins; otherwise the preset's definition says.
+        preset = SUBAGENT_PRESETS.get(subagent_type)
+        override = (model_override or getattr(preset, "model", "")
+                    or "").strip().lower()
         if override == "parent":
             return parent_model, "parent"
         if is_writer_preset(subagent_type):
