@@ -15,6 +15,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import subprocess
 import threading
 import uuid
 from pathlib import Path
@@ -44,7 +45,7 @@ class _SessionContext:
     OWN = frozenset({
         "agent_workspace", "initial_session_id", "sessions_managed",
         "session_open_elsewhere", "agent_engine", "agent_state",
-        "agent_status_html", "add_init_js",
+        "agent_status_html", "add_init_js", "presence_key",
     })
 
     def __init__(self, base: Any, **own: Any) -> None:
@@ -139,6 +140,49 @@ def workspace_choices(ctx: Any) -> list[str]:
     return out
 
 
+def _exclude_locally(root: str, common_dir: str, pattern: str = ".delfin/") -> None:
+    """Keep ``pattern`` out of ``git status`` in this clone only: an entry
+    in its info/exclude, nothing committed. Skipped when already ignored."""
+    try:
+        probe = subprocess.run(
+            ["git", "-C", root, "check-ignore", "-q", ".delfin/worktrees/probe"],
+            capture_output=True, timeout=5)
+        if probe.returncode == 0:
+            return
+        exclude = Path(common_dir) / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        if pattern not in text.splitlines():
+            sep = "" if not text or text.endswith("\n") else "\n"
+            exclude.write_text(f"{text}{sep}{pattern}\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def session_worktree(workspace: str) -> str:
+    """A fresh worktree of the repository ``workspace`` is in, on a branch of
+    its own, for a session that must not share a checkout with another.
+
+    Under ``<repo>/.delfin/worktrees``, the way Claude Code keeps its own
+    under ``.claude/worktrees``, and kept out of ``git status`` there.
+    Returns the path at the same place inside the worktree as ``workspace``
+    is inside the repository.
+    """
+    from delfin.agent import session_presence as _presence
+    from delfin.agent import worktree as _wt
+    repo = _presence.repository_of(workspace)
+    if not repo["root"]:
+        raise ValueError(f"{workspace} is not in a git repository")
+    _exclude_locally(repo["root"], repo["common_dir"])
+    info = _wt.enter_worktree(repo["root"], branch_prefix="session",
+                              parent=Path(repo["root"]) / ".delfin" / "worktrees")
+    try:
+        inside = Path(workspace).resolve().relative_to(Path(repo["root"]))
+    except ValueError:
+        inside = Path(".")
+    return str((info.path / inside).resolve())
+
+
 def _short_path(path: str) -> str:
     home = str(Path.home())
     return "~" + path[len(home):] if path.startswith(home) else path
@@ -184,10 +228,16 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                                layout=widgets.Layout(width="50%"))
     cancel_btn = widgets.Button(description="Cancel",
                                 layout=widgets.Layout(width="50%"))
+    own_worktree_box = widgets.Checkbox(
+        value=False, description="Own worktree", indent=False,
+        tooltip="Work on a branch of its own in a separate checkout",
+        layout=widgets.Layout(width="100%", display="none"))
+    worktree_hint = widgets.HTML("")
     new_form = widgets.VBox(
         [widgets.HTML("<span style='font-size:11px;color:#546e7a'>"
                       "Working directory</span>"),
-         workdir_box, widgets.HBox([start_btn, cancel_btn])],
+         workdir_box, own_worktree_box, worktree_hint,
+         widgets.HBox([start_btn, cancel_btn])],
         layout=widgets.Layout(display="none"))
     notice = widgets.HTML("")
     list_box = widgets.VBox()
@@ -309,6 +359,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             agent_status_html=widgets.HTML(""),
             add_init_js=(ctx.add_init_js if not view["scripts_added"]
                          else (lambda script: None)),
+            presence_key=key,
         )
         tab, refs = build(session_ctx)
         view["scripts_added"] = True
@@ -347,6 +398,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                 shutdown()
         except Exception:
             pass
+        try:
+            from delfin.agent import session_presence as _presence
+            _presence.withdraw(key)
+        except Exception:
+            pass
         sessions.remove(rec)
         stage.children = tuple(r["tab"] for r in sessions)
         if not sessions:
@@ -374,6 +430,13 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             if sid != rec.get("remembered_id"):
                 rec["remembered_id"] = sid
                 changed = True
+            try:
+                from delfin.agent import session_presence as _presence
+                _presence.announce(rec["key"], session_id=sid,
+                                   title=_session_title(state),
+                                   workspace=rec["workspace"])
+            except Exception:
+                pass
         active = _find(view["active"])
         if active is not None:
             try:
@@ -400,10 +463,32 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
 
     # -- controls ---------------------------------------------------------------
 
+    def _suggest_worktree(_change=None) -> None:
+        """Offer a worktree inside a git repository, and pre-select it when
+        another open session already works in that repository."""
+        where = str(workdir_box.value or "").strip()
+        try:
+            from delfin.agent import session_presence as _presence
+            in_repo = bool(where) and bool(_presence.repository_of(where)["root"])
+            busy = _presence.in_same_repository(where) if in_repo else []
+        except Exception:
+            in_repo, busy = False, []
+        own_worktree_box.layout.display = "" if in_repo else "none"
+        own_worktree_box.value = bool(busy)
+        if busy:
+            names = ", ".join(str(r.get("title") or "a session") for r in busy[:3])
+            worktree_hint.value = (
+                "<div style='font-size:10px;color:#546e7a'>Also working in "
+                f"this repository: {html.escape(names)}. A worktree of its "
+                "own keeps the two sessions apart.</div>")
+        else:
+            worktree_hint.value = ""
+
     def _on_new(_btn=None) -> None:
         workdir_box.options = workspace_choices(ctx)
         new_form.layout.display = ""
         new_btn.layout.display = "none"
+        _suggest_worktree()
 
     def _on_cancel(_btn=None) -> None:
         new_form.layout.display = "none"
@@ -414,8 +499,15 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         if where and not Path(where).expanduser().is_dir():
             _say(f"Not a directory: {where}")
             return
+        target = str(Path(where).expanduser()) if where else ""
+        if own_worktree_box.value and own_worktree_box.layout.display != "none":
+            try:
+                target = session_worktree(target or default_workspace(ctx))
+            except Exception as exc:
+                _say(f"No worktree was created: {exc}")
+                return
         _on_cancel()
-        open_session(str(Path(where).expanduser()) if where else "")
+        open_session(target)
 
     def _on_resume(change) -> None:
         sid = str(change.get("new") or "")
@@ -425,6 +517,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         open_session(str(data.get("workspace") or ""), sid)
         _refresh_resume_options()
 
+    workdir_box.observe(_suggest_worktree, names="value")
     new_btn.on_click(_on_new)
     cancel_btn.on_click(_on_cancel)
     start_btn.on_click(_on_start)
@@ -469,4 +562,6 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         "sessions": lambda: list(sessions),
         "active": lambda: _find(view["active"]),
         "refresh": refresh,
+        "form": {"new": new_btn, "workdir": workdir_box,
+                 "own_worktree": own_worktree_box, "start": start_btn},
     }

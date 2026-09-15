@@ -574,6 +574,9 @@ USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     # reopens them. A test's list would reopen fixtures in the real one.
     ("delfin.dashboard.agent_sessions", "_OPEN_SESSIONS_PATH",
      "agent_open_sessions.json"),
+    # Where each open session works; a test's record would show a fixture
+    # to a real session as another agent in its repository.
+    ("delfin.agent.session_presence", "_DIR", "session_presence"),
     # The benchmark's per-checkout run lock. It lived under tests/fixtures
     # first, where the checkout-leak guard would have caught it, and the
     # move to ~/.delfin brought it into this table's scope instead.

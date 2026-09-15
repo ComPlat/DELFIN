@@ -6662,6 +6662,15 @@ def create_tab(ctx):
         # Scheduler fire-callback: when a wake-up triggers, drop the prompt
         # into the input box and send. The thread runs in the scheduler's
         # background, so we marshal back to the UI thread via input_textarea.
+        # This session's record in the session list's presence registry, so
+        # the engine does not name its own session among the others.
+        try:
+            _kp_presence = getattr(engine, "kit_permissions", None)
+            if _kp_presence is not None:
+                _kp_presence.presence_key = str(
+                    getattr(ctx, "presence_key", "") or "")
+        except Exception:
+            pass
         try:
             from delfin.agent import scheduler as _sched_mod
             sch = _sched_mod.get_scheduler()
