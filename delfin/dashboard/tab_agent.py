@@ -303,6 +303,9 @@ def _tool_stall_budget_s(tool_name: str) -> float:
 # minutes, not seconds; a CI watch is throttled to once a minute on its own.
 _JOB_WAKE_INTERVAL_S = 120.0
 
+# How often the Background panel re-reads what is running. Local files only.
+_BACKGROUND_REFRESH_S = 10.0
+
 
 def _job_wake_prompt(done: list) -> str:
     """The message a finished watched job sends an idle agent; "" for none."""
@@ -6063,58 +6066,19 @@ def create_tab(ctx):
     state.setdefault("_session_start_ts", _t_init.time())
 
     def _refresh_subagent_panel():
+        """The Background panel: everything the agent still has out.
+
+        Running shells, watched cluster jobs and CI runs, running sub-agents
+        and scheduled wake-ups, one line each -- and only while they are out.
+        It used to list sub-agents alone, and kept finished ones: the two
+        explore agents of report 20260915-132613 stayed on screen long after
+        their reports were in the chat, while the 40-minute background suite
+        and the watched CI run never showed at all.
+        """
         try:
-            from delfin.agent.subagents import read_running, read_telemetry
-            import time as _t
-            running = read_running()
-            # Each RUNNING subagent is an expandable block (open by default)
-            # showing its live steps (read/write/bash …) — the live
-            # drill-down that makes subagent work visible.
-            # COMPACT one-liners only — the full per-step activity (and the noisy
-            # tool names) now lives in the "• Subagent" drill-in chips above, so
-            # the bottom panel stays lean (the raw mcp_ step names were too much
-            # detail down here). Shows the current action, not every step.
-            blocks = []
-            for sa in running.values():
-                el = int(_t.time() - float(sa.get("started_at", _t.time())))
-                last = str(sa.get("last_action", ""))[:48]
-                blocks.append(
-                    f"<div style='color:#b45309;'>🟡 "
-                    f"<b>{_html.escape(str(sa.get('type','?')))}</b> "
-                    f"{_html.escape(str(sa.get('description',''))[:50])}"
-                    f" · {el//60}m{el%60:02d}s"
-                    + (f" · {_html.escape(last)}" if last else "") + "</div>"
-                )
-            # Finished subagents (telemetry) — compact one-liners, CURRENT
-            # session only (the telemetry file is global; without this filter a
-            # fresh session keeps showing prior/old-test runs, bug 2026-06-25).
-            _sess_start = float(state.get("_session_start_ts", 0) or 0)
-            recent = []
-            for rec in (read_telemetry(last_n=8) or [])[::-1]:
-                try:
-                    if float(rec.get("ts", 0) or 0) < _sess_start:
-                        continue          # belongs to an earlier session
-                except Exception:
-                    pass
-                ok = not rec.get("error")
-                recent.append(
-                    f"<span style='color:{'#2e7d32' if ok else '#c62828'};'>"
-                    f"{'✅' if ok else '❌'} {_html.escape(str(rec.get('subagent_type','?')))}"
-                    f"</span> {_html.escape(str(rec.get('description',''))[:50])}"
-                    f" · {float(rec.get('elapsed_s',0)):.0f}s"
-                    f" · {rec.get('n_tool_calls', rec.get('tool_calls', 0))} calls"
-                )
-            if blocks or recent:
-                html = ("<div style='font-size:11px; color:#546e7a;'>"
-                        "<b>🤖 Subagents</b>")
-                html += "".join(blocks)
-                if recent:
-                    html += ("<div style='margin-top:2px;'>"
-                             + " &nbsp;|&nbsp; ".join(recent[:5]) + "</div>")
-                html += "</div>"
-                subagent_panel_html.value = html
-            else:
-                subagent_panel_html.value = ""
+            from delfin.agent import background_view as _bgv
+            subagent_panel_html.value = _bgv.render_html(
+                _bgv.collect(_agent_workspace_path()))
         except Exception:
             subagent_panel_html.value = ""
 
@@ -6666,15 +6630,22 @@ def create_tab(ctx):
                 if (_enabled and state.get("engine") is not None
                         and not state.get("streaming")
                         and not (input_textarea.value or "").strip()):
+                    from delfin.agent import background_view as _bgv_wake
                     from delfin.agent import job_monitor as _jm_wake
                     _ws = _agent_workspace_path()
+                    _done: list = []
                     if _ws and _jm_wake.load_watched(
                             _jm_wake._agent_watch_path(_ws)).get("jobs"):
-                        _prompt = _job_wake_prompt(_jm_wake.check_agent_jobs(
+                        _done.extend(_jm_wake.check_agent_jobs(
                             _ws, consume=False, marker="wake_notified"))
-                        if _prompt:
-                            input_textarea.value = _prompt
-                            _on_send(None)
+                    # A background sub-agent that finished wakes the agent
+                    # the same way; the turn it starts drains its report.
+                    _done.extend(_bgv_wake.finished_background_agents(
+                        state.setdefault("_woken_agents", set())))
+                    _prompt = _job_wake_prompt(_done)
+                    if _prompt:
+                        input_textarea.value = _prompt
+                        _on_send(None)
             except Exception:
                 pass
             finally:
@@ -6697,6 +6668,36 @@ def create_tab(ctx):
                 _first.daemon = True
                 _first.start()
                 state["_job_wake_timer"] = _first
+            except Exception:
+                pass
+
+        # The Background panel refreshes on its own: a suite or a watch runs
+        # for many minutes without a tool call to trigger a refresh. Local
+        # reads only, so a short interval costs nothing on the cluster.
+        def _background_tick():
+            import threading as _threading_bg
+            try:
+                _refresh_subagent_panel()
+            except Exception:
+                pass
+            finally:
+                try:
+                    _again_bg = _threading_bg.Timer(
+                        _BACKGROUND_REFRESH_S, _background_tick)
+                    _again_bg.daemon = True
+                    _again_bg.start()
+                    state["_background_timer"] = _again_bg
+                except Exception:
+                    pass
+
+        if state.get("_background_timer") is None:
+            try:
+                import threading as _threading_bg_first
+                _first_bg = _threading_bg_first.Timer(
+                    _BACKGROUND_REFRESH_S, _background_tick)
+                _first_bg.daemon = True
+                _first_bg.start()
+                state["_background_timer"] = _first_bg
             except Exception:
                 pass
         _refresh_task_ticker()
