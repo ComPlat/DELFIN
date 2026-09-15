@@ -4,8 +4,8 @@ After report 20260915-085107 pushed to main, CI went red and nobody looked:
 the agent had no way to read it -- ``gh`` is not installed on the cluster
 nodes -- and when the user pasted the log it guessed at a licence header.
 A pushed commit's GitHub Actions runs are now a watched job: LLM-free,
-asked at most once a minute, reported once, with the job and step that
-failed and a link to the run.
+asked at most every three minutes, reported once, with the job and step
+that failed and a link to the run.
 """
 
 from __future__ import annotations
@@ -129,12 +129,54 @@ def test_a_push_that_never_got_a_run_is_reported_after_half_an_hour(ws):
     assert done[0]["state"] == "NO CI RUN" and done[0]["ok"] is False
 
 
-def test_github_is_asked_at_most_once_a_minute(ws):
+def test_github_is_asked_at_most_every_three_minutes(ws):
     fetch = _Fetch({"actions/runs": {"workflow_runs": [
         _run("CI", status="queued", conclusion=None)]}})
     _check(ws, fetch)
     jm.check_agent_jobs(ws, fetch_fn=fetch)
     assert len(fetch.urls) == 1
+    assert jm._CI_MIN_INTERVAL_S >= 180
+
+
+def test_a_rate_limited_watch_waits_for_the_reset(ws):
+    """A login node is one address for all its users, and sixty
+    unauthenticated calls an hour are shared by all of them. On 2026-09-15
+    two watches emptied that budget; asking again only gets another 403."""
+    limited = {"message": "API rate limit exceeded for 141.52.43.10.",
+               "_retry_at": time.time() + 900}
+    fetch = _Fetch({"actions/runs": limited})
+    done = _check(ws, fetch)
+    assert "rate limit" in done[0]["degraded"]
+    _check(ws, fetch)            # the interval is out of the way, the reset not
+    assert len(fetch.urls) == 1
+
+    green = _Fetch({"actions/runs": {"workflow_runs": [_run("CI")]}})
+    data = jm.load_watched(_watch_file(ws))
+    for entry in data["jobs"].values():
+        entry["retry_at"] = time.time() - 1
+    jm.save_watched(data, _watch_file(ws))
+    assert _check(ws, green)[0]["state"] == "SUCCESS"
+
+
+def test_a_refusal_brings_githubs_reason_and_reset(monkeypatch):
+    import email.message
+    import io
+    import urllib.error
+    import urllib.request
+
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = "1789480000"
+
+    def _refuse(*a, **kw):
+        raise urllib.error.HTTPError(
+            "https://api.github.com/x", 403, "rate limit exceeded", headers,
+            io.BytesIO(b'{"message": "API rate limit exceeded"}'))
+
+    monkeypatch.setattr(urllib.request, "urlopen", _refuse)
+    body = jm._default_fetch("https://api.github.com/x")
+    assert body == {"message": "API rate limit exceeded",
+                    "_retry_at": 1789480000.0}
 
 
 def test_watch_job_takes_a_ci_id(tmp_path, monkeypatch):

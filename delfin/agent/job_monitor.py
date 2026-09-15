@@ -468,16 +468,26 @@ def _emit_watch_attention(kind: str, title: str, detail: str,
 # job, answered by the public API (or GITHUB_TOKEN / GH_TOKEN when set).
 
 _CI_ID_RE = re.compile(r"^ci:([\w.-]+/[\w.-]+)@([0-9a-f]{7,40})$")
-# Unauthenticated, the API allows sixty calls an hour per address, and every
-# turn and the daemon come through check_agent_jobs.
-_CI_MIN_INTERVAL_S = 60.0
+# Unauthenticated, the API allows sixty calls an hour per ADDRESS, and a
+# login node is one address for every user on it; every turn and the daemon
+# come through check_agent_jobs. On 2026-09-15 two watches polling once a
+# minute emptied that budget and every answer was a 403 for the rest of the
+# hour. Twenty calls an hour per watch, and a rate-limited answer waits for
+# the reset GitHub names instead of asking again.
+_CI_MIN_INTERVAL_S = 180.0
 # A push whose commit has no run after this long will not get one.
 _CI_NO_RUN_AFTER_S = 30 * 60.0
 _CI_OK_CONCLUSIONS = frozenset({"success", "skipped", "neutral"})
 
 
 def _default_fetch(url: str) -> Optional[dict]:
-    """GET a GitHub API URL as JSON; None when it cannot be had."""
+    """GET a GitHub API URL as JSON; None when it cannot be had.
+
+    A refusal comes back as GitHub's own error body, so the reason reaches
+    the user ("API rate limit exceeded"), with ``_retry_at`` (epoch seconds)
+    when GitHub says when the budget returns.
+    """
+    import urllib.error
     import urllib.request
 
     headers = {"Accept": "application/vnd.github+json",
@@ -489,6 +499,22 @@ def _default_fetch(url: str) -> Optional[dict]:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8", "replace"))
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        body.setdefault("message", f"HTTP {exc.code}")
+        reset = (exc.headers or {}).get("X-RateLimit-Reset")
+        if (exc.code in (403, 429) and reset
+                and (exc.headers or {}).get("X-RateLimit-Remaining") == "0"):
+            try:
+                body["_retry_at"] = float(reset)
+            except ValueError:
+                pass
+        return body
     except Exception:
         return None
 
@@ -517,8 +543,10 @@ def query_ci_runs(
     data = fetch(url)
     if not isinstance(data, dict) or "workflow_runs" not in data:
         detail = data.get("message", "") if isinstance(data, dict) else ""
+        retry_at = data.get("_retry_at") if isinstance(data, dict) else None
         return {"state": STATE_UNAVAILABLE, "runs": [], "failed": [],
-                "url": "", "detail": str(detail or "no answer")[:120]}
+                "url": "", "detail": str(detail or "no answer")[:120],
+                "retry_at": retry_at}
     runs = [r for r in data["workflow_runs"]
             if str(r.get("head_sha", "")).startswith(sha)]
     summary = [{"name": r.get("name", ""), "status": r.get("status", ""),
@@ -679,7 +707,8 @@ def check_agent_jobs(
                     entry[marker] = True
                 changed = True
         elif _kind(jid, entry) == "ci":
-            if now - float(entry.get("last_checked") or 0) < _CI_MIN_INTERVAL_S:
+            if (now - float(entry.get("last_checked") or 0) < _CI_MIN_INTERVAL_S
+                    or now < float(entry.get("retry_at") or 0)):
                 continue
             entry["last_checked"] = now
             changed = True
@@ -691,6 +720,10 @@ def check_agent_jobs(
                                str(entry.get("branch") or ""),
                                fetch_fn or _default_fetch)
             state = ci["state"]
+            if ci.get("retry_at"):
+                entry["retry_at"] = ci["retry_at"]
+            else:
+                entry.pop("retry_at", None)
             if state == STATE_UNAVAILABLE:
                 # Said once, and the watch goes on: an answer that did not
                 # come is not a green run.

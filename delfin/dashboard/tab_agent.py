@@ -300,7 +300,7 @@ def _tool_stall_budget_s(tool_name: str) -> float:
 
 # How often the dashboard looks for finished watched jobs while the agent is
 # idle. A SLURM watch costs an squeue/sacct pair per look, so this stays in
-# minutes, not seconds; a CI watch is throttled to once a minute on its own.
+# minutes, not seconds; a CI watch is throttled to once every three minutes on its own.
 _JOB_WAKE_INTERVAL_S = 120.0
 
 # How often the Background panel re-reads what is running. Local files only.
