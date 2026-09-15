@@ -124,6 +124,37 @@ def test_a_human_is_asked_instead_of_refused(tmp_path):
     assert asked and "not asked for a push" in asked[0]
 
 
+def test_an_answer_picked_in_the_dialog_grants_the_push(tmp_path):
+    """Report 20260915-132613: the user picked "Ja, committen und pushen"
+    in ask_user_question, and the gate refused the push twice."""
+    perms = _perms(tmp_path)
+    A._grant_push_from(perms, "mach die Tests grün", new_request=True)
+    A._grant_push_from_answer(perms, json.dumps(
+        {"answers": ["Ja, committen und pushen"], "multiSelect": False}))
+    assert _gate(perms, "git push origin main") is None
+
+
+def test_an_answer_that_declines_grants_nothing(tmp_path):
+    perms = _perms(tmp_path)
+    A._grant_push_from(perms, "mach die Tests grün", new_request=True)
+    A._grant_push_from_answer(perms, json.dumps(
+        {"answers": ["Nein, noch nicht pushen"]}))
+    assert "has not asked for a push" in _gate(perms, "git push origin main")
+
+
+def test_a_question_to_the_user_ends_the_turn():
+    """After "Soll ich pushen?" auto-continue sent the agent back in, and it
+    tried the push it had just asked about."""
+    import inspect
+    assert A._ends_with_a_question(
+        "Soll ich `git push origin main` jetzt ausführen?")
+    assert A._ends_with_a_question("Welche Variante willst du?**")
+    assert not A._ends_with_a_question("Push ist durch. CI läuft.")
+    src = inspect.getsource(A.OpenAIClient.stream_message)
+    i = src.index("_did_tools_since_cont and _auto_cont_count < _AUTO_CONT_CAP")
+    assert "not _ends_with_a_question(" in src[i:i + 400]
+
+
 def test_the_push_arms_a_watch_on_its_ci(tmp_path):
     perms = _perms(tmp_path)
     A._grant_push_from(perms, "push it", new_request=True)

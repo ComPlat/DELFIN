@@ -2245,6 +2245,30 @@ def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
         grants["push"] = 0
 
 
+def _grant_push_from_answer(perms: Any, raw_result: Any) -> None:
+    """An answer picked in ask_user_question is the user speaking too.
+
+    Report 20260915-132613: the agent asked "Push?" in the dialog, the user
+    picked "Ja, committen und pushen" -- and the gate refused the push twice,
+    because only typed messages granted one. The user had to type "ja push"
+    to say it again.
+    """
+    try:
+        payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+    except (TypeError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+    answers = " ".join(str(a) for a in (payload.get("answers") or []))
+    if answers:
+        _grant_push_from(perms, answers, new_request=False)
+
+
+def _ends_with_a_question(text: str) -> bool:
+    """True when an answer ends by asking the user something."""
+    return (text or "").rstrip().rstrip("*_`").rstrip().endswith(("?", "？"))
+
+
 def _pushed_refs(output: str) -> list[tuple[str, str, str]]:
     """(owner/repo, new sha, branch) for every ref a GitHub push updated."""
     repo = ""
@@ -18906,6 +18930,12 @@ class OpenAIClient(_BaseClient):
 
                     # A push that went through spends the user's grant for it
                     # and arms a watch on the CI it started.
+                    if fn_name.rsplit("__", 1)[-1] == "ask_user_question":
+                        try:
+                            _grant_push_from_answer(
+                                self._permissions, _raw_result)
+                        except Exception:
+                            pass
                     if fn_name.rsplit("__", 1)[-1] == "bash_background":
                         try:
                             _bg_note = _background_command_note(fn_args)
@@ -19280,9 +19310,14 @@ class OpenAIClient(_BaseClient):
             # tool activity since the last auto-continue + a hard cap, so it can
             # never loop without progress. The injected nudge also tells it to
             # ASK when genuinely unsure rather than guess — autonomy ≠ guessing.
+            # Nor after a question to the user: report 20260915-132613 asked
+            # "Soll ich git push origin main jetzt ausführen?", was sent back
+            # in by the line below, and tried the push it had just asked
+            # about -- which the gate refused a second time.
             if (_did_tools_since_cont and _auto_cont_count < _AUTO_CONT_CAP
                     and self._has_pending_tasks()
-                    and not self._waiting_on_watched_jobs()):
+                    and not self._waiting_on_watched_jobs()
+                    and not _ends_with_a_question("".join(_text_chunks))):
                 _auto_cont_count += 1
                 _did_tools_since_cont = False
                 _final = "".join(_text_chunks) if _text_chunks else ""
