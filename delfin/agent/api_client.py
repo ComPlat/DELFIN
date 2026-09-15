@@ -7161,11 +7161,13 @@ def _auto_watch_submitted_jobs(stdout: str, perms) -> list[str]:
         if workspace is None:
             return ids
         from . import job_monitor as _jm
+        _sid = str(getattr(perms, "task_session_id", "") or "")
         for match in _SBATCH_SUBMITTED_RE.finditer(stdout or ""):
             job_id = match.group(1)
             try:
                 _jm.register_agent_job(
-                    workspace, job_id, description="submitted by the agent")
+                    workspace, job_id, description="submitted by the agent",
+                    **({"extra": {"session_id": _sid}} if _sid else {}))
                 ids.append(job_id)
             except Exception:
                 continue
@@ -10042,9 +10044,13 @@ class _DocToolExecutor:
                 pass
             try:
                 from .job_monitor import register_agent_job
+                _watch_sid = str(getattr(permissions, "task_session_id", "")
+                                 or "")
                 entry = register_agent_job(
                     ws, job_id,
-                    str(arguments.get("description", "") or "")[:200])
+                    str(arguments.get("description", "") or "")[:200],
+                    **({"extra": {"session_id": _watch_sid}}
+                       if _watch_sid else {}))
             except Exception as exc:
                 return json.dumps({"error": f"could not watch job: {exc}"})
             return json.dumps({
@@ -15213,6 +15219,9 @@ class _DocToolExecutor:
         # did not match. A wake-up that silently never fires is worse than
         # one that was refused.
         _ws = str(getattr(perms, "workspace", "") or "")
+        # The session that asked: several run in one dashboard, and a
+        # wake-up belongs to the conversation that scheduled it.
+        _sid = str(getattr(perms, "task_session_id", "") or "")
         try:
             if name == "schedule_wakeup":
                 # The prompt IS the wake-up. Without one the agent is
@@ -15230,6 +15239,7 @@ class _DocToolExecutor:
                     prompt=_prompt,
                     reason=str(arguments.get("reason", "")),
                     workspace=_ws,
+                    session_id=_sid,
                 )
                 return json.dumps({
                     "status": "ok",
@@ -15242,6 +15252,7 @@ class _DocToolExecutor:
                     prompt=str(arguments.get("prompt", "")),
                     reason=str(arguments.get("reason", "")),
                     fire_immediately=bool(arguments.get("fire_immediately", False)),
+                    session_id=_sid,
                 )
                 return json.dumps({
                     "status": "ok",

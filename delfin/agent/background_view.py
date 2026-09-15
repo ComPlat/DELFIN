@@ -21,8 +21,17 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-def collect(workspace: Any, *, now: Optional[float] = None) -> dict:
-    """Everything still out for ``workspace``, grouped by kind."""
+def collect(workspace: Any, *, now: Optional[float] = None,
+            session_id: Optional[str] = None) -> dict:
+    """Everything still out for ``workspace``, grouped by kind.
+
+    With ``session_id``, watches and wake-ups another session owns are left
+    out: the panel belongs to one conversation, and several can share a
+    workspace."""
+
+    def _theirs(owner: Any) -> bool:
+        return bool(session_id and owner and str(owner) != session_id)
+
     now = time.time() if now is None else float(now)
     ws = str(workspace or "")
     view: dict[str, list[dict]] = {
@@ -49,9 +58,9 @@ def collect(workspace: Any, *, now: Optional[float] = None) -> dict:
         watched = (_jm.load_watched(_jm._agent_watch_path(ws)).get("jobs") or {}) if ws else {}
         for jid, entry in watched.items():
             entry = entry or {}
-            if entry.get("kind") == "bash":
-                # A running one already has its shell row; a finished one is
-                # reported to the agent, not waited for.
+            if entry.get("kind") == "bash" or _theirs(entry.get("session_id")):
+                # A running bash job already has its shell row; a finished
+                # one is reported to the agent, not waited for.
                 continue
             view["watches"].append({
                 "id": str(jid),
@@ -81,8 +90,11 @@ def collect(workspace: Any, *, now: Optional[float] = None) -> dict:
 
     try:
         from . import scheduler as _sch
-        for entry in _sch.get_scheduler().list_entries():
+        _scheduler = _sch.get_scheduler()
+        for entry in _scheduler.list_entries():
             if getattr(entry, "disabled", False):
+                continue
+            if session_id and _theirs(_scheduler.owner_of(entry.id)):
                 continue
             view["wakeups"].append({
                 "id": str(entry.id),
