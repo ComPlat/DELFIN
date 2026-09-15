@@ -2260,6 +2260,32 @@ def _pushed_refs(output: str) -> list[tuple[str, str, str]]:
     return refs
 
 
+def _background_command_note(arguments: Any) -> str:
+    """A note for a background command that hides its own result; "" if none.
+
+    Report 20260915-125310 did both at once. ``pytest ... | tail -30`` held
+    every line back until the job ended, so bash_output showed nothing for
+    thirty minutes; and ``...; echo "EXIT=$?" >> log`` made the job's exit
+    code echo's, so a suite with 25 failures finished with exit code 0.
+    """
+    cmd = (str(arguments.get("command") or "")
+           if isinstance(arguments, dict) else "").strip()
+    notes = []
+    if re.search(r"\|\s*(?:tail|head)\b", cmd):
+        notes.append(
+            "`| tail` / `| head` holds the output back until the job ends; "
+            "the job's output is captured whole, so leave the pipe off and "
+            "read it with bash_output")
+    if re.search(r"(?:;|&&|\|\|)\s*echo\b[^;&|]*$", cmd):
+        notes.append(
+            "the command ends in `echo`, so the job's exit code is echo's, "
+            "not the work's: judge the result from its output (a pytest "
+            "summary line, an EXIT= line you wrote), never from exit_code")
+    if not notes:
+        return ""
+    return "[Background command] " + "; and ".join(notes) + "."
+
+
 def _after_push(arguments: Any, raw_result: Any, perms: Any) -> str:
     """What a push that went through leaves behind, as a note for the model.
 
@@ -7699,7 +7725,8 @@ def _run_test_command(command: str, workspace, timeout: float) -> tuple[str, boo
     except Exception:
         return "", False
     if r.returncode != 0:
-        out = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+        out = _ANSI_ESCAPE_RE.sub(
+            "", ((r.stdout or "") + "\n" + (r.stderr or ""))).strip()
         return f"`{command}` failed (exit {r.returncode}):\n{out[-1800:]}", False
     return "", False
 
@@ -7962,10 +7989,18 @@ def _parse_test_counts(output: str) -> tuple[int, int]:
     return passed, failed + errors
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
 def _failing_test_files(text: str) -> set[str]:
     """Test FILE paths parsed from failure summary lines
-    ('FAILED tests/test_x.py::test_y')."""
-    return {m.group(1) for m in _PYTEST_FAILED_LINE_RE.finditer(text or "")}
+    ('FAILED tests/test_x.py::test_y').
+
+    Colour codes are taken out first: where pytest is told to colour its
+    output, "FAILED" arrives wrapped in escapes and no summary line matched
+    (the agent's own suite run in report 20260915-125310)."""
+    clean = _ANSI_ESCAPE_RE.sub("", text or "")
+    return {m.group(1) for m in _PYTEST_FAILED_LINE_RE.finditer(clean)}
 
 
 def _paths_from_diff(diff: str) -> list[str]:
@@ -17201,6 +17236,38 @@ class OpenAIClient(_BaseClient):
         counts = self._open_task_state().get("counts") or {}
         return any(counts.get(s) for s in _at.ACTIONABLE_STATUSES)
 
+    def _waiting_on_watched_jobs(self) -> bool:
+        """True while a job the agent asked to be told about is still out.
+
+        Report 20260915-125310: the agent started the suite in the
+        background, watched it and said it would end its turn -- and
+        auto-continue sent it back ("there are still OPEN tasks"), where the
+        only thing left was to wait, so it waited inside the turn: six
+        bash_status calls blocking 300 s each. A watched job wakes the agent
+        when it is done; until then the turn ends. A bash job counts only
+        while it runs; a cluster job or a CI run cannot be asked cheaply
+        here, so its watch counts until the watch reports it.
+        """
+        try:
+            from . import job_monitor as _jm
+            ws = getattr(self._permissions, "workspace", None)
+            if not ws:
+                return False
+            jobs = _jm.load_watched(_jm._agent_watch_path(ws)).get("jobs") or {}
+            for jid, entry in jobs.items():
+                if (entry or {}).get("kind") != "bash":
+                    return True
+                try:
+                    from . import bash_jobs as _bj
+                    job = _bj.get_registry().get(jid, ws)
+                except Exception:
+                    job = None
+                if job is not None and job.poll() is None:
+                    return True
+            return False
+        except Exception:
+            return False
+
     def _attach_subagent_runner(
         self, permissions: Optional["KitToolPermissions"],
     ) -> None:
@@ -18839,6 +18906,13 @@ class OpenAIClient(_BaseClient):
 
                     # A push that went through spends the user's grant for it
                     # and arms a watch on the CI it started.
+                    if fn_name.rsplit("__", 1)[-1] == "bash_background":
+                        try:
+                            _bg_note = _background_command_note(fn_args)
+                            if _bg_note:
+                                self.push_run_note(_bg_note)
+                        except Exception:
+                            pass
                     if fn_name.rsplit("__", 1)[-1] == "bash":
                         try:
                             _baseline_shell_reads(
@@ -19207,7 +19281,8 @@ class OpenAIClient(_BaseClient):
             # never loop without progress. The injected nudge also tells it to
             # ASK when genuinely unsure rather than guess — autonomy ≠ guessing.
             if (_did_tools_since_cont and _auto_cont_count < _AUTO_CONT_CAP
-                    and self._has_pending_tasks()):
+                    and self._has_pending_tasks()
+                    and not self._waiting_on_watched_jobs()):
                 _auto_cont_count += 1
                 _did_tools_since_cont = False
                 _final = "".join(_text_chunks) if _text_chunks else ""
