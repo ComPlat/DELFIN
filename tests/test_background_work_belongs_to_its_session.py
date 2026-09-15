@@ -64,15 +64,17 @@ def test_a_wake_up_of_a_session_not_open_here_waits_for_it(sch):
     assert ent.id in {e.id for e in sch.list_entries()}
 
 
-def test_a_wake_up_nobody_owns_goes_to_the_latest_session(sch):
-    first, last = [], []
+def test_a_wake_up_nobody_owns_wakes_no_session(sch):
+    """Scheduled before wake-ups had an owner: a new conversation was woken
+    by "wait for the CI result of 8feb1765", which an old one had left."""
+    first, last, daemon = [], [], []
     sch.add_fire_listener("a", first.append, lambda owner: owner == "A")
     sch.add_fire_listener("b", last.append, lambda owner: owner == "B")
     ent = sch.schedule_once(delay_seconds=60, prompt="check")
     ent.next_fire_at = time.time() - 1
 
-    sch.tick()
-    assert first == [] and [e.id for e in last] == [ent.id]
+    assert sch.tick() == 0 and first == [] and last == []
+    assert sch.tick(fire_callback=daemon.append) == 1, "the daemon still runs it"
 
 
 def test_the_owner_is_kept_beside_the_schedule_not_in_it(sch):
@@ -112,12 +114,14 @@ def test_a_finished_job_is_reported_to_its_own_session(ws):
     assert [d["job_id"] for d in done] == [jid]
 
 
-def test_a_watch_nobody_owns_is_every_sessions(ws):
+def test_a_watch_nobody_owns_is_no_sessions(ws):
     jm.register_agent_job(ws, f"ci:ComPlat/DELFIN@{_SHA_A}", "older watch")
-    assert len(jm.check_agent_jobs(ws, fetch_fn=_green, session_id="A")) == 1
+    assert jm.check_agent_jobs(ws, fetch_fn=_green, session_id="A") == []
+    assert len(jm.check_agent_jobs(ws, fetch_fn=_green)) == 1, "the daemon's"
 
 
 def test_the_background_panel_shows_its_own_sessions_work(ws, sch):
+    jm.register_agent_job(ws, "ci:ComPlat/DELFIN@0badc0de", "left by an old one")
     jm.register_agent_job(ws, f"ci:ComPlat/DELFIN@{_SHA_A}", "A's push",
                           extra={"session_id": "A"})
     jm.register_agent_job(ws, f"ci:ComPlat/DELFIN@{_SHA_B}", "B's push",
@@ -129,4 +133,4 @@ def test_the_background_panel_shows_its_own_sessions_work(ws, sch):
     assert [w["label"] for w in view["watches"]] == ["A's push"]
     assert view["wakeups"] == []
     everything = bgv.collect(ws)
-    assert len(everything["watches"]) == 2 and len(everything["wakeups"]) == 1
+    assert len(everything["watches"]) == 3 and len(everything["wakeups"]) == 1

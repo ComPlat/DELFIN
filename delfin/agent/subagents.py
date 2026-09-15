@@ -372,6 +372,16 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
             except FileNotFoundError:
                 pass
         else:
+            if "owner_session" not in entry and f.exists():
+                # The run rewrites its entry at every step without knowing
+                # which session reserved it; the reservation's owner stays.
+                try:
+                    owner = json.loads(f.read_text(encoding="utf-8")).get(
+                        "owner_session")
+                    if owner:
+                        entry = {**entry, "owner_session": owner}
+                except Exception:
+                    pass
             if not f.exists():
                 # Starting an entry is the one moment guaranteed to happen
                 # and cheap enough to carry the cleanup of what an earlier
@@ -383,7 +393,7 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
 
 
 def reserve_running(sa_id: str, *, subagent_type: str = "",
-                    description: str = "") -> None:
+                    description: str = "", owner_session: str = "") -> None:
     """Announce a subagent id BEFORE the work behind it starts.
 
     A background run hands its id to the parent immediately, but the live
@@ -406,9 +416,33 @@ def reserve_running(sa_id: str, *, subagent_type: str = "",
         "last_action": "",
         "transcript": [],
         "reserved": True,
+        # The session that started it. The pid says which process owns a
+        # run, and one dashboard process holds several sessions.
+        **({"owner_session": owner_session} if owner_session else {}),
     })
     _note_pending_report(sa_id, subagent_type=subagent_type,
                          description=description)
+
+
+# Background runs the user asked to stop, by the id the panel lists.
+_CANCELLED: set[str] = set()
+
+
+def cancel_background(sa_id: str) -> bool:
+    """Ask a running background sub-agent to stop. True if one is running.
+
+    The run sees it at its next step, as it would see its parent's Stop, and
+    ends with what it has.
+    """
+    sa_id = str(sa_id or "").strip()
+    if not sa_id or sa_id not in read_running():
+        return False
+    _CANCELLED.add(sa_id)
+    return True
+
+
+def cancel_requested(*sa_ids: str) -> bool:
+    return any(str(s or "") in _CANCELLED for s in sa_ids if s)
 
 
 def mark_running_died(sa_id: str, error: str = "") -> None:
@@ -2825,6 +2859,19 @@ def run_subagent(
                 except Exception:
                     pass
         sub_client.set_permissions(sub_perms)
+        # The copy inherited the parent's Stop probe; a stop the user gives
+        # this run alone (the × in the Background panel) is heard too.
+        _parent_stop = getattr(parent_client, "should_stop", None)
+
+        def _stop_probe(_ids=(sa_id, resume_from), _parent=_parent_stop):
+            if cancel_requested(*_ids):
+                return True
+            try:
+                return bool(_parent()) if callable(_parent) else False
+            except Exception:
+                return False
+
+        sub_client.should_stop = _stop_probe
     except Exception:
         # Fallback to the legacy swap-on-parent if copying fails.
         sub_client = parent_client
@@ -3023,6 +3070,7 @@ def run_subagent(
         error = f"sub-agent stream raised: {exc}"
     finally:
         _running_update(_sa_id, None)
+        _CANCELLED.discard(_sa_id)
         # Restore parent permissions ONLY if we fell back to running on the
         # shared parent client (the normal isolated-copy path never touched it).
         if restore_parent and hasattr(parent_client, "set_permissions"):

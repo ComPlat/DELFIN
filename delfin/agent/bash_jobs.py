@@ -962,6 +962,7 @@ class _Registry:
         timeout_s: int = _DEFAULT_BG_TIMEOUT_S,
         env: Optional[dict] = None,
         workspace: str | Path | None = None,
+        session_id: str = "",
     ) -> BashJob:
         if not command.strip():
             raise ValueError("command must be non-empty")
@@ -1068,6 +1069,9 @@ class _Registry:
             "exit_code": None,
             "finished_at": None,
             "acknowledged": False,
+            # The conversation that started it: several sessions can share
+            # a workspace, and each lists and stops only its own shells.
+            **({"session_id": session_id} if session_id else {}),
         })
         _note_job_workspace(jid, ws)
 

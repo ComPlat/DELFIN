@@ -446,6 +446,18 @@ def register_agent_job(
     return entry
 
 
+def unwatch_agent_job(workspace: str | Path, job_id: str) -> bool:
+    """Stop watching a job. The job itself is not touched: a cluster job or
+    a CI run goes on, only nobody is told when it ends. True if it was
+    watched."""
+    path = _agent_watch_path(workspace)
+    data = load_watched(path)
+    if data.get("jobs", {}).pop(str(job_id), None) is None:
+        return False
+    save_watched(data, path)
+    return True
+
+
 def _emit_watch_attention(kind: str, title: str, detail: str,
                           workspace: str | Path) -> None:
     """Surface a watch-list problem where a user will see it. Never raises."""
@@ -605,10 +617,9 @@ def check_agent_jobs(
 ) -> list[dict]:
     """Report agent-registered jobs that reached a terminal state — once.
 
-    ``session_id`` limits the report to that session's watches and the ones
-    nobody owns: several sessions can work in one workspace, and a job
-    belongs to the conversation that is waiting for it. None (the daemon)
-    reads them all.
+    ``session_id`` limits the report to that session's watches: several
+    sessions can work in one workspace, and a job belongs to the
+    conversation that is waiting for it. None (the daemon) reads them all.
 
     LLM-free like :func:`check_once`. Terminal entries are removed from the
     persistent watch file (atomic write), so each completion/failure is
@@ -646,9 +657,11 @@ def check_agent_jobs(
     now = time.time()
     for jid, entry in list(jobs.items()):
         entry = entry or {}
-        if (session_id is not None and entry.get("session_id")
-                and entry.get("session_id") != session_id):
-            continue      # another session's watch
+        if session_id is not None and entry.get("session_id") != session_id:
+            # Another session's watch -- or one from before watches had an
+            # owner, which is no session's: a new conversation must not be
+            # woken by work an old one left behind. The daemon reads those.
+            continue
         if float(entry.get("added_at") or now) < now - _AGENT_WATCH_MAX_AGE_S:
             # Only an entry that never got an answer is worth an alarm. One
             # the daemon already reported on is being pruned as bookkeeping.
