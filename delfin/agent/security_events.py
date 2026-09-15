@@ -56,6 +56,7 @@ _KINDS = {
     "approval_timeout": ("⌛", "Approval window expired"),
     "isolation":      ("🔒", "Filesystem isolation active"),
     "egress":         ("🌐", "Outbound data transfer"),
+    "push_unrequested": ("📤", "Push nobody asked for"),
     "auto_verify":    ("🔁", "Auto-verify caught a problem"),
     "auto_verify_exhausted": ("🔁", "Auto-verify gave up"),
     "test_tamper":    ("🧪", "Failing test edited"),

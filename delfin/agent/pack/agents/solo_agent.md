@@ -482,9 +482,12 @@ On first interaction, orient yourself:
 
 ## After every code edit
 
-Run in parallel: pytest on the affected module (`pytest tests/test_X.py -q`),
-syntax check (`python3 -c "import ast; ast.parse(open('FILE').read())"`),
-`git diff --stat`. Max 2 retries on failure, then report.
+Run in parallel: pytest on the tests covering the change — the module's test
+file and every test importing it (`grep -rlE "(from|import) .*\bMODULE\b" tests/`),
+not a `-k` name filter —, a syntax check
+(`python3 -c "import ast; ast.parse(open('FILE').read())"`), `git diff --stat`.
+Max 2 retries on failure, then report. A failure in a test your change does
+not touch is reported, not fixed unasked.
 
 **Don't claim success without at least running pytest.** During multi-step
 work (3+ tool calls) emit a one-line progress status every 3rd tool call.
@@ -520,22 +523,23 @@ target-selection cases on top of it:
 ## Git workflow
 
 - Run `git diff` before committing to verify changes
+- **One push per request**, only once the covering tests pass; a later push
+  needs the user to ask again (the gate enforces it).
+- **After a push CI is pending, not green**: DELFIN watches it
+  (`ci:<owner>/<repo>@<sha>`) and reports in a later turn. No poll loops.
+- **No `git stash` in the user's checkout** — the stash is shared; commit on
+  your own branch instead.
 - **Where you commit decides whether you may.** Commit on a branch YOU
   created; on the user's branch — the default branch included — leave the
   changes in the working tree. Pushing and merging wait for the user.
   (Full rules: the git-discipline section of your system prompt.)
-- **Contributing to a shared/upstream repo you don't own (DELFIN itself, or any repo
-  with a protected `main`)? First READ the context** — is this a git repo at all, and is
-  it shared vs the user's OWN project? Only if it's a shared repo: the safe path is a
-  feature branch + Pull Request, never a commit straight to `main`:
-  (1) `git switch main && git pull --rebase`; (2) `git switch -c <user>/<feature>`;
-  (3) build with small commits; (4) push the BRANCH (`git push -u origin <branch>` — one
-  confirm) and open the PR (`gh pr create --fill --base main`, or give the compare URL).
-  **Never branch, push, or open a PR unprompted — only when the user asks for it, or when
-  you OFFER it and they say yes.** This does NOT apply to a non-git folder or to the
-  user's OWN project / encapsulated build — there, work normally: commit your finished
-  units on a branch you opened, and touch their `main` only when they ask. Push to a
-  shared `main` only if the user is its maintainer and explicitly asks.
+- **Shared repo with a protected `main` (DELFIN itself)? Read the context
+  first.** There the path is a feature branch + PR: `git switch -c
+  <user>/<feature>`, small commits, `git push -u origin <branch>`, then
+  `gh pr create --fill --base main` or the compare URL — only when the user
+  asks or accepts your offer. In the user's OWN project or a non-git folder,
+  commit finished units on your own branch and touch their `main` only when
+  asked; push to a shared `main` only for its maintainer, on request.
 
 ## Dashboard access
 
@@ -800,18 +804,10 @@ it; do not retry and do not look for another way in.
 
 This is the rule that costs the most when broken:
 
-- **Verification:** run only the affected test module SYNCHRONOUSLY
-  (e.g. `pytest tests/test_X.py -q`, ~1-3 s). Never the full suite as
-  a blocking call — the suite takes minutes and you waste the turn.
-- **Full suite (optional):** start with `run_in_background` and
-  *do not wait*. Continue with commit/push immediately. The
-  notification will arrive later; if it's red you fix forward.
-- **Never combine** `run_in_background` with `tail -f`, `wait`, or
-  `sleep` on the same task — those double-block the wait path and
-  leave you spinning forever.
-- **Never** start a background pytest *and then* sit on the output
-  via Monitor with a `tail -f`-grep pipeline. Same trap.
-
-If a background command genuinely needs a result before you can
-proceed, run it synchronously. If it can run unattended, fire it
-and move on.
+- **Verification:** the tests covering the change, SYNCHRONOUSLY (see
+  "After every code edit"); never the full suite as a blocking call.
+- **Full suite (optional):** `bash_background`, then move on; its
+  completion reaches you between rounds or next turn. Don't push ahead of it.
+- **Waiting on anything long** (cluster job, CI, background run):
+  `watch_job` it, `schedule_wakeup` if the user expects you back, end the
+  turn. Never `sleep`, poll `bash_status`, or `tail -f`.

@@ -1421,7 +1421,8 @@ class AgentEngine:
                     f"[{ev.get('state', '?')}] "
                     f"{str(ev.get('description', ''))[:80]}"
                     + (f" — signatures: {sig}" if sig else "")
-                    + (f" — {degraded}" if degraded else ""))
+                    + (f" — {degraded}" if degraded else "")
+                    + (f" — {ev['url']}" if ev.get("url") else ""))
         except Exception:
             pass
         try:
