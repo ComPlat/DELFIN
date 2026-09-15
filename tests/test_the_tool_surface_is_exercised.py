@@ -66,6 +66,8 @@ _NOT_EXERCISED_HERE = {
     "report_verdict": "tests/test_subagent_report_verification.py",
     # Cluster resources this machine does not have.
     "watch_job": "needs SLURM",
+    "session_message": "tests/test_sessions_can_write_to_each_other.py — "
+                       "needs a second open session",
     "run_tests": "would run the suite inside the suite",
     # Side effects that leave the machine.
     "remote_trigger": "sends a request to a configured remote",

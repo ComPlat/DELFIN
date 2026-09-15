@@ -6045,9 +6045,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "type": "string",
                         "enum": ["", "worktree"],
                         "description": (
-                            "'worktree' runs the sub-agent in a fresh git "
-                            "worktree so its edits stay off the user's "
-                            "working tree. Default: the parent CWD."
+                            "'worktree': a fresh git worktree, so its edits "
+                            "stay off the user's tree."
                         ),
                     },
                 },
@@ -6273,6 +6272,23 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["job_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "session_message",
+            "description": (
+                "List other open sessions (no `to`) or message one "
+                "(not as the user)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string"},
+                    "message": {"type": "string"},
+                },
             },
         },
     },
@@ -10122,6 +10138,10 @@ class _DocToolExecutor:
                 except Exception:
                     pass
             return _out
+
+        # Other open sessions: who they are, and a message to one of them.
+        if name == "session_message":
+            return self._execute_session_message(arguments, permissions)
 
         # Scheduler: one-shot wake-ups + interval cron.
         if name in ("schedule_wakeup", "cron_create",
@@ -15211,6 +15231,48 @@ class _DocToolExecutor:
 
     # ------- Scheduler / cron ---------------------------------------------
 
+    def _execute_session_message(
+        self, arguments: dict, perms: "KitToolPermissions | None" = None,
+    ) -> str:
+        """List the other open sessions, or leave a message for one.
+
+        Sessions are the open agent sessions of this user (session_presence);
+        a message waits in the receiver's inbox until it takes it."""
+        from . import session_messages as _msgs
+        from . import session_presence as _presence
+        me = str(getattr(perms, "presence_key", "") or "")
+        others = _presence.open_sessions(exclude_key=me)
+        to = str(arguments.get("to") or "").strip()
+        text = str(arguments.get("message") or "").strip()
+        if not to:
+            return json.dumps({
+                "sessions": [{
+                    "key": r.get("key"), "title": r.get("title", ""),
+                    "workspace": r.get("workspace", ""),
+                    "branch": r.get("branch", ""),
+                } for r in others],
+                "note": ("Pass to=<key> and message to write to one."
+                         if others else "No other session is open."),
+            }, ensure_ascii=False)
+        target = next((r for r in others
+                       if to in (r.get("key"), r.get("session_id"))), None)
+        if target is None:
+            return json.dumps({"error": (
+                f"no other open session {to!r}. Call session_message without "
+                "`to` for the list.")})
+        if not text:
+            return json.dumps({"error": "message is required."})
+        mine = next((r for r in _presence.open_sessions()
+                     if me and r.get("key") == me), {})
+        try:
+            _msgs.send(str(target.get("key")), text, from_key=me,
+                       from_title=str(mine.get("title") or ""))
+        except OSError as exc:
+            return json.dumps({"error": f"message not delivered: {exc}"})
+        return json.dumps({"status": "sent", "to": target.get("key"),
+                           "title": target.get("title", "")},
+                          ensure_ascii=False)
+
     def _execute_scheduler(self, name: str, arguments: dict,
                            perms: "KitToolPermissions | None" = None) -> str:
         from . import scheduler as _sched
@@ -17704,6 +17766,7 @@ class OpenAIClient(_BaseClient):
                               "remote_trigger",
                               "run_tests",
                               "watch_job",
+                              "session_message",
                               "history_search",
                               "history_get",
                               "orchestrate",
@@ -18860,6 +18923,7 @@ class OpenAIClient(_BaseClient):
                                             "remote_trigger",
                                             "run_tests",
                                             "watch_job",
+                                            "session_message",
                                             "history_search",
                                             "history_get",
                                             "orchestrate",
