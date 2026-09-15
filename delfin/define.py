@@ -206,7 +206,7 @@ print_Loewdin_population_analysis=no
 Resource Settings:
 ----------
 PAL=48
-maxcore=6000
+maxcore=4500
 parallel_workflows=yes
 pal_jobs=4
 orca_parallel_strategy=auto

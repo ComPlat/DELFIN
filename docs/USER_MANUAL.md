@@ -429,10 +429,10 @@ you want and the report gains an "Experimental properties" section.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `PAL` | `12` | Number of CPU cores for ORCA |
-| `maxcore` | `6000` | Memory per core (MB) |
+| `PAL` | `48` | Number of CPU cores for ORCA |
+| `maxcore` | `4500` | Memory per core (MB) |
 | `parallel_workflows` | `yes` | Run ox/red workflows in parallel (auto-splits PAL) |
-| `pal_jobs` | `3` | Number of parallel job slots |
+| `pal_jobs` | `4` | Number of parallel job slots |
 | `enable_job_timeouts` | `no` | Enable job timeouts |
 | `job_timeout_hours` | `36` | Default job timeout |
 | `opt_timeout_hours` | `14` | Geometry optimisation timeout |

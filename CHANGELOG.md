@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — The default CONTROL job fits the larger CPU partition
+
+The shipped CONTROL now uses `PAL=48` with `maxcore=4500`, requesting 216 GB
+instead of 288 GB. This fits a 256 GB `cpu_il` node, so the default dashboard
+job can start in either `cpu` or `cpu_il` rather than being confined to the
+smaller `cpu` partition. The ORCA Builder keeps its independent
+`PAL=12` / `MaxCore=6000` default (72 GB).
+
 ### Added — Jobs start in whichever partition frees first, and say why they wait
 
 A CPU job is submitted to every partition of the site that can hold it; SLURM starts it in whichever can run it first. On bwUniCluster 3.0 that is `cpu` and `cpu_il` (264 Ice Lake nodes, 64 cores and 256 GB each): for 40 cores, 240 GB and 2 days `sbatch --test-only` expected a start twelve days earlier in `cpu_il` than in `cpu`. PAL, maxcore and the time limit are not touched. Whether a request fits a partition is asked of SLURM with `sbatch --test-only`, once per request shape, because listing a partition the request does not fit makes SLURM reject the whole job. Configurable with `runtime.slurm.partitions` or `DELFIN_SLURM_PARTITIONS`; a site without a profile keeps its template's partition.

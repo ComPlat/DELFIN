@@ -144,9 +144,8 @@ def test_the_dashboard_shows_the_template_it_validates_against():
     assert "\nmethod=classic\n" in constants.ONLY_GOAT_TEMPLATE
 
 
-def test_the_deliberate_resource_change_is_the_only_one(tmp_path):
-    """PAL and pal_jobs were raised on purpose; pin them so a later template
-    edit cannot move them silently."""
+def test_the_deliberate_resource_defaults_do_not_move_silently(tmp_path):
+    """Pin the cluster-sized defaults, including a request cpu_il can hold."""
     control = tmp_path / "CONTROL.txt"
     control.write_text(
         define.TEMPLATE.replace("[CHARGE]", "0")
@@ -157,6 +156,11 @@ def test_the_deliberate_resource_change_is_the_only_one(tmp_path):
     )
     config = read_control_file(str(control))
     assert config["PAL"] == 48
+    assert config["maxcore"] == 4500
+    assert config["PAL"] * config["maxcore"] == 216000
+    assert config["PAL"] * config["maxcore"] < 256000, (
+        "the shipped CONTROL must fit a 256 GB cpu_il node"
+    )
     assert config["pal_jobs"] == 4
     assert config["orca_parallel_strategy"] == "auto"
 
