@@ -3,7 +3,7 @@
 The line was stream text, and stream text lands where console output lands:
 the top left corner.  In a 560 px tall frame that one small line in the far
 top corner read as a picture that had failed to arrive, not as the
-invitation it was -- reported the same way twice, by two different users.
+invitation it was.
 It is what the box is waiting for, so it goes where a picture keeps its
 caption: the bottom left corner of the frame.
 """

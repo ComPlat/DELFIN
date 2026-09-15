@@ -717,10 +717,24 @@ def test_to_smiles_reads_its_own_drawing(builder):
 
 
 def _preview(refs):
+    """What the preview shows: 'viewer' for a picture, the words for a note.
+
+    A note is HTML too since d507039a put it in the bottom left corner, and
+    reading every piece of HTML as a picture turned "SMILES detected" into
+    'viewer' -- the CI run after that commit was red on exactly this.
+    """
+    import html as _html
+
     out = []
     for item in refs['orca_mol_output'].outputs or ():
         data = item.get('data') or {}
-        out.append('viewer' if data.get('text/html') else (item.get('text') or '').strip())
+        markup = data.get('text/html') or ''
+        if 'orca-mol-note' in markup:
+            out.append(_html.unescape(re.sub(r'<[^>]+>', '', markup)).strip())
+        elif markup:
+            out.append('viewer')
+        else:
+            out.append((item.get('text') or '').strip())
     return out
 
 
