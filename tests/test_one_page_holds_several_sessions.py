@@ -77,6 +77,22 @@ def test_a_conversation_open_in_another_session_is_not_loaded_twice(tmp_path):
     assert "already open in another session" in str(refs["state"]["chat_messages"])
 
 
+def test_a_listed_session_has_no_second_session_selector(tmp_path):
+    """The session list opens, resumes and closes sessions; a selector
+    inside the tab would be a second way to switch conversations."""
+    import ipywidgets as widgets
+
+    tab, refs = tab_agent.create_tab(_ctx(tmp_path, sessions_managed=True))
+    refs["shutdown"]()
+    stack, selectors = [tab], []
+    while stack:
+        node = stack.pop()
+        if isinstance(node, widgets.Dropdown) and node.description == "Session:":
+            selectors.append(node)
+        stack.extend(getattr(node, "children", ()) or ())
+    assert selectors and all(w.layout.display == "none" for w in selectors)
+
+
 def test_a_closed_session_stops_its_background_work(tmp_path):
     _tab, refs = tab_agent.create_tab(_ctx(tmp_path))
     state = refs["state"]

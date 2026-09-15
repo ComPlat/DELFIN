@@ -31,6 +31,86 @@ _REFRESH_S = 3.0
 # is rebuilt on open/close and at this interval, not on every refresh.
 _RESUME_REFRESH_S = 60.0
 
+# The session list, in the agent tab's own palette (tab_agent._AGENT_CSS):
+# system font, slate greys, the chat's light blue for the session on screen.
+# Everything is border-box and the column clips horizontally -- widgets set
+# to 100% width plus their padding made it scroll sideways.
+_SIDEBAR_CSS = """<style>
+.delfin-session-shell { width: 100%; align-items: flex-start; overflow-x: hidden; }
+.delfin-sessions {
+    box-sizing: border-box; flex: 0 0 236px !important; width: 236px;
+    max-width: 236px; margin: 0 12px 0 0; padding: 8px 8px 10px; gap: 6px;
+    background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 10px;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.delfin-sessions * { box-sizing: border-box; }
+.delfin-sessions .widget-html, .delfin-sessions .widget-html-content {
+    margin: 0; line-height: normal; }
+.delfin-sessions .jupyter-button { margin: 0; box-shadow: none; }
+.delfin-session-head { align-items: center; justify-content: space-between;
+    padding: 0 2px 0 6px; }
+.delfin-session-heading { font-size: 11px; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase; color: #6b7280; }
+.delfin-session-add { width: 26px !important; height: 26px !important;
+    padding: 0 !important; border: 0; border-radius: 7px;
+    background: transparent !important; color: #475569; font-size: 18px;
+    line-height: 26px; }
+.delfin-session-add:hover { background: #e2e8f0 !important; color: #0f172a; }
+.delfin-session-list { gap: 2px; max-height: calc(100vh - 320px);
+    overflow-y: auto !important; overflow-x: hidden !important; }
+.delfin-session-item { width: 100%; align-items: center; gap: 2px;
+    padding: 5px 4px 5px 8px; border-radius: 8px; }
+.delfin-session-item:hover { background: #eef2f7; }
+.delfin-session-item.delfin-session-active { background: #dbeafe; }
+.delfin-session-text { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.delfin-session-title { width: 100% !important; height: 20px !important;
+    padding: 0 !important; border: 0; background: transparent !important;
+    text-align: left; font-size: 13px; font-weight: 500; color: #1f2937;
+    line-height: 20px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; cursor: pointer; }
+.delfin-session-title:focus-visible { outline: 2px solid #93c5fd;
+    outline-offset: 1px; border-radius: 4px; }
+.delfin-session-active .delfin-session-title { font-weight: 600; color: #0f172a; }
+.delfin-session-path { font-size: 11px; color: #6b7280; line-height: 15px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.delfin-session-busy .delfin-session-title::before { content: "";
+    display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0;
+    border-radius: 50%; background: #16a34a; vertical-align: middle;
+    animation: delfin-session-pulse 1.4s ease-in-out infinite; }
+@keyframes delfin-session-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+    .delfin-session-busy .delfin-session-title::before { animation: none; } }
+.delfin-session-close { flex: 0 0 22px; width: 22px !important;
+    height: 22px !important; padding: 0 !important; border: 0;
+    border-radius: 6px; background: transparent !important; color: #9ca3af;
+    font-size: 15px; line-height: 22px; opacity: 0; }
+.delfin-session-item:hover .delfin-session-close,
+.delfin-session-active .delfin-session-close,
+.delfin-session-close:focus-visible { opacity: 1; }
+.delfin-session-close:hover { background: #cbd5e1 !important; color: #1f2937; }
+.delfin-session-form { gap: 6px; padding: 8px; background: #ffffff;
+    border: 1px solid #e5e7eb; border-radius: 8px; }
+.delfin-session-form .widget-combobox, .delfin-session-form .widget-checkbox {
+    width: 100% !important; margin: 0; }
+.delfin-session-form input[type="text"] { font-size: 12px; border-radius: 6px; }
+.delfin-session-label { font-size: 11px; color: #6b7280; }
+.delfin-session-hint { font-size: 11px; color: #475569; line-height: 1.35; }
+.delfin-session-actions { gap: 6px; justify-content: flex-end; }
+.delfin-session-actions .jupyter-button { width: auto !important;
+    height: 26px !important; padding: 0 12px !important; border-radius: 6px;
+    font-size: 12px; }
+.delfin-session-start { background: #2563eb !important; color: #ffffff !important; }
+.delfin-session-start:hover { background: #1d4ed8 !important; }
+.delfin-session-cancel { background: transparent !important; color: #475569; }
+.delfin-session-cancel:hover { background: #f1f5f9 !important; }
+.delfin-session-notice { font-size: 11px; color: #b45309; padding: 0 6px; }
+.delfin-session-resume { width: 100% !important; margin: 2px 0 0 !important; }
+.delfin-session-resume select { font-size: 12px; color: #475569;
+    border-radius: 6px; }
+.delfin-session-stage { flex: 1 1 0% !important; min-width: 0 !important; }
+</style>"""
+
 
 class _SessionContext:
     """The dashboard context as one session sees it.
@@ -188,6 +268,16 @@ def _short_path(path: str) -> str:
     return "~" + path[len(home):] if path.startswith(home) else path
 
 
+def _display_path(path: str, limit: int = 34) -> str:
+    """A working directory short enough for one line of the list: the home
+    directory as ~, and a long path as its last two parts."""
+    text = _short_path(path)
+    if len(text) <= limit:
+        return text
+    parts = Path(text).parts
+    return "…/" + "/".join(parts[-2:]) if len(parts) > 2 else text
+
+
 def _session_title(state: dict) -> str:
     for message in state.get("chat_messages") or []:
         if isinstance(message, dict) and message.get("role") == "user":
@@ -216,42 +306,44 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                             "scripts_added": False, "resume_at": 0.0}
     shared_status = getattr(ctx, "agent_status_html", None)
 
-    heading = widgets.HTML("<b>Sessions</b>")
-    new_btn = widgets.Button(description="+ New session",
-                             tooltip="Start another session",
-                             layout=widgets.Layout(width="100%"))
+    def _classed(w, *names):
+        for name in names:
+            w.add_class(name)
+        return w
+
+    heading = _classed(widgets.HTML("Sessions"), "delfin-session-heading")
+    new_btn = _classed(widgets.Button(description="+", tooltip="New session"),
+                       "delfin-session-add")
+    head = _classed(widgets.HBox([heading, new_btn]), "delfin-session-head")
     workdir_box = widgets.Combobox(
         options=workspace_choices(ctx), value=default_workspace(ctx),
         placeholder="Working directory", ensure_option=False,
         layout=widgets.Layout(width="100%"))
-    start_btn = widgets.Button(description="Start", button_style="primary",
-                               layout=widgets.Layout(width="50%"))
-    cancel_btn = widgets.Button(description="Cancel",
-                                layout=widgets.Layout(width="50%"))
+    start_btn = _classed(widgets.Button(description="Start"),
+                         "delfin-session-start")
+    cancel_btn = _classed(widgets.Button(description="Cancel"),
+                          "delfin-session-cancel")
     own_worktree_box = widgets.Checkbox(
         value=False, description="Own worktree", indent=False,
         tooltip="Work on a branch of its own in a separate checkout",
-        layout=widgets.Layout(width="100%", display="none"))
-    worktree_hint = widgets.HTML("")
-    new_form = widgets.VBox(
-        [widgets.HTML("<span style='font-size:11px;color:#546e7a'>"
-                      "Working directory</span>"),
-         workdir_box, own_worktree_box, worktree_hint,
-         widgets.HBox([start_btn, cancel_btn])],
         layout=widgets.Layout(display="none"))
-    notice = widgets.HTML("")
-    list_box = widgets.VBox()
-    resume_dropdown = widgets.Dropdown(
-        options=[("Resume a saved session…", "")], value="",
-        layout=widgets.Layout(width="100%"))
-    sidebar = widgets.VBox(
-        [heading, new_btn, new_form, notice, list_box, resume_dropdown],
-        layout=widgets.Layout(width="240px", min_width="200px",
-                              flex="0 0 240px", margin="0 12px 0 0"))
-    stage = widgets.VBox(layout=widgets.Layout(flex="1 1 auto", min_width="0"))
-    widget = widgets.HBox([sidebar, stage],
-                          layout=widgets.Layout(width="100%",
-                                                align_items="flex-start"))
+    worktree_hint = _classed(widgets.HTML(""), "delfin-session-hint")
+    new_form = _classed(widgets.VBox(
+        [_classed(widgets.HTML("Working directory"), "delfin-session-label"),
+         workdir_box, own_worktree_box, worktree_hint,
+         _classed(widgets.HBox([cancel_btn, start_btn]),
+                  "delfin-session-actions")],
+        layout=widgets.Layout(display="none")), "delfin-session-form")
+    notice = _classed(widgets.HTML(""), "delfin-session-notice")
+    list_box = _classed(widgets.VBox(), "delfin-session-list")
+    resume_dropdown = _classed(widgets.Dropdown(
+        options=[("Resume a saved session…", "")], value=""),
+        "delfin-session-resume")
+    sidebar = _classed(widgets.VBox(
+        [widgets.HTML(_SIDEBAR_CSS), head, new_form, notice, list_box,
+         resume_dropdown]), "delfin-sessions")
+    stage = _classed(widgets.VBox(), "delfin-session-stage")
+    widget = _classed(widgets.HBox([sidebar, stage]), "delfin-session-shell")
 
     # -- lookup -------------------------------------------------------------
 
@@ -269,16 +361,17 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                    for rec in sessions)
 
     def _say(text: str) -> None:
-        notice.value = (f"<span style='font-size:11px;color:#b45309'>"
-                        f"{html.escape(text)}</span>" if text else "")
+        notice.value = html.escape(text) if text else ""
 
     # -- what is on screen ----------------------------------------------------
 
     def _render_list() -> None:
         rows = []
         for rec in sessions:
-            rec["title_btn"].button_style = (
-                "info" if rec["key"] == view["active"] else "")
+            if rec["key"] == view["active"]:
+                rec["row"].add_class("delfin-session-active")
+            else:
+                rec["row"].remove_class("delfin-session-active")
             rows.append(rec["row"])
         list_box.children = tuple(rows)
 
@@ -363,18 +456,20 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         )
         tab, refs = build(session_ctx)
         view["scripts_added"] = True
-        title_btn = widgets.Button(description="New session", tooltip=where,
-                                   layout=widgets.Layout(flex="1 1 auto",
-                                                         width="auto"))
-        close_btn = widgets.Button(description="×", tooltip=(
-            "Close this session — it stays saved and can be resumed"),
-            layout=widgets.Layout(width="32px"))
-        info = widgets.HTML(
-            f"<div style='font-size:10px;color:#78909c;overflow-wrap:anywhere;"
-            f"margin:-2px 0 4px 2px'>{html.escape(_short_path(where))}</div>")
+        title_btn = _classed(widgets.Button(description="New session",
+                                            tooltip=where),
+                             "delfin-session-title")
+        close_btn = _classed(widgets.Button(description="×", tooltip=(
+            "Close this session — it stays saved and can be resumed")),
+            "delfin-session-close")
+        info = _classed(widgets.HTML(html.escape(_display_path(where))),
+                        "delfin-session-path")
+        row = _classed(widgets.HBox([
+            _classed(widgets.VBox([title_btn, info]), "delfin-session-text"),
+            close_btn]), "delfin-session-item")
         rec = {"key": key, "workspace": where, "tab": tab, "refs": refs or {},
                "ctx": session_ctx, "title_btn": title_btn, "info": info,
-               "row": widgets.VBox([widgets.HBox([title_btn, close_btn]), info])}
+               "row": row}
         title_btn.on_click(lambda _b, _key=key: activate(_key))
         close_btn.on_click(lambda _b, _key=key: close_session(_key))
         session_ctx.agent_status_html.observe(
@@ -422,10 +517,13 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         changed = False
         for rec in sessions:
             state = _state(rec)
-            label = (("● " if state.get("streaming") else "")
-                     + _session_title(state))
+            label = _session_title(state)
             if rec["title_btn"].description != label:
                 rec["title_btn"].description = label
+            if state.get("streaming"):
+                rec["row"].add_class("delfin-session-busy")
+            else:
+                rec["row"].remove_class("delfin-session-busy")
             sid = _session_id(rec)
             if sid != rec.get("remembered_id"):
                 rec["remembered_id"] = sid
