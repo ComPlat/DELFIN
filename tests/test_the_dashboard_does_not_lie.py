@@ -134,7 +134,7 @@ def test_the_dropped_engines_conversation_is_carried_to_the_next():
     assert "engine.export_state()" in body
     assert 'state["_engine_carry_over"] = carry' in body
     assert "engine.client.kill()" in body
-    ensure = _body("_ensure_engine", text, 12000)
+    ensure = _body("_ensure_engine", text, 14000)
     assert 'carry = state.pop("_engine_carry_over", None)' in ensure
     assert "_hand_state_to(" in ensure, "the carry-over goes through the one restore site"
     hand = _body("_hand_state_to", text, 900)

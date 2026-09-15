@@ -1866,6 +1866,22 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
 )
 
 
+# Several agent sessions share one page and only one of them is shown. The
+# page scripts looked elements up with document.querySelector, which returns
+# the FIRST match -- so Enter in the second session clicked the first
+# session's Send. Every lookup takes the visible element instead, and the
+# first one when none is (a page with a single session behaves as before).
+_VISIBLE_LOOKUP_JS = """
+window.__delfinQ = window.__delfinQ || function(sel) {
+    var all = document.querySelectorAll(sel);
+    for (var i = 0; i < all.length; i++) {
+        if (all[i].offsetParent !== null) return all[i];
+    }
+    return all.length ? all[0] : null;
+};
+"""
+
+
 def _agent_workspace_from_launch(launch_cwd: str, fallback) -> "Path":
     """Where the AGENT works — derived from the REAL delfin-voila launch dir,
     not Path.cwd() (Voila pins the kernel cwd to the notebook's dir inside the
@@ -5618,7 +5634,7 @@ def create_tab(ctx):
     _enter_js_output = widgets.Output()
     with _enter_js_output:
         from IPython.display import display as _ipyd, Javascript as _JS
-        _ipyd(_JS("""
+        _ipyd(_JS(_VISIBLE_LOOKUP_JS + """
 (function() {
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
@@ -5630,7 +5646,7 @@ def create_tab(ctx):
                 if (container) {
                     e.preventDefault();
                     e.stopPropagation();
-                    var sendBtn = document.querySelector('.delfin-agent-send-row button');
+                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
                     if (sendBtn) sendBtn.click();
                     return;
                 }
@@ -5639,40 +5655,41 @@ def create_tab(ctx):
         if (e.key === 'Escape') {
             var btns = document.querySelectorAll('button');
             for (var i = 0; i < btns.length; i++) {
-                if (btns[i].textContent.trim() === 'Stop' && !btns[i].disabled) {
+                if (btns[i].textContent.trim() === 'Stop' && !btns[i].disabled
+                        && btns[i].offsetParent !== null) {
                     btns[i].click(); e.preventDefault(); return;
                 }
             }
         }
         if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-            var a = document.querySelector('.delfin-agent-chat');
+            var a = window.__delfinQ('.delfin-agent-chat');
             if (a) {
                 e.preventDefault();
-                var ta = document.querySelector('.delfin-agent-input textarea');
+                var ta = window.__delfinQ('.delfin-agent-input textarea');
                 if (ta) {
                     var ns = Object.getOwnPropertyDescriptor(
                         window.HTMLTextAreaElement.prototype, 'value').set;
                     ns.call(ta, '/clear');
                     ta.dispatchEvent(new Event('input', {bubbles: true}));
                     setTimeout(function() {
-                        var sb = document.querySelector('.delfin-agent-send-row button');
+                        var sb = window.__delfinQ('.delfin-agent-send-row button');
                         if (sb) sb.click();
                     }, 50);
                 }
             }
         }
         if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-            var a = document.querySelector('.delfin-agent-chat');
+            var a = window.__delfinQ('.delfin-agent-chat');
             if (a) {
                 e.preventDefault();
-                var ta = document.querySelector('.delfin-agent-input textarea');
+                var ta = window.__delfinQ('.delfin-agent-input textarea');
                 if (ta) {
                     var ns = Object.getOwnPropertyDescriptor(
                         window.HTMLTextAreaElement.prototype, 'value').set;
                     ns.call(ta, '/search');
                     ta.dispatchEvent(new Event('input', {bubbles: true}));
                     setTimeout(function() {
-                        var sb = document.querySelector('.delfin-agent-send-row button');
+                        var sb = window.__delfinQ('.delfin-agent-send-row button');
                         if (sb) sb.click();
                     }, 50);
                 }
@@ -5680,18 +5697,18 @@ def create_tab(ctx):
         }
         // Shift+Tab: cycle permission mode
         if (e.key === 'Tab' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
-            var a = document.querySelector('.delfin-agent-chat');
+            var a = window.__delfinQ('.delfin-agent-chat');
             if (a) {
                 e.preventDefault();
                 e.stopPropagation();
-                var ta = document.querySelector('.delfin-agent-input textarea');
+                var ta = window.__delfinQ('.delfin-agent-input textarea');
                 if (ta) {
                     var ns = Object.getOwnPropertyDescriptor(
                         window.HTMLTextAreaElement.prototype, 'value').set;
                     ns.call(ta, '/perm-cycle');
                     ta.dispatchEvent(new Event('input', {bubbles: true}));
                     setTimeout(function() {
-                        var sb = document.querySelector('.delfin-agent-send-row button');
+                        var sb = window.__delfinQ('.delfin-agent-send-row button');
                         if (sb) sb.click();
                     }, 50);
                 }
@@ -5727,7 +5744,13 @@ def create_tab(ctx):
             auto: false,    // the next scroll event is one we caused
             timer: null
         };
-        function chatEl() { return document.querySelector('.delfin-agent-chat'); }
+        // Standalone like every block here: the visible-session lookup when
+        // the page has it, the plain one otherwise.
+        function q(sel) {
+            return window.__delfinQ ? window.__delfinQ(sel)
+                                    : document.querySelector(sel);
+        }
+        function chatEl() { return q('.delfin-agent-chat'); }
         function atEnd(c) {
             return (c.scrollHeight - c.scrollTop - c.clientHeight)
                    <= CHAT_BOTTOM_TOLERANCE_PX;
@@ -5809,14 +5832,14 @@ def create_tab(ctx):
         // pressing that is not a request to leave the reader's place.
         document.addEventListener('click', function(e) {
             if (!e.target || !e.target.closest) return;
-            var sendBtn = document.querySelector('.delfin-agent-send-row button');
+            var sendBtn = q('.delfin-agent-send-row button');
             if (sendBtn && e.target.closest('button') === sendBtn) {
                 window.__delfinChatToBottom(chatEl());
             }
         }, true);
         setInterval(function() {
             // Only follow while the working indicator is visible
-            var working = document.querySelector('.delfin-agent-working');
+            var working = q('.delfin-agent-working');
             if (!working) return;
             if (!S.follow) return;
             var chat = chatEl();
@@ -5838,7 +5861,9 @@ def create_tab(ctx):
             ta.style.height = Math.min(ta.scrollHeight, MAXH) + 'px';
         }
         function inputTA() {
-            return document.querySelector('.delfin-agent-input textarea');
+            var sel = '.delfin-agent-input textarea';
+            return window.__delfinQ ? window.__delfinQ(sel)
+                                    : document.querySelector(sel);
         }
         // Grow while typing (also fires on the programmatic /clear,/search
         // value-set dispatches above, so the box shrinks back when cleared).
@@ -6656,11 +6681,12 @@ def create_tab(ctx):
                 pass
             finally:
                 try:
-                    _again = _threading_wake.Timer(
-                        _JOB_WAKE_INTERVAL_S, _job_wake_tick)
-                    _again.daemon = True
-                    _again.start()
-                    state["_job_wake_timer"] = _again
+                    if not state.get("_closed"):
+                        _again = _threading_wake.Timer(
+                            _JOB_WAKE_INTERVAL_S, _job_wake_tick)
+                        _again.daemon = True
+                        _again.start()
+                        state["_job_wake_timer"] = _again
                 except Exception:
                     pass
 
@@ -6688,11 +6714,12 @@ def create_tab(ctx):
                 pass
             finally:
                 try:
-                    _again_bg = _threading_bg.Timer(
-                        _BACKGROUND_REFRESH_S, _background_tick)
-                    _again_bg.daemon = True
-                    _again_bg.start()
-                    state["_background_timer"] = _again_bg
+                    if not state.get("_closed"):
+                        _again_bg = _threading_bg.Timer(
+                            _BACKGROUND_REFRESH_S, _background_tick)
+                        _again_bg.daemon = True
+                        _again_bg.start()
+                        state["_background_timer"] = _again_bg
                 except Exception:
                     pass
 
@@ -6781,7 +6808,8 @@ def create_tab(ctx):
             pass
         try:
             import os as _os
-            return str(_os.environ.get("DELFIN_LAUNCH_CWD", "")
+            return str(getattr(ctx, "agent_workspace", "")
+                       or _os.environ.get("DELFIN_LAUNCH_CWD", "")
                        or (ctx.repo_dir or ""))
         except Exception:
             return ""
@@ -6927,6 +6955,20 @@ def create_tab(ctx):
 
     def _load_saved_session(session_id):
         """Load a saved session and restore engine + UI state."""
+        # One conversation, one view: two sessions holding the same one would
+        # save over each other's turns.
+        _elsewhere = getattr(ctx, "session_open_elsewhere", None)
+        try:
+            _taken = (callable(_elsewhere)
+                      and session_id != state.get("active_session_id")
+                      and _elsewhere(session_id))
+        except Exception:
+            _taken = False
+        if _taken:
+            _append_system_message(
+                "This conversation is already open in another session — "
+                "switch to it in the session list.")
+            return
         try:
             from delfin.agent.session_store import load_session
             data = load_session(session_id)
@@ -7264,8 +7306,10 @@ def create_tab(ctx):
             # The agent builds where you LAUNCHED delfin-voila, not where the
             # notebook lives. Only this (agent) resolution changes — ctx.repo_dir
             # (calc/jobs/settings) is untouched.
+            # A listed session's own directory, else the launch dir.
             repo_dir = _agent_workspace_from_launch(
-                os.environ.get("DELFIN_LAUNCH_CWD", ""),
+                getattr(ctx, "agent_workspace", "")
+                or os.environ.get("DELFIN_LAUNCH_CWD", ""),
                 ctx.repo_dir or Path.cwd(),
             )
             # Safety fallback: if that resolves to $HOME or a system root (e.g.
@@ -8742,7 +8786,7 @@ def create_tab(ctx):
             # Auto-focus input textarea when agent finishes
             working_html.value = (
                 '<img src="" onerror="'
-                "var ta=document.querySelector('.delfin-agent-input textarea');"
+                "var ta=window.__delfinQ('.delfin-agent-input textarea');"
                 "if(ta)ta.focus();"
                 "this.remove();"
                 '" style="display:none">'
@@ -18686,7 +18730,7 @@ def create_tab(ctx):
         mode_desc_html.layout.display = "none"
         advance_btn.layout.display = "none"
 
-    _enter_key_init_js = """
+    _enter_key_init_js = _VISIBLE_LOOKUP_JS + """
 (function() {
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
@@ -18694,7 +18738,7 @@ def create_tab(ctx):
         /* Enter = Approve (if approval pending) or Send */
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             /* Check if approval buttons are visible */
-            var approveBtn = document.querySelector('.delfin-agent-approval-row button');
+            var approveBtn = window.__delfinQ('.delfin-agent-approval-row button');
             if (approveBtn && approveBtn.offsetParent !== null) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -18707,7 +18751,7 @@ def create_tab(ctx):
                 if (container) {
                     e.preventDefault();
                     e.stopPropagation();
-                    var sendBtn = document.querySelector('.delfin-agent-send-row button');
+                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
                     if (sendBtn) sendBtn.click();
                     return;
                 }
@@ -18716,7 +18760,7 @@ def create_tab(ctx):
         /* Escape = Deny (if approval pending) or Stop generation */
         if (e.key === 'Escape') {
             /* Check if deny button is visible */
-            var approvalRow = document.querySelector('.delfin-agent-approval-row');
+            var approvalRow = window.__delfinQ('.delfin-agent-approval-row');
             if (approvalRow && approvalRow.offsetParent !== null) {
                 var btns = approvalRow.querySelectorAll('button');
                 if (btns.length >= 2) {
@@ -18727,7 +18771,8 @@ def create_tab(ctx):
             }
             var stopBtns = document.querySelectorAll('button');
             for (var i = 0; i < stopBtns.length; i++) {
-                if (stopBtns[i].textContent.trim() === 'Stop' && !stopBtns[i].disabled) {
+                if (stopBtns[i].textContent.trim() === 'Stop' && !stopBtns[i].disabled
+                        && stopBtns[i].offsetParent !== null) {
                     stopBtns[i].click();
                     e.preventDefault();
                     return;
@@ -18737,18 +18782,18 @@ def create_tab(ctx):
         /* Ctrl+L = Clear chat */
         if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
             /* Only if focus is in the agent area */
-            var agentArea = document.querySelector('.delfin-agent-chat');
+            var agentArea = window.__delfinQ('.delfin-agent-chat');
             if (agentArea) {
                 e.preventDefault();
                 /* Trigger /clear by setting textarea and clicking send */
-                var ta = document.querySelector('.delfin-agent-input textarea');
+                var ta = window.__delfinQ('.delfin-agent-input textarea');
                 if (ta) {
                     var nativeSet = Object.getOwnPropertyDescriptor(
                         window.HTMLTextAreaElement.prototype, 'value').set;
                     nativeSet.call(ta, '/clear');
                     ta.dispatchEvent(new Event('input', {bubbles: true}));
                     setTimeout(function() {
-                        var sendBtn = document.querySelector('.delfin-agent-send-row button');
+                        var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
                         if (sendBtn) sendBtn.click();
                     }, 50);
                 }
@@ -18756,17 +18801,17 @@ def create_tab(ctx):
         }
         /* Ctrl+K = Toggle search */
         if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-            var agentArea = document.querySelector('.delfin-agent-chat');
+            var agentArea = window.__delfinQ('.delfin-agent-chat');
             if (agentArea) {
                 e.preventDefault();
-                var ta = document.querySelector('.delfin-agent-input textarea');
+                var ta = window.__delfinQ('.delfin-agent-input textarea');
                 if (ta) {
                     var nativeSet = Object.getOwnPropertyDescriptor(
                         window.HTMLTextAreaElement.prototype, 'value').set;
                     nativeSet.call(ta, '/search');
                     ta.dispatchEvent(new Event('input', {bubbles: true}));
                     setTimeout(function() {
-                        var sendBtn = document.querySelector('.delfin-agent-send-row button');
+                        var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
                         if (sendBtn) sendBtn.click();
                     }, 50);
                 }
@@ -18774,18 +18819,18 @@ def create_tab(ctx):
         }
         /* Shift+Tab = Cycle permission mode */
         if (e.key === 'Tab' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
-            var agentArea = document.querySelector('.delfin-agent-chat');
+            var agentArea = window.__delfinQ('.delfin-agent-chat');
             if (agentArea) {
                 e.preventDefault();
                 e.stopPropagation();
-                var ta = document.querySelector('.delfin-agent-input textarea');
+                var ta = window.__delfinQ('.delfin-agent-input textarea');
                 if (ta) {
                     var nativeSet = Object.getOwnPropertyDescriptor(
                         window.HTMLTextAreaElement.prototype, 'value').set;
                     nativeSet.call(ta, '/perm-cycle');
                     ta.dispatchEvent(new Event('input', {bubbles: true}));
                     setTimeout(function() {
-                        var sendBtn = document.querySelector('.delfin-agent-send-row button');
+                        var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
                         if (sendBtn) sendBtn.click();
                     }, 50);
                 }
@@ -18807,7 +18852,7 @@ def create_tab(ctx):
         var now = Date.now();
         if (now - _lastModelRefresh < 5000) return;
         _lastModelRefresh = now;
-        var refresh = document.querySelector(
+        var refresh = window.__delfinQ(
             '.delfin-agent-model-refresh button'
         );
         if (refresh) refresh.click();
@@ -18875,9 +18920,12 @@ def create_tab(ctx):
     # empty tab.
     try:
         import os as _os
-        boot_sid = getattr(ctx, "initial_session_id", "") or _os.environ.get(
-            "DELFIN_RESUME_SESSION", ""
-        )
+        # A session the sidebar opens is told which conversation it holds;
+        # the environment's resume target is the sidebar's to apply once,
+        # or every new session would reopen the same one.
+        boot_sid = getattr(ctx, "initial_session_id", "") or (
+            "" if getattr(ctx, "sessions_managed", False)
+            else _os.environ.get("DELFIN_RESUME_SESSION", ""))
         boot_sid = (boot_sid or "").strip()
         if boot_sid:
             if boot_sid == "latest":
@@ -18900,7 +18948,50 @@ def create_tab(ctx):
 
     ctx.add_init_js(_enter_key_init_js)
 
-    return tab_widget, {}
+    def _shutdown_tab() -> None:
+        """Close this session: save it, end its turn, stop its timers.
+
+        For a session closed in the session list while the dashboard runs
+        on. Its timer chains check ``_closed`` before re-arming, so they end
+        with the tick that is already scheduled.
+        """
+        state["_closed"] = True
+        try:
+            _auto_save_session()
+        except Exception:
+            pass
+        engine = state.get("engine")
+        if engine is not None:
+            try:
+                if state.get("streaming"):
+                    engine.request_stop()
+                if hasattr(engine.client, "kill"):
+                    engine.client.kill()
+            except Exception:
+                pass
+        _stop_job_event_watcher()
+        state["_subagent_live_stop"] = True
+        for key in ("_job_wake_timer", "_background_timer", "_stale_timer",
+                    "_stale_kill_timer"):
+            timer = state.get(key)
+            try:
+                if timer is not None:
+                    timer.cancel()
+            except Exception:
+                pass
+        try:
+            from delfin.agent import scheduler as _sched_close
+            _sched_close.get_scheduler().remove_fire_listener(id(state))
+        except Exception:
+            pass
+
+    return tab_widget, {
+        "state": state,
+        "shutdown": _shutdown_tab,
+        "workspace": _agent_workspace_path,
+        "load_session": _load_saved_session,
+        "save": _auto_save_session,
+    }
 
 
 # ---------------------------------------------------------------------------
