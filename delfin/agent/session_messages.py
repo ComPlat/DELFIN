@@ -39,7 +39,17 @@ def _lock(fd: int) -> None:
 
 def send(to_key: str, text: str, *, from_key: str = "",
          from_title: str = "") -> dict:
-    """Leave ``text`` in session ``to_key``'s inbox. Returns the message."""
+    """Leave ``text`` in session ``to_key``'s inbox. Returns the message.
+
+    Credentials are redacted first: the other session may run on another
+    provider, and the text goes into its transcript and every later
+    request it makes."""
+    try:
+        from .output_guard import scrub_secrets
+        text = scrub_secrets(str(text or ""))
+        from_title = scrub_secrets(str(from_title or ""))
+    except Exception:
+        pass
     message = {
         "to": str(to_key), "from": str(from_key or ""),
         "from_title": str(from_title or "")[:80],
