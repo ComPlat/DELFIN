@@ -25,6 +25,7 @@ install (no extra ``requests`` / ``beautifulsoup4`` dependency).
 from __future__ import annotations
 
 import html as _html
+import http.client
 import ipaddress
 import json
 import os
@@ -195,13 +196,94 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _ip_refusal(ip_str: str, host: str) -> Optional[str]:
+    try:
+        ip = ipaddress.ip_address(ip_str.split("%", 1)[0])
+    except ValueError:
+        return f"unparseable address {ip_str!r} for host {host!r}"
+    if getattr(ip, "ipv4_mapped", None) is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback or ip.is_link_local or ip.is_private \
+            or ip.is_multicast or ip.is_reserved or ip.is_unspecified \
+            or ip in _CGNAT_NET:
+        return (f"resolved IP {ip_str} for host {host!r} is "
+                "private/loopback/link-local — refused")
+    return None
+
+
+def _checked_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                               source_address=None, **_kw):
+    """``socket.create_connection`` that connects only to an address it has
+    just checked.
+
+    ``_check_url`` resolved the name and urllib resolved it again to
+    connect: a name that answers with a public address the first time and
+    127.0.0.1 or the cloud metadata address the second (DNS rebinding)
+    passed the check and reached the private one. Here the name is resolved
+    once, each address is checked, and the socket goes to that address."""
+    host, port = address
+    last: Optional[BaseException] = None
+    refusal = ""
+    for af, socktype, proto, _canon, sockaddr in socket.getaddrinfo(
+            host, port, 0, socket.SOCK_STREAM):
+        why = _ip_refusal(str(sockaddr[0]), str(host))
+        if why:
+            refusal = why
+            continue
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last = exc
+            if sock is not None:
+                sock.close()
+    if refusal:
+        raise OSError(f"refused: {refusal}")
+    raise last if last is not None else OSError(f"no address for {host!r}")
+
+
+class _CheckedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._create_connection = _checked_create_connection
+
+
+class _CheckedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._create_connection = _checked_create_connection
+
+
+class _CheckedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        # Through a configured proxy the connection goes to the proxy, which
+        # resolves the name itself; the URL was still checked beforehand.
+        cls = http.client.HTTPConnection if req.has_proxy() else _CheckedHTTPConnection
+        return self.do_open(cls, req)
+
+
+class _CheckedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        cls = (http.client.HTTPSConnection if getattr(req, "_tunnel_host", None)
+               else _CheckedHTTPSConnection)
+        return self.do_open(cls, req, context=self._context)
+
+
 _GUARDED_OPENER = None
 
 
 def _guarded_opener():
     global _GUARDED_OPENER
     if _GUARDED_OPENER is None:
-        _GUARDED_OPENER = urllib.request.build_opener(_GuardedRedirectHandler())
+        _GUARDED_OPENER = urllib.request.build_opener(
+            _GuardedRedirectHandler(), _CheckedHTTPHandler(),
+            _CheckedHTTPSHandler())
     return _GUARDED_OPENER
 
 
