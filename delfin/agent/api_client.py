@@ -2314,6 +2314,128 @@ def _is_git_push(cmd: str) -> bool:
     return bool(_GIT_PUSH_RE.search(_with_shell_bodies(cmd)))
 
 
+# -- a push to GitHub, the one way out of the process cage ---------------------
+#
+# SSH is closed inside the cage (keys, agent and control sockets are masked,
+# and ssh refuses its system configuration inside a user namespace), which is
+# what keeps an agent from starting processes on other machines. A push to
+# GitHub over SSH is the one use of it the user wanted kept (2026-09-16). It
+# runs outside the cage only in exactly this shape:
+#
+# * the whole command is `git push [flags] [remote] [refspecs]`, optionally
+#   followed by `2>&1` and `| tail -N` / `| head -N` -- nothing else runs,
+#   and no refspec forces (`+`) or deletes (`:branch`);
+# * the remote is a configured one whose push URL, after every insteadOf
+#   rewrite, is an SSH URL on github.com, and it names no remote helper;
+# * git runs with hooks off, no fsmonitor, no submodule recursion, every
+#   transport but SSH refused, and an SSH command of DELFIN's that forbids
+#   proxies, local commands and connection sharing -- set with -c, which
+#   outranks the repository's own configuration an agent can edit;
+# * no GIT_* variable of the environment reaches it.
+#
+# The push gate before it (push grants, the git role) is unchanged.
+
+_PLAIN_PUSH_RE = re.compile(
+    r"^\s*git\s+push((?:\s+[A-Za-z0-9._/:@^~-]+)*)"
+    r"(\s+2>&1)?"
+    r"(?:\s*\|\s*(tail|head)\s+(?:-n\s*)?-?(\d+))?\s*$")
+_PLAIN_PUSH_FLAGS = frozenset({
+    "-u", "--set-upstream", "-q", "--quiet", "-v", "--verbose",
+    "--porcelain", "-n", "--dry-run", "--tags", "--follow-tags", "--atomic",
+})
+_GITHUB_SSH_URL_RE = re.compile(
+    r"^(?:ssh://)?git@github\.com(?::22)?[:/][A-Za-z0-9._-]+/[A-Za-z0-9._-]+?"
+    r"(?:\.git)?/?$")
+_GITHUB_PUSH_SSH = ("ssh -o ControlMaster=no -o ControlPath=none "
+                    "-o ProxyCommand=none -o ProxyJump=none "
+                    "-o PermitLocalCommand=no -o BatchMode=yes")
+
+
+def _git_out(cwd, *args: str) -> Optional[str]:
+    try:
+        r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
+                           text=True, timeout=15,
+                           env={k: v for k, v in os.environ.items()
+                                if not k.startswith("GIT_")})
+    except Exception:
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _github_push_plan(cmd: str, run_cwd) -> Optional[dict]:
+    """How to run ``cmd`` as a push to GitHub outside the process cage, or
+    None when it is not exactly such a push (then it runs in the cage)."""
+    match = _PLAIN_PUSH_RE.match(cmd or "")
+    if not match:
+        return None
+    tokens = (match.group(1) or "").split()
+    flags = [t for t in tokens if t.startswith("-")]
+    if any(f not in _PLAIN_PUSH_FLAGS for f in flags):
+        return None
+    positional = [t for t in tokens if not t.startswith("-")]
+    # A refspec that starts with ':' deletes the branch; '+' forces, and is
+    # already outside the character class. Neither takes this way out.
+    if any(t.startswith(":") or t.endswith(":") for t in positional[1:]):
+        return None
+    remotes = (_git_out(run_cwd, "remote") or "").split()
+    if not remotes:
+        return None
+    if positional:
+        remote = positional[0]
+        if remote not in remotes:
+            return None
+    else:
+        upstream = _git_out(run_cwd, "rev-parse", "--abbrev-ref",
+                            "--symbolic-full-name", "@{push}") or ""
+        named = sorted((r for r in remotes if upstream.startswith(r + "/")),
+                       key=len, reverse=True)
+        if named:
+            remote = named[0]
+        elif len(remotes) == 1:
+            remote = remotes[0]
+        else:
+            return None
+    url = _git_out(run_cwd, "remote", "get-url", "--push", remote) or ""
+    if not _GITHUB_SSH_URL_RE.match(url):
+        return None
+    if _git_out(run_cwd, "config", "--get", f"remote.{remote}.vcs"):
+        return None
+    argv = ["git",
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "core.fsmonitor=false",
+            "-c", "push.recurseSubmodules=no",
+            "-c", "protocol.allow=never",
+            "-c", "protocol.ssh.allow=always",
+            "-c", f"core.sshCommand={_GITHUB_PUSH_SSH}",
+            "push", *tokens]
+    return {"argv": argv, "remote": remote, "url": url,
+            "merge_stderr": bool(match.group(2)),
+            "filter": match.group(3) or "",
+            "lines": int(match.group(4) or 0)}
+
+
+def _run_github_push(plan: dict, run_cwd, env: dict,
+                     timeout: int) -> "subprocess.CompletedProcess":
+    """Run a push ``_github_push_plan`` accepted, and shape its result the
+    way the shell command it came from would have."""
+    push_env = {k: v for k, v in env.items()
+                if not k.startswith("GIT_") and k not in ("SSH_ASKPASS",)}
+    proc = subprocess.run(plan["argv"], cwd=str(run_cwd), env=push_env,
+                          capture_output=True, text=True, timeout=timeout,
+                          stdin=subprocess.DEVNULL, start_new_session=True,
+                          check=False)
+    out, err, code = proc.stdout or "", proc.stderr or "", proc.returncode
+    if plan["merge_stderr"]:
+        out, err = out + err, ""
+    if plan["filter"]:
+        # The pipeline's status is the filter's, as in the shell.
+        lines = out.splitlines(keepends=True)
+        n = plan["lines"]
+        lines = lines[-n:] if plan["filter"] == "tail" else lines[:n]
+        out, code = "".join(lines), 0
+    return subprocess.CompletedProcess(plan["argv"], code, out, err)
+
+
 def _message_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -14527,15 +14649,23 @@ class _DocToolExecutor:
 
         t0 = time.monotonic()
         try:
-            proc = subprocess.run(
-                _bash_isolation_argv(cmd, run_cwd, perms),
-                cwd=str(run_cwd),
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
+            _push = _github_push_plan(cmd, run_cwd) if _is_git_push(cmd) else None
+            if _push is not None:
+                _record_security_event(
+                    "isolation", "bash",
+                    f"git push to {_push['url']} ran outside the process cage "
+                    "(hooks off, SSH hardened)", blocked=False)
+                proc = _run_github_push(_push, run_cwd, env, timeout)
+            else:
+                proc = subprocess.run(
+                    _bash_isolation_argv(cmd, run_cwd, perms),
+                    cwd=str(run_cwd),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
         except subprocess.TimeoutExpired:
             return json.dumps({
                 "error": f"command timed out after {timeout}s",
@@ -14652,6 +14782,9 @@ class _DocToolExecutor:
                 # somewhere the drain -- which reads the workspace -- never
                 # looks. The job finished and nobody was told.
                 workspace=str(perms.workspace),
+                # In the process cage like a foreground command: what the
+                # job starts ends with it, and the job with its kernel.
+                argv=_bash_isolation_argv(cmd, run_cwd, perms),
                 **({"session_id": _job_sid} if _job_sid else {}),
             )
         except ValueError as exc:
@@ -16808,6 +16941,133 @@ def _announce_auto_isolation() -> None:
     )
 
 
+# -- the process cage --------------------------------------------------------
+#
+# Filesystem isolation decides what a command may WRITE. The process cage
+# decides what it may LEAVE BEHIND, and it holds in every mode, "off"
+# included: nothing an agent's command starts outlives the command (a
+# background job: the kernel that started it), and the ways a process could
+# be handed to something that outlives both are closed.
+#
+# * Its own PID namespace. When the command ends, the kernel kills every
+#   process in the namespace -- `setsid`, `nohup`, `disown` and a double
+#   fork all included, which the lifeline ledger cannot see.
+# * --die-with-parent: the cage ends with the kernel or CLI that started it,
+#   however that one ends.
+# * --new-session: no controlling terminal, so nothing can be typed into the
+#   terminal running delfin-voila (TIOCSTI).
+# * The doors to long-lived servers outside are masked: the systemd user
+#   manager and D-Bus (/run/user/<uid>: `systemd-run --user`), running tmux
+#   and screen servers, the SSH directory (keys, and the control sockets a
+#   dashboard transfer leaves open) and the SSH agent. `crontab` and `at`
+#   cannot use their setuid helpers inside a user namespace.
+#
+# Measured on a bwUniCluster login node, 2026-09-16: every escape above
+# ended with the command; SLURM (sbatch/squeue) keeps working inside, so
+# cluster jobs -- calculations, which end with their walltime -- are the one
+# thing a command still hands on.
+#
+# DELFIN_PROCESS_CAGE=off in the environment of the process that runs the
+# agent (the delfin-voila terminal) turns it off. A setting would be
+# something an agent can write; that environment is not.
+
+_PROCESS_CAGE_ENV = "DELFIN_PROCESS_CAGE"
+_PROCESS_CAGE_FUNCTIONAL: Optional[bool] = None
+_PROCESS_CAGE_GAP_ANNOUNCED = False
+_PROCESS_CAGE_UNSET = ("SSH_AUTH_SOCK", "SSH_AGENT_PID", "TMUX", "TMUX_PANE",
+                       "STY", "DBUS_SESSION_BUS_ADDRESS")
+
+
+def _process_cage_functional() -> bool:
+    """bwrap works here in the shape the cage uses. Probed once."""
+    global _PROCESS_CAGE_FUNCTIONAL
+    if _PROCESS_CAGE_FUNCTIONAL is not None:
+        return _PROCESS_CAGE_FUNCTIONAL
+    ok = False
+    try:
+        if shutil.which("bwrap"):
+            r = subprocess.run(
+                ["bwrap", "--dev-bind", "/", "/", "--proc", "/proc",
+                 *_process_cage_options(), "true"],
+                capture_output=True, timeout=10,
+            )
+            ok = r.returncode == 0
+    except Exception:
+        ok = False
+    _PROCESS_CAGE_FUNCTIONAL = ok
+    return ok
+
+
+def _process_cage_enabled() -> bool:
+    """The cage applies: not turned off, and bwrap works. Says once when it
+    cannot, because then a command's processes can outlive it."""
+    global _PROCESS_CAGE_GAP_ANNOUNCED
+    if os.environ.get(_PROCESS_CAGE_ENV, "").strip().lower() == "off":
+        return False
+    if _process_cage_functional():
+        return True
+    if not _PROCESS_CAGE_GAP_ANNOUNCED:
+        _PROCESS_CAGE_GAP_ANNOUNCED = True
+        try:
+            _record_security_event(
+                "isolation", "bash",
+                "the process cage is NOT active: bubblewrap is missing or "
+                "its namespaces are refused here. A process a command starts "
+                "detached (setsid, nohup, a double fork) can outlive the "
+                "command; delfin-voila's lifeline and `delfin-agent stop-all` "
+                "still end what they can find.",
+                blocked=False,
+            )
+        except Exception:
+            pass
+    return False
+
+
+def _process_cage_options() -> list[str]:
+    """bwrap options for the cage, without the filesystem layout."""
+    opts = ["--unshare-pid", "--new-session", "--die-with-parent"]
+    uid = os.getuid()
+    home = Path.home()
+    doors = [
+        f"/run/user/{uid}",
+        "/run/screen",
+        str(home / ".screen"),
+        str(home / ".ssh"),
+        os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", f"tmux-{uid}"),
+    ]
+    agent_socket = os.environ.get("SSH_AUTH_SOCK", "")
+    # OpenSSH keeps an agent's socket in a directory of its own, ssh-XXXX.
+    # Anything else is left to --unsetenv: masking a directory by where a
+    # variable points could hide the command's own working directory.
+    if agent_socket and os.path.basename(
+            os.path.dirname(agent_socket)).startswith("ssh-"):
+        doors.append(os.path.dirname(agent_socket))
+    never = {"/", "/tmp", "/run", str(home), str(home.resolve())}
+    seen: set[str] = set()
+    for door in doors:
+        try:
+            # bwrap cannot mount through a symlinked path; mask the real one.
+            real = os.path.realpath(door)
+        except OSError:
+            continue
+        if real in never or real in seen or not os.path.isdir(real):
+            continue
+        seen.add(real)
+        opts += ["--tmpfs", real]
+    for var in _PROCESS_CAGE_UNSET:
+        opts += ["--unsetenv", var]
+    return opts
+
+
+def _in_process_cage(argv: list[str], run_cwd) -> list[str]:
+    """``argv`` inside the process cage, with the filesystem as it is."""
+    if not _process_cage_enabled():
+        return argv
+    return ["bwrap", "--dev-bind", "/", "/", "--proc", "/proc",
+            *_process_cage_options(),
+            "--chdir", str(Path(run_cwd).resolve()), *argv]
+
+
 # Set by a front-end that wants isolation for this process only, e.g.
 # `delfin-agent --isolate`. Empty means "ask the settings file", which is
 # what every caller did before this existed.
@@ -16846,7 +17106,11 @@ def _bash_isolation_argv(
     defaults to "auto": isolate only in the unattended (bypass) profile,
     where no human approves each command, and always for a locked scope.
     "off" is the explicit escape hatch for HPC setups that need
-    unrestricted bash; "bwrap" forces it everywhere.
+    unrestricted writes; "bwrap" forces it everywhere.
+
+    Whatever the filesystem mode, the command runs in the process cage
+    (see ``_process_cage_options``) where bwrap works: nothing it starts
+    outlives it.
 
     A locked scope on a host where bubblewrap does not work falls back to
     plain bash and records a security event saying so -- the containment
@@ -16897,9 +17161,9 @@ def _bash_isolation_argv(
             mode = "bwrap"
             _announce_auto_isolation()
         else:
-            return plain
+            return _in_process_cage(plain, run_cwd)
     if mode != "bwrap" or not shutil.which("bwrap"):
-        return plain
+        return _in_process_cage(plain, run_cwd)
 
     try:
         from delfin.agent.sandbox import _HOME_SECRET_DIRS
@@ -16932,9 +17196,10 @@ def _bash_isolation_argv(
         roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
     for r in roots:
         args += ["--bind", r, r]
-    args += ["--chdir", str(Path(run_cwd).resolve()),
-             "--die-with-parent"] + plain
-    return args
+    args += ["--chdir", str(Path(run_cwd).resolve())]
+    args += (_process_cage_options() if _process_cage_enabled()
+             else ["--die-with-parent"])
+    return args + plain
 
 
 def _is_stream_unsupported_error(exc: Exception) -> bool:

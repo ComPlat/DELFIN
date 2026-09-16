@@ -311,7 +311,9 @@ def test_an_unlocked_interactive_session_keeps_plain_bash(scene, monkeypatch):
     perms = KitToolPermissions(workspace=str(office))
     perms.mode = "default"
     argv = A._bash_isolation_argv("ls", office, perms)
-    assert argv[0] != "bwrap"
+    # Plain as far as the filesystem goes; the process cage holds in every
+    # mode (test_nothing_an_agent_command_starts_outlives_it).
+    assert "--ro-bind" not in argv and argv[-3:] == ["/bin/bash", "-c", "ls"]
 
 
 # ---------------------------------------------------------------------------
