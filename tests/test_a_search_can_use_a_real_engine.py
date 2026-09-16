@@ -67,8 +67,11 @@ def test_a_failing_keyed_engine_falls_through_to_the_keyless_chain(monkeypatch):
     assert out.get("source") != "brave"
 
 
-def test_the_tool_description_names_the_engines():
+def test_the_tool_description_is_unchanged_because_the_budget_is_full():
+    """The schema budget (9,450 tokens) had no headroom: naming the engines
+    in the description cost 24 tokens over it. The engine choice is the
+    tool's business, not the model's, so the description stays as it was."""
     from delfin.agent import api_client as A
     import inspect
     src = inspect.getsource(A)
-    assert "Uses Google or " in src and "Brave when a key is configured" in src
+    assert "Uses Google or " not in src
