@@ -213,6 +213,22 @@ DEFAULT_SETTINGS = {
         #   "off"            — explicit escape hatch: never isolate (e.g. an HPC
         #                      node whose MPI/module workflow needs raw bash).
         "bash_isolation": "auto",
+        # The network of an ISOLATED command (a locked session, an
+        # unattended run, a forced isolation) -- modelled on the sandboxes
+        # of coding agents: the command reaches the network only through
+        # DELFIN's egress proxy, which lets through the allowed domains.
+        #   mode "proxy" (default) -- allowed domains only, plus the SLURM
+        #                          controller from slurm.conf;
+        #        "none"          -- no network;
+        #        "open"          -- unrestricted.
+        # Cloud metadata addresses are refused in every mode, attended
+        # commands included. allowed_domains ADDS to the built-in list
+        # (PyPI, conda, GitHub); "*.example.org" covers subdomains.
+        "sandbox_network": {
+            "mode": "proxy",
+            "allowed_domains": [],
+            "allowed_ports": [80, 443],
+        },
         # Eval loop (Stufe 4): mine outcome history for recurring failure
         # patterns, scaffold draft benchmark tasks, write a report. The
         # default pass is LLM-free (0 tokens); a live benchmark run stays

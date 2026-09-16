@@ -60,6 +60,7 @@ _KINDS = {
     "no_sandbox":     ("🚫", "Refused: no sandbox configured"),
     "no_sandbox_mcp": ("🚫", "MCP tool refused: no sandbox configured"),
     "egress":         ("🌐", "Outbound data transfer"),
+    "egress_blocked": ("🌐", "Network destination blocked (sandbox)"),
     "push_unrequested": ("📤", "Push nobody asked for"),
     "push_default_branch": ("🔀", "Contributor push to the default branch"),
     "auto_verify":    ("🔁", "Auto-verify caught a problem"),

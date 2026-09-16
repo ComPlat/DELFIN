@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import ipaddress
 import os
 import platform
 import select
@@ -69,6 +70,12 @@ DEFAULT_ALLOWED = (
 )
 
 
+#: Metadata services that hand out cloud credentials; link-local ranges are
+#: refused as a whole besides these.
+_METADATA = {ipaddress.ip_address(a) for a in (
+    "169.254.169.254", "100.100.100.200", "168.63.129.16", "fd00:ec2::254")}
+
+
 def _arch():
     return _ARCHES.get(platform.machine())
 
@@ -94,50 +101,92 @@ def available() -> bool:
     return rc == 0 and sizes[0] >= 80 and sizes[1] >= 24
 
 
-def _program() -> list[tuple[int, int, int, int]]:
-    audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg = _arch()
-    LD, JEQ, JSET, RET, AND = 0x20, 0x15, 0x45, 0x06, 0x54
+def _assemble(items) -> list[tuple[int, int, int, int]]:
+    """Resolve labelled jumps. An item is ``("label", name)``, a statement
+    ``(code, k)``, or a jump ``(code, k, true_label, false_label)`` where a
+    label of None means the next instruction."""
+    labels, count = {}, 0
+    for item in items:
+        if item[0] == "label":
+            labels[item[1]] = count
+        else:
+            count += 1
+    out, pc = [], 0
+    for item in items:
+        if item[0] == "label":
+            continue
+        if len(item) == 4:
+            code, k, t, f = item
+            jt = 0 if t is None else labels[t] - pc - 1
+            jf = 0 if f is None else labels[f] - pc - 1
+            if not (0 <= jt <= 255 and 0 <= jf <= 255):
+                raise ValueError("jump out of range")
+            out.append((code, jt, jf, k))
+        else:
+            out.append((item[0], 0, 0, item[1]))
+        pc += 1
+    return out
+
+
+_LD, _JEQ, _JSET, _RET, _AND = 0x20, 0x15, 0x45, 0x06, 0x54
+
+
+def _head(audit: int):
     deny = _RET_ERRNO | errno.EPERM
-    prog: list[tuple[int, int, int, int]] = []
-    # 0 arch must match, or nothing runs (32-bit entry points bypass numbers)
-    prog.append((LD, 0, 0, 4))
-    prog.append((JEQ, 1, 0, audit))
-    prog.append((RET, 0, 0, deny))
-    prog.append((LD, 0, 0, 0))
+    items = [(_LD, 4), (_JEQ, audit, None, "deny_all"), (_LD, 0)]
     if audit == 0xC000003E:
         # x32 system calls carry bit 30; refuse them all.
-        prog.append((JSET, 0, 1, 0x40000000))
-        prog.append((RET, 0, 0, deny))
-    prog.append((JEQ, 0, 1, nr_connect))
-    prog.append((RET, 0, 0, _RET_USER_NOTIF))
-    prog.append((JEQ, 0, 1, nr_uring))
-    prog.append((RET, 0, 0, _RET_ERRNO | errno.ENOSYS))
-    prog.append((JEQ, 0, 7, nr_socket))         # not socket(): ALLOW below
-    prog.append((LD, 0, 0, 16))                 # args[0] low: domain
-    prog.append((JEQ, 0, 5, socket.AF_UNIX))    # not AF_UNIX: ALLOW below
-    prog.append((LD, 0, 0, 24))                 # args[1] low: type
-    prog.append((AND, 0, 0, 0xF))
-    prog.append((JEQ, 1, 0, socket.SOCK_DGRAM))
-    prog.append((RET, 0, 0, _RET_ALLOW))
-    prog.append((RET, 0, 0, _RET_ERRNO | errno.EACCES))
-    prog.append((RET, 0, 0, _RET_ALLOW))
-    return prog
+        items.append((_JSET, 0x40000000, "deny_all", None))
+    return items, [("label", "deny_all"), (_RET, deny)]
 
 
-def _block_unix_program() -> list[tuple[int, int, int, int]]:
+def _program(block_inet_datagrams: bool = False):
+    """connect() to the supervisor, no io_uring, no datagram Unix socket,
+    and with a restricted network no non-stream inet socket (UDP would
+    leave without connect(), past the supervisor). A foreign architecture
+    (32-bit entry points use other numbers) runs nothing."""
+    audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg = _arch()
+    items, tail = _head(audit)
+    items += [
+        (_JEQ, nr_connect, "notify", None),
+        (_JEQ, nr_uring, "enosys", None),
+        (_JEQ, nr_socket, None, "allow"),
+        (_LD, 16),
+        (_JEQ, socket.AF_UNIX, "unix", None),
+    ]
+    if block_inet_datagrams:
+        items += [(_JEQ, socket.AF_INET, "inet", None),
+                  (_JEQ, socket.AF_INET6, "inet", None)]
+    items += [(_RET, _RET_ALLOW),
+              ("label", "unix"), (_LD, 24), (_AND, 0xF),
+              (_JEQ, socket.SOCK_DGRAM, "eacces", "allow")]
+    if block_inet_datagrams:
+        items += [("label", "inet"), (_LD, 24), (_AND, 0xF),
+                  (_JEQ, socket.SOCK_STREAM, "allow", "eacces")]
+    items += [("label", "allow"), (_RET, _RET_ALLOW),
+              ("label", "eacces"), (_RET, _RET_ERRNO | errno.EACCES),
+              ("label", "enosys"), (_RET, _RET_ERRNO | errno.ENOSYS),
+              ("label", "notify"), (_RET, _RET_USER_NOTIF)] + tail
+    return _assemble(items)
+
+
+def _block_unix_program(block_inet_datagrams: bool = False):
     """Where the kernel cannot hand connects to a supervisor: no Unix socket
-    at all (and no io_uring), everything else as usual."""
+    at all (and no io_uring), and with a restricted network no inet socket
+    at all either."""
     audit, _sc, _nc, nr_socket, nr_uring, _po, _pg = _arch()
-    LD, JEQ, JSET, RET = 0x20, 0x15, 0x45, 0x06
-    deny = _RET_ERRNO | errno.EPERM
-    prog = [(LD, 0, 0, 4), (JEQ, 1, 0, audit), (RET, 0, 0, deny), (LD, 0, 0, 0)]
-    if audit == 0xC000003E:
-        prog += [(JSET, 0, 1, 0x40000000), (RET, 0, 0, deny)]
-    prog += [(JEQ, 0, 1, nr_uring), (RET, 0, 0, _RET_ERRNO | errno.ENOSYS),
-             (JEQ, 0, 3, nr_socket), (LD, 0, 0, 16),
-             (JEQ, 0, 1, socket.AF_UNIX), (RET, 0, 0, _RET_ERRNO | errno.EACCES),
-             (RET, 0, 0, _RET_ALLOW)]
-    return prog
+    items, tail = _head(audit)
+    items += [(_JEQ, nr_uring, "enosys", None),
+              (_JEQ, nr_socket, None, "allow"),
+              (_LD, 16),
+              (_JEQ, socket.AF_UNIX, "eacces", None)]
+    if block_inet_datagrams:
+        items += [(_JEQ, socket.AF_INET, "eacces", None),
+                  (_JEQ, socket.AF_INET6, "eacces", None)]
+    items += [("label", "allow"), (_RET, _RET_ALLOW),
+              ("label", "eacces"), (_RET, _RET_ERRNO | errno.EACCES),
+              ("label", "enosys"), (_RET, _RET_ERRNO | errno.ENOSYS)] + tail
+    return _assemble(items)
 
 
 def filter_supported() -> bool:
@@ -145,46 +194,71 @@ def filter_supported() -> bool:
             and sys.byteorder == "little")
 
 
-def install_block_unix_filter() -> None:
+def _install(insns, flags: int) -> int:
     a = _arch()
-    insns = _block_unix_program()
-    arr = (_SockFilter * len(insns))(*[_SockFilter(*i) for i in insns])
-    prog = _SockFprog(len(insns), arr)
-    rc = _libc.syscall(ctypes.c_long(a[1]), ctypes.c_uint(_SECCOMP_SET_MODE_FILTER),
-                       ctypes.c_uint(0), ctypes.byref(prog))
-    if rc != 0:
-        raise OSError(ctypes.get_errno(), "seccomp filter: " + os.strerror(ctypes.get_errno()))
-
-
-def install_filter() -> int:
-    """In the process that will run the command: install the filter and
-    return the listener descriptor. Needs no_new_privs set already."""
-    a = _arch()
-    insns = _program()
     arr = (_SockFilter * len(insns))(*[_SockFilter(*i) for i in insns])
     prog = _SockFprog(len(insns), arr)
     fd = _libc.syscall(ctypes.c_long(a[1]), ctypes.c_uint(_SECCOMP_SET_MODE_FILTER),
-                       ctypes.c_uint(_SECCOMP_FILTER_FLAG_NEW_LISTENER),
-                       ctypes.byref(prog))
+                       ctypes.c_uint(flags), ctypes.byref(prog))
     if fd < 0:
         raise OSError(ctypes.get_errno(), "seccomp filter: " + os.strerror(ctypes.get_errno()))
     return int(fd)
 
 
+def install_block_unix_filter(block_inet_datagrams: bool = False) -> None:
+    _install(_block_unix_program(block_inet_datagrams), 0)
+
+
+def install_filter(block_inet_datagrams: bool = False) -> int:
+    """In the process that will run the command: install the filter and
+    return the listener descriptor. Needs no_new_privs set already."""
+    return _install(_program(block_inet_datagrams), _SECCOMP_FILTER_FLAG_NEW_LISTENER)
+
+
 class Supervisor:
     """Answers the command's connect() calls until the command ends."""
 
-    def __init__(self, listener: int, allowed: list[str]):
+    def __init__(self, listener: int, allowed: list[str], net_mode: str = "open",
+                 allowed_tcp=(), denied=()):
         self.listener = listener
         self.allowed = [os.path.realpath(p).rstrip("/") for p in allowed if p]
+        self.denied = [os.path.realpath(p).rstrip("/") for p in denied if p]
+        self.net_mode = net_mode if net_mode in ("open", "proxy", "none") else "none"
+        self.allowed_tcp = set()
+        for entry in allowed_tcp:
+            host, _, port = str(entry).rpartition(":")
+            try:
+                self.allowed_tcp.add((ipaddress.ip_address(host.strip("[]")), int(port)))
+            except ValueError:
+                continue
         a = _arch()
         self._nr_pidfd_open, self._nr_pidfd_getfd = a[5], a[6]
         self.refused: list[str] = []
 
     # -- policy -------------------------------------------------------------
+    def inet_refusal(self, ip, port: int) -> str:
+        """Why a connect to ``ip:port`` is refused, or ""."""
+        if getattr(ip, "ipv4_mapped", None) is not None:
+            ip = ip.ipv4_mapped
+        if ip.is_link_local or ip in _METADATA:
+            return f"cloud metadata / link-local address {ip}"
+        if self.net_mode == "open":
+            return ""
+        if self.net_mode == "proxy" and (ip, port) in self.allowed_tcp:
+            return ""
+        return (f"direct connection to {ip}:{port}; the sandbox reaches the "
+                "network through its proxy only")
+
     def unix_path_allowed(self, path: str) -> bool:
         real = os.path.realpath(path)
-        return any(real == p or real.startswith(p + "/") for p in self.allowed)
+
+        def beneath(prefixes):
+            return any(real == p or real.startswith(p + "/") or p == ""
+                       for p in prefixes)
+
+        if self.denied and beneath(self.denied):
+            return False
+        return beneath(self.allowed)
 
     # -- plumbing -----------------------------------------------------------
     def _send(self, notif_id: int, val: int, err: int) -> None:
@@ -199,9 +273,23 @@ class Supervisor:
                 return True
         return False
 
+    @staticmethod
+    def _thread_group(tid: int) -> int:
+        """The process a thread belongs to. A notification names the calling
+        THREAD, and pidfd_open accepts only a process: a connect() from a
+        resolver thread (curl, most HTTP clients) failed with EBADF."""
+        try:
+            with open(f"/proc/{tid}/status", encoding="ascii", errors="replace") as fh:
+                for line in fh:
+                    if line.startswith("Tgid:"):
+                        return int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            pass
+        return tid
+
     def _dup_fd(self, pid: int, fd: int) -> int:
-        pidfd = _libc.syscall(ctypes.c_long(self._nr_pidfd_open), ctypes.c_int(pid),
-                              ctypes.c_uint(0))
+        pidfd = _libc.syscall(ctypes.c_long(self._nr_pidfd_open),
+                              ctypes.c_int(self._thread_group(pid)), ctypes.c_uint(0))
         if pidfd < 0:
             return -1
         try:
@@ -225,6 +313,25 @@ class Supervisor:
                 self._send(notif_id, -1, -errno.EACCES)
                 return
             family = struct.unpack_from("<H", raw)[0]
+            if family in (socket.AF_INET, socket.AF_INET6):
+                if family == socket.AF_INET and len(raw) >= 8:
+                    port = struct.unpack_from(">H", raw, 2)[0]
+                    ip = ipaddress.ip_address(raw[4:8])
+                elif family == socket.AF_INET6 and len(raw) >= 24:
+                    port = struct.unpack_from(">H", raw, 2)[0]
+                    ip = ipaddress.ip_address(raw[8:24])
+                else:
+                    self._send(notif_id, -1, -errno.EINVAL)
+                    return
+                why = self.inet_refusal(ip, port)
+                if why:
+                    self.refused.append(why)
+                    self._send(notif_id, -1, -errno.EACCES)
+                    return
+            elif family not in (socket.AF_UNIX, socket.AF_UNSPEC) and self.net_mode != "open":
+                self.refused.append(f"address family {family}")
+                self._send(notif_id, -1, -errno.EACCES)
+                return
             if family == socket.AF_UNIX:
                 name = raw[2:]
                 if not name or name[0] == 0:

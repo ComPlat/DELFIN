@@ -18,7 +18,10 @@ runs before the policy holds. Any failure refuses the command (exit 126)
 instead of running it unconfined.
 
     python -I landlock_exec.py --write DIR ... --hide PATH ... \
-        [--tmpdir DIR] [--allow-socket DIR ...] [--strict 1] -- /bin/bash -c CMD
+        [--tmpdir DIR] [--allow-socket DIR ...] [--strict 1] [--fs 0] \
+        [--net open|proxy|none] [--proxy-socket PATH] [--allow-tcp IP:PORT ...] \
+        [--deny-socket DIR ...] \
+        -- /bin/bash -c CMD
 
 Unix sockets are guarded too (``socket_guard``): the command reaches them
 only beneath the write roots, the private temp directory and the cluster's
@@ -211,78 +214,180 @@ def _exit_code(status: int) -> int:
     return 128 - code if code < 0 else code
 
 
+class _Forwarder:
+    """A loopback port inside the sandbox that leads to the egress proxy's
+    Unix socket. Runs in the supervising process, outside the filter."""
+
+    def __init__(self, unix_path: str):
+        import socket as _socket
+        self._socket = _socket
+        self.unix_path = unix_path
+        self.server = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(64)
+        self.port = self.server.getsockname()[1]
+
+    def start(self) -> None:
+        import threading
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self) -> None:
+        import threading
+        while True:
+            try:
+                conn, _ = self.server.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._pipe, args=(conn,), daemon=True).start()
+
+    def _pipe(self, conn) -> None:
+        import select as _select
+        up = self._socket.socket(self._socket.AF_UNIX, self._socket.SOCK_STREAM)
+        try:
+            up.connect(self.unix_path)
+            pair = [conn, up]
+            while True:
+                readable, _, _ = _select.select(pair, [], [], 600)
+                if not readable:
+                    return
+                for s in readable:
+                    data = s.recv(65536)
+                    if not data:
+                        return
+                    (up if s is conn else conn).sendall(data)
+        except OSError:
+            return
+        finally:
+            for s in (conn, up):
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+
+_PROXY_VARS = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
+_UNSET_VARS = ("no_proxy", "NO_PROXY", "all_proxy", "ALL_PROXY",
+               "SSH_AUTH_SOCK", "SSH_AGENT_PID", "TMUX", "TMUX_PANE", "STY",
+               "DBUS_SESSION_BUS_ADDRESS")
+
+
 def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
-                 command: list[str], strict: bool) -> int:
-    """Apply the filesystem policy and the socket guard, run the command.
+                 command: list[str], strict: bool, *, use_fs: bool = True,
+                 net_mode: str = "open", proxy_socket: str = "",
+                 allow_tcp: list[str] | None = None,
+                 deny_socket: list[str] | None = None) -> int:
+    """Apply the filesystem policy (unless ``use_fs`` is off, inside
+    bubblewrap), the socket guard and the network mode, and run the command.
 
     With user notification the command runs as a child under a filter that
     hands every connect() to the supervisor in this process. Without it,
-    Unix sockets are refused outright. Where no filter can be installed at
-    all, a strict run refuses the command."""
+    Unix sockets are refused outright and, with a restricted network, inet
+    sockets too; where no filter can be installed at all a strict run
+    refuses the command."""
+    allow_tcp = list(allow_tcp or [])
+    restricted = net_mode in ("proxy", "none")
     try:
         sg = _load_socket_guard()
-    except Exception as exc:
+    except Exception:
         sg = None
-        load_error = exc
-    if sg is not None and sg.available():
-        import socket as _socket
-        parent_end, child_end = _socket.socketpair()
-        pid = os.fork()
-        if pid == 0:                                # the command
-            parent_end.close()
-            try:
-                apply(write, hide)
-                listener = sg.install_filter()
-                _socket.send_fds(child_end, [b"L"], [listener])
-                os.close(listener)                  # the command must not hold it
-                child_end.recv(1)
-                child_end.close()
-                os.execvp(command[0], command)
-            except BaseException as exc:            # noqa: BLE001 - child must exit
-                try:
-                    os.write(2, f"refused: sandbox could not be applied ({exc}); "
-                                "the command was not run.\n".encode())
-                finally:
-                    os._exit(126)
-        child_end.close()
+    guard = sg is not None and sg.available()
+    forwarder = None
+    env_updates: dict[str, str] = {}
+    if net_mode == "proxy" and proxy_socket and guard:
         try:
-            _msg, fds, _flags, _addr = _socket.recv_fds(parent_end, 16, 1)
-        except OSError:
-            fds = []
-        if not fds:
-            _pid, status = os.waitpid(pid, 0)
-            return _exit_code(status)
-        listener = fds[0]
-        parent_end.send(b"k")
+            token_path = os.path.join(os.path.dirname(proxy_socket), "token")
+            with open(token_path, encoding="utf-8") as fh:
+                token = fh.read().strip()
+            forwarder = _Forwarder(proxy_socket)
+            url = f"http://delfin:{token}@127.0.0.1:{forwarder.port}"
+            env_updates = {k: url for k in _PROXY_VARS}
+            allow_tcp.append(f"127.0.0.1:{forwarder.port}")
+        except OSError as exc:
+            if strict:
+                print(f"refused: the sandbox's network proxy is not reachable "
+                      f"({exc}); the command was not run.", file=sys.stderr)
+                return 126
+            forwarder = None
+    if not guard:
+        if restricted and strict:
+            print("refused: this host cannot restrict the command's network "
+                  "(no seccomp user notification); the command was not run.",
+                  file=sys.stderr)
+            return 126
+        try:
+            if use_fs:
+                apply(write, hide)
+            elif _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+                raise _Refused("prctl(PR_SET_NO_NEW_PRIVS) failed")
+        except _Refused as exc:
+            print(f"refused: filesystem isolation could not be applied ({exc}); "
+                  "the command was not run.", file=sys.stderr)
+            return 126
+        try:
+            if sg is None or not sg.filter_supported():
+                raise OSError("no seccomp filter for this platform")
+            sg.install_block_unix_filter(block_inet_datagrams=False)
+        except Exception as exc:
+            if strict:
+                print("refused: the command could not be kept from the user's "
+                      f"sessions ({exc}); the command was not run.", file=sys.stderr)
+                return 126
+        for key in _UNSET_VARS:
+            os.environ.pop(key, None)
+        try:
+            os.execvp(command[0], command)
+        except OSError as exc:
+            print(f"landlock_exec: cannot run {command[0]}: {exc}", file=sys.stderr)
+            return 127
+        return 127
+
+    import socket as _socket
+    parent_end, child_end = _socket.socketpair()
+    pid = os.fork()
+    if pid == 0:                                    # the command
         parent_end.close()
         try:
-            _libc.prctl(4, 0, 0, 0, 0)              # PR_SET_DUMPABLE: not readable
-        except Exception:
-            pass
-        status = sg.Supervisor(listener, allowed).serve(pid)
+            if forwarder is not None:
+                forwarder.server.close()
+            if use_fs:
+                apply(write, hide)
+            elif _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+                raise _Refused("prctl(PR_SET_NO_NEW_PRIVS) failed")
+            listener = sg.install_filter(block_inet_datagrams=restricted)
+            _socket.send_fds(child_end, [b"L"], [listener])
+            os.close(listener)                      # the command must not hold it
+            child_end.recv(1)
+            child_end.close()
+            for key in _UNSET_VARS:
+                os.environ.pop(key, None)
+            os.environ.update(env_updates)
+            os.execvp(command[0], command)
+        except BaseException as exc:                # noqa: BLE001 - child must exit
+            try:
+                os.write(2, f"refused: sandbox could not be applied ({exc}); "
+                            "the command was not run.\n".encode())
+            finally:
+                os._exit(126)
+    child_end.close()
+    try:
+        _msg, fds, _flags, _addr = _socket.recv_fds(parent_end, 16, 1)
+    except OSError:
+        fds = []
+    if not fds:
+        _pid, status = os.waitpid(pid, 0)
         return _exit_code(status)
-    # No supervisor: Landlock, and no Unix socket at all.
+    listener = fds[0]
+    parent_end.send(b"k")
+    parent_end.close()
     try:
-        apply(write, hide)
-    except _Refused as exc:
-        print(f"refused: filesystem isolation could not be applied ({exc}); "
-              "the command was not run.", file=sys.stderr)
-        return 126
-    try:
-        if sg is None or not sg.filter_supported():
-            raise OSError("no seccomp filter for this platform")
-        sg.install_block_unix_filter()
-    except Exception as exc:
-        if strict:
-            print("refused: the command could not be kept from the user's "
-                  f"sessions ({exc}); the command was not run.", file=sys.stderr)
-            return 126
-    try:
-        os.execvp(command[0], command)
-    except OSError as exc:
-        print(f"landlock_exec: cannot run {command[0]}: {exc}", file=sys.stderr)
-        return 127
-    return 127
+        _libc.prctl(4, 0, 0, 0, 0)                  # PR_SET_DUMPABLE: not readable
+    except Exception:
+        pass
+    if forwarder is not None:
+        forwarder.start()
+    status = sg.Supervisor(listener, allowed, net_mode, allow_tcp,
+                           denied=deny_socket or ()).serve(pid)
+    return _exit_code(status)
 
 
 def main(argv: list[str]) -> int:
@@ -292,7 +397,12 @@ def main(argv: list[str]) -> int:
     write: list[str] = []
     hide: list[str] = []
     allow_socket: list[str] = []
+    allow_tcp: list[str] = []
+    deny_socket: list[str] = []
     strict = False
+    use_fs = True
+    net_mode = "open"
+    proxy_socket = ""
     tmpdir = ""
     i = 0
     while i < len(argv) and argv[i] != "--":
@@ -306,8 +416,18 @@ def main(argv: list[str]) -> int:
             tmpdir = value
         elif flag == "--allow-socket":
             allow_socket.append(value)
+        elif flag == "--allow-tcp":
+            allow_tcp.append(value)
+        elif flag == "--deny-socket":
+            deny_socket.append(value)
         elif flag == "--strict":
             strict = value == "1"
+        elif flag == "--fs":
+            use_fs = value != "0"
+        elif flag == "--net":
+            net_mode = value if value in ("open", "proxy", "none") else "none"
+        elif flag == "--proxy-socket":
+            proxy_socket = value
         else:
             print(f"landlock_exec: unknown option {flag}", file=sys.stderr)
             return 126
@@ -327,7 +447,9 @@ def main(argv: list[str]) -> int:
     except Exception:
         sg_defaults = []
     return _run_guarded(write, hide, sg_defaults + roots + allow_socket,
-                        command, strict)
+                        command, strict, use_fs=use_fs, net_mode=net_mode,
+                        proxy_socket=proxy_socket, allow_tcp=allow_tcp,
+                        deny_socket=deny_socket)
 
 
 if __name__ == "__main__":
