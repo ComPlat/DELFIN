@@ -365,6 +365,13 @@ def _outlived_their_start() -> list[dict]:
     return out
 
 
+# A dashboard session sends a heartbeat every minute; one silent for longer
+# than this has ended (the presence records only count a session as closed
+# after fifteen minutes, which is right for the session list and wrong for
+# "is anything still running").
+HEARTBEAT_FRESH_S = 180
+
+
 def status() -> dict:
     """What could be running on its own, without changing anything.
 
@@ -382,6 +389,7 @@ def status() -> dict:
          "title": str(r.get("title") or "")[:60],
          "seconds_since_heartbeat": int(now - float(r.get("updated_at") or 0))}
         for r in session_presence.open_sessions()]
+    here = _hostname()
     kept = []
     for path in sorted((delfin_dir / "kept_sessions").glob("*.json")):
         try:
@@ -389,9 +397,14 @@ def status() -> dict:
         except (OSError, ValueError):
             continue
         if isinstance(record, dict):
+            host = str(record.get("host") or "").split(".")[0]
+            pid = record.get("pid")
             kept.append({"session": record.get("session_name"),
-                         "host": record.get("host"),
-                         "since": record.get("started_at")})
+                         "host": host,
+                         "since": record.get("started_at"),
+                         "here": host == here,
+                         "alive_here": host == here and str(pid).isdigit()
+                         and os.path.exists(f"/proc/{pid}")})
     result["kept_sessions"] = kept
     try:
         result["active_schedules"] = [
@@ -405,18 +418,24 @@ def status() -> dict:
     for name in ("scheduler_daemon", "job_monitor", "bug_watcher"):
         pid_file = delfin_dir / f"{name}.pid"
         try:
-            daemons[name] = int(pid_file.read_text().strip() or 0)
+            pid = int(pid_file.read_text().strip() or 0)
         except (OSError, ValueError):
             continue
+        try:
+            running = f"delfin.agent.{name}".encode() in Path(
+                f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            running = False
+        daemons[name] = {"pid": pid, "alive_here": running}
     result["daemon_pid_files"] = daemons
-    here = []
+    processes = []
     for pid in _own_agent_processes(now + 1.0):
         try:
             cmdline = (Path(f"/proc/{pid}/cmdline").read_bytes()
                        .replace(b"\0", b" ").decode(errors="replace").strip())
         except OSError:
             continue
-        here.append({"pid": pid, "command": cmdline[:160]})
-    result["agent_processes_here"] = here
+        processes.append({"pid": pid, "command": cmdline[:160]})
+    result["agent_processes_here"] = processes
     result["outlived_their_start_here"] = _outlived_their_start()
     return result
