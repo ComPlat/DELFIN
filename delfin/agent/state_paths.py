@@ -612,6 +612,10 @@ USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     # The lifeline ledger: which detached processes a launcher ends when it
     # stops. A test's ledger in the real home would name the test's pids.
     ("delfin.agent.lifeline", "_DIR", "lifeline"),
+    # The emergency stop. Every DELFIN process of the user, on every
+    # machine, ends itself when this file names a time after its start: a
+    # test writing it into the real home would end the user's dashboards.
+    ("delfin.agent.stop_all", "_PATH", "stop_all.json"),
     # The benchmark's per-checkout run lock. It lived under tests/fixtures
     # first, where the checkout-leak guard would have caught it, and the
     # move to ~/.delfin brought it into this table's scope instead.

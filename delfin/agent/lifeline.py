@@ -17,6 +17,9 @@ How it holds:
 * A long-lived process -- a dashboard kernel, a daemon -- also watches the
   lifeline and ends itself once it is gone. That covers a root that was
   killed without a chance to clean up.
+* The same watch ends the process on an emergency stop (``stop_all``),
+  which reaches every machine sharing the home directory -- a lifeline
+  only reaches its own.
 """
 
 from __future__ import annotations
@@ -175,17 +178,27 @@ def end_children(lifeline: Optional[tuple[int, Optional[int]]] = None, *,
     return [pid for pid, _ticks in targets]
 
 
+def _stopped() -> bool:
+    """An emergency stop was given after this process started -- on this
+    machine or any other that shares the home directory."""
+    try:
+        from .stop_all import stopped_since_start
+        return stopped_since_start()
+    except Exception:
+        return False
+
+
 def watch(on_gone: Callable[[], None], *, poll_s: float = _POLL_S
           ) -> Optional[threading.Thread]:
     """Call ``on_gone`` once, from a daemon thread, when the lifeline this
-    process lives under is gone. None when it lives under none."""
+    process lives under is gone or an emergency stop was given
+    (``stop_all``). A process under no lifeline still obeys the stop."""
     lifeline = current()
-    if lifeline is None:
-        return None
-    pid, ticks = lifeline
 
     def _run() -> None:
-        while _alive(pid, ticks):
+        while not _stopped():
+            if lifeline is not None and not _alive(*lifeline):
+                break
             time.sleep(poll_s)
         try:
             on_gone()

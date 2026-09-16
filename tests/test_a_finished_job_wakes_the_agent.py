@@ -87,7 +87,9 @@ def test_only_an_idle_agent_with_an_empty_box_is_woken():
     assert "state.get('streaming')" in src
     assert "input_textarea.value" in src
     assert "marker='wake_notified'" in src
-    assert "_on_send(None)" in src
+    # It sends through the one door for turns nobody typed, which holds it
+    # after an emergency stop (test_an_emergency_stop_reaches_every_machine).
+    assert "_send_on_its_own(_prompt)" in src
     assert ".daemon = True" in src
 
 

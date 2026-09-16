@@ -423,6 +423,24 @@ def _user_state_resolvers():
 
 
 @pytest.fixture(autouse=True)
+def _emergency_stop_reaches_no_real_process(monkeypatch):
+    """The emergency stop ends this user's agent processes on the machine it
+    is given from, found by command line and environment. From a test that
+    would be the user's real dashboards: nothing may match here unless a
+    test names its own marker."""
+    try:
+        from delfin.agent import stop_all
+    except Exception:
+        return
+    import os
+    never = "delfin-test-marker-that-matches-no-process-%d" % os.getpid()
+    monkeypatch.setattr(stop_all, "_COMMAND_MARKERS", (never,))
+    monkeypatch.setattr(stop_all, "_DASHBOARD_ENV", (never + "=",))
+    monkeypatch.setattr(stop_all, "_STARTED_AT", None)
+    monkeypatch.setattr(stop_all, "_cache", None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
                         _user_state_resolvers):
     """Point every writable user-state sink into the test's own directory.
