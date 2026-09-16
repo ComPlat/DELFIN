@@ -2346,6 +2346,29 @@ def _is_secret_path(perms: Any, path: Path) -> bool:
         return True
 
 
+def _prompt_fingerprints(api_messages: list, base: int) -> dict:
+    """Short hashes of the system prompt and of the prefix before this turn.
+
+    Cheap (one sha1 over text already in memory) and never raises; an
+    empty dict when there is nothing to hash."""
+    try:
+        import hashlib
+        if not api_messages:
+            return {}
+        head = api_messages[0]
+        sys_text = str(head.get("content") or "") if head.get("role") in ("system", "developer") else ""
+        h_sys = hashlib.sha1(sys_text.encode("utf-8", "replace")).hexdigest()[:12]
+        h_pre = hashlib.sha1()
+        for msg in api_messages[:max(1, int(base or 0))]:
+            h_pre.update(str(msg.get("role") or "").encode())
+            h_pre.update(b"\0")
+            h_pre.update(str(msg.get("content") or "").encode("utf-8", "replace"))
+            h_pre.update(b"\1")
+        return {"system_hash": h_sys, "prefix_hash": h_pre.hexdigest()[:12]}
+    except Exception:
+        return {}
+
+
 def _is_git_push(cmd: str) -> bool:
     return bool(_GIT_PUSH_RE.search(_with_shell_bodies(cmd)))
 
@@ -19011,7 +19034,10 @@ class OpenAIClient(_BaseClient):
                         total_ms=int((_round_end - _round_t0) * 1000),
                         input_tokens=_round_in, cached_tokens=_round_cached,
                         output_tokens=_round_out, tool_calls=len(_tool_calls),
-                        finish_reason=str(finish_reason or ""))
+                        finish_reason=str(finish_reason or ""),
+                        **_prompt_fingerprints(
+                            api_messages,
+                            int(getattr(self, "_turn_rows_base", 0) or 0)))
                 except Exception:
                     pass
 
