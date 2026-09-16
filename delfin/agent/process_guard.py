@@ -78,6 +78,12 @@ def protect(kind: str) -> bool:
             ok = _libc().prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) == 0
         except Exception:
             ok = False
+    elif sys.platform == "darwin":
+        # No process of the user may attach a debugger (PT_DENY_ATTACH).
+        try:
+            ok = _libc().ptrace(31, 0, 0, 0) == 0
+        except Exception:
+            ok = False
     try:
         from .lifeline import ENV_PID, ENV_TICKS, _start_ticks
         record = {

@@ -107,16 +107,33 @@ class EgressProxy:
         os.chmod(self.socket_path, 0o600)
         self._server.listen(64)
         self._closed = False
-        threading.Thread(target=self._accept_loop, name="delfin-egress-proxy",
-                         daemon=True).start()
+        self.tcp_port = 0
+        self._tcp = None
+        threading.Thread(target=self._accept_loop, args=(self._server,),
+                         name="delfin-egress-proxy", daemon=True).start()
+
+    def ensure_tcp(self) -> int:
+        """A loopback port as well, for a sandbox without a forwarder of its
+        own (macOS Seatbelt). The token is required there as everywhere."""
+        if self._tcp is None:
+            self._tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._tcp.bind(("127.0.0.1", 0))
+            self._tcp.listen(64)
+            self.tcp_port = self._tcp.getsockname()[1]
+            threading.Thread(target=self._accept_loop, args=(self._tcp,),
+                             name="delfin-egress-proxy-tcp", daemon=True).start()
+        return self.tcp_port
 
     # -- lifecycle ----------------------------------------------------------
     def close(self) -> None:
         self._closed = True
-        try:
-            self._server.close()
-        except OSError:
-            pass
+        for srv in (self._server, self._tcp):
+            if srv is None:
+                continue
+            try:
+                srv.close()
+            except OSError:
+                pass
         for p in (self.socket_path, os.path.join(self._dir, "token")):
             try:
                 os.unlink(p)
@@ -127,10 +144,10 @@ class EgressProxy:
         except OSError:
             pass
 
-    def _accept_loop(self) -> None:
+    def _accept_loop(self, server) -> None:
         while not self._closed:
             try:
-                conn, _ = self._server.accept()
+                conn, _ = server.accept()
             except OSError:
                 return
             threading.Thread(target=self._serve, args=(conn,), daemon=True).start()

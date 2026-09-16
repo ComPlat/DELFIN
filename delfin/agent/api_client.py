@@ -17336,6 +17336,15 @@ def _guard_without_cage(argv: list[str]) -> list[str]:
     network otherwise as they are."""
     if not argv or argv[0] != "/bin/bash":
         return argv                 # already guarded, or a refusal
+    if sys.platform == "darwin":
+        try:
+            from . import seatbelt as _sb
+            if _sb.available():
+                return _sb.argv(argv, _sb.profile(restrict_files=False,
+                                                  deny_sockets=_sb.session_doors()))
+        except Exception:
+            pass
+        return argv
     try:
         from . import landlock_exec as _ll
         from . import socket_guard as _sg
@@ -17348,6 +17357,45 @@ def _guard_without_cage(argv: list[str]) -> list[str]:
         return wrapped + ["--"] + argv
     except Exception:
         return argv
+
+
+def _seatbelt_functional() -> bool:
+    """macOS: Seatbelt runs a profile here."""
+    try:
+        from . import seatbelt as _sb
+        return _sb.available()
+    except Exception:
+        return False
+
+
+def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
+    """``plain`` under a Seatbelt profile (macOS): writes only in the
+    workspace roots and a private temp directory, the credential locations
+    unreadable, Unix sockets only in the workspace, and with a restricted
+    network TCP only to the egress proxy's loopback port."""
+    from . import egress_proxy as _ep
+    from . import seatbelt as _sb
+    try:
+        roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
+    except Exception:
+        roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
+    roots += [str(Path(p).resolve()) for p in extra_write]
+    tmp = _private_tmp_dir()
+    mode = _ep.network_mode()
+    env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"]
+    port = 0
+    if mode == "proxy":
+        try:
+            proxy = _ep.get_proxy()
+            port = proxy.ensure_tcp()
+            url = f"http://delfin:{proxy.token}@127.0.0.1:{port}"
+            env_prefix += [f"{k}={url}" for k in ("http_proxy", "https_proxy",
+                                                   "HTTP_PROXY", "HTTPS_PROXY")]
+        except Exception:
+            mode = "none"
+    prof = _sb.profile(write_roots=roots + [tmp], hide=_home_secret_paths(),
+                       allow_sockets=roots + [tmp], net_mode=mode, proxy_port=port)
+    return env_prefix + _sb.argv(plain, prof)
 
 
 def _landlock_argv(plain: list[str], perms, extra_write=(), *,
@@ -17728,6 +17776,8 @@ def _bash_isolation_argv(
         elif _landlock_functional():
             _announce_isolation_via_landlock("locked session")
             return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
+        elif _seatbelt_functional():
+            return _seatbelt_argv(plain, perms, extra_write)
         else:
             # Say it. A locked scope promises the agent cannot leave one
             # folder; with no working bwrap that promise rests entirely on
@@ -17742,7 +17792,7 @@ def _bash_isolation_argv(
             # parser of command text is no containment.
             return _refusal_argv(
                 "this session is locked to its folder, and neither "
-                "bubblewrap nor Landlock can confine a command on this host")
+                "bubblewrap, Landlock nor Seatbelt can confine a command on this host")
     elif mode == "auto":
         perm_mode = str(getattr(perms, "mode", "") or "").strip()
         if perm_mode == "bypassPermissions" and _bwrap_functional():
@@ -17751,6 +17801,8 @@ def _bash_isolation_argv(
         elif perm_mode == "bypassPermissions" and _landlock_functional():
             _announce_isolation_via_landlock("unattended (bypass) run")
             return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
+        elif perm_mode == "bypassPermissions" and _seatbelt_functional():
+            return _seatbelt_argv(plain, perms, extra_write)
         elif perm_mode == "bypassPermissions":
             _announce_bypass_without_isolation()
             return _in_process_cage(plain, run_cwd)
@@ -17762,9 +17814,11 @@ def _bash_isolation_argv(
         if _landlock_functional():
             _announce_isolation_via_landlock("forced isolation")
             return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
+        if _seatbelt_functional():
+            return _seatbelt_argv(plain, perms, extra_write)
         return _refusal_argv(
             "filesystem isolation is switched on, and neither bubblewrap "
-            "nor Landlock can provide it on this host")
+            "nor Landlock nor Seatbelt can provide it on this host")
     if mode != "bwrap":
         return _in_process_cage(plain, run_cwd)
 
