@@ -541,10 +541,60 @@ def _record_deadline(rec: dict) -> float:
     return started + min(timeout_s, float(_DEFAULT_BG_TIMEOUT_S))
 
 
+_MACHINE: Optional[dict] = None
+
+
+def this_machine() -> dict:
+    """``{"host": ..., "boot_id": ...}`` of the machine this process runs on.
+
+    Login nodes share the home directory, and with it every registry file.
+    A pid means something only on the machine, and in the boot, that
+    issued it."""
+    global _MACHINE
+    if _MACHINE is None:
+        import socket
+        try:
+            host = (socket.gethostname() or "").strip()
+        except Exception:
+            host = ""
+        try:
+            boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        except Exception:
+            boot = ""
+        _MACHINE = {"host": host, "boot_id": boot}
+    return dict(_MACHINE)
+
+
+def record_runs_elsewhere(rec: dict) -> bool:
+    """Whether a record's process runs on ANOTHER machine.
+
+    Such a process cannot be looked at or signalled from here: its pid
+    names nothing, or a stranger's process, on this machine. A record
+    without a host predates this and is judged as local."""
+    host = str((rec or {}).get("host") or "")
+    return bool(host) and host != this_machine()["host"]
+
+
+def _record_from_an_earlier_boot(rec: dict) -> bool:
+    """Same machine, but it has restarted since: the process is gone."""
+    boot = str((rec or {}).get("boot_id") or "")
+    here = this_machine()["boot_id"]
+    return (bool(boot) and bool(here) and boot != here
+            and not record_runs_elsewhere(rec))
+
+
 def _record_alive(rec: dict) -> bool:
-    """Is the process behind this record still running?"""
+    """Is the process behind this record still running?
+
+    For a job on another login node this cannot be checked; it counts as
+    running until its wall-clock cap, so nothing here declares it finished
+    or deletes the directory it works in."""
     try:
         if (rec or {}).get("finished_at") is not None:
+            return False
+        if record_runs_elsewhere(rec):
+            return time.time() < _record_deadline(rec)
+        if _record_from_an_earlier_boot(rec):
             return False
         return _pid_alive(int((rec or {}).get("pid") or 0),
                           (rec or {}).get("proc_start_ticks"))
@@ -568,6 +618,8 @@ def _record_holds_the_node(rec: dict, live_pgids: Optional[set] = None,
     optimisation for callers judging many records; ``None`` falls back to
     a per-record probe.
     """
+    if record_runs_elsewhere(rec) or _record_from_an_earlier_boot(rec):
+        return False            # another machine's cores, or none at all
     if _record_alive(rec):
         return True
     pid = int((rec or {}).get("pid") or 0)
@@ -615,6 +667,10 @@ def _enforce_deadline(rec: dict, now: float) -> bool:
     the record was changed. Best-effort — a process we may not signal (a
     different user's recycled pid) is simply left alone.
     """
+    if record_runs_elsewhere(rec):
+        # Never signal a pid from another machine: here it is nothing, or a
+        # stranger's process that happens to carry the same number.
+        return False
     if not _record_alive(rec):
         return False
     if now < _record_deadline(rec):
@@ -897,8 +953,13 @@ class ReattachedJob:
         self.proc = _ReattachedProc(int(record.get("pid") or 0), self.exit_code)
 
     def poll(self) -> Optional[int]:
+        if self.finished_at is None and record_runs_elsewhere(self._record):
+            # Runs on another login node: reported as running until its
+            # wall-clock cap, never finished or signalled from here.
+            return None if time.time() < self.deadline_at else _RC_UNKNOWN
         if self.finished_at is None:
-            if _pid_alive(self.proc.pid, self._start_ticks):
+            if _pid_alive(self.proc.pid, self._start_ticks) and \
+                    not _record_from_an_earlier_boot(self._record):
                 # Re-arm the wall-clock bound the restart lost: the watchdog
                 # that would have enforced it died with its process, and the
                 # setsid child did not.
@@ -1101,6 +1162,7 @@ class _Registry:
             "job_id": jid,
             "pid": proc.pid,
             "proc_start_ticks": _proc_start_ticks(proc.pid),
+            **this_machine(),
             "command": command,
             "description": description,
             "cwd": cwd,
@@ -1226,6 +1288,12 @@ class _Registry:
         job = self.get(job_id)
         if job is None:
             return False, f"unknown job_id: {job_id}"
+        rec = getattr(job, "_record", None)
+        if isinstance(rec, dict) and record_runs_elsewhere(rec):
+            return False, (
+                f"job {job_id} runs on {rec.get('host')}, not on this machine "
+                f"({this_machine()['host']}); end it from a session there. "
+                "Its pid means nothing here.")
         if job.poll() is not None:
             return True, f"job already finished (rc={job.proc.returncode})"
         try:
@@ -1313,6 +1381,11 @@ def drain_finished_events(workspace: str | Path) -> list[dict]:
             changed = _prune_old_records(jobs, now)
             for jid, rec in jobs.items():
                 if rec.get("acknowledged"):
+                    continue
+                if record_runs_elsewhere(rec):
+                    # Its own machine reports its end; from here it could
+                    # only be guessed, and a guess would announce a running
+                    # calculation as finished.
                     continue
                 claimed_at = float(rec.get("claimed_at") or 0.0)
                 if claimed_at and (now - claimed_at) < _EVENT_CLAIM_GRACE_S:
