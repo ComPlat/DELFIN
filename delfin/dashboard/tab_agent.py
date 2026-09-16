@@ -6286,6 +6286,22 @@ def create_tab(ctx):
             state["_on_its_own"] = False
         return True
 
+
+    def _session_user_text() -> str:
+        """Everything the user -- or another session -- wrote in this chat.
+
+        A path named there is a file the task is about, often one still to
+        be created ("Schreibe tests/test_delfin_doctor.py"). The citation
+        check flagged it as invented and forced a correction round, twice
+        per session on GLM (driven 2026-09-16)."""
+        try:
+            return "\n".join(
+                str(m.get("content") or "")
+                for m in (state.get("chat_messages") or [])
+                if isinstance(m, dict) and m.get("role") == "user")[-50000:]
+        except Exception:
+            return ""
+
     def _deliver_session_messages() -> None:
         """Hand this session the messages other sessions left for it.
 
@@ -8597,10 +8613,22 @@ def create_tab(ctx):
                         )
                     if _san.glitch_chars:
                         _bits.append(f"removed {_san.glitch_chars} glitch characters")
+                    # Name the model that produced it. The note blamed
+                    # gpt-5.x and advised raising the effort on a GLM turn
+                    # whose effort cannot go higher (driven 2026-09-16).
+                    _mdl = ""
+                    try:
+                        _mdl = str(_engine_model_name(state.get("engine")) or "")
+                    except Exception:
+                        _mdl = ""
+                    _cause = ""
+                    if _san.leaked_tools and "gpt" in _mdl.lower():
+                        _cause = (" Cause: gpt-5.x via the KIT endpoint leaks "
+                                  "harmony tool syntax as text; raising the "
+                                  "effort or resending helps.")
                     state["_sanitize_note"] = (
-                        "🧹 Cleaned model output (" + "; ".join(_bits) + "). "
-                        "Cause: gpt-5.x via the KIT endpoint leaks harmony tool "
-                        "syntax as text. Tip: raise effort or resend."
+                        "🧹 Cleaned the output of " + (_mdl or "the model")
+                        + " (" + "; ".join(_bits) + ")." + _cause
                     )
             except Exception:
                 pass
@@ -17149,6 +17177,7 @@ def create_tab(ctx):
                                 repo_root=getattr(engine, "repo_dir", None),
                                 observed_files=getattr(
                                     engine, "_last_observed_files", None),
+                                named_in=_session_user_text(),
                             )
                         except Exception:
                             _cflags = []
@@ -17210,6 +17239,7 @@ def create_tab(ctx):
                                         observed_files=getattr(
                                             engine, "_last_observed_files",
                                             None),
+                                        named_in=_session_user_text(),
                                     ))
                         if _vflags:
                             _kws = ", ".join(
