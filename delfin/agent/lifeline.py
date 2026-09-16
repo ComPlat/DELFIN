@@ -223,6 +223,11 @@ def guard_daemon() -> Optional[threading.Thread]:
     is that terminal's session leader -- unless the daemon leads a session
     of its own, which is no terminal to follow.
     """
+    try:
+        from . import process_guard as _process_guard
+        _process_guard.protect("daemon")
+    except Exception:
+        pass
     if current() is None:
         sid = os.getsid(0)
         if sid != os.getpid():

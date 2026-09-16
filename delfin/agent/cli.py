@@ -2866,6 +2866,9 @@ def main(argv: list[str] | None = None) -> int:
         # (os._exit skips atexit, so that path stops them first).
         import atexit as _atexit
         _atexit.register(_stop_own_background_shells)
+        # This process holds the model's key: no command it runs may read it.
+        from . import process_guard as _process_guard
+        _process_guard.protect("terminal agent")
 
         def _end_with_everything() -> None:
             _stop_own_background_shells()
