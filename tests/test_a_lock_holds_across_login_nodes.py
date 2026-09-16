@@ -51,10 +51,41 @@ def test_without_a_working_flock_the_lease_loses_no_update(tmp_path):
     assert got == want
 
 
-def test_the_control_without_the_lease_loses_updates(tmp_path):
-    """The same run on the old lock: evidence that the test can see it."""
-    got, want = _count(tmp_path, use_lease=False)
-    assert got < want
+def _meet(path, barrier, use_lease):
+    BJ.fcntl.flock = lambda *a, **k: None
+    if not use_lease:
+        BJ._take_lease = lambda p, d: None
+        BJ._note_lock_timeout = lambda p: None
+    with BJ.cross_process_lock(path):
+        n = json.loads(path.read_text())["n"]
+        try:
+            barrier.wait(timeout=3)     # both inside at once, if the lock lets them
+        except Exception:
+            pass
+        path.write_text(json.dumps({"n": n + 1}))
+
+
+def _meeting(tmp_path, use_lease):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"n": 0}))
+    ctx = multiprocessing.get_context("fork")
+    barrier = ctx.Barrier(2)
+    ps = [ctx.Process(target=_meet, args=(path, barrier, use_lease)) for _ in range(2)]
+    for p in ps:
+        p.start()
+    for p in ps:
+        p.join(60)
+    return json.loads(path.read_text())["n"]
+
+
+def test_the_control_without_the_lease_loses_an_update(tmp_path):
+    """The old lock with flock gone: two writers meet inside and one update
+    is lost -- every time, not by the luck of the scheduler."""
+    assert _meeting(tmp_path, use_lease=False) == 1
+
+
+def test_with_the_lease_the_second_writer_waits(tmp_path):
+    assert _meeting(tmp_path, use_lease=True) == 2
 
 
 def test_a_lease_left_by_a_dead_process_here_is_broken_at_once(tmp_path):
