@@ -1889,6 +1889,13 @@ def _stop_what_this_process_started() -> None:
         pass
 
 
+def _kernel_lost_its_lifeline() -> None:
+    """delfin-voila is gone -- stopped, killed, its terminal closed -- and
+    this kernel was left behind: stop what it started, then end."""
+    _stop_what_this_process_started()
+    os._exit(0)
+
+
 def _register_process_exit_cleanup() -> None:
     global _PROCESS_CLEANUP_REGISTERED
     if _PROCESS_CLEANUP_REGISTERED:
@@ -1896,6 +1903,11 @@ def _register_process_exit_cleanup() -> None:
     _PROCESS_CLEANUP_REGISTERED = True
     import atexit
     atexit.register(_stop_what_this_process_started)
+    try:
+        from delfin.agent import lifeline as _lifeline
+        _lifeline.watch(_kernel_lost_its_lifeline)
+    except Exception:
+        pass
 
 
 # Several agent sessions share one page and only one of them is shown. The
@@ -10895,19 +10907,24 @@ def create_tab(ctx):
                     _append_system_message("Daemon already running. `/watch status` for details.")
                 else:
                     import subprocess as _sp, sys as _sys
+                    from delfin.agent import lifeline as _lifeline
                     _log = Path.home() / ".delfin" / "job_monitor.log"
                     _log.parent.mkdir(parents=True, exist_ok=True)
                     with _log.open("a") as _lf:
-                        _sp.Popen(
+                        _daemon = _sp.Popen(
                             [_sys.executable, "-m", "delfin.agent.job_monitor"],
                             stdout=_lf, stderr=_lf,
-                            start_new_session=True,  # survives dashboard close
+                            # Ends with delfin-voila's terminal (lifeline).
+                            start_new_session=True,
+                            env=_lifeline.child_env(),
                         )
+                    _lifeline.record_child(
+                        int(getattr(_daemon, "pid", 0) or 0), "job_monitor")
                     _append_system_message(
                         f"🚀 Job-monitor daemon started (interval "
                         f"{cfg['interval_s']}s, auto_diagnose="
-                        f"{cfg['auto_diagnose']}). Keeps running after the "
-                        f"dashboard closes; log: `{_log}`."
+                        f"{cfg['auto_diagnose']}). It ends when delfin-voila "
+                        f"stops; log: `{_log}`."
                     )
             elif sub == "stop":
                 st = _jm.monitor_status()

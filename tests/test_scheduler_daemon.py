@@ -396,6 +396,8 @@ def test_cli_scheduler_start_spawns_detached_daemon(
     assert rc == 0
     assert spawned["cmd"][1:] == ["-m", "delfin.agent.scheduler_daemon"]
     assert spawned["kw"]["start_new_session"] is True
+    # Detached from Ctrl+C, not from the terminal: it carries the lifeline.
+    assert spawned["kw"]["env"].get("DELFIN_LIFELINE_PID")
     assert "started" in capsys.readouterr().out
 
 

@@ -413,6 +413,13 @@ class MCPServer:
                     # stop() still terminates it explicitly.
                     start_new_session=True,
                 )
+                # A group of its own is out of reach of the terminal's
+                # Ctrl+C, so the lifeline ledger ends it with delfin-voila.
+                try:
+                    from . import lifeline as _lifeline
+                    _lifeline.record_child(self.proc.pid, "mcp")
+                except Exception:
+                    pass
                 self._closed_reason = ""
                 self._reader_proc = None
                 # A restart must not be able to report the PREVIOUS

@@ -496,6 +496,9 @@ def run_loop(
 
 
 def main() -> int:
+    # Ends with the terminal or dashboard that started it (lifeline).
+    from . import lifeline as _lifeline
+    _lifeline.guard_daemon()
     cfg = watcher_settings()
     if not cfg["enabled"]:
         print("bug_watcher is disabled (agent.bug_watcher.enabled=false). "

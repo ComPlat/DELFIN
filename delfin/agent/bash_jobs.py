@@ -1044,6 +1044,13 @@ class _Registry:
             )
             self._jobs[jid] = job
             job.session_id = session_id
+        # Its own session keeps a restart from taking it down; the lifeline
+        # ledger is what still ends it with delfin-voila's terminal.
+        try:
+            from . import lifeline as _lifeline
+            _lifeline.record_child(proc.pid, "shell")
+        except Exception:
+            pass
 
         # Persist the job BEFORE the watchdog starts, so its exit update can
         # never race the initial write. After a restart this record is the

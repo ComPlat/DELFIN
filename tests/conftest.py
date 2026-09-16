@@ -123,6 +123,18 @@ def _unexpected_under_a_generated_root() -> frozenset:
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _the_suite_lives_under_no_lifeline():
+    """A suite started from a delfin-voila terminal inherits its lifeline;
+    a test that then built a dashboard tab would put a watcher on that
+    process, and end the test run when the dashboard stops."""
+    import os
+    names = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
+    saved = {name: os.environ.pop(name) for name in names if name in os.environ}
+    yield
+    os.environ.update(saved)
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _the_suite_opens_no_browser():
     """No test reaches the developer's browser.
 
