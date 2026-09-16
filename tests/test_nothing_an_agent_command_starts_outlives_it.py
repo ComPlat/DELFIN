@@ -213,8 +213,12 @@ def test_where_the_cage_cannot_be_built_it_is_said(tmp_path, monkeypatch):
     monkeypatch.delenv(A._PROCESS_CAGE_ENV, raising=False)
     monkeypatch.setattr(A, "_record_security_event",
                         lambda *a, **k: events.append(a))
-    assert A._bash_isolation_argv("echo hi", tmp_path, _perms(tmp_path),
-                                  mode="off") == ["/bin/bash", "-c", "echo hi"]
+    argv = A._bash_isolation_argv("echo hi", tmp_path, _perms(tmp_path), mode="off")
+    # The command still runs as written; where the kernel has seccomp user
+    # notification the socket guard stands in for the cage's door masks.
+    assert argv[-3:] == ["/bin/bash", "-c", "echo hi"]
+    from delfin.agent import socket_guard
+    assert (argv[2].endswith("landlock_exec.py")) == socket_guard.available()
     assert events and "process cage is NOT active" in events[0][2]
 
 

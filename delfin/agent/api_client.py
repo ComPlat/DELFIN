@@ -17280,6 +17280,76 @@ def _home_secret_paths() -> list[str]:
     return out
 
 
+_SLURM_CONTROLLERS: Optional[list[str]] = None
+
+
+def _sandbox_network_args() -> tuple[list[str], str]:
+    """Helper flags for an isolated command's network, and the directory of
+    the egress proxy's socket ("" without one).
+
+    ``agent.sandbox_network.mode``: "proxy" (default) -- the command reaches
+    the network only through the egress proxy, which lets through the
+    allowed domains, plus the SLURM controller so job submission works;
+    "none" -- no network; "open" -- unrestricted, cloud metadata still
+    refused."""
+    global _SLURM_CONTROLLERS
+    from . import egress_proxy as _ep
+    mode = _ep.network_mode()
+    args = ["--net", mode]
+    proxy_dir = ""
+    if mode == "proxy":
+        try:
+            proxy = _ep.get_proxy()
+            args += ["--proxy-socket", proxy.socket_path]
+            proxy_dir = os.path.dirname(proxy.socket_path)
+        except Exception:
+            args = ["--net", "none"]
+        if _SLURM_CONTROLLERS is None:
+            try:
+                _SLURM_CONTROLLERS = _ep.slurm_controllers()
+            except Exception:
+                _SLURM_CONTROLLERS = []
+        for hp in _SLURM_CONTROLLERS:
+            args += ["--allow-tcp", hp]
+    return args, proxy_dir
+
+
+def _session_doors() -> list[str]:
+    """The sockets through which a command would reach the user's sessions:
+    the same set the bubblewrap process cage masks."""
+    uid = os.getuid()
+    home = Path.home()
+    doors = [f"/run/user/{uid}", "/run/screen", str(home / ".screen"),
+             str(home / ".ssh"),
+             os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", f"tmux-{uid}"),
+             "/var/run/docker.sock", "/run/docker.sock", "/tmp/.X11-unix"]
+    agent = os.environ.get("SSH_AUTH_SOCK", "")
+    if agent and os.path.basename(os.path.dirname(agent)).startswith("ssh-"):
+        doors.append(os.path.dirname(agent))
+    return doors
+
+
+def _guard_without_cage(argv: list[str]) -> list[str]:
+    """On a host without the bubblewrap cage, an attended command still
+    cannot reach the user's terminal, SSH agent or session sockets, nor the
+    cloud metadata address: the socket guard, with the filesystem and the
+    network otherwise as they are."""
+    if not argv or argv[0] != "/bin/bash":
+        return argv                 # already guarded, or a refusal
+    try:
+        from . import landlock_exec as _ll
+        from . import socket_guard as _sg
+        if not _sg.available():
+            return argv
+        wrapped = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+                   "--fs", "0", "--net", "open", "--allow-socket", "/"]
+        for door in _session_doors():
+            wrapped += ["--deny-socket", door]
+        return wrapped + ["--"] + argv
+    except Exception:
+        return argv
+
+
 def _landlock_argv(plain: list[str], perms, extra_write=(), *,
                    strict: bool = False) -> list[str]:
     """``plain`` under Landlock: writes only in the workspace roots, a
@@ -17299,6 +17369,8 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
     # strict: where not even a filter can keep the command from the user's
     # sessions (tmux, the SSH agent, systemd), a locked or forced isolation
     # refuses the command; an unattended run proceeds on Landlock alone.
+    net_args, _proxy_dir = _sandbox_network_args()
+    argv += net_args
     argv += ["--tmpdir", _private_tmp_dir(), "--strict", "1" if strict else "0", "--"]
     return argv + plain
 
@@ -17404,7 +17476,8 @@ def _announce_isolation_via_landlock(what: str) -> None:
             f"filesystem isolation active for this {what} through Landlock "
             "(bubblewrap cannot run here): writes only in the workspace, "
             "credential folders unreadable, no connection to the user's "
-            "terminal, SSH agent or session sockets", blocked=False)
+            "terminal, SSH agent or session sockets, network only through "
+            "the egress proxy (agent.sandbox_network)", blocked=False)
     except Exception:
         pass
 
@@ -17558,9 +17631,13 @@ def _process_cage_options() -> list[str]:
 
 
 def _in_process_cage(argv: list[str], run_cwd) -> list[str]:
-    """``argv`` inside the process cage, with the filesystem as it is."""
+    """``argv`` inside the process cage, with the filesystem as it is. Where
+    bwrap cannot build the cage (not where the terminal turned it off), the
+    socket guard keeps the session doors shut instead."""
     if not _process_cage_enabled():
-        return argv
+        if os.environ.get(_PROCESS_CAGE_ENV, "").strip().lower() == "off":
+            return argv
+        return _guard_without_cage(argv)
     return ["bwrap", "--dev-bind", "/", "/", "--proc", "/proc",
             *_process_cage_options(),
             "--chdir", str(Path(run_cwd).resolve()), *argv]
@@ -17725,6 +17802,33 @@ def _bash_isolation_argv(
     args += ["--chdir", str(Path(run_cwd).resolve())]
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])
+    # The network: the socket guard inside the namespace holds the command
+    # to the egress proxy (and the SLURM controller); where the kernel
+    # cannot hand connects to it, a restricted network becomes no network.
+    try:
+        from . import landlock_exec as _ll
+        from . import socket_guard as _sg
+        net_args, proxy_dir = _sandbox_network_args()
+        if _sg.available():
+            if proxy_dir:
+                args += ["--ro-bind", proxy_dir, proxy_dir]
+            # The helper and its interpreter must be visible inside: a
+            # checkout or an environment under /tmp is behind the fresh
+            # tmpfs, and a helper that cannot start refuses nothing.
+            for needed in {str(Path(_ll.__file__).resolve().parent),
+                           str(Path(sys.executable).resolve().parent.parent),
+                           str(Path(sys.prefix).resolve())}:
+                if needed.startswith("/tmp/") or needed == "/tmp":
+                    args += ["--ro-bind", needed, needed]
+            inner = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+                     "--fs", "0", *net_args, "--strict", "1"]
+            for r in roots + [str(Path(p).resolve()) for p in extra_write] + ["/tmp"]:
+                inner += ["--allow-socket", r]
+            return args + inner + ["--"] + plain
+        if net_args[1] != "open":
+            args += ["--unshare-net"]
+    except Exception:
+        args += ["--unshare-net"]
     return args + plain
 
 
