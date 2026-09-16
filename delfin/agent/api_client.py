@@ -19562,8 +19562,8 @@ class OpenAIClient(_BaseClient):
                     api_messages.append({
                         "role": "user",
                         "content": (
-                            "[Harness check -- not a message from the user] "
-                            "Auto-verification of the file(s) you just edited "
+                            "[Verify] Automatic check, not a message from the "
+                            "user. Auto-verification of the file(s) you just edited "
                             "found a problem:\n\n"
                             f"{_problems}\n\n"
                             "Fix it if your edits caused it, then finish. If "
