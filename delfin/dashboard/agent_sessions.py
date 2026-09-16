@@ -278,11 +278,22 @@ def _display_path(path: str, limit: int = 34) -> str:
     return "…/" + "/".join(parts[-2:]) if len(parts) > 2 else text
 
 
+# A message another session left arrives through the input box like a typed
+# one. It is not the user's words: it must not name the session (the title
+# then wrapped itself into every later message: "[Message from the session
+# "[Message from ..." -- driven 2026-09-16), and it must not pin its language.
+_DELIVERED_PREFIX = "[Message from the session"
+
+
+def is_delivered_message(text: str) -> bool:
+    return str(text or "").lstrip().startswith(_DELIVERED_PREFIX)
+
+
 def _session_title(state: dict) -> str:
     for message in state.get("chat_messages") or []:
         if isinstance(message, dict) and message.get("role") == "user":
             text = " ".join(str(message.get("content") or "").split())
-            if text:
+            if text and not is_delivered_message(text):
                 return text[:38] + ("…" if len(text) > 38 else "")
     return "New session"
 
