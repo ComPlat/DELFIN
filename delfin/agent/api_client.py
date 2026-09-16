@@ -17280,7 +17280,8 @@ def _home_secret_paths() -> list[str]:
     return out
 
 
-def _landlock_argv(plain: list[str], perms, extra_write=()) -> list[str]:
+def _landlock_argv(plain: list[str], perms, extra_write=(), *,
+                   strict: bool = False) -> list[str]:
     """``plain`` under Landlock: writes only in the workspace roots, a
     private temp directory and /dev; the home credential locations
     unreadable. The helper refuses to run the command if the policy
@@ -17295,7 +17296,10 @@ def _landlock_argv(plain: list[str], perms, extra_write=()) -> list[str]:
         argv += ["--write", r]
     for h in _home_secret_paths():
         argv += ["--hide", h]
-    argv += ["--tmpdir", _private_tmp_dir(), "--"]
+    # strict: where not even a filter can keep the command from the user's
+    # sessions (tmux, the SSH agent, systemd), a locked or forced isolation
+    # refuses the command; an unattended run proceeds on Landlock alone.
+    argv += ["--tmpdir", _private_tmp_dir(), "--strict", "1" if strict else "0", "--"]
     return argv + plain
 
 
@@ -17399,7 +17403,8 @@ def _announce_isolation_via_landlock(what: str) -> None:
             "isolation", "bash",
             f"filesystem isolation active for this {what} through Landlock "
             "(bubblewrap cannot run here): writes only in the workspace, "
-            "credential folders unreadable", blocked=False)
+            "credential folders unreadable, no connection to the user's "
+            "terminal, SSH agent or session sockets", blocked=False)
     except Exception:
         pass
 
@@ -17645,7 +17650,7 @@ def _bash_isolation_argv(
             mode = "bwrap"
         elif _landlock_functional():
             _announce_isolation_via_landlock("locked session")
-            return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
         else:
             # Say it. A locked scope promises the agent cannot leave one
             # folder; with no working bwrap that promise rests entirely on
@@ -17679,7 +17684,7 @@ def _bash_isolation_argv(
         # without it the command is refused rather than run without.
         if _landlock_functional():
             _announce_isolation_via_landlock("forced isolation")
-            return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
         return _refusal_argv(
             "filesystem isolation is switched on, and neither bubblewrap "
             "nor Landlock can provide it on this host")

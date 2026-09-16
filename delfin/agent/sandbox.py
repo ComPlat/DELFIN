@@ -304,7 +304,7 @@ def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str) -> list[str]:
                 "--write", str(Path(repo_dir).resolve())]
         for h in _home_secret_paths():
             argv += ["--hide", h]
-        return argv + ["--tmpdir", _private_tmp_dir(), "--"] + base
+        return argv + ["--tmpdir", _private_tmp_dir(), "--strict", "0", "--"] + base
     except Exception:
         return base
 
