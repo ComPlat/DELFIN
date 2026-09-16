@@ -15813,6 +15813,7 @@ class _DocToolExecutor:
                     prompt=str(arguments.get("prompt", "")),
                     reason=str(arguments.get("reason", "")),
                     fire_immediately=bool(arguments.get("fire_immediately", False)),
+                    workspace=_ws,
                     session_id=_sid,
                 )
                 return json.dumps({
@@ -15821,7 +15822,12 @@ class _DocToolExecutor:
                     "next_fire_at": ent.next_fire_at,
                 })
             if name == "cron_list":
-                entries = sch.list_entries()
+                # A session sees its own schedule. Every session's prompts
+                # were listed, and any session could delete any entry by
+                # its id (review 2026-09-16). The user still sees and ends
+                # them all in the Background panel.
+                entries = [e for e in sch.list_entries()
+                           if _schedule_is_mine(sch, e.id, _sid)]
                 return json.dumps({
                     "entries": [
                         {
@@ -15847,6 +15853,11 @@ class _DocToolExecutor:
                     return json.dumps({"error": (
                         "entry_id is required — pass the id from "
                         "cron_list. Nothing was deleted.")})
+                if not _schedule_is_mine(sch, _entry_id, _sid):
+                    return json.dumps({"status": "not_found", "note": (
+                        "no entry with that id in this session's schedule. "
+                        "Another session's entries are the user's to end, "
+                        "in the Background panel.")})
                 ok = sch.delete(_entry_id)
                 return json.dumps({"status": "ok" if ok else "not_found"})
         except ValueError as exc:
@@ -17528,6 +17539,18 @@ def _test_run_argv(argv: list[str], perms, report_dir) -> list[str]:
         return caged
     rd = str(Path(report_dir).resolve())
     return caged[:-3] + ["--bind", rd, rd] + caged[-3:]
+
+
+def _schedule_is_mine(sch: Any, entry_id: str, session_id: str) -> bool:
+    """Whether a schedule entry belongs to the asking session.
+
+    An entry records the session that created it. A session owns exactly
+    those; a caller without a session (the terminal agent, a script) owns
+    the entries that have no session. Fails closed."""
+    try:
+        return str(sch.owner_of(str(entry_id)) or "") == str(session_id or "")
+    except Exception:
+        return False
 
 
 def _is_stream_unsupported_error(exc: Exception) -> bool:
