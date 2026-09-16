@@ -36,7 +36,13 @@ def collect(workspace: Any, *, now: Optional[float] = None,
     now = time.time() if now is None else float(now)
     ws = str(workspace or "")
     view: dict[str, list[dict]] = {
-        "shells": [], "watches": [], "agents": [], "wakeups": []}
+        "shells": [], "watches": [], "agents": [], "wakeups": [], "errors": []}
+
+    def _failed(group: str, exc: BaseException) -> None:
+        # A read that failed used to show as "nothing running"; the panel
+        # must say it could not look (review 2026-09-16).
+        view["errors"].append({"group": group,
+                               "error": f"{type(exc).__name__}: {str(exc)[:120]}"})
 
     try:
         from . import bash_jobs as _bj
@@ -53,8 +59,8 @@ def collect(workspace: Any, *, now: Optional[float] = None,
                 "label": str(rec.get("description") or rec.get("command") or "")[:90],
                 "since": float(rec.get("started_at") or now),
             })
-    except Exception:
-        pass
+    except Exception as _exc:
+        _failed("shells", _exc)
 
     try:
         from . import job_monitor as _jm
@@ -72,8 +78,8 @@ def collect(workspace: Any, *, now: Optional[float] = None,
                 "state": str(entry.get("last_state") or "waiting"),
                 "since": float(entry.get("added_at") or now),
             })
-    except Exception:
-        pass
+    except Exception as _exc:
+        _failed("watches", _exc)
 
     try:
         from . import subagents as _sa
@@ -89,8 +95,8 @@ def collect(workspace: Any, *, now: Optional[float] = None,
                 "since": float(entry.get("started_at") or now),
                 "last": str(entry.get("last_action") or "")[:60],
             })
-    except Exception:
-        pass
+    except Exception as _exc:
+        _failed("agents", _exc)
 
     try:
         from . import scheduler as _sch
@@ -106,8 +112,8 @@ def collect(workspace: Any, *, now: Optional[float] = None,
                 "label": str(entry.reason or entry.prompt or "")[:90],
                 "at": float(getattr(entry, "next_fire_at", 0) or 0),
             })
-    except Exception:
-        pass
+    except Exception as _exc:
+        _failed("wakeups", _exc)
 
     for group in ("shells", "watches", "agents"):
         view[group].sort(key=lambda row: row["since"])
@@ -130,6 +136,7 @@ _STOP_TIPS = {
     "watches": "Stop watching — the job itself keeps running",
     "agents": "Stop this background agent",
     "wakeups": "Cancel this wake-up",
+    "errors": "This list could not be read; nothing to stop",
 }
 
 
@@ -160,6 +167,9 @@ def rows(view: dict, *, now: Optional[float] = None) -> list[dict]:
         label = "Loop" if row["kind"] == "interval" else "Wake-up"
         when = (f"in {_duration(row['at'] - now)}" if row["at"] > now else "due")
         _add("wakeups", row["id"], label, row["label"] or row["id"], when)
+    for n, row in enumerate(view.get("errors", [])):
+        _add("errors", f"error-{n}", "⚠ Not read",
+             f"{row['group']}: could not be listed", row["error"])
     return out
 
 
