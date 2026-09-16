@@ -122,16 +122,22 @@ def _unexpected_under_a_generated_root() -> frozenset:
         entry[3:] for entry in done.stdout.split("\0") if entry[3:])
 
 
+_LIFELINE_NAMES = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
+_LIFELINE_SAVED: dict = {}
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _the_suite_lives_under_no_lifeline():
     """A suite started from a delfin-voila terminal inherits its lifeline;
     a test that then built a dashboard tab would put a watcher on that
-    process, and end the test run when the dashboard stops."""
-    import os
-    names = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
-    saved = {name: os.environ.pop(name) for name in names if name in os.environ}
+    process, and end the test run when the dashboard stops.
+
+    The strip itself happens in pytest_configure, before the first test's
+    DELFIN_* snapshot. Done here, during the first test's setup, it came
+    AFTER that snapshot: the first test was reported for "leaving" the
+    lifeline behind, and the teardown restore put the lifeline back for
+    every later test (seen from a dashboard shell, 2026-09-16)."""
     yield
-    os.environ.update(saved)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -681,6 +687,16 @@ def pytest_configure(config):
         "markers",
         "slow: heavy or order-dependent test, excluded from the fast CI gate",
     )
+    import os
+    for name in _LIFELINE_NAMES:
+        if name in os.environ:
+            _LIFELINE_SAVED[name] = os.environ.pop(name)
+
+
+def pytest_unconfigure(config):
+    import os
+    os.environ.update(_LIFELINE_SAVED)
+    _LIFELINE_SAVED.clear()
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
