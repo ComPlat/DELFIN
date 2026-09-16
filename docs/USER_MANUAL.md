@@ -564,6 +564,25 @@ delfin stop --workspace PATH
 delfin co2 --define
 delfin qm_check [TOOL ...]
 delfin qm_run TOOL -- [ARGS]
+delfin doctor [--json] [--scratch PATH]
+```
+
+#### `delfin doctor` — installation self-check
+
+`delfin doctor` verifies that the local installation is usable before you
+start a run: it probes ORCA, xTB and OpenMPI via `--version`, tests that the
+scratch directory is writable, and reports whether SLURM, the KIT-Toolbox
+API key and the doc-search index are configured. It never starts a
+computation and never opens a network connection. Each check prints one
+`OK` / `MISSING` / `BROKEN` line with a detail, and `MISSING`/`BROKEN`
+results additionally print a fix hint. Only `BROKEN` (present but not
+working) makes the command exit non-zero — a machine without SLURM or
+without a KIT key is a valid setup.
+
+```bash
+delfin doctor               # human-readable report
+delfin doctor --json        # raw results as JSON (name/status/detail/fix_hint)
+delfin doctor --scratch /path/to/scratch
 ```
 
 ### Companion CLI tools
