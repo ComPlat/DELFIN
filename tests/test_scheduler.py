@@ -211,13 +211,20 @@ def test_legacy_entry_without_new_fields_still_loads(fresh_path):
     assert ent.fail_count == 0
 
 
+def _perms(path):
+    # A wake-up is a future agent turn; a client without a sandbox may not
+    # schedule one (test_a_client_without_a_sandbox_reads_nothing).
+    from delfin.agent.api_client import KitToolPermissions
+    return KitToolPermissions(workspace=str(path.parent))
+
+
 def test_tool_dispatch_schedule_wakeup(fresh_path, monkeypatch):
     monkeypatch.setattr(S, "_DEFAULT_PATH", fresh_path)
     S.reset_scheduler()
     out = _DocToolExecutor().execute(
         "schedule_wakeup",
         {"delay_seconds": 120, "prompt": "later", "reason": "test"},
-        permissions=None,
+        permissions=_perms(fresh_path),
     )
     payload = json.loads(out)
     assert payload["status"] == "ok"
@@ -230,17 +237,17 @@ def test_tool_dispatch_cron_create_and_list(fresh_path, monkeypatch):
     create_out = _DocToolExecutor().execute(
         "cron_create",
         {"every_seconds": 600, "prompt": "poll", "reason": "test"},
-        permissions=None,
+        permissions=_perms(fresh_path),
     )
     eid = json.loads(create_out)["id"]
     list_out = _DocToolExecutor().execute(
-        "cron_list", {}, permissions=None,
+        "cron_list", {}, permissions=_perms(fresh_path),
     )
     listing = json.loads(list_out)
     assert any(e["id"] == eid for e in listing["entries"])
 
     delete_out = _DocToolExecutor().execute(
-        "cron_delete", {"entry_id": eid}, permissions=None,
+        "cron_delete", {"entry_id": eid}, permissions=_perms(fresh_path),
     )
     assert json.loads(delete_out)["status"] == "ok"
 
@@ -251,7 +258,7 @@ def test_tool_rejects_too_short_interval(fresh_path, monkeypatch):
     out = _DocToolExecutor().execute(
         "cron_create",
         {"every_seconds": 5, "prompt": "x"},
-        permissions=None,
+        permissions=_perms(fresh_path),
     )
     payload = json.loads(out)
     assert "error" in payload
