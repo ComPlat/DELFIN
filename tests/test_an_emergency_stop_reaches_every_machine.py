@@ -104,7 +104,8 @@ def test_a_process_started_after_the_stop_carries_on(stop_file):
         child.wait()
 
 
-def test_a_process_under_no_lifeline_still_obeys_the_stop(stop_file, monkeypatch):
+def test_a_process_under_no_lifeline_still_obeys_the_stop(stop_file, monkeypatch,
+                                                         real_lifeline_watch):
     monkeypatch.delenv(L.ENV_PID, raising=False)
     monkeypatch.delenv(L.ENV_TICKS, raising=False)
     monkeypatch.setattr(S, "_STARTED_AT", time.time() - 60)
