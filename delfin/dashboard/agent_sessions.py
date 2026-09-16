@@ -30,6 +30,8 @@ _REFRESH_S = 3.0
 # Reading the saved sessions parses every session file, so the resume list
 # is rebuilt on open/close and at this interval, not on every refresh.
 _RESUME_REFRESH_S = 60.0
+# How long the first click on "Stop all agents" waits for the second.
+_STOP_ARM_S = 8.0
 
 # The session list, in the agent tab's own palette (tab_agent._AGENT_CSS):
 # system font, slate greys, the chat's light blue for the session on screen.
@@ -117,7 +119,29 @@ _SIDEBAR_CSS = """<style>
 .delfin-session-resume select { font-size: 12px; color: #475569;
     border-radius: 6px; }
 .delfin-session-stage { flex: 1 1 0% !important; min-width: 0 !important; }
+.delfin-session-elsewhere { font-size: 11px; color: #475569; padding: 4px 6px 0; }
+.delfin-session-stopall { width: 100% !important; margin: 8px 0 0 !important;
+    background: transparent !important; color: #b91c1c !important;
+    border: 1px solid #fca5a5 !important; border-radius: 6px; font-size: 12px; }
+.delfin-session-stopall.delfin-armed { background: #b91c1c !important;
+    color: #ffffff !important; }
 </style>"""
+
+
+def _give_emergency_stop() -> None:
+    """Give the emergency stop from a process of its own.
+
+    The kernel this runs in ends with the stop within seconds; the stop's
+    direct end of the other kernels on this machine must not end with it.
+    """
+    import subprocess
+    import sys
+
+    subprocess.Popen(
+        [sys.executable, "-m", "delfin.agent.cli", "stop-all", "--yes",
+         "--reason", "dashboard button"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 class _SessionContext:
@@ -435,9 +459,17 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
     resume_dropdown = _classed(widgets.Dropdown(
         options=[("Resume a saved session…", "")], value=""),
         "delfin-session-resume")
+    elsewhere_note = _classed(widgets.HTML(""), "delfin-session-elsewhere")
+    stop_all_btn = _classed(widgets.Button(
+        description="Stop all agents",
+        tooltip=("Emergency stop: ends every agent of yours on every login "
+                 "node -- dashboard kernels with their shells and MCP "
+                 "servers, and the daemons. Schedules are disabled and "
+                 "nothing starts on its own afterwards; cluster jobs keep "
+                 "running.")), "delfin-session-stopall")
     sidebar = _classed(widgets.VBox(
         [widgets.HTML(_SIDEBAR_CSS), head, new_form, notice, list_box,
-         resume_dropdown]), "delfin-sessions")
+         resume_dropdown, elsewhere_note, stop_all_btn]), "delfin-sessions")
     stage = _classed(widgets.VBox(), "delfin-session-stage")
     widget = _classed(widgets.HBox([sidebar, stage]), "delfin-session-shell")
 
@@ -648,6 +680,27 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         if changed:
             _persist()
 
+    def _refresh_elsewhere() -> None:
+        """Name the sessions open on other machines: the stop below reaches
+        them, and nothing else on this page does."""
+        try:
+            import socket as _socket
+
+            from delfin.agent import session_presence as _presence
+            here = _socket.gethostname()
+            counts: dict[str, int] = {}
+            for record in _presence.open_sessions():
+                host = str(record.get("host") or "")
+                if host and host != here:
+                    short = host.split(".")[0]
+                    counts[short] = counts.get(short, 0) + 1
+        except Exception:
+            counts = {}
+        elsewhere_note.value = (
+            "Also open on other login nodes: " + html.escape(", ".join(
+                f"{n} on {h}" for h, n in sorted(counts.items())))
+            if counts else "")
+
     def _tick() -> None:
         try:
             refresh()
@@ -655,6 +708,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             if _time.monotonic() >= view["resume_at"]:
                 view["resume_at"] = _time.monotonic() + _RESUME_REFRESH_S
                 _refresh_resume_options()
+                _refresh_elsewhere()
         except Exception:
             pass
         finally:
@@ -733,6 +787,41 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             pass
 
     workdir_box.observe(_refresh_folder_choices, names="value")
+    def _on_stop_all(_btn=None) -> None:
+        """Two clicks: the first arms the button for a few seconds."""
+        import time as _time
+        if view.get("stop_armed_until", 0.0) < _time.monotonic():
+            view["stop_armed_until"] = _time.monotonic() + _STOP_ARM_S
+            stop_all_btn.description = "Click again to stop everything"
+            stop_all_btn.add_class("delfin-armed")
+
+            def _disarm() -> None:
+                if view.get("stop_armed_until", 0.0) <= _time.monotonic():
+                    stop_all_btn.description = "Stop all agents"
+                    stop_all_btn.remove_class("delfin-armed")
+
+            timer = threading.Timer(_STOP_ARM_S + 0.5, _disarm)
+            timer.daemon = True
+            timer.start()
+            return
+        view["stop_armed_until"] = 0.0
+        stop_all_btn.disabled = True
+        stop_all_btn.description = "Stopping every agent…"
+        try:
+            _give_emergency_stop()
+        except Exception as exc:
+            stop_all_btn.disabled = False
+            stop_all_btn.description = "Stop all agents"
+            stop_all_btn.remove_class("delfin-armed")
+            _say(f"The stop could not be given: {exc}. In a terminal: "
+                 "delfin-agent stop-all")
+            return
+        _say("Emergency stop given: every agent on every login node ends "
+             "within seconds, this dashboard's too. Reload the page to "
+             "start again; nothing starts on its own until you send a "
+             "message yourself.")
+
+    stop_all_btn.on_click(_on_stop_all)
     new_btn.on_click(_on_new)
     cancel_btn.on_click(_on_cancel)
     start_btn.on_click(_on_start)
