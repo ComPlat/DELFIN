@@ -2833,6 +2833,15 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _stop_own_background_shells() -> None:
+    """End the background shells this process started. Never raises."""
+    try:
+        from . import bash_jobs as _bj
+        _bj.get_registry().stop_running()
+    except Exception:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     # A probe or an interview driven through here is nobody's session:
     # with DELFIN_SCRATCH_STATE set it keeps its history, memory, profile
@@ -2847,7 +2856,18 @@ def main(argv: list[str] | None = None) -> int:
         # An agent in a terminal ends with an emergency stop given anywhere
         # (stop_all), and with the dashboard it was started from, if any.
         from . import lifeline as _lifeline
-        _lifeline.watch(_lifeline.exit_now)
+        # The background shells this terminal agent started end with it,
+        # as a dashboard's end with its kernel: at a normal exit, at an
+        # interrupt, and when the lifeline or an emergency stop ends it
+        # (os._exit skips atexit, so that path stops them first).
+        import atexit as _atexit
+        _atexit.register(_stop_own_background_shells)
+
+        def _end_with_everything() -> None:
+            _stop_own_background_shells()
+            _lifeline.exit_now()
+
+        _lifeline.watch(_end_with_everything)
     try:
         return int(args.func(args) or 0)
     except KeyboardInterrupt:

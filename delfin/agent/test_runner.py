@@ -248,10 +248,10 @@ def run_tests(
 
     t0 = time.monotonic()
     try:
-        proc = subprocess.run(
+        from . import contained_run as _contained
+        proc = _contained.run(
             wrap(cmd, tmpdir) if wrap is not None else cmd,
             cwd=str(workspace),
-            capture_output=True, text=True,
             timeout=max(5, timeout_s),
             env=env,
         )

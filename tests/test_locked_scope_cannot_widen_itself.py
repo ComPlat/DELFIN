@@ -255,6 +255,7 @@ def test_a_locked_session_without_bwrap_says_so(monkeypatch):
     the user whether or not anything is enforcing it."""
     recorded: list[tuple] = []
     monkeypatch.setattr(A, "_bwrap_functional", lambda: False)
+    monkeypatch.setattr(A, "_landlock_functional", lambda: False)
     monkeypatch.setattr(A, "_ISOLATION_GAP_ANNOUNCED", False)
     monkeypatch.setattr(
         A, "_record_security_event",
@@ -265,19 +266,34 @@ def test_a_locked_session_without_bwrap_says_so(monkeypatch):
     perms.mode = "default"
     argv = A._bash_isolation_argv("ls", ws, perms)
 
-    # The documented fallback: no filesystem wrap. The command may still
-    # run in the process cage, which does not depend on this mode.
-    assert "--ro-bind" not in argv and argv[-3:] == ["/bin/bash", "-c", "ls"], \
-        "expected the documented fallback"
+    # With nothing on the host able to hold a command to the folder, the
+    # command is refused rather than run on the path checks alone.
+    assert "ls" not in argv and "refused" in " ".join(argv), \
+        "a locked session without any isolation must refuse the command"
     assert recorded, "the downgrade was not recorded anywhere"
     text = " ".join(str(x) for x in recorded[0][0])
     assert "isolation" in text and "NOT active" in text
+
+
+def test_a_locked_session_without_bwrap_is_held_by_landlock(monkeypatch):
+    """Where bubblewrap cannot run but the kernel has Landlock, the folder
+    is still the boundary: the command runs under the Landlock helper."""
+    monkeypatch.setattr(A, "_bwrap_functional", lambda: False)
+    monkeypatch.setattr(A, "_landlock_functional", lambda: True)
+    monkeypatch.setattr(A, "_process_cage_enabled", lambda: False)
+    monkeypatch.setattr(A, "_record_security_event", lambda *a, **kw: None)
+    ws = pathlib.Path(tempfile.mkdtemp(prefix="ws_"))
+    argv = A._bash_isolation_argv("ls", ws, _perms(locked=True, ws=ws))
+    assert argv[1] == "-I" and argv[2].endswith("landlock_exec.py")
+    assert argv[argv.index("--write") + 1] == str(ws.resolve())
+    assert argv[-3:] == ["/bin/bash", "-c", "ls"]
 
 
 def test_the_announcement_fires_once(monkeypatch):
     """A line per bash command would bury the panel it is meant to inform."""
     recorded: list = []
     monkeypatch.setattr(A, "_bwrap_functional", lambda: False)
+    monkeypatch.setattr(A, "_landlock_functional", lambda: False)
     monkeypatch.setattr(A, "_ISOLATION_GAP_ANNOUNCED", False)
     monkeypatch.setattr(A, "_record_security_event",
                         lambda *a, **kw: recorded.append(a))

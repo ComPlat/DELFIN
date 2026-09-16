@@ -31,22 +31,28 @@ def test_the_test_process_gets_the_shells_scrubbed_environment(tmp_path, monkeyp
     assert callable(seen["wrap"])
 
 
-def test_the_report_directory_is_bound_into_a_fresh_tmp(tmp_path, monkeypatch):
-    monkeypatch.setattr(A, "_bash_isolation_argv", lambda cmd, cwd, perms: [
-        "bwrap", "--ro-bind", "/", "/", "--tmpfs", "/tmp",
-        "/bin/bash", "-c", cmd])
+def test_the_report_directory_stays_writable_inside_the_cage(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake(cmd, cwd, perms, mode=None, extra_write=()):
+        seen.update(cmd=cmd, extra_write=tuple(extra_write))
+        return ["/bin/bash", "-c", cmd]
+
+    monkeypatch.setattr(A, "_bash_isolation_argv", fake)
     out = A._test_run_argv(["python", "-m", "pytest", "a b.py"], _perms(tmp_path), tmp_path)
-    rd = str(tmp_path.resolve())
-    assert out[-3:] == ["/bin/bash", "-c", "python -m pytest 'a b.py'"]
-    assert out[-6:-3] == ["--bind", rd, rd]
-    assert out.index("--bind") > out.index("--tmpfs")
+    assert out == ["/bin/bash", "-c", "python -m pytest 'a b.py'"]
+    assert seen["extra_write"] == (tmp_path,)
 
 
-def test_without_bwrap_the_command_is_left_as_it_is(tmp_path, monkeypatch):
-    monkeypatch.setattr(A, "_bash_isolation_argv",
-                        lambda cmd, cwd, perms: ["/bin/bash", "-c", cmd])
-    out = A._test_run_argv(["python", "-m", "pytest"], _perms(tmp_path), tmp_path)
-    assert out == ["/bin/bash", "-c", "python -m pytest"]
+def test_a_bwrap_wrap_binds_the_extra_directory_after_the_fresh_tmp(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "_bwrap_functional", lambda: True)
+    monkeypatch.setattr(A.shutil, "which", lambda _x: "/usr/bin/bwrap")
+    perms = KitToolPermissions(workspace=str(tmp_path), lock_workspace=True)
+    report = tmp_path / "report"
+    out = A._bash_isolation_argv("true", tmp_path, perms, extra_write=(report,))
+    rd = str(report.resolve())
+    i = out.index(rd)
+    assert out[i - 1] == "--bind" and i > out.index("--tmpfs")
 
 
 @pytest.mark.skipif(not A._bwrap_functional(), reason="bubblewrap does not work here")
