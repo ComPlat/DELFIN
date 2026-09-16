@@ -33,7 +33,7 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 
 _DEFAULT_TIMEOUT_S = 300
@@ -191,6 +191,8 @@ def run_tests(
     pytest_args: list[str] | None = None,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     python: str = "",
+    env: Optional[dict] = None,
+    wrap: Optional[Callable[[list[str], Path], list[str]]] = None,
 ) -> dict[str, Any]:
     """Run pytest on ``target`` (relative to ``workspace``) and return JSON.
 
@@ -206,6 +208,13 @@ def run_tests(
         Wall-clock cap. Hitting it returns ``status='timeout'``.
     python : str
         Python interpreter to use. Default = ``sys.executable``.
+    env : dict, optional
+        The child's environment. The agent passes the shell's scrubbed
+        environment: a test file the agent wrote is code the agent runs.
+    wrap : callable, optional
+        ``wrap(argv, report_dir) -> argv``: runs pytest inside the same
+        cage as the agent's shell. ``report_dir`` must stay reachable
+        from inside it, since the report is read back from there.
     """
     import sys
     workspace = Path(workspace).expanduser().resolve()
@@ -240,9 +249,11 @@ def run_tests(
     t0 = time.monotonic()
     try:
         proc = subprocess.run(
-            cmd, cwd=str(workspace),
+            wrap(cmd, tmpdir) if wrap is not None else cmd,
+            cwd=str(workspace),
             capture_output=True, text=True,
             timeout=max(5, timeout_s),
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         shutil.rmtree(tmpdir, ignore_errors=True)
