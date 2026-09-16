@@ -32,6 +32,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -264,12 +265,48 @@ def detect_config(env: Optional[dict] = None) -> SandboxConfig:
     if requested == "firejail":
         return SandboxConfig("firejail", allow_net, timeout_s)
 
-    # auto (and any unknown value) — pick best available
-    if shutil.which("bwrap"):
+    # auto (and any unknown value) — pick best available. Installed is not
+    # working: a bwrap whose user namespace is refused made every approved
+    # command fail.
+    if shutil.which("bwrap") and _bwrap_works():
         return SandboxConfig("bwrap", allow_net, timeout_s)
     if shutil.which("firejail"):
         return SandboxConfig("firejail", allow_net, timeout_s)
     return SandboxConfig("allowlist", allow_net, timeout_s)
+
+
+def _bwrap_works() -> bool:
+    try:
+        from .api_client import _bwrap_functional
+        return bool(_bwrap_functional())
+    except Exception:
+        return False
+
+
+def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str) -> list[str]:
+    """``bash -c cmd`` for the modes without bubblewrap or firejail.
+
+    The allowlist mode ran commands with nothing around them: python, pip,
+    awk and env are on the list, and every key was in the environment. Where
+    the kernel has Landlock the command now runs under it (writes only in the
+    repository and a private temp directory, credential folders unreadable),
+    as the agent's own shell does on such a host. "off" stays off."""
+    base = ["bash", "-c", cmd]
+    if mode != "allowlist":
+        return base
+    try:
+        from .api_client import (_home_secret_paths, _landlock_functional,
+                                 _private_tmp_dir)
+        from . import landlock_exec as _ll
+        if not _landlock_functional():
+            return base
+        argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+                "--write", str(Path(repo_dir).resolve())]
+        for h in _home_secret_paths():
+            argv += ["--hide", h]
+        return argv + ["--tmpdir", _private_tmp_dir(), "--"] + base
+    except Exception:
+        return base
 
 
 # Home-relative directories that are tmpfs'd inside the sandbox so the agent
@@ -451,21 +488,23 @@ def run_agent_command(
         argv = _firejail_argv(cmd, repo_dir, cfg.allow_network)
         shell = False
     else:
-        # 'off' or 'allowlist' or 'auto-fell-back-to-allowlist' — no sandbox.
-        # We still avoid shell=True by routing through bash -c explicitly,
-        # which produces equivalent behavior but makes argv inspectable.
-        argv = ["bash", "-c", cmd]
+        # 'off' or 'allowlist' or 'auto-fell-back-to-allowlist'. Routed
+        # through bash -c explicitly so the argv stays inspectable; the
+        # allowlist mode runs under Landlock where the kernel has it.
+        argv = _unsandboxed_argv(cmd, repo_dir, cfg.mode)
         shell = False
 
     try:
-        proc = subprocess.run(
+        # Every mode: the shell's scrubbed environment (no provider keys),
+        # its own session and process group, no terminal, the whole group
+        # ended at exit and at the timeout.
+        from .api_client import _scrubbed_bash_env
+        from . import contained_run as _contained
+        proc = _contained.run(
             argv,
-            shell=shell,
             cwd=str(repo_dir),
-            capture_output=True,
-            text=True,
+            env=_scrubbed_bash_env(),
             timeout=cfg.timeout_s,
-            check=False,
         )
         elapsed = time.monotonic() - t0
         _audit({
