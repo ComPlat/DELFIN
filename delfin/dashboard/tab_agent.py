@@ -1919,9 +1919,15 @@ def _stop_what_this_process_started() -> None:
 
 
 def _kernel_lost_its_lifeline() -> None:
-    """delfin-voila is gone -- stopped, killed, its terminal closed -- and
-    this kernel was left behind: stop what it started, then end."""
+    """delfin-voila is gone -- stopped, killed, its terminal closed -- or an
+    emergency stop was given (``stop_all``): stop what this kernel started,
+    let go of its kept session, then end."""
     _stop_what_this_process_started()
+    try:
+        from delfin.dashboard import session as _kept
+        _kept.drop_record(reason="kernel ended with its lifeline")
+    except Exception:
+        pass
     os._exit(0)
 
 
@@ -6250,6 +6256,36 @@ def create_tab(ctx):
                 f"list could not be read ({type(_exc).__name__}).</div>")
             background_rows_box.children = ()
 
+    def _send_on_its_own(text: str, *, leave_text_when_held: bool = False) -> bool:
+        """Start a turn nobody typed: a scheduled wake-up, a finished job, a
+        message from another session.
+
+        After an emergency stop (``stop_all``) a session stays quiet until
+        somebody sends it something by hand; it says so once instead. The
+        check fails closed: a session that cannot tell whether it was
+        stopped does not wake itself.
+        """
+        try:
+            from delfin.agent import stop_all as _stop_all
+            allowed = _stop_all.wakes_allowed(state.get("_armed_at", 0.0))
+            note = "" if allowed else _stop_all.held_note()
+        except Exception:
+            allowed, note = False, "⏸ Not started on its own: the stop check failed."
+        if not allowed:
+            if leave_text_when_held:
+                input_textarea.value = text
+            if not state.get("_held_note_shown"):
+                state["_held_note_shown"] = True
+                _append_system_message(note)
+            return False
+        input_textarea.value = text
+        state["_on_its_own"] = True
+        try:
+            _on_send(None)
+        finally:
+            state["_on_its_own"] = False
+        return True
+
     def _deliver_session_messages() -> None:
         """Hand this session the messages other sessions left for it.
 
@@ -6276,8 +6312,7 @@ def create_tab(ctx):
         if streaming and engine is not None and hasattr(engine.client, "push_steer"):
             engine.client.push_steer(text)
         else:
-            input_textarea.value = text
-            _on_send(None)
+            _send_on_its_own(text, leave_text_when_held=True)
 
     def _peek_background(workspace, group, item_id):
         """The ▸ on a Background row: the item's last output lines, in the chat."""
@@ -6822,11 +6857,10 @@ def create_tab(ctx):
 
             def _on_wake(entry):
                 try:
-                    input_textarea.value = (
+                    _send_on_its_own(
                         f"[scheduled] {entry.reason or entry.prompt}\n\n"
                         f"{entry.prompt}"
                     )
-                    _on_send(None)
                 except Exception:
                     pass
 
@@ -6868,8 +6902,7 @@ def create_tab(ctx):
                         session_id=_background_owner()))
                     _prompt = _job_wake_prompt(_done)
                     if _prompt:
-                        input_textarea.value = _prompt
-                        _on_send(None)
+                        _send_on_its_own(_prompt)
             except Exception:
                 pass
             finally:
@@ -15498,6 +15531,11 @@ def create_tab(ctx):
         user_text = input_textarea.value.strip()
         if not user_text:
             return
+        if not state.get("_on_its_own"):
+            # Sent by somebody: after an emergency stop this is what lets
+            # the session start turns on its own again (_send_on_its_own).
+            state["_armed_at"] = time.time()
+            state["_held_note_shown"] = False
 
         # Hide any pending question UI when user sends a message
         _hide_question_ui()
