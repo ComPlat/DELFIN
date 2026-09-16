@@ -459,6 +459,14 @@ def real_lifeline_watch(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _the_test_run_stays_debuggable(monkeypatch):
+    """process_guard makes an agent process non-dumpable and registers it.
+    A test building the agent tab or running the chat command would do that
+    to pytest itself; the guard's own tests turn it on in a child."""
+    monkeypatch.setenv("DELFIN_PROCESS_GUARD", "off")
+
+
+@pytest.fixture(autouse=True)
 def _emergency_stop_reaches_no_real_process(monkeypatch):
     """The emergency stop ends this user's agent processes on the machine it
     is given from, found by command line and environment. From a test that

@@ -1975,6 +1975,12 @@ def _register_process_exit_cleanup() -> None:
     if _PROCESS_CLEANUP_REGISTERED:
         return
     _PROCESS_CLEANUP_REGISTERED = True
+    # The kernel holds the model's key: no command it runs may read it.
+    try:
+        from delfin.agent import process_guard as _process_guard
+        _process_guard.protect("dashboard kernel")
+    except Exception:
+        pass
     import atexit
     atexit.register(_stop_what_this_process_started)
     try:

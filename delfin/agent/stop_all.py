@@ -228,6 +228,19 @@ def _own_agent_processes(before: float) -> list[int]:
         started = process_started_at(pid)
         if started is not None and started < before:
             found.append(pid)
+    # A protected agent process (process_guard) cannot be read through
+    # /proc; it put itself on a register instead.
+    try:
+        from . import process_guard as _pg
+        for rec in _pg.registered_here():
+            pid = int(rec.get("pid") or 0)
+            if pid in mine or pid in found or _pg.uid_of(pid) != uid:
+                continue
+            started = process_started_at(pid)
+            if started is not None and started < before:
+                found.append(pid)
+    except Exception:
+        pass
     return found
 
 
@@ -337,14 +350,31 @@ def _outlived_their_start() -> list[dict]:
     except OSError:
         return out
     mine = _ancestors(os.getpid())
+    try:
+        from . import process_guard as _pg
+        registered = {int(r.get("pid") or 0): r for r in _pg.registered_here()
+                      if _pg.uid_of(int(r.get("pid") or 0)) == uid}
+    except Exception:
+        registered = {}
     for entry in entries:
         if not entry.isdigit() or int(entry) in mine:
             continue
         pid = int(entry)
         try:
-            if os.stat(f"/proc/{pid}").st_uid != uid:
-                continue
-            env = _environ(pid)
+            if pid in registered:
+                # Protected: its environment is not readable; the register
+                # carries what the judgement needs.
+                rec = registered[pid]
+                env = {k: str(v) for k, v in (
+                    (ENV_PID, rec.get("lifeline_pid") or ""),
+                    (ENV_TICKS, rec.get("lifeline_ticks") or ""),
+                    ("DELFIN_VOILA_PORT", rec.get("voila_port") or ""),
+                    ("JPY_PARENT_PID", rec.get("jpy_parent_pid") or ""),
+                ) if v}
+            else:
+                if os.stat(f"/proc/{pid}").st_uid != uid:
+                    continue
+                env = _environ(pid)
             cmdline = (Path(f"/proc/{pid}/cmdline").read_bytes()
                        .replace(b"\0", b" ").decode(errors="replace").strip())
         except OSError:
