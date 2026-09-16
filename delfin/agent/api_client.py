@@ -2310,6 +2310,26 @@ def _with_shell_bodies(cmd: str) -> str:
     return "\n".join(parts)
 
 
+def _is_secret_path(perms: Any, path: Path) -> bool:
+    """Whether ``path`` matches the secret deny list, tested the way
+    ``_check_read_access`` tests it: relative to the readable root it lies
+    in, else absolute. Fails closed."""
+    try:
+        resolved = Path(path).expanduser().resolve()
+        in_root = perms.find_readable_root_for(resolved)
+        if in_root is not None:
+            try:
+                rel = str(resolved.relative_to(in_root)).replace("\\", "/")
+            except Exception:
+                rel = str(resolved).replace("\\", "/")
+        else:
+            rel = str(resolved).replace("\\", "/")
+        return bool(perms.matches_path_deny(rel)
+                    or perms.matches_path_deny(str(resolved).replace("\\", "/")))
+    except Exception:
+        return True
+
+
 def _is_git_push(cmd: str) -> bool:
     return bool(_GIT_PUSH_RE.search(_with_shell_bodies(cmd)))
 
@@ -11817,6 +11837,14 @@ class _DocToolExecutor:
         matches = []
         for fp in _iter_scan_files(search_path, extra_skip):
             if fp.suffix.lower() in _SCAN_SKIP_SUFFIXES:
+                continue
+            # Per-file secret deny. The comment above promised it and the
+            # loop never did it: grep_file(path=".") read a workspace-root
+            # .env, *.key or credentials.json line by line (review
+            # 2026-09-16). Same test as _check_read_access, without its
+            # outside-root confirmation -- a denied file is skipped, never
+            # asked about.
+            if perms is not None and _is_secret_path(perms, fp):
                 continue
             try:
                 if fp.stat().st_size > _SCAN_MAX_FILE_BYTES:
