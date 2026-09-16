@@ -97,8 +97,18 @@ def test_apply_patch_check_only_not_gated(workspace):
     applied (so it stays usable, incl. in plan mode via the executor)."""
     perms = KitToolPermissions(workspace=workspace, mode="default",
                                confirm_callback=None)
-    # Even a deny-listed target is not write-gated when only checking.
-    assert _apply_gate(perms, _diff_create(".env"), check_only=True) is None
+    # A target the WRITE gate would ask about is not gated when only checking.
+    assert _apply_gate(perms, _diff_create("src/x.py"), check_only=True) is None
+
+
+def test_apply_patch_check_only_still_refuses_a_secret(workspace):
+    """A dry run READS its target and echoes a mismatching line, so one
+    check_only per line used to read .env (security review 2026-09-16).
+    The secret deny list is the one gate a dry run keeps."""
+    perms = KitToolPermissions(workspace=workspace, mode="default",
+                               confirm_callback=None)
+    err = _apply_gate(perms, _diff_create(".env"), check_only=True)
+    assert err is not None and "secret deny-glob" in err
 
 
 def test_apply_patch_blocked_in_plan_mode(workspace):
