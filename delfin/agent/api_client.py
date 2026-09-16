@@ -8661,8 +8661,16 @@ def _elide_old_tool_results(
     *,
     char_budget: int = _TOOL_CONTEXT_CHAR_BUDGET,
     keep_recent: int = _TOOL_KEEP_RECENT,
+    protect_before: int = 0,
 ) -> int:
     """Semantic context editing inside a long tool-call loop.
+
+    ``protect_before`` is the index where this turn's rows begin; the rows
+    in front of it came from earlier turns' histories (turn_history keeps
+    them, already cut to a head) and are the prefix every request of the
+    session shares. Eliding them first freed little and broke the
+    endpoint's prefix cache at the earliest possible offset -- the very
+    thing the one-deep-cut rule below exists to avoid.
 
     Over up to 50 rounds, accumulated ``role=="tool"`` outputs can
     dominate the input-token budget. When their combined size exceeds
@@ -8678,6 +8686,7 @@ def _elide_old_tool_results(
     """
     tool_idxs = [i for i, m in enumerate(api_messages)
                  if m.get("role") == "tool"]
+    protect_before = max(0, int(protect_before or 0))
 
     def _tool_chars() -> int:
         return sum(len(str(api_messages[i].get("content", "")))
@@ -8689,6 +8698,7 @@ def _elide_old_tool_results(
     # _ELIDE_TO_FRACTION.
     target = int(char_budget * _ELIDE_TO_FRACTION)
     editable = tool_idxs[:-keep_recent] if keep_recent > 0 else tool_idxs
+    editable = [i for i in editable if i >= protect_before]
     elided = 0
     for i in editable:
         if _tool_chars() <= target:
@@ -18330,7 +18340,9 @@ class OpenAIClient(_BaseClient):
             # this loop grows large, elide the OLDEST tool results (keep
             # the recent ones + all reasoning) so a long agentic turn
             # doesn't blow the input-token budget. No-op under budget.
-            _elide_old_tool_results(api_messages, char_budget=_tool_budget)
+            _elide_old_tool_results(
+                api_messages, char_budget=_tool_budget,
+                protect_before=int(getattr(self, "_turn_rows_base", 0) or 0))
             # Output backstop: stop cleanly if this turn's total generated
             # tokens crossed the (very high) per-turn ceiling. Text emitted so
             # far was already streamed to the caller, so nothing is lost.
