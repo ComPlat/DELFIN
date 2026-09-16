@@ -19,6 +19,8 @@ from pathlib import Path
 
 _DIR = Path.home() / ".delfin" / "session_inbox"
 _MAX_TEXT = 4000
+# At most this many messages reach one prompt; older ones are counted, not read.
+_MAX_TAKE = 20
 
 
 def _inbox(key: str) -> Path:
@@ -95,6 +97,17 @@ def take(key: str) -> list[dict]:
             continue
         if isinstance(message, dict):
             out.append(message)
+    # Everything waiting went into ONE prompt, uncapped: a sender in a loop
+    # could fill the receiver's whole context with one take. The newest
+    # messages are delivered; the receiver is told how many older ones
+    # were not.
+    if len(out) > _MAX_TAKE:
+        dropped = len(out) - _MAX_TAKE
+        out = out[-_MAX_TAKE:]
+        out.insert(0, {"from": "", "from_title": "the session inbox",
+                       "text": f"{dropped} earlier message(s) were not "
+                               f"delivered: the inbox held more than "
+                               f"{_MAX_TAKE}.", "sent_at": time.time()})
     return out
 
 
