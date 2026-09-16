@@ -236,6 +236,8 @@ def test_main_defaults_to_open_browser_in_vscode(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("TERM_PROGRAM", "vscode")
     monkeypatch.delenv("BROWSER", raising=False)
     monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
+    monkeypatch.delenv("DELFIN_NO_BROWSER", raising=False)
+    monkeypatch.setattr(cli_voila, "_launch_is_interactive", lambda: True)
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
     monkeypatch.setattr(cli_voila, "_get_voila_static_root", lambda: "/tmp/voila-static")

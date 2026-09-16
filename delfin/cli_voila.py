@@ -155,6 +155,40 @@ def _is_vscode_session(env: dict[str, str] | None = None) -> bool:
     return term_program == "vscode" or "browser.sh" in browser or bool(ipc_hook)
 
 
+def _launch_is_interactive() -> bool:
+    """True when a person typed the launch: stdin and stdout are terminals."""
+    try:
+        return bool(sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def _decide_open_browser(args, env: dict[str, str] | None = None,
+                         interactive: bool | None = None) -> bool:
+    """Whether this launch opens the dashboard in a browser.
+
+    The explicit switches win. Otherwise a tab opens only for a launch a
+    person typed into a VS Code terminal. A launch from a script, a test,
+    an agent or a service inherits the same VS Code variables, and on
+    2026-09-16 every such launch -- browser drives, dashboard tests --
+    opened a tab on the developer's desktop. Those are never interactive
+    (no terminal on stdin/stdout), and ``DELFIN_NO_BROWSER`` switches the
+    automatic open off for a whole environment.
+    """
+    env = env if env is not None else os.environ
+    if getattr(args, "open_browser", None) is True:
+        return True
+    if getattr(args, "no_browser", None) is True:
+        return False
+    if str(env.get("DELFIN_NO_BROWSER") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return False
+    if interactive is None:
+        interactive = _launch_is_interactive()
+    if not interactive:
+        return False
+    return _is_vscode_session(env)
+
+
 def _prepare_voila_env(open_browser: bool) -> dict[str, str]:
     env = os.environ.copy()
     if not open_browser:
@@ -770,12 +804,7 @@ def main(argv=None):
             f"     Read it with:  cat {_token_file}\n"
         )
 
-    if args.open_browser is True:
-        open_browser = True
-    elif args.no_browser is True:
-        open_browser = False
-    else:
-        open_browser = _is_vscode_session()
+    open_browser = _decide_open_browser(args)
     notebook = _find_notebook()
     root_dir = str(_default_voila_root())
     notebook = _stage_notebook_under_root(notebook, root_dir)
