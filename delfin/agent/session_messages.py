@@ -13,6 +13,7 @@ its session list.
 from __future__ import annotations
 
 import json
+import re
 import os
 import time
 from pathlib import Path
@@ -113,8 +114,12 @@ def take(key: str) -> list[dict]:
 
 def render(message: dict) -> str:
     """A message as the receiving agent reads it."""
-    sender = str(message.get("from") or "")
-    who = str(message.get("from_title") or sender or "another session")
+    sender = re.sub(r"[^A-Za-z0-9_-]", "", str(message.get("from") or ""))[:40]
+    # The title is another session's first message: it must not be able to
+    # close the header's quotes or bracket and write text that reads as the
+    # harness (security review 2026-09-16).
+    who = re.sub(r'[\[\]"\n\r]', " ", str(message.get("from_title") or sender
+                                          or "another session"))[:80].strip()
     # "if it needs one" read as an invitation: two sessions greeted each other
     # in a loop, each turn answering the last acknowledgement (driven
     # 2026-09-16). A reply is for a question or a request, never for thanks.
