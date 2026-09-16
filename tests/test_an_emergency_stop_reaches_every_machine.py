@@ -304,3 +304,48 @@ def test_the_check_finds_a_process_whose_dashboard_is_gone(stop_file):
 
 def test_the_shell_a_stop_is_typed_into_is_not_one_of_the_agents():
     assert os.getppid() in S._ancestors(os.getpid())
+
+
+def _report(**overrides):
+    report = {"host": "uc3n990", "at": time.time(), "last_stop": {},
+              "open_sessions": [], "kept_sessions": [], "active_schedules": [],
+              "daemon_pid_files": {}, "agent_processes_here": [],
+              "outlived_their_start_here": []}
+    report.update(overrides)
+    return report
+
+
+def test_a_session_silent_for_minutes_is_not_reported_as_running(capsys):
+    from delfin.agent import cli
+    code = cli._print_stop_all_check(_report(open_sessions=[
+        {"host": "uc3n991", "title": "Session C", "seconds_since_heartbeat": 600}]))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "ended" in out and "left over" in out
+
+
+def test_a_session_with_a_fresh_heartbeat_is_running(capsys):
+    from delfin.agent import cli
+    code = cli._print_stop_all_check(_report(open_sessions=[
+        {"host": "uc3n991", "title": "Session C", "seconds_since_heartbeat": 30}]))
+    assert code == 1
+    assert "something is running" in capsys.readouterr().out
+
+
+def test_left_over_records_are_named_but_not_counted_as_running(capsys):
+    from delfin.agent import cli
+    code = cli._print_stop_all_check(_report(
+        kept_sessions=[{"session": "uc3n991-e2d3", "host": "uc3n991",
+                        "since": time.time(), "here": False, "alive_here": False}],
+        daemon_pid_files={"scheduler_daemon": {"pid": 4242, "alive_here": False}}))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "run this check on uc3n991" in out
+    assert "left over unless it runs on another login node" in out
+
+
+def test_a_daemon_running_here_is_running(capsys):
+    from delfin.agent import cli
+    code = cli._print_stop_all_check(_report(
+        daemon_pid_files={"job_monitor": {"pid": 4242, "alive_here": True}}))
+    assert code == 1

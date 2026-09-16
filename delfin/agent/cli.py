@@ -2034,19 +2034,33 @@ def _print_stop_all_check(report: dict) -> int:
         except (TypeError, ValueError):
             return "?"
 
+    from .stop_all import HEARTBEAT_FRESH_S
+
     host = report.get("host") or "?"
     print(f"DELFIN agents -- check only, nothing is changed "
           f"({host}, {_time.strftime('%H:%M:%S', _time.localtime(report['at']))})")
     print("Every login node (read from the shared home directory):")
     sessions = report.get("open_sessions") or []
-    print(f"  Open dashboard sessions: {len(sessions) or 'none'}")
+    fresh = [r for r in sessions
+             if r["seconds_since_heartbeat"] <= HEARTBEAT_FRESH_S]
+    print(f"  Open dashboard sessions: "
+          + (f"{len(fresh)} with a heartbeat in the last "
+             f"{HEARTBEAT_FRESH_S // 60} min" if fresh else "none")
+          + (f", {len(sessions) - len(fresh)} silent (ended)"
+             if len(sessions) > len(fresh) else ""))
     for row in sessions:
+        age = row["seconds_since_heartbeat"]
         print(f"    {row['host']}: {row['title']!r} "
-              f"(heartbeat {row['seconds_since_heartbeat']} s ago)")
+              + (f"(heartbeat {age} s ago)" if age <= HEARTBEAT_FRESH_S
+                 else f"(last heartbeat {age // 60} min ago -- ended)"))
     kept = report.get("kept_sessions") or []
     print(f"  Kept sessions:           {len(kept) or 'none'}")
     for row in kept:
-        print(f"    {row['session']} on {row['host']} since {_clock(row['since'])}")
+        where = ("running on this machine" if row.get("alive_here")
+                 else "its process is gone -- left over" if row.get("here")
+                 else f"run this check on {row['host']} to be certain")
+        print(f"    {row['session']} on {row['host']} since "
+              f"{_clock(row['since'])} ({where})")
     schedules = report.get("active_schedules") or []
     print(f"  Active schedules:        {len(schedules) or 'none'}"
           + (f" (could not read them: {report['schedules_error']})"
@@ -2055,8 +2069,11 @@ def _print_stop_all_check(report: dict) -> int:
         print(f"    {row['id']} next {_clock(row['next_fire_at'])}: {row['prompt']}")
     daemons = report.get("daemon_pid_files") or {}
     print(f"  Daemons (pid files):     {len(daemons) or 'none'}")
-    for name, pid in daemons.items():
-        print(f"    {name}: pid {pid} (on whichever machine started it)")
+    for name, row in daemons.items():
+        print(f"    {name}: pid {row['pid']} ("
+              + ("running on this machine" if row.get("alive_here") else
+                 "not running on this machine; left over unless it runs on "
+                 "another login node") + ")")
     stop = report.get("last_stop") or {}
     print("  Last emergency stop:     "
           + (f"{_clock(stop.get('at'))} on {stop.get('host')}" if stop else "never"))
@@ -2069,11 +2086,22 @@ def _print_stop_all_check(report: dict) -> int:
     print(f"  Outlived their start:    {len(outlived) or 'none'}")
     for row in outlived:
         print(f"    pid {row['pid']} ({row['why']}): {row['command']}")
-    running = any((sessions, kept, schedules, daemons, here, outlived))
+    running = bool(
+        fresh or schedules or here or outlived
+        or any(r.get("alive_here") for r in kept)
+        or any(r.get("alive_here") for r in daemons.values()))
     if running:
-        print("Result: something is open or running -- see above. "
+        print("Result: something is running or scheduled -- see above. "
               "To end all of it: delfin-agent stop-all")
         return 1
+    leftovers = len(sessions) + len(kept) + len(daemons)
+    if leftovers:
+        print("Result: nothing runs on this machine, nothing is scheduled, "
+              f"and no session has sent a heartbeat in the last "
+              f"{HEARTBEAT_FRESH_S // 60} min. The records above are left "
+              "over; where one names another login node, run this check "
+              "there too.")
+        return 0
     print("Result: no agent is running or scheduled.")
     return 0
 
