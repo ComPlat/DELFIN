@@ -139,15 +139,17 @@ def _guarded_opener():
 
 
 def _fetch_bytes(url: str, timeout_s: int,
-                 want_status: bool = False):
+                 want_status: bool = False, headers: Optional[dict] = None):
     """GET a URL with a strict cap. Returns (body, content_type).
 
     With ``want_status`` the HTTP status comes along as a third element:
     a search endpoint answering 202 has served a challenge page, not an
     empty result set, and the caller has to be able to tell those apart.
+    ``headers`` are added to the request (a keyed engine's token).
     """
     req = urllib.request.Request(
-        url, headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*"}
+        url, headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*",
+                      **(headers or {})}
     )
     # Use the redirect-guarding opener so each hop is re-checked against the
     # deny-list (the initial URL is already validated by the caller).
@@ -338,6 +340,93 @@ def _ddg_instant_answer(query: str, timeout_s: int) -> list[dict]:
 _RESET_ATTEMPTS = 3
 
 
+# ---------------------------------------------------------------------------
+# Keyed engines: a real search index when the user has a key for one.
+# ---------------------------------------------------------------------------
+#
+# DuckDuckGo's HTML endpoint is scraped and challenged; OpenAlex and
+# Wikipedia are indexes, not the web. With a key the agent searches the way
+# an assistant with a search API does. Keys come from the credential store
+# (env var or ~/.delfin credential file): GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX
+# for Google's Custom Search JSON API, BRAVE_SEARCH_API_KEY for Brave
+# Search. Absent keys cost nothing; a failing keyed engine falls through to
+# the keyless chain and is named in the error.
+
+def _credential(name: str) -> str:
+    try:
+        from .credentials import load_credential
+        return str(load_credential(name) or "").strip()
+    except Exception:
+        return ""
+
+
+def _google_cse_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
+    key, cx = _credential("GOOGLE_CSE_API_KEY"), _credential("GOOGLE_CSE_CX")
+    if not key or not cx:
+        return []
+    url = ("https://www.googleapis.com/customsearch/v1?"
+           + urllib.parse.urlencode({"key": key, "cx": cx, "q": query,
+                                     "num": max(1, min(int(max_results), 10))}))
+    body, _ctype = _fetch_bytes(url, timeout_s)[:2]
+    data = json.loads(body.decode("utf-8", errors="replace"))
+    hits = []
+    for item in data.get("items") or []:
+        link = str(item.get("link") or "")
+        if link.startswith(("http://", "https://")):
+            hits.append({"title": str(item.get("title") or "").strip(),
+                         "url": link,
+                         "snippet": str(item.get("snippet") or "").strip()[:300],
+                         "index": "google"})
+    return hits[:max_results]
+
+
+def _brave_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
+    key = _credential("BRAVE_SEARCH_API_KEY")
+    if not key:
+        return []
+    url = ("https://api.search.brave.com/res/v1/web/search?"
+           + urllib.parse.urlencode({"q": query, "count": max(1, min(int(max_results), 20))}))
+    body, _ctype = _fetch_bytes(url, timeout_s, headers={
+        "Accept": "application/json", "X-Subscription-Token": key})[:2]
+    data = json.loads(body.decode("utf-8", errors="replace"))
+    hits = []
+    for item in ((data.get("web") or {}).get("results") or []):
+        link = str(item.get("url") or "")
+        if link.startswith(("http://", "https://")):
+            hits.append({"title": str(item.get("title") or "").strip(),
+                         "url": link,
+                         "snippet": str(item.get("description") or "").strip()[:300],
+                         "index": "brave"})
+    return hits[:max_results]
+
+
+_KEYED_ENGINES = (("google", _google_cse_search), ("brave", _brave_search))
+
+
+def keyed_engines_configured() -> list[str]:
+    """Which keyed engines have a key here, by name."""
+    out = []
+    if _credential("GOOGLE_CSE_API_KEY") and _credential("GOOGLE_CSE_CX"):
+        out.append("google")
+    if _credential("BRAVE_SEARCH_API_KEY"):
+        out.append("brave")
+    return out
+
+
+def _keyed_search(query: str, max_results: int, timeout_s: int) -> tuple[list[dict], str, str]:
+    """(hits, source, error) from the first keyed engine that answers."""
+    error = ""
+    for name, fn in _KEYED_ENGINES:
+        try:
+            hits = fn(query, max_results, timeout_s)
+        except Exception as exc:
+            error = f"{name}: {type(exc).__name__}: {str(exc)[:80]}"
+            continue
+        if hits:
+            return hits, name, ""
+    return [], "", error
+
+
 def _is_connection_reset(exc: BaseException) -> bool:
     """A connection the peer reset, however the platform spells it."""
     reason = getattr(exc, "reason", exc)
@@ -353,6 +442,9 @@ def web_search(query: str, *, max_results: int = 8,
     when the HTML endpoint returns nothing (e.g. blocked by a 202 anomaly)."""
     if not query.strip():
         return {"error": "query must be non-empty"}
+    keyed_hits, keyed_source, keyed_error = _keyed_search(query, max_results, timeout_s)
+    if keyed_hits:
+        return {"query": query, "results": keyed_hits, "source": keyed_source}
     encoded = urllib.parse.urlencode({"q": query})
     url = f"https://duckduckgo.com/html/?{encoded}"
     err = _check_url(url)
