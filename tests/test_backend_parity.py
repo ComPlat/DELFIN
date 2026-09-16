@@ -177,7 +177,10 @@ def test_notice_anthropic_api_lists_all_gaps():
 
 
 def test_notice_openai_without_permissions_lists_gated_caps():
-    text = bp.degradation_notice("api", "openai")
+    # Every factory path now wires a policy, so the provider alone
+    # implies nothing is missing; only a reported absence lists the gaps.
+    assert bp.degradation_notice("api", "openai") == ""
+    text = bp.degradation_notice("api", "openai", has_permissions=False)
     assert "permissions policy" in text
     for cap in ("file_tools", "bash", "subagents", "task_tools",
                 "undo_journal", "web_tools"):
