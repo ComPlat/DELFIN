@@ -3223,8 +3223,8 @@ def _needs_a_sandbox(name: str) -> bool:
 
 
 def _no_sandbox_refusal(name: str) -> str:
-    return (f"Tool '{name}' needs a workspace sandbox and this client has "
-            "none (no permissions configured), so it reads, writes and "
+    return (f"Tool '{name}' needs a workspace sandbox and no permissions "
+            "are configured on this client, so it reads, writes and "
             "fetches nothing. The document and calculation index tools "
             "still work.")
 
