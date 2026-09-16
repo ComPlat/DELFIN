@@ -12757,9 +12757,17 @@ class _DocToolExecutor:
             _t = str(args.get("target") or "").strip()
             if _t:
                 try:
-                    _resolved = (Path(_t) if Path(_t).is_absolute()
-                                 else (perms.workspace / _t)).resolve()
-                    if perms.find_readable_root_for(_resolved) is None:
+                    from .test_runner import split_target as _split_target
+                    _outside = None
+                    for _tok in _split_target(_t, perms.workspace) or [_t]:
+                        _head = _tok.split("::", 1)[0]
+                        _r = (Path(_head) if Path(_head).is_absolute()
+                              else (perms.workspace / _head)).resolve()
+                        if perms.find_readable_root_for(_r) is None:
+                            _outside = _r
+                            break
+                    _resolved = _outside
+                    if _outside is not None:
                         _record_security_event(
                             "locked_scope_exec", name, str(_resolved), blocked=True)
                         return (
