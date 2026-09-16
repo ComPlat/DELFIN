@@ -1504,13 +1504,52 @@ def resolve_office_workspace(configured) -> Path | None:
 # settings file, so a session deliberately placed on Plan could be talked
 # into "asks nothing", permanently, by one line of generated text. The
 # ladder is only a ladder if the thing it restrains cannot climb it.
-_USER_ONLY_SLASH_COMMANDS = frozenset({"/perms", "/perm-cycle"})
+#
+# Security review 2026-09-16: the same holds for every command that widens
+# trust, persists beyond the session, starts processes or decides on the
+# user's behalf. One ACTION line -- from an injected file, a web page or a
+# message another session sent -- could trust hooks and MCP servers, grant
+# a directory "always", approve every staged diff, schedule autonomous
+# loops, delete memories or write a user-wide memory.
+_USER_ONLY_SLASH_COMMANDS = frozenset({
+    "/perms", "/perm-cycle",
+    "/grant", "/hooks", "/mcp", "/approve", "/reject",
+    "/loop", "/forget", "/profile", "/session", "/init",
+    "/undo", "/undo-file", "/git",
+})
 
 
 def _slash_is_user_only(cmd: str) -> bool:
     """Whether this command may come only from the person, not the model."""
-    first = (cmd or "").strip().split(" ", 1)[0].strip().lower()
-    return first in _USER_ONLY_SLASH_COMMANDS
+    text = (cmd or "").strip()
+    first = text.split(" ", 1)[0].strip().lower()
+    if first in _USER_ONLY_SLASH_COMMANDS:
+        return True
+    # A memory the model asks for stays in the project; the user-wide store,
+    # which every repository reads, is the user's to write.
+    if first == "/remember":
+        rest = text[len("/remember"):].strip().lower()
+        if rest.startswith(("global:", "global ", "user:", "user ")):
+            return True
+    return False
+
+
+def _awaiting_user_answer(state: dict) -> bool:
+    """Whether the next sent text will be read as the USER's answer.
+
+    Text injected through the input box -- another session's message, a
+    scheduled wake-up, a watched-job result -- was taken as the answer to
+    an agent's question, and during a findings review as the approval of a
+    critic's REJECT (security review 2026-09-16). Such text waits while a
+    person's answer is expected."""
+    return bool(
+        state.get("_awaiting_agent_question")
+        or state.get("_awaiting_findings_review")
+        or state.get("_awaiting_gate_review")
+        or state.get("_awaiting_conflict_resolution")
+        or state.get("_active_gate")
+        or state.get("_pending_dashboard_action")
+        or state.get("_pending_approval"))
 
 
 # Every command token the slash dispatcher (_handle_slash_command)
@@ -6265,6 +6304,11 @@ def create_tab(ctx):
         check fails closed: a session that cannot tell whether it was
         stopped does not wake itself.
         """
+        if _awaiting_user_answer(state):
+            # Kept for later, never typed into the box: the next thing sent
+            # now would be taken as the user's answer.
+            state.setdefault("_deferred_on_its_own", []).append(text)
+            return False
         try:
             from delfin.agent import stop_all as _stop_all
             allowed = _stop_all.wakes_allowed(state.get("_armed_at", 0.0))
@@ -6315,6 +6359,12 @@ def create_tab(ctx):
         streaming = bool(state.get("streaming"))
         if not streaming and (input_textarea.value or "").strip():
             return
+        if not streaming and _awaiting_user_answer(state):
+            return          # messages stay in the inbox until the answer is given
+        if not streaming and state.get("_deferred_on_its_own"):
+            _deferred = state.pop("_deferred_on_its_own") or []
+            if _deferred and _send_on_its_own("\n\n".join(_deferred)):
+                return
         from delfin.agent import session_messages as _msgs
         messages = _msgs.take(key)
         if not messages:
@@ -19268,6 +19318,17 @@ def create_tab(ctx):
             if _sid:
                 from delfin.agent import bash_jobs as _bj_close
                 _bj_close.get_registry().stop_running(session_id=_sid)
+        except Exception:
+            pass
+        # Its background sub-agents end with it. They kept running with the
+        # parent's permissions and a confirm callback bound to a closed tab
+        # (security review 2026-09-16).
+        try:
+            _owner = _background_owner()
+            from delfin.agent import subagents as _sa_close
+            for _sa_id, _entry in (_sa_close.read_running() or {}).items():
+                if str((_entry or {}).get("owner_session") or "") == _owner:
+                    _sa_close.cancel_background(str(_sa_id))
         except Exception:
             pass
         engine = state.get("engine")
