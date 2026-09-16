@@ -2869,6 +2869,10 @@ def main(argv: list[str] | None = None) -> int:
         # This process holds the model's key: no command it runs may read it.
         from . import process_guard as _process_guard
         _process_guard.protect("terminal agent")
+        _exported = _process_guard.exported_provider_keys()
+        if _exported:
+            print("Warning: " + _process_guard.exported_key_advice(_exported),
+                  file=sys.stderr)
 
         def _end_with_everything() -> None:
             _stop_own_background_shells()

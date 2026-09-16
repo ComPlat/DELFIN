@@ -148,3 +148,21 @@ def uid_of(pid: int) -> Optional[int]:
     except (OSError, ValueError, IndexError):
         return None
     return None
+
+
+#: The model providers' keys DELFIN itself runs on.
+PROVIDER_KEYS = ("KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+
+
+def exported_provider_keys() -> list[str]:
+    """Names (never values) of provider keys present in this environment."""
+    return [k for k in PROVIDER_KEYS if os.environ.get(k)]
+
+
+def exported_key_advice(names) -> str:
+    return (f"{', '.join(names)} is exported in your environment. DELFIN's own "
+            "processes are protected, but the shell you exported it in, and "
+            "anything else started from it, can be read by every process of "
+            "yours through /proc. Store it with `delfin-agent credentials set "
+            f"{names[0]}` and remove the export.")
+

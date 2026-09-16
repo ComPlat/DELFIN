@@ -726,6 +726,18 @@ def main(argv=None):
         ),
     )
     args = parser.parse_args(argv)
+    # This process carries the user's environment, which may hold an
+    # exported provider key; the commands the dashboard runs are processes
+    # of the same user. Unreadable to them, and said once if a key is there.
+    try:
+        from delfin.agent import process_guard as _process_guard
+        _process_guard.protect("dashboard launcher")
+        _exported = _process_guard.exported_provider_keys()
+        if _exported:
+            print("Warning: " + _process_guard.exported_key_advice(_exported),
+                  file=sys.stderr)
+    except Exception:
+        pass
     # Record the REAL shell cwd the user launched from, BEFORE Voila resets the
     # kernel's cwd to the notebook's directory (inside the delfin checkout).
     # ONLY the agent tab reads this — to decide where to build (launch dir =
@@ -878,7 +890,8 @@ def main(argv=None):
     # never uses. notebook_shim is left alone (harmless redirect shim).
     _extensions = (
         "{'voila': True, 'jupyterlab': False, 'notebook': False, "
-        "'jupyter_lsp': False, 'jupyter_server_terminals': False}"
+        "'jupyter_lsp': False, 'jupyter_server_terminals': False, "
+        "'delfin.dashboard.server_guard': True}"
     )
     cmd = [
         sys.executable,
