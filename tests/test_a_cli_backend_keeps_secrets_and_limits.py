@@ -31,6 +31,11 @@ def launch(monkeypatch):
         raise _Captured()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    # The host is supplied, not measured: the client looks for the claude
+    # binary, which a CI runner does not have.
+    real_which = A.shutil.which
+    monkeypatch.setattr(A.shutil, "which", lambda name, *a, **k:
+                        "/usr/bin/claude" if name == "claude" else real_which(name, *a, **k))
     monkeypatch.setenv("KIT_TOOLBOX_API_KEY", KIT)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-own-key-for-the-cli")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-own-key-for-codex")
