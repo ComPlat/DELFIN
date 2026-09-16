@@ -1866,6 +1866,38 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
 )
 
 
+_PROCESS_CLEANUP_REGISTERED = False
+
+
+def _stop_what_this_process_started() -> None:
+    """Stop every background shell and MCP server this kernel started.
+
+    Both run in process groups of their own -- a shell so a restart cannot
+    take it down, a server so a terminal Ctrl+C does not -- and so neither
+    ended with the kernel. An agent must not go on working after its
+    dashboard is gone.
+    """
+    try:
+        from delfin.agent import bash_jobs as _bj
+        _bj.get_registry().stop_running()
+    except Exception:
+        pass
+    try:
+        from delfin.agent import mcp_client as _mcp
+        _mcp.reset_registry()
+    except Exception:
+        pass
+
+
+def _register_process_exit_cleanup() -> None:
+    global _PROCESS_CLEANUP_REGISTERED
+    if _PROCESS_CLEANUP_REGISTERED:
+        return
+    _PROCESS_CLEANUP_REGISTERED = True
+    import atexit
+    atexit.register(_stop_what_this_process_started)
+
+
 # Several agent sessions share one page and only one of them is shown. The
 # page scripts looked elements up with document.querySelector, which returns
 # the FIRST match -- so Enter in the second session clicked the first
@@ -19043,16 +19075,28 @@ def create_tab(ctx):
 
     ctx.add_init_js(_enter_key_init_js)
 
-    def _shutdown_tab() -> None:
-        """Close this session: save it, end its turn, stop its timers.
+    def _shutdown_tab(save: bool = True) -> None:
+        """Close this session: save it, end its turn, stop its timers and
+        the background shells it started.
 
-        For a session closed in the session list while the dashboard runs
-        on. Its timer chains check ``_closed`` before re-arming, so they end
-        with the tick that is already scheduled.
+        For a session closed in the session list, and for the kernel ending
+        (registered at exit below). Its timer chains check ``_closed``
+        before re-arming, so they end with the tick already scheduled.
+        Closing twice does nothing the second time.
         """
+        if state.get("_closed"):
+            return
         state["_closed"] = True
+        if save:
+            try:
+                _auto_save_session()
+            except Exception:
+                pass
         try:
-            _auto_save_session()
+            _sid = _ensure_task_session_id()
+            if _sid:
+                from delfin.agent import bash_jobs as _bj_close
+                _bj_close.get_registry().stop_running(session_id=_sid)
         except Exception:
             pass
         engine = state.get("engine")
@@ -19079,6 +19123,15 @@ def create_tab(ctx):
             _sched_close.get_scheduler().remove_fire_listener(id(state))
         except Exception:
             pass
+
+    # The kernel ending is the session ending, and nothing it started may
+    # outlive it. The server ends an unkept kernel with its last window and
+    # a kept one once it is no longer kept; this is what makes that the end
+    # of the agent's work too. Saved sessions were written at every turn,
+    # so the exit path does not write again.
+    import atexit as _atexit
+    _atexit.register(_shutdown_tab, save=False)
+    _register_process_exit_cleanup()
 
     return tab_widget, {
         "state": state,

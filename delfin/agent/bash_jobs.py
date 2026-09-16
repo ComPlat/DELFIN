@@ -1043,6 +1043,7 @@ class _Registry:
                 timeout_s=timeout_s,
             )
             self._jobs[jid] = job
+            job.session_id = session_id
 
         # Persist the job BEFORE the watchdog starts, so its exit update can
         # never race the initial write. After a restart this record is the
@@ -1153,6 +1154,27 @@ class _Registry:
         if not include_finished:
             jobs = [j for j in jobs if j.poll() is None]
         return jobs
+
+    def stop_running(self, session_id: Optional[str] = None) -> list[str]:
+        """Terminate the running jobs this process started -- all of them, or
+        those of ``session_id``. Returns the ids that were stopped.
+
+        A background shell runs in a session of its own so a restart cannot
+        take it down; that is also why nothing ended it when its dashboard
+        session closed. A closed session and an ending dashboard kernel stop
+        their shells here.
+        """
+        stopped: list[str] = []
+        for job in self.list_jobs(include_finished=False):
+            if session_id is not None and getattr(job, "session_id", "") != session_id:
+                continue
+            try:
+                ok, _message = self.kill(job.job_id)
+            except Exception:
+                ok = False
+            if ok:
+                stopped.append(job.job_id)
+        return stopped
 
     def kill(self, job_id: str, *, sig: int = signal.SIGTERM) -> tuple[bool, str]:
         job = self.get(job_id)
