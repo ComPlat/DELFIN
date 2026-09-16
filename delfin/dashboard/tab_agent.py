@@ -9856,7 +9856,8 @@ def create_tab(ctx):
                                     ("stdout", job.stdout_path),
                                     ("stderr", job.stderr_path),
                                 ):
-                                    if not path.is_file():
+                                    from delfin.agent.bash_jobs import is_own_output_file as _own_out
+                                    if not _own_out(path):
                                         continue
                                     sz = path.stat().st_size
                                     if sz > last_size[stream_name]:

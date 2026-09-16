@@ -13,8 +13,8 @@ from delfin.agent import bash_jobs as bj
 
 
 def test_a_shell_shows_the_tail_of_its_output(tmp_path, monkeypatch):
-    out = tmp_path / "job.out"; out.write_text("\n".join(f"line {i}" for i in range(100)) + "\n")
-    err = tmp_path / "job.err"; err.write_text("warning: x\n")
+    out = tmp_path / "kit_bg_job.stdout"; out.write_text("\n".join(f"line {i}" for i in range(100)) + "\n")
+    err = tmp_path / "kit_bg_job.stderr"; err.write_text("warning: x\n")
     reg = {"jobs": {"bg-1": {"command": "pytest -q", "stdout_path": str(out), "stderr_path": str(err)}}}
     monkeypatch.setattr(bj, "_load_registry_file", lambda ws: reg)
     text = BV.peek(tmp_path, "shells", "bg-1", lines=5)

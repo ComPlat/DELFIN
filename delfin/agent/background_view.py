@@ -219,7 +219,7 @@ def peek(workspace: Any, group: str, item_id: str, *, lines: int = _PEEK_LINES) 
             parts = []
             for key, label in (("stdout_path", "stdout"), ("stderr_path", "stderr")):
                 path = str(rec.get(key) or "")
-                if not path:
+                if not path or not _bj.is_own_output_file(path):
                     continue
                 try:
                     text = Path(path).read_text(encoding="utf-8", errors="replace")
