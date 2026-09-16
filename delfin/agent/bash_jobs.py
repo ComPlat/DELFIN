@@ -74,6 +74,7 @@ import os
 import re
 import secrets
 import signal
+import stat as _stat
 import subprocess
 import tempfile
 import threading
@@ -474,6 +475,33 @@ def _base_child_env() -> dict:
         return os.environ.copy()
 
 
+_OWN_OUTPUT_NAME = re.compile(r"^kit_bg_[A-Za-z0-9_-]+\.(?:stdout|stderr)$")
+
+
+def is_own_output_file(path) -> bool:
+    """Whether ``path`` is an output file this module created for a job.
+
+    The registry lives in ``<workspace>/.delfin/bash_jobs.json``, inside
+    the folder the agent may write. A record written there named any file
+    as a job's output: the next completion notice put the last 500
+    characters of it into the model's context (an SSH key, past every
+    read gate), and pruning an old record deleted it (review 2026-09-16).
+    So a path from a record is used only when it looks like what
+    ``start`` creates: a ``kit_bg_*.stdout``/``.stderr`` name, a regular
+    file that is no symlink and has no second hard link, owned by this
+    user. Never raises.
+    """
+    try:
+        raw = str(path or "")
+        if not raw or not _OWN_OUTPUT_NAME.match(os.path.basename(raw)):
+            return False
+        st = os.lstat(raw)
+        return (_stat.S_ISREG(st.st_mode) and st.st_nlink == 1
+                and st.st_uid == os.getuid())
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def _unlink_job_outputs(rec: dict) -> None:
     """Remove a finished job's stdout/stderr tempfiles.
 
@@ -484,7 +512,7 @@ def _unlink_job_outputs(rec: dict) -> None:
     """
     for key in ("stdout_path", "stderr_path"):
         raw = (rec or {}).get(key)
-        if not raw:
+        if not raw or not is_own_output_file(raw):
             continue
         try:
             Path(str(raw)).unlink()
@@ -747,6 +775,8 @@ _SBATCH_SUBMITTED_RE = re.compile(r"Submitted batch job\s+(\d+)")
 
 def _submitted_slurm_ids(stdout_path: str | Path) -> list[str]:
     """SLURM job ids a finished background command submitted, from its output."""
+    if not is_own_output_file(stdout_path):
+        return []
     try:
         text = Path(stdout_path).read_text(encoding="utf-8", errors="replace")
     except Exception:
@@ -1233,6 +1263,8 @@ def get_registry() -> _Registry:
 
 def _tail_chars(path: str | Path, limit: int = _EVENT_TAIL_CHARS) -> str:
     """Last ``limit`` characters of a job output file, best-effort."""
+    if not is_own_output_file(path):
+        return ""
     try:
         p = Path(path)
         size = p.stat().st_size
@@ -1542,6 +1574,8 @@ def read_output(
 
 
 def _read_lines(path: Path) -> list[str]:
+    if not is_own_output_file(path):
+        return []
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             return fh.read().splitlines()
