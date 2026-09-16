@@ -6828,7 +6828,8 @@ def create_tab(ctx):
                     # A background sub-agent that finished wakes the agent
                     # the same way; the turn it starts drains its report.
                     _done.extend(_bgv_wake.finished_background_agents(
-                        state.setdefault("_woken_agents", set())))
+                        state.setdefault("_woken_agents", set()),
+                        session_id=_background_owner()))
                     _prompt = _job_wake_prompt(_done)
                     if _prompt:
                         input_textarea.value = _prompt

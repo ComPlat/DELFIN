@@ -223,12 +223,18 @@ def cancel(workspace: Any, group: str, item_id: str) -> str:
     return f"Nothing to stop for {group} {item_id}."
 
 
-def finished_background_agents(already: set) -> list[dict]:
+def finished_background_agents(already: set,
+                               session_id: Optional[str] = None) -> list[dict]:
     """Background sub-agents of this session that finished and have not
     woken the agent yet, as wake entries. Adds each id to ``already``.
 
     Peeks at the pending-report markers without claiming them: the turn the
     wake starts drains the report itself, exactly once.
+
+    With ``session_id``, only markers that session's reservation owns wake
+    it. The process stamp alone told two sessions of one dashboard apart
+    from nothing: both woke on the same finished delegate, each with its
+    own ``already`` set. A marker without an owner is no session's.
     """
     out: list[dict] = []
     try:
@@ -240,6 +246,8 @@ def finished_background_agents(already: set) -> list[dict]:
             except Exception:
                 continue
             if not isinstance(rec, dict) or not _sa._entry_owned_by_us(rec):
+                continue
+            if session_id is not None and str(rec.get("owner_session") or "") != session_id:
                 continue
             sa_id = str(rec.get("sa_id") or f.stem)
             if sa_id in running or sa_id in already:
