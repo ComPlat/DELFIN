@@ -256,6 +256,26 @@ def resume_kernel_manager_class(base: type) -> type:
                         "fresh kernel.", name, _session.RECORD_DIR, listing,
                         os.environ.get("HOME", ""))
                 return ""
+            # A kept session is announced in the home directory, which the
+            # login nodes share, but its kernel belongs to the server on the
+            # machine that wrote the record. Asked from anywhere else, this
+            # server does not run it -- and dropping the record because of
+            # that ended three running agent sessions on 2026-09-16: their
+            # own server, finding them no longer kept and unwatched, ended
+            # their kernel ten seconds later.
+            record = next((r for r in _session.list_records()
+                           if r.get("session_name") == name), {})
+            elsewhere = str(record.get("host") or "")
+            here = _session._hostname()
+            if elsewhere and elsewhere != here:
+                if log:
+                    log.warning(
+                        "[delfin] return to session %r: it runs on %s, not on "
+                        "this machine (%s). Its record and its kernel are "
+                        "left alone; open the dashboard on %s to return to "
+                        "it. Starting a fresh kernel here.",
+                        name, elsewhere, here, elsewhere)
+                return ""
             try:
                 known = kid in self
             except Exception:
