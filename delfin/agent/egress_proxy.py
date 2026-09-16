@@ -78,6 +78,22 @@ def domain_allowed(host: str, allowed) -> bool:
     return False
 
 
+def _short_base() -> Optional[str]:
+    """A directory whose paths stay inside a Unix socket's 104-108 bytes.
+
+    TMPDIR on a cluster is often a long job scratch path, where binding
+    the proxy socket failed and an isolated command had no network."""
+    candidates = [tempfile.gettempdir(), "/tmp", "/var/tmp", "/dev/shm"]
+    for base in candidates:
+        try:
+            if (len(base) <= 60 and os.path.isdir(base)
+                    and os.access(base, os.W_OK | os.X_OK)):
+                return base
+        except OSError:
+            continue
+    return None
+
+
 class EgressProxy:
     """A minimal forward proxy with a domain allow-list. Thread per client."""
 
@@ -93,7 +109,7 @@ class EgressProxy:
         self.token = secrets.token_urlsafe(32)
         self._connector = connector or self._connect_public
         self._on_refusal = on_refusal
-        self._dir = tempfile.mkdtemp(prefix="delfin-egress-")
+        self._dir = tempfile.mkdtemp(prefix="dlf-egress-", dir=_short_base())
         os.chmod(self._dir, 0o700)
         self.socket_path = os.path.join(self._dir, "proxy.sock")
         # The sandbox helper reads the token from here (0600), never from

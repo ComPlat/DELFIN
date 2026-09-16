@@ -74,15 +74,22 @@ except OSError:
 
 
 @pytest.fixture
-def scene(tmp_path):
-    ws = tmp_path / "ws"
+def scene():
+    # A short base: a Unix socket path may hold 108 bytes, and pytest's
+    # temp directory plus a long test name exceeded it on some hosts.
+    import pathlib
+    import shutil
+    import tempfile
+    base = pathlib.Path(tempfile.mkdtemp(prefix="dsg", dir="/tmp")).resolve()
+    ws = base / "ws"
     ws.mkdir()
-    outside = tmp_path / "sessions"
+    outside = base / "sessions"
     outside.mkdir()
     (ws / "link.sock").symlink_to(outside / "door.sock")
-    probe = tmp_path / "probe.py"
+    probe = base / "probe.py"
     probe.write_text(_PROBE)
-    return ws, outside, probe
+    yield ws, outside, probe
+    shutil.rmtree(base, ignore_errors=True)
 
 
 def _run(ws, probe, *targets):
