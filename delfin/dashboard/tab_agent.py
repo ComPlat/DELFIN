@@ -14846,9 +14846,14 @@ def create_tab(ctx):
             _append_system_message("Cannot retry while streaming.")
             return
         engine = state["engine"]
-        if not engine or not engine.messages:
+        if not engine:
             _append_system_message("Nothing to retry.")
             return
+        # An empty engine history is NOT "nothing to retry": a request the
+        # endpoint never started (a gateway 400 after 260 s, 2026-09-16)
+        # ends with the engine dropping the user message, while the chat
+        # still shows it -- and the notice that ends such a turn promises
+        # /retry. The message is taken from the chat below.
         # Find the last user message
         last_user_text = ""
         # Remove trailing assistant + thinking messages from chat
