@@ -49,13 +49,46 @@ def _has_json_report() -> bool:
         return False
 
 
-def _tail(text: str, n: int = _TAIL_LINES) -> str:
+def _tail(text, n: int = _TAIL_LINES) -> str:
     if not text:
         return ""
+    # subprocess.TimeoutExpired carries bytes even with text=True; joining
+    # them crashed the timeout path ("sequence item 0: expected str
+    # instance, bytes found", driven 2026-09-16) and hid the timeout.
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
     lines = text.splitlines()
     if len(lines) <= n:
         return text
     return "...\n" + "\n".join(lines[-n:])
+
+
+def split_target(target: str, workspace) -> list[str]:
+    """The pytest arguments a ``target`` string stands for.
+
+    One path or node id stays one argument -- a node id can hold spaces in
+    its parameter brackets. Several space-separated paths become several
+    arguments when every one of them names something in the workspace:
+    "tests/a.py tests/b.py" reached pytest as a single missing path, exit
+    code 4, reported as a failed run (driven 2026-09-16).
+    """
+    import shlex
+    text = str(target or "").strip()
+    if not text:
+        return []
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        return [text]
+    if len(tokens) < 2:
+        return [text]
+    base = Path(str(workspace))
+    for tok in tokens:
+        head = tok.split("::", 1)[0]
+        cand = Path(head) if Path(head).is_absolute() else base / head
+        if not cand.exists():
+            return [text]
+    return tokens
 
 
 def _parse_json_report(path: Path) -> dict[str, Any]:
@@ -194,7 +227,7 @@ def run_tests(
     report_path = tmpdir / ("report.json" if use_json else "report.xml")
     cmd = [py, "-m", "pytest"]
     if target:
-        cmd.append(target)
+        cmd.extend(split_target(target, workspace))
     if pytest_args:
         cmd.extend(pytest_args)
     if use_json:
@@ -212,6 +245,7 @@ def run_tests(
             timeout=max(5, timeout_s),
         )
     except subprocess.TimeoutExpired as exc:
+        shutil.rmtree(tmpdir, ignore_errors=True)
         return {
             "status": "timeout",
             "framework": "pytest",
@@ -244,7 +278,15 @@ def run_tests(
 
     summary = parsed.get("summary") or {}
     status = "ok"
-    if proc.returncode == 0:
+    if proc.returncode in (4, 5):
+        # 4 = usage error (a path pytest could not find), 5 = no tests
+        # collected. Neither ran a test; "failed" told the agent its tests
+        # were red while the same files passed from bash (2026-09-16).
+        status = "error"
+        parsed.setdefault("_parse_error", (
+            "pytest usage error: a target was not found"
+            if proc.returncode == 4 else "no tests were collected"))
+    elif proc.returncode == 0:
         status = "ok"
     elif summary.get("failed", 0) or summary.get("errors", 0):
         status = "failed"
