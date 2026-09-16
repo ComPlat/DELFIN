@@ -2680,13 +2680,17 @@ def _resolve_subagent_model(
     try:
         # A call's own choice wins; otherwise the preset's definition says.
         preset = SUBAGENT_PRESETS.get(subagent_type)
-        override = (model_override or getattr(preset, "model", "")
-                    or "").strip().lower()
+        asked = (model_override or "").strip().lower()
+        override = (asked or getattr(preset, "model", "") or "").strip().lower()
         if override == "parent":
             return parent_model, "parent"
         if is_writer_preset(subagent_type):
             return parent_model, "parent"
-        if override != "cheap" and not _cheap_tier_enabled():
+        # Only the CALL may ask for the cheap tier against the user's
+        # switch. A definition file that says `model: cheap` is a default,
+        # and a default does not override agent.subagents.cheap_tier=false
+        # (review 2026-09-16).
+        if asked != "cheap" and not _cheap_tier_enabled():
             return parent_model, "parent"
         provider = str(
             getattr(parent_client, "_provider", "")
