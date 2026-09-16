@@ -129,10 +129,41 @@ def _alive(record: dict, now: float) -> bool:
     return True
 
 
+# A record this much older than stale is reaped, not merely skipped. Crashed
+# kernels never withdraw their record; the directory grew by one file per
+# crash and was read whole on every refresh (review 2026-09-16).
+_REAP_AFTER_S = 4 * _STALE_S
+
+
+def _reap(now: float) -> int:
+    """Remove records of sessions that are long gone. Never raises."""
+    removed = 0
+    try:
+        files = list(_DIR.glob("*.json"))
+    except Exception:
+        return 0
+    for f in files:
+        try:
+            record = json.loads(f.read_text(encoding="utf-8"))
+            updated = float((record or {}).get("updated_at") or 0)
+            dead_here = (isinstance(record, dict)
+                         and record.get("host") == socket.gethostname()
+                         and not _alive(record, now))
+            if now - updated > _REAP_AFTER_S or dead_here:
+                f.unlink()
+                removed += 1
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+    return removed
+
+
 def open_sessions(*, exclude_key: str = "") -> list[dict]:
     """The records of the sessions that are open, other than ``exclude_key``."""
     now = time.time()
     out: list[dict] = []
+    _reap(now)
     try:
         files = sorted(_DIR.glob("*.json"))
     except Exception:
