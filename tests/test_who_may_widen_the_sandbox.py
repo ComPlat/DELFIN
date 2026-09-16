@@ -119,7 +119,10 @@ _GATES = ("_check_read_access", "_run_permission_gate", "_get_path_arg",
           # had ever reached this list through _resolve_in_workspace
           # alone. list_files did, when `path` stopped being ignored, and
           # was reported as ungated while doing exactly the right thing.
-          "_resolve_in_workspace")
+          "_resolve_in_workspace",
+          # The secret deny list applied to a path a tool found itself
+          # (a grep or code-navigation hit), not one the model named.
+          "_is_secret_path")
 
 
 def test_every_tool_that_takes_a_path_asks_about_it():
