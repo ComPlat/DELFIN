@@ -94,9 +94,13 @@ _SIDEBAR_CSS = """<style>
 .delfin-session-close:focus-visible { opacity: 1; }
 .delfin-session-close:hover { background: #cbd5e1 !important; color: #1f2937; }
 .delfin-session-form { gap: 6px; padding: 8px; background: #ffffff;
-    border: 1px solid #e5e7eb; border-radius: 8px; }
-.delfin-session-form .widget-combobox, .delfin-session-form .widget-checkbox {
-    width: 100% !important; margin: 0; }
+    border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+/* The Combobox renders as .widget-text; without the width rule it kept
+   its default width, 4 px wider than the card, and the card (overflow
+   auto by default) grew a sideways scrollbar (user, 2026-09-16). */
+.delfin-session-form .widget-combobox, .delfin-session-form .widget-text,
+.delfin-session-form .widget-checkbox {
+    width: 100% !important; max-width: 100%; margin: 0; }
 .delfin-session-form input[type="text"] { font-size: 12px; border-radius: 6px; }
 .delfin-session-label { font-size: 11px; color: #6b7280; }
 .delfin-session-hint { font-size: 11px; color: #475569; line-height: 1.35; }
