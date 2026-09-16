@@ -421,6 +421,7 @@ def reserve_running(sa_id: str, *, subagent_type: str = "",
         **({"owner_session": owner_session} if owner_session else {}),
     })
     _note_pending_report(sa_id, subagent_type=subagent_type,
+                         owner_session=owner_session,
                          description=description)
 
 
@@ -570,7 +571,7 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 
 def _note_pending_report(sa_id: str, *, subagent_type: str = "",
-                         description: str = "") -> None:
+                         description: str = "", owner_session: str = "") -> None:
     """Record that this process owes its parent agent a report for ``sa_id``.
 
     Best-effort: a delegation must never fail because bookkeeping could
@@ -602,11 +603,21 @@ def _note_pending_report(sa_id: str, *, subagent_type: str = "",
         # Atomic AND owner-only: mkstemp creates the temporary file 0600
         # and os.replace carries that mode over, so this satisfies both the
         # torn-read fix and the state-file permission rule.
+        # The session that reserved the run owns its report too: with two
+        # sessions in one dashboard, a marker stamped only with the process
+        # woke both of them (review 2026-09-16).
+        if not owner_session:
+            try:
+                owner_session = str((read_running(include_dead=True).get(sa_id) or {})
+                                    .get("owner_session") or "")
+            except Exception:
+                owner_session = ""
         _atomic_write_json(_pending_path(sa_id), {
             "sa_id": sa_id,
             "type": subagent_type or "",
             "description": (description or "")[:120],
             "started_at": time.time(),
+            **({"owner_session": owner_session} if owner_session else {}),
             **_owner_stamp(),
         })
     except Exception:
