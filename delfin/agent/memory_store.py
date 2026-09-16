@@ -249,6 +249,15 @@ def load_memories(path: Path | None = None) -> list[dict[str, Any]]:
     return _read(path or _DEFAULT_PATH).get("facts", [])
 
 
+def _without_secrets(text):
+    """Memory text with credentials redacted. Never raises."""
+    try:
+        from .output_guard import scrub_secrets
+        return scrub_secrets(str(text or ""))
+    except Exception:
+        return text
+
+
 def save_memory(
     text: str,
     source: str = "user",
@@ -259,7 +268,7 @@ def save_memory(
     data = _read(p)
     facts = data.get("facts", [])
     facts.append({
-        "text": text.strip(),
+        "text": _without_secrets(text).strip(),
         "source": source,
         "created_at": time.time(),
     })
@@ -873,6 +882,13 @@ def save_typed_memory(text: str, **kwargs):
     use (bash_jobs.cross_process_lock): bounded, and it proceeds unlocked
     after its deadline rather than holding a turn hostage.
     """
+    # A memory is read back into every later session's prompt, in every
+    # project for the user-wide store, and sent to whichever provider that
+    # session uses. A key pasted into a chat and distilled, or a token the
+    # model was steered into remember(), must not travel that far.
+    text = _without_secrets(text)
+    if kwargs.get("title"):
+        kwargs["title"] = _without_secrets(kwargs["title"])
     try:
         from .bash_jobs import cross_process_lock
     except Exception:
