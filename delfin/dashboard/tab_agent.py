@@ -6207,8 +6207,19 @@ def create_tab(ctx):
                     else:
                         _stop.on_click(
                             lambda _b, _k=_key, _w=_ws: _stop_background(_w, *_k))
+                    _controls = [_stop]
+                    if _row["group"] in ("shells", "agents"):
+                        # A look inside, the way a background task's output
+                        # can be opened: the last lines land in the chat.
+                        _peek = widgets.Button(
+                            description="▸", tooltip="Show the last lines of its output",
+                            layout=widgets.Layout(width="26px", height="22px",
+                                                  padding="0"))
+                        _peek.on_click(
+                            lambda _b, _k=_key, _w=_ws: _peek_background(_w, *_k))
+                        _controls = [_peek, _stop]
                     _cache[_key] = (widgets.HBox(
-                        [_label, _stop],
+                        [_label, *_controls],
                         layout=widgets.Layout(align_items="center")), _label)
                 _box, _label = _cache[_key]
                 _html = _bgv.row_html(_row)
@@ -6256,6 +6267,12 @@ def create_tab(ctx):
         else:
             input_textarea.value = text
             _on_send(None)
+
+    def _peek_background(workspace, group, item_id):
+        """The ▸ on a Background row: the item's last output lines, in the chat."""
+        from delfin.agent import background_view as _bgv
+        text = _bgv.peek(workspace, group, item_id)
+        _append_system_message("▸ " + text[:4000])
 
     def _stop_background(workspace, group, item_id):
         """The × on a Background row: stop that item and say what happened."""

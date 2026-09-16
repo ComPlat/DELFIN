@@ -199,6 +199,55 @@ def render_html(view: dict, *, now: Optional[float] = None) -> str:
             + "".join(row_html(row) for row in items) + "</div>")
 
 
+_PEEK_LINES = 40
+
+
+def peek(workspace: Any, group: str, item_id: str, *, lines: int = _PEEK_LINES) -> str:
+    """The last lines of what a listed item has produced, for a look inside.
+
+    A shell shows the tail of its output (stderr after stdout when there is
+    any); a background agent its last recorded step. A watch or a wake-up
+    has no output of its own; the line says where to look instead.
+    """
+    item_id = str(item_id or "")
+    try:
+        if group == "shells":
+            from . import bash_jobs as _bj
+            rec = (_bj._load_registry_file(str(workspace or "")).get("jobs") or {}).get(item_id) or {}
+            if not rec:
+                return f"Shell {item_id}: no record of it."
+            parts = []
+            for key, label in (("stdout_path", "stdout"), ("stderr_path", "stderr")):
+                path = str(rec.get(key) or "")
+                if not path:
+                    continue
+                try:
+                    text = Path(path).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                tail = text.splitlines()[-lines:]
+                if tail:
+                    parts.append(f"[{label}, last {len(tail)} line(s)]\n" + "\n".join(tail))
+            cmd = str(rec.get("command") or rec.get("description") or "")[:120]
+            return (f"Shell {item_id} · {cmd}\n" + ("\n".join(parts) if parts else "(no output yet)"))
+        if group == "agents":
+            from . import subagents as _sa
+            rec = (_sa.read_running() or {}).get(item_id) or {}
+            if not rec:
+                return f"Background agent {item_id}: not running."
+            last = str(rec.get("last") or rec.get("last_action") or "")
+            return (f"Background agent {item_id} · {str(rec.get('description') or '')[:100]}\n"
+                    + (f"last step: {last}" if last else "(no step recorded yet)")
+                    + "\nOpen the agent view in the chat to follow it live.")
+        if group == "watches":
+            return f"Watch {item_id}: a cluster job or CI run; its result arrives in the chat when it ends."
+        if group == "wakeups":
+            return f"Wake-up {item_id}: fires as a message in this chat when due."
+    except Exception as exc:
+        return f"Could not look into {item_id}: {exc}"
+    return f"{item_id}: nothing to show."
+
+
 def cancel(workspace: Any, group: str, item_id: str) -> str:
     """Stop one listed item, and say what happened.
 
