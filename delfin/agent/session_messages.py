@@ -59,6 +59,14 @@ def send(to_key: str, text: str, *, from_key: str = "",
     from .state_paths import ensure_dir
     ensure_dir(_DIR)
     path = _inbox(str(to_key))
+    from .bash_jobs import cross_process_lock
+    # flock on the inbox is node-local on some shared filesystems; the
+    # cross-process lock adds a lease that holds across login nodes.
+    with cross_process_lock(path):
+        return _append(path, line, message, to_key)
+
+
+def _append(path, line: bytes, message: dict, to_key: str) -> dict:
     for _attempt in range(5):
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
@@ -82,6 +90,12 @@ def send(to_key: str, text: str, *, from_key: str = "",
 def take(key: str) -> list[dict]:
     """Every message waiting for session ``key``, removed from its inbox."""
     path = _inbox(str(key))
+    from .bash_jobs import cross_process_lock
+    with cross_process_lock(path):
+        return _take(path)
+
+
+def _take(path) -> list[dict]:
     try:
         fd = os.open(path, os.O_RDONLY)
     except FileNotFoundError:
