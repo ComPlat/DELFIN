@@ -36,8 +36,12 @@ _RESUME_REFRESH_S = 60.0
 # Everything is border-box and the column clips horizontally -- widgets set
 # to 100% width plus their padding made it scroll sideways.
 _SIDEBAR_CSS = """<style>
-.delfin-session-shell { width: 100%; align-items: flex-start; overflow-x: hidden; }
+.delfin-session-shell { width: 100%; align-items: flex-start; overflow-x: clip; }
 .delfin-sessions {
+    /* Stays on screen while a long chat scrolls: sticky against the page.
+       The shell clips with `clip`, not `hidden` -- `hidden` makes the
+       shell a scroll box and a sticky child sticks to that, not the page. */
+    position: sticky; top: 8px; align-self: flex-start;
     box-sizing: border-box; flex: 0 0 236px !important; width: 236px;
     max-width: 236px; margin: 0 12px 0 0; padding: 8px 8px 10px; gap: 6px;
     background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 10px;
@@ -208,16 +212,70 @@ def default_workspace(ctx: Any) -> str:
     return workspace
 
 
-def workspace_choices(ctx: Any) -> list[str]:
-    """Directories offered for a new session: the default, the agent
-    workspace, the calculations and the DELFIN checkout."""
+_PICKER_MAX = 200
+
+
+def workspace_choices(ctx: Any, typed: str = "") -> list[str]:
+    """Directories offered for a new session.
+
+    First the four the dashboard knows -- the default, the agent workspace,
+    the calculations and the DELFIN checkout -- then the folders a person
+    can pick the way an editor's open dialog lets them: with nothing typed,
+    the folders in the home directory; with a path typed, the folders in
+    it (when it ends with a slash or is a directory) or those of its parent
+    that start with what was typed. Hidden folders only when the typed
+    name starts with a dot. Asked on every keystroke, so bounded and
+    never raising.
+    """
     out: list[str] = []
     for d in (default_workspace(ctx), getattr(ctx, "agent_dir", None),
               getattr(ctx, "calc_dir", None), getattr(ctx, "repo_dir", None)):
         text = str(d or "").strip()
         if text and text not in out:
             out.append(text)
+    for text in _folders_like(typed):
+        if text not in out:
+            out.append(text)
+        if len(out) >= _PICKER_MAX:
+            break
     return out
+
+
+def _folders_like(typed: str) -> list[str]:
+    """The folders an editor's open dialog would show for ``typed``."""
+    try:
+        raw = str(typed or "").strip()
+        if not raw:
+            base, prefix = Path.home(), ""
+        else:
+            head, _sep, tail = raw.rpartition("/")
+            cand = Path(raw).expanduser()
+            # A trailing "." is a prefix for hidden folders, not the
+            # directory itself (Path would fold it away).
+            if raw.endswith("/") or (tail != "." and cand.is_dir()):
+                base, prefix = cand, ""
+            else:
+                base, prefix = Path(head or "/").expanduser(), tail
+        if not base.is_dir():
+            return []
+        shown = []
+        for entry in sorted(base.iterdir(), key=lambda e: e.name.lower()):
+            name = entry.name
+            if not name.startswith(prefix):
+                continue
+            if name.startswith(".") and not prefix.startswith("."):
+                continue
+            try:
+                if not entry.is_dir():
+                    continue
+            except OSError:
+                continue
+            shown.append(str(entry))
+            if len(shown) >= _PICKER_MAX:
+                break
+        return shown
+    except Exception:
+        return []
 
 
 def _exclude_locally(root: str, common_dir: str, pattern: str = ".delfin/") -> None:
@@ -624,6 +682,19 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         _refresh_resume_options()
 
     workdir_box.observe(_suggest_worktree, names="value")
+
+    def _refresh_folder_choices(change=None) -> None:
+        """The list under the box follows what is typed, like an editor's
+        open dialog: the folders of the typed path, or of its parent."""
+        try:
+            typed = str((change or {}).get("new") if change else workdir_box.value or "")
+            choices = workspace_choices(ctx, typed)
+            if list(workdir_box.options) != choices:
+                workdir_box.options = choices
+        except Exception:
+            pass
+
+    workdir_box.observe(_refresh_folder_choices, names="value")
     new_btn.on_click(_on_new)
     cancel_btn.on_click(_on_cancel)
     start_btn.on_click(_on_start)
