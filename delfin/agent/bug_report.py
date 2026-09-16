@@ -268,6 +268,47 @@ def _resolve_referenced(
     return (None, "outside-workspace") if escaped else (None, "")
 
 
+def _secret_reason(src: Path, workspace: Path | None) -> str:
+    """Why ``src`` must never be copied into the shared report archive, or "".
+
+    The report writer runs as the user, outside every agent gate, and the
+    archive is readable by the whole group. The dashboard collects the path
+    of every file the agent TRIED to touch -- including reads the secret
+    deny list refused -- so a prompt-injected read_file("~/.ssh/id_rsa")
+    that was denied still put the real key into the report (security review
+    2026-09-16). Two rules:
+
+    * the agent's own secret deny list (.env, *.key, *.pem, .ssh, .netrc,
+      credentials*, secrets*, id_rsa, ...), matched on the name, the path
+      relative to the workspace and the absolute path;
+    * outside the session workspace, any path with a hidden component
+      (~/.bash_history, ~/.config/..., ~/.docker/config.json, ~/.kube/...):
+      dotfiles outside the project are the user's private configuration.
+    """
+    import fnmatch
+    try:
+        from .api_client import _DEFAULT_PATH_DENY_GLOBS as globs
+    except Exception:
+        return "deny-list-unavailable"
+    resolved = src.resolve()
+    spellings = {resolved.name, str(resolved)}
+    inside = False
+    if workspace is not None:
+        try:
+            rel = resolved.relative_to(Path(workspace).expanduser().resolve())
+            spellings.add(str(rel))
+            inside = True
+        except (ValueError, OSError):
+            inside = False
+    for sp in spellings:
+        sp = sp.replace("\\", "/")
+        if any(fnmatch.fnmatch(sp, g) for g in globs):
+            return "skipped-secret"
+    if not inside and any(part.startswith(".") for part in resolved.parts[1:]):
+        return "skipped-private-dotfile"
+    return ""
+
+
 def _bundle_files(
     referenced: list, report_dir: Path,
     *, workspace: str | Path | None = None,
@@ -311,6 +352,11 @@ def _bundle_files(
                 records.append(rec)
                 continue
             rec["resolved_via"] = via
+            _why = _secret_reason(src, ws_base)
+            if _why:
+                rec["status"] = _why
+                records.append(rec)
+                continue
             size = src.stat().st_size
             rec["bytes"] = size
             if bundled >= _MAX_FILES:
@@ -334,7 +380,14 @@ def _bundle_files(
                 n += 1
             used_names.add(name)
             ws.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, ws / name)
+            # Text goes through the same redactor as the report itself: a
+            # config or log the agent read can hold a token that no file
+            # name gives away. Binary files are copied as they are.
+            _data = src.read_bytes()
+            if b"\0" not in _data[:8192]:
+                _guarded_write(ws / name, _data.decode("utf-8", errors="replace"))
+            else:
+                shutil.copy2(src, ws / name)
             manifest.append(f"{name}\t{src}")
             rec["status"] = "bundled"
             rec["bundled"] = f"workspace/{name}"
@@ -656,7 +709,9 @@ def write_bug_report(
         "turn_metrics": turn_metrics,
         "request_metrics": request_metrics,
         "settings": settings_snapshot(settings),
-        "recent_outcomes": recent_outcomes(),
+        # Not the outcome history: it holds the prompts of EVERY session of
+        # this user, and the archive is shared with the group.
+        "recent_outcomes": [],
         "chat_messages": chat_messages or [],
         "engine_messages": engine_messages or [],
         "cycle_history": cycle_history or [],
