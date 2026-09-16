@@ -89,11 +89,21 @@ def cull_config_args(grace: Optional[float] = None) -> list[str]:
     log lines truthful.
     """
     seconds = max(1, int(round(grace if grace is not None else grace_seconds())))
-    return [
+    args = [
         f"--MappingKernelManager.cull_idle_timeout={seconds}",
         f"--MappingKernelManager.cull_interval={POLL_SECONDS}",
         "--MappingKernelManager.cull_connected=False",
     ]
+    if not stays_up():
+        # The server stopped itself only when a kernel ended -- and a kernel
+        # exists only once somebody opens a window. A launcher that died
+        # before anyone did left a server with no kernel serving nothing:
+        # one ran for five days on port 8868 (2026-09-11 to -16). With no
+        # kernel and no request for this long, the server ends. A kept
+        # session has a live kernel, so it is never cut short by this.
+        args.append("--ServerApp.shutdown_no_activity_timeout="
+                    f"{int(NEVER_CONNECTED_SECONDS)}")
+    return args
 
 
 def kept_kernel_ids(*, root: str = "") -> set[str]:
