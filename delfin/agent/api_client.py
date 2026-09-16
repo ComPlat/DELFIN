@@ -15441,11 +15441,23 @@ class _DocToolExecutor:
         if not isinstance(pytest_args, list):
             return json.dumps({"error": "pytest_args must be a list"})
         timeout = int(arguments.get("timeout_s", 300) or 300)
+        # A test file is code the agent may have written itself, so it
+        # runs as the agent's shell does: without the provider keys in
+        # its environment and inside the same cage. It inherited the full
+        # environment and ran uncaged, beside a bash tool that got
+        # neither -- in a locked session too, where the shell is confined
+        # to the folder (review 2026-09-16).
+        env = _scrubbed_bash_env()
+        env.setdefault("LC_ALL", "C.UTF-8")
+        env.setdefault("LANG", "C.UTF-8")
         result = _tr.run_tests(
             workspace=perms.workspace,
             target=target,
             pytest_args=[str(a) for a in pytest_args],
             timeout_s=timeout,
+            env=env,
+            wrap=lambda argv, report_dir: _test_run_argv(
+                argv, perms, report_dir),
         )
         return json.dumps(result, ensure_ascii=False)
 
@@ -17499,6 +17511,22 @@ def _bash_isolation_argv(
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])
     return args + plain
+
+
+def _test_run_argv(argv: list[str], perms, report_dir) -> list[str]:
+    """pytest's argv in the cage the agent's shell runs in.
+
+    Same decision as ``_bash_isolation_argv`` (filesystem isolation in a
+    locked scope and in the unattended profile, the process cage wherever
+    bwrap works). That cage gives the command a fresh ``/tmp``, and the
+    runner reads the report back from a directory under it, so that one
+    directory is bound through, after every other mount."""
+    import shlex
+    caged = _bash_isolation_argv(shlex.join(argv), perms.workspace, perms)
+    if not caged or caged[0] != "bwrap":
+        return caged
+    rd = str(Path(report_dir).resolve())
+    return caged[:-3] + ["--bind", rd, rd] + caged[-3:]
 
 
 def _is_stream_unsupported_error(exc: Exception) -> bool:
