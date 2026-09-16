@@ -356,8 +356,13 @@ def scan_for_ungrounded_code_claims(
     repo_root: Path | str | None = None,
     observed_files: Optional[frozenset[str] | set[str]] = None,
     max_flags: int = 8,
+    named_in: str = "",
 ) -> list[CodeClaimFlag]:
     """Cross-check file citations in ``text`` against reality.
+
+    ``named_in`` is text the user (or another session) wrote: a path named
+    there is the subject of the task, often a file still to be created, and
+    is never reported -- neither invented nor unread.
 
     - a cited path that exists nowhere in the workspace  -> "nonexistent"
       (hard flag: drives the forced self-correction turn)
@@ -382,6 +387,8 @@ def scan_for_ungrounded_code_claims(
             _module = "." not in path.rsplit("/", 1)[-1]
             if _is_observed(path, obs) or (
                     _module and _is_observed(path + ".py", obs)):
+                continue
+            if named_in and path.strip("./") and path.strip("./") in named_in:
                 continue
             # A bare file name is a name, not a place. "chain_setup.py"
             # lives in delfin/co2/, "CONTROL.txt" in every run folder --
