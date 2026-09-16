@@ -274,19 +274,34 @@ def acquire_session_lock(session_id: str) -> Path:
     d = _ensure_dir()
     p = d / f"{session_id}.lock"
     me = os.getpid()
-    holder, ts = 0, 0.0
+    holder, ts, holder_host = 0, 0.0, ""
     try:
         info = json.loads(p.read_text(encoding="utf-8"))
         holder = int(info.get("pid", 0) or 0)
         ts = float(info.get("ts", 0) or 0)
+        holder_host = str(info.get("host", "") or "")
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         pass
-    if holder and holder != me:
-        if (time.time() - ts) < _LOCK_MAX_AGE_S and _pid_alive(holder):
+    here = _this_host()
+    elsewhere = bool(holder_host) and holder_host != here
+    if holder and (holder != me or elsewhere):
+        fresh = (time.time() - ts) < _LOCK_MAX_AGE_S
+        # A lock taken on another login node (they share this directory)
+        # cannot be judged by a pid, which names nothing here or a stranger;
+        # it holds until it is stale.
+        if fresh and (elsewhere or _pid_alive(holder)):
             raise SessionLockedError(session_id, holder)
         # Stale lock (dead pid or >1h old): break silently.
-    _atomic_write_text(p, json.dumps({"pid": me, "ts": time.time()}))
+    _atomic_write_text(p, json.dumps({"pid": me, "ts": time.time(), "host": here}))
     return p
+
+
+def _this_host() -> str:
+    try:
+        import socket
+        return (socket.gethostname() or "").strip()
+    except Exception:
+        return ""
 
 
 def release_session_lock(session_id: str) -> None:
@@ -294,7 +309,9 @@ def release_session_lock(session_id: str) -> None:
     p = _lock_path(session_id)
     try:
         info = json.loads(p.read_text(encoding="utf-8"))
-        if int(info.get("pid", 0) or 0) == os.getpid():
+        host = str(info.get("host", "") or "")
+        if (int(info.get("pid", 0) or 0) == os.getpid()
+                and (not host or host == _this_host())):
             p.unlink()
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         pass

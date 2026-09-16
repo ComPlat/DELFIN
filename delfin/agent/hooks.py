@@ -352,7 +352,10 @@ def _build_env(
     user_prompt: str = "",
     workspace: Path | str | None = None,
 ) -> dict[str, str]:
-    env = dict(os.environ)
+    # Hooks run on every tool call; the model provider keys the agent runs
+    # on are not theirs to read.
+    from .mcp_client import _DELFIN_PROVIDER_KEYS
+    env = {k: v for k, v in os.environ.items() if k not in _DELFIN_PROVIDER_KEYS}
     env["DELFIN_HOOK_EVENT"] = event
     if tool_name:
         env["DELFIN_TOOL_NAME"] = tool_name
