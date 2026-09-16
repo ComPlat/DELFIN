@@ -68,6 +68,7 @@ checked. They are 0600, so the content stays private to the owner.)
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import json
 import os
@@ -373,6 +374,8 @@ def cross_process_lock(path: Path):
     :func:`take_lock_timeouts`.
     """
     handle = None
+    lease = None
+    lock_path = None
     try:
         lock_path = Path(str(path) + _LOCK_SUFFIX)
         # A state path is absolute or it is not a state path. A relative
@@ -386,19 +389,29 @@ def cross_process_lock(path: Path):
             yield
             return
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(lock_path, "a+")
         deadline = time.monotonic() + _LOCK_TIMEOUT_S
+        handle = open(lock_path, "a+")
         while True:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except OSError:
+            except OSError as exc:
+                if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                    # The filesystem does not do flock: the lease alone.
+                    handle.close()
+                    handle = None
+                    break
                 if time.monotonic() >= deadline:
                     _note_lock_timeout(lock_path)
                     handle.close()
                     handle = None
+                    deadline = None
                     break
                 time.sleep(0.005)
+        if deadline is not None:
+            lease = _take_lease(Path(str(path) + _LEASE_SUFFIX), deadline)
+            if lease is None:
+                _note_lock_timeout(lock_path)
     except Exception:
         if handle is not None:
             try:
@@ -409,6 +422,8 @@ def cross_process_lock(path: Path):
     try:
         yield
     finally:
+        if lease is not None:
+            _release_lease(lease)
         if handle is not None:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -418,6 +433,103 @@ def cross_process_lock(path: Path):
                 handle.close()
             except OSError:
                 pass
+
+
+_LEASE_SUFFIX = ".lease"
+#: A lease older than this is broken whoever holds it. The cycles it guards
+#: load, change and write one JSON file; half a minute also absorbs the
+#: clock difference between login nodes.
+_LEASE_S = 30.0
+
+
+def _lease_is_stale(lease_path: Path) -> tuple[bool, str]:
+    """(stale, nonce) of the lease on disk."""
+    try:
+        raw = lease_path.read_text(encoding="utf-8")
+        mtime = lease_path.stat().st_mtime
+    except OSError:
+        # Gone: released a moment ago. Not "stale" -- breaking now would
+        # rename the lease somebody else creates next. Just try again.
+        return False, ""
+    try:
+        info = json.loads(raw)
+    except ValueError:
+        # Being written this instant, or torn: judged by its age alone, and
+        # broken only against that same content (see _break_lease).
+        return (time.time() - mtime) > _LEASE_S, "torn:" + raw
+    nonce = str(info.get("nonce") or "")
+    if time.time() - float(info.get("ts") or 0) > _LEASE_S and time.time() - mtime > _LEASE_S:
+        return True, nonce
+    here = this_machine()
+    if (str(info.get("host") or "") == here["host"]):
+        if info.get("boot") and here["boot_id"] and info.get("boot") != here["boot_id"]:
+            return True, nonce              # this machine restarted since
+        if not _pid_alive(int(info.get("pid") or 0)):
+            return True, nonce
+    return False, nonce
+
+
+def _take_lease(lease_path: Path, deadline: float):
+    here = this_machine()
+    nonce = secrets.token_hex(8)
+    body = json.dumps({"host": here["host"], "boot": here["boot_id"],
+                       "pid": os.getpid(), "ts": time.time(), "nonce": nonce})
+    while True:
+        try:
+            fd = os.open(lease_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, body.encode("utf-8"))
+            finally:
+                os.close(fd)
+            return (lease_path, nonce)
+        except FileExistsError:
+            stale, stale_nonce = _lease_is_stale(lease_path)
+            if stale:
+                _break_lease(lease_path, stale_nonce)
+                continue
+        except OSError:
+            return None
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.005)
+
+
+def _break_lease(lease_path: Path, judged_nonce: str) -> None:
+    """Remove a stale lease without removing a fresh one that replaced it
+    between the judgement and the removal."""
+    aside = lease_path.with_name(f"{lease_path.name}.broken-{secrets.token_hex(4)}")
+    try:
+        os.rename(lease_path, aside)
+    except OSError:
+        return
+    try:
+        raw = aside.read_text(encoding="utf-8")
+    except OSError:
+        raw = None
+    try:
+        taken = "torn:" + raw if judged_nonce.startswith("torn:") else \
+            str(json.loads(raw or "{}").get("nonce") or "")
+    except ValueError:
+        taken = "torn:" + (raw or "")
+    if raw is None or taken != judged_nonce:
+        try:
+            os.link(aside, lease_path)          # put the fresh one back
+        except OSError:
+            pass
+    try:
+        aside.unlink()
+    except OSError:
+        pass
+
+
+def _release_lease(lease) -> None:
+    lease_path, nonce = lease
+    try:
+        info = json.loads(lease_path.read_text(encoding="utf-8"))
+        if str(info.get("nonce") or "") == nonce:
+            lease_path.unlink()
+    except (OSError, ValueError):
+        pass
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
