@@ -236,8 +236,8 @@ class TurnResult:
 def permission_mode(engine) -> str:
     """The posture, or "" when this backend carries no permissions object.
 
-    create_client builds KitToolPermissions only for the kit and ollama
-    providers. On the others the file and shell tools refuse outright, so
+    create_client builds KitToolPermissions for every chat-API provider
+    (kit, ollama, openai). On the CLI backends there is none, so
     an empty answer here is a fact the banner has to state rather than
     paper over with a plausible-looking default.
     """

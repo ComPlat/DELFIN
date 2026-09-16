@@ -86,8 +86,8 @@ _MATRIX: dict[str, dict[str, tuple[str, str]]] = {
     # tools are suppressed for models whose resolved capabilities report
     # supports_tools=False, weak-model profiles trim to a core tool set,
     # and every coding tool needs a KitToolPermissions policy (wired by
-    # the kit/ollama factory paths in create_client; the plain openai
-    # provider path constructs the client without one).
+    # every OpenAIClient factory path in create_client: kit, ollama and
+    # the openai API provider).
     BACKEND_OPENAI: {
         CAP_TOOL_LOOP: (CONDITIONAL, (
             "full agentic loop in OpenAIClient.stream_message; suppressed "
@@ -96,10 +96,9 @@ _MATRIX: dict[str, dict[str, tuple[str, str]]] = {
             "chat-only; weak-model profiles trim to a core tool set"
         )),
         CAP_FILE_TOOLS: (CONDITIONAL, (
-            "read tools (read_file/grep_file/list_files) are always "
-            "advertised; write_file/edit_file/multi_edit/apply_patch need "
-            "a workspace permissions policy — the kit and ollama factory "
-            "paths wire one, the plain openai provider path does not"
+            "need a workspace permissions policy, which every factory "
+            "path wires; a client without one runs only the document and "
+            "calculation index tools (_needs_a_sandbox)"
         )),
         CAP_BASH: (CONDITIONAL, (
             "needs a workspace permissions policy; commands pass the "
@@ -268,8 +267,8 @@ _MATRIX: dict[str, dict[str, tuple[str, str]]] = {
 
 #: Capabilities on the reference backend that exist only once a workspace
 #: permissions policy is configured (see the reference-row reasons above).
-#: Used by the degradation notice for the plain openai provider path,
-#: which constructs OpenAIClient without a policy.
+#: Used by the degradation notice when a caller reports a client without
+#: a policy (has_permissions=False).
 _PERMISSION_GATED_CAPS: tuple[str, ...] = (
     CAP_FILE_TOOLS, CAP_BASH, CAP_SUBAGENTS, CAP_TASK_TOOLS,
     CAP_UNDO_JOURNAL, CAP_WEB_TOOLS,
@@ -281,7 +280,7 @@ _BACKEND_ALIASES: dict[str, str] = {
     "api": BACKEND_ANTHROPIC_API,
     "anthropic": BACKEND_ANTHROPIC_API,
     "codex": BACKEND_CODEX_CLI,
-    # Provider names accepted in the single-argument form: both factory
+    # Provider names accepted in the single-argument form: these factory
     # paths construct OpenAIClient with a permissions policy; the default
     # provider yields the CLI client.
     "kit": BACKEND_OPENAI,
@@ -382,8 +381,8 @@ def degradation_notice(
     exactly once, never per turn). Pure: the caller supplies backend,
     provider and — for the OpenAI-compatible backend — whether a
     workspace permissions policy is configured (``has_permissions``;
-    None means infer from the provider: the kit/ollama factory paths
-    wire one, the plain openai path does not). Never raises.
+    None means the factory default, which wires one on every
+    OpenAIClient path). Never raises.
     """
     if not first_turn:
         return ""
@@ -391,11 +390,7 @@ def degradation_notice(
     gaps = capability_gaps(canon)
     perm_gaps: list[str] = []
     if canon == BACKEND_OPENAI:
-        no_perms = (
-            has_permissions is False
-            or (has_permissions is None
-                and str(provider or "").strip().lower() == "openai")
-        )
+        no_perms = has_permissions is False
         if no_perms:
             perm_gaps = [CAPABILITY_LABELS[c] for c in _PERMISSION_GATED_CAPS]
     if not gaps and not perm_gaps:
@@ -425,8 +420,8 @@ def degradation_notice(
         )
     lines.append(
         "Full surface: start the session on the OpenAI-compatible API "
-        "backend with a workspace permissions policy (provider 'kit' or "
-        "'ollama' in create_client)."
+        "backend with a workspace permissions policy (provider 'kit', "
+        "'ollama' or 'openai' with backend 'api' in create_client)."
     )
     lines.append(
         "Tell the user about these limits once at the start of your next "
