@@ -479,6 +479,14 @@ class Scheduler:
                         "wake-up. Schedule it again if it is still wanted."))
                     changed = True
                     continue
+                if fire_callback is not None and self.owner_of(ent.id):
+                    # A wake-up a SESSION scheduled is that session's. The
+                    # override is how the headless daemon fires entries, and
+                    # it used to fire these too: with the dashboard closed,
+                    # a session's "check again in 30 min" became an agent
+                    # turn nobody watched (review 2026-09-16, after a tmux
+                    # that ended mid-run). It waits for its session instead.
+                    continue
                 cb = fire_callback or self._callback_for(ent)
                 if cb is None:
                     continue
