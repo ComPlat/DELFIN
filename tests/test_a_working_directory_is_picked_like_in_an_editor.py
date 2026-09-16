@@ -75,3 +75,17 @@ def test_the_session_bar_stays_on_screen_while_the_chat_scrolls():
     shell = css[css.index(".delfin-session-shell {"):]
     shell = shell[:shell.index("}")]
     assert "overflow-x: hidden" not in shell
+
+
+def test_the_new_session_card_cannot_scroll_sideways():
+    """Measured on 2026-09-16: the card's content was 220 px in a 216 px box
+    because the Combobox renders as .widget-text, which the width rule did
+    not name, and the card's default overflow is auto."""
+    css = AS._SIDEBAR_CSS
+    i = css.index(".delfin-session-form {")
+    block = css[i:css.index("}", i)]
+    assert "overflow: hidden" in block
+    j = css.index(".delfin-session-form .widget-combobox")
+    rule = css[j:css.index("}", j)]
+    assert ".delfin-session-form .widget-text" in rule
+    assert "max-width: 100%" in rule
