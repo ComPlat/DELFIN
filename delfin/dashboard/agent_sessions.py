@@ -157,20 +157,43 @@ def load_open_sessions() -> list[dict]:
         return []
     rows = data.get("sessions") if isinstance(data, dict) else None
     out: list[dict] = []
+    here = _host()
     for row in rows or []:
-        if isinstance(row, dict) and str(row.get("session_id") or "").strip():
-            out.append({"session_id": str(row["session_id"]).strip(),
-                        "workspace": str(row.get("workspace") or "")})
+        if not (isinstance(row, dict) and str(row.get("session_id") or "").strip()):
+            continue
+        # The home directory is shared by every login node. A session left
+        # open on node A must not be reopened by a dashboard on node B --
+        # two views would save over one conversation. Rows from before the
+        # field carry no host and are restored as before.
+        host = str(row.get("host") or "")
+        if host and host != here:
+            continue
+        out.append({"session_id": str(row["session_id"]).strip(),
+                    "workspace": str(row.get("workspace") or "")})
     return out[:_MAX_OPEN]
 
 
-def save_open_sessions(rows: list[dict]) -> None:
-    """Remember which sessions are open. Never raises."""
+def _host() -> str:
     try:
-        from delfin.agent.state_paths import ensure_dir, write_text
+        import socket
+        return socket.gethostname()
+    except Exception:
+        return ""
+
+
+def save_open_sessions(rows: list[dict]) -> None:
+    """Remember which sessions are open, whole and with this host's name.
+
+    Never raises. Written atomically: a torn write of this file is the
+    whole list of open sessions gone on the next start."""
+    try:
+        from delfin.agent.state_paths import ensure_dir, write_text_atomic
         ensure_dir(_OPEN_SESSIONS_PATH.parent)
-        write_text(_OPEN_SESSIONS_PATH,
-                   json.dumps({"sessions": rows}, indent=2) + "\n")
+        here = _host()
+        stamped = [{**row, "host": row.get("host") or here}
+                   for row in rows if isinstance(row, dict)]
+        write_text_atomic(_OPEN_SESSIONS_PATH,
+                          json.dumps({"sessions": stamped}, indent=2) + "\n")
     except Exception:
         pass
 

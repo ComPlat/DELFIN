@@ -96,9 +96,9 @@ def announce(key: str, *, session_id: str = "", title: str = "",
     if last and last[0] == body and now - last[1] < _HEARTBEAT_S:
         return
     try:
-        from .state_paths import ensure_dir, write_text
+        from .state_paths import ensure_dir, write_text_atomic
         ensure_dir(_DIR)
-        write_text(_path(key), json.dumps({**record, "updated_at": now}))
+        write_text_atomic(_path(key), json.dumps({**record, "updated_at": now}))
         _last_written[key] = (body, now)
     except Exception:
         pass
