@@ -2331,6 +2331,31 @@ def _is_secret_path(perms: Any, path: Path) -> bool:
         return True
 
 
+_MCP_PATH_ARG_KEYS = ("path", "paths", "file", "files", "file_path", "filename",
+                      "folder", "directory", "dir", "root", "pdf_path", "source",
+                      "target", "input_path")
+
+
+def _mcp_secret_path_arg(args: Any, perms: Any) -> str:
+    """The first path argument of an MCP call that names a secret file, or ""."""
+    if not isinstance(args, dict):
+        return ""
+    for key in _MCP_PATH_ARG_KEYS:
+        val = args.get(key)
+        values = val if isinstance(val, (list, tuple)) else [val]
+        for v in values:
+            if not isinstance(v, str) or not v.strip():
+                continue
+            try:
+                cand = Path(v).expanduser()
+                cand = cand if cand.is_absolute() else perms.workspace / cand
+            except Exception:
+                continue
+            if _is_secret_path(perms, cand):
+                return v
+    return ""
+
+
 # Deny globs that match a NAME, not a kind of secret file.
 _NAME_ONLY_SECRET_GLOBS = frozenset({
     "credentials*", "**/credentials*", "secrets*", "**/secrets*"})
@@ -2358,7 +2383,7 @@ def _reviewed_source_named_like_a_secret(perms: Any, resolved: Path, rel: str) -
             return False
         spellings = {str(rel).replace("\\", "/"), str(resolved).replace("\\", "/")}
         hits = {g for g in getattr(perms, "path_deny_globs", ()) or ()
-                for sp in spellings if _fn.fnmatch(sp, g)}
+                for sp in spellings if _fn.fnmatchcase(sp.lower(), g.lower())}
         if not hits or not hits <= _NAME_ONLY_SECRET_GLOBS:
             return False
         return bool(_DocToolExecutor._is_reviewed_project_file(Path(resolved)))
@@ -3455,6 +3480,13 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     "credentials*", "**/credentials*", "secrets*", "**/secrets*",
     "*.secret", "**/*.secret",
     ".netrc", "**/.netrc", "**/.aws/credentials",
+    # Added after the security review of 2026-09-16: credential stores of
+    # common tools, the .ssh directory NAME itself (".ssh/**" does not match
+    # "list_files(path='.ssh')"), direnv and *.env files.
+    ".ssh", "**/.ssh", ".git-credentials", "**/.git-credentials",
+    ".npmrc", "**/.npmrc", ".pypirc", "**/.pypirc", ".pgpass", "**/.pgpass",
+    ".kube/**", "**/.kube/**", ".docker/config.json", "**/.docker/config.json",
+    ".envrc", "**/.envrc", "*.env", "**/*.env",
     # Common SSH private-key names even outside a .ssh/ directory.
     "id_rsa", "id_rsa.*", "id_dsa", "id_ecdsa", "id_ed25519",
     "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
@@ -4182,8 +4214,12 @@ class KitToolPermissions:
         return self._under_any(resolved, self.confirm_write_dirs)
 
     def matches_path_deny(self, rel_path: str) -> bool:
+        # Case-insensitive: fnmatch follows the filesystem, which on Linux
+        # let Credentials.json and SECRETS.yaml through (review 2026-09-16).
         rp = rel_path.replace("\\", "/")
-        return any(fnmatch.fnmatch(rp, g) for g in self.path_deny_globs)
+        low = rp.lower()
+        return any(fnmatch.fnmatch(rp, g) or fnmatch.fnmatchcase(low, g.lower())
+                   for g in self.path_deny_globs)
 
     def matches_path_protected(self, rel_path: str) -> bool:
         """Self-modification guard: paths that always require explicit confirm,
@@ -12175,6 +12211,22 @@ class _DocToolExecutor:
                 rel = str(resolved).replace("\\", "/")
             if perms.matches_path_deny(rel):
                 return tok
+        # Relative tokens too. Only /, ~ and $HOME were looked at, so
+        # `cat .env`, `head config/server.key` and `sed -n p .netrc` ran
+        # without a question in default mode (review 2026-09-16).
+        for tok in re.findall(r"(?<![^\s;|&<>()=])(?![-/~$])[^\s;|&<>()`'\"=]+", cleaned):
+            rel = tok[2:] if tok.startswith("./") else tok
+            if not rel or rel.startswith(("http:", "https:")):
+                continue
+            if perms.matches_path_deny(rel) or perms.matches_path_deny(
+                    rel.rsplit("/", 1)[-1]):
+                try:
+                    resolved = (perms.workspace / rel).resolve()
+                    if _reviewed_source_named_like_a_secret(perms, resolved, rel):
+                        continue
+                except Exception:
+                    pass
+                return tok
         return None
 
     # Interpreters that run a script file given as an argument. A command like
@@ -12859,6 +12911,18 @@ class _DocToolExecutor:
             # --check` (read-only) → allowed; a real apply in plan mode is
             # already refused by the mode=="plan" guard above.
             if bool(args.get("check_only", False)):
+                # A dry run writes nothing, but it READS the target and a
+                # mismatch echoes the line it found: one check_only per line
+                # read .env (review 2026-09-16). Secrets stay denied.
+                try:
+                    from . import patch_apply as _pa
+                    _dry_files = _pa._files_in_diff(args.get("diff", "") or "")
+                except Exception:
+                    _dry_files = []
+                for _rel in _dry_files:
+                    if _is_secret_path(perms, perms.workspace / str(_rel)):
+                        return (f"read denied: '{_rel}' matches a secret deny-glob; "
+                                "a check_only patch against it is refused too.")
                 return None
             diff = args.get("diff", "") or ""
             try:
@@ -13416,6 +13480,17 @@ class _DocToolExecutor:
         # whose effects it cannot judge, and "cannot judge" was silently
         # spelled "allow". Read-only names pass; the rest need a decision.
         if base in _MCP_READONLY_TOOL_BASES:
+            # Read-only is not secret-free: mcp__kit-coding__read_file(".env")
+            # and delfin-ops read_pdf(<any path>) passed with no read gate at
+            # all (review 2026-09-16). The native tools' secret deny list
+            # applies to every path argument; the outside-workspace question
+            # stays with the server's own scope.
+            if perms is not None:
+                _denied = _mcp_secret_path_arg(args, perms)
+                if _denied:
+                    return (f"read denied: '{_denied}' matches a secret deny-glob "
+                            "(.ssh/, .env, *.key, credentials, *.pem). These are "
+                            "never readable, regardless of mode or confirm.")
             return None
         return self._gate_side_effecting_mcp_tool(name, base, args, perms)
 
@@ -15143,6 +15218,19 @@ class _DocToolExecutor:
             gate_err = self._run_permission_gate("apply_patch", arguments, perms)
             if gate_err is not None:
                 return json.dumps({"error": gate_err})
+        elif perms is not None:
+            # A dry run skips the write gate (it stays usable in plan mode)
+            # but not the secret deny list: it READS the target and echoes
+            # a mismatching line (security review 2026-09-16).
+            try:
+                _dry_files = _pa._files_in_diff(diff)
+            except Exception:
+                _dry_files = []
+            for _rel in _dry_files:
+                if _is_secret_path(perms, perms.workspace / str(_rel)):
+                    return json.dumps({"error": (
+                        f"read denied: '{_rel}' matches a secret deny-glob; "
+                        "a check_only patch against it is refused too.")})
         if getattr(perms, "mode", "") == "diff_approval" and not check_only:
             # Per-file staging via the pure-Python applier: post-images are
             # computed in memory for ALL files before anything is staged.
@@ -15317,6 +15405,17 @@ class _DocToolExecutor:
                 perms.workspace, symbol,
                 file_hint=file_hint, language=language,
             )
+        # The grep backend reads every file of the workspace and returns the
+        # matching line: find_references("DB_PASSWORD") answered with the
+        # line of .env (review 2026-09-16). Secret files drop out.
+        if isinstance(result, dict) and isinstance(result.get("matches"), list):
+            kept = []
+            for m in result["matches"]:
+                rel = str((m or {}).get("path") or "")
+                if rel and _is_secret_path(perms, perms.workspace / rel):
+                    continue
+                kept.append(m)
+            result["matches"] = kept
         return json.dumps(result, ensure_ascii=False)
 
     # ------- Notifications / remote triggers ------------------------------
