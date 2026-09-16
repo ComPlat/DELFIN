@@ -32,8 +32,19 @@ macos = pytest.mark.skipif(sys.platform != "darwin" or not SB.available(),
 
 
 @pytest.fixture
-def scene(tmp_path, monkeypatch):
+def scene(monkeypatch):
+    # A short base: macOS allows 104 bytes for a Unix socket path, and
+    # pytest's temp directory under /private/var/folders is longer.
+    import pathlib
+    import shutil
+    import tempfile
     from delfin.agent import api_client as A
+    tmp_path = pathlib.Path(tempfile.mkdtemp(prefix="dsb", dir="/tmp")).resolve()
+    yield from _scene(A, tmp_path, monkeypatch)
+    shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def _scene(A, tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents=True)
     (home / ".ssh" / "id_ed25519").write_text("PRIVATE-KEY-PROBE\n")
@@ -41,7 +52,7 @@ def scene(tmp_path, monkeypatch):
     ws.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(A, "_record_security_event", lambda *a, **k: None)
-    return A, tmp_path, home, ws
+    yield A, tmp_path, home, ws
 
 
 def _run(A, argv, ws):

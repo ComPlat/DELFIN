@@ -9,6 +9,7 @@ These tests run the host-independent floor with the cage switched off.
 import json
 import os
 import subprocess
+import sys
 import time
 
 import pytest
@@ -53,9 +54,10 @@ def test_a_timeout_ends_the_whole_group(tmp_path):
 
 
 def test_the_command_has_no_terminal_and_a_session_of_its_own():
-    out = C.run(["/bin/bash", "-c",
-                 "if [ -t 0 ]; then echo tty; else echo notty; fi; "
-                 "ps -o sid= -p $$ | tr -d ' '"], timeout=30)
+    # Asked in Python: `ps -o sid=` is Linux procps, not macOS ps.
+    out = C.run([sys.executable, "-c",
+                 "import os, sys; print('tty' if sys.stdin.isatty() else 'notty', os.getsid(0))"],
+                timeout=30)
     first, sid = out.stdout.split()
     assert first == "notty"
     assert int(sid) != os.getsid(0)
