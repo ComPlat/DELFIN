@@ -5372,10 +5372,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "web_search",
             "description": (
-                "Web search; returns {title, url, snippet}. Uses Google or "
-                "Brave when a key is configured, else DuckDuckGo with "
-                "OpenAlex/Wikipedia fallbacks. Only for facts not in the "
-                "codebase or the indexed docs — search those first."
+                "Web search; returns {title, url, snippet}. Only for facts "
+                "not in the codebase or the indexed docs — search those first."
             ),
             "parameters": {
                 "type": "object",
