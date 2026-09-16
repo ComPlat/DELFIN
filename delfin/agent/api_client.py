@@ -2565,6 +2565,12 @@ def _message_text(content: Any) -> str:
     return ""
 
 
+_MACHINE_MESSAGE_PREFIXES = (
+    "[Message from the session", "[scheduled", "[watch]", "[Verify]",
+    "[Command results]", "[Harness check",
+)
+
+
 def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
     """Record whether a user message asks for a push.
 
@@ -2575,7 +2581,17 @@ def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
     grants = getattr(perms, "push_grants", None)
     if not isinstance(grants, dict):
         return
+    # Only a person grants a push. A sub-agent's prompt was written by the
+    # parent model (and the grant dict is shared with the parent, so its
+    # "new request" also wiped the user's real grant); text the harness
+    # injects -- another session's message, a wake-up, a watched-job result,
+    # a verification turn -- is not the user either (security review
+    # 2026-09-16).
+    if int(getattr(perms, "subagent_depth", 0) or 0) > 0:
+        return
     text = _message_text(content)
+    if text.lstrip().startswith(_MACHINE_MESSAGE_PREFIXES):
+        return
     if _asks_for_push(text):
         grants["push"] = 1
     elif new_request:
@@ -15659,6 +15675,13 @@ class _DocToolExecutor:
         from . import session_messages as _msgs
         from . import session_presence as _presence
         me = str(getattr(perms, "presence_key", "") or "")
+        if not me:
+            # A headless turn (the scheduler daemon, the CLI) is no open
+            # session: it could write to every session, which then runs the
+            # text under its own permissions.
+            return json.dumps({"error": (
+                "session_message is available only inside an open dashboard "
+                "session.")})
         others = _presence.open_sessions(exclude_key=me)
         to = str(arguments.get("to") or "").strip()
         text = str(arguments.get("message") or "").strip()
@@ -19769,7 +19792,10 @@ class OpenAIClient(_BaseClient):
 
                     # A push that went through spends the user's grant for it
                     # and arms a watch on the CI it started.
-                    if fn_name.rsplit("__", 1)[-1] == "ask_user_question":
+                    # The native dialog only: an MCP server's tool of the same
+                    # name returns whatever the server says, not what the
+                    # user picked.
+                    if fn_name == "ask_user_question":
                         try:
                             _grant_push_from_answer(
                                 self._permissions, _raw_result)
