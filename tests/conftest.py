@@ -422,6 +422,36 @@ def _user_state_resolvers():
     return tuple(out)
 
 
+try:
+    from delfin.agent import lifeline as _lifeline
+    _REAL_LIFELINE_WATCH = _lifeline.watch
+except Exception:                                   # pragma: no cover
+    _lifeline = None
+    _REAL_LIFELINE_WATCH = None
+
+
+@pytest.fixture(autouse=True)
+def _no_watcher_ends_the_test_run(monkeypatch):
+    """``lifeline.watch`` ends the process it runs in -- a dashboard kernel,
+    a daemon, a terminal agent -- when its lifeline goes or an emergency
+    stop is given. In a test run that process is pytest. A watcher left
+    running by one test (building the agent tab, running the chat command)
+    ended the whole run the moment a later test gave a stop into its own
+    directory: silently, at 29 %, with exit code 0 -- which CI reads as
+    green. Nothing is watched here unless a test asks for the real watch
+    (``real_lifeline_watch``)."""
+    if _lifeline is not None:
+        monkeypatch.setattr(_lifeline, "watch", lambda on_gone, **kw: None)
+
+
+@pytest.fixture
+def real_lifeline_watch(monkeypatch):
+    """The real ``lifeline.watch``, for a test that checks the watch itself
+    and gives it a callback that cannot end the run."""
+    monkeypatch.setattr(_lifeline, "watch", _REAL_LIFELINE_WATCH)
+    return _REAL_LIFELINE_WATCH
+
+
 @pytest.fixture(autouse=True)
 def _emergency_stop_reaches_no_real_process(monkeypatch):
     """The emergency stop ends this user's agent processes on the machine it

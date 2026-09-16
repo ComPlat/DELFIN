@@ -72,7 +72,8 @@ def test_a_pid_that_now_belongs_to_another_process_is_left_alone(root):
         other.kill()
 
 
-def test_a_watcher_notices_that_its_lifeline_is_gone(tmp_path, monkeypatch):
+def test_a_watcher_notices_that_its_lifeline_is_gone(tmp_path, monkeypatch,
+                                                    real_lifeline_watch):
     launcher = subprocess.Popen([sys.executable, "-c",
                                  "import time; time.sleep(0.5)"])
     monkeypatch.setenv(L.ENV_PID, str(launcher.pid))
