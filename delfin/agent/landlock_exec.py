@@ -18,7 +18,11 @@ runs before the policy holds. Any failure refuses the command (exit 126)
 instead of running it unconfined.
 
     python -I landlock_exec.py --write DIR ... --hide PATH ... \
-        [--tmpdir DIR] -- /bin/bash -c CMD
+        [--tmpdir DIR] [--allow-socket DIR ...] [--strict 1] -- /bin/bash -c CMD
+
+Unix sockets are guarded too (``socket_guard``): the command reaches them
+only beneath the write roots, the private temp directory and the cluster's
+authentication and name services.
     python -I landlock_exec.py --probe
 """
 from __future__ import annotations
@@ -191,12 +195,104 @@ def apply(write: list[str], hide: list[str]) -> None:
         os.close(ruleset_fd)
 
 
+def _load_socket_guard():
+    """socket_guard.py beside this file, loaded by path: under ``python -I``
+    the script's directory is not on sys.path, which is the point."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "socket_guard.py")
+    spec = importlib.util.spec_from_file_location("_delfin_socket_guard", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _exit_code(status: int) -> int:
+    code = os.waitstatus_to_exitcode(status)
+    return 128 - code if code < 0 else code
+
+
+def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
+                 command: list[str], strict: bool) -> int:
+    """Apply the filesystem policy and the socket guard, run the command.
+
+    With user notification the command runs as a child under a filter that
+    hands every connect() to the supervisor in this process. Without it,
+    Unix sockets are refused outright. Where no filter can be installed at
+    all, a strict run refuses the command."""
+    try:
+        sg = _load_socket_guard()
+    except Exception as exc:
+        sg = None
+        load_error = exc
+    if sg is not None and sg.available():
+        import socket as _socket
+        parent_end, child_end = _socket.socketpair()
+        pid = os.fork()
+        if pid == 0:                                # the command
+            parent_end.close()
+            try:
+                apply(write, hide)
+                listener = sg.install_filter()
+                _socket.send_fds(child_end, [b"L"], [listener])
+                os.close(listener)                  # the command must not hold it
+                child_end.recv(1)
+                child_end.close()
+                os.execvp(command[0], command)
+            except BaseException as exc:            # noqa: BLE001 - child must exit
+                try:
+                    os.write(2, f"refused: sandbox could not be applied ({exc}); "
+                                "the command was not run.\n".encode())
+                finally:
+                    os._exit(126)
+        child_end.close()
+        try:
+            _msg, fds, _flags, _addr = _socket.recv_fds(parent_end, 16, 1)
+        except OSError:
+            fds = []
+        if not fds:
+            _pid, status = os.waitpid(pid, 0)
+            return _exit_code(status)
+        listener = fds[0]
+        parent_end.send(b"k")
+        parent_end.close()
+        try:
+            _libc.prctl(4, 0, 0, 0, 0)              # PR_SET_DUMPABLE: not readable
+        except Exception:
+            pass
+        status = sg.Supervisor(listener, allowed).serve(pid)
+        return _exit_code(status)
+    # No supervisor: Landlock, and no Unix socket at all.
+    try:
+        apply(write, hide)
+    except _Refused as exc:
+        print(f"refused: filesystem isolation could not be applied ({exc}); "
+              "the command was not run.", file=sys.stderr)
+        return 126
+    try:
+        if sg is None or not sg.filter_supported():
+            raise OSError("no seccomp filter for this platform")
+        sg.install_block_unix_filter()
+    except Exception as exc:
+        if strict:
+            print("refused: the command could not be kept from the user's "
+                  f"sessions ({exc}); the command was not run.", file=sys.stderr)
+            return 126
+    try:
+        os.execvp(command[0], command)
+    except OSError as exc:
+        print(f"landlock_exec: cannot run {command[0]}: {exc}", file=sys.stderr)
+        return 127
+    return 127
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--probe"]:
         print(abi_version())
         return 0
     write: list[str] = []
     hide: list[str] = []
+    allow_socket: list[str] = []
+    strict = False
     tmpdir = ""
     i = 0
     while i < len(argv) and argv[i] != "--":
@@ -208,6 +304,10 @@ def main(argv: list[str]) -> int:
             hide.append(value)
         elif flag == "--tmpdir":
             tmpdir = value
+        elif flag == "--allow-socket":
+            allow_socket.append(value)
+        elif flag == "--strict":
+            strict = value == "1"
         else:
             print(f"landlock_exec: unknown option {flag}", file=sys.stderr)
             return 126
@@ -220,19 +320,14 @@ def main(argv: list[str]) -> int:
         write.append(tmpdir)
         for key in ("TMPDIR", "TMP", "TEMP"):
             os.environ[key] = tmpdir
+    roots = [w for w in write if w]
     write.append("/dev")
     try:
-        apply(write, hide)
-    except _Refused as exc:
-        print(f"refused: filesystem isolation could not be applied ({exc}); "
-              "the command was not run.", file=sys.stderr)
-        return 126
-    try:
-        os.execvp(command[0], command)
-    except OSError as exc:
-        print(f"landlock_exec: cannot run {command[0]}: {exc}", file=sys.stderr)
-        return 127
-    return 127                      # not reached
+        sg_defaults = list(_load_socket_guard().DEFAULT_ALLOWED)
+    except Exception:
+        sg_defaults = []
+    return _run_guarded(write, hide, sg_defaults + roots + allow_socket,
+                        command, strict)
 
 
 if __name__ == "__main__":
