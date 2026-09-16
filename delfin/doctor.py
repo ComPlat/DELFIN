@@ -1,5 +1,8 @@
 """Installation self-check for DELFIN (``delfin doctor``).
 
+Complements ``delfin-agent doctor`` (delfin/agent/doctor.py), which checks
+the agent stack; this one checks what a calculation needs.
+
 Each check is a small function returning a :class:`CheckResult`.  The
 checks are deliberately cheap: they only locate binaries via ``PATH``
 (``shutil.which``), run ``--version`` probes, touch the scratch
@@ -104,19 +107,54 @@ def _check_binary(name: str, binary: str, version_flag: str,
     return CheckResult(name, OK, info or f"{binary} at {path}")
 
 
+def _tool_health(name: str):
+    """What DELFIN's own tool resolver knows about ``name``.
+
+    ``qm_health.check_tool`` finds a tool the way DELFIN runs it (PATH,
+    ``ORCA_BINARY``/``ORCA_PATH``, the qm_tools directory, dangling links)
+    and knows each program's probe. ORCA has no ``--version``: given one it
+    tries to open it as an input file and exits 2, so probing it that way
+    reported every working ORCA as broken (review of the first run,
+    2026-09-16). ``depth="runs"`` starts only what can be started safely.
+    """
+    from delfin import qm_health
+    return qm_health.check_tool(name, depth="runs", timeout=_PROBE_TIMEOUT_S)
+
+
+def _check_qm_tool(name: str, missing_hint: str) -> CheckResult:
+    try:
+        health = _tool_health(name)
+    except Exception as exc:
+        return CheckResult(name, BROKEN, f"could not check {name}: {exc}",
+                           "report this as a DELFIN bug")
+    level = str(getattr(health, "level", "absent") or "absent")
+    path = str(getattr(health, "path", "") or "")
+    why = str(getattr(health, "why", "") or "")
+    fix = str(getattr(health, "fix", "") or "")
+    if level == "absent":
+        return CheckResult(name, MISSING, why or f"{name} not found", missing_hint)
+    if level == "fail":
+        return CheckResult(name, BROKEN,
+                           f"{name} at {path}: {why}" if path else why,
+                           fix or f"check the {name} installation")
+    version = str(getattr(health, "version", "") or "")
+    detail = f"{name} at {path}" + (f" ({version})" if version else "")
+    return CheckResult(name, OK, detail)
+
+
 def check_orca() -> CheckResult:
-    """ORCA found on PATH and answers ``orca --version``."""
-    return _check_binary(
-        "orca", "orca", "--version",
+    """ORCA found where DELFIN looks for it."""
+    return _check_qm_tool(
+        "orca",
         "install ORCA or add its bin directory to PATH "
-        "(e.g. module load chem/orca)",
+        "(e.g. module load chem/orca), or set ORCA_BINARY",
     )
 
 
 def check_xtb() -> CheckResult:
-    """xtb found on PATH and answers ``xtb --version``."""
-    return _check_binary(
-        "xtb", "xtb", "--version",
+    """xtb found and answers its version probe."""
+    return _check_qm_tool(
+        "xtb",
         "install xtb or add it to PATH (conda install xtb, or module load)",
     )
 
@@ -167,12 +205,24 @@ def check_slurm() -> CheckResult:
 
 
 def check_kit_toolbox_key() -> CheckResult:
-    """KIT-Toolbox API key configured — presence only, never the value."""
-    if os.environ.get("KIT_TOOLBOX_API_KEY"):
-        return CheckResult("kit_toolbox_key", OK, "KIT_TOOLBOX_API_KEY is set")
+    """KIT-Toolbox API key configured — presence only, never the value.
+
+    Looked up the way DELFIN looks it up: the environment first, then the
+    credential store ``~/.delfin/credentials.json``. Reading only the
+    environment reported the key missing for every user who had stored it.
+    """
+    try:
+        from delfin.agent.credentials import load_credential
+        present = bool(load_credential("KIT_TOOLBOX_API_KEY"))
+    except Exception:
+        present = bool(os.environ.get("KIT_TOOLBOX_API_KEY"))
+    if present:
+        return CheckResult("kit_toolbox_key", OK,
+                           "KIT_TOOLBOX_API_KEY is configured")
     return CheckResult(
-        "kit_toolbox_key", MISSING, "KIT_TOOLBOX_API_KEY is not set",
-        "export KIT_TOOLBOX_API_KEY to enable the KIT-Toolbox provider",
+        "kit_toolbox_key", MISSING, "KIT_TOOLBOX_API_KEY is not configured",
+        "store it with `delfin-agent credentials set KIT_TOOLBOX_API_KEY` "
+        "or export KIT_TOOLBOX_API_KEY",
     )
 
 
