@@ -2725,6 +2725,34 @@ def _resolve_subagent_model(
         return parent_model, "parent"
 
 
+_REPORT_TAIL_SHORT = 400        # a last remark this short is not the report...
+_REPORT_BODY_MIN = 800          # ...when an earlier segment this long exists
+
+
+def _delegate_report(parts: list[str], segment_starts: list[int]) -> str:
+    """What the delegate reports: its last word, plus the report it wrote
+    before a final check.
+
+    The text after the last tool call is the report; the text between
+    calls ("Now let me find ...") is narration (report 20260915-110358).
+    But a delegate that writes its report and then runs one confirming
+    grep ends on "Confirmed." -- and the report body sat in the segment
+    before it (review 2026-09-16). So when the last word is short and an
+    earlier segment is long, the report is that segment with the last word
+    after it. A run that ended on a tool call has no last word; then
+    everything it said is all there is.
+    """
+    starts = sorted({max(0, int(i)) for i in (segment_starts or [0])} | {0})
+    bounds = list(zip(starts, starts[1:] + [len(parts)]))
+    segments = ["".join(parts[a:b]).strip() for a, b in bounds]
+    tail = segments[-1] if segments else ""
+    body = max(segments[:-1], key=len, default="")
+    if tail and len(tail) < _REPORT_TAIL_SHORT and len(body) >= max(
+            _REPORT_BODY_MIN, 3 * len(tail)):
+        return body + "\n\n" + tail
+    return tail or "".join(parts).strip()
+
+
 def run_subagent(
     *,
     subagent_type: str,
@@ -2956,6 +2984,7 @@ def run_subagent(
 
     final_text_parts: list[str] = []
     _final_from = 0      # where the text after the last tool call starts
+    _segment_starts: list[int] = [0]   # where each text segment between tool calls starts
     tool_calls_seen: list[dict] = []
     in_tokens = out_tokens = 0
     t0 = time.monotonic()
@@ -3045,6 +3074,7 @@ def run_subagent(
                 _sa_text_buf.append(event.text)
             elif event.type == "tool_use":
                 _final_from = len(final_text_parts)
+                _segment_starts.append(len(final_text_parts))
                 tool_calls_seen.append({
                     "name": event.tool_name,
                     "input": event.tool_input,
@@ -3136,8 +3166,7 @@ def run_subagent(
     # back whole it pushed the answer past every cap on the way to the
     # parent (report 20260915-110358). A run that ended on a tool call has
     # no last word; then everything it said is all there is.
-    final_text = ("".join(final_text_parts[_final_from:]).strip()
-                  or "".join(final_text_parts).strip())
+    final_text = _delegate_report(final_text_parts, _segment_starts)
     if not final_text and not error:
         error = "sub-agent returned no text"
 
