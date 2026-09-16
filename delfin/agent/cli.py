@@ -2837,6 +2837,17 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _show_security_notices() -> None:
+    """Print, once, what a security update changed in the settings."""
+    try:
+        from delfin.user_settings import load_settings, take_security_notices
+        load_settings()                     # applies a pending update
+        for notice in take_security_notices():
+            print(notice, file=sys.stderr)
+    except Exception:
+        pass
+
+
 def _stop_own_background_shells() -> None:
     """End the background shells this process started. Never raises."""
     try:
@@ -2869,6 +2880,7 @@ def main(argv: list[str] | None = None) -> int:
         # This process holds the model's key: no command it runs may read it.
         from . import process_guard as _process_guard
         _process_guard.protect("terminal agent")
+        _show_security_notices()
         _exported = _process_guard.exported_provider_keys()
         if _exported:
             print("Warning: " + _process_guard.exported_key_advice(_exported),
