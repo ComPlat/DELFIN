@@ -3190,6 +3190,44 @@ _GATED_TOOLS: frozenset[str] = frozenset({
     "run_tests",
 }) | _NETWORK_TOOLS
 
+# What may run with NO permissions object. Such a caller has no workspace,
+# no secret deny list and nobody to ask, so a file read took any absolute
+# path (~/.ssh/id_rsa included) and remember() wrote durable memory. The
+# plain OpenAI API client was built that way and offered read_file,
+# grep_file, list_files and remember to the model. Allow-listed, so a tool
+# added later needs a sandbox until someone decides otherwise: the
+# configured document and calculation indexes and the verdict only.
+_RUNS_WITHOUT_A_SANDBOX: frozenset[str] = frozenset({
+    "search_docs", "read_section", "list_docs", "list_sections",
+    "search_calcs", "get_calc_info", "calc_summary", "report_verdict",
+})
+
+
+def _needs_a_sandbox(name: str) -> bool:
+    """Whether a KNOWN tool may not run without a permissions object.
+
+    An unknown name is left to the unknown-tool error and its near-miss
+    hint; every MCP tool needs one (its server reads and writes files the
+    deny list cannot see without a workspace)."""
+    if not isinstance(name, str) or not name:
+        return False
+    if name.startswith("mcp__"):
+        return True
+    if name in _RUNS_WITHOUT_A_SANDBOX:
+        return False
+    try:
+        return any(t.get("function", {}).get("name") == name
+                   for t in _DOC_TOOLS_OPENAI)
+    except Exception:
+        return True
+
+
+def _no_sandbox_refusal(name: str) -> str:
+    return (f"Tool '{name}' needs a workspace sandbox and this client has "
+            "none (no permissions configured), so it reads, writes and "
+            "fetches nothing. The document and calculation index tools "
+            "still work.")
+
 # What plan mode may run. Plan promises the user that the agent explores
 # and proposes and changes nothing, so the safe list is the one that has
 # to be enumerated -- the alternative, a hand-maintained list of families
@@ -9880,6 +9918,9 @@ class _DocToolExecutor:
         permissions: Optional["KitToolPermissions"] = None,
     ) -> str:
         """The body of :meth:`execute`, under one pinned policy."""
+        if permissions is None and _needs_a_sandbox(name):
+            _record_security_event("no_sandbox", name, "", blocked=True)
+            return json.dumps({"error": _no_sandbox_refusal(name)})
         # Plan mode, deny-by-default. One check at the single entry point,
         # before hooks, before dispatch, covering namespaced MCP calls too
         # -- rather than a per-family refusal each new tool has to be
@@ -13523,6 +13564,9 @@ class _DocToolExecutor:
         """
         if not isinstance(name, str) or not name.startswith("mcp__"):
             return None
+        if perms is None:
+            _record_security_event("no_sandbox_mcp", name, "", blocked=True)
+            return _no_sandbox_refusal(name)
         base = name.rsplit("__", 1)[-1]
 
         # (0) Per-role execution allow-list. MCP tools are dispatched without
@@ -20500,6 +20544,51 @@ def _map_kit_permission_mode(permission_mode: str) -> str:
     return table.get(pm, "default")
 
 
+def _workspace_sandbox(
+    cwd: str, permission_mode: str,
+    kit_confirm_callback: Optional[Callable[[str, dict, str], bool]],
+    read_only_dirs: list[str] | None, confirm_write_dirs: list[str] | None,
+) -> "KitToolPermissions":
+    """The permissions policy of a chat-API client without KIT settings of
+    its own: workspace at ``cwd``, persisted extra dirs and default mode,
+    the built-in bash allow and deny lists."""
+    local_ws = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
+    try:
+        from . import kit_settings as _kit_settings
+        persisted = _kit_settings.load(repo_dir=local_ws)
+    except Exception:
+        persisted = None
+    local_extra: tuple[Path, ...] = ()
+    if persisted is not None:
+        seen: list[Path] = []
+        for d in persisted.extra_workspace_dirs:
+            try:
+                p = Path(d).expanduser().resolve()
+            except Exception:
+                continue
+            if p == local_ws or p in seen or not p.is_dir():
+                continue
+            seen.append(p)
+        local_extra = tuple(seen)
+    local_mode = (
+        _map_kit_permission_mode(permission_mode) if permission_mode
+        else (persisted.default_mode if persisted is not None
+              and persisted.default_mode in {
+                  "plan", "default", "acceptEdits", "bypassPermissions"
+              } else "default")
+    )
+    local_perms = KitToolPermissions(
+        workspace=local_ws, mode=local_mode,
+        confirm_callback=kit_confirm_callback,
+        extra_workspace_dirs=local_extra,
+        read_only_workspace_dirs=tuple(read_only_dirs or ()),
+        confirm_write_dirs=tuple(confirm_write_dirs or ()),
+        bash_auto_allow_patterns=tuple(_DEFAULT_BASH_AUTO_ALLOW),
+        bash_deny_patterns=tuple(_DEFAULT_BASH_DENY_PATTERNS),
+    )
+    return local_perms
+
+
 def create_client(
     backend: str = "cli",
     provider: str = "claude",
@@ -20618,7 +20707,16 @@ def create_client(
                                   permission_mode=permission_mode)
         from .credentials import load_credential as _load_cred_openai
         openai_key = api_key or _load_cred_openai("OPENAI_API_KEY")
-        return OpenAIClient(api_key=openai_key, model=model, provider="openai")
+        # The same sandbox as the other chat-API paths. Built without one,
+        # this client offered read_file on any absolute path, with no
+        # secret deny list, and remember() on durable memory.
+        return OpenAIClient(
+            api_key=openai_key, model=model, provider="openai",
+            permissions=_workspace_sandbox(
+                cwd, permission_mode, kit_confirm_callback,
+                read_only_dirs, confirm_write_dirs),
+            effort=effort,
+        )
     if provider == "ollama":
         # Ollama, vLLM, LM Studio, llama.cpp-server etc. expose an
         # OpenAI-compatible /v1 surface. They reuse the same agentic
@@ -20641,40 +20739,9 @@ def create_client(
             ollama_host = ollama_host.rstrip("/") + "/v1"
         # Reuse the KIT permissions stack so local-model runs get the
         # same sandbox + allow-list as the cloud-providers do.
-        local_ws = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
-        try:
-            from . import kit_settings as _kit_settings
-            persisted = _kit_settings.load(repo_dir=local_ws)
-        except Exception:
-            persisted = None
-        local_extra: tuple[Path, ...] = ()
-        if persisted is not None:
-            seen: list[Path] = []
-            for d in persisted.extra_workspace_dirs:
-                try:
-                    p = Path(d).expanduser().resolve()
-                except Exception:
-                    continue
-                if p == local_ws or p in seen or not p.is_dir():
-                    continue
-                seen.append(p)
-            local_extra = tuple(seen)
-        local_mode = (
-            _map_kit_permission_mode(permission_mode) if permission_mode
-            else (persisted.default_mode if persisted is not None
-                  and persisted.default_mode in {
-                      "plan", "default", "acceptEdits", "bypassPermissions"
-                  } else "default")
-        )
-        local_perms = KitToolPermissions(
-            workspace=local_ws, mode=local_mode,
-            confirm_callback=kit_confirm_callback,
-            extra_workspace_dirs=local_extra,
-            read_only_workspace_dirs=tuple(read_only_dirs or ()),
-            confirm_write_dirs=tuple(confirm_write_dirs or ()),
-            bash_auto_allow_patterns=tuple(_DEFAULT_BASH_AUTO_ALLOW),
-            bash_deny_patterns=tuple(_DEFAULT_BASH_DENY_PATTERNS),
-        )
+        local_perms = _workspace_sandbox(
+            cwd, permission_mode, kit_confirm_callback,
+            read_only_dirs, confirm_write_dirs)
         # Ollama's OpenAI surface requires no auth — pass a placeholder so
         # the openai-python client doesn't blow up on missing-key.
         return OpenAIClient(
