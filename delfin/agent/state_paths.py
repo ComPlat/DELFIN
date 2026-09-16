@@ -160,6 +160,37 @@ def write_text(path: Any, text: str, *, encoding: str = "utf-8") -> Path:
     return p
 
 
+def write_text_atomic(path: Any, text: str, *, encoding: str = "utf-8") -> Path:
+    """Write a state file whole: a reader sees the old file or the new one.
+
+    ``write_text`` truncates first and writes second, so a reader racing
+    it -- another dashboard on a login node that shares the home
+    directory, a second session in this one -- can read an empty or torn
+    file. For a registry that is the whole list of open sessions or the
+    presence record other sessions act on, that is the list gone. Temp
+    file beside the target (mkstemp: 0600 from creation), then
+    ``os.replace``, atomic within a directory.
+    """
+    import tempfile
+    p = Path(path)
+    ensure_dir(p.parent)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{p.name}.", suffix=".tmp",
+                                    dir=str(p.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            fh.write(text)
+        secure_file(tmp)
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return p
+
+
 def open_append(path: Any, *, encoding: str = "utf-8"):
     """Open a state file for appending, owner-only from creation.
 
@@ -778,7 +809,7 @@ def scratch_state_from_environment(
 __all__ = [
     "DIR_MODE", "FILE_MODE",
     "DEFAULT_RETENTION_DAYS", "DEFAULT_SESSION_RETENTION_DAYS",
-    "StateDir", "ensure_dir", "secure_file", "write_text", "open_append",
+    "StateDir", "ensure_dir", "secure_file", "write_text", "write_text_atomic", "open_append",
     "repair_tree", "prune_old", "state_dirs", "run_startup_maintenance",
     "reset_maintenance_flag",
     "USER_STATE_SINKS", "USER_STATE_RESOLVERS", "PROJECT_LEAVES",
