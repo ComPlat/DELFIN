@@ -967,7 +967,12 @@ class _Registry:
         env: Optional[dict] = None,
         workspace: str | Path | None = None,
         session_id: str = "",
+        argv: Optional[list[str]] = None,
     ) -> BashJob:
+        """Start ``command``. ``argv`` is what actually runs, when the caller
+        wraps the command -- the agent's shell tool puts it in the process
+        cage (``api_client._bash_isolation_argv``); ``command`` stays what
+        the job is known, capped and shown by."""
         if not command.strip():
             raise ValueError("command must be non-empty")
         if timeout_s <= 0:
@@ -1022,7 +1027,7 @@ class _Registry:
             run_env.update(env)
 
         proc = subprocess.Popen(
-            ["/bin/bash", "-c", command],
+            list(argv) if argv else ["/bin/bash", "-c", command],
             cwd=cwd,
             env=run_env,
             stdout=sout,

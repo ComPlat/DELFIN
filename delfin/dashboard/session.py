@@ -137,6 +137,13 @@ def why_not_resumed(*, root: str = "", request_url: str = "") -> str:
                 "ended, or it was kept by another account or on another "
                 f"machine. As seen from this kernel: {listing}; HOME={home}; "
                 f"kernel {mine[:8] or '?'}.")
+    elsewhere = str(record.get("host") or "")
+    if elsewhere and elsewhere != _hostname():
+        return (f"Session \"{name}\" runs on {elsewhere}, not on this login "
+                f"node ({_hostname()}), and was left running there. To return "
+                f"to it, log in to {elsewhere} and open the dashboard address "
+                "delfin-voila printed there. To end it from anywhere: "
+                "delfin-agent stop-all.")
     wanted = str(record.get("kernel_id") or "")
     return (f"A record for \"{name}\" exists (kernel {wanted[:8]}), but the "
             f"server started a fresh kernel ({mine[:8]}) for this page: it no "
@@ -760,8 +767,17 @@ def _banner_html(records: list[dict]) -> str:
                     else f"for {age / 60.0:.0f}&nbsp;min")
         except (TypeError, ValueError):
             when = ""
-        link = (f'<a href="{url}">re-enter</a>' if url
-                else '<span style="color:#8a919e">address unknown</span>')
+        elsewhere = str(record.get("host") or "")
+        if elsewhere and elsewhere != _hostname():
+            # Its kernel is served on that machine; a link here would ask
+            # this server for a kernel it does not run.
+            link = (f'<span style="color:#8a919e">runs on <code>{elsewhere}'
+                    '</code> &mdash; log in there to return</span>')
+        elif url:
+            link = f'<a href="{url}">re-enter</a>'
+        else:
+            link = '<span style="color:#8a919e">address unknown</span>'
+
         rows.append(
             f'<li style="margin:2px 0"><code>{name}</code>'
             f'{" &middot; " + when if when else ""} &middot; {link}</li>')

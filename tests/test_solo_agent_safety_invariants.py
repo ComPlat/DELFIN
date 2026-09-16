@@ -312,8 +312,17 @@ def test_greetings_classify_simple_for_fast_turns():
 def test_bash_isolation_off_is_plain_bash(tmp_path):
     from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
     perms = KitToolPermissions(workspace=str(tmp_path))
-    assert _bash_isolation_argv("echo hi", tmp_path, perms, mode="off") == [
-        "/bin/bash", "-c", "echo hi"]
+    _assert_no_filesystem_isolation(
+        _bash_isolation_argv("echo hi", tmp_path, perms, mode="off"))
+
+
+def _assert_no_filesystem_isolation(argv):
+    """The command as written, without the read-only filesystem wrap.
+
+    It may still run in the process cage, which holds in every filesystem
+    mode (test_nothing_an_agent_command_starts_outlives_it)."""
+    assert argv[-3:] == ["/bin/bash", "-c", "echo hi"]
+    assert "--ro-bind" not in argv
 
 
 def test_bash_isolation_default_setting_is_auto():
@@ -326,8 +335,8 @@ def test_auto_isolation_is_plain_in_interactive_mode(tmp_path):
     # workflows stay on raw bash there.
     from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
     perms = KitToolPermissions(workspace=str(tmp_path), mode="default")
-    assert _bash_isolation_argv("echo hi", tmp_path, perms, mode="auto") == [
-        "/bin/bash", "-c", "echo hi"]
+    _assert_no_filesystem_isolation(
+        _bash_isolation_argv("echo hi", tmp_path, perms, mode="auto"))
 
 
 def test_auto_isolation_engages_in_bypass_mode(monkeypatch, tmp_path):
@@ -348,16 +357,16 @@ def test_auto_isolation_falls_back_when_bwrap_unavailable(monkeypatch, tmp_path)
     A._BWRAP_FUNCTIONAL = None
     monkeypatch.setattr(A, "_bwrap_functional", lambda: False)
     perms = A.KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
-    assert A._bash_isolation_argv("echo hi", tmp_path, perms, mode="auto") == [
-        "/bin/bash", "-c", "echo hi"]
+    _assert_no_filesystem_isolation(
+        A._bash_isolation_argv("echo hi", tmp_path, perms, mode="auto"))
 
 
 def test_isolation_off_is_escape_hatch_even_in_bypass(tmp_path):
     # Explicit "off" must defeat auto-isolation everywhere (the HPC opt-out).
     from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
     perms = KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
-    assert _bash_isolation_argv("echo hi", tmp_path, perms, mode="off") == [
-        "/bin/bash", "-c", "echo hi"]
+    _assert_no_filesystem_isolation(
+        _bash_isolation_argv("echo hi", tmp_path, perms, mode="off"))
 
 
 @requires_a_working_sandbox

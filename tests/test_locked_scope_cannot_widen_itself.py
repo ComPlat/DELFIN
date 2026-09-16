@@ -265,7 +265,10 @@ def test_a_locked_session_without_bwrap_says_so(monkeypatch):
     perms.mode = "default"
     argv = A._bash_isolation_argv("ls", ws, perms)
 
-    assert argv[0] == "/bin/bash", "expected the documented fallback"
+    # The documented fallback: no filesystem wrap. The command may still
+    # run in the process cage, which does not depend on this mode.
+    assert "--ro-bind" not in argv and argv[-3:] == ["/bin/bash", "-c", "ls"], \
+        "expected the documented fallback"
     assert recorded, "the downgrade was not recorded anywhere"
     text = " ".join(str(x) for x in recorded[0][0])
     assert "isolation" in text and "NOT active" in text
