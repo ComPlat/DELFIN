@@ -2310,6 +2310,22 @@ def _with_shell_bodies(cmd: str) -> str:
     return "\n".join(parts)
 
 
+def _steer_label(text: str) -> str:
+    """Who a message delivered into a running turn is from.
+
+    Every such message was shown as "💬 [you, mid-run]" -- also a message
+    another session sent and a wake-up the agent had scheduled itself
+    (driven 2026-09-16: "[you, mid-run]: [scheduled] Warte auf Session A").
+    The chat must not put words in the user's mouth.
+    """
+    head = str(text or "").lstrip()
+    if head.startswith("[Message from the session"):
+        return "✉ [another session, mid-run]: "
+    if head.startswith("[scheduled]"):
+        return "⏰ [wake-up, mid-run]: "
+    return "💬 [you, mid-run]: "
+
+
 def _is_git_push(cmd: str) -> bool:
     return bool(_GIT_PUSH_RE.search(_with_shell_bodies(cmd)))
 
@@ -19604,7 +19620,7 @@ class OpenAIClient(_BaseClient):
                                      new_request=False)
                     api_messages.append({"role": "user", "content": _steer})
                     yield StreamEvent(
-                        type="notice", text="\n\n💬 [you, mid-run]: " + _steer + "\n")
+                        type="notice", text="\n\n" + _steer_label(_steer) + _steer + "\n")
 
                 # A background job that finished DURING this turn. The only
                 # delivery path was the system prompt, which is built once
@@ -19878,7 +19894,7 @@ class OpenAIClient(_BaseClient):
                     _grant_push_from(self._permissions, _s, new_request=False)
                     api_messages.append({"role": "user", "content": _s})
                     yield StreamEvent(
-                        type="notice", text="\n\n💬 [you, mid-run]: " + _s + "\n")
+                        type="notice", text="\n\n" + _steer_label(_s) + _s + "\n")
                 continue
 
             # Background work that finished while the model was writing its
