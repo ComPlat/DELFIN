@@ -2455,7 +2455,9 @@ def _after_push(arguments: Any, raw_result: Any, perms: Any) -> str:
             if not sha:
                 continue
             try:
-                watched.append(register_ci_watch(workspace, repo, sha, branch))
+                watched.append(register_ci_watch(
+                    workspace, repo, sha, branch,
+                    session_id=str(getattr(perms, "task_session_id", "") or "")))
             except Exception:
                 continue
     # A branch that is not the default one is on its way to a pull request:
@@ -17514,7 +17516,13 @@ class OpenAIClient(_BaseClient):
             if not ws:
                 return False
             jobs = _jm.load_watched(_jm._agent_watch_path(ws)).get("jobs") or {}
+            # Only this session's watches hold its auto-continue: a watch
+            # another session armed -- or one from before watches had an
+            # owner -- is not this session's reason to wait.
+            sid = str(getattr(self._permissions, "task_session_id", "") or "")
             for jid, entry in jobs.items():
+                if sid and str((entry or {}).get("session_id") or "") != sid:
+                    continue
                 if (entry or {}).get("kind") != "bash":
                     return True
                 try:

@@ -593,16 +593,26 @@ def register_ci_watch(
     sha: str,
     branch: str = "",
     description: str = "",
+    session_id: str = "",
 ) -> str:
     """Watch the CI runs of a pushed commit. Returns the watch id,
-    ``ci:<owner>/<repo>@<sha>``."""
+    ``ci:<owner>/<repo>@<sha>``.
+
+    ``session_id`` names the session that pushed. Watches belong to the
+    session that armed them, and check_agent_jobs(session_id=...) reads
+    only that session's: a CI watch registered without one was never
+    reported to the session that had pushed, only to the headless daemon.
+    """
     jid = f"ci:{repo}@{sha}"
     if not _CI_ID_RE.match(jid):
         raise ValueError(f"not a GitHub repository and commit: {repo}@{sha}")
+    extra = {"branch": branch}
+    if session_id:
+        extra["session_id"] = str(session_id)
     register_agent_job(
         workspace, jid,
         description or (f"CI for {sha[:8]}" + (f" on {branch}" if branch else "")),
-        extra={"branch": branch})
+        extra=extra)
     return jid
 
 
