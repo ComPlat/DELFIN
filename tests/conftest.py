@@ -123,6 +123,28 @@ def _unexpected_under_a_generated_root() -> frozenset:
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _the_suite_opens_no_browser():
+    """No test reaches the developer's browser.
+
+    delfin-voila opens the dashboard by itself when it believes it runs in a
+    VS Code terminal (TERM_PROGRAM, VSCODE_IPC_HOOK_CLI, a BROWSER helper),
+    and a suite started there inherits exactly those variables: on
+    2026-09-15 a test that launched a real server opened dashboard tabs on
+    the developer's machine. CI never has them, which is why it went unseen.
+    """
+    import os
+    hooks = ("VSCODE_IPC_HOOK_CLI", "BROWSER")
+    saved = {name: os.environ.pop(name) for name in hooks if name in os.environ}
+    term = os.environ.get("TERM_PROGRAM")
+    if term == "vscode":
+        os.environ.pop("TERM_PROGRAM")
+    yield
+    os.environ.update(saved)
+    if term == "vscode":
+        os.environ["TERM_PROGRAM"] = term
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _the_suite_does_not_write_into_the_checkout():
     """Fail the run when new paths appeared in the checkout.
 
