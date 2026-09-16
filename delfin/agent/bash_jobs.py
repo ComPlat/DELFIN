@@ -776,12 +776,16 @@ def _watch_submitted_jobs(workspace: str | Path, rec: dict) -> list[str]:
     except Exception:
         return []
     watched: list[str] = []
+    # The shell's session owns what the shell submitted; without it the
+    # watch belonged to no session and its result reached none.
+    sid = str((rec or {}).get("session_id") or "")
     for jid in ids:
         try:
             register_agent_job(
                 workspace, jid,
                 description="submitted by background job "
-                            f"{(rec or {}).get('job_id') or '?'}")
+                            f"{(rec or {}).get('job_id') or '?'}",
+                **({"extra": {"session_id": sid}} if sid else {}))
             watched.append(jid)
         except Exception:
             continue
