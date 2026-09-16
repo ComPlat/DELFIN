@@ -517,8 +517,18 @@ def record_request(
     output_tokens: int = 0,
     tool_calls: int = 0,
     finish_reason: str = "",
+    system_hash: str = "",
+    prefix_hash: str = "",
 ) -> None:
-    """Append one request's timing and token counts. Never raises."""
+    """Append one request's timing and token counts. Never raises.
+
+    ``system_hash`` fingerprints the system prompt, ``prefix_hash`` the
+    system prompt plus every message before this turn's rows. A cold
+    request whose hashes equal the previous request's lost the endpoint's
+    cache; one whose hashes differ was sent a different prefix. Three GLM
+    sessions on 2026-09-16 served half their requests cold and nothing
+    could tell those two apart.
+    """
     try:
         from .state_paths import ensure_dir, open_append, secure_file
         from .state_paths import write_text as _write_secure
@@ -541,6 +551,10 @@ def record_request(
             "tool_calls": int(tool_calls),
             "finish_reason": str(finish_reason or ""),
         }
+        if system_hash:
+            entry["system_hash"] = str(system_hash)
+        if prefix_hash:
+            entry["prefix_hash"] = str(prefix_hash)
         with open_append(p) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         secure_file(p)
@@ -579,11 +593,20 @@ def format_requests(entries: list[dict], *, limit: int = 40) -> str:
         f"{total_in} input tokens  cold={len(cold)}  "
         f"waited for first token={waited / 1000:.0f}s"
     ]
-    for e in entries[-limit:]:
+    shown = entries[-limit:]
+    for idx, e in enumerate(shown):
         ttft = e.get("ttft_ms")
         ttft_s = f"{int(ttft) / 1000:.1f}s" if ttft is not None else "—"
         flag = ("  ⚠ cold" if ttft is not None and int(ttft) >= _COLD_TTFT_MS
                 else "")
+        # Why it was cold, when the hashes can say: the same prefix as the
+        # request before means the endpoint dropped its cache.
+        if flag and idx > 0 and e.get("prefix_hash") and shown[idx - 1].get("prefix_hash"):
+            prev = shown[idx - 1]
+            if e.get("system_hash") and e.get("system_hash") != prev.get("system_hash"):
+                flag += " (system prompt changed)"
+            elif e.get("prefix_hash") == prev.get("prefix_hash"):
+                flag += " (same prefix: endpoint cache lost)"
         rows.append(
             f"ttft={ttft_s}  total={_int(e, 'total_ms') / 1000:.1f}s  "
             f"in={_int(e, 'input_tokens')}  "
