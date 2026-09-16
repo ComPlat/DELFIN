@@ -8528,6 +8528,7 @@ def _observe_read_files(
 def _observe_test_evidence(
     evidence: list, red_files: set,
     fn_name: str, fn_args: Any, result: str,
+    created: Optional[set] = None,
 ) -> str:
     """Update the per-turn evidence ledger + red-test-file set from one tool
     result. Returns a tamper-gate note to PREPEND to the result when the call
@@ -8593,6 +8594,23 @@ def _observe_test_evidence(
                 _clear_green_targets(red_files, cmd)
         return ""
 
+    # Test files this session CREATED are its own work in progress. The gate
+    # guards expectations someone else wrote; a test the agent is still
+    # writing -- red because its fixture is wrong -- tripped it on every
+    # fix (driven 2026-09-16, a new tests/test_delfin_doctor.py). Recorded
+    # only from evidence of creation: write_file's "File created:" or a diff
+    # from /dev/null. An overwritten or pre-existing test stays guarded.
+    if created is not None and not is_err:
+        if fn_name == "write_file" and str(result or "").startswith("File created:"):
+            _p = str(args.get("path") or "")
+            if _p and _looks_like_test_file(_p):
+                created.add(_p.replace("\\", "/").lstrip("./"))
+        elif fn_name == "apply_patch":
+            _diff = str(args.get("diff", "") or "")
+            for _new in re.findall(r"(?m)^--- /dev/null\s*\n\+\+\+ (?:b/)?(\S+)", _diff):
+                if _looks_like_test_file(_new):
+                    created.add(_new.lstrip("./"))
+
     if (fn_name in ("edit_file", "write_file", "multi_edit", "apply_patch")
             and not is_err and red_files):
         targets: list[str] = []
@@ -8601,10 +8619,12 @@ def _observe_test_evidence(
             targets.append(str(p))
         if fn_name == "apply_patch":
             targets.extend(_paths_from_diff(str(args.get("diff", "") or "")))
+        mine = created or set()
         hits = [
             t for t in targets
-            if any(_same_test_file(t, r) for r in red_files)
-            or _looks_like_test_file(t)
+            if (any(_same_test_file(t, r) for r in red_files)
+                or _looks_like_test_file(t))
+            and not any(_same_test_file(t, c) for c in mine)
         ]
         if hits:
             _record_security_event(
@@ -19126,9 +19146,12 @@ class OpenAIClient(_BaseClient):
                             _sv = json.loads(result)
                             if isinstance(_sv, dict):
                                 self._last_structured_verdict = _sv
+                        if not isinstance(getattr(self, "_created_test_files", None), set):
+                            self._created_test_files = set()   # whole session
                         _tamper_note = _observe_test_evidence(
                             self._test_evidence, self._red_test_files,
-                            fn_name, fn_args, result)
+                            fn_name, fn_args, result,
+                            created=self._created_test_files)
                         if _tamper_note:
                             result = _tamper_note + "\n\n" + result
                         _observe_read_files(
