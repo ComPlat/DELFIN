@@ -102,7 +102,11 @@ def render(message: dict) -> str:
     """A message as the receiving agent reads it."""
     sender = str(message.get("from") or "")
     who = str(message.get("from_title") or sender or "another session")
-    reply = (f' Answer with session_message(to="{sender}", message=...) if '
-             "it needs one." if sender else "")
+    # "if it needs one" read as an invitation: two sessions greeted each other
+    # in a loop, each turn answering the last acknowledgement (driven
+    # 2026-09-16). A reply is for a question or a request, never for thanks.
+    reply = (f' Reply with session_message(to="{sender}", message=...) only if '
+             "it asks you for something; a greeting, thanks or an "
+             "acknowledgement gets no reply." if sender else "")
     return (f'[Message from the session "{who}" — not from the user.{reply}]\n'
             f"{message.get('text') or ''}")
