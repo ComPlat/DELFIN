@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import fnmatch
+import json
 import os
 import re
 import shutil
@@ -191,6 +192,47 @@ def _get_step_file_patterns() -> tuple[set[str], set[str]]:
         )
     }
     return step_file_names, step_file_glob_patterns
+
+
+def _run_doctor_subcommand(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="delfin doctor",
+        description="Installation self-check: ORCA, xTB, OpenMPI, scratch dir, "
+        "SLURM, KIT key and doc index. No computations, no network.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print raw results as JSON (one object per check) and exit.",
+    )
+    parser.add_argument(
+        "--scratch",
+        default=None,
+        help="Scratch directory to probe (default: $DELFIN_SCRATCH > $TMPDIR > system temp).",
+    )
+    args = parser.parse_args(argv)
+
+    from .doctor import run_all, exit_code  # lazy: keep CLI startup light
+
+    results = run_all(scratch_dir=args.scratch)
+
+    if args.json:
+        print(json.dumps([asdict(r) for r in results], indent=2))
+        return exit_code(results)
+
+    width = max((len(r.name) for r in results), default=0)
+    for r in results:
+        print(f"{r.status.upper():7s}  {r.name:<{width}s}  {r.detail}")
+        if r.status in ("missing", "broken") and r.fix_hint:
+            print(f"         {'':<{width}s}  fix: {r.fix_hint}")
+    n_ok = sum(1 for r in results if r.status == "ok")
+    n_missing = sum(1 for r in results if r.status == "missing")
+    n_broken = sum(1 for r in results if r.status == "broken")
+    print(
+        f"\n{n_ok} ok, {n_missing} missing, {n_broken} broken "
+        f"({len(results)} checks)"
+    )
+    return exit_code(results)
 
 
 def _run_qm_check_subcommand(argv: list[str]) -> int:
@@ -1508,6 +1550,8 @@ def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
     arg_list = list(argv if argv is not None else sys.argv[1:])
+    if arg_list and arg_list[0] == "doctor":
+        return _run_doctor_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "qm_check":
         return _run_qm_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "qm_run":
