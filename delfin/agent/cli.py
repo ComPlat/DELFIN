@@ -2023,6 +2023,117 @@ def cmd_session(args: argparse.Namespace) -> int:
     return 2
 
 
+def _print_stop_all_check(report: dict) -> int:
+    """Print ``stop_all.status()``. Returns 0 when nothing is running, 1
+    when something is."""
+    import time as _time
+
+    def _clock(epoch) -> str:
+        try:
+            return _time.strftime("%m-%d %H:%M", _time.localtime(float(epoch)))
+        except (TypeError, ValueError):
+            return "?"
+
+    host = report.get("host") or "?"
+    print(f"DELFIN agents -- check only, nothing is changed "
+          f"({host}, {_time.strftime('%H:%M:%S', _time.localtime(report['at']))})")
+    print("Every login node (read from the shared home directory):")
+    sessions = report.get("open_sessions") or []
+    print(f"  Open dashboard sessions: {len(sessions) or 'none'}")
+    for row in sessions:
+        print(f"    {row['host']}: {row['title']!r} "
+              f"(heartbeat {row['seconds_since_heartbeat']} s ago)")
+    kept = report.get("kept_sessions") or []
+    print(f"  Kept sessions:           {len(kept) or 'none'}")
+    for row in kept:
+        print(f"    {row['session']} on {row['host']} since {_clock(row['since'])}")
+    schedules = report.get("active_schedules") or []
+    print(f"  Active schedules:        {len(schedules) or 'none'}"
+          + (f" (could not read them: {report['schedules_error']})"
+             if report.get("schedules_error") else ""))
+    for row in schedules:
+        print(f"    {row['id']} next {_clock(row['next_fire_at'])}: {row['prompt']}")
+    daemons = report.get("daemon_pid_files") or {}
+    print(f"  Daemons (pid files):     {len(daemons) or 'none'}")
+    for name, pid in daemons.items():
+        print(f"    {name}: pid {pid} (on whichever machine started it)")
+    stop = report.get("last_stop") or {}
+    print("  Last emergency stop:     "
+          + (f"{_clock(stop.get('at'))} on {stop.get('host')}" if stop else "never"))
+    print(f"This machine only ({host}) -- run this on every login node you used:")
+    here = report.get("agent_processes_here") or []
+    print(f"  Agent processes:         {len(here) or 'none'}")
+    for row in here:
+        print(f"    pid {row['pid']}: {row['command']}")
+    outlived = report.get("outlived_their_start_here") or []
+    print(f"  Outlived their start:    {len(outlived) or 'none'}")
+    for row in outlived:
+        print(f"    pid {row['pid']} ({row['why']}): {row['command']}")
+    running = any((sessions, kept, schedules, daemons, here, outlived))
+    if running:
+        print("Result: something is open or running -- see above. "
+              "To end all of it: delfin-agent stop-all")
+        return 1
+    print("Result: no agent is running or scheduled.")
+    return 0
+
+
+def cmd_stop_all(args: argparse.Namespace) -> int:
+    """The emergency stop: end every agent of this user on every login node.
+
+    See ``stop_all``. Asks first unless ``--yes``: it ends dashboards'
+    kernels, not only the agent in them.
+    """
+    import time as _time
+
+    from . import session_presence, stop_all
+
+    if args.check:
+        return _print_stop_all_check(stop_all.status())
+    open_before = session_presence.open_sessions()
+    if not args.yes:
+        hosts = sorted({str(r.get("host") or "?").split(".")[0]
+                        for r in open_before})
+        print("This ends every DELFIN agent of yours on every login node: "
+              "dashboard kernels (with their agents, shells and MCP "
+              "servers) and the daemons. Cluster jobs keep running.")
+        if hosts:
+            print(f"Open sessions right now: {len(open_before)} "
+                  f"on {', '.join(hosts)}.")
+        try:
+            answer = input("Stop everything? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            print("Nothing stopped.")
+            return 1
+    summary = stop_all.request(args.reason or "delfin-agent stop-all")
+    when = _time.strftime("%H:%M:%S", _time.localtime(summary["at"]))
+    print(f"Emergency stop given at {when} on {summary['host']}.")
+    print("  Every kernel and daemon of yours that started before it ends "
+          "within a few seconds, on every login node that shares this home.")
+    found = summary.get("found_here") or []
+    ended = summary.get("ended_here") or []
+    print(f"  On this machine: {len(found)} agent process(es) found; "
+          f"{len(found) - len(ended)} ended on their own, {len(ended)} had "
+          "to be ended" + (f" ({', '.join(map(str, ended))})" if ended else "")
+          + ".")
+    print(f"  Schedules disabled: {summary.get('schedules_disabled', 0)}"
+          + (f" (could not read them: {summary['schedules_error']})"
+             if summary.get("schedules_error") else "") + ".")
+    others: dict[str, int] = {}
+    for record in open_before:
+        host = str(record.get("host") or "?").split(".")[0]
+        if host != summary["host"]:
+            others[host] = others.get(host, 0) + 1
+    if others:
+        print("  Sessions on other machines, which end there on their own: "
+              + ", ".join(f"{h}: {n}" for h, n in sorted(others.items())) + ".")
+    print("  Nothing starts on its own again until you send a session "
+          "something yourself. Cluster jobs keep running (squeue --me).")
+    return 0
+
+
 def cmd_scheduler(args: argparse.Namespace) -> int:
     """Control the headless scheduler daemon: start / status / stop.
 
@@ -2664,6 +2775,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     sched.set_defaults(func=cmd_scheduler, scheduler_action="status")
 
+    stop_all_p = sub.add_parser(
+        "stop-all",
+        help="Emergency stop: end every agent of yours on every login node "
+             "(dashboard kernels, shells, MCP servers, daemons); schedules "
+             "are disabled and nothing starts on its own afterwards",
+    )
+    stop_all_p.add_argument("--yes", action="store_true",
+                            help="Do not ask first")
+    stop_all_p.add_argument("--check", action="store_true",
+                            help="Only show what is open, kept, scheduled or "
+                                 "running on its own; change nothing. Exit "
+                                 "code 1 when something is")
+    stop_all_p.add_argument("--reason", default="",
+                            help="Recorded with the stop")
+    stop_all_p.set_defaults(func=cmd_stop_all)
+
     # doctor — aggregate prerequisite health report
     doctor = sub.add_parser(
         "doctor",
@@ -2688,6 +2815,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))
+    if getattr(args, "func", None) in (cmd_chat, cmd_run):
+        # An agent in a terminal ends with an emergency stop given anywhere
+        # (stop_all), and with the dashboard it was started from, if any.
+        from . import lifeline as _lifeline
+        _lifeline.watch(_lifeline.exit_now)
     try:
         return int(args.func(args) or 0)
     except KeyboardInterrupt:
