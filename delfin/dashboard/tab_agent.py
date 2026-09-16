@@ -1979,6 +1979,12 @@ def _register_process_exit_cleanup() -> None:
     try:
         from delfin.agent import process_guard as _process_guard
         _process_guard.protect("dashboard kernel")
+        _exported = _process_guard.exported_provider_keys()
+        if _exported:
+            from delfin.agent.api_client import _record_security_event
+            _record_security_event(
+                "key_exported", "environment",
+                _process_guard.exported_key_advice(_exported), blocked=False)
     except Exception:
         pass
     import atexit

@@ -38,6 +38,8 @@ __all__ = [
     "check_slurm",
     "check_kit_toolbox_key",
     "check_docs_index",
+    "check_command_isolation",
+    "check_no_exported_key",
     "run_all",
     "exit_code",
 ]
@@ -226,6 +228,66 @@ def check_kit_toolbox_key() -> CheckResult:
     )
 
 
+def check_command_isolation() -> CheckResult:
+    """What confines the agent's commands on THIS host.
+
+    ok: bubblewrap works, or Landlock with the socket guard (seccomp user
+    notification). missing: neither -- a locked session then refuses shell
+    commands and an unattended run is held by path checks only. The setting
+    ``agent.bash_isolation = "off"`` is named: it switches the isolation off
+    by choice.
+    """
+    try:
+        from delfin.agent import api_client as A
+        from delfin.agent import socket_guard as SG
+        bwrap = bool(A._bwrap_functional())
+        landlock = bool(A._landlock_functional())
+        guard = bool(SG.available())
+    except Exception as exc:  # pragma: no cover - import environment issue
+        return CheckResult("command_isolation", BROKEN,
+                           f"could not probe isolation: {exc}",
+                           "check your DELFIN installation (delfin.agent)")
+    try:
+        from delfin.user_settings import load_settings
+        setting = str(((load_settings() or {}).get("agent") or {})
+                      .get("bash_isolation", "auto") or "auto")
+    except Exception:
+        setting = "auto"
+    parts = [f"bubblewrap {'works' if bwrap else 'unavailable'}",
+             f"Landlock {'available' if landlock else 'unavailable'}",
+             f"socket guard {'available' if guard else 'unavailable'}",
+             f"agent.bash_isolation={setting}"]
+    detail = ", ".join(parts)
+    if setting.strip().lower() == "off":
+        return CheckResult(
+            "command_isolation", MISSING, detail + " (switched off)",
+            "unattended runs are not isolated while agent.bash_isolation is "
+            "\"off\"; set it to \"auto\" in ~/.delfin_settings.json unless a "
+            "workflow needs raw bash")
+    if bwrap or (landlock and guard):
+        return CheckResult("command_isolation", OK, detail)
+    return CheckResult(
+        "command_isolation", MISSING, detail,
+        "without bubblewrap or Landlock (Linux 5.13+) a locked session "
+        "refuses shell commands and an unattended run is held by path "
+        "checks only; install bubblewrap or use a newer kernel")
+
+
+def check_no_exported_key() -> CheckResult:
+    """No provider key exported in the environment -- names only."""
+    try:
+        from delfin.agent import process_guard
+        names = process_guard.exported_provider_keys()
+        advice = process_guard.exported_key_advice(names) if names else ""
+    except Exception:
+        names, advice = [], ""
+    if not names:
+        return CheckResult("exported_keys", OK,
+                           "no provider key exported in the environment")
+    return CheckResult("exported_keys", MISSING,
+                       f"{', '.join(names)} exported in the environment", advice)
+
+
 def check_docs_index() -> CheckResult:
     """DELFIN doc-search index file exists and is readable JSON."""
     try:
@@ -264,6 +326,8 @@ def run_all(scratch_dir: str | os.PathLike | None = None) -> list[CheckResult]:
         lambda: check_scratch_dir(scratch_dir),
         check_slurm,
         check_kit_toolbox_key,
+        check_command_isolation,
+        check_no_exported_key,
         check_docs_index,
     ]
     results: list[CheckResult] = []

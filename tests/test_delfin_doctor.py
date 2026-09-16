@@ -268,8 +268,8 @@ class TestRunAll:
         docs_index_file(None)
         results = run_all(scratch_dir=scratch_dir)
         names = [r.name for r in results]
-        assert len(results) == 7
-        assert len(set(names)) == 7  # distinct, no duplicates
+        assert len(results) == 9
+        assert len(set(names)) == 9  # distinct, no duplicates
         assert all(isinstance(r, CheckResult) for r in results)
 
     def test_all_ok(self, clean_env, scratch_dir, docs_index_file, monkeypatch, tool_health):
@@ -277,7 +277,12 @@ class TestRunAll:
             make_binary(clean_env, b, "ok")
         tool_health("orca", "ok")
         tool_health("xtb", "ok")
-        monkeypatch.setenv("KIT_TOOLBOX_API_KEY", "dummy")
+        # Stored, not exported: an exported key is itself a finding.
+        monkeypatch.delenv("KIT_TOOLBOX_API_KEY", raising=False)
+        monkeypatch.setattr("delfin.agent.credentials.load_credential",
+                            lambda name, **kw: "dummy")
+        monkeypatch.setattr("delfin.doctor.check_command_isolation",
+                            lambda: CheckResult("command_isolation", OK, "supplied"))
         docs_index_file({"documents": []})
         results = run_all(scratch_dir=scratch_dir)
         assert all(r.status == OK for r in results), [
