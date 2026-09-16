@@ -347,13 +347,18 @@ def test_tool_push_notification():
     assert "sent" in payload
 
 
-def test_tool_remote_trigger_blocked_no_config():
-    out = _DocToolExecutor().execute(
-        "remote_trigger",
-        {"event": "test", "payload": {}},
-        permissions=None,
-    )
-    payload = json.loads(out)
+def test_tool_remote_trigger_blocked_no_config(tmp_path, monkeypatch):
+    # Without a sandbox the tool is refused outright; with one, a missing
+    # trigger configuration is what stops it.
+    refused = json.loads(_DocToolExecutor().execute(
+        "remote_trigger", {"event": "test", "payload": {}}, permissions=None))
+    assert "needs a workspace sandbox" in refused["error"]
+    from delfin.agent.api_client import KitToolPermissions
+    perms = KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
+    monkeypatch.setattr(_DocToolExecutor, "_run_permission_gate",
+                        lambda self, name, args, perms: None)
+    payload = json.loads(_DocToolExecutor().execute(
+        "remote_trigger", {"event": "test", "payload": {}}, permissions=perms))
     assert payload["sent"] is False
 
 
