@@ -55,6 +55,9 @@ _KINDS = {
     "outside_read_bypass": ("👁", "Read outside the roots (Bypass)"),
     "approval_timeout": ("⌛", "Approval window expired"),
     "isolation":      ("🔒", "Filesystem isolation active"),
+    # A client built without a permissions policy runs only the index tools.
+    "no_sandbox":     ("🚫", "Refused: no sandbox configured"),
+    "no_sandbox_mcp": ("🚫", "MCP tool refused: no sandbox configured"),
     "egress":         ("🌐", "Outbound data transfer"),
     "push_unrequested": ("📤", "Push nobody asked for"),
     "push_default_branch": ("🔀", "Contributor push to the default branch"),
