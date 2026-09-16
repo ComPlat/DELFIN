@@ -3435,7 +3435,7 @@ class AgentEngine:
         if getattr(self, "_session_language", ""):
             return
         text = str(user_message or "")
-        if text.lstrip().startswith("[Verify]"):
+        if text.lstrip().startswith(("[Verify]", "[Message from the session")):
             return                      # the harness talking, always English
         try:
             from . import verify_guard as _vg
