@@ -23,3 +23,16 @@ def test_an_empty_engine_history_is_not_nothing_to_retry():
 
 def test_the_notice_still_promises_retry():
     assert "/retry sends the same message" in SRC
+
+
+def test_the_gateways_own_timeout_is_named_not_pasted():
+    """The same failed turn ended with "Error: Error code: 400 - {'detail':
+    'Open WebUI: Server Connection Error'}" -- the gateway's wait for the
+    model ran out. The chat says that, and what helps."""
+    from delfin.dashboard.tab_agent import _gateway_gave_up
+    assert _gateway_gave_up("Error code: 400 - {'detail': 'Open WebUI: Server Connection Error'}")
+    assert not _gateway_gave_up("Error code: 401 - invalid key")
+    assert not _gateway_gave_up("")
+    i = SRC.index("elif _gateway_gave_up(error_text):")
+    body = SRC[i:i + 1600]
+    assert "could not reach" in body and "`/retry`" in body and "kit.deepseek-v4-flash" in body

@@ -404,6 +404,17 @@ def _count_plan_steps(plan: str) -> int:
     return len(numbers)
 
 
+def _gateway_gave_up(error_text: str) -> bool:
+    """True for the KIT gateway's "could not reach the model" answer.
+
+    It arrives as HTTP 400 with the body ``{'detail': 'Open WebUI: Server
+    Connection Error'}`` after the gateway's own wait (about four minutes)
+    ran out -- a queue longer than that, or a model server restarting.
+    """
+    text = str(error_text or "")
+    return "Server Connection Error" in text and "Open WebUI" in text
+
+
 def _turn_timing_text(total_s: float, ttft_s: float, tool_calls: int) -> str:
     """``4:12 to first token · 5:03 turn · 3 tools`` for the status row."""
     parts = []
@@ -17865,6 +17876,20 @@ def create_tab(ctx):
                     _append_system_message(
                         f"CLI process crashed: {error_text[:200]}\n"
                         f"Engine will auto-restart on next message."
+                    )
+                elif _gateway_gave_up(error_text):
+                    # KIT's gateway answers 400 "Open WebUI: Server Connection
+                    # Error" when its own wait for the model server runs out
+                    # (about four minutes, seen twice on 2026-09-16 with GLM's
+                    # queue longer than that). Say what it is: the endpoint,
+                    # not this session, and what helps.
+                    _append_system_message(
+                        f"⚠️ KIT's gateway could not reach **{_cur_model or 'the model'}** "
+                        "in time: its own wait ran out before the model's queue "
+                        "reached this request. This is the endpoint, not this "
+                        "session; nothing was billed. Wait a few minutes and "
+                        "`/retry`, or switch the model to one that answers now "
+                        "(`kit.deepseek-v4-flash` answered in seconds today)."
                     )
                 elif chunks:
                     _update_last_assistant(
