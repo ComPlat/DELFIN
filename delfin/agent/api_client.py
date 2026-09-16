@@ -158,6 +158,44 @@ class _BaseClient:
 # CLI backend (uses OAuth -- no API key needed)
 # ---------------------------------------------------------------------------
 
+# Credentials each CLI backend needs for itself; every other secret is
+# removed from its environment.
+_CLAUDE_CLI_KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                    "CLAUDE_CODE_OAUTH_TOKEN")
+_CODEX_CLI_KEYS = ("OPENAI_API_KEY", "CODEX_API_KEY")
+
+
+def _cli_backend_env(own_keys: tuple[str, ...]) -> dict:
+    """The environment for an external agent CLI: the shell's scrubbed
+    environment plus the credentials that CLI itself runs on."""
+    env = _scrubbed_bash_env()
+    for key in own_keys:
+        if os.environ.get(key):
+            env[key] = os.environ[key]
+    return env
+
+
+# Secret files in the Claude CLI's permission-rule syntax (gitignore-style
+# patterns; ``~/`` is the home directory). Kept to the kinds of secret the
+# native deny list names, not its name globs such as "credentials*", which
+# would also hide source files.
+_CLI_SECRET_PATTERNS: tuple[str, ...] = (
+    "**/.env", "**/.env.*", "**/*.env", "**/.envrc",
+    "**/*.key", "**/*.pem", "**/*.p12", "**/*.pfx", "**/*.secret",
+    "**/.ssh/**", "~/.ssh/**", "**/.gnupg/**", "~/.gnupg/**",
+    "**/.netrc", "~/.netrc", "**/.git-credentials", "~/.git-credentials",
+    "**/.aws/credentials", "~/.aws/credentials", "**/.npmrc", "**/.pypirc",
+    "**/.pgpass", "~/.kube/**", "~/.docker/config.json",
+    "~/.delfin/credentials.json",
+    "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
+)
+
+
+def _cli_secret_deny_rules() -> list[str]:
+    return [f"{verb}({pattern})" for verb in ("Read", "Edit")
+            for pattern in _CLI_SECRET_PATTERNS]
+
+
 class CLIClient(_BaseClient):
     """Persistent bidirectional CLI-backend client via ``--input-format stream-json``.
 
@@ -234,10 +272,20 @@ class CLIClient(_BaseClient):
         ]
 
         if self.permission_mode and self.permission_mode != "default":
-            if self.permission_mode in ("auto", "bypassPermissions"):
+            if self.permission_mode == "bypassPermissions":
                 cmd.append("--dangerously-skip-permissions")
             else:
+                # "auto" is a mode of the CLI's own, with its own checks.
+                # It was passed as --dangerously-skip-permissions, which
+                # turns every check off -- the user chose the mode that
+                # asks less, not the one that asks nothing.
                 cmd.extend(["--permission-mode", self.permission_mode])
+
+        # DELFIN's secret deny list, in the CLI's rule syntax. The CLI runs
+        # its own tools, so DELFIN's read and write gates never see them;
+        # deny rules hold in every CLI mode, bypass included.
+        cmd.extend(["--settings", json.dumps(
+            {"permissions": {"deny": _cli_secret_deny_rules()}})])
 
         if self.mcp_config:
             cmd.extend(["--mcp-config", self.mcp_config])
@@ -262,6 +310,10 @@ class CLIClient(_BaseClient):
             stderr=subprocess.PIPE,
             text=True,
             cwd=self.cwd,
+            # Every key but the CLI's own: its shell tool inherits this,
+            # and `env` would put the KIT or OpenAI key into a transcript
+            # that goes to another provider.
+            env=_cli_backend_env(_CLAUDE_CLI_KEYS),
             # Its own process group, so a Ctrl+C in a terminal front-end
             # does not reach it. This process is deliberately long-lived
             # across turns, and signal_stop() sends it a SIGINT on purpose
@@ -20308,11 +20360,13 @@ class CodexCLIClient(_BaseClient):
     _PERM_TO_CODEX_FLAGS: dict[str, list[str]] = {
         "plan":                ["--sandbox", "read-only"],
         "default":             ["--sandbox", "workspace-write"],
-        # repo_free: full disk access (git needs .git/ writable).
         # codex exec has no --ask-for-approval, so --full-auto is needed.
-        # Safety relies on the DELFIN zone system + agent prompt rules.
-        "acceptEdits":         ["--full-auto", "--sandbox", "danger-full-access"],
-        "auto":                ["--full-auto", "--sandbox", "danger-full-access"],
+        # Accepting edits is not leaving the workspace: these two ran
+        # with danger-full-access, the whole disk and no sandbox, on the
+        # strength of prompt rules the CLI never sees. Only the profile
+        # that says "bypass" gets that.
+        "acceptEdits":         ["--full-auto", "--sandbox", "workspace-write"],
+        "auto":                ["--full-auto", "--sandbox", "workspace-write"],
         "bypassPermissions":   ["--full-auto", "--sandbox", "danger-full-access"],
     }
 
@@ -20384,6 +20438,7 @@ class CodexCLIClient(_BaseClient):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=_cli_backend_env(_CODEX_CLI_KEYS),
         )
 
         # Send prompt via stdin
