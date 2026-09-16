@@ -17175,9 +17175,10 @@ def _redact_tool_result(text: str) -> str:
     if not text or len(text) > 400_000:
         return text
     try:
-        from .output_guard import _redact_secrets
-        findings: list = []
-        return _redact_secrets(text, findings)
+        # scrub_secrets also replaces the exact values DELFIN holds, which
+        # have no shape the pattern checks know (a KIT key).
+        from .output_guard import scrub_secrets
+        return scrub_secrets(text)
     except Exception:
         return text
 

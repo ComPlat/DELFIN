@@ -190,6 +190,30 @@ def _redact_secrets(text: str, findings: list) -> str:
     return text
 
 
+def scrub_secrets(text: str) -> str:
+    """``text`` without any credential DELFIN holds and without anything
+    shaped like one, for text that is KEPT (memory) or PASSED ON (another
+    session's inbox, a tool result in the transcript).
+
+    Exact values first: a KIT key has no recognisable prefix, so the shape
+    checks alone let it through. Never raises; returns the input when
+    scrubbing itself fails.
+    """
+    if not text:
+        return text
+    try:
+        from .web_tools import _known_secret_values
+        for secret in sorted(set(_known_secret_values()), key=len, reverse=True):
+            if secret in text:
+                text = text.replace(secret, "[redacted:credential]")
+    except Exception:
+        pass
+    try:
+        return _redact_secrets(text, [])
+    except Exception:
+        return text
+
+
 # ---------------------------------------------------------------------------
 # Absolute-certainty scan (telemetry only)
 # ---------------------------------------------------------------------------
