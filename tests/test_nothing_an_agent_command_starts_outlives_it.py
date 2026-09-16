@@ -195,6 +195,9 @@ def test_only_the_environment_of_the_terminal_turns_the_cage_off(tmp_path, monke
 def test_filesystem_isolation_and_the_cage_combine(tmp_path, monkeypatch):
     monkeypatch.setattr(A, "_process_cage_functional", lambda: True)
     monkeypatch.setattr(A, "_bwrap_functional", lambda: True)
+    # The host is supplied, not measured: the forced mode also asks
+    # shutil.which, and the CI runner has no bubblewrap installed.
+    monkeypatch.setattr(A.shutil, "which", lambda _x: "/usr/bin/bwrap")
     monkeypatch.delenv(A._PROCESS_CAGE_ENV, raising=False)
     argv = A._bash_isolation_argv("echo hi", tmp_path, _perms(tmp_path),
                                   mode="bwrap")
