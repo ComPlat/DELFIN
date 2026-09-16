@@ -235,7 +235,9 @@ def parent_death_signal() -> None:
     however the parent died. Linux only; a no-op elsewhere."""
     try:
         import ctypes
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        # The running process's own C library: "libc.so.6" is glibc's name
+        # and does not exist on musl (Alpine), where this was a silent no-op.
+        libc = ctypes.CDLL(None, use_errno=True)
         libc.prctl(1, signal.SIGTERM)      # PR_SET_PDEATHSIG
     except Exception:
         pass

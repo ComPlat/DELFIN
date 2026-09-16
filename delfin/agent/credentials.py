@@ -63,9 +63,21 @@ def _read_store(path: Path | None = None) -> dict[str, str]:
     return out
 
 
+class CredentialStoreNotPrivate(OSError):
+    """The key would not be private to the user where it would be stored."""
+
+
 def _write_store(store: dict[str, str], path: Path | None = None) -> None:
+    """Write the store so that nobody but the user can read it, or not at all.
+
+    The temporary file was created under the umask and only then chmodded:
+    a window in which it was world-readable on a default umask, and for
+    good on a filesystem that ignores modes (CIFS, FAT, some network
+    mounts). It is now created 0600 with O_EXCL and O_NOFOLLOW, and its
+    mode and owner are checked on the open descriptor before a byte of the
+    key is written. Where that check fails the key is not stored.
+    """
     p = _resolve_path(path)
-    # Ensure parent dir exists with permissive-to-owner-only mode
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -74,27 +86,50 @@ def _write_store(store: dict[str, str], path: Path | None = None) -> None:
             pass
     except OSError:
         return
-    # Atomic write: tmp file → chmod 0600 → rename
     tmp = p.with_suffix(p.suffix + ".tmp")
     try:
-        tmp.write_text(
-            json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True)
-            + "\n",
-            encoding="utf-8",
-        )
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
-        tmp.replace(p)
-        try:
-            os.chmod(p, 0o600)
-        except OSError:
-            pass
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
     except OSError:
-        # Best-effort: leave the old file intact if anything failed
+        return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(tmp, flags, 0o600)
+    except OSError:
+        return
+    try:
+        st = os.fstat(fd)
+        if (st.st_mode & 0o077) or (hasattr(os, "getuid") and st.st_uid != os.getuid()):
+            raise CredentialStoreNotPrivate(
+                f"{p.parent} does not keep files private to you (mode "
+                f"{oct(st.st_mode & 0o777)}); the key was not stored. Keep "
+                "it in an environment variable instead, or move the store "
+                "to a filesystem with POSIX permissions.")
+        data = (json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True)
+                + "\n").encode("utf-8")
+        os.write(fd, data)
+        os.fsync(fd)
+    except CredentialStoreNotPrivate:
+        os.close(fd)
         try:
-            tmp.unlink(missing_ok=True)
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    except OSError:
+        os.close(fd)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return
+    os.close(fd)
+    try:
+        tmp.replace(p)
+    except OSError:
+        try:
+            tmp.unlink()
         except OSError:
             pass
 

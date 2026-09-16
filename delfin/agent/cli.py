@@ -1974,7 +1974,11 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         if not value:
             print("No value entered, aborting.", file=sys.stderr)
             return 1
-        ok = _cred.set_credential(name, value)
+        try:
+            ok = _cred.set_credential(name, value)
+        except _cred.CredentialStoreNotPrivate as exc:
+            print(f"Not stored: {exc}", file=sys.stderr)
+            return 1
         if ok:
             print(f"Stored {name} = {_cred.mask(value)} "
                   f"in {_cred.credentials_path()} (chmod 0600)")

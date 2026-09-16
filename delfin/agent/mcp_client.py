@@ -293,6 +293,13 @@ def _extract_jsonrpc_from_sse(raw: str, rid: Any) -> dict:
     return best or {"error": {"message": "no JSON-RPC payload in SSE stream"}}
 
 
+# Credentials of the model providers the agent itself uses.
+_DELFIN_PROVIDER_KEYS = frozenset({
+    "KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_API_KEY",
+})
+
+
 @dataclass
 class MCPTool:
     server: str
@@ -374,7 +381,10 @@ class MCPServer:
         with self._lock:
             if self.proc is not None and self.proc.poll() is None:
                 return
-            env = dict(os.environ)
+            # The model providers' keys DELFIN runs on are no server's
+            # business; a server that needs one names it in its config.
+            env = {k: v for k, v in os.environ.items()
+                   if k not in _DELFIN_PROVIDER_KEYS}
             env.update(self.env or {})
             argv = [self.command, *self.args]
             if self.isolation is not None:
