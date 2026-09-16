@@ -3200,6 +3200,10 @@ _GATED_TOOLS: frozenset[str] = frozenset({
 _RUNS_WITHOUT_A_SANDBOX: frozenset[str] = frozenset({
     "search_docs", "read_section", "list_docs", "list_sections",
     "search_calcs", "get_calc_info", "calc_summary", "report_verdict",
+    # A notice to the user's own channel. Without a sandbox there is no
+    # file content to put into it; a remote trigger and a scheduled agent
+    # turn stay refused.
+    "push_notification",
 })
 
 
