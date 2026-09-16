@@ -14977,14 +14977,15 @@ class _DocToolExecutor:
                     "(hooks off, SSH hardened)", blocked=False)
                 proc = _run_github_push(_push, run_cwd, env, timeout)
             else:
-                proc = subprocess.run(
+                # Contained on every host: its own session and process
+                # group, no terminal, the whole group ended at exit and
+                # at the timeout. subprocess.run killed only bash itself.
+                from . import contained_run as _contained
+                proc = _contained.run(
                     _bash_isolation_argv(cmd, run_cwd, perms),
                     cwd=str(run_cwd),
                     env=env,
-                    capture_output=True,
-                    text=True,
                     timeout=timeout,
-                    check=False,
                 )
         except subprocess.TimeoutExpired:
             return json.dumps({
@@ -17215,23 +17216,101 @@ def _bwrap_functional() -> bool:
                 capture_output=True, timeout=5,
             )
             ok = r.returncode == 0
+    except subprocess.TimeoutExpired:
+        # A slow start on a loaded login node is not an answer. Cached,
+        # it turned isolation off for the whole life of the process.
+        return False
     except Exception:
         ok = False
     _BWRAP_FUNCTIONAL = ok
     return ok
 
 
+_LANDLOCK_FUNCTIONAL: Optional[bool] = None
+
+
+def _landlock_functional() -> bool:
+    """True when this kernel offers Landlock, the second way to filesystem
+    isolation where bubblewrap cannot run. Probed once. Never raises."""
+    global _LANDLOCK_FUNCTIONAL
+    if _LANDLOCK_FUNCTIONAL is not None:
+        return _LANDLOCK_FUNCTIONAL
+    ok = False
+    try:
+        from . import landlock_exec as _ll
+        ok = (sys.platform.startswith("linux") and _ll.abi_version() >= 1
+              and Path(_ll.__file__).is_file() and Path(sys.executable).is_file())
+    except Exception:
+        ok = False
+    _LANDLOCK_FUNCTIONAL = ok
+    return ok
+
+
+_PRIVATE_TMP: Optional[str] = None
+
+
+def _private_tmp_dir() -> str:
+    """A temp directory only this process's commands use, 0700."""
+    global _PRIVATE_TMP
+    if _PRIVATE_TMP and Path(_PRIVATE_TMP).is_dir():
+        return _PRIVATE_TMP
+    import atexit
+    import tempfile
+    _PRIVATE_TMP = tempfile.mkdtemp(prefix="delfin-cmd-tmp-")
+    atexit.register(shutil.rmtree, _PRIVATE_TMP, True)
+    return _PRIVATE_TMP
+
+
+def _home_secret_paths() -> list[str]:
+    try:
+        from delfin.agent.sandbox import _HOME_SECRET_DIRS
+    except Exception:
+        _HOME_SECRET_DIRS = ()
+    home = Path.home()
+    out = []
+    for rel in _HOME_SECRET_DIRS:
+        try:
+            out.append(str((home / rel).resolve()))
+        except OSError:
+            continue
+    return out
+
+
+def _landlock_argv(plain: list[str], perms, extra_write=()) -> list[str]:
+    """``plain`` under Landlock: writes only in the workspace roots, a
+    private temp directory and /dev; the home credential locations
+    unreadable. The helper refuses to run the command if the policy
+    cannot be applied."""
+    from . import landlock_exec as _ll
+    try:
+        roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
+    except Exception:
+        roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
+    argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve())]
+    for r in list(roots) + [str(Path(p).resolve()) for p in extra_write]:
+        argv += ["--write", r]
+    for h in _home_secret_paths():
+        argv += ["--hide", h]
+    argv += ["--tmpdir", _private_tmp_dir(), "--"]
+    return argv + plain
+
+
+def _refusal_argv(reason: str) -> list[str]:
+    """A command that only says why the real one was not run."""
+    return ["/bin/sh", "-c", 'printf "%s\\n" "$1" >&2; exit 126', "refused",
+            f"refused: {reason}. The command was not run."]
+
+
 _ISOLATION_GAP_ANNOUNCED = False
 
 
 def _announce_isolation_unavailable(perms) -> None:
-    """Record (once) that a locked session is running without bwrap.
+    """Record (once) that a locked session has no filesystem isolation.
 
-    Not an error and not a refusal: the path gates still hold, and on many
-    HPC nodes user namespaces are forbidden outright, so refusing to start
-    would make the mode unusable exactly where it is most wanted. But the
-    difference between "contained" and "checked by a parser" is one the
-    user is entitled to see rather than discover.
+    Neither bubblewrap nor Landlock works on this host, so its shell
+    commands are refused (see ``_bash_isolation_argv``); the file tools,
+    whose gates do not depend on parsing a command, keep working. Said
+    once, so the security panel shows why the shell answers "refused".
     """
     global _ISOLATION_GAP_ANNOUNCED
     if _ISOLATION_GAP_ANNOUNCED:
@@ -17239,13 +17318,12 @@ def _announce_isolation_unavailable(perms) -> None:
     _ISOLATION_GAP_ANNOUNCED = True
     try:
         _record_security_event(
-            "isolation", "bash",
+            "isolation_missing", "bash",
             f"filesystem isolation is NOT active for this locked session "
-            f"({getattr(perms, 'workspace', '?')}): bubblewrap is missing or "
-            "its user namespace is refused here. Paths are still checked, "
-            "but a command that hides its target from that check is not "
-            "stopped by the filesystem.",
-            blocked=False,
+            f"({getattr(perms, 'workspace', '?')}): bubblewrap cannot run "
+            "here and the kernel offers no Landlock. Shell commands are "
+            "refused in this session; the file tools still work.",
+            blocked=True,
         )
     except Exception:
         pass
@@ -17300,6 +17378,42 @@ def _redact_tool_result(text: str) -> str:
         return scrub_secrets(text)
     except Exception:
         return text
+
+
+_LANDLOCK_ANNOUNCED = False
+_BYPASS_GAP_ANNOUNCED = False
+
+
+def _announce_isolation_via_landlock(what: str) -> None:
+    """Say once that filesystem isolation holds through Landlock."""
+    global _LANDLOCK_ANNOUNCED
+    if _LANDLOCK_ANNOUNCED:
+        return
+    _LANDLOCK_ANNOUNCED = True
+    try:
+        _record_security_event(
+            "isolation", "bash",
+            f"filesystem isolation active for this {what} through Landlock "
+            "(bubblewrap cannot run here): writes only in the workspace, "
+            "credential folders unreadable", blocked=False)
+    except Exception:
+        pass
+
+
+def _announce_bypass_without_isolation() -> None:
+    """Say once that an unattended run has no filesystem isolation."""
+    global _BYPASS_GAP_ANNOUNCED
+    if _BYPASS_GAP_ANNOUNCED:
+        return
+    _BYPASS_GAP_ANNOUNCED = True
+    try:
+        _record_security_event(
+            "isolation_missing", "bash",
+            "filesystem isolation is NOT active for this unattended (bypass) "
+            "run: neither bubblewrap nor Landlock works on this host, so "
+            "commands are held only by the path checks", blocked=False)
+    except Exception:
+        pass
 
 
 def _announce_auto_isolation() -> None:
@@ -17465,6 +17579,7 @@ def _bash_isolation_argv(
     run_cwd,
     perms,
     mode: str | None = None,
+    extra_write=(),
 ) -> list[str]:
     """argv for the agent's bash tool, optionally bwrap-isolated.
 
@@ -17487,10 +17602,13 @@ def _bash_isolation_argv(
     (see ``_process_cage_options``) where bwrap works: nothing it starts
     outlives it.
 
-    A locked scope on a host where bubblewrap does not work falls back to
-    plain bash and records a security event saying so -- the containment
-    then rests on the path checks alone, and that is a difference the user
-    is entitled to see.
+    Where bubblewrap cannot run, Landlock (Linux 5.13+) gives the same
+    filesystem promise through ``landlock_exec``. A locked scope, or a
+    forced isolation, on a host with neither refuses the command instead
+    of running it on the strength of the path checks alone; an unattended
+    (bypass) run there proceeds and says so in the security panel.
+    ``extra_write`` names directories a caller needs writable besides the
+    workspace roots (the test runner's report directory).
     """
     plain = ["/bin/bash", "-c", cmd]
     if mode is None and _BASH_ISOLATION_OVERRIDE:
@@ -17521,6 +17639,9 @@ def _bash_isolation_argv(
     if getattr(perms, "scope_locked", False):
         if _bwrap_functional():
             mode = "bwrap"
+        elif _landlock_functional():
+            _announce_isolation_via_landlock("locked session")
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
         else:
             # Say it. A locked scope promises the agent cannot leave one
             # folder; with no working bwrap that promise rests entirely on
@@ -17530,14 +17651,35 @@ def _bash_isolation_argv(
             # the doctor. It is announced once per process so the security
             # panel shows what is actually protecting the folder.
             _announce_isolation_unavailable(perms)
+            # A locked scope promises one folder. With nothing on this host
+            # able to hold a command to it, the command is not run: a
+            # parser of command text is no containment.
+            return _refusal_argv(
+                "this session is locked to its folder, and neither "
+                "bubblewrap nor Landlock can confine a command on this host")
     elif mode == "auto":
         perm_mode = str(getattr(perms, "mode", "") or "").strip()
         if perm_mode == "bypassPermissions" and _bwrap_functional():
             mode = "bwrap"
             _announce_auto_isolation()
+        elif perm_mode == "bypassPermissions" and _landlock_functional():
+            _announce_isolation_via_landlock("unattended (bypass) run")
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
+        elif perm_mode == "bypassPermissions":
+            _announce_bypass_without_isolation()
+            return _in_process_cage(plain, run_cwd)
         else:
             return _in_process_cage(plain, run_cwd)
-    if mode != "bwrap" or not shutil.which("bwrap"):
+    if mode == "bwrap" and not shutil.which("bwrap"):
+        # Isolation was asked for by name. Landlock gives the same promise;
+        # without it the command is refused rather than run without.
+        if _landlock_functional():
+            _announce_isolation_via_landlock("forced isolation")
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
+        return _refusal_argv(
+            "filesystem isolation is switched on, and neither bubblewrap "
+            "nor Landlock can provide it on this host")
+    if mode != "bwrap":
         return _in_process_cage(plain, run_cwd)
 
     try:
@@ -17569,7 +17711,7 @@ def _bash_isolation_argv(
         roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
     except Exception:
         roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
-    for r in roots:
+    for r in roots + [str(Path(p).resolve()) for p in extra_write]:
         args += ["--bind", r, r]
     args += ["--chdir", str(Path(run_cwd).resolve())]
     args += (_process_cage_options() if _process_cage_enabled()
@@ -17586,11 +17728,8 @@ def _test_run_argv(argv: list[str], perms, report_dir) -> list[str]:
     runner reads the report back from a directory under it, so that one
     directory is bound through, after every other mount."""
     import shlex
-    caged = _bash_isolation_argv(shlex.join(argv), perms.workspace, perms)
-    if not caged or caged[0] != "bwrap":
-        return caged
-    rd = str(Path(report_dir).resolve())
-    return caged[:-3] + ["--bind", rd, rd] + caged[-3:]
+    return _bash_isolation_argv(shlex.join(argv), perms.workspace, perms,
+                                extra_write=(report_dir,))
 
 
 def _schedule_is_mine(sch: Any, entry_id: str, session_id: str) -> bool:

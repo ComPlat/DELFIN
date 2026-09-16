@@ -377,10 +377,10 @@ def _run_command(
     expanded = _expand(cmd.command, arguments or {})
     t0 = time.monotonic()
     try:
-        proc = subprocess.run(
+        from . import contained_run as _contained
+        proc = _contained.run(
             expanded, shell=True, env=env,
             cwd=str(cwd) if cwd else None,
-            capture_output=True, text=True,
             timeout=max(0.1, cmd.timeout_s),
         )
         return proc.returncode, proc.stdout or "", proc.stderr or "", time.monotonic() - t0

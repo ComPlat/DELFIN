@@ -356,6 +356,8 @@ def test_auto_isolation_falls_back_when_bwrap_unavailable(monkeypatch, tmp_path)
     import delfin.agent.api_client as A
     A._BWRAP_FUNCTIONAL = None
     monkeypatch.setattr(A, "_bwrap_functional", lambda: False)
+    # Neither isolation works here: the command runs, and says so.
+    monkeypatch.setattr(A, "_landlock_functional", lambda: False)
     perms = A.KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
     _assert_no_filesystem_isolation(
         A._bash_isolation_argv("echo hi", tmp_path, perms, mode="auto"))
