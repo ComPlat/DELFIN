@@ -11,6 +11,7 @@ import stat
 
 import pytest
 
+from delfin import doctor
 from delfin.doctor import (
     BROKEN,
     MISSING,
@@ -53,13 +54,39 @@ def make_binary(bindir, name, behavior="ok"):
 
 @pytest.fixture
 def clean_env(monkeypatch, tmp_path):
-    """PATH with only an empty mock bin dir; no KIT key, no scratch vars."""
+    """PATH with only an empty mock bin dir; no KIT key, no scratch vars.
+
+    ORCA and xtb are found through DELFIN's resolver (qm_health), which
+    also looks outside PATH; tests steer it through ``tool_health``."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     monkeypatch.setenv("PATH", str(bindir))
     monkeypatch.delenv("KIT_TOOLBOX_API_KEY", raising=False)
     monkeypatch.delenv("DELFIN_SCRATCH", raising=False)
+    import delfin.agent.credentials as creds
+    monkeypatch.setattr(creds, "load_credential",
+                        lambda name, **kw: os.environ.get(name, ""))
+    monkeypatch.setattr(doctor, "_tool_health", lambda name: _health(name, "absent"))
     return bindir
+
+
+def _health(name, level, path="/opt/x/bin/" , why=""):
+    from delfin.qm_health import ToolHealth
+    return ToolHealth(name=name, level=level, present=level != "absent",
+                      path=(path + name) if level != "absent" else "",
+                      why=why or ("not found" if level == "absent" else ""))
+
+
+@pytest.fixture
+def tool_health(monkeypatch):
+    """Set what the resolver reports for orca/xtb: tool_health("orca", "fail")."""
+    levels = {}
+    monkeypatch.setattr(doctor, "_tool_health",
+                        lambda name: _health(name, levels.get(name, "absent")))
+
+    def set_level(name, level):
+        levels[name] = level
+    return set_level
 
 
 @pytest.fixture
@@ -102,11 +129,41 @@ def docs_index_file(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 BINARY_CHECKS = [
-    ("orca", check_orca),
-    ("xtb", check_xtb),
     ("mpirun", check_openmpi),
     ("sinfo", check_slurm),
 ]
+
+QM_TOOL_CHECKS = [
+    ("orca", check_orca),
+    ("xtb", check_xtb),
+]
+
+
+@pytest.mark.parametrize("tool,func", QM_TOOL_CHECKS, ids=[t for t, _ in QM_TOOL_CHECKS])
+class TestQmToolChecks:
+    """ORCA and xtb go through DELFIN's resolver, not a --version probe:
+    ORCA has no --version and exits 2, which reported every working ORCA
+    as broken in the first run."""
+
+    def test_ok(self, clean_env, tool_health, tool, func):
+        tool_health(tool, "ok")
+        result = func()
+        assert result.status == OK and tool in result.detail
+
+    def test_missing(self, clean_env, tool_health, tool, func):
+        assert func().status == MISSING
+
+    def test_broken(self, clean_env, tool_health, tool, func):
+        tool_health(tool, "fail")
+        assert func().status == BROKEN
+
+
+def test_orca_is_not_probed_with_version(monkeypatch, clean_env):
+    """A mock `orca` on PATH that fails on --version must not make ORCA broken:
+    the resolver, not --version, decides."""
+    make_binary(clean_env, "orca", "broken")
+    monkeypatch.setattr(doctor, "_tool_health", lambda name: _health(name, "ok"))
+    assert check_orca().status == OK
 
 
 @pytest.mark.parametrize("binary,func", BINARY_CHECKS, ids=[b for b, _ in BINARY_CHECKS])
@@ -176,6 +233,13 @@ class TestKitKey:
     def test_missing(self, clean_env):
         assert check_kit_toolbox_key().status == MISSING
 
+    def test_a_key_in_the_credential_store_counts(self, clean_env, monkeypatch):
+        import delfin.agent.credentials as creds
+        monkeypatch.setattr(creds, "load_credential",
+                            lambda name, **kw: "stored" if name == "KIT_TOOLBOX_API_KEY" else "")
+        result = check_kit_toolbox_key()
+        assert result.status == OK and "stored" not in result.detail
+
 
 # ---------------------------------------------------------------------------
 # Docs index check
@@ -208,9 +272,11 @@ class TestRunAll:
         assert len(set(names)) == 7  # distinct, no duplicates
         assert all(isinstance(r, CheckResult) for r in results)
 
-    def test_all_ok(self, clean_env, scratch_dir, docs_index_file, monkeypatch):
-        for b in BINARIES:
+    def test_all_ok(self, clean_env, scratch_dir, docs_index_file, monkeypatch, tool_health):
+        for b in ("mpirun", "sinfo"):
             make_binary(clean_env, b, "ok")
+        tool_health("orca", "ok")
+        tool_health("xtb", "ok")
         monkeypatch.setenv("KIT_TOOLBOX_API_KEY", "dummy")
         docs_index_file({"documents": []})
         results = run_all(scratch_dir=scratch_dir)
@@ -259,9 +325,8 @@ class TestExitCode:
 
     def test_end_to_end_broken_binary(self, clean_env, scratch_dir, docs_index_file):
         docs_index_file(None)
-        make_binary(clean_env, "orca", "broken")
-        for b in BINARIES[1:]:
-            make_binary(clean_env, b, "ok")
+        make_binary(clean_env, "mpirun", "broken")
+        make_binary(clean_env, "sinfo", "ok")
         results = run_all(scratch_dir=scratch_dir)
         assert exit_code(results) == 1
 
