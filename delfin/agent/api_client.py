@@ -2200,10 +2200,22 @@ _MCP_BASH_CMD_KEYS: tuple[str, ...] = ("command", "cmd", "script", "code")
 # `git push` in a shell command, with any `-C dir` / `-c k=v` / `--flag`
 # ahead of the subcommand.
 _GIT_PUSH_RE = re.compile(
-    r"(?:^|[\s;&|(`])git(?:\s+-[Cc]\s+\S+|\s+--[\w-]+(?:=\S+)?)*\s+push\b")
+    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+|\s+-c\s+\S+"
+    r"|\s+--[\w-]+(?:=\S+)?)*\s+push\b")
 # A user message that asks for a push ("push", "pushen", "puschen"), and
-# one that says not to.
-_ASKS_FOR_PUSH_RE = re.compile(r"\bpu(?:sh|sch)", re.IGNORECASE)
+# one that says not to. The word alone was the test once, and "der Push
+# ist gestern fehlgeschlagen" granted a push (review 2026-09-16): a push
+# spoken of as a thing that happened -- an article before it, a past
+# tense, a verb of failing or succeeding after it -- is a report, not a
+# request.
+_ASKS_FOR_PUSH_RE = re.compile(r"\bpu(?:sh|sch)(?:e|en|t)?\b", re.IGNORECASE)
+_PUSH_REPORT_RE = re.compile(
+    r"(?:\b(?:der|den|dem|des|ein|einen|einem|eines|mein|meinen|dein|deinen|"
+    r"the|a|an|my|your|that|this|last|letzte[rn]?)\s+pu(?:sh|sch)\b"
+    r"|\bge?pu(?:sh|sch)(?:ed|t)\b"
+    r"|\bpu(?:sh|sch)\w*\s+(?:ist|war|hat|hatte|wurde|is|was|has|had|went|"
+    r"failed|fehlgeschlagen|klappte|funktioniert)\b)",
+    re.IGNORECASE)
 _REFUSES_PUSH_RE = re.compile(
     r"\b(?:nicht|kein\w*|nie|never|don'?t|do\s+not|no)\W+(?:\w+\W+){0,2}"
     r"pu(?:sh|sch)", re.IGNORECASE)
@@ -2263,8 +2275,9 @@ def _push_targets(cmd: str, cwd: Any) -> set[str]:
 
     targets: set[str] = set()
     current: Optional[str] = None
-    for match in _GIT_PUSH_RE.finditer(cmd or ""):
-        rest = re.split(r"[;&|]", cmd[match.end():], maxsplit=1)[0]
+    cmd = _with_shell_bodies(cmd)
+    for match in _GIT_PUSH_RE.finditer(cmd):
+        rest = re.split(r"[;&|\n]", cmd[match.end():], maxsplit=1)[0]
         try:
             positional = [a for a in shlex.split(rest) if not a.startswith("-")]
         except ValueError:
@@ -2282,8 +2295,23 @@ def _push_targets(cmd: str, cwd: Any) -> set[str]:
     return targets
 
 
+# A command a shell is handed as a string: `sh -c 'git push'`, `bash -c "..."`,
+# `eval "..."`. The body is a command line of its own; `grep 'git push'` is not.
+_SHELL_BODY_RE = re.compile(
+    r"(?:\b(?:sh|bash|zsh|dash|ksh)\s+(?:-\w+\s+)*-c\s+|\beval\s+)"
+    r"(['\"])(.*?)\1", re.DOTALL)
+
+
+def _with_shell_bodies(cmd: str) -> str:
+    """``cmd`` plus every command line it hands to a shell as a string."""
+    parts = [cmd or ""]
+    for m in _SHELL_BODY_RE.finditer(cmd or ""):
+        parts.append(m.group(2))
+    return "\n".join(parts)
+
+
 def _is_git_push(cmd: str) -> bool:
-    return bool(_GIT_PUSH_RE.search(cmd or ""))
+    return bool(_GIT_PUSH_RE.search(_with_shell_bodies(cmd)))
 
 
 def _message_text(content: Any) -> str:
@@ -2306,10 +2334,23 @@ def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
     if not isinstance(grants, dict):
         return
     text = _message_text(content)
-    if _ASKS_FOR_PUSH_RE.search(text) and not _REFUSES_PUSH_RE.search(text):
+    if _asks_for_push(text):
         grants["push"] = 1
     elif new_request:
         grants["push"] = 0
+
+
+def _asks_for_push(text: str) -> bool:
+    """True when the message asks for a push, not when it talks about one."""
+    if not text or _REFUSES_PUSH_RE.search(text):
+        return False
+    reports = {m.start() for m in _PUSH_REPORT_RE.finditer(text)}
+    for m in _ASKS_FOR_PUSH_RE.finditer(text):
+        # a report match covers the push word it is about
+        if any(r <= m.start() < r + 40 for r in reports):
+            continue
+        return True
+    return False
 
 
 def _grant_push_from_answer(perms: Any, raw_result: Any) -> None:
