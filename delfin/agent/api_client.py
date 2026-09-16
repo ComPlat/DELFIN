@@ -2324,10 +2324,46 @@ def _is_secret_path(perms: Any, path: Path) -> bool:
                 rel = str(resolved).replace("\\", "/")
         else:
             rel = str(resolved).replace("\\", "/")
-        return bool(perms.matches_path_deny(rel)
-                    or perms.matches_path_deny(str(resolved).replace("\\", "/")))
+        denied = bool(perms.matches_path_deny(rel)
+                      or perms.matches_path_deny(str(resolved).replace("\\", "/")))
+        return denied and not _reviewed_source_named_like_a_secret(perms, resolved, rel)
     except Exception:
         return True
+
+
+# Deny globs that match a NAME, not a kind of secret file.
+_NAME_ONLY_SECRET_GLOBS = frozenset({
+    "credentials*", "**/credentials*", "secrets*", "**/secrets*"})
+_SOURCE_SUFFIXES = frozenset({".py", ".pyi"})
+
+
+def _reviewed_source_named_like_a_secret(perms: Any, resolved: Path, rel: str) -> bool:
+    """A committed, unmodified source module whose only offence is its name.
+
+    ``delfin/agent/credentials.py`` is the code that MANAGES the credential
+    store; the store itself is ~/.delfin/credentials.json. The name glob
+    "credentials*" refused it to read_file and grep_file, and an agent
+    building an installation check could not see how the key is looked up
+    -- it guessed an env-var-only check, wrong for every user whose key is
+    in the store (driven 2026-09-16).
+
+    Allowed only when ALL hold: every deny glob that matches is a name glob
+    (not .env, *.key, .ssh, ...); the file is Python source; git tracks it
+    and it is unmodified (``_is_reviewed_project_file``, fails closed). Its
+    contents are then in the repository history anyway.
+    """
+    try:
+        import fnmatch as _fn
+        if Path(resolved).suffix.lower() not in _SOURCE_SUFFIXES:
+            return False
+        spellings = {str(rel).replace("\\", "/"), str(resolved).replace("\\", "/")}
+        hits = {g for g in getattr(perms, "path_deny_globs", ()) or ()
+                for sp in spellings if _fn.fnmatch(sp, g)}
+        if not hits or not hits <= _NAME_ONLY_SECRET_GLOBS:
+            return False
+        return bool(_DocToolExecutor._is_reviewed_project_file(Path(resolved)))
+    except Exception:
+        return False
 
 
 def _is_git_push(cmd: str) -> bool:
@@ -12434,7 +12470,9 @@ class _DocToolExecutor:
             rel_for_glob = str(resolved).replace("\\", "/")
 
         # Hard secret-deny: secrets are NEVER readable, no confirm option.
-        if perms.matches_path_deny(rel_for_glob):
+        if (perms.matches_path_deny(rel_for_glob)
+                and not _reviewed_source_named_like_a_secret(
+                    perms, resolved, rel_for_glob)):
             return (
                 f"read denied: '{label or rel_for_glob}' matches a secret "
                 "deny-glob (.ssh/, .env, *.key, credentials, *.pem). "
