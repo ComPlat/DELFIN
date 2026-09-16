@@ -578,6 +578,9 @@ USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     # to a real session as another agent in its repository.
     ("delfin.agent.session_presence", "_DIR", "session_presence"),
     ("delfin.agent.session_messages", "_DIR", "session_inbox"),
+    # The lifeline ledger: which detached processes a launcher ends when it
+    # stops. A test's ledger in the real home would name the test's pids.
+    ("delfin.agent.lifeline", "_DIR", "lifeline"),
     # The benchmark's per-checkout run lock. It lived under tests/fixtures
     # first, where the checkout-leak guard would have caught it, and the
     # move to ~/.delfin brought it into this table's scope instead.

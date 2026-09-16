@@ -101,6 +101,51 @@ def _latest_vscode_ipc_socket() -> str | None:
     return None
 
 
+def _terminal_gone(signum, frame):
+    """SIGTERM or SIGHUP reach the launcher: stop exactly as Ctrl+C does."""
+    raise KeyboardInterrupt
+
+
+def _install_stop_signals() -> dict:
+    """A closed terminal (SIGHUP) or a plain kill (SIGTERM) used to end the
+    launcher without its cleanup, leaving the server and everything under
+    it running: one server stayed up five days. Both now take the Ctrl+C
+    path. Returns the handlers they replaced."""
+    import signal
+    previous: dict = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            previous[sig] = signal.signal(sig, _terminal_gone)
+        except (ValueError, OSError):
+            pass
+    return previous
+
+
+def _restore_signals(previous: dict) -> None:
+    import signal
+    for sig, handler in (previous or {}).items():
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError, TypeError):
+            pass
+
+
+def _end_agent_processes() -> None:
+    """End every detached process started under this launcher: background
+    shells, MCP servers, daemons (the lifeline ledger)."""
+    try:
+        from delfin.agent import lifeline
+        ended = lifeline.end_children()
+    except Exception:
+        return
+    if ended:
+        print(f"Stopped {len(ended)} background process(es) started from "
+              "this dashboard.")
+
+
 def _is_vscode_session(env: dict[str, str] | None = None) -> bool:
     """Return True when the launcher runs inside a VS Code terminal session."""
     env = env or os.environ
@@ -993,7 +1038,16 @@ def main(argv=None):
 
     # Pipe stderr so we can drop the few benign jupyter noise lines that survive
     # Python's warning filters; stdout stays inherited (banner is untouched).
-    proc = subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE)
+    # This process is the lifeline of everything the dashboard starts: the
+    # server dies with it however it dies (parent death signal), kernels and
+    # daemons watch it, and what runs detached is on its ledger.
+    from delfin.agent import lifeline as _lifeline
+    env.update(_lifeline.claim_root())
+    proc = subprocess.Popen(
+        cmd, env=env, stderr=subprocess.PIPE,
+        preexec_fn=_lifeline.parent_death_signal if os.name == "posix" else None,
+    )
+    _previous_signals = _install_stop_signals()
     stderr_stream = getattr(proc, "stderr", None)
     stderr_thread = None
     if stderr_stream is not None:
@@ -1015,18 +1069,29 @@ def main(argv=None):
         rc = proc.wait()
         if stderr_thread is not None:
             stderr_thread.join(timeout=2)
+        _end_agent_processes()
         sys.exit(rc)
     except KeyboardInterrupt:
-        print("\nStopping...")
+        # Ctrl+C, SIGTERM or the terminal closing: the end of everything,
+        # kept sessions included. A second Ctrl+C must not cut it short.
+        try:
+            import signal as _signal
+            _signal.signal(_signal.SIGINT, _signal.SIG_IGN)
+        except Exception:
+            pass
+        print("\nStopping the dashboard and everything it started...")
         proc.terminate()
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
         if stderr_thread is not None:
             stderr_thread.join(timeout=2)
+        _end_agent_processes()
         print("Stopped.")
+    finally:
+        _restore_signals(_previous_signals)
 
 
 if __name__ == "__main__":

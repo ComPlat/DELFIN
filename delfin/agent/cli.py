@@ -1908,6 +1908,8 @@ def cmd_bug(args: argparse.Namespace) -> int:
         if not _bw.acquire_pid_lock():
             print("bug_watcher is already running (PID lock).")
             return 3
+        from . import lifeline as _lifeline
+        _lifeline.guard_daemon()
         try:
             print(f"bug_watcher started (interval {cfg['interval_s']}s, "
                   f"archive={archive}).")
@@ -2041,13 +2043,21 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         import subprocess as _sp
         log = Path.home() / ".delfin" / "scheduler_daemon.log"
         log.parent.mkdir(parents=True, exist_ok=True)
+        from . import lifeline as _lifeline
         with log.open("a") as lf:
-            _sp.Popen(
+            daemon = _sp.Popen(
                 [sys.executable, "-m", "delfin.agent.scheduler_daemon"],
                 stdout=lf, stderr=lf,
-                start_new_session=True,  # survives shell/dashboard close
+                # Detached from Ctrl+C in the shell, but not from the
+                # terminal: it follows this terminal (or the dashboard it
+                # was started from) through the lifeline, and ends with it.
+                start_new_session=True,
+                env=_lifeline.child_env(),
             )
+        _lifeline.record_child(int(getattr(daemon, "pid", 0) or 0),
+                               "scheduler_daemon")
         print(f"Scheduler daemon started (detached); log: {log}")
+        print("It ends when this terminal closes.")
         print("It executes ONLY entries you explicitly scheduled "
               "(schedule_wakeup / cron_create) — each fire is one paid "
               "agent turn.")

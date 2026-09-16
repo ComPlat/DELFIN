@@ -1202,6 +1202,9 @@ def run_loop(
 
 
 def main() -> int:
+    # Ends with the terminal or dashboard that started it (lifeline).
+    from . import lifeline as _lifeline
+    _lifeline.guard_daemon()
     cfg = monitor_settings()
     if not cfg["enabled"]:
         print("job_monitor is disabled (agent.job_monitor.enabled=false). "
