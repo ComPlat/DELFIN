@@ -6201,8 +6201,12 @@ def create_tab(ctx):
                         description="×", tooltip=_row["tip"],
                         layout=widgets.Layout(width="26px", height="22px",
                                               padding="0"))
-                    _stop.on_click(
-                        lambda _b, _k=_key, _w=_ws: _stop_background(_w, *_k))
+                    if _row["group"] == "errors":
+                        # nothing to stop behind an error row
+                        _stop.disabled = True
+                    else:
+                        _stop.on_click(
+                            lambda _b, _k=_key, _w=_ws: _stop_background(_w, *_k))
                     _cache[_key] = (widgets.HBox(
                         [_label, _stop],
                         layout=widgets.Layout(align_items="center")), _label)
@@ -6216,8 +6220,12 @@ def create_tab(ctx):
                 _cache.pop(_gone, None)
             if tuple(background_rows_box.children) != tuple(_children):
                 background_rows_box.children = tuple(_children)
-        except Exception:
-            subagent_panel_html.value = ""
+        except Exception as _exc:
+            # Say that the list could not be read; an empty panel claims
+            # nothing is running.
+            subagent_panel_html.value = (
+                "<div style='font-size:11px; color:#b45309;'>Background: the "
+                f"list could not be read ({type(_exc).__name__}).</div>")
             background_rows_box.children = ()
 
     def _deliver_session_messages() -> None:
