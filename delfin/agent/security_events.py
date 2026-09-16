@@ -62,6 +62,7 @@ _KINDS = {
     "egress":         ("🌐", "Outbound data transfer"),
     "egress_blocked": ("🌐", "Network destination blocked (sandbox)"),
     "key_exported":   ("🔑", "Provider key exported in the environment"),
+    "settings_updated": ("🛡", "Settings changed by a security update"),
     "push_unrequested": ("📤", "Push nobody asked for"),
     "push_default_branch": ("🔀", "Contributor push to the default branch"),
     "auto_verify":    ("🔁", "Auto-verify caught a problem"),

@@ -1979,6 +1979,14 @@ def _register_process_exit_cleanup() -> None:
     try:
         from delfin.agent import process_guard as _process_guard
         _process_guard.protect("dashboard kernel")
+        try:
+            from delfin.user_settings import load_settings as _ls, take_security_notices as _tsn
+            _ls()
+            for _notice in _tsn():
+                from delfin.agent.api_client import _record_security_event as _rse
+                _rse("settings_updated", "settings", _notice, blocked=False)
+        except Exception:
+            pass
         _exported = _process_guard.exported_provider_keys()
         if _exported:
             from delfin.agent.api_client import _record_security_event

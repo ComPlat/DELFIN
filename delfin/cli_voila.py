@@ -732,6 +732,10 @@ def main(argv=None):
     try:
         from delfin.agent import process_guard as _process_guard
         _process_guard.protect("dashboard launcher")
+        from delfin.user_settings import load_settings as _load_settings, take_security_notices
+        _load_settings()                    # applies a pending security update
+        for _notice in take_security_notices():
+            print(_notice, file=sys.stderr)
         _exported = _process_guard.exported_provider_keys()
         if _exported:
             print("Warning: " + _process_guard.exported_key_advice(_exported),
