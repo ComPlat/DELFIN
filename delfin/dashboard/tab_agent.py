@@ -386,6 +386,24 @@ def _waiting_label(model: str, waited_s: float, first: bool,
     return text
 
 
+_PLAN_STEP_RE = re.compile(r"(?m)^\s*(\d{1,3})[.)]\s+\S")
+
+
+def _count_plan_steps(plan: str) -> int:
+    """How many numbered steps a submitted plan lists; 0 when it lists none.
+
+    Counted from the numbered items ("1. …", "2) …") of the plan body the
+    model handed to exit_plan_mode. A plan without numbered items is not
+    a one-step plan by default: 0 keeps the long execute prompt, which is
+    the safe side (a task list too many, not a step too few).
+    """
+    try:
+        numbers = {int(m.group(1)) for m in _PLAN_STEP_RE.finditer(plan or "")}
+    except Exception:
+        return 0
+    return len(numbers)
+
+
 def _turn_timing_text(total_s: float, ttft_s: float, tool_calls: int) -> str:
     """``4:12 to first token · 5:03 turn · 3 tools`` for the status row."""
     parts = []
@@ -5385,8 +5403,20 @@ def create_tab(ctx):
         state["_kit_plan_has_response"] = False
         state["_agent_wait_chip"] = ""
         _refresh_kit_mode_chip()
-        # Inject a follow-up user message that triggers execution.
+        # Inject a follow-up user message that triggers execution. A plan
+        # of one step gets the short form: the long one asked for a task
+        # list "up front", and hello.txt (one write_file) cost five tool
+        # calls and 348k tokens on task bookkeeping (driven 2026-09-11).
         try:
+            _n_steps = _count_plan_steps(state.get("_pending_plan_body") or "")
+            if _n_steps == 1:
+                input_textarea.value = (
+                    "Execute the approved plan now, in ONE continuous run. It "
+                    "has a single step: do it with a REAL action (write_file / "
+                    "bash …), verify the result, and report in a few words. "
+                    "No task list is needed for one step.")
+                _on_send(None)
+                return
             input_textarea.value = (
                 "Execute the approved plan now, in ONE continuous run. Open the "
                 "task list with task_create (one per step, the whole roadmap up "
