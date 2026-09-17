@@ -2321,6 +2321,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if any(r.get("status") == "FAIL" for r in results) else 0
 
 
+def cmd_where(args: argparse.Namespace) -> int:
+    """Say where the dashboard is and how to walk back into it."""
+    from . import where as _where
+
+    print(_where.format_text(_where.dashboard(), _where.sessions()))
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -2885,6 +2893,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Print the SessionReport as JSON instead of "
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
+
+    # where — the dashboard runs on one node, in one multiplexer, behind
+    # one forwarded port, and the next login lands anywhere.
+    where_p = sub.add_parser(
+        "where",
+        help="Where the dashboard runs and how to get back into it: node, "
+             "tmux session, port, and a link per kept session",
+    )
+    where_p.set_defaults(func=cmd_where)
 
     return p
 

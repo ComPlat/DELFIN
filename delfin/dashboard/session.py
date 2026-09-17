@@ -774,7 +774,16 @@ def _banner_html(records: list[dict]) -> str:
             link = (f'<span style="color:#8a919e">runs on <code>{elsewhere}'
                     '</code> &mdash; log in there to return</span>')
         elif url:
-            link = f'<a href="{url}">re-enter</a>'
+            # A button, and a verb that says what happens. "re-enter"
+            # read as a label for something that had already happened,
+            # and the one control that takes a person back into their
+            # running work is not the place to be clever (2026-09-17).
+            link = (
+                f'<a href="{url}" style="display:inline-block;'
+                ' background:#2f7d4f; color:#fff; text-decoration:none;'
+                ' padding:3px 12px; border-radius:4px; font-weight:600;'
+                '">Open this session &rarr;</a>'
+            )
         else:
             link = '<span style="color:#8a919e">address unknown</span>'
 
@@ -785,9 +794,11 @@ def _banner_html(records: list[dict]) -> str:
         '<div style="border:1px solid #d7dbe2; border-left:3px solid #4b9e5f;'
         ' background:#f7f9fb; padding:8px 12px; margin:0 0 8px 0;'
         ' border-radius:4px; font-size:13px">'
-        '<b>A session is still running.</b> '
-        '<span style="color:#5a6270">This window is new &mdash; '
-        'you can continue where you left off.</span>'
+        '<b>A session is still running &mdash; this window is a new, '
+        'empty one.</b> '
+        '<span style="color:#5a6270">What you type here does NOT reach '
+        'it. Use the button to go back into the running session with its '
+        'history, its agent and its work.</span>'
         f'<ul style="margin:6px 0 0 18px; padding:0">{"".join(rows)}</ul>'
         '</div>'
     )
