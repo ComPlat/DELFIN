@@ -49,7 +49,9 @@ def sample_changes():
         {"seq": 2, "ts": "2026-01-01T00:00:01", "tool": "edit_file", "path": "a.py",
          "created": False, "extra": {}},
         {"seq": 3, "ts": "2026-01-01T00:00:02", "tool": "bash", "path": "b.py",
-         "created": False, "extra": {"deleted": True}},
+         "created": False, "deleted": True, "raw": True},   # real shape: extra merged top-level
+        {"seq": 4, "ts": "2026-01-01T00:00:03", "tool": "bash", "path": "c.py",
+         "created": False, "extra": {"deleted": True}},     # nested form still tolerated
         # malformed entries must be skipped, not crash
         {"seq": 4, "no_path": True},
         "garbage",
@@ -105,7 +107,8 @@ def test_full_report(monkeypatch):
     # one entry per unique path, latest change wins, order oldest-first
     assert r.files_changed == [
         {"path": "a.py", "change": "modified"},   # created then modified
-        {"path": "b.py", "change": "deleted"},
+        {"path": "b.py", "change": "deleted"},    # top-level deleted (real shape)
+        {"path": "c.py", "change": "deleted"},    # nested extra tolerated
     ]
 
     # commands_run: first line of every bash input
