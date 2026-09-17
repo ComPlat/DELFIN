@@ -13,7 +13,10 @@ this field list; keep the field names stable (see tests/test_session_report.py).
 from __future__ import annotations
 
 import json
+import os
 import re
+
+from . import tool_trace
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -145,7 +148,14 @@ def _files_changed(records: list[dict]) -> list[dict]:
 
 
 def _commands_run(entries: list[dict]) -> list[str]:
-    """First line of every bash-like tool input (the auditable command)."""
+    """The command of every bash-like tool call, as it was run.
+
+    The trace stores a tool's input as the JSON it was called with --
+    ``{"command": ..., "description": ...}`` -- so reading the first line
+    of it put the JSON in the report where the command belonged. The
+    payload is parsed, and raw text is still accepted for a recorder that
+    stored the command itself.
+    """
     out = []
     for e in entries:
         if not isinstance(e, dict):
@@ -154,12 +164,16 @@ def _commands_run(entries: list[dict]) -> list[str]:
         if "bash" not in tool.lower():
             continue
         raw = e.get("input")
-        if isinstance(raw, str):
-            cmd = raw.strip().splitlines()
-            if cmd:
-                out.append(cmd[0])
-        elif raw is not None:
-            out.append(str(raw))
+        if raw is None:
+            continue
+        # The trace's own reading of an entry: the command is a field of
+        # the recorded call, not the first line of its JSON.
+        command = tool_trace.command_of(e)
+        if not command and not tool_trace.call_args(e):
+            command = str(raw)          # an older recorder stored the text
+        first = command.strip().splitlines()
+        if first and first[0].strip():
+            out.append(first[0])
     return out
 
 
@@ -489,6 +503,21 @@ def _report_dir() -> "Path":
     return Path.home() / ".delfin" / "session_reports"
 
 
+def _own_it(path: "Path", mode: int) -> None:
+    """Keep a report to the user it is about; never raises.
+
+    This is the one file that collects every command of a session in one
+    place, and it was the only one of these stores written with whatever
+    the umask allowed -- tool_trace creates its file 0600, change_journal
+    chmods 0600/0700. On a shared home the difference is who can read the
+    session back.
+    """
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
 def _safe_session_id(session_id: str) -> str:
     """Same sanitization as change_journal._safe_session_id (no traversal)."""
     return re.sub(r"[^a-zA-Z0-9_-]", "_", str(session_id or "") or "session")[:40]
@@ -508,11 +537,15 @@ def write_session_report(session_id: str) -> "Path | None":
         report = collect_session_report(sid)
         text = render_markdown(report)
         path = _report_dir() / (_safe_session_id(sid) + ".md")
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        _own_it(path.parent, 0o700)
         # Atomic-ish: write a temp file next to the target, then replace,
         # so a reader never sees a half-written report.
         tmp = path.with_suffix(".md.tmp")
         tmp.write_text(text, encoding="utf-8")
+        # Narrow it BEFORE it takes the final name: a chmod afterwards
+        # leaves a window in which the report is readable by others.
+        _own_it(tmp, 0o600)
         tmp.replace(path)
         return path
     except Exception:

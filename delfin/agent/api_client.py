@@ -3021,8 +3021,18 @@ def _after_push(arguments: Any, raw_result: Any, perms: Any) -> str:
     links = [f"https://github.com/{repo}/compare/{base}...{branch}?expand=1"
              for repo, _sha, branch in refs
              if branch not in ({"main", "master"} | {base})]
+    # Name the branch that actually went up. `git push -u origin HEAD`
+    # pushes the branch the worktree is on, which is not always the one
+    # the model believes it made: a session reported "diag-denials" and
+    # the remote had "session/8c29dfaa" (2026-09-17). The link carries
+    # the real name, the sentence says it.
+    went_up = sorted({branch for _repo, _sha, branch in refs if branch})
+    named = (" It went up as " + ", ".join(f"`{b}`" for b in went_up)
+             + " — use that name when you say what was pushed."
+             ) if went_up else ""
     pr = (" Give the user this link to open the pull request: "
           + " ".join(links) + ".") if links else ""
+    pr = named + pr
     if not watched:
         return f"[Push went through.]{pr} {spent}"
     return ("[Push went through.] Its CI is being watched ("
@@ -6886,8 +6896,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "session_message",
             "description": (
-                "List other open sessions (no `to`) or message one "
-                "(not as the user)."
+                "List other open sessions (no `to`), message one, or all "
+                "with to=all (not as the user)."
             ),
             "parameters": {
                 "type": "object",
@@ -13262,8 +13272,18 @@ class _DocToolExecutor:
             if ok:
                 return None
             _w = "protected path" if is_protected else "calc file"
-            if not self._confirm_timed_out(perms):
-                perms.record_denied_action("write", str(resolved))
+            if self._confirm_timed_out(perms):
+                # Absence, not refusal. The distinction was drawn for bash
+                # and not here, so an unattended window on a protected path
+                # told the model the user had said no -- twice in one
+                # afternoon, five minutes each (2026-09-17).
+                _record_security_event("approval_timeout", name, rel_str)
+                return (
+                    f"approval to change the {_w} '{rel_str}' TIMED OUT — "
+                    "the user is away, this is NOT a denial. Do not try it "
+                    "again now; carry on with work that needs no approval, "
+                    "or end your turn saying what is waiting for them.")
+            perms.record_denied_action("write", str(resolved))
             return f"user denied '{name}' on {_w} '{rel_str}'"
 
         # Inside a writable root. "default" asks before the change; that is
@@ -13286,9 +13306,15 @@ class _DocToolExecutor:
             except Exception as exc:
                 return f"confirm_callback raised: {exc}"
             if not ok:
+                if self._confirm_timed_out(perms):
+                    _record_security_event("approval_timeout", name, rel_str)
+                    return (
+                        f"approval to write '{rel_str}' TIMED OUT — the user "
+                        "is away, this is NOT a denial. Do not try it again "
+                        "now; carry on with work that needs no approval, or "
+                        "end your turn saying what is waiting for them.")
                 _record_security_event("denied_by_user", name, rel_str)
-                if not self._confirm_timed_out(perms):
-                    perms.record_denied_action("write", str(resolved))
+                perms.record_denied_action("write", str(resolved))
                 return (
                     f"user denied '{name}' on '{rel_str}'. Do NOT retry it or "
                     "write the same content by another route — ask the user "
@@ -13354,9 +13380,14 @@ class _DocToolExecutor:
                 return f"confirm_callback raised: {exc}"
             _record_security_event("egress", name, target[:120], blocked=not ok)
             if not ok:
-                if not self._confirm_timed_out(perms):
-                    perms.record_denied_action(
-                        "tool", _tool_action_signature(name, args))
+                if self._confirm_timed_out(perms):
+                    return (
+                        f"approval for '{name}' TIMED OUT — the user is away, "
+                        "this is NOT a denial. Do not try it again now, and "
+                        "do not reach the same destination another way; say "
+                        "what is waiting for them.")
+                perms.record_denied_action(
+                    "tool", _tool_action_signature(name, args))
                 return (f"user denied '{name}'. Do NOT retry it or reach the "
                         "same destination another way.")
             return None
@@ -14064,9 +14095,14 @@ class _DocToolExecutor:
             return f"confirm_callback raised: {exc}"
         _record_security_event("mcp_side_effect", name, base, blocked=not ok)
         if not ok:
-            if not self._confirm_timed_out(perms):
-                perms.record_denied_action(
-                    "tool", _tool_action_signature(name, args or {}))
+            if self._confirm_timed_out(perms):
+                return (
+                    f"approval for '{name}' TIMED OUT — the user is away, "
+                    "this is NOT a denial. Do not try it again now, and do "
+                    "not reach the same effect through another server; say "
+                    "what is waiting for them.")
+            perms.record_denied_action(
+                "tool", _tool_action_signature(name, args or {}))
             return (
                 f"user denied '{name}'. Do NOT retry it or reach the same "
                 "effect through another server."
@@ -16010,12 +16046,42 @@ class _DocToolExecutor:
                 "note": ("Pass to=<key> and message to write to one."
                          if others else "No other session is open."),
             }, ensure_ascii=False)
+        if to.lower() in ("all", "*", "everyone"):
+            # One fact for every peer, in one call. Sessions working on the
+            # same feature sent the same sentence to each other separately:
+            # 71 of 541 tool calls in one afternoon were session_message,
+            # much of it the same announcement twice (2026-09-17).
+            if not others:
+                return json.dumps({"error": "no other session is open."})
+            if not text:
+                return json.dumps({"error": "message is required."})
+            mine = next((r for r in _presence.open_sessions()
+                         if me and r.get("key") == me), {})
+            sent, failed = [], []
+            for peer in others:
+                try:
+                    _msgs.send(str(peer.get("key")), text, from_key=me,
+                               from_title=str(mine.get("title") or ""))
+                    sent.append(peer.get("key"))
+                except OSError as exc:
+                    failed.append({"key": peer.get("key"), "why": str(exc)})
+            return json.dumps({"status": "sent", "to": sent,
+                               "not_delivered": failed}, ensure_ascii=False)
         target = next((r for r in others
                        if to in (r.get("key"), r.get("session_id"))), None)
         if target is None:
-            return json.dumps({"error": (
-                f"no other open session {to!r}. Call session_message without "
-                "`to` for the list.")})
+            # The list, here, not a second call: a session addressed a peer
+            # by its TITLE, got told the key was unknown, and had to ask
+            # for the roster it could have been handed (2026-09-17).
+            return json.dumps({
+                "error": (f"no other open session {to!r} — address one by its "
+                          "`key`, not by its title."),
+                "sessions": [{
+                    "key": r.get("key"), "title": r.get("title", ""),
+                    "workspace": r.get("workspace", ""),
+                    "branch": r.get("branch", ""),
+                } for r in others],
+            }, ensure_ascii=False)
         if not text:
             return json.dumps({"error": "message is required."})
         mine = next((r for r in _presence.open_sessions()
@@ -16739,7 +16805,10 @@ class _DocToolExecutor:
             perms.plan_awaiting_approval = ""
             return json.dumps({"error": (
                 f"exit_plan_mode is only valid while in 'plan' mode "
-                f"(current mode: {perms.mode!r})"
+                f"(current mode: {perms.mode!r}). Nothing is waiting to be "
+                "approved and nothing was submitted: this mode executes, so "
+                "carry out the work and report it. Calling this again will "
+                "return the same answer."
             )})
         # A plan is already on screen and unanswered. Return NOW, without
         # touching the approval callback -- that callback blocks for the
