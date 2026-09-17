@@ -128,7 +128,9 @@ def _files_changed(records: list[dict]) -> list[dict]:
         extra = rec.get("extra") or {}
         if isinstance(rec.get("created"), bool) and rec.get("created"):
             change = "created"
-        elif isinstance(extra, dict) and extra.get("deleted"):
+        elif rec.get("deleted") or (isinstance(extra, dict) and extra.get("deleted")):
+            # _write_record merges `extra` into the record top level
+            # (change_journal.py:478), so `deleted` sits there, not nested.
             change = "deleted"
         else:
             change = "modified"
