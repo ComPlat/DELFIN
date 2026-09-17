@@ -291,3 +291,230 @@ def collect_session_report(session_id: str) -> SessionReport:
         # Contract: never raise. Anything already filled stays filled.
         pass
     return report
+
+
+# --------------------------------------------------------------------------
+# rendering (Session B). Pure functions: no I/O, no colour, no imports of
+# the collector's sources — they only read the dataclass.
+# --------------------------------------------------------------------------
+
+def _fmt_duration(started_at: float, ended_at: float) -> str:
+    """Human duration between two unix timestamps; '-' when unknown."""
+    try:
+        seconds = float(ended_at) - float(started_at)
+    except (TypeError, ValueError):
+        return "-"
+    if seconds < 0 or started_at <= 0.0 or ended_at <= 0.0:
+        return "-"
+    m, s = divmod(int(round(seconds)), 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def _fmt_time(ts: float) -> str:
+    """UTC HH:MM:SS for a unix timestamp; '-' when unknown (0.0/negative)."""
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        return "-"
+    if ts <= 0.0:
+        return "-"
+    import datetime as _dt
+
+    return _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC")
+
+
+def _fmt_cost(cost_usd: float) -> str:
+    try:
+        return f"${float(cost_usd):.2f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _fmt_int(value) -> str:
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def render_markdown(report: SessionReport) -> str:
+    """Render a SessionReport as a clean Markdown document.
+
+    Sections: header (session id, model, duration), Tool Calls, Files
+    Changed, Commands Run, Tests Run, Denials, Cost & Tokens.
+    """
+    lines: list[str] = []
+    add = lines.append
+
+    add(f"# Session Report: {report.session_id or '(unknown session)'}")
+    add("")
+    duration = _fmt_duration(report.started_at, report.ended_at)
+    add(f"- **Model:** {report.model or '-'}")
+    add(f"- **Started:** {_fmt_time(report.started_at)}")
+    add(f"- **Ended:** {_fmt_time(report.ended_at)}")
+    add(f"- **Duration:** {duration}")
+    add("")
+
+    add("## Tool Calls")
+    add("")
+    if report.tool_calls:
+        add("| Tool | Calls | OK | Failed |")
+        add("|---|---:|---:|---:|")
+        for row in report.tool_calls:
+            add("| {name} | {count} | {ok} | {failed} |".format(
+                name=str(row.get("name", "") or "-").replace("|", "\\|"),
+                count=_fmt_int(row.get("count", 0)),
+                ok=_fmt_int(row.get("ok", 0)),
+                failed=_fmt_int(row.get("failed", 0)),
+            ))
+    else:
+        add("_(none)_")
+    add("")
+
+    add("## Files Changed")
+    add("")
+    if report.files_changed:
+        add("| File | Change |")
+        add("|---|---|")
+        for row in report.files_changed:
+            add("| {path} | {change} |".format(
+                path=str(row.get("path", "") or "-").replace("|", "\\|"),
+                change=str(row.get("change", "") or "-").replace("|", "\\|"),
+            ))
+    else:
+        add("_(none)_")
+    add("")
+
+    add("## Commands Run")
+    add("")
+    if report.commands_run:
+        add("```")
+        for cmd in report.commands_run:
+            add(str(cmd))
+        add("```")
+    else:
+        add("_(none)_")
+    add("")
+
+    add("## Tests Run")
+    add("")
+    if report.tests_run:
+        add("| Target | Status | Passed | Failed |")
+        add("|---|---|---:|---:|")
+        for row in report.tests_run:
+            add("| {target} | {status} | {passed} | {failed} |".format(
+                target=str(row.get("target", "") or "-").replace("|", "\\|"),
+                status=str(row.get("status", "") or "-").replace("|", "\\|"),
+                passed=_fmt_int(row.get("passed", 0)),
+                failed=_fmt_int(row.get("failed", 0)),
+            ))
+    else:
+        add("_(none)_")
+    add("")
+
+    add("## Denials")
+    add("")
+    if report.denials:
+        for row in report.denials:
+            add("- **{kind}**: {detail}".format(
+                kind=str(row.get("kind", "") or "-"),
+                detail=str(row.get("detail", "") or "-"),
+            ))
+    else:
+        add("_(none)_")
+    add("")
+
+    add("## Cost & Tokens")
+    add("")
+    add(f"- **Cost:** {_fmt_cost(report.cost_usd)}")
+    add(f"- **Input tokens:** {_fmt_int(report.input_tokens)}")
+    add(f"- **Output tokens:** {_fmt_int(report.output_tokens)}")
+    add("")
+
+    return "\n".join(lines)
+
+
+def render_terminal(report: SessionReport) -> str:
+    """Render a SessionReport as a compact plain-text summary.
+
+    Plain ASCII, no colour codes — safe for any terminal, log or pager.
+    """
+    total_calls = 0
+    total_failed = 0
+    for row in report.tool_calls or []:
+        try:
+            total_calls += int(row.get("count", 0) or 0)
+            total_failed += int(row.get("failed", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+    n_files = len(report.files_changed or [])
+    n_tests = len(report.tests_run or [])
+    n_denials = len(report.denials or [])
+    tests_passed = sum(
+        1 for row in report.tests_run or []
+        if str(row.get("status", "")) == "passed")
+    tests_failed = n_tests - tests_passed
+
+    lines = [
+        f"Session {report.session_id or '(unknown)'}"
+        f" | model {report.model or '-'}"
+        f" | duration {_fmt_duration(report.started_at, report.ended_at)}",
+        f"Tool calls: {total_calls} ({total_failed} failed)"
+        f" | files changed: {n_files}"
+        f" | tests: {tests_passed} passed, {tests_failed} failed"
+        f" | denials: {n_denials}",
+        f"Cost {_fmt_cost(report.cost_usd)}"
+        f" | tokens in {_fmt_int(report.input_tokens)}"
+        f" out {_fmt_int(report.output_tokens)}",
+    ]
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# shutdown hook: best-effort write of the Markdown report into
+# ~/.delfin/session_reports/<safe-session-id>.md (per-session-file pattern
+# shared with change_journal / pending_changes).
+# --------------------------------------------------------------------------
+
+def _report_dir() -> "Path":
+    from pathlib import Path
+
+    return Path.home() / ".delfin" / "session_reports"
+
+
+def _safe_session_id(session_id: str) -> str:
+    """Same sanitization as change_journal._safe_session_id (no traversal)."""
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", str(session_id or "") or "session")[:40]
+
+
+def write_session_report(session_id: str) -> "Path | None":
+    """Collect and write the Markdown session report; never raises.
+
+    Returns the written path, or None when nothing could be done (empty
+    session id, or every step failed — including the collection itself,
+    which by contract also never raises).
+    """
+    try:
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        report = collect_session_report(sid)
+        text = render_markdown(report)
+        path = _report_dir() / (_safe_session_id(sid) + ".md")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic-ish: write a temp file next to the target, then replace,
+        # so a reader never sees a half-written report.
+        tmp = path.with_suffix(".md.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+        return path
+    except Exception:
+        # Best-effort by contract: a failed report must never break the
+        # shutdown path that called us.
+        return None
