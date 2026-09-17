@@ -136,6 +136,41 @@ def read(session: str, *, last_n: int | None = None,
     return out
 
 
+def call_args(entry: dict) -> dict:
+    """The arguments a recorded call was made with, as a mapping.
+
+    An entry stores the call's input as the JSON it was invoked with, so
+    every reader that wanted the command, the path or the target had to
+    parse it again -- three diagnostic tools did exactly that within one
+    afternoon, each in its own way (2026-09-17). The format is left
+    alone; this is the reading of it.
+
+    Always a dict: an input that is not a JSON object (a bare string
+    from an older recorder) yields {}, and so does anything unreadable.
+    """
+    if not isinstance(entry, dict):
+        return {}
+    raw = entry.get("input")
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def command_of(entry: dict) -> str:
+    """The shell command of a recorded bash-like call, or ""."""
+    if not isinstance(entry, dict):
+        return ""
+    if "bash" not in str(entry.get("tool", "")).lower():
+        return ""
+    return str(call_args(entry).get("command") or "")
+
+
 def clear(session: str) -> None:
     try:
         trace_path(session).unlink()

@@ -149,7 +149,20 @@ _BASELINE_TOKENS = 11_422
 # say "leave that file to me" or "I pushed, rebase first". One tool lists the
 # other open sessions and leaves a message for one; the receiver takes it
 # between rounds or as its next turn, marked as not coming from the user.
-_TOKEN_BUDGET = 9_450
+# Raised a ninth time, 9_450 -> 9_455, for the broadcast in
+# session_message. 17 measured for the first wording ("message one by its
+# `key`, or tell them all at once", plus a description on the `to`
+# property); the property description went (the tool's own line already
+# says what `to` takes) and the sentence was cut back to the original
+# shape with three words added, which is the 5 that remain.
+#
+# What they buy: the same sentence no longer goes to each peer in turn.
+# Twelve sessions in one afternoon spent 71 of 541 tool calls on
+# session_message, a good part of it one announcement sent twice
+# (2026-09-17). One call now reaches every other open session, and a
+# message addressed to a name that is not a key comes back with the
+# roster instead of costing a second call to ask for it.
+_TOKEN_BUDGET = 9_455
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

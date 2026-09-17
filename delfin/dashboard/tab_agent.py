@@ -8313,7 +8313,8 @@ def create_tab(ctx):
 
             role_total = len(engine.route)
             if engine.is_cycle_complete:
-                header_meta = f"{engine.mode} · cycle complete · ${engine.cost_usd:.2f}"
+                header_meta = (f"{engine.mode} · cycle complete · "
+                               f"{_engine_cost_label(engine)}")
             else:
                 header_meta = (
                     f"{engine.mode} · step {engine.current_role_index + 1}/{max(role_total, 1)}"
@@ -8321,7 +8322,7 @@ def create_tab(ctx):
                 )
                 if state.get("streaming"):
                     header_meta += " · running"
-                header_meta += f" · ${engine.cost_usd:.2f}"
+                header_meta += f" · {_engine_cost_label(engine)}"
 
         retry_value = "0"
         retry_note = "No active retries."
@@ -19573,6 +19574,30 @@ def _fmt_cost(cost_usd: float) -> str:
     "$0.000", which reads as free rather than as cheap.
     """
     return f"${cost_usd:.3f}" if cost_usd >= 0.0005 else f"${cost_usd:.4f}"
+
+
+def _engine_cost_label(engine) -> str:
+    """The header's cost, or what it means when there is no number.
+
+    ``$0.00`` is what this printed for a whole session on a model with no
+    published rate: the engine counts each turn as measured, non-billing
+    or unpriced, and the header ignored the distinction. A zero that was
+    never measured is not a cheap run, and a header that says it is makes
+    the dashboard say something untrue.
+    """
+    try:
+        cost = float(getattr(engine, "cost_usd", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    if cost > 0:
+        return f"${cost:.2f}"
+    unpriced = int(getattr(engine, "_unpriced_turns", 0) or 0)
+    non_billing = int(getattr(engine, "_non_billing_turns", 0) or 0)
+    if unpriced:
+        return "cost not measured"
+    if non_billing:
+        return "no charge"
+    return f"${cost:.2f}"
 
 
 def _estimate_cost_str(
