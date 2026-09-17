@@ -62,7 +62,7 @@ def _real(paths: Iterable[str]) -> list[str]:
 def profile(*, write_roots: Iterable[str] = (), hide: Iterable[str] = (),
             allow_sockets: Iterable[str] = (), deny_sockets: Iterable[str] = (),
             restrict_files: bool = True, net_mode: str = "open",
-            proxy_port: int = 0) -> str:
+            proxy_port: int = 0, write_deny: Iterable[str] = ()) -> str:
     """The Seatbelt profile. ``restrict_files`` False is the attended
     profile: the filesystem as it is, the session doors still shut."""
     lines = ["(version 1)", "(allow default)"]
@@ -74,6 +74,12 @@ def profile(*, write_roots: Iterable[str] = (), hide: Iterable[str] = (),
                      ' (literal "/dev/null") (literal "/dev/zero")'
                      ' (literal "/dev/dtracehelper") (regex #"^/dev/tty")'
                      ' (regex #"^/dev/fd/"))')
+        denied = _real(write_deny)
+        if denied:
+            # After the allow, so it wins: git hooks stay readable, a new
+            # one cannot be written.
+            lines.append("(deny file-write* " +
+                         " ".join(f"(subpath {_q(d)})" for d in denied) + ")")
     hidden = _real(hide)
     if hidden:
         lines.append("(deny file-read* file-write* " +

@@ -17280,6 +17280,51 @@ def _home_secret_paths() -> list[str]:
     return out
 
 
+_GIT_ROOTS_CACHE: dict = {}
+
+
+def _git_metadata_roots(workspace) -> list[str]:
+    """The git directories an isolated command must be able to write for
+    ordinary version control to work: the shared object store and the
+    worktree's own git dir.
+
+    A session in its own worktree checks out under
+    ``<repo>/.delfin/worktrees/<name>``, but git keeps that worktree's
+    metadata in ``<repo>/.git/worktrees/<name>`` and the objects and refs
+    in ``<repo>/.git`` -- both OUTSIDE the workspace. Without them the
+    sandbox refused every git command with "not a git repository". These
+    are the same directories a git worktree shares with its repository
+    anyway; a session still has its own checkout and its own branch.
+
+    Cached per workspace; never raises; empty when the workspace is not in
+    a git repository. The file tools keep their ``.git/**`` deny, so this
+    widens only what the shell needs for git itself."""
+    key = str(workspace)
+    if key in _GIT_ROOTS_CACHE:
+        return _GIT_ROOTS_CACHE[key]
+    roots: list[str] = []
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute",
+             "--git-dir", "--git-common-dir"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            for line in out.stdout.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    resolved = str(Path(line).resolve())
+                except OSError:
+                    continue
+                if resolved not in roots:
+                    roots.append(resolved)
+    except Exception:
+        roots = []
+    _GIT_ROOTS_CACHE[key] = roots
+    return roots
+
+
 _SLURM_CONTROLLERS: Optional[list[str]] = None
 
 
@@ -17380,6 +17425,9 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
     except Exception:
         roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
     roots += [str(Path(p).resolve()) for p in extra_write]
+    git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
+    roots += [r for r in git_roots if r not in roots]
+    hook_dirs = [str(Path(g) / "hooks") for g in git_roots]
     tmp = _private_tmp_dir()
     mode = _ep.network_mode()
     env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"]
@@ -17394,7 +17442,8 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
         except Exception:
             mode = "none"
     prof = _sb.profile(write_roots=roots + [tmp], hide=_home_secret_paths(),
-                       allow_sockets=roots + [tmp], net_mode=mode, proxy_port=port)
+                       allow_sockets=roots + [tmp], net_mode=mode, proxy_port=port,
+                       write_deny=hook_dirs)
     return env_prefix + _sb.argv(plain, prof)
 
 
@@ -17409,11 +17458,18 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
         roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
     except Exception:
         roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
+    git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
     argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve())]
-    for r in list(roots) + [str(Path(p).resolve()) for p in extra_write]:
+    for r in list(roots) + [str(Path(p).resolve()) for p in extra_write] + git_roots:
         argv += ["--write", r]
     for h in _home_secret_paths():
         argv += ["--hide", h]
+    # git's hooks would run on the user's next git command. bubblewrap and
+    # Seatbelt keep them readable-but-not-writable for free; Landlock cannot
+    # carve a subpath out of a writable tree without also blocking the new
+    # files git creates beside it (index.lock, config.lock), so on a
+    # Landlock-only host the shell-command hook deny (_bash_denied_path) is
+    # what stops a planted hook.
     # strict: where not even a filter can keep the command from the user's
     # sessions (tmux, the SSH agent, systemd), a locked or forced isolation
     # refuses the command; an unattended run proceeds on Landlock alone.
@@ -17853,6 +17909,17 @@ def _bash_isolation_argv(
         roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
     for r in roots + [str(Path(p).resolve()) for p in extra_write]:
         args += ["--bind", r, r]
+    git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
+    for r in git_roots:
+        try:
+            if os.path.isdir(r):
+                args += ["--bind", r, r]
+        except OSError:
+            continue
+    # A git hook the command plants would run on the user's next git
+    # command: existing hooks stay readable, new ones cannot be written.
+    for g in git_roots:
+        args += ["--ro-bind-try", str(Path(g) / "hooks"), str(Path(g) / "hooks")]
     args += ["--chdir", str(Path(run_cwd).resolve())]
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])
