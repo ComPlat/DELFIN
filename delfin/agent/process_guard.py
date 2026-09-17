@@ -172,3 +172,56 @@ def exported_key_advice(names) -> str:
             "yours through /proc. Store it with `delfin-agent credentials set "
             f"{names[0]}` and remove the export.")
 
+
+def put_exported_keys_away(names=()) -> str:
+    """Do it instead of asking for it. Returns one line, or "".
+
+    The warning above repeated at every start and left four manual steps
+    -- store the key, find the export, delete it, open a new shell -- and
+    a key sat in a group-readable shell file in the meantime (seen on a
+    cluster, 2026-09-17). The key is taken into the 0600 store and the
+    export is commented out with a copy of the file kept beside it.
+
+    Silent when there is nothing to do. A stored value that DIFFERS from
+    the exported one is left alone and said out loud: which of the two is
+    the right key is not this function's to decide.
+    """
+    try:
+        from . import credentials as _cred
+        rows = _cred.secure_exported_keys(names or exported_provider_keys())
+    except Exception:
+        return ""
+    stored = [r["name"] for r in rows if r["action"] == "stored"]
+    cleaned = [(r["name"], c) for r in rows for c in r.get("cleaned") or []]
+    differs = [r["name"] for r in rows if r["action"] == "differs"]
+    parts: list[str] = []
+    if stored:
+        parts.append(f"{', '.join(stored)} taken into "
+                     f"{_cred.credentials_path()} (0600)")
+    for name, where in cleaned:
+        parts.append(f"the line exporting {name} in {where['file']}:"
+                     f"{where['line']} is commented out "
+                     f"(copy: {where['backup']})")
+    for row in rows:
+        if row.get("systemd"):
+            parts.append(f"{row['name']} removed from the systemd user "
+                         "environment (put it back with `systemctl --user "
+                         f"set-environment {row['name']}=...` if you meant "
+                         "it to be there)")
+    unplaced = [r["name"] for r in rows
+                if r["action"] in ("stored", "already")
+                and not r.get("exports") and not r.get("systemd")]
+    if unplaced:
+        parts.append(f"{', '.join(unplaced)} is still exported by something "
+                     "outside the home directory (a site profile, a job "
+                     "script, the parent shell) — the store holds it now, so "
+                     "that export can go")
+    if differs:
+        parts.append(f"{', '.join(differs)} is exported AND stored with a "
+                     "different value — neither was changed; decide which is "
+                     "current and store that one")
+    if not parts:
+        return ""
+    return ("Key hygiene: " + "; ".join(parts)
+            + ". Open a new shell so the export is gone from it too.")
+

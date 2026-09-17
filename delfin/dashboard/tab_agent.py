@@ -1990,9 +1990,11 @@ def _register_process_exit_cleanup() -> None:
         _exported = _process_guard.exported_provider_keys()
         if _exported:
             from delfin.agent.api_client import _record_security_event
+            _done = _process_guard.put_exported_keys_away(_exported)
             _record_security_event(
                 "key_exported", "environment",
-                _process_guard.exported_key_advice(_exported), blocked=False)
+                _done or _process_guard.exported_key_advice(_exported),
+                blocked=False)
     except Exception:
         pass
     import atexit

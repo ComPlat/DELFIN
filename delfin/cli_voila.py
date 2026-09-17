@@ -738,8 +738,16 @@ def main(argv=None):
             print(_notice, file=sys.stderr)
         _exported = _process_guard.exported_provider_keys()
         if _exported:
-            print("Warning: " + _process_guard.exported_key_advice(_exported),
-                  file=sys.stderr)
+            # Do it rather than ask for it: the key goes into the 0600
+            # store and the export is commented out, with a copy of the
+            # file kept. Only what could not be decided is left to say.
+            _done = _process_guard.put_exported_keys_away(_exported)
+            if _done:
+                print(_done, file=sys.stderr)
+            else:
+                print("Warning: "
+                      + _process_guard.exported_key_advice(_exported),
+                      file=sys.stderr)
     except Exception:
         pass
     # Record the REAL shell cwd the user launched from, BEFORE Voila resets the
