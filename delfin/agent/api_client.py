@@ -2939,6 +2939,39 @@ def _pipe_exit_note(arguments: Any, raw_result: Any) -> str:
             "with `set -o pipefail;`.")
 
 
+#: What bubblewrap prints when IT could not start, as opposed to what
+#: the command inside it printed.
+_SANDBOX_START_FAILED_RE = re.compile(
+    r"^bwrap: (.+)$|^sandbox-exec: (.+)$", re.M)
+
+
+def _sandbox_start_note(raw_result: Any) -> str:
+    """A note for a command whose SANDBOX failed to start; "" if none.
+
+    The command did not run. The agent sees a non-zero exit and a line it
+    did not write, and reads it as a refusal it must work around -- one
+    session took "bwrap: Can't bind mount /oldroot/..." for a denial and
+    rewrote its command, when a plain retry was what worked (2026-09-17).
+    """
+    try:
+        res = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(res, dict) or res.get("exit_code") in (0, None):
+        return ""
+    text = f"{res.get('stderr') or ''}\n{res.get('stdout') or ''}"
+    hit = _SANDBOX_START_FAILED_RE.search(text)
+    if not hit:
+        return ""
+    said = (hit.group(1) or hit.group(2) or "").strip()[:160]
+    return ("[Shell] the sandbox itself failed to start, so the command "
+            f"never ran: {said}. This is not a refusal and not a result — "
+            "nothing was changed and nothing was read. Run the command "
+            "again as it was; if it fails the same way twice, say so "
+            "instead of rewriting it, and `delfin doctor` reports what "
+            "this host can offer.")
+
+
 def _after_push(arguments: Any, raw_result: Any, perms: Any) -> str:
     """What a push that went through leaves behind, as a note for the model.
 
@@ -20508,6 +20541,12 @@ class OpenAIClient(_BaseClient):
                             _pipe_note = _pipe_exit_note(fn_args, _raw_result)
                             if _pipe_note:
                                 self.push_run_note(_pipe_note)
+                        except Exception:
+                            pass
+                        try:
+                            _cage_note = _sandbox_start_note(_raw_result)
+                            if _cage_note:
+                                self.push_run_note(_cage_note)
                         except Exception:
                             pass
                         try:

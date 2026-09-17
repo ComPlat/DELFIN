@@ -472,6 +472,9 @@ class AgentEngine:
         self._last_test_evidence: list = []
         self.token_usage = {"input": 0, "output": 0, "cached": 0}
         self.cost_usd: float = 0.0
+        #: What the last turn's cost means; written into its metrics row
+        #: so a report can tell an unmeasured zero from a cheap turn.
+        self._last_turn_price_state: str = ""
         # What this session's turns DELEGATED, kept apart from what they
         # spent themselves. cost_usd above has only ever counted the
         # parent model's own tokens; a delegated run is billed separately
@@ -5681,12 +5684,15 @@ class AgentEngine:
         ).state
         if state == _pricing.NON_BILLING:
             self._non_billing_turns += 1
+            self._last_turn_price_state = "non_billing"
         elif (state == _pricing.PRICED
                 or float(cost_delta or 0.0) > 0
                 or getattr(self, "backend", "") == "cli"):
             self._measured_cost_turns += 1
+            self._last_turn_price_state = "measured"
         else:
             self._unpriced_turns += 1
+            self._last_turn_price_state = "unknown"
 
     def _usd_budget_enforced(self) -> bool:
         """Whether the configured USD ceiling actually bounds this run.
