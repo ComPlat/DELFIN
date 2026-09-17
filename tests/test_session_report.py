@@ -9,6 +9,7 @@ contract for missing/misbehaving sources.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import pytest
 
@@ -165,3 +166,117 @@ def test_session_report_contract_fields():
         "tool_calls", "files_changed", "commands_run", "tests_run",
         "denials", "cost_usd", "input_tokens", "output_tokens",
     ]
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: `delfin-agent report` through the CLI, with a session
+# fabricated ON DISK in a fake ~/.delfin (no monkeypatching of the
+# collector's sources — the real files are written by the real APIs).
+# ---------------------------------------------------------------------------
+
+import json as _json
+import time as _time
+
+CLI_SESSION = "e2e-report-session"
+
+
+def _fabricate(home: Path) -> None:
+    """Write one session's real source files under a fake home."""
+    import delfin.agent.tool_trace as tt
+    import delfin.agent.agent_metrics as am
+
+    # tool trace: two bash calls + one run_tests call
+    tt.record(CLI_SESSION, tool="bash", tool_input="ls -la\nmore lines",
+              output="ok")
+    tt.record(CLI_SESSION, tool="run_tests",
+              tool_input=_json.dumps(
+                  {"target": "tests/test_x.py", "pytest_args": ["-q"]}),
+              output="3 passed in 1s", ok=True)
+
+    # metrics: one turn row naming this session
+    am.record_turn(am.TurnMetrics(
+        ts=_time.time(), session_id=CLI_SESSION, model="kit.glm-5.3",
+        cost_usd=1.5, input_tokens=100, output_tokens=50,
+    ))
+
+
+def _cli(argv: list[str]) -> tuple[int, str, str]:
+    """Run delfin.agent.cli.main with stdout/stderr captured."""
+    import io as _io
+    from contextlib import redirect_stderr, redirect_stdout
+
+    from delfin.agent import cli as agent_cli
+
+    buf_out, buf_err = _io.StringIO(), _io.StringIO()
+    with redirect_stdout(buf_out), redirect_stderr(buf_err):
+        rc = agent_cli.main(argv)
+    return rc, buf_out.getvalue(), buf_err.getvalue()
+
+
+def test_report_json_end_to_end(monkeypatch, tmp_path, capsys):
+    """`report --session ID --json` collects from real on-disk sources."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _fabricate(tmp_path)
+
+    rc, out, err = _cli(["report", "--session", CLI_SESSION, "--json"])
+    assert rc == 0, err
+    data = _json.loads(out)
+    assert data["session_id"] == CLI_SESSION
+    assert data["model"] == "kit.glm-5.3"
+    assert data["cost_usd"] == pytest.approx(1.5)
+    assert data["input_tokens"] == 100 and data["output_tokens"] == 50
+    tools = {t["name"]: t for t in data["tool_calls"]}
+    assert tools["bash"] == {"name": "bash", "count": 1, "ok": 1, "failed": 0}
+    assert data["commands_run"] == ["ls -la"]
+    assert data["tests_run"] == [
+        {"target": "tests/test_x.py", "status": "passed",
+         "passed": 3, "failed": 0},
+    ]
+    assert data["started_at"] > 0.0 and data["ended_at"] >= data["started_at"]
+
+
+def test_report_no_id_uses_latest_session(monkeypatch, tmp_path):
+    """No --session: the most recently updated saved session wins."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _fabricate(tmp_path)
+
+    from delfin.agent import session_store as ss
+    ss.save_session(CLI_SESSION, chat_messages=[{"role": "user",
+                                                 "content": "hi"}],
+                    title="e2e", model="kit.glm-5.3")
+
+    rc, out, err = _cli(["report", "--json"])
+    assert rc == 0, err
+    assert _json.loads(out)["session_id"] == CLI_SESSION
+
+
+def test_report_no_sessions_is_an_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    rc, out, err = _cli(["report"])
+    assert rc == 1
+    assert "no sessions found" in err
+
+
+def test_report_missing_session_is_empty_but_valid(monkeypatch, tmp_path):
+    """collect_session_report never raises; the CLI prints it anyway."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    rc, out, err = _cli(["report", "--session", "never-was", "--json"])
+    assert rc == 0, err
+    data = _json.loads(out)
+    assert data["session_id"] == "never-was"
+    assert data["tool_calls"] == [] and data["cost_usd"] == 0.0
+
+
+def test_report_terminal_rendering(monkeypatch, tmp_path):
+    """Without --json the command prints render_terminal (B's renderer,
+    skipped until session-report-b merges it into this branch)."""
+    sr_mod = pytest.importorskip("delfin.agent.session_report")
+    if not hasattr(sr_mod, "render_terminal"):
+        pytest.skip("render_terminal arrives with session-report-b")
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _fabricate(tmp_path)
+    rc, out, err = _cli(["report", "--session", CLI_SESSION])
+    assert rc == 0, err
+    assert out.strip()                      # non-empty, plain rendering
+    assert "\x1b[" not in out               # no colour codes

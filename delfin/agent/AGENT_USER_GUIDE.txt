@@ -52,6 +52,9 @@ Then just talk to it like a colleague:
     /session ls             list / load saved sessions (🚨 = diagnoses)
     /session handoff new    start a fresh session seeded with a brief
     /memorize               save this session's durable facts to memory
+    delfin-agent report [--session <id>] [--json]  what one session did:
+                            tools, files changed, commands, tests, denials,
+                            cost (default: the most recent session)
     /agents                 subagent presets + recently finished runs
     /plan approve|reject    approve a plan the agent proposed
     /mode plan              read-only planning mode (no edits possible)
