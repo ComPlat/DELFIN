@@ -18259,6 +18259,12 @@ def create_tab(ctx):
                                 cooperative_stop=bool(
                                     state.get("_last_cooperative_stop")
                                 ),
+                                # Whether this turn's cost means anything.
+                                # Without it every report read an unpriced
+                                # turn's 0.0 as free.
+                                price_state=str(
+                                    getattr(engine, "_last_turn_price_state", "")
+                                    or ""),
                                 # The only writer of TurnMetrics. The engine
                                 # meters delegated spend per turn, and without
                                 # these five the record would carry the fields

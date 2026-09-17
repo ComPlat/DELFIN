@@ -250,6 +250,14 @@ class TurnMetrics:
     delegated_output_tokens: int = 0
     delegated_cost_usd: float = 0.0          # measured delegate spend
     delegates_unpriced: int = 0              # delegates with no rate on record
+    #: What this turn's own cost_usd means: "measured" (the backend said
+    #: so, or a published rate applied), "non_billing" (the provider
+    #: charges no USD at all — a measured zero) or "unknown" (no rate,
+    #: nothing observed). The engine resolves this per turn and used to
+    #: keep it to itself, so every report read an unpriced turn's 0.0 as
+    #: free: a session of 16 turns showed "$0.00" with nothing behind it
+    #: (2026-09-17). "" only in a record written before this existed.
+    price_state: str = ""
     extras: dict = field(default_factory=dict)  # for future fields
 
     @property
@@ -312,6 +320,23 @@ def read_turns(
     return out
 
 
+def _num(value: Any, *, whole: bool = False) -> float:
+    """A number from a record field, or 0 when it is not one.
+
+    A metrics line is written by whatever ran the turn, and one bad
+    field used to take the whole aggregate down with a ValueError --
+    ``cost_usd: "x"`` and nothing could be reported at all. A record
+    that cannot be read contributes nothing and the rest still counts.
+    """
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if number != number or number in (float("inf"), float("-inf")):
+        return 0.0
+    return float(int(number)) if whole else number
+
+
 def aggregate_by_model(
     records: list[dict] | None = None,
     *,
@@ -340,39 +365,54 @@ def aggregate_by_model(
         records = read_turns(path=path)
     if since_s is not None:
         cut = time.time() - float(since_s)
-        records = [r for r in records if float(r.get("ts") or 0) >= cut]
+        records = [r for r in records if _num(r.get("ts")) >= cut]
     by_model: dict[str, list[dict]] = defaultdict(list)
     for r in records:
         by_model[r.get("model") or "?"].append(r)
     out: dict[str, dict[str, Any]] = {}
     for model, rows in by_model.items():
         n = max(1, len(rows))
-        total_tool = sum(int(r.get("tool_calls") or 0) for r in rows)
-        total_tool_err = sum(int(r.get("tool_errors") or 0) for r in rows)
+        total_tool = sum(_num(r.get("tool_calls"), whole=True) for r in rows)
+        total_tool_err = sum(_num(r.get("tool_errors"), whole=True) for r in rows)
         silent = sum(1 for r in rows if r.get("silent_exit"))
         coop = sum(1 for r in rows if r.get("cooperative_stop"))
         usercorr = sum(1 for r in rows if r.get("user_corrected"))
-        cost_total = sum(float(r.get("cost_usd") or 0) for r in rows)
+        cost_total = sum(_num(r.get("cost_usd")) for r in rows)
         # The half the aggregates could not see. Kept as its own sum so
         # "this model got dearer" stays distinguishable from "this model
         # started delegating" -- the two call for opposite changes.
         deleg_total = sum(
-            float(r.get("delegated_cost_usd") or 0) for r in rows)
+            _num(r.get("delegated_cost_usd")) for r in rows)
         delegating = sum(
-            1 for r in rows if int(r.get("delegate_count") or 0) > 0)
-        dur_total = sum(float(r.get("duration_s") or 0) for r in rows)
-        out_tok_total = sum(int(r.get("output_tokens") or 0) for r in rows)
-        cont_total = sum(int(r.get("continuation_rounds") or 0) for r in rows)
+            1 for r in rows if _num(r.get("delegate_count"), whole=True) > 0)
+        dur_total = sum(_num(r.get("duration_s")) for r in rows)
+        out_tok_total = sum(_num(r.get("output_tokens"), whole=True) for r in rows)
+        unpriced = sum(1 for r in rows
+                       if str(r.get("price_state") or "") == "unknown")
+        non_billing = sum(1 for r in rows
+                          if str(r.get("price_state") or "") == "non_billing")
+        # The other half of what a turn costs. It was recorded on every
+        # turn and reported by nothing, so a report that wanted it had
+        # to sum the raw records itself (2026-09-17).
+        in_tok_total = sum(_num(r.get("input_tokens"), whole=True) for r in rows)
+        cont_total = sum(_num(r.get("continuation_rounds"), whole=True) for r in rows)
         out[model] = {
             "n_turns": len(rows),
             "avg_duration_s": dur_total / n,
             "avg_cost_usd": cost_total / n,
             "total_cost_usd": cost_total,
+            # Read the cost WITH these: a total of 0.00 over unpriced
+            # turns is "not measured", not "free".
+            "unpriced_turns": unpriced,
+            "non_billing_turns": non_billing,
             "total_delegated_cost_usd": deleg_total,
             "avg_delegated_cost_usd": deleg_total / n,
             "total_cost_usd_incl_delegated": cost_total + deleg_total,
             "delegating_turns": delegating,
             "avg_tokens_out": out_tok_total / n,
+            "total_tokens_out": out_tok_total,
+            "avg_tokens_in": in_tok_total / n,
+            "total_tokens_in": in_tok_total,
             "tool_error_rate": total_tool_err / max(1, total_tool),
             "silent_exit_rate": silent / n,
             "cooperative_stop_rate": coop / n,
