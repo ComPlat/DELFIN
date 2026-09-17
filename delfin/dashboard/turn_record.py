@@ -59,6 +59,21 @@ def record_path(kid: str, *, root: str = "") -> str:
     return os.path.join(root or RECORD_DIR, f"{kid}.json")
 
 
+def _own_directory(directory: str) -> None:
+    """Make the directory, and keep it to its owner.
+
+    A home directory on a shared machine is often readable by others,
+    and this one says which sessions are working. The mode is set after
+    the fact as well as at creation: a directory made by an older
+    DELFIN, or by a umask that widened it, is narrowed here.
+    """
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+
+
 def _write(kid: str, root: str) -> str:
     directory = root or RECORD_DIR
     payload = {
@@ -68,7 +83,7 @@ def _write(kid: str, root: str) -> str:
         "updated_at": time.time(),
     }
     try:
-        os.makedirs(directory, exist_ok=True)
+        _own_directory(directory)
         path = record_path(kid, root=directory)
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -175,6 +190,11 @@ def running_kernel_ids(*, root: str = "", now: Optional[float] = None) -> set[st
             continue
         try:
             with open(os.path.join(directory, name), encoding="utf-8") as handle:
+                # Read who owns it from the open file rather than the
+                # path: a record swapped between the two answers would
+                # be read under the wrong owner.
+                if os.fstat(handle.fileno()).st_uid != os.getuid():
+                    continue
                 record = json.load(handle)
         except (OSError, ValueError):
             continue
