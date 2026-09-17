@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -485,8 +486,6 @@ def render_terminal(report: SessionReport) -> str:
 # --------------------------------------------------------------------------
 
 def _report_dir() -> "Path":
-    from pathlib import Path
-
     return Path.home() / ".delfin" / "session_reports"
 
 
