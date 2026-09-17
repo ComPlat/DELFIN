@@ -190,6 +190,7 @@ def run_tests(
     target: str = "",
     pytest_args: list[str] | None = None,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
+    should_stop=None,
     python: str = "",
     env: Optional[dict] = None,
     wrap: Optional[Callable[[list[str], Path], list[str]]] = None,
@@ -254,7 +255,19 @@ def run_tests(
             cwd=str(workspace),
             timeout=max(5, timeout_s),
             env=env,
+            should_stop=should_stop,
         )
+        if proc.returncode == _contained.STOPPED_RETURNCODE:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return {
+                "status": "stopped",
+                "framework": "pytest",
+                "elapsed_s": round(time.monotonic() - t0, 2),
+                "raw_stdout_tail": _tail(proc.stdout or ""),
+                "raw_stderr_tail": _tail(proc.stderr or ""),
+                "note": ("the run was ended on request before it finished; "
+                         "nothing about the suite's state follows from this"),
+            }
     except subprocess.TimeoutExpired as exc:
         shutil.rmtree(tmpdir, ignore_errors=True)
         return {
