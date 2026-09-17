@@ -952,7 +952,17 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # kernel -- never offers to go back to the page you are on.
     _returning = _session.build_returning_banner()
 
-    _header_root = widgets.VBox(([_returning] if _returning else []) + [
+    # One beacon, so the server can tell a page that was closed from a
+    # connection that dropped. It renders nothing.
+    try:
+        from delfin.dashboard import window_close as _window_close
+        _closing_beacon = _window_close.beacon_widget()
+    except Exception:
+        _closing_beacon = None
+
+    _header_root = widgets.VBox(([_returning] if _returning else [])
+                                + ([_closing_beacon] if _closing_beacon else [])
+                                + [
         busy_css,
         create_page_css(),
         widgets.HBox([

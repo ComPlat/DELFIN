@@ -102,9 +102,18 @@ def _leave(manager, kid):
 
 
 def _age(manager, kid, seconds):
-    """Move a kernel's unwatched-since back in time."""
+    """Move a kernel's unwatched-since back in time.
+
+    The window announced its closing as it went, the way a page being
+    unloaded does: that is what makes the short grace apply at all. A
+    connection that merely dropped is the subject of
+    test_a_closed_window_is_not_a_dropped_connection.py.
+    """
     since, had = manager._delfin_unwatched()[kid]
     manager._delfin_unwatched()[kid] = (since - seconds, had)
+    if had:
+        manager.delfin_window_closed(kid)
+        manager._delfin_closed()[kid] = since - seconds
 
 
 def _unwatched(manager, kid, seconds):

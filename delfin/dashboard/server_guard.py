@@ -18,6 +18,15 @@ def _load_jupyter_server_extension(serverapp) -> None:
         process_guard.protect("dashboard server")
     except Exception:
         pass
+    # The route a closing page sends its beacon to. Without it every
+    # close and every dropped connection look the same, and a session
+    # whose link went quiet for a minute would be ended as if the
+    # person had closed it.
+    try:
+        from delfin.dashboard import window_close
+        window_close.register(serverapp)
+    except Exception:
+        pass
 
 
 # Older jupyter_server spelling.
