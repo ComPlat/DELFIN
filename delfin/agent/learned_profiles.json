@@ -62,7 +62,7 @@
   "claude": {
     "communication": {
       "rules": [
-        "No Co-Authored-By in commits",
+        "Commits carry no attribution of their own except the DELFIN-Agent co-author trailer; never a third-party assistant",
         "Dashboard actions: ACTION line + max 5 words explanation"
       ]
     },

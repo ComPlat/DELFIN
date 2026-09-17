@@ -726,6 +726,11 @@ class PromptLoader:
         except Exception:
             return ""
 
+    #: Belongs to no account on purpose: a deployment that wants the
+    #: trailer to show an avatar and count in the contributor graph sets
+    #: agent.commit_coauthor_email to an address its bot account owns.
+    _DEFAULT_COAUTHOR_EMAIL = "noreply@delfin-agent.invalid"
+
     def _commit_attribution_block(self, model: str = "") -> str:
         """The co-author trailer the agent ends its commits with.
 
@@ -741,9 +746,23 @@ class PromptLoader:
         except Exception:
             pass
         name = f"DELFIN-Agent ({model})" if model else "DELFIN-Agent"
+        # The address decides whether the trailer is a line of text or a
+        # linked contributor: GitHub attaches a co-author to an account by
+        # its email, and the .invalid default belongs to none, so the
+        # trailer renders without an avatar and counts for nobody. Set
+        # agent.commit_coauthor_email to the bot account's
+        # <id>+<name>@users.noreply.github.com to change that.
+        email = self._DEFAULT_COAUTHOR_EMAIL
+        try:
+            from delfin.user_settings import load_settings
+            agent = (load_settings() or {}).get("agent") or {}
+            email = str(agent.get("commit_coauthor_email", "") or "").strip() \
+                or self._DEFAULT_COAUTHOR_EMAIL
+        except Exception:
+            email = self._DEFAULT_COAUTHOR_EMAIL
         return ("--- Commit attribution ---\n"
                 "End every git commit message you write with this trailer:\n"
-                f"Co-Authored-By: {name} <noreply@delfin-agent.invalid>\n"
+                f"Co-Authored-By: {name} <{email}>\n"
                 "The user's instructions and remembered preferences win: if "
                 "they say to leave the line out or word it differently, do "
                 "that.")

@@ -41,7 +41,7 @@ import json
 import pytest
 
 from delfin.agent.api_client import (
-    KitToolPermissions, _doc_executor, _loop_body_already_allowed)
+    KitToolPermissions, _doc_executor, _loop_body)
 
 
 @pytest.fixture
@@ -84,55 +84,58 @@ def test_the_body_twice_in_one_call_runs(ws):
     assert "error" not in out, out
 
 
-def test_the_loop_is_still_refused(ws):
-    """The behaviour is unchanged. Only the message is."""
+def test_the_loop_runs_like_the_body_it_repeats(ws):
+    """This once asserted the opposite: refused, with a hint to write
+    the commands out. The hint never appeared in 259 refused loops, so
+    the spelling stayed a dead end. A loop of allowed commands is not a
+    permission question."""
     out = _run(ws, "for i in 1 2 3; do python3 bench_a.py; done")
-    assert "error" in out
+    assert "error" not in out, out
 
 
 # ---------------------------------------------------------------------------
-# The hint
+# What still asks, and what is refused before any of it
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("cmd", [
     "for i in 1 2 3; do python3 bench_a.py; done",
-    "for i in $(seq 5); do python3 bench_a.py; done",
     "for f in *.out; do cat $f; done",
+    "for f in r.out; do grep x \"$f\"; done",
     "while read l; do cat r.out; done",
 ])
-def test_a_loop_over_an_allowed_body_says_no_permission_is_needed(ws, cmd):
-    err = _run(ws, cmd).get("error", "")
-    assert "do not need permission" in err, err
-    assert "Do NOT ask the user for this one" in err
+def test_a_loop_over_an_allowed_body_simply_runs(ws, cmd):
+    """The hint was the right diagnosis and the wrong remedy.
 
-
-def test_the_hint_quotes_the_body_that_is_allowed(ws):
-    err = _run(ws, "for i in 1 2 3; do python3 bench_a.py; done").get("error", "")
-    assert "python3 bench_a.py" in err
-    assert "';'" in err, "the compound spelling is what makes it one call"
+    It told the model to write the commands out instead. Over 259
+    refused loops it never appeared once, and a loop whose every command
+    is allowed is not a permission question at all -- 233 of 264 refused
+    loops in the whole trace history would have run under this rule
+    (measured 2026-09-17). So the loop runs, and the hint is gone with
+    the refusal it explained.
+    """
+    out = _run(ws, cmd)
+    assert "not on the auto-allow list" not in json.dumps(out)
 
 
 @pytest.mark.parametrize("cmd", [
-    "while true; do rm -rf /tmp/x; done",
-    "for i in 1 2; do curl http://example.invalid; done",
-    "for i in 1 2; do chmod 777 /etc/passwd; done",
+    "for i in 1 2; do rm -rf build; done",
+    "for i in 1 2; do pip install requests; done",
 ])
-def test_a_loop_over_a_refused_body_never_says_permission_is_unneeded(ws, cmd):
-    """The half that must not widen: the hint fires off the BODY, not off
-    the word `for`. Telling a model it needs no permission to run
-    `rm -rf` in a loop would be the worst possible advice."""
+def test_a_loop_over_a_body_that_is_not_allowed_still_stops(ws, cmd):
+    """The half that must not widen: the rule reads the BODY, not the
+    word `for`. A loop is allowed exactly when the commands in it are,
+    and not one step further."""
     err = _run(ws, cmd).get("error", "")
     assert err
     assert "do not need permission" not in err, err
 
 
 def test_a_loop_over_an_unlisted_body_still_asks_the_user(ws):
-    """`curl` is not on the auto-allow list and not on the deny-list, so
-    it reaches the message the hint attaches to — and must keep it."""
+    """`curl` is on neither list, so the loop reaches the user the way
+    the bare command would."""
     err = _run(ws, "for i in 1 2; do curl http://example.invalid; done").get(
         "error", "")
     assert "TELL THE USER" in err
-    assert "do not need permission" not in err
 
 
 @pytest.mark.parametrize("cmd", [
@@ -155,25 +158,20 @@ def test_a_command_that_is_not_a_loop_is_untouched(ws):
 # The predicate itself
 # ---------------------------------------------------------------------------
 
-def test_the_body_is_extracted_between_do_and_done(ws):
-    assert _loop_body_already_allowed(
-        "for i in 1 2 3; do python3 bench_a.py; done",
-        _perms(ws)) == "python3 bench_a.py"
+def test_the_body_is_read_between_do_and_done(ws):
+    assert _loop_body("for i in 1 2 3; do python3 bench_a.py; done") == \
+        ["python3 bench_a.py"]
+    assert _loop_body("for f in *.out; do echo $f; grep x $f; done") == \
+        ["echo $f", "grep x $f"]
 
 
-def test_a_refused_body_yields_nothing(ws):
-    assert _loop_body_already_allowed(
-        "while true; do rm -rf /tmp/x; done", _perms(ws)) == ""
+def test_what_is_not_a_loop_is_not_read_as_one(ws):
+    assert _loop_body("python3 bench_a.py") is None
+    assert _loop_body("for i in 1 2; do ; done") is None
 
 
-def test_no_loop_yields_nothing(ws):
-    assert _loop_body_already_allowed("python3 bench_a.py", _perms(ws)) == ""
-
-
-def test_an_empty_body_yields_nothing(ws):
-    assert _loop_body_already_allowed("for i in 1 2; do ; done", _perms(ws)) == ""
-
-
-def test_no_perms_yields_nothing():
-    assert _loop_body_already_allowed(
-        "for i in 1 2; do echo x; done", None) == ""
+def test_a_header_that_runs_something_is_not_read_as_a_loop(ws):
+    """`$(...)` in the words a loop walks over is a command nobody
+    looked at, and the list cannot vouch for what it prints."""
+    assert _loop_body("for f in $(ls); do echo $f; done") is None
+    assert _loop_body("while ps aux; do echo x; done") is None

