@@ -1970,7 +1970,14 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     # running calculations.
     r"\bkillall\b[^;|&]*-u\b",
     r"\bpkill\b[^;|&]*(?:-u\b|--uid\b|-U\b)",
-    r"\b(shutdown|reboot|halt|poweroff|init\s+0|init\s+6)\b",
+    # Ending the machine, as a COMMAND. Matched anywhere in the line, this
+    # refused `grep -rn "shutdown\\|def stop" engine.py` and, worse, a
+    # `git commit -m "... on shutdown"` -- it read the commit message and
+    # cost a session its commit (driven 2026-09-17). So the word must stand
+    # where a command stands: line start or after a separator, optionally
+    # quoted (python -c "os.system('reboot')") or path-qualified.
+    r"""(?:^|[;|&`(])[\s'\"]*(?:sudo\s+)?(?:/\S*/)?"""
+    r"(?:shutdown|reboot|halt|poweroff|init\s+[06])\b",
     r"\bsudo\b",
     r"(?:^|\s)su\s+-",
     r"git\s+push\s+(?:[^|;&]*\s)?(?:--force(?!-with-lease)|-f\b)",
@@ -2480,6 +2487,32 @@ def _reviewed_source_named_like_a_secret(perms: Any, resolved: Path, rel: str) -
         return bool(_DocToolExecutor._is_reviewed_project_file(Path(resolved)))
     except Exception:
         return False
+
+
+def _read_only_reason(resolved, perms) -> str:
+    """Why this path is read-only, and what to do instead.
+
+    One sentence named the calculation archive whatever the path was. A
+    session working in its own git worktree that touched the checkout the
+    worktree belongs to was told to "COPY it into calc or agent_workspace"
+    (driven 2026-09-17) -- advice for a stored calculation, nonsense for a
+    repository. Each read-only kind now says its own reason."""
+    try:
+        path = Path(resolved)
+        workspace = Path(getattr(perms, "workspace", "") or ".")
+        for parent in (path, *path.parents):
+            if (parent / ".git").exists():
+                if parent != workspace:
+                    return (f"the repository checkout at {parent}, which is "
+                            "not your workspace — work inside your own "
+                            "workspace, or ask the user to add that "
+                            "directory as a workspace directory")
+                break
+    except Exception:
+        pass
+    return ("the archive of stored calculations, or the DELFIN checkout — "
+            "it is fixed; to work on it, COPY it into calc or "
+            "agent_workspace and edit the copy")
 
 
 def _is_git_push(cmd: str) -> bool:
@@ -13001,10 +13034,9 @@ class _DocToolExecutor:
                     "as a workspace directory."
                 )
             return (
-                f"'{path_arg}' is in a READ-ONLY location (the archive of "
-                f"stored calculations, or the DELFIN checkout). It is fixed "
-                f"— to work on it, COPY it into calc or agent_workspace and "
-                f"edit the copy. Refusing to modify it in place."
+                f"'{path_arg}' is in a READ-ONLY location "
+                f"({_read_only_reason(resolved, perms)}). "
+                "Refusing to modify it in place."
             )
         # Already refused this session. The prose the refusal returns asks
         # the model not to retry; nothing enforced it, so the identical
