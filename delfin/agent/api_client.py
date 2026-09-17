@@ -2806,13 +2806,25 @@ def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
 
 
 def _asks_for_push(text: str) -> bool:
-    """True when the message asks for a push, not when it talks about one."""
-    if not text or _REFUSES_PUSH_RE.search(text):
+    """True when the message asks for a push, not when it talks about one.
+
+    A report and a refusal are read AT the push word they belong to, never
+    across the whole message. Reading the refusal globally meant that one
+    "do not push to main" cancelled the "push your branch" three sentences
+    above it: the task said both, the grant was never given, and the
+    session ended up handing the user a git command to run by hand
+    (2026-09-17, three sessions).
+    """
+    if not text:
         return False
     reports = {m.start() for m in _PUSH_REPORT_RE.finditer(text)}
+    refused = [(m.start(), m.end()) for m in _REFUSES_PUSH_RE.finditer(text)]
     for m in _ASKS_FOR_PUSH_RE.finditer(text):
         # a report match covers the push word it is about
         if any(r <= m.start() < r + 40 for r in reports):
+            continue
+        # a refusal spans from its negation to the push word it refuses
+        if any(start <= m.start() < end for start, end in refused):
             continue
         return True
     return False
