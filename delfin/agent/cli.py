@@ -413,6 +413,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096,
                     **_emit)
     sid = _save_session(engine, repo)
+    # Session report: best-effort Markdown write; never breaks exit.
+    try:
+        from .session_report import write_session_report
+        write_session_report(sid or getattr(engine, "session_id", ""))
+    except Exception:
+        pass
 
     # Learning signal: record the outcome so provider profiles learn from
     # CLI/headless usage too — previously only dashboard cycles fed the
@@ -1249,6 +1255,12 @@ def cmd_chat(args: argparse.Namespace) -> int:
     finally:
         _save_session(engine, workspace,
                       title=getattr(args, "session_name", "") or "")
+        # Session report: best-effort Markdown write; never breaks exit.
+        try:
+            from .session_report import write_session_report
+            write_session_report(getattr(engine, "session_id", "") or "")
+        except Exception:
+            pass
         try:
             os.chdir(_cwd_before)
         except Exception:
