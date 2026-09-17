@@ -22,6 +22,7 @@ which are meant to outlive the call that started them.
 """
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import subprocess
@@ -123,7 +124,8 @@ def run(
             except (BrokenPipeError, OSError):
                 pass
         try:
-            if should_stop is None:
+            probe = should_stop
+            if probe is None:
                 proc.wait(timeout=timeout)
             else:
                 deadline = (None if timeout is None
@@ -140,9 +142,27 @@ def run(
                         break
                     except subprocess.TimeoutExpired:
                         pass
+                    if probe is None:
+                        # The probe is gone (it raised); wait the rest out.
+                        continue
                     try:
-                        asked = bool(should_stop())
-                    except Exception:
+                        asked = bool(probe())
+                    except Exception as exc:
+                        # A probe that raises answered "never stop" at
+                        # every poll, silently: the one failure a STOP
+                        # mechanism must not have is the quiet kind.
+                        # Found by a session testing the mechanism from
+                        # outside, whose probe defined __bool__ and not
+                        # __call__ (2026-09-17). It is not turned into a
+                        # stop -- a flaky probe would then end every
+                        # command -- but it is said once and not asked
+                        # again, so the command runs unstoppable rather
+                        # than unstoppable AND unremarked.
+                        logging.getLogger(__name__).warning(
+                            "stop probe raised %s: %s — this command can no "
+                            "longer be stopped on request",
+                            type(exc).__name__, exc)
+                        probe = None
                         asked = False
                     if asked:
                         stopped = True
