@@ -15931,6 +15931,15 @@ def create_tab(ctx):
             # Reset the per-turn error slot so a Bug Report reflects THIS
             # turn (empty once the latest turn succeeded), not a stale trace.
             state["_last_turn_error"] = ""
+        # The server ends a kernel whose window has been gone for the
+        # grace. Leave a record that a turn is running here, so a closed
+        # tab or a dropped connection cannot take the work away mid-run;
+        # it is removed below when the turn ends.
+        try:
+            from delfin.dashboard import turn_record as _turns
+            _turns.mark(True)
+        except Exception:
+            pass
         if state["session_start_time"] is None:
             state["session_start_time"] = time.monotonic()
         _ensure_task_session_id(engine, create=True)
@@ -18051,6 +18060,15 @@ def create_tab(ctx):
                     _is_current = state.get("_generation_id") == _my_gen_id
                     if _is_current:
                         state["streaming"] = False
+                # The turn is over: drop the record that held the culler
+                # off. A newer generation has its own record, so a stale
+                # worker must not clear it.
+                if _is_current:
+                    try:
+                        from delfin.dashboard import turn_record as _turns
+                        _turns.mark(False)
+                    except Exception:
+                        pass
                 # Disarm the stale + kill watchers — the worker is done
                 # one way or another, no need to flag stale-ness or send
                 # a cooperative stop on an already-closed turn.
@@ -18313,6 +18331,13 @@ def create_tab(ctx):
         # Bump generation so the old worker's finally block won't touch UI
         state["_generation_id"] = state.get("_generation_id", 0) + 1
         state["streaming"] = False
+        # Stopped by hand: the old worker's finally sees a newer
+        # generation and leaves the record alone, so clear it here.
+        try:
+            from delfin.dashboard import turn_record as _turns
+            _turns.mark(False)
+        except Exception:
+            pass
         # Finalize any in-progress streaming message
         msgs = state["chat_messages"]
         if msgs and msgs[-1].get("_streaming"):
