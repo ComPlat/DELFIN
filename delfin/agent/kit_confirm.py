@@ -66,6 +66,13 @@ class KitConfirmBroker:
         # True when the most recent decision was a TIMEOUT (user absent),
         # not an actual click on deny. Consumers distinguish the two.
         self.last_timed_out = False
+        # When a window expired with nobody answering, the moment it did.
+        # Until it is cleared (a real decision) or a window has passed,
+        # further requests are not made to wait again: the answer would be
+        # the same, and each wait costs the agent the whole window. Two
+        # sessions spent five minutes each this way on 2026-09-17, one of
+        # them on a `git add`.
+        self._away_since: Optional[float] = None
         self._on_request: Optional[Any] = None  # UI callback to refresh the panel
         # UI callback for an EXPIRED request: the panel clears itself when the
         # window closes, which looks to the user like the prompt vanished for
@@ -127,8 +134,16 @@ class KitConfirmBroker:
         except Exception:
             attn_id = ""
 
-        # Block worker thread until decided or timeout.
-        decided = req.event.wait(timeout=self._timeout_s)
+        # Block worker thread until decided or timeout -- unless a window
+        # has just expired unanswered. Nobody is there to answer this one
+        # either, and the inbox entry above is what the user acts on when
+        # they return.
+        with self._lock:
+            away = self._away_since
+        if away is not None and (time.monotonic() - away) < self._timeout_s:
+            decided = False
+        else:
+            decided = req.event.wait(timeout=self._timeout_s)
 
         with self._lock:
             try:
@@ -144,8 +159,12 @@ class KitConfirmBroker:
                 # denied — never retry", which previously poisoned the rest
                 # of the session after every unattended 300s window.
                 self.last_timed_out = True
+                if self._away_since is None:
+                    self._away_since = time.monotonic()
             else:
                 self.last_timed_out = False
+                # Somebody answered: they are back.
+                self._away_since = None
             timed_out = self.last_timed_out
 
             persist_cb = self._persist_callback
