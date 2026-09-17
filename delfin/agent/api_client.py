@@ -2406,6 +2406,128 @@ def _is_secret_path(perms: Any, path: Path) -> bool:
         return True
 
 
+#: The git subcommands whose ``-m`` carries prose rather than a path.
+_PROSE_SUBCOMMANDS = ("commit", "tag", "stash", "notes")
+
+#: ``-m``, ``--message``, ``--message=``: the flag whose value is text.
+_MESSAGE_FLAG = re.compile(r"(?<![\w-])(?:-m|--message)(?:=|\s|$)")
+
+#: What stays readable inside a message: a substitution actually runs.
+_SUBSTITUTION = re.compile(r"\$\([^()]*\)|\$\{[^{}]*\}|`[^`]*`")
+
+#: Where one command ends and the next begins.
+_SEGMENT_BREAK = re.compile(r"(?:\|\||&&|[;\n|&()])")
+
+
+def _prose_blanked(cmd: str) -> str:
+    """The command with commit-message prose blanked out.
+
+    A commit message is text that is never run: it reaches git as one
+    argument and goes into the repository. The path scan and the
+    deny-patterns must not read it -- a message saying which files a
+    report skips ("secrets, keys, credentials") was refused as if it
+    were reaching for them, twice, and the session had to reword its
+    own commit to get past the gate (seen on 2026-09-17).
+
+    Blanked, not removed, so every other offset in the command is where
+    it was. What is NOT blanked is the one thing inside a message that
+    does run: ``$(...)``, ``${...}`` and backticks. ``git commit -m
+    "$(cat ~/.ssh/id_rsa)"`` reads exactly as it did before.
+
+    Only a message flag of a git command is treated this way, and only
+    its value. ``git commit -F ~/.ssh/id_rsa`` names a file, and a file
+    is a path.
+    """
+    if "-m" not in cmd and "--message" not in cmd:
+        return cmd
+    out = list(cmd)
+    for start, end in _segments(cmd):
+        if not _is_a_git_prose_command(cmd[start:end]):
+            continue
+        for value_start, value_end in _message_values(cmd, start, end):
+            keep = {
+                i
+                for m in _SUBSTITUTION.finditer(cmd[value_start:value_end])
+                for i in range(value_start + m.start(), value_start + m.end())
+            }
+            for i in range(value_start, value_end):
+                if i not in keep:
+                    out[i] = " "
+    return "".join(out)
+
+
+def _segments(cmd: str) -> list:
+    """(start, end) of each command in a pipeline, quotes respected."""
+    spans = []
+    start = 0
+    i = 0
+    quote = ""
+    while i < len(cmd):
+        ch = cmd[i]
+        if quote:
+            if ch == "\\" and quote == '"':
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+        elif _SEGMENT_BREAK.match(cmd, i):
+            spans.append((start, i))
+            i += _SEGMENT_BREAK.match(cmd, i).end() - i
+            start = i
+            continue
+        i += 1
+    spans.append((start, len(cmd)))
+    return [(a, b) for a, b in spans if b > a]
+
+
+def _is_a_git_prose_command(segment: str) -> bool:
+    words = segment.split()
+    if not words:
+        return False
+    # Skip a leading environment assignment or two: `GIT_EDITOR=true git ...`
+    while words and "=" in words[0] and not words[0].startswith("-"):
+        words = words[1:]
+    if not words or os.path.basename(words[0]) != "git":
+        return False
+    for word in words[1:]:
+        if word.startswith("-"):
+            continue
+        return word in _PROSE_SUBCOMMANDS
+    return False
+
+
+def _message_values(cmd: str, start: int, end: int) -> list:
+    """(start, end) of every message value in this segment."""
+    found = []
+    for flag in _MESSAGE_FLAG.finditer(cmd, start, end):
+        i = flag.end()
+        if cmd[flag.end() - 1:flag.end()] not in ("=",):
+            while i < end and cmd[i] in " \t":
+                i += 1
+        if i >= end:
+            continue
+        if cmd[i] in "'\"":
+            quote = cmd[i]
+            i += 1
+            j = i
+            while j < end:
+                if cmd[j] == "\\" and quote == '"':
+                    j += 2
+                    continue
+                if cmd[j] == quote:
+                    break
+                j += 1
+            found.append((i, min(j, end)))
+        else:
+            j = i
+            while j < end and not cmd[j].isspace():
+                j += 1
+            found.append((i, j))
+    return found
+
+
 def _prompt_fingerprints(api_messages: list, base: int) -> dict:
     """Short hashes of the system prompt and of the prefix before this turn.
 
@@ -12513,7 +12635,7 @@ class _DocToolExecutor:
         # reason for dropping it was that `echo "/home/user/.ssh"` should
         # not confuse the scan; a false positive on an echo costs one
         # confirmation dialog, and this cost a credential.
-        cleaned = re.sub(r"['\"]", " ", cmd)
+        cleaned = re.sub(r"['\"]", " ", _prose_blanked(cmd))
         # Match absolute /paths and ~ / $HOME prefixed paths.
         candidates = set(re.findall(
             r"(?<![A-Za-z0-9_])(?:~|\$HOME|/)[^\s;|&<>()`'\"]+",
@@ -13274,7 +13396,10 @@ class _DocToolExecutor:
             cmd = args.get("command", "") or ""
             if not cmd.strip():
                 return "command is required"
-            denied = perms.matches_bash_deny(cmd)
+            # Read as a command, not as prose: a deny-pattern that
+            # matched the words of a commit message refused work that
+            # never ran anything.
+            denied = perms.matches_bash_deny(_prose_blanked(cmd))
             if denied:
                 _record_security_event("deny_pattern", "bash",
                                        f"{cmd[:80]} → {denied}")
