@@ -266,6 +266,22 @@ def test_junk_in_the_directory_is_not_a_running_turn(turns):
     assert T.running_kernel_ids() == set()
 
 
+def test_the_records_are_kept_to_their_owner(turns):
+    """A home directory on a shared machine is often readable by
+    others, and this directory says which sessions are working."""
+    T.mark(True, kid="k1")
+    assert os.stat(turns).st_mode & 0o777 == 0o700
+    assert os.stat(turns / "k1.json").st_mode & 0o777 == 0o600
+
+
+def test_a_record_that_is_not_ours_holds_nothing(turns, monkeypatch):
+    """Only this user's own records speak for this user's kernels."""
+    _write_record(turns, "k1")
+    assert T.running_kernel_ids() == {"k1"}
+    monkeypatch.setattr(os, "getuid", lambda: os.stat(turns).st_uid + 1)
+    assert T.running_kernel_ids() == set()
+
+
 def test_a_missing_directory_is_simply_no_turn(tmp_path, monkeypatch):
     monkeypatch.setattr(T, "RECORD_DIR", str(tmp_path / "never-made"))
     assert T.running_kernel_ids() == set()
