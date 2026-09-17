@@ -2557,6 +2557,16 @@ class AgentEngine:
             self.client.should_stop = lambda: bool(self._stop_requested)
         except Exception:
             pass
+        # The same probe on the permissions, because the object that RUNS
+        # a tool is not the client: a command or a test run that lasts
+        # half an hour is waited out inside the executor, which reaches
+        # the session only through these.
+        try:
+            perms = getattr(self.client, "kit_permissions", None)
+            if perms is not None:
+                perms.should_stop = lambda: bool(self._stop_requested)
+        except Exception:
+            pass
 
         # ...and the turn's cost ceiling, for the same reason: the check
         # below fires on message_delta, which every client emits once, at

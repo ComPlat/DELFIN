@@ -6,9 +6,9 @@ Aggregates two REAL sources — no third one exists:
   ``ok`` is False and whose error text looks like a refusal/blocked action
   ("not on the auto-allow list", "escapes workspace sandbox", "refusing to
   overwrite", …) is one lost turn. Counted per (category, tool) across all
-  session traces in ``~/.delfin/tool_traces`` (parsed from the JSONL files
-  directly — ``tool_trace.read()`` resolves only the global ``_DIR`` and
-  cannot be pointed at another directory), with ``aggregate_tools()``
+  session traces in ``~/.delfin/tool_traces``, listed and read through
+  ``tool_trace.sessions()`` and ``tool_trace.read(..., root=...)``, with
+  ``aggregate_tools()``
   supplying the per-tool call/error totals so a refusal count can be read
   against a denominator.
 * ``delfin.agent.security_events`` (in-process ring buffer): the permission
@@ -74,29 +74,6 @@ def _scrub(text: str) -> str:
         return ""
 
 
-def _read_trace(path: Path) -> list[dict]:
-    """Parse one session JSONL the way ``tool_trace.read()`` does.
-
-    ``read()`` resolves paths via the module-global ``_DIR`` only, so it
-    cannot read a caller-supplied directory; the same line-by-line JSON
-    parsing is done here against ``path``. Best-effort: corrupt lines are
-    skipped, a missing/unreadable file yields ``[]``.
-    """
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except Exception:
-        return []
-    out: list[dict] = []
-    for ln in lines:
-        try:
-            e = json.loads(ln)
-        except Exception:
-            continue
-        if isinstance(e, dict):
-            out.append(e)
-    return out
-
-
 def _categorize(error: str) -> str | None:
     if _NOT_A_REFUSAL.search(error or ""):
         return None
@@ -104,14 +81,6 @@ def _categorize(error: str) -> str | None:
         if pat.search(error or ""):
             return label
     return None
-
-
-def _trace_sessions(base: Path) -> list[str]:
-    """Session names (trace file stems) under ``base``, best-effort."""
-    try:
-        return sorted(p.stem for p in base.glob("*.jsonl"))
-    except Exception:
-        return []
 
 
 def collect(
@@ -138,7 +107,10 @@ def collect(
     }
     try:
         base = Path(dir_path) if dir_path else tool_trace._DIR
-        sessions = _trace_sessions(base)
+        # The trace's own listing and reading: this module used to walk
+        # the directory and parse the JSONL itself, because read() could
+        # not be pointed at another directory. It can now.
+        sessions = sorted(tool_trace.sessions(root=base))
         if max_sessions:
             sessions = sessions[-int(max_sessions):]
     except Exception:
@@ -146,7 +118,7 @@ def collect(
 
     groups: dict[tuple[str, str], dict] = {}
     for sess in sessions:
-        entries = _read_trace(base / f"{sess}.jsonl")
+        entries = tool_trace.read(sess, root=base)
         out["sessions"] += 1
         for e in entries:
             out["entries"] += 1

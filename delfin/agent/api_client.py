@@ -4365,6 +4365,10 @@ class KitToolPermissions:
     # that went through spends it (_after_push). Shared by reference with
     # sub-agents, like denied_actions, so a child is no way to a second one.
     push_grants: dict[str, int] = field(default_factory=dict)
+    #: Asked while a command or a test run is waited on, so Stop reaches
+    #: work that is already running. Installed by the engine; None in a
+    #: caller that has no session, which behaves exactly as before.
+    should_stop: Optional[Callable[[], bool]] = None
     # Directories a single approved outside-workspace READ opened for the
     # rest of the session. Readable, never writable, never persisted -- see
     # ``add_session_read_dir``.
@@ -15228,6 +15232,7 @@ class _DocToolExecutor:
                     cwd=str(run_cwd),
                     env=env,
                     timeout=timeout,
+                    should_stop=getattr(perms, "should_stop", None),
                 )
         except subprocess.TimeoutExpired:
             return json.dumps({
@@ -15751,6 +15756,10 @@ class _DocToolExecutor:
             pytest_args=[str(a) for a in pytest_args],
             timeout_s=timeout,
             env=env,
+            # Stop has to reach a run that lasts half an hour: the worker
+            # is inside it, and nothing else looks at the flag until it
+            # returns.
+            should_stop=getattr(perms, "should_stop", None),
             wrap=lambda argv, report_dir: _test_run_argv(
                 argv, perms, report_dir),
         )

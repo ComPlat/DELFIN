@@ -165,6 +165,10 @@ def test_session_report_contract_fields():
         "session_id", "model", "started_at", "ended_at",
         "tool_calls", "files_changed", "commands_run", "tests_run",
         "denials", "cost_usd", "input_tokens", "output_tokens",
+        # Appended, never inserted: two consumers read this list by
+        # position. They say what a cost of 0.00 means — a session on a
+        # model with no published rate is not a free one.
+        "unpriced_turns", "non_billing_turns",
     ]
 
 

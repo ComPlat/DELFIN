@@ -45,6 +45,12 @@ class SessionReport:
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
+    #: How many of this session's turns nobody could price, and how many
+    #: ran where the provider charges nothing at all. Without them a cost
+    #: of 0.00 says "free" for a session on a model with no published
+    #: rate, which is the one thing it does not know.
+    unpriced_turns: int = 0
+    non_billing_turns: int = 0
 
 
 # --------------------------------------------------------------------------
@@ -243,8 +249,9 @@ def _denials() -> list[dict]:
     return out
 
 
-def _numbers(session_id: str, entries: list[dict]) -> tuple[str, float, float, float, int, int]:
-    """model, started_at, ended_at, cost_usd, input_tokens, output_tokens."""
+def _numbers(session_id: str, entries: list[dict]) -> tuple:
+    """model, started_at, ended_at, cost_usd, input/output tokens, and how
+    many turns were unpriced or non-billing."""
     rows = _turn_rows(session_id)
     model = ""
     for row in rows:  # last row with a non-empty model wins
@@ -253,7 +260,14 @@ def _numbers(session_id: str, entries: list[dict]) -> tuple[str, float, float, f
     cost = 0.0
     in_tok = 0
     out_tok = 0
+    unpriced = 0
+    non_billing = 0
     for row in rows:
+        state = str(row.get("price_state") or "")
+        if state == "unknown":
+            unpriced += 1
+        elif state == "non_billing":
+            non_billing += 1
         try:
             cost += float(row.get("cost_usd") or 0.0)
             in_tok += int(row.get("input_tokens") or 0)
@@ -272,7 +286,8 @@ def _numbers(session_id: str, entries: list[dict]) -> tuple[str, float, float, f
                 started, ended = min(turn_ts), max(turn_ts)
         except (TypeError, ValueError):
             pass
-    return model, started, ended, cost, in_tok, out_tok
+    return (model, started, ended, cost, in_tok, out_tok,
+            unpriced, non_billing)
 
 
 # --------------------------------------------------------------------------
@@ -296,12 +311,14 @@ def collect_session_report(session_id: str) -> SessionReport:
         report.tests_run = _tests_run(entries)
         report.denials = _denials()
 
-        (model, started, ended,
-         cost, in_tok, out_tok) = _numbers(session_id, entries)
+        (model, started, ended, cost, in_tok, out_tok,
+         unpriced, non_billing) = _numbers(session_id, entries)
         report.model = model
         report.started_at = started
         report.ended_at = ended
         report.cost_usd = cost
+        report.unpriced_turns = unpriced
+        report.non_billing_turns = non_billing
         report.input_tokens = in_tok
         report.output_tokens = out_tok
     except Exception:
@@ -346,11 +363,24 @@ def _fmt_time(ts: float) -> str:
         "%Y-%m-%d %H:%M:%S UTC")
 
 
-def _fmt_cost(cost_usd: float) -> str:
+def _fmt_cost(cost_usd: float, unpriced: int = 0, non_billing: int = 0) -> str:
+    """The cost, or what its absence means.
+
+    A zero is three different statements -- measured, charge-free, or
+    never priced at all -- and printing "$0.00" for the third says the
+    session was free when nobody knows what it cost.
+    """
     try:
-        return f"${float(cost_usd):.2f}"
+        value = float(cost_usd)
     except (TypeError, ValueError):
         return "-"
+    if value > 0:
+        return f"${value:.2f}"
+    if int(unpriced or 0) > 0:
+        return f"not measured ({int(unpriced)} turn(s) with no rate)"
+    if int(non_billing or 0) > 0:
+        return "no charge"
+    return f"${value:.2f}"
 
 
 def _fmt_int(value) -> str:
@@ -449,7 +479,7 @@ def render_markdown(report: SessionReport) -> str:
 
     add("## Cost & Tokens")
     add("")
-    add(f"- **Cost:** {_fmt_cost(report.cost_usd)}")
+    add(f"- **Cost:** {_fmt_cost(report.cost_usd, report.unpriced_turns, report.non_billing_turns)}")
     add(f"- **Input tokens:** {_fmt_int(report.input_tokens)}")
     add(f"- **Output tokens:** {_fmt_int(report.output_tokens)}")
     add("")
@@ -486,7 +516,7 @@ def render_terminal(report: SessionReport) -> str:
         f" | files changed: {n_files}"
         f" | tests: {tests_passed} passed, {tests_failed} failed"
         f" | denials: {n_denials}",
-        f"Cost {_fmt_cost(report.cost_usd)}"
+        f"Cost {_fmt_cost(report.cost_usd, report.unpriced_turns, report.non_billing_turns)}"
         f" | tokens in {_fmt_int(report.input_tokens)}"
         f" out {_fmt_int(report.output_tokens)}",
     ]

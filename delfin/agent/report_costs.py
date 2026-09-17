@@ -11,10 +11,15 @@ A read-only diagnostic over the two real metric stores:
 Findings baked into the design (each surfaced by the report itself, not
 hidden):
 
-* ``aggregate_by_model`` does NOT aggregate ``input_tokens``, even though
-  ``TurnMetrics.input_tokens`` is recorded. This module therefore sums
-  input tokens itself from the raw records instead of trusting the
-  aggregate.
+* ``aggregate_by_model`` did NOT aggregate ``input_tokens`` when this was
+  written, and raised ``ValueError`` on a malformed numeric field. Both
+  are fixed at the source (it reports ``total_tokens_in`` and drops what
+  it cannot read), so the sums here no longer work around anything --
+  this module keeps its own per-row pass because its table is per model
+  AND per window, which the aggregate does not provide together.
+* A cost of 0.00 is not a free run: ``agent_metrics`` records what each
+  turn's cost MEANS (measured, non-billing, unpriced), and a total of
+  zero over unpriced turns says only that nobody could price them.
 * The turn_metrics session logs cannot be joined to a model on their own
   (``model`` is recorded but cost is not), so the warm-vs-cold view is
   built from the agent_metrics records' own input/output token sums;
