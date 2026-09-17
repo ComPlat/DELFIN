@@ -37,3 +37,41 @@ def test_the_setting_turns_it_off(monkeypatch):
     monkeypatch.setattr(
         us, "load_settings", lambda *a, **k: {"agent": {"commit_coauthor": False}})
     assert "Co-Authored-By: DELFIN-Agent" not in _solo_prompt("kit.glm-5.3")
+
+
+def test_the_address_is_where_the_credit_is_decided(monkeypatch):
+    """GitHub attaches a co-author to an account by its email. The
+    default belongs to none on purpose — a deployment that wants the
+    avatar and the contributor credit names its own bot address."""
+    import delfin.user_settings as us
+    monkeypatch.setattr(
+        us, "load_settings",
+        lambda *a, **k: {"agent": {
+            "commit_coauthor_email":
+                "12345678+delfin-agent@users.noreply.github.com"}})
+    prompt = _solo_prompt("kit.glm-5.3")
+    assert ("Co-Authored-By: DELFIN-Agent (kit.glm-5.3) "
+            "<12345678+delfin-agent@users.noreply.github.com>") in prompt
+
+
+def test_without_a_setting_it_belongs_to_nobody(monkeypatch):
+    import delfin.user_settings as us
+    monkeypatch.setattr(us, "load_settings", lambda *a, **k: {"agent": {}})
+    assert "<noreply@delfin-agent.invalid>" in _solo_prompt("kit.glm-5.3")
+
+
+def test_the_prompt_does_not_say_both_things():
+    """A learned rule said "No Co-Authored-By in commits" while the
+    attribution block asked for exactly that trailer — the same prompt,
+    two instructions. It meant no THIRD-PARTY attribution."""
+    prompt = _solo_prompt("kit.glm-5.3")
+    assert "No Co-Authored-By in commits" not in prompt
+    assert "Co-Authored-By: DELFIN-Agent (kit.glm-5.3)" in prompt
+
+
+def test_the_shipped_address_is_the_agents_own_account():
+    """Its noreply form: the trailer links to the machine account and no
+    personal address enters the history."""
+    prompt = _solo_prompt("kit.glm-5.3")
+    assert "@users.noreply.github.com>" in prompt
+    assert "@gmail.com" not in prompt

@@ -177,6 +177,14 @@ DEFAULT_SETTINGS = {
         # to main/master is refused. "maintainer": pushes to the default
         # branch are allowed, one per user request.
         "git_role": "contributor",
+        # The address the agent's Co-Authored-By trailer carries. GitHub
+        # attaches a co-author to an account by its email, so an address
+        # nobody owns renders a line with no avatar that counts for
+        # nobody; this is the DELFIN agent's own machine account, in its
+        # noreply form so no personal address appears in the history.
+        # The commits stay the user's: the agent is the co-author.
+        "commit_coauthor_email":
+            "330454853+delfin-agent@users.noreply.github.com",
         # Directory the "Bug Report" button writes reproducible bug
         # bundles into. Empty = per-user fallback (~/.delfin/agent_bugs).
         # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE
