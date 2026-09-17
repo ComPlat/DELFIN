@@ -23,7 +23,13 @@ _OUT_CAP = 2000             # chars kept per input/output
 # the start of the sub-agent's narration and none of its answer (report
 # 20260915-110358).
 _REPORT_OUT_CAP = 32_000
-_REPORT_TOOLS = frozenset({"subagent", "subagent_result", "orchestrate"})
+#: Tools whose OUTPUT is the thing a later reader needs whole. A test
+#: run's result is a verdict with a failure list, and at the ordinary cap
+#: about half of the recorded ones were cut mid-JSON and unreadable --
+#: measured by the session that built the flake report on them
+#: (2026-09-17), which had to count them as unusable rather than guess.
+_REPORT_TOOLS = frozenset({"subagent", "subagent_result", "orchestrate",
+                           "run_tests"})
 _MAX_BYTES = 4 * 1024 * 1024   # trim the file when it grows past this
 _KEEP_TAIL = 1500          # lines kept when trimming
 
