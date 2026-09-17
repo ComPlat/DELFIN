@@ -162,8 +162,12 @@ def _grant_except(ruleset_fd: int, directory: str, hidden: list[str],
             continue
 
 
-def apply(write: list[str], hide: list[str]) -> None:
-    """Restrict this process. Raises ``_Refused`` when it cannot."""
+def apply(write: list[str], hide: list[str], read_only: list[str] = ()) -> None:
+    """Restrict this process. Raises ``_Refused`` when it cannot.
+
+    ``read_only`` paths stay readable (from the top-level read grant) but are
+    carved out of every write grant, so a directory inside a write root can
+    be readable and executable without being writable -- git's ``hooks``."""
     abi = abi_version()
     if abi < 1:
         raise _Refused("Landlock is not available on this kernel")
@@ -179,13 +183,15 @@ def apply(write: list[str], hide: list[str]) -> None:
                        f"{os.strerror(ctypes.get_errno())}")
     try:
         hidden = sorted({os.path.realpath(h) for h in hide if h})
+        no_write = sorted(set(hidden) | {os.path.realpath(r) for r in read_only if r})
         _grant_except(ruleset_fd, "/", hidden, _READ, list_dirs=True)
         # Write roots get the write rights only; reading comes from the
         # walk above, so a hidden path inside a workspace stays hidden,
-        # and it is not writable either.
+        # and it is not writable either. A read_only path is skipped by the
+        # write walk but not by the read grant: readable, not writable.
         for path in write:
             if path:
-                _grant_except(ruleset_fd, os.path.realpath(path), hidden,
+                _grant_except(ruleset_fd, os.path.realpath(path), no_write,
                               write_rights, list_dirs=False)
         if _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
             raise _Refused("prctl(PR_SET_NO_NEW_PRIVS) failed")
@@ -275,7 +281,8 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
                  command: list[str], strict: bool, *, use_fs: bool = True,
                  net_mode: str = "open", proxy_socket: str = "",
                  allow_tcp: list[str] | None = None,
-                 deny_socket: list[str] | None = None) -> int:
+                 deny_socket: list[str] | None = None,
+                 read_only: list[str] | None = None) -> int:
     """Apply the filesystem policy (unless ``use_fs`` is off, inside
     bubblewrap), the socket guard and the network mode, and run the command.
 
@@ -316,7 +323,7 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
             return 126
         try:
             if use_fs:
-                apply(write, hide)
+                apply(write, hide, read_only or [])
             elif _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
                 raise _Refused("prctl(PR_SET_NO_NEW_PRIVS) failed")
         except _Refused as exc:
@@ -350,7 +357,7 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
             if forwarder is not None:
                 forwarder.server.close()
             if use_fs:
-                apply(write, hide)
+                apply(write, hide, read_only or [])
             elif _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
                 raise _Refused("prctl(PR_SET_NO_NEW_PRIVS) failed")
             listener = sg.install_filter(block_inet_datagrams=restricted)
@@ -399,6 +406,7 @@ def main(argv: list[str]) -> int:
     allow_socket: list[str] = []
     allow_tcp: list[str] = []
     deny_socket: list[str] = []
+    read_only: list[str] = []
     strict = False
     use_fs = True
     net_mode = "open"
@@ -420,6 +428,8 @@ def main(argv: list[str]) -> int:
             allow_tcp.append(value)
         elif flag == "--deny-socket":
             deny_socket.append(value)
+        elif flag == "--read-only":
+            read_only.append(value)
         elif flag == "--strict":
             strict = value == "1"
         elif flag == "--fs":
@@ -449,7 +459,7 @@ def main(argv: list[str]) -> int:
     return _run_guarded(write, hide, sg_defaults + roots + allow_socket,
                         command, strict, use_fs=use_fs, net_mode=net_mode,
                         proxy_socket=proxy_socket, allow_tcp=allow_tcp,
-                        deny_socket=deny_socket)
+                        deny_socket=deny_socket, read_only=read_only)
 
 
 if __name__ == "__main__":

@@ -315,7 +315,11 @@ def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str) -> list[str]:
 # legitimate commands like ``python -m pytest`` or ``delfin --recalc``.
 _HOME_SECRET_DIRS = (
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".netrc", ".pgpass",
-    ".azure", ".gcp", ".config/gcloud", ".config/gh", ".config/git",
+    ".azure", ".gcp", ".config/gcloud", ".config/gh",
+    # NOT .config/git: it is git's own config and ignore file, no
+    # credential, and hiding it made git fatal ("cannot use
+    # ~/.config/git/ignore as an exclude file"). Credentials live in
+    # .git-credentials and a helper, both denied separately.
     ".git-credentials", ".npmrc", ".pypirc",
     ".anthropic", ".openai", ".claude",
     # The framework's own credential store. The other providers' folders
