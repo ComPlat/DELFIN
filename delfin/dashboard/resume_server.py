@@ -32,6 +32,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, quote, urlsplit
 
 from delfin.dashboard import session as _session
+from delfin.dashboard import turn_record as _turns
 
 
 # ---------------------------------------------------------------------------
@@ -318,9 +319,20 @@ def resume_kernel_manager_class(base: type) -> type:
                 self._delfin_unwatched_since = store
             return store
 
+        @property
+        def _delfin_waiting_for_turn(self) -> set:
+            """Kernels already reported as kept for a running turn, so
+            the report is made once an episode and not every poll."""
+            store = getattr(self, "_delfin_waiting_store", None)
+            if store is None:
+                store = set()
+                self._delfin_waiting_store = store
+            return store
+
         def notify_connect(self, kernel_id):
             super().notify_connect(kernel_id)
             self._delfin_unwatched().pop(kernel_id, None)
+            self._delfin_waiting_for_turn.discard(kernel_id)
 
         def notify_disconnect(self, kernel_id):
             super().notify_disconnect(kernel_id)
@@ -343,10 +355,11 @@ def resume_kernel_manager_class(base: type) -> type:
 
         async def cull_kernel_if_idle(self, kernel_id):
             """End a kernel that has had no window for the grace, unless
-            it is kept. Replaces the server's idle rule outright: a
-            dashboard kernel is idle while its agent works in a thread
-            and busy with widget traffic while nobody watches, so
-            activity says nothing here. Windows do.
+            it is kept or a turn is running in it. Replaces the server's
+            idle rule outright: a dashboard kernel is idle while its
+            agent works in a thread and busy with widget traffic while
+            nobody watches, so activity says nothing here. Windows do --
+            and the record a running turn leaves does.
             """
             state = self._delfin_seconds_unwatched(kernel_id)
             if state is None:
@@ -355,6 +368,22 @@ def resume_kernel_manager_class(base: type) -> type:
             allowed = grace_seconds() if had_window else NEVER_CONNECTED_SECONDS
             if seconds <= allowed:
                 return
+            if kernel_id in _turns.running_kernel_ids():
+                # Work in flight. A closed tab and a dropped WebSocket
+                # look the same from here, and ending the kernel now
+                # would throw away a run nobody asked to stop. The clock
+                # starts again so the grace is served after the turn,
+                # not during it -- an unwatched session still stops,
+                # just not mid-run.
+                self._delfin_unwatched()[kernel_id] = (time.monotonic(), had_window)
+                if kernel_id not in self._delfin_waiting_for_turn:
+                    self._delfin_waiting_for_turn.add(kernel_id)
+                    self.log.warning(
+                        "[delfin] keeping kernel %s: no window for %ds, but a "
+                        "turn is running; the grace starts again when it ends.",
+                        kernel_id[:8], int(seconds))
+                return
+            self._delfin_waiting_for_turn.discard(kernel_id)
             kept = kept_kernel_ids()
             if kernel_id in kept:
                 return
