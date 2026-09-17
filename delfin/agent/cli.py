@@ -2309,6 +2309,33 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if any(r.get("status") == "FAIL" for r in results) else 0
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    """What one agent session actually did: tools, files, commands,
+    tests, denials, cost. `--json` prints the SessionReport itself,
+    otherwise the terminal rendering."""
+    import dataclasses
+    import json as _json
+
+    from . import session_report as _sr
+
+    sid = (getattr(args, "session", "") or "").strip()
+    if not sid:
+        # No id: the most recently updated session, via the same source
+        # `session ls` reads (sorted by updated_at, missing dir -> []).
+        from . import session_store as _ss
+        sid = (_ss.latest_session() or {}).get("session_id", "")
+        if not sid:
+            print("ERROR: no sessions found", file=sys.stderr)
+            return 1
+
+    report = _sr.collect_session_report(sid)
+    if getattr(args, "json", False):
+        print(_json.dumps(dataclasses.asdict(report), indent=2))
+    else:
+        print(_sr.render_terminal(report))
+    return 0
+
+
 def _subcommand_names(parser: argparse.ArgumentParser) -> frozenset[str]:
     """The subcommands the parser really registers.
 
@@ -2833,6 +2860,19 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--workspace", default="",
                         help="Workspace directory (default: current dir)")
     doctor.set_defaults(func=cmd_doctor)
+
+    # report — what one session actually did, from the recorded sources
+    report = sub.add_parser(
+        "report",
+        help="What one agent session did: tools, files, commands, tests, "
+             "denials, cost (default: the most recent session)",
+    )
+    report.add_argument("--session", default="",
+                        help="Session ID (default: the most recent session)")
+    report.add_argument("--json", action="store_true",
+                        help="Print the SessionReport as JSON instead of "
+                             "the terminal rendering")
+    report.set_defaults(func=cmd_report)
 
     return p
 
