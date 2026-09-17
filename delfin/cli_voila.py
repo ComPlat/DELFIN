@@ -8,6 +8,7 @@ Usage::
 """
 
 import argparse
+import atexit
 import importlib.util
 import importlib.resources
 import ipaddress
@@ -1088,6 +1089,23 @@ def main(argv=None):
             "\n"
             f"     Then open http://localhost:{args.port} in your browser."
         )
+    # Leave the note that says where this is running, so a later login
+    # on another node can find its way back instead of guessing which
+    # node it was. Best-effort: a dashboard that starts is worth more
+    # than one that can be found again.
+    try:
+        from delfin.agent import where as _where
+
+        _where.announce_dashboard(
+            port=args.port, token=_token,
+            resume_path=resume_url_path.split("?")[0] if resume_url_path else "")
+        atexit.register(_where.withdraw_dashboard)
+        _back = _where.reconnect_command(_where.dashboard())
+        if _back:
+            print(f"  ↩ Come back with:  {_back}")
+            print("     From anywhere:     delfin-agent where\n")
+    except Exception:
+        pass
     print("Press Ctrl+C to stop.\n")
 
     # Pipe stderr so we can drop the few benign jupyter noise lines that survive

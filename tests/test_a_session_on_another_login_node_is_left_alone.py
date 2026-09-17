@@ -3,7 +3,7 @@
 Kept sessions are announced in the home directory, which every login node
 shares; the kernel belongs to the server on the machine that wrote the
 record. On 2026-09-16 a login landed on uc3n990 while three agent sessions
-were kept on uc3n991. "re-enter" asked uc3n990's server for the kernel; it
+were kept on uc3n991. The button asked uc3n990's server for the kernel; it
 did not run it, took the record for stale and removed it -- and uc3n991's
 server, finding its unwatched kernel no longer kept, ended it ten seconds
 later, with the three agents in it.
@@ -88,7 +88,7 @@ def test_the_landing_banner_does_not_offer_a_return_it_cannot_make():
     other = _kept_on("uc3n991")
     record = json.loads(other.read_text())
     html = S._banner_html([record])
-    assert "re-enter" not in html
+    assert "Open this session" not in html
     assert "runs on <code>uc3n991</code>" in html
 
 
@@ -96,4 +96,4 @@ def test_the_landing_banner_still_offers_a_session_on_this_node(monkeypatch):
     monkeypatch.setenv(S.RESUME_PATH_ENV, "/voila/render/delfin_voila_runtime/delfin_resume.ipynb")
     here = json.loads(_kept_on(S._hostname(), name="here-1", kid="k1").read_text())
     here["request_url"] = "http://localhost:8866/voila/render/dash.ipynb"
-    assert "re-enter" in S._banner_html([here])
+    assert "Open this session" in S._banner_html([here])
