@@ -263,6 +263,26 @@ def tool_headline(name: str, tool_input, *, width: int = _DEFAULT_WIDTH,
     return f"{marker}{head}  {theme.dim(value)}" if value else f"{marker}{head}"
 
 
+#: How many lines of a tool's own output are shown under its summary.
+#: Three: enough for a pytest tally, a traceback's last frame or the
+#: path something was written to, and few enough that a thousand-line
+#: run does not push the conversation off the screen.
+_RESULT_TAIL_LINES = 3
+
+
+def _result_tail(output: str, width: int) -> list[str]:
+    """The last few non-empty lines of a result, ready to print."""
+    if not output or not output.strip():
+        return []
+    lines = [ln.rstrip() for ln in output.splitlines()]
+    lines = [ln for ln in lines if ln.strip()]
+    if not lines:
+        return []
+    budget = max(_MIN_WIDTH, width) - 6
+    return ["      " + truncate_middle(_WS_RE.sub(" ", ln).strip(), budget)
+            for ln in lines[-_RESULT_TAIL_LINES:]]
+
+
 def tool_result_line(name: str, output: str, *, meta: dict | None = None,
                      width: int = _DEFAULT_WIDTH,
                      theme: Theme | None = None) -> str:
@@ -299,7 +319,16 @@ def tool_result_line(name: str, output: str, *, meta: dict | None = None,
     notes = _WS_RE.sub(" ", str(meta.get("notes") or "").strip())
     if notes:
         body += f" · {truncate_middle(notes, 60)}"
-    return "  ⎿ " + theme.dim(body)
+    head = "  ⎿ " + theme.dim(body)
+
+    # A count is not a result. "34 lines, 2.1 kB" says a command ran and
+    # nothing about what it found, so the reader has to ask the agent
+    # what its own tool said. The last few lines are where the answer
+    # usually is -- a pytest summary, the bottom of a traceback, the file
+    # that was written -- and they cost three rows.
+    tail = _result_tail(output, width)
+    return head + ("\n" + "\n".join(theme.dim(t) for t in tail)
+                   if tail else "")
 
 
 def notice_line(text: str, *, theme: Theme | None = None) -> str:

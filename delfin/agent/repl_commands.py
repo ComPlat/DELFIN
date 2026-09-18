@@ -1210,16 +1210,41 @@ def _jobs(ctx, args: str) -> CommandResult:
 def _attention(ctx, args: str) -> CommandResult:
     """The attention inbox, rendered by the module that owns it.
 
-    Read-only here. Answering and dismissing resolve an item the agent
-    is waiting on, and those belong on the surface that parked it.
+    Listing, and clearing what is no longer wanted. Answering a request
+    belongs on the surface that parked it; throwing one away does not —
+    the inbox outlives the session that filled it, and there was no way
+    to empty it at all. Seven confirmations from sessions that had ended
+    hours before were still being reported as open (2026-09-18).
+
+    `clear` without a kind touches notices only, which is the module's
+    own rule: the gesture for tidying run notices must not also throw
+    away the confirmation an agent is blocked on. Name the kind to mean
+    it.
     """
     try:
         from . import attention
-        kind = args.strip().lower()
+        parts = args.strip().lower().split()
+        if parts and parts[0] == "clear":
+            kind = parts[1] if len(parts) > 1 else ""
+            if kind and kind not in attention.ATTENTION_KINDS:
+                return CommandResult(output=(
+                    "usage: /attention clear [" + "|".join(
+                        sorted(attention.ATTENTION_KINDS)) + "]"))
+            out = attention.clear_all(kind or None,
+                                      include_blocking=bool(kind))
+            n = int((out or {}).get("cleared", 0) or 0)
+            kept = int((out or {}).get("kept", 0) or 0)
+            said = f"cleared {n} item(s)"
+            if kept:
+                said += (f"; kept {kept} the agent is waiting on — name "
+                         "the kind to clear those too")
+            return CommandResult(output=said)
+        kind = parts[0] if parts else ""
         if kind and kind not in attention.ATTENTION_KINDS:
             return CommandResult(output=(
                 "usage: /attention [" + "|".join(
-                    sorted(attention.ATTENTION_KINDS)) + "]"))
+                    sorted(attention.ATTENTION_KINDS)) + "] | "
+                "/attention clear [kind]"))
         return CommandResult(output=attention.render_inbox(kind or None))
     except Exception as exc:
         return CommandResult(output=f"attention inbox unavailable ({exc})")
@@ -1619,7 +1644,8 @@ BUILTINS: dict[str, ReplCommand] = {
                     "Watched cluster jobs: id, state, elapsed, workspace; "
                     "/jobs watch on|off|status for the monitor daemon",
                     _jobs, True),
-        ReplCommand("/attention", "workspace", "The attention inbox",
+        ReplCommand("/attention", "workspace",
+                    "The attention inbox; `clear [kind]` empties it",
                     _attention, True),
     ]
 }
