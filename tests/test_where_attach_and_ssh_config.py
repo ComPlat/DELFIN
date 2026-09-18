@@ -53,7 +53,7 @@ def test_attach_inside_the_named_session_says_so(tmp_path, monkeypatch,
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "already" in out
+    assert "already" in out.lower()
     assert "token" not in out and "SECRET" not in out
 
 
@@ -207,8 +207,10 @@ def test_liveness_gone_when_the_pid_is_dead_here(tmp_path, monkeypatch):
 
 def test_where_main_dispatches_attach(monkeypatch):
     called = {}
-    monkeypatch.setattr(where, "run_attach",
-                        lambda r: called.setdefault("r", r) or 0)
+    def fake_attach(r):
+        called["r"] = r
+        return 0
+    monkeypatch.setattr(where, "run_attach", fake_attach)
     monkeypatch.setattr(where, "dashboard", lambda: {"host": "h"})
 
     rc = where.main(["--attach"])
