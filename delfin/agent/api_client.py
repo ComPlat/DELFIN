@@ -15099,7 +15099,10 @@ class _DocToolExecutor:
                     f"'{path.name}' without a prior read_file in this "
                     "session — call read_file on it first. The same rule "
                     "applies to edit_file; the shell is not a way around "
-                    "it."
+                    "it. For a large file you are about to replace whole "
+                    "(a log, a report), read_file with limit=1 is enough: "
+                    "the baseline is what it establishes, not the "
+                    "content."
                 )})
             current = resolved.stat().st_mtime
             if current > tracked + 1e-3:
