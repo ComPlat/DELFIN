@@ -164,3 +164,44 @@ def test_every_script_that_makes_a_venv_puts_the_build_tools_in_it():
         text = script.read_text(encoding="utf-8")
         assert re.search(r"pip install[^\n]*\bwheel\b", text), \
             f"{script.relative_to(REPO)} makes a venv without a wheel builder"
+
+
+def _runtime_key_for(tree: pathlib.Path) -> str:
+    text = SUBMIT.read_text(encoding="utf-8")
+    parts = [re.search(rf"^{name}\(\) \{{.*?^\}}", text, re.M | re.S).group(0)
+             for name in ("compute_runtime_tree_hash", "compute_runtime_dirty_hash", "detect_runtime_key")]
+    script = ("\n".join(parts) + f"\nDELFIN_DIR='{tree}'\nRUNTIME_KEY=''\nRUNTIME_BUILD_MODE=''\n"
+              "detect_runtime_key\necho \"$RUNTIME_KEY\"\n")
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    return done.stdout.strip()
+
+
+def _a_checkout_without_git(tmp_path: pathlib.Path) -> pathlib.Path:
+    tree = tmp_path / "delfin_checkout"
+    (tree / "delfin").mkdir(parents=True)
+    (tree / "delfin" / "orca.py").write_text("x = 1\n", encoding="utf-8")
+    (tree / "pyproject.toml").write_text("[project]\nname = 'delfin-complat'\n", encoding="utf-8")
+    return tree
+
+
+def test_a_checkout_without_git_still_gets_a_key_of_its_own(tmp_path):
+    # Without git -- not installed, or not on the compute node -- the key used
+    # to be the constant "tree-default": the wheel built first stayed the
+    # cached one, and every later job ran the DELFIN of that day however often
+    # the checkout was updated.
+    tree = _a_checkout_without_git(tmp_path)
+    assert _runtime_key_for(tree) != "tree-default"
+
+
+def test_changing_the_code_changes_the_key(tmp_path):
+    tree = _a_checkout_without_git(tmp_path)
+    before = _runtime_key_for(tree)
+    assert _runtime_key_for(tree) == before                   # nothing moved, same wheel
+
+    (tree / "delfin" / "orca.py").write_text("x = 2\nyy = 3\n", encoding="utf-8")
+    assert _runtime_key_for(tree) != before                   # edited
+
+    tree_with_more = _a_checkout_without_git(tmp_path / "second")
+    (tree_with_more / "delfin" / "recalc_control.py").write_text("y = 1\n", encoding="utf-8")
+    assert _runtime_key_for(tree_with_more) != _runtime_key_for(_a_checkout_without_git(tmp_path / "third"))
