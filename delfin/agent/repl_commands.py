@@ -1046,7 +1046,13 @@ def _hooks(ctx, _args: str) -> CommandResult:
 
 
 def _bash(ctx, args: str) -> CommandResult:
-    """Background shell jobs: list them, or kill one by id.
+    """Background shell jobs: list them, look inside one, or kill one.
+
+    Looking inside was the agent's privilege alone -- ``bash_output`` is
+    a tool, and the person who started the run had no way to ask. A run
+    that lasts half an hour is exactly the one somebody wants to watch,
+    so ``/bash <job_id>`` shows what a job is, how long it has been
+    going and what it has written.
 
     Kill is the only mutation, and it needs the id: a /bash that killed
     "the last one" would reach a job the user is not looking at.
@@ -1068,7 +1074,10 @@ def _bash(ctx, args: str) -> CommandResult:
         return CommandResult(output=f"{parts[1]}: {note}" if ok
                              else f"not killed — {note}")
     if action not in ("ls", "jobs"):
-        return CommandResult(output="usage: /bash [ls] | /bash kill <job_id>")
+        # Anything else is a job id: /bash <job_id> looks inside it.
+        return _bash_detail(registry, parts[0],
+                            int(parts[1]) if len(parts) > 1
+                            and parts[1].isdigit() else 40)
     try:
         jobs = sorted(registry.list_jobs(), key=lambda j: j.started_at,
                       reverse=True)
@@ -1086,8 +1095,66 @@ def _bash(ctx, args: str) -> CommandResult:
         lines.append(f"  {flag} {st.get('job_id')}  exit={st.get('exit_code')}  "
                      f"{float(st.get('elapsed_s', 0.0) or 0.0):>7.1f}s  "
                      f"{str(st.get('command', ''))[:50]}")
+    lines.append("  /bash <job_id> [lines]   look inside one")
     lines.append("  /bash kill <job_id>")
     return CommandResult(output="\n".join(lines))
+
+
+def _bash_detail(registry, job_id: str, tail_lines: int) -> CommandResult:
+    """One job: what it is, how long it has run, and what it wrote."""
+    try:
+        job = next((j for j in registry.list_jobs(include_finished=True)
+                    if str(j.job_id) == job_id), None)
+    except Exception as exc:
+        return CommandResult(output=f"could not read the job ({exc})")
+    if job is None:
+        return CommandResult(
+            output=f"no background job {job_id!r} — /bash lists them")
+    try:
+        st = job.status_dict()
+    except Exception as exc:
+        return CommandResult(output=f"could not read {job_id} ({exc})")
+
+    secs = float(st.get("elapsed_s", 0.0) or 0.0)
+    runtime = (f"{int(secs // 60)}m {secs % 60:4.1f}s" if secs >= 60
+               else f"{secs:.1f}s")
+    if st.get("running"):
+        status = "running"
+    elif st.get("killed_by_signal"):
+        status = f"killed by {st.get('signal_name')}"
+    else:
+        status = f"finished (exit {st.get('exit_code')})"
+
+    out = [f"  Status:   {status}",
+           f"  Runtime:  {runtime}",
+           f"  Command:  {str(st.get('command', ''))[:300]}"]
+    if st.get("description"):
+        out.append(f"  Task:     {st['description']}")
+    if st.get("cwd"):
+        out.append(f"  Cwd:      {st['cwd']}")
+    if st.get("note"):
+        out.append(f"  Note:     {st['note']}")
+
+    try:
+        from . import bash_jobs as _bj
+        read = _bj.read_output(job, head_lines=0, tail_lines=tail_lines)
+    except Exception:
+        read = {}
+    out.append("")
+    wrote = False
+    for stream in ("stdout", "stderr"):
+        text = str(read.get(stream) or "").rstrip()
+        if not text:
+            continue
+        wrote = True
+        total = read.get(f"{stream}_total_lines")
+        head = f"  {stream} (last {tail_lines} of {total} lines):" if total \
+            else f"  {stream}:"
+        out.append(head)
+        out.extend("    " + ln for ln in text.splitlines())
+    if not wrote:
+        out.append("  Output:   nothing written yet")
+    return CommandResult(output="\n".join(out))
 
 
 def _jobs(ctx, args: str) -> CommandResult:

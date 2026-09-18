@@ -1626,6 +1626,43 @@ def _bash_symlink_escapes(cmd: str, workspace: Path) -> list[str]:
     return out
 
 
+def _uncommitted_note(workspace) -> str:
+    """One line when a turn leaves changes nobody committed, else "".
+
+    Four sessions on 2026-09-18 produced four commits between them, each
+    at the very end, and 226 tool calls went into one of them. The one
+    session that committed in two steps -- the failing control first,
+    then the fix -- was the one whose work could be verified in a minute,
+    because the order was the evidence. Two full suites were killed
+    mid-session the same day by a node watchdog: what is committed
+    survives that, and what is not hangs by a thread.
+
+    A line, not a demand: it says what is there and stops. Never raises,
+    and says nothing outside a git checkout.
+    """
+    import subprocess as _sp
+    if not workspace:
+        return ""
+    try:
+        out = _sp.run(["git", "status", "--porcelain"],
+                      cwd=str(workspace), capture_output=True,
+                      text=True, timeout=5)
+        if out.returncode != 0:
+            return ""                     # not a checkout: nothing to say
+        changed = [ln for ln in out.stdout.splitlines()
+                   if ln.strip() and not ln.startswith("?? ")]
+        if not changed:
+            return ""
+        n = len(changed)
+        return (f"[git] {n} tracked file{'s' if n != 1 else ''} changed and "
+                "not committed. A step that stands on its own is worth a "
+                "commit now — a control run that fails, committed before "
+                "the fix that makes it pass, is the one commit that proves "
+                "the most.")
+    except Exception:
+        return ""
+
+
 def _bash_write_targets(cmd: str) -> list[str]:
     """Paths a shell command would plausibly WRITE to.
 
@@ -21275,6 +21312,10 @@ class OpenAIClient(_BaseClient):
                 _stop = {"open": "end_turn_open_tasks",
                          "unknown": "end_turn_tasks_unknown"}.get(
                              str(_end_state.get("state", "")), "end_turn")
+            _uncommitted = _uncommitted_note(
+                getattr(self._permissions, "workspace", None))
+            if _uncommitted:
+                yield StreamEvent(type="notice", text="\n" + _uncommitted)
             cost = self._estimate_cost(_total_in, _total_out)
             yield StreamEvent(
                 type="message_delta",
