@@ -292,7 +292,7 @@ def test_metal_aware_falls_through_to_legacy_for_cn3_to_12(env_on):
 def test_default_off_for_real_pool_metals(env_off):
     """Bit-exact OFF on every CN=2 metal observed in master_v3 pool."""
     # Metals observed at CN=2 in
-    # /home/qmchem_max/agent_workspace/quality_framework/results/
+    # /home/localuser/agent_workspace/quality_framework/results/
     # smiles_master_v3__DELFIN__20260513_122130.jsonl
     observed_metals = [
         "Au", "Ag", "Cu", "Hg", "Zn", "Cd", "Fe", "Ru", "V", "Pt",

@@ -17,7 +17,7 @@ from delfin.dashboard.tab_job_status import build_slurm_job_table, empty_queue_h
 
 NOW = datetime(2026, 9, 14, 14, 0)
 
-SSHARE = 'ka|ka_ew7404|0.000679|0.001409|0.394548|0.481840\n'
+SSHARE = 'ka|ka_user|0.000679|0.001409|0.394548|0.481840\n'
 SACCTMGR = 'ka|ka||cpu=3840||\n'
 
 
@@ -68,8 +68,8 @@ def test_the_backend_reads_fairshare_and_the_cpu_limit(backend):
 
 
 def test_the_default_account_is_the_one_shown(backend):
-    backend._outputs['sshare'] = ('other|ka_ew7404|0.1|0.05|0.8|1.2\n'
-                                  'ka|ka_ew7404|0.000679|0.001409|0.394548|0.481840\n')
+    backend._outputs['sshare'] = ('other|ka_user|0.1|0.05|0.8|1.2\n'
+                                  'ka|ka_user|0.000679|0.001409|0.394548|0.481840\n')
     backend._outputs['sacctmgr'] = ('ka|other||cpu=10||\n'
                                     'ka|ka|cpu_il|cpu=100||\n'
                                     'ka|ka||cpu=3840|50|200\n')

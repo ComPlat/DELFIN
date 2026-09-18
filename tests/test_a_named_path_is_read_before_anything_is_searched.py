@@ -2,7 +2,7 @@
 
 Report 20260828-131603 (ka_gf0106, dashboard_agent). The message was:
 
-    /pfs/data6/home/ka/ka_ibcs/ka_gf0106/calc/trans-CH2OH/
+    /pfs/data6/home/ka/ka_group/ka_gf0106/calc/trans-CH2OH/
     was ist bei den rechungen schief gelaufen?
 
 A path, and a question about the runs inside it. What the session did:
