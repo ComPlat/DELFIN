@@ -2418,6 +2418,49 @@ _SUBSTITUTION = re.compile(r"\$\([^()]*\)|\$\{[^{}]*\}|`[^`]*`")
 #: Where one command ends and the next begins.
 _SEGMENT_BREAK = re.compile(r"(?:\|\||&&|[;\n|&()])")
 
+#: Throwing the ssh configuration away, which is the usual hygiene trick
+#: (`-F /dev/null`, or a GIT_SSH_COMMAND that replaces it) and on a
+#: cluster removes the only route out: the remote is reached through a
+#: ProxyCommand/ProxyJump that lives in exactly that file.
+_SSH_CONFIG_DISCARDED_RE = re.compile(
+    r"-F\s+/dev/null|GIT_SSH_COMMAND\s*=", re.I)
+
+#: What the failure looks like once the route is gone.
+_SSH_NO_ROUTE_RE = re.compile(
+    r"could not resolve hostname"
+    r"|could not read from remote repository"
+    r"|connection timed out|network is unreachable"
+    r"|connect to host \S+ port \d+: permission denied",
+    re.I)
+
+
+def _discarded_ssh_config_note(cmd: str, returncode: Optional[int],
+                               stderr: str) -> str:
+    """Why a remote that worked a moment ago stopped resolving, or "".
+
+    Measured 2026-09-18: a session pushed successfully, then ran
+    ``GIT_SSH_COMMAND="ssh -F /dev/null" git fetch`` and got "Could not
+    resolve hostname github.com". It spent the next eight calls building
+    a replacement ssh config, hit "Bad owner or permissions" on the
+    system one, and ended at "port 22: Permission denied" — all of it
+    solving a problem the flag had created.
+    """
+    if not returncode:
+        return ""
+    if not _SSH_CONFIG_DISCARDED_RE.search(cmd or ""):
+        return ""
+    if not _SSH_NO_ROUTE_RE.search(stderr or ""):
+        return ""
+    return (
+        "This command replaced the ssh configuration (-F /dev/null, or "
+        "GIT_SSH_COMMAND). On a machine that reaches the outside through "
+        "a ProxyCommand/ProxyJump — every cluster login node does — that "
+        "file IS the route, so discarding it is what stopped the host "
+        "resolving. Run the same command WITHOUT overriding it. Do not "
+        "build a replacement config: the one you discarded is the "
+        "working one."
+    )
+
 
 #: A few of the denied commands have a sanctioned way to do the same job.
 #: Naming it turns a dead end into a detour: a session that wanted to
@@ -15333,6 +15376,9 @@ class _DocToolExecutor:
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
+        _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
+        if _ssh_note:
+            payload["hint"] = _ssh_note
         watched = _auto_watch_submitted_jobs(proc.stdout or "", perms)
         if watched:
             payload["watched_slurm_jobs"] = watched
