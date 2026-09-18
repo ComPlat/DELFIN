@@ -65,7 +65,15 @@ class KitConfirmBroker:
         self._timeout_s = default_timeout_s
         # True when the most recent decision was a TIMEOUT (user absent),
         # not an actual click on deny. Consumers distinguish the two.
-        self.last_timed_out = False
+        # Per THREAD, not per broker. Requests arrive on whichever
+        # thread is running tools -- the turn worker, a subagent, a
+        # background job -- and they overlap. With one flag for all of
+        # them, an answer to one request cleared the expiry of another,
+        # and the expired one was then recorded as a REFUSAL: a path
+        # permanently closed that the user never saw. The flag is read
+        # off ``__self__`` by the gate, so it stays an attribute and
+        # keeps its name; only its storage moved.
+        self._timed_out = threading.local()
         #: The session this broker belongs to, stamped on every request
         #: it parks in the inbox. Set by whoever builds the broker; "" is
         #: honest about not knowing rather than claiming someone else's.
@@ -94,6 +102,16 @@ class KitConfirmBroker:
         self._toast: Any = None
 
     # -- public API --------------------------------------------------------
+
+    @property
+    def last_timed_out(self) -> bool:
+        """Whether THIS thread's last dialog expired rather than being
+        refused. See the note in __init__ for why it is per thread."""
+        return bool(getattr(self._timed_out, "value", False))
+
+    @last_timed_out.setter
+    def last_timed_out(self, value: bool) -> None:
+        self._timed_out.value = bool(value)
 
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Called from the agent worker thread. Blocks until decided.

@@ -1765,15 +1765,15 @@ class TerminalAgent:
                 out.append(f"\x1b[{spare}A")
             # Rows written: the cursor sits after the LAST row. Put it
             # on the cursor's row and column: up by the rows below it,
-            # then across (col 1 is the border; +2 lands after "│ ";
+            # then across (the content rows start at column zero;
             # clamped so a cursor on a border column cannot wrap).
             crow, ccol = view.cursor
             below = len(view.rows) - 1 - (crow + 1)     # minus top border
             _state["below"] = below
             _state["rows"] = len(view.rows)
-            # Column 1 is the border and "│ " is two columns wide — but
-            # the narrow form draws no frame, and adding the offset there
-            # put the cursor two columns past the text.
+            # A form that draws a frame needs its width stepped over;
+            # the two-rule form and the narrow row do not, and adding
+            # the offset there put the cursor two columns past the text.
             offset = 2 if getattr(view, "border", True) else 0
             col = min(ccol + offset, max(1, self.transcript.width - 1))
             if below:
