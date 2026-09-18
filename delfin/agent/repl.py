@@ -609,6 +609,7 @@ class TerminalAgent:
         self.transcript.finish()
         self._report_compaction(compaction_before)
         self._report_tasks()
+        self._offer_next_steps()
         self._report_status()
         return result_box[0] if result_box else TurnResult(error="turn produced nothing")
 
@@ -1326,6 +1327,52 @@ class TerminalAgent:
         if text:
             self.transcript.chrome(self.transcript.theme.dim(text))
 
+    def _offer_next_steps(self) -> None:
+        """What could come next, offered as numbers the user can type.
+
+        Drawn from the tasks the agent itself left open, so a suggestion
+        is never a guess about what the user wants and costs no tokens
+        to produce. A turn that closed everything offers nothing, which
+        is the honest answer to "what now".
+
+        Never raises: a courtesy that can take the prompt with it is not
+        a courtesy.
+        """
+        self._next_steps = []
+        try:
+            from . import task_ticker
+            steps = task_ticker.next_steps(
+                self.opts.cwd,
+                session_id=str(getattr(self.engine, "session_id", "") or ""))
+        except Exception:
+            return
+        if not steps:
+            return
+        self._next_steps = list(steps)
+        theme = self.transcript.theme
+        self.transcript.chrome(theme.dim("  next"))
+        for i, step in enumerate(steps, 1):
+            self.transcript.chrome(theme.dim(f"    {i}  {step[:100]}"))
+
+    def _expand_next_step(self, text: str) -> str:
+        """A bare number at the prompt means the suggestion of that number.
+
+        Only a bare number, and only while an offer stands: "2" is a
+        message in its own right in a conversation about numbers, and it
+        must stay one when nothing was offered.
+        """
+        steps = getattr(self, "_next_steps", None) or []
+        raw = (text or "").strip()
+        if not steps or not raw.isdigit():
+            return text
+        i = int(raw)
+        if 1 <= i <= len(steps):
+            chosen = steps[i - 1]
+            self.transcript.chrome(
+                self.transcript.theme.dim(f"  → {chosen[:100]}"))
+            return chosen
+        return text
+
     def _report_tasks(self) -> None:
         """Open work, when the agent left some and the user wants to see it."""
         if not self._show_tasks:
@@ -1378,6 +1425,9 @@ class TerminalAgent:
                 self._idle_interrupts = 0
                 if not pending:
                     continue
+                # A bare number stands for the suggestion of that number,
+                # and only while one is on offer.
+                pending = self._expand_next_step(pending)
                 pending = self._handle_line(pending)
                 if self._quit:
                     return 0
