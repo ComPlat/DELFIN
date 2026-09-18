@@ -671,6 +671,11 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
     ("delfin.agent.session_store", "_bundles_path", "bundles"),
     ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
+    # The note that says which node the dashboard runs on, and with which
+    # token. A run that drove the launcher overwrote it with its own pid,
+    # and the launcher's atexit hook then deleted it on the way out --
+    # leaving a dashboard that was still serving with no way back to it.
+    ("delfin.agent.where", "record_path", "dashboard_here.json"),
     ("delfin.agent.change_journal", "_undo_root", "undo"),
     ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
     ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),

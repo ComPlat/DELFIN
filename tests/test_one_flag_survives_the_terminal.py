@@ -97,6 +97,11 @@ def test_an_armed_start_writes_the_record_the_server_reads(monkeypatch,
     monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path))
     monkeypatch.setattr(S, "kernel_id", lambda: "k-armed")
     monkeypatch.setattr(S, "session_name", lambda: "armed-one")
+    # A kernel announces itself on the SERVER's terminal, by writing to its
+    # parent's file descriptor -- which pytest does not capture. Without
+    # this the run prints "Session armed-one is kept" into whatever
+    # terminal started the suite.
+    monkeypatch.setattr(S, "_server_stdout", lambda: None)
 
     strip = S.build_status_strip()
     assert strip is not None
