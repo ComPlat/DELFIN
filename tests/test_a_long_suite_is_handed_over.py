@@ -12,9 +12,10 @@ the same wall in the same way.
                          only after losing the ten minutes
 
 `bash` learned this in the morning ("a long run is started, not waited
-out"); `run_tests` did not. It does now — and it refuses rather than
-clamps, because clamping spends the ceiling before saying the same
-thing, which is exactly what cost each session its ten minutes.
+out"); `run_tests` did not. It does now — it hands the run to a job and
+returns the id at once, rather than clamping, because clamping spends
+the ceiling before saying the same thing, which is exactly what cost
+each session its ten minutes.
 
 The way out is real as of today: a finished background job wakes the
 session by itself, in the dashboard and at the terminal prompt.
@@ -41,17 +42,17 @@ def run_tests(tmp_path):
     return _call
 
 
-def test_a_half_hour_suite_is_refused_at_once(run_tests):
+def test_a_half_hour_suite_is_not_sat_on(run_tests):
+    """First this refused and named bash_background; now it hands the run
+    over itself, which is the same principle with the last step done."""
     out, perms = run_tests(pytest_args=["-q", "tests/"], timeout_s=1800)
-    err = out.get("error", "")
-    assert "started, not waited out" in err
-    assert "bash_background" in err
-    assert "wakes this session" in err, "the way out has to be named"
+    assert out.get("status") == "started"
+    assert out.get("job_id")
     assert out.get("requested_timeout_s") == 1800
-    assert out.get("max_timeout_s") == perms.bash_max_timeout_s
+    assert out.get("max_foreground_timeout_s") == perms.bash_max_timeout_s
 
 
-def test_it_refuses_before_spending_the_time(run_tests):
+def test_it_answers_before_spending_the_time(run_tests):
     """The whole point: the answer costs nothing. A clamp would spend the
     ceiling first and then say the same sentence."""
     import time
@@ -63,7 +64,7 @@ def test_it_refuses_before_spending_the_time(run_tests):
 def test_the_ceiling_is_the_shell_s_own(run_tests):
     """One number for both, so the agent does not have to learn two."""
     out, perms = run_tests(pytest_args=["-q"], timeout_s=100000)
-    assert out.get("max_timeout_s") == perms.bash_max_timeout_s
+    assert out.get("max_foreground_timeout_s") == perms.bash_max_timeout_s
 
 
 @pytest.mark.parametrize("timeout", [5, 60, 300, 600])

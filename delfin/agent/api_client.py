@@ -6398,16 +6398,16 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "run_tests",
             "description": (
-                "Run pytest with structured output: pass/fail/error counts "
-                "plus failing node-ids. Prefer this over `bash python -m "
-                "pytest`, whose text output is fragile to parse."
+                "Run pytest: pass/fail/error counts plus failing "
+                "node-ids. Prefer it over `bash python -m pytest`. Over "
+                "600s it runs as a job and you are told when it ends."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": "Path or nodeid; empty = discover from cwd.",
+                        "description": "Path or nodeid; empty = discover.",
                     },
                     "pytest_args": {
                         "type": "array",
@@ -6420,6 +6420,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "minimum": 5,
                         "maximum": 1800,
                     },
+                    "background": {"type": "boolean"},
                 },
             },
         },
@@ -15975,6 +15976,54 @@ class _DocToolExecutor:
             "recorded": True,
         }, ensure_ascii=False)
 
+    def _run_tests_in_background(
+        self, target, pytest_args, timeout, ceiling, env, perms
+    ) -> str:
+        """Start the suite as a job and hand back its id.
+
+        The SAME command the foreground path runs -- test_runner owns it
+        (``build_command``), so a run handed over is not a second
+        spelling of the run. A second spelling is how a producer and a
+        renderer came to disagree elsewhere in this codebase, and the
+        cost was six wake-ups that named nothing.
+
+        No report file: a background run is read the way every other one
+        is, with ``bash_output``, and a finished job wakes the session by
+        itself — in the dashboard and at the terminal prompt.
+        """
+        from . import bash_jobs as _bj
+        from . import test_runner as _tr
+        try:
+            cmd = _tr.build_command(
+                perms.workspace, target=target,
+                pytest_args=[str(a) for a in pytest_args])
+        except Exception as exc:
+            return json.dumps({"error": f"could not build the run: {exc}"})
+        import shlex as _shlex
+        line = " ".join(_shlex.quote(c) for c in cmd)
+        try:
+            job = _bj.get_registry().start(
+                line, cwd=str(perms.workspace), env=env,
+                timeout_s=max(timeout, ceiling),
+                workspace=perms.workspace,
+                description=f"pytest {target or 'tests'} (background)",
+                argv=cmd)
+        except Exception as exc:
+            return json.dumps({"error": f"could not start the run: {exc}"})
+        job_id = str(getattr(job, "job_id", "") or "")
+        return json.dumps({
+            "status": "started",
+            "job_id": job_id,
+            "command": line[:300],
+            "requested_timeout_s": timeout,
+            "max_foreground_timeout_s": ceiling,
+            "note": (
+                f"the suite runs as job {job_id}. Do not wait on it: when "
+                "it finishes this session is told, and bash_output("
+                f"'{job_id}') reads what it wrote. bash_status("
+                f"'{job_id}') asks how far it is."),
+        }, ensure_ascii=False)
+
     def _execute_run_tests(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -16001,18 +16050,7 @@ class _DocToolExecutor:
         # wakes the session by itself, at the terminal prompt as well as
         # in the dashboard.
         ceiling = int(getattr(perms, "bash_max_timeout_s", 600) or 600)
-        if timeout > ceiling:
-            return json.dumps({"error": (
-                f"run_tests with timeout_s={timeout} would hold this turn "
-                f"for longer than a turn should be held. A suite that "
-                f"needs more than {ceiling}s is started, not waited out: "
-                f"bash_background returns a job id at once, a finished "
-                f"job wakes this session by itself, and bash_output reads "
-                f"what it wrote. Pass timeout_s <= {ceiling} to run it "
-                f"here instead."),
-                "max_timeout_s": ceiling,
-                "requested_timeout_s": timeout,
-            })
+
         # A test file is code the agent may have written itself, so it
         # runs as the agent's shell does: without the provider keys in
         # its environment and inside the same cage. It inherited the full
@@ -16022,6 +16060,16 @@ class _DocToolExecutor:
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
         env.setdefault("LANG", "C.UTF-8")
+
+        # A suite longer than the shell's own ceiling is HANDED OVER, not
+        # sat on, and the caller may ask for that outright. run_tests used
+        # to accept up to 1800 s and run in the foreground: one call held
+        # a turn for 30 minutes (measured 2026-09-18, one of 18 calls over
+        # five minutes that cost 154 minutes across four sessions).
+        if bool(arguments.get("background", False)) or timeout > ceiling:
+            return self._run_tests_in_background(
+                target, pytest_args, timeout, ceiling, env, perms)
+
         result = _tr.run_tests(
             workspace=perms.workspace,
             target=target,

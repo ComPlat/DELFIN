@@ -1646,10 +1646,17 @@ class TerminalAgent:
         # forever, which is exactly the hang a first run would show.
         read_raw: list = []          # [callable] once the context opens
 
+        #: How long the idle prompt waits for a key before looking around.
+        #: It is not keystroke latency: read_ready is a select, so a key
+        #: returns at once and a signal (SIGWINCH) interrupts the wait —
+        #: this only sets how often an idle prompt wakes to do nothing.
+        #: At 0.1 s that was ten times a second where readline blocked.
+        _IDLE_TICK_S = 0.5
+
         def _read_chunk() -> str:
             # RawMode.read_ready: one chunk or "" after a short timeout,
             # with paste-marker stitching already in the decoder.
-            return read_raw[0](0.1) if read_raw else ""
+            return read_raw[0](_IDLE_TICK_S) if read_raw else ""
 
         class _BlankDecoder:
             """A decoder-shaped blank, so _clear_box can size a box."""
