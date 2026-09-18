@@ -12,9 +12,9 @@ from delfin import quota
 
 def test_lfs_quota_single_line():
     output = (
-        'Disk quotas for usr ka_ew7404 (uid 506470):\n'
+        'Disk quotas for usr ka_user (uid 506470):\n'
         '      Filesystem  kbytes   bquota  blimit  bgrace   files   iquota\n'
-        '/home/ka/ka_ibcs/ka_ew7404 250652044  524288000 576716800  '
+        '/home/ka/ka_group/ka_user 250652044  524288000 576716800  '
         '-  479667  5000000\n'
     )
     used, soft = quota.parse_lfs_quota(output)

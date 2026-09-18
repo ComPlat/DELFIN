@@ -24,7 +24,7 @@ import pytest
 from delfin.agent.api_client import _bash_write_targets, _git_subcommand
 
 
-ELSEWHERE = "/pfs/data6/home/ka/ka_ibcs/ka_ew7404/software/delfin"
+ELSEWHERE = "/pfs/data6/home/ka/ka_group/ka_user/software/delfin"
 
 
 # -- the reported command ---------------------------------------------------
