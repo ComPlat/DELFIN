@@ -15258,8 +15258,21 @@ class _DocToolExecutor:
                     should_stop=getattr(perms, "should_stop", None),
                 )
         except subprocess.TimeoutExpired:
+            # Say what to do instead. The default window is a minute or
+            # two, and a run that needs longer has two sanctioned ways
+            # to be run -- neither of which the refusal named, so a
+            # session hit the same wall twice and lost the work each
+            # time (2026-09-17).
             return json.dumps({
-                "error": f"command timed out after {timeout}s",
+                "error": (
+                    f"command timed out after {timeout}s and was ended, "
+                    "with everything it started. Nothing about its work "
+                    "follows from this. For a longer run: pass a bigger "
+                    "timeout_s, or -- better for anything over a few "
+                    "minutes -- start it with bash_background, which "
+                    "returns a job id at once; then bash_status(job_id, "
+                    "wait_seconds=300) waits for it and bash_output reads "
+                    "what it wrote. Do not repeat the command unchanged."),
                 "command": cmd[:200],
                 "description": description,
             })

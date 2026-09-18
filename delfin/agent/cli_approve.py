@@ -137,7 +137,14 @@ class Confirm:
     def __init__(self, *, timeout_s: float = 0.0,
                  stdin: TextIO | None = None,
                  stdout: TextIO | None = None,
-                 clock: Any = None) -> None:
+                 clock: Any = None,
+                 key_source: Any = None) -> None:
+        # ``key_source(deadline) -> "y" | "n" | "s" | None`` stands in for
+        # the terminal. Without it the single-keypress branch could only
+        # run against a real tty, so the tests reached the line-read
+        # fallback and the branch people actually use was never
+        # exercised -- said so by the session that wrote it.
+        self._key_source = key_source
         self.timeout_s = float(timeout_s or 0.0)
         self.last_timed_out = False
         self.aborted = False
@@ -234,6 +241,8 @@ class Confirm:
         """
         deadline = (self._clock() + self.timeout_s
                     if self.timeout_s > 0 else None)
+        if self._key_source is not None:
+            return self._keypress_loop(deadline, self._key_source)
         try:
             fileno = self._stdin.fileno()
             use_select = True
@@ -277,6 +286,28 @@ class Confirm:
                 termios.tcsetattr(fileno, termios.TCSADRAIN, old)
             except termios.error:
                 pass
+
+    def _keypress_loop(self, deadline, keys) -> str | None:
+        """The single-key branch, over a source that can be supplied.
+
+        The terminal path builds its own source; a test hands one in.
+        Same loop either way, so what is tested is what runs.
+        """
+        while True:
+            if deadline is not None and self._clock() >= deadline:
+                return None
+            if deadline is not None:
+                self._say(f"\r  … {max(0, int(deadline - self._clock()))}s"
+                          " left (y / n / s)")
+            ch = keys(deadline)
+            if ch is None:
+                if deadline is not None and self._clock() >= deadline:
+                    return None
+                continue
+            if ch in ("y", "n", "s"):
+                return ch
+            # Anything else (including Enter) is ignored -- the choice is
+            # exactly these three keys, shown in the footer.
 
     def _read_line(self, deadline: float | None) -> str | None:
         """Fallback: read a whole line, first character decides.

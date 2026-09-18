@@ -276,6 +276,17 @@ def run_tests(
             "elapsed_s": round(time.monotonic() - t0, 2),
             "raw_stdout_tail": _tail(exc.stdout or ""),
             "raw_stderr_tail": _tail(exc.stderr or ""),
+            # A whole suite can run far longer than a turn should wait,
+            # and this tool only runs synchronously: a session waited
+            # 1500 seconds for a run it could have started and come back
+            # to (2026-09-17). Say the way that exists.
+            "note": ("the run was cut off, not finished — nothing about the "
+                     "suite follows from this. A run this long belongs in "
+                     "the background: start it with bash_background "
+                     "(`python -m pytest -q …`), then bash_status(job_id, "
+                     "wait_seconds=300) waits for it and bash_output reads "
+                     "the result. A finished background job wakes the "
+                     "session by itself."),
         }
     except FileNotFoundError as exc:
         return {
