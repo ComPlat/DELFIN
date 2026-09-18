@@ -213,9 +213,9 @@ def test_list_jobs_releases_env_hold_on_refresh():
     squeue_out = (
         "       JOBID    PARTITION       NAME       USER  ST         TIME  "
         "NODES NODELIST(REASON)\n"
-        "     5880813          cpu    stuckjob  ka_ew7404  PD         0:00  "
+        "     5880813          cpu    stuckjob  ka_user  PD         0:00  "
         "    1 (user env retrieval failed requeued held)\n"
-        "     5880814          cpu   normaljob  ka_ew7404  PD         0:00  "
+        "     5880814          cpu   normaljob  ka_user  PD         0:00  "
         "    1 (Priority)\n"
     )
     calls = []

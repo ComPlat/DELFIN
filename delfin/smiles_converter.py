@@ -40411,7 +40411,7 @@ def smiles_to_xyz_architector(smiles: str) -> Tuple[Optional[str], Optional[str]
 
 # ---------------------------------------------------------------------------
 # SELF-TEST for DELFIN_FFFREE_HAPTO_SEAT_RIGID
-#   PYTHONPATH=/home/qmchem_max/DELFIN_dev python -m delfin.smiles_converter
+#   PYTHONPATH=/home/localuser/DELFIN_dev python -m delfin.smiles_converter
 # A direct file invocation loads a DIFFERENT module copy because of the editable
 # installation -- always start via `-m`.
 # ---------------------------------------------------------------------------
