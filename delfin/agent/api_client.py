@@ -2482,6 +2482,16 @@ _SUBSTITUTION = re.compile(r"\$\([^()]*\)|\$\{[^{}]*\}|`[^`]*`")
 #: Where one command ends and the next begins.
 _SEGMENT_BREAK = re.compile(r"(?:\|\||&&|[;\n|&()])")
 
+#: An argument that names a path to SKIP rather than one to touch:
+#: find's `-not -path X` / `! -name X`, the --exclude family that grep,
+#: rsync and tar share, and git's own `:(exclude)X` pathspec. The value
+#: goes; nothing else on the line does.
+_EXCLUSION_ARG_RE = re.compile(
+    r"(?:(?:!|-not)\s+-(?:i?path|i?name|i?regex)\s+\S+"
+    r"|--exclude(?:-dir|-from)?(?:=|\s+)\S+"
+    r"|:\(exclude\)\S+)"
+)
+
 
 #: A few of the denied commands have a sanctioned way to do the same job.
 #: Naming it turns a dead end into a detour: a session that wanted to
@@ -12808,6 +12818,16 @@ class _DocToolExecutor:
         # not confuse the scan; a false positive on an echo costs one
         # confirmation dialog, and this cost a credential.
         cleaned = re.sub(r"['\"]", " ", _prose_blanked(cmd))
+        # A path named as something to SKIP is not a path the command
+        # touches. Dropping these before the scan removes a refusal that
+        # was arbitrary from the caller's side: measured 2026-09-18,
+        #     find … -not -path "*/.git/*" -delete      refused
+        #     grep -rn foo --exclude-dir=.git .         allowed
+        # -- the same intent, told apart by spelling. Only the value of
+        # the exclusion goes; every other token on the line is still
+        # scanned, so `--exclude=x cat ~/.ssh/id_rsa` is caught on its
+        # second half exactly as before.
+        cleaned = _EXCLUSION_ARG_RE.sub(" ", cleaned)
         # Match absolute /paths and ~ / $HOME prefixed paths.
         candidates = set(re.findall(
             r"(?<![A-Za-z0-9_])(?:~|\$HOME|/)[^\s;|&<>()`'\"]+",
