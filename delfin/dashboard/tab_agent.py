@@ -5765,6 +5765,49 @@ def create_tab(ctx):
     )
     input_row.add_class("delfin-agent-send-row")
 
+    # What could come next, under the box you type in. Drawn from the
+    # tasks the agent itself left open -- not a second call to the model
+    # and not a guess about what somebody wants -- and from the same
+    # helper the terminal prompt offers, so the two cannot drift.
+    next_steps_box = widgets.HBox(
+        [], layout=widgets.Layout(margin="2px 0 0 4px", flex_flow="row wrap"))
+
+    def _fill_input(text: str):
+        def _click(_btn):
+            input_textarea.value = text
+        return _click
+
+    def _refresh_next_steps():
+        """Never raises: a courtesy that can take the tab with it is not
+        a courtesy."""
+        try:
+            from delfin.agent.task_ticker import next_steps as _next
+            eng = state.get("engine")
+            ws = None
+            if eng is not None:
+                kp = getattr(eng, "kit_permissions", None)
+                if kp is not None:
+                    ws = kp.workspace
+            if ws is None:
+                ws = ctx.repo_dir or Path.cwd()
+            steps = _next(ws, session_id=str(
+                state.get("active_session_id", "") or ""))
+        except Exception:
+            steps = []
+        if not steps:
+            next_steps_box.children = ()
+            return
+        kids = []
+        for step in steps:
+            b = widgets.Button(
+                description=step[:58],
+                tooltip=step,
+                layout=widgets.Layout(width="auto", margin="0 4px 0 0"))
+            b.add_class("delfin-next-step")
+            b.on_click(_fill_input(step))
+            kids.append(b)
+        next_steps_box.children = tuple(kids)
+
     # Working indicator (animated spinner)
     working_html = widgets.HTML(value="")
 
@@ -7054,6 +7097,7 @@ def create_tab(ctx):
             except Exception:
                 pass
         _refresh_task_ticker()
+        _refresh_next_steps()
         _refresh_status_line()
 
     state["_wire_phase5_callbacks"] = _wire_phase5_callbacks
@@ -7080,6 +7124,10 @@ def create_tab(ctx):
                  margin="6px 0 0 0",
              ),
          ),
+         # Directly under the box you type in: what could come next,
+         # each one a click that fills the box rather than sends it —
+         # a suggestion is an offer, and the sending stays the user's.
+         next_steps_box,
          # Below the message box: click • Main / • Subagent to enter its chat.
          # Hidden entirely unless subagents exist this session.
          agent_view_chips,
@@ -7463,6 +7511,7 @@ def create_tab(ctx):
 
         _refresh_chat_html()
         _refresh_task_ticker()
+        _refresh_next_steps()
         _update_status()
         _update_button_states()
 
@@ -16506,6 +16555,7 @@ def create_tab(ctx):
                     if tool_name in ("task_create", "task_update", "task_list"):
                         try:
                             _refresh_task_ticker()
+                            _refresh_next_steps()
                         except Exception:
                             pass
                     # Live tool-trace panel: reflect every tool call as it lands.
@@ -18444,6 +18494,7 @@ def create_tab(ctx):
         session_dropdown.value = ""
         _refresh_chat_html()
         _refresh_task_ticker()
+        _refresh_next_steps()
         _update_status()
         _update_button_states()
 
@@ -18524,6 +18575,7 @@ def create_tab(ctx):
                 state["_cycle_history"] = []
                 _set_active_gate()
                 _refresh_task_ticker()
+                _refresh_next_steps()
                 _append_system_message(
                     f"Mode switched to {new_mode}. Continuing with the "
                     "existing conversation — no need to re-send your "

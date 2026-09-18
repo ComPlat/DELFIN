@@ -234,7 +234,8 @@ def _cursor_position(wrapped: list[tuple[str, int]], stop: int, inner: int
     return (row - 1 if row else 0, inner)
 
 
-def render_box(text: str, cursor: int, width: int, hint: str = "") -> BoxView:
+def render_box(text: str, cursor: int, width: int, hint: str = "",
+               status: str = "") -> BoxView:
     """Render the framed input area. Pure; raises nothing.
 
     ``cursor`` is an offset into ``text`` (0..len). An offset outside
@@ -268,6 +269,11 @@ def render_box(text: str, cursor: int, width: int, hint: str = "") -> BoxView:
     rows.append(rule)
 
     hint_row = None
+    # What is running, under the line you type on: a background suite, a
+    # sub-agent still out. It was reachable only by asking (`/bash`), so
+    # a run started twenty minutes ago was remembered or it was not.
+    if status:
+        rows.append("  " + _truncate_hint(status, inner - 2))
     if hint:
         rows.append("  " + _truncate_hint(hint, inner - 2))
         hint_row = len(rows) - 1
