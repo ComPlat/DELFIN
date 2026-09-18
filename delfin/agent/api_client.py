@@ -15350,6 +15350,20 @@ class _DocToolExecutor:
                         "bash", _tp, _pre, perms, deleted=True)
                 continue
             self._capture_raw_change("bash", _tp, _pre, perms)
+            # The shell just wrote it, through the same gates a file tool
+            # goes through — so the edit baseline moves with it. Without
+            # this, an agent that appends with `cat >> f <<'EOF'` is told
+            # by the next edit_file that "f was modified since last
+            # read_file", which is true and reads as a warning about
+            # somebody else's change. Measured 2026-09-18: three refusals
+            # in one session, each straight after its own heredoc.
+            #
+            # What is given up is small and named: the guard still covers
+            # a change this session did NOT make, which is what it is for.
+            try:
+                perms.read_tracker[str(_tp)] = _tp.stat().st_mtime
+            except Exception:
+                pass
 
         out = proc.stdout or ""
         err = proc.stderr or ""
