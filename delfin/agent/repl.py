@@ -1714,7 +1714,11 @@ class TerminalAgent:
             below = len(view.rows) - 1 - (crow + 1)     # minus top border
             _state["below"] = below
             _state["rows"] = len(view.rows)
-            col = min(ccol + 2, max(1, self.transcript.width - 1))
+            # Column 1 is the border and "│ " is two columns wide — but
+            # the narrow form draws no frame, and adding the offset there
+            # put the cursor two columns past the text.
+            offset = 2 if getattr(view, "border", True) else 0
+            col = min(ccol + offset, max(1, self.transcript.width - 1))
             if below:
                 out.append(f"\x1b[{below}A")
             out.append(f"\r\x1b[{col}C")
@@ -1817,6 +1821,16 @@ class TerminalAgent:
                         if newer is not None:
                             decoder.buffer = newer
                             decoder.cursor = len(newer)
+                    elif kind in (rk.STEER, rk.EXPAND, rk.TASKS):
+                        # Turn-time keys. There is no turn here, and the
+                        # decoder has already taken the line into the
+                        # event — so without this branch Ctrl+G emptied
+                        # the box and nothing happened, which is the one
+                        # outcome a key must never have.
+                        text = getattr(event, "text", "") or ""
+                        if text:
+                            decoder.buffer = text
+                            decoder.cursor = len(text)
                     elif kind == rk.COMPLETE:
                         done = _complete_word(decoder.buffer)
                         if done != decoder.buffer:
