@@ -389,29 +389,16 @@ def _user_state_targets():
     return tuple(out)
 
 
-# The sinks that are resolved per call rather than at import. Redirecting
-# these one by one, rather than swapping Path.home for the whole suite: that
-# was measured, and it breaks 357 tests that legitimately read the real home.
-_USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
-    ("delfin.agent.audit_log", "_default_log_path", "audit.log"),
-    # Which directories the user has trusted to run commands. A test that
-    # granted trust must never grant it in the real store: the entry would
-    # outlive the run and let a later, real session honour a workspace's
-    # hooks and MCP servers on the strength of a pytest tmp directory.
-    ("delfin.agent.workspace_trust", "_trust_store_path",
-     "trusted_workspaces.json"),
-    # The state-tree maintenance sweep walks these three, and its prune
-    # DELETES: pointed at the real home from inside a test run it would
-    # remove the user's archived transcripts, handoffs and bundles.
-    ("delfin.agent.session_store", "_transcript_archive_path",
-     "transcript_archive"),
-    ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
-    ("delfin.agent.session_store", "_bundles_path", "bundles"),
-    ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
-    ("delfin.agent.change_journal", "_undo_root", "undo"),
-    ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
-    ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),
-)
+# Redirecting these one by one, rather than swapping Path.home for the whole
+# suite: that was measured, and it breaks 357 tests that legitimately read the
+# real home.
+#
+# There is no second copy of the table here. A literal one stood at this spot
+# and SHADOWED the import above, so the product's table was read and thrown
+# away on the next statement -- the two copies happened to agree, so nothing
+# failed, and an entry added to the product table would simply not have
+# reached the suite. The redirect is asserted from the product table in
+# test_a_note_is_not_left_by_a_test.py.
 
 
 @pytest.fixture(scope="session")
