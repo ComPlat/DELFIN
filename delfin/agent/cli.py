@@ -2375,6 +2375,40 @@ def cmd_where(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_jobs(args: argparse.Namespace) -> int:
+    """The cluster's jobs from a terminal: read-only, answer when asked.
+
+    `jobs watch --on|--off|--status` manages the monitor daemon's
+    setting; the listing itself never starts or signals anything. A host
+    without squeue gets one line and exit 0 — missing is not failing.
+    """
+    import json as _json
+
+    from . import cli_jobs as _cj
+
+    action = getattr(args, "jobs_action", None)
+    if action == "watch":
+        if getattr(args, "on", False):
+            print(_cj.watch_set("on"))
+            return 0
+        if getattr(args, "off", False):
+            print(_cj.watch_set("off"))
+            return 0
+        print(_cj.watch_report())
+        return 0
+
+    try:
+        rows = _cj.collect_job_rows()
+    except _cj.SchedulerUnavailable as exc:
+        print(_cj.scheduler_note(0, exc))
+        return 0
+    if getattr(args, "json", False):
+        print(_json.dumps(rows, indent=2))
+    else:
+        print(_cj.render_jobs(rows))
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -2966,6 +3000,34 @@ def build_parser() -> argparse.ArgumentParser:
     sessions_p.add_argument("--limit", type=int, default=20,
                             help="How many to list (default 20)")
     sessions_p.set_defaults(func=cmd_sessions)
+
+    # jobs — the cluster's jobs, read-only, without starting a session.
+    # Same query and watch files the monitor daemon uses (cli_jobs is
+    # the surface, job_monitor the mechanism).
+    jobs_p = sub.add_parser(
+        "jobs",
+        help="Your watched cluster jobs: id, state, elapsed, workspace "
+             "(read-only); `jobs watch` manages the monitor daemon",
+    )
+    jobs_p.add_argument("--json", action="store_true",
+                        help="Print the rows as JSON instead of the table")
+    jobs_p.set_defaults(func=cmd_jobs)
+
+    jobs_sub = jobs_p.add_subparsers(dest="jobs_action")
+    jobs_watch = jobs_sub.add_parser(
+        "watch",
+        help="Start, stop or report the job-monitor daemon (its setting "
+             "agent.job_monitor.enabled; the watch loop is LLM-free)",
+    )
+    jobs_watch.add_argument("--on", action="store_true",
+                            help="Enable job monitoring (persists the "
+                                 "setting; starts nothing)")
+    jobs_watch.add_argument("--off", action="store_true",
+                            help="Disable job monitoring (a running daemon "
+                                 "exits on its next pass)")
+    jobs_watch.add_argument("--status", action="store_true",
+                            help="Report daemon, setting and watched count "
+                                 "(default)")
 
     return p
 
