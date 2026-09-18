@@ -204,18 +204,46 @@ def resume() -> bool:
 # The opt-in
 # ---------------------------------------------------------------------------
 
+#: How often an armed session refreshes its record.
+HEARTBEAT_S = 60.0
+
+#: How long a record from ANOTHER machine may go unrefreshed and still
+#: count as alive. Four missed beats: a busy kernel can be late, and the
+#: cost of believing a dead one is a server that never stops.
+FOREIGN_STALE_S = 300.0
+
+_heartbeat: "threading.Event | None" = None
+
+
+def _beat(name: str, stop: "threading.Event") -> None:
+    while not stop.wait(HEARTBEAT_S):
+        if not write_record(name):
+            return
+
+
 def keep_alive(on: bool, *, session_name: str = "") -> None:
     """Arm or disarm the opt-in. Never called by default.
 
     The state here is what the strip and the terminal describe; what the
     SERVER honours is the record on disk, written and dropped beside
-    this by the control.
+    this by the control. While it is armed the record is refreshed, so
+    another machine can tell a living session from one whose kernel is
+    long gone.
     """
-    global _keep_alive, _session_name
+    global _keep_alive, _session_name, _heartbeat
     with _lock:
         _keep_alive = bool(on)
         if session_name:
             _session_name = session_name
+        who = _session_name
+        if _heartbeat is not None:
+            _heartbeat.set()
+            _heartbeat = None
+        if _keep_alive and who:
+            stop = threading.Event()
+            _heartbeat = stop
+            threading.Thread(target=_beat, args=(who, stop), daemon=True,
+                             name="delfin-keep-alive").start()
 
 
 def is_kept_alive() -> bool:
@@ -570,12 +598,20 @@ def write_record(name: str = "", *, root: str = "", kid: str = "") -> str:
     try:
         os.makedirs(directory, exist_ok=True)
         path = record_path(who, root=directory)
+        now = time.time()
         payload = {
             "session_name": who,
             "kernel_id": ident,
             "pid": os.getpid(),
             "host": _hostname(),
-            "started_at": time.time(),
+            "started_at": now,
+            # A sign of life, refreshed while the kernel runs. Without it
+            # a record could only be judged by its pid, which means
+            # nothing on another machine -- so a session kept on one
+            # login node and read from another looked alive for ever,
+            # kept the server from ever stopping, and offered a return
+            # to a kernel that died hours ago (2026-09-18).
+            "updated_at": now,
             "request_url": _request_url(),
         }
         tmp = path + ".tmp"
@@ -709,8 +745,23 @@ def _record_is_dead(record: dict) -> bool:
     the record is left alone and the resume itself decides.
     """
     host = str(record.get("host") or "")
-    if not host or host != _hostname():
+    if not host:
         return False
+    if host != _hostname():
+        # Another machine: its pid means nothing here, but its heartbeat
+        # does. A record nobody has refreshed is not a running session.
+        beat = record.get("updated_at")
+        if beat is None:
+            # Written before the heartbeat existed: judged by age alone,
+            # generously, so an old format is never called dead early.
+            beat = record.get("started_at")
+            if beat is None:
+                return False
+            return (time.time() - float(beat)) > 6 * 3600
+        try:
+            return (time.time() - float(beat)) > FOREIGN_STALE_S
+        except (TypeError, ValueError):
+            return False
     try:
         pid = int(record.get("pid") or 0)
     except (TypeError, ValueError):
@@ -724,6 +775,16 @@ def _record_is_dead(record: dict) -> bool:
     except OSError:
         return False
     return False
+
+
+def live_records(*, root: str = "") -> list[dict]:
+    """Kept records whose session still shows a sign of life.
+
+    Read-only: unlike ``other_sessions`` this drops nothing, because the
+    server asks it while deciding whether to stop and must not rewrite
+    the directory from that path.
+    """
+    return [r for r in list_records(root=root) if not _record_is_dead(r)]
 
 
 def other_sessions(*, root: str = "", exclude_kernel: str = "") -> list[dict]:

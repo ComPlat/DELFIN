@@ -64,7 +64,7 @@ _CRED_ASSIGNMENT = re.compile(
     r"(['\"]?)([^\s'\";|&]+)\2")
 
 
-def _redact(value: str) -> str:
+def redact(value: str) -> str:
     """Mask a credential VALUE, keeping the command that carries it.
 
     Redaction is shown, not silent. It is also as narrow as it can be:
@@ -88,14 +88,14 @@ def _redact(value: str) -> str:
     return value
 
 
-def _redact_args(args: dict) -> str:
+def redact_args(args: dict) -> str:
     """Render the arguments whole, masking credential-looking values."""
     safe: dict[str, Any] = {}
     for key, val in (args or {}).items():
         if _CRED_KEY.search(str(key)):
             safe[str(key)] = "<redacted>"
         elif isinstance(val, str):
-            safe[str(key)] = _redact(val)
+            safe[str(key)] = redact(val)
         else:
             safe[str(key)] = val
     try:
@@ -105,12 +105,12 @@ def _redact_args(args: dict) -> str:
         return repr(safe)
 
 
-def _redact_preview(preview: str) -> str:
+def redact_preview(preview: str) -> str:
     """Strip control characters, then mask credential-looking lines."""
     text = rr.strip_control(str(preview or ""))
     out = []
     for line in text.splitlines():
-        out.append(_redact(line))
+        out.append(redact(line))
     return "\n".join(out)
 
 
@@ -121,7 +121,7 @@ def _inline_args(args: dict) -> str:
         if _CRED_KEY.search(str(key)):
             continue
         if isinstance(val, str):
-            parts.append(f"{key}={_redact(val)}")
+            parts.append(f"{key}={redact(val)}")
         else:
             parts.append(f"{key}={val!r}")
     return " ".join(parts) or "{}"
@@ -189,11 +189,11 @@ class Confirm:
     # -- rendering ----------------------------------------------------------
     def _render(self, tool: str, args: dict, preview: str) -> None:
         name = rr.short_tool_name(tool) or tool or "?"
-        body = _redact_preview(preview)
+        body = redact_preview(preview)
         lines = [f"┌─ {name}"]
         if tool in _WRITE_TOOLS:
             lines.append("│  command:")
-            for ln in _redact_args(args).splitlines() or ["{}"]:
+            for ln in redact_args(args).splitlines() or ["{}"]:
                 lines.append("│    " + rr.truncate_middle(ln, 96))
             if body.strip():
                 lines.append("│  diff:")
@@ -292,3 +292,9 @@ class Confirm:
         if line[0] in ("y", "n", "s"):
             return line[0]
         return "n"  # an answer that is none of the three is a refusal
+
+
+#: The names these helpers had while they lived only in this module.
+_redact = redact
+_redact_args = redact_args
+_redact_preview = redact_preview
