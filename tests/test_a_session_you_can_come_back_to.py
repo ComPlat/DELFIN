@@ -441,16 +441,61 @@ def test_a_record_whose_process_is_gone_is_not_offered(tmp_path, monkeypatch):
     assert (tmp_path / "here.json").exists()
 
 
-def test_a_record_from_another_host_is_left_alone(tmp_path, monkeypatch):
-    """A home directory may be shared; a pid means nothing elsewhere."""
+def test_a_record_from_another_host_is_judged_by_its_heartbeat(tmp_path,
+                                                               monkeypatch):
+    """A home directory may be shared; a pid means nothing elsewhere.
+
+    So the record carries a sign of life instead. Without one, a session
+    kept on one login node looked alive from another for ever — it kept
+    the server from stopping and offered a return to a kernel that had
+    died hours before (2026-09-18).
+    """
+    import time as _t
+
     from delfin.dashboard import session as s
 
     monkeypatch.setattr(s, "_hostname", lambda: "thishost")
-    rec = {"session_name": "far", "kernel_id": "k3", "pid": 4194305,
-           "host": "otherhost", "started_at": 1.0}
-    (tmp_path / "far.json").write_text(json.dumps(rec))
-    assert [r["session_name"] for r in s.other_sessions(root=str(tmp_path))] == ["far"]
-    assert (tmp_path / "far.json").exists()
+    fresh = {"session_name": "far", "kernel_id": "k3", "pid": 4194305,
+             "host": "otherhost", "started_at": 1.0,
+             "updated_at": _t.time()}
+    (tmp_path / "far.json").write_text(json.dumps(fresh))
+    assert [r["session_name"] for r in s.other_sessions(root=str(tmp_path))] \
+        == ["far"]
+    assert (tmp_path / "far.json").exists(), "a beating record is left alone"
+
+
+def test_a_record_from_another_host_that_stopped_beating_is_gone(tmp_path,
+                                                                 monkeypatch):
+    import time as _t
+
+    from delfin.dashboard import session as s
+
+    monkeypatch.setattr(s, "_hostname", lambda: "thishost")
+    stale = {"session_name": "far", "kernel_id": "k3", "pid": 4194305,
+             "host": "otherhost", "started_at": 1.0,
+             "updated_at": _t.time() - s.FOREIGN_STALE_S - 1}
+    (tmp_path / "far.json").write_text(json.dumps(stale))
+    assert s.other_sessions(root=str(tmp_path)) == []
+
+
+def test_an_old_record_without_a_heartbeat_is_given_the_benefit_of_the_doubt(
+        tmp_path, monkeypatch):
+    """Written before the heartbeat existed: judged by age alone, and
+    generously, so an old format is never called dead early."""
+    import time as _t
+
+    from delfin.dashboard import session as s
+
+    monkeypatch.setattr(s, "_hostname", lambda: "thishost")
+    recent = {"session_name": "far", "kernel_id": "k3", "pid": 4194305,
+              "host": "otherhost", "started_at": _t.time() - 60}
+    (tmp_path / "far.json").write_text(json.dumps(recent))
+    assert [r["session_name"] for r in s.other_sessions(root=str(tmp_path))] \
+        == ["far"]
+
+    ancient = dict(recent, started_at=_t.time() - 7 * 3600)
+    (tmp_path / "far.json").write_text(json.dumps(ancient))
+    assert s.other_sessions(root=str(tmp_path)) == []
 
 
 def test_a_record_without_a_host_is_left_alone(tmp_path, monkeypatch):

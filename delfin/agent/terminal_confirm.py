@@ -164,7 +164,16 @@ def render_request(req: ConfirmRequest, *, theme: rr.Theme | None = None,
         head = theme.yellow(f"┌─ {name}  OUTSIDE the workspace")
 
     lines = [head]
-    body = rr.strip_control(req.preview or "").splitlines()
+    # Masked before anything reaches the screen: this broker printed the
+    # command whole, so a line carrying a token showed it to the terminal
+    # and to the scrollback behind it. The value goes, the command stays
+    # readable -- an approval you cannot read is one you cannot give.
+    try:
+        from .cli_approve import redact_preview as _redact_preview
+        _preview = _redact_preview(req.preview or "")
+    except Exception:
+        _preview = rr.strip_control(req.preview or "")
+    body = _preview.splitlines()
     shown, hidden = body[:body_lines], max(0, len(body) - body_lines)
     for line in shown:
         lines.append("│  " + rr.truncate_middle(line, max(20, width - 4)))

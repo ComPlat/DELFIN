@@ -409,7 +409,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     # caller that stands in for `_run_once` was written against the
     # signature without it. A turn that streams nothing is called exactly
     # as it always was.
-    _emit = {"emit": _json_line} if stream_json else {}
+    # A terminal that is watching gets the turn rendered as it happens --
+    # the tool being called, then its verdict -- instead of silence until
+    # the answer. cli_stream does the rendering; this only decides when
+    # it applies: a tty, and no machine-readable stream asked for.
+    _human_stream = bool(not stream_json and sys.stdout.isatty())
+    if _human_stream:
+        from .cli_stream import StreamRenderer
+
+        def _render_event(event: dict) -> None:
+            for line in StreamRenderer([event], is_tty=True):
+                print(line, flush=True)
+
+        _emit = {"emit": _render_event}
+    else:
+        _emit = {"emit": _json_line} if stream_json else {}
     out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096,
                     **_emit)
     sid = _save_session(engine, repo)
@@ -559,10 +573,17 @@ def _pick_session(workspace: Path) -> str:
     if not rows:
         print("No previous sessions in this directory.", file=sys.stderr)
         return ""
-    for i, row in enumerate(rows, 1):
-        title = str(row.get("title", "") or "(untitled)")[:60]
-        when = str(row.get("updated_at", "") or "")[:16]
-        print(f"  {i:2}. {when}  {title}", file=sys.stderr)
+    # The listing comes from cli_resume so the terminal and the picker
+    # show the same table -- id, age, model and the task line -- instead
+    # of two renderings of the same rows.
+    try:
+        from .cli_resume import render_sessions
+        print(render_sessions(rows), file=sys.stderr)
+    except Exception:
+        for i, row in enumerate(rows, 1):
+            title = str(row.get("title", "") or "(untitled)")[:60]
+            when = str(row.get("updated_at", "") or "")[:16]
+            print(f"  {i:2}. {when}  {title}", file=sys.stderr)
     try:
         raw = input("resume which? [1] ").strip() or "1"
         idx = int(raw)
@@ -2321,6 +2342,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if any(r.get("status") == "FAIL" for r in results) else 0
 
 
+def cmd_sessions(args: argparse.Namespace) -> int:
+    """What ran here before, as a table that says how to come back."""
+    from . import cli_resume as _cr
+
+    rows = _cr.list_sessions(limit=max(1, int(getattr(args, "limit", 20) or 20)))
+    if not rows:
+        print("No sessions recorded yet.")
+        return 0
+    print(_cr.render_sessions(rows))
+    return 0
+
+
 def cmd_where(args: argparse.Namespace) -> int:
     """Say where the dashboard is and how to walk back into it."""
     from . import where as _where
@@ -2902,6 +2935,16 @@ def build_parser() -> argparse.ArgumentParser:
              "tmux session, port, and a link per kept session",
     )
     where_p.set_defaults(func=cmd_where)
+
+    # sessions — what ran here before, without starting anything
+    sessions_p = sub.add_parser(
+        "sessions",
+        help="List earlier agent sessions: id, age, model and the task "
+             "they were given (resume one with --resume <id>)",
+    )
+    sessions_p.add_argument("--limit", type=int, default=20,
+                            help="How many to list (default 20)")
+    sessions_p.set_defaults(func=cmd_sessions)
 
     return p
 

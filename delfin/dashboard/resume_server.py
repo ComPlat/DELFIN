@@ -131,8 +131,17 @@ def cull_config_args(grace: Optional[float] = None) -> list[str]:
 
 
 def kept_kernel_ids(*, root: str = "") -> set[str]:
-    """Every kernel a record says is kept."""
-    return {str(r.get("kernel_id") or "") for r in _session.list_records(root=root)}
+    """Every kernel a LIVING record says is kept.
+
+    A record left behind by a session that is gone used to count: the
+    server then never stopped, because it believed a kept session was
+    still out there. One from another login node could say that for
+    ever, since a pid means nothing across machines -- so the records
+    carry a heartbeat now, and this reads only the ones that have one
+    (2026-09-18).
+    """
+    return {str(r.get("kernel_id") or "")
+            for r in _session.live_records(root=root)}
 
 
 #: The query key that marks a request as a resume, and names which
