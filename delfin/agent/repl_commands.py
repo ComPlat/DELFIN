@@ -1090,6 +1090,39 @@ def _bash(ctx, args: str) -> CommandResult:
     return CommandResult(output="\n".join(lines))
 
 
+def _jobs(ctx, args: str) -> CommandResult:
+    """The cluster's jobs inside a session: same data and formatter as
+    `delfin-agent jobs` (cli_jobs is the one surface over job_monitor).
+
+    Read-only — it answers when asked, no polling. `/jobs watch
+    on|off|status` manages the monitor daemon's setting, and only the
+    flag: it neither launches nor signals anything. Cancelling stays on
+    `/cancel <id>`, which confirms first.
+    """
+    try:
+        from . import cli_jobs
+    except Exception as exc:
+        return CommandResult(output=f"jobs view unavailable ({exc})")
+    parts = args.strip().split()
+    sub = parts[0].lower() if parts else ""
+    if sub == "watch":
+        flag = parts[1].lower() if len(parts) > 1 else "status"
+        if flag in ("on", "off"):
+            return CommandResult(output=cli_jobs.watch_set(flag))
+        if flag == "status":
+            return CommandResult(output=cli_jobs.watch_report())
+        return CommandResult(output=(
+            "usage: /jobs watch on|off|status"))
+    if sub not in ("", "ls"):
+        return CommandResult(output=(
+            "usage: /jobs [ls] | /jobs watch on|off|status"))
+    try:
+        rows = cli_jobs.collect_job_rows()
+    except cli_jobs.SchedulerUnavailable as exc:
+        return CommandResult(output=cli_jobs.scheduler_note(0, exc))
+    return CommandResult(output=cli_jobs.render_jobs(rows))
+
+
 def _attention(ctx, args: str) -> CommandResult:
     """The attention inbox, rendered by the module that owns it.
 
@@ -1489,6 +1522,10 @@ BUILTINS: dict[str, ReplCommand] = {
                     _git, True),
         ReplCommand("/bash", "workspace", "Background jobs: list or kill one",
                     _bash, True),
+        ReplCommand("/jobs", "workspace",
+                    "Watched cluster jobs: id, state, elapsed, workspace; "
+                    "/jobs watch on|off|status for the monitor daemon",
+                    _jobs, True),
         ReplCommand("/attention", "workspace", "The attention inbox",
                     _attention, True),
     ]
