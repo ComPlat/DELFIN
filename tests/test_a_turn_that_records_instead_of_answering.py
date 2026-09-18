@@ -25,16 +25,32 @@ import types
 import pytest
 
 from delfin.agent import api_client as ac
-from delfin.agent.model_profiles import get_profile
+from delfin.agent.model_profiles import (
+    ModelProfile, _COERCE, get_profile)
 
 
-def test_the_cap_is_a_profile_knob():
+def test_the_cap_is_universal_not_per_model():
+    """The loop-shape is not a model quirk: any model can take the
+    memory addendum as the work. The cap is the default for every
+    profile — kit.glm-5.3 merely measured it first (six calls, a
+    fragment for an answer, 2026-09-08).
+
+    Threshold from the trace archive (2026-09-18, 33 sessions, 99
+    ts-gap-grouped turns): the highest number of memory writes any
+    recorded turn legitimately made is ONE (`remember` once in the
+    whole archive, `forget` zero). Every tool that legitimately
+    repeats — bash to 31/turn, task_create to 5 — is outside the
+    memory-write class. Two allowed, refused from the third on, has
+    zero false positives in the entire archive.
+    """
     assert get_profile("kit.glm-5.3").max_memory_writes_per_turn == 2
-    # Every other model is uncapped: nothing changes for a model that
-    # never had the problem.
+    # Not a GLM special case: every model carries the same default.
     for model in ("kit.deepseek-v4-flash", "kit.qwen3.5-397b-A17b",
-                  "sonnet", "azure.gpt-5.4"):
-        assert get_profile(model).max_memory_writes_per_turn == 0, model
+                  "sonnet", "azure.gpt-5.4", "totally-unknown-model"):
+        assert get_profile(model).max_memory_writes_per_turn == 2, model
+    assert ModelProfile().max_memory_writes_per_turn == 2
+    # 0 stays a valid opt-OUT for a user who wants no cap at all.
+    assert _COERCE["max_memory_writes_per_turn"] is int
 
 
 def test_only_writes_are_counted():
@@ -133,8 +149,30 @@ def test_the_refusal_says_what_to_do_instead():
     assert "2 fact" in refusal
 
 
-def test_an_uncapped_model_is_never_held_back():
+def test_every_other_model_is_capped_the_same_way():
+    """Not a model-specific special case: the detector is keyed on the
+    tool NAME alone (api_client._MEMORY_WRITE_TOOLS = remember/forget),
+    so a model that never had the problem carries the same guard.
+    Two go through, the third is refused, and the turn is NOT aborted
+    — the user still gets their answer.
+    """
     client, _ = _client("kit.deepseek-v4-flash", calls=6)
     results = _run(client)
     assert results, "no tool ran at all"
-    assert not any("memory write refused" in r for r in results), results
+    assert not any("refused" in r for r in results[:2]), results[:2]
+    assert any("memory write refused" in r for r in results), results
+    # The turn continues past the refusal rather than dying: a later
+    # round still produced a tool result.
+    assert len(results) >= 3, results
+
+
+def test_a_legitimate_repeater_is_untouched():
+    """bash_status polling a running job is the same tool, called over
+    and over with different round-trip timings — exactly the shape the
+    round-signature guard is blind to and this class must NOT cover.
+    Only memory WRITES are capped; nothing else in _MEMORY_WRITE_TOOLS
+    outside remember/forget is affected.
+    """
+    assert "bash_status" not in ac._MEMORY_WRITE_TOOLS
+    assert "bash" not in ac._MEMORY_WRITE_TOOLS
+    assert ac._MEMORY_WRITE_TOOLS == frozenset({"remember", "forget"})
