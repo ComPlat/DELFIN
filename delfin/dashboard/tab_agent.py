@@ -6965,6 +6965,32 @@ def create_tab(ctx):
         # so "watch the CI and tell me" meant nothing until somebody typed.
         # Only while no turn runs and the input box is empty: a draft is the
         # user's, and a running turn is handed the result between rounds.
+        def _finished_shells(seen: set) -> list:
+            """Background shells that finished since the last look.
+
+            Reported, not drained: the turn this wakes reads the output
+            through bash_output like any other, and an event consumed
+            here would be one the agent never sees.
+            """
+            out: list = []
+            try:
+                from delfin.agent import bash_jobs as _bj_wake
+                registry = _bj_wake.get_registry()
+                for job in registry.list_jobs(include_finished=True):
+                    code = job.poll()
+                    if code is None or job.job_id in seen:
+                        continue
+                    seen.add(job.job_id)
+                    out.append({
+                        "kind": "shell",
+                        "id": job.job_id,
+                        "label": str(getattr(job, "command", ""))[:80],
+                        "status": "ok" if code == 0 else f"exit {code}",
+                    })
+            except Exception:
+                return []
+            return out
+
         def _job_wake_tick():
             import threading as _threading_wake
             try:
@@ -6988,6 +7014,13 @@ def create_tab(ctx):
                     _done.extend(_bgv_wake.finished_background_agents(
                         state.setdefault("_woken_agents", set()),
                         session_id=_background_owner()))
+                    # A long shell started with bash_background ends the
+                    # same way a watched job does, and woke nobody: the
+                    # agent had to think of asking bash_status, and a run
+                    # started before a quiet night was simply never
+                    # looked at again (2026-09-18).
+                    _done.extend(_finished_shells(
+                        state.setdefault("_woken_shells", set())))
                     _prompt = _job_wake_prompt(_done)
                     if _prompt:
                         _send_on_its_own(_prompt)

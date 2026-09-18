@@ -239,3 +239,68 @@ def test_no_secret_survives_either_path():
                  'curl -H "Authorization: Bearer sk-live-1234" https://x',
                  'psql "password=sk-live-1234"']:
         assert "sk-live-1234" not in _redact(line)
+
+
+# -- the branch people actually use ---------------------------------------
+
+class _Keys:
+    """A terminal, supplied. Yields what was pressed, then nothing."""
+
+    def __init__(self, presses):
+        self._presses = list(presses)
+        self.asked = 0
+
+    def __call__(self, deadline):
+        self.asked += 1
+        return self._presses.pop(0) if self._presses else None
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        self.t += 0.5
+        return self.t
+
+
+def _confirm(**kw):
+    import io
+
+    from delfin.agent.cli_approve import Confirm
+
+    return Confirm(stdin=io.StringIO(""), stdout=io.StringIO(), **kw)
+
+
+def test_one_keypress_allows_it():
+    keys = _Keys(["y"])
+    c = _confirm(key_source=keys)
+    assert c.callback("bash", {"command": "ls"}, "$ ls") is True
+    assert keys.asked == 1, "one press, one ask"
+
+
+def test_one_keypress_denies_it():
+    assert _confirm(key_source=_Keys(["n"])).callback(
+        "bash", {"command": "ls"}, "$ ls") is False
+
+
+def test_a_key_that_means_nothing_is_ignored_and_it_waits():
+    keys = _Keys(["x", "\n", "y"])
+    assert _confirm(key_source=keys).callback(
+        "bash", {"command": "ls"}, "$ ls") is True
+    assert keys.asked == 3
+
+
+def test_the_window_expires_and_that_is_absence_not_refusal():
+    c = _confirm(timeout_s=2.0, clock=_Clock(), key_source=_Keys([]))
+    assert c.callback("bash", {"command": "ls"}, "$ ls") is False
+    assert c.last_timed_out is True, "absence, not a decision"
+
+
+def test_allow_for_this_session_stops_asking():
+    keys = _Keys(["s"])
+    c = _confirm(key_source=keys)
+    assert c.callback("bash", {"command": "ls"}, "$ ls") is True
+    asked_once = keys.asked
+    assert c.callback("bash", {"command": "ls -la"}, "$ ls -la") is True
+    assert keys.asked == asked_once, "the second one was not asked about"
