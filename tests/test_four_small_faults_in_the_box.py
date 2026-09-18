@@ -10,11 +10,11 @@ reading rather than by any test:
                        text instead of at its end the moment the box
                        scrolled
 
-  viewport's border    with no hint row, `rows[1:]` swept the BOTTOM
-                       border in as content and then appended it again:
-                       two "╰────╯" rows
+  viewport's rule      with no hint row, `rows[1:]` swept the BOTTOM
+                       rule in as content and then appended it again:
+                       two closing rules, one above the other
 
-  the narrow form      below MIN_WIDTH the box draws no frame, and the
+  the narrow form      below MIN_WIDTH the box draws no rules, and the
                        caller added the border's two columns anyway, so
                        the cursor stood two columns past the text. The
                        same row measured its cut in characters, which is
@@ -36,6 +36,18 @@ from delfin.agent import repl_box as rb
 HINT = "esc interrupt · /help"
 
 
+def _rule_rows(view, width: int = 40) -> list[int]:
+    """Indices of the rule rows in *view*: the top and bottom of the box.
+
+    The two rules are the same string, so a rule is found by matching it
+    whole rather than by a corner character. Not by ``hint_row`` either:
+    ``viewport`` copies that index from the view it windowed, so on a
+    windowed view it points into a picture that is no longer there.
+    """
+    rule = rb._HORIZONTAL * (width - 1)
+    return [i for i, r in enumerate(view.rows) if r == rule]
+
+
 # -- the window's cursor ----------------------------------------------------
 
 def test_a_scrolled_window_keeps_the_cursor_on_the_text():
@@ -44,11 +56,14 @@ def test_a_scrolled_window_keeps_the_cursor_on_the_text():
     row, col = view.cursor
     # The cursor's row must be the LAST content row of the window: that
     # is where the end of the text is.
-    content = [r for r in view.rows
-               if r.startswith(rb._VERTICAL) and "…" not in r]
+    # A content row has no border character to be recognised by any
+    # more, so it is named by position instead: everything between the
+    # two rules that is not a "…" marker.
+    rules = _rule_rows(view)
+    content = [i for i in range(rules[0] + 1, rules[-1])
+               if view.rows[i] != "…"]
     assert content, view.rows
-    last_content_index = len(view.rows) - 1 - list(
-        reversed(view.rows)).index(content[-1])
+    last_content_index = content[-1]          # index into view.rows
     assert row + 1 == last_content_index, (
         f"cursor row {row} is not the last content row "
         f"{last_content_index - 1}:\n" + "\n".join(view.rows))
@@ -59,19 +74,25 @@ def test_an_unscrolled_window_is_unchanged():
     assert rb.viewport(view, 6) == view
 
 
-# -- the window's borders ---------------------------------------------------
+# -- the window's rules -----------------------------------------------------
 
-def test_a_window_without_a_hint_has_one_bottom_border():
+# The two rules are the same string now, so "how many rows start with ╰"
+# has no answer: the count that carries the same meaning is WHERE the
+# rule rows are. Exactly two, the first and the last of the picture —
+# the duplicated closing rule showed up as a third, between them.
+
+def test_a_window_without_a_hint_has_one_closing_rule():
     text = "z" * 350
     view = rb.viewport(rb.render_box(text, len(text), 40, ""), 6)
-    bottoms = [r for r in view.rows if r.startswith("╰")]
-    assert len(bottoms) == 1, "\n".join(view.rows)
+    assert _rule_rows(view) == [0, len(view.rows) - 1], "\n".join(view.rows)
 
 
 def test_a_window_with_a_hint_still_has_one():
     text = "z" * 350
     view = rb.viewport(rb.render_box(text, len(text), 40, HINT), 6)
-    assert len([r for r in view.rows if r.startswith("╰")]) == 1
+    # With a hint the closing rule is second from the bottom; the hint
+    # sits under it.
+    assert _rule_rows(view) == [0, len(view.rows) - 2], "\n".join(view.rows)
     assert view.rows[-1].strip().startswith("esc")
 
 
@@ -82,8 +103,21 @@ def test_the_narrow_form_says_it_has_no_border():
     assert view.border is False, "the caller must not offset for a frame"
 
 
-def test_a_framed_box_says_it_has_one():
-    assert rb.render_box("hello", 5, 40, HINT).border is True
+def test_the_wide_form_reports_the_column_the_caller_can_use():
+    """Replaces "a framed box says it has one".
+
+    There is no framed form left: the wide form draws two rules and no
+    side borders, so `border` is False for it too and the flag no longer
+    tells the two forms apart. What it still has to do is the thing the
+    flag was for — tell the caller NOT to add a border's two columns,
+    because the reported column is measured from the start of the row
+    itself. So that is what is checked: the flag, and the column it
+    promises, against the row it indexes into.
+    """
+    view = rb.render_box("hello", 5, 40, HINT)
+    assert view.border is False, "the caller must not offset for a frame"
+    assert view.rows[1] == "> hello"
+    assert view.cursor == (0, rb.string_width("> hello"))
 
 
 def test_the_narrow_cursor_is_measured_in_columns():

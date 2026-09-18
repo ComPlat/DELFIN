@@ -732,6 +732,40 @@ def _launch_questions_answered(report) -> bool:
     return answer in ("y", "yes")
 
 
+#: The name at the top of a session. A box around a word, not a wordmark
+#: drawn out of half-blocks: block art is a different size in every
+#: terminal font and a smear in the ones that lack the glyphs, and it
+#: costs rows of the work that scrolls away. A name is read in a glance
+#: either way.
+_WORDMARK_TEXT = "DELFIN"
+
+#: Below this the box is wider than the screen, and a wrapped box reads
+#: as damage. The line under it says the same thing anyway.
+_WORDMARK_MIN_WIDTH = 20
+
+
+def _terminal_width(default: int = 80) -> int:
+    """Never raises: a banner is not worth a traceback."""
+    try:
+        import shutil as _sh
+        return int(_sh.get_terminal_size((default, 24)).columns)
+    except Exception:
+        return default
+
+
+def _wordmark(width: int) -> tuple[str, ...]:
+    """The name in a box, or nothing when it would not fit."""
+    if int(width or 0) < _WORDMARK_MIN_WIDTH:
+        return ()
+    inner = len(_WORDMARK_TEXT) + 2
+    return (
+        "╭" + "─" * inner + "╮",
+        "│ " + _WORDMARK_TEXT + " │",
+        "╰" + "─" * inner + "╯",
+        "",
+    )
+
+
 def _startup_banner(engine, report, workspace: Path,
                     why: str = "", isolation_note: str = "",
                     notes: tuple[str, ...] = ()) -> str:
@@ -765,7 +799,8 @@ def _startup_banner(engine, report, workspace: Path,
         # rather than as "this directory is not a repository".
         where = "not a git repository"
 
-    lines = [
+    lines = list(_wordmark(_terminal_width()))
+    lines += [
         f"delfin-agent · {provider}/{model} · {role_mode}",
         f"workspace  {_tilde(workspace)}  ({where})",
     ]

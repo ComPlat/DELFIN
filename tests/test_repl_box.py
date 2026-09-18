@@ -1,8 +1,12 @@
-"""The framed input box, as a table of cases.
+"""The input area between two rules, as a table of cases.
 
-Every row of the table is one layout question a framed input line has
-to answer, checked against a hand-drawn expectation. The renderer is
+Every row of the table is one layout question the input line has to
+answer, checked against a hand-drawn expectation. The renderer is
 pure — no terminal anywhere — so each case is just input in, rows out.
+
+There is no frame: a content row is the raw wrapped text, with no side
+borders and no padding, and it wraps at ``width - 1`` columns — the
+length of the rules above and below it.
 """
 
 import pytest
@@ -27,7 +31,9 @@ CASES = [
         # name, text, cursor, width, hint, expected content rows,
         # expected cursor (row, col)
         "empty", "", 0, 40, "",
-        [PROMPT.strip()],
+        # The row IS the prompt, trailing space and all: there is no
+        # padding to strip and the cursor sits in the column after it.
+        [PROMPT],
         (0, 2),
         id="empty",
     ),
@@ -45,15 +51,16 @@ CASES = [
     ),
     pytest.param(
         "wraps at the inner width",
+        # inner = width - 1 = 39: "> " plus 37 of the 39 a's fill row 0.
         "a" * 39, 39, 40, "",
-        ["> " + "a" * 34, "a" * 5],
-        (1, 5),
+        ["> " + "a" * 37, "a" * 2],
+        (1, 2),
         id="wrap",
     ),
     pytest.param(
         "cursor on the first wrapped row",
         "a" * 39, 10, 40, "",
-        ["> " + "a" * 34, "a" * 5],
+        ["> " + "a" * 37, "a" * 2],
         (0, 12),
         id="cursor-first-row",
     ),
@@ -65,19 +72,22 @@ CASES = [
         id="cjk",
     ),
     pytest.param(
-        "seventeen wide chars exactly fill the row",
-        "あ" * 17, 34, 40, "",
-        # inner = 36; "> " + 17 wide chars = 36 columns exactly.
-        ["> " + "あ" * 17],
-        (0, 36),
+        "nineteen wide chars exactly fill the row",
+        # Width 41, not 40: the case exists to check the EXACT fill, and
+        # "> " plus wide characters is always an even number of columns,
+        # so it can only land on an even inner width. inner = 40;
+        # "> " + 19 wide chars = 40 columns exactly.
+        "あ" * 19, 19, 41, "",
+        ["> " + "あ" * 19],
+        (0, 40),
         id="wide-exact-fill",
     ),
     pytest.param(
         "wide char straddling moves down whole",
-        "a" * 34 + "あ", 35, 40, "",
-        # inner=36, "> " + 34 a = 36 columns; the wide char cannot fit
-        # in 0 remaining columns and moves down.
-        ["> " + "a" * 34, "あ"],
+        "a" * 36 + "あ", 37, 40, "",
+        # inner=39, "> " + 36 a = 38 columns; the wide char needs two
+        # and one column is left, so it moves down whole.
+        ["> " + "a" * 36, "あ"],
         (1, 2),
         id="wide-straddle",
     ),
@@ -98,7 +108,7 @@ CASES = [
     pytest.param(
         "empty text, hint present",
         "", 0, 40, HINT,
-        [PROMPT.strip()],
+        [PROMPT],
         (0, 2),
         id="hint-empty-text",
     ),
@@ -111,33 +121,36 @@ def test_box_table(name, text, cursor, width, hint,
                    expected_content, expected_cursor):
     view = render_box(text, cursor, width, hint)
     content = view.rows[1:-1] if hint == "" else view.rows[1:-2]
-    # Content rows carry the frame; compare the inner text.
+    assert len(content) == len(expected_content), (name, content)
     for i, row in enumerate(content):
-        assert row.startswith("│ "), name
-        assert row.endswith(" │"), name
-        inner = row[2:-2]
-        # Strip padding for the comparison, but the measured width must
-        # be exact: the right border lines up because every inner row is
-        # padded to the same width.
-        assert string_width(inner.rstrip()) == string_width(
-            expected_content[i].rstrip()), (name, inner)
-        assert inner.rstrip() == expected_content[i].rstrip(), name
-        assert string_width(inner) == width - 4, (name, row)
+        # A content row is the raw wrapped text — no left border, no
+        # right border, no padding — so it must match the expectation
+        # CHARACTER for character. (The old form compared the two
+        # rstripped and then checked the padding separately, because the
+        # row was padded out to the right border; there is no padding to
+        # allow for now, and an exact match is what says so.)
+        assert row == expected_content[i], (name, row)
+        # What the padding used to buy — every row ending in the same
+        # column — the wrap width buys instead: no row is wider than the
+        # rules above and below it, so the terminal never wraps one.
+        assert string_width(row) <= width - 1, (name, row)
     assert view.cursor == expected_cursor, (name, view.cursor)
 
 
-# -- the frame -----------------------------------------------------------
+# -- the rules -----------------------------------------------------------
 
-def test_frame_rows_and_alignment():
+def test_rule_rows_and_alignment():
     view = render_box("hi", 2, 40, HINT)
-    assert view.rows[0] == "╭" + "─" * 38 + "╮"
-    assert view.rows[-2] == "╰" + "─" * 38 + "╯"
-    # Every bordered row is exactly the terminal width, so nothing
-    # wraps. (The hint row is deliberately shorter — it sits under the
-    # frame like the example, not inside it.)
+    rule = "─" * 39
+    assert view.rows[0] == rule
+    assert view.rows[-2] == rule
+    # Alignment used to mean a right border standing in one column on
+    # every row. With no right border the property that survives is the
+    # one the rules define: the two are identical and one column short
+    # of the terminal, so neither wraps, and no row between them runs
+    # past them. (The hint row sits under the lower rule, as before.)
     for row in view.rows[:view.hint_row or len(view.rows)]:
-        if row.startswith(("╭", "│", "╰")):
-            assert string_width(row) == 40, row
+        assert string_width(row) <= string_width(rule), row
 
 
 def test_hint_is_last_row_and_never_wraps():
@@ -175,9 +188,12 @@ def test_narrow_row_cursor_is_visible():
     assert view.cursor == (0, 9), view.cursor
 
 
-def test_at_min_width_has_a_frame():
+def test_at_min_width_the_rules_are_drawn():
+    # At exactly MIN_WIDTH the full form is still used, not the
+    # degenerate single row: a rule above, the text, a rule below.
     view = render_box("", 0, MIN_WIDTH)
-    assert view.rows[0].startswith("╭")
+    assert view.rows[0] == "─" * (MIN_WIDTH - 1)
+    assert view.rows[-1] == "─" * (MIN_WIDTH - 1)
     assert len(view.rows) == 3
 
 

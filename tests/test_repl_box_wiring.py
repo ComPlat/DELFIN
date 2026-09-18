@@ -1,4 +1,4 @@
-"""The wiring of the framed box into the idle prompt.
+"""The wiring of the input box into the idle prompt.
 
 Everything here runs without a terminal: the fallback contract (a pipe
 keeps the readline path), the history walk, and the key decoding of the

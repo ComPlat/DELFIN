@@ -1,37 +1,43 @@
-"""Pure rendering of the framed input area at the idle prompt.
+"""Pure rendering of the input area at the idle prompt.
 
 No terminal, no I/O, no cursor movement: in goes (text, cursor offset,
-width, hint), out comes a list of rows. Everything hard about a framed
-input line is layout, and layout is decidable without a terminal — which
-is the whole reason this module exists apart from ``repl.py``.
+width, hint), out comes a list of rows. Everything hard about an input
+line is layout, and layout is decidable without a terminal — which is
+the whole reason this module exists apart from ``repl.py``.
 
-The box:
+Two rules, and the text between them:
 
-    ╭────────────────────────────────────────────────────────╮
-    │ > the message being typed                              │
-    ╰────────────────────────────────────────────────────────╯
+    ─────────────────────────────────────────────────────────
+    > the message being typed
+    ─────────────────────────────────────────────────────────
       esc interrupt · shift+tab approval mode · /help
+
+It was a closed frame first. A frame has to defend its right edge on
+every keystroke and at every width, and three of the four faults found
+in the first week lived in exactly that: a border drawn from the new
+height while the old one stood, a bottom border counted as content, a
+cursor offset by a border that a narrow row did not draw. The rules say
+the same thing to the eye and give the text four more columns.
 
 Rules the renderer owns:
 
-* Wrapping. Text longer than one inner row wraps onto further rows; the
+* Wrapping. Text longer than one row wraps onto further rows; the
   cursor travels with it, and ``BoxView.cursor`` says where on the
-  screen it belongs, as (content-row index, column from the left
-  border), so the caller can move it without re-deriving the layout.
-* The right border. Every content row is padded to the full inner width
-  so the ``│`` on the right lines up with the corners — a ragged border
-  is the bug this module exists to prevent.
+  screen it belongs, as (content-row index, column from the row's
+  start), so the caller can move it without re-deriving the layout.
 * Double-width characters. CJK and other East Asian wide characters
-  occupy two columns; a wide char that would straddle the inner-width
-  edge moves down to the next row whole rather than being split,
-  because a terminal cannot put half of one in a column.
-* Width below the minimum. The frame alone costs 4 columns; below
-  ``MIN_WIDTH`` the box degenerates to a single unpadded row with the
-  END of the text kept, so nothing is silently dropped and the cursor
+  occupy two columns; a wide char that would straddle the edge moves
+  down to the next row whole rather than being split, because a
+  terminal cannot put half of one in a column.
+* Width below the minimum. Below ``MIN_WIDTH`` even the rules are not
+  worth their rows: the area degenerates to a single row with the END
+  of the text kept, so nothing is silently dropped and the cursor
   (where a person is typing) stays visible.
 * A hint that does not fit. The hint is truncated from the left with an
   ellipsis, keeping its END — the key names, which is what a hint is
   for. It never wraps and never steals a row from the text.
+* Nothing writes the last column. Every row is at most ``width - 1``
+  wide, so no terminal wraps a row of its own accord.
 """
 
 from __future__ import annotations
@@ -47,17 +53,15 @@ PROMPT = "> "
 #: Below this width the frame does not fit; a plain row is returned.
 MIN_WIDTH = 20
 
-_TOP_LEFT, _TOP_RIGHT = "╭", "╮"
 _BOTTOM_LEFT, _BOTTOM_RIGHT = "╰", "╯"
 _HORIZONTAL = "─"
-_VERTICAL = "│"
 
 
 def char_width(ch: str) -> int:
     """Columns *ch* occupies. Wide (CJK) and fullwidth characters are 2.
 
     Combining marks are 0 — they stack onto the character before them,
-    and counting one for each would push the right border out of line
+    and counting one for each would push the row past the rules
     exactly when the user types Vietnamese or Korean.
     """
     if unicodedata.combining(ch):
@@ -71,15 +75,6 @@ def char_width(ch: str) -> int:
 
 def string_width(text: str) -> int:
     return sum(char_width(ch) for ch in text)
-
-
-def _pad_to(text: str, width: int) -> str:
-    """Pad *text* to exactly *width* screen columns.
-
-    Padding uses the MEASURED width, not ``len`` — a row holding one
-    CJK character needs one space fewer, or the right border shifts.
-    """
-    return text + " " * max(0, width - string_width(text))
 
 
 def _wrap(text: str, inner: int) -> list[tuple[str, int]]:
@@ -164,16 +159,18 @@ def _narrow_row(text: str, cursor: int, width: int) -> BoxView:
 class BoxView:
     """The rendered box: rows plus where the cursor belongs.
 
-    ``rows`` is the full picture (top border, content rows, bottom
-    border, then the hint row when there is one). ``cursor`` is a
-    ``(row, column)`` into the CONTENT rows — row 0 is the first row
-    under the top border — with the column in screen columns measured
-    from just after the left border's padding. The caller renders the
-    rows and then places the cursor; it never re-derives the layout.
+    ``rows`` is the full picture (the opening rule, the content rows,
+    the closing rule, then the hint row when there is one). ``cursor``
+    is a ``(row, column)`` into the CONTENT rows — row 0 is the first
+    row under the opening rule — with the column in screen columns
+    measured from the start of that row. The caller renders the rows and
+    then places the cursor; it never re-derives the layout.
 
-    ``border`` is False for the degenerate narrow form, which draws no
-    frame at all: the caller offsets the cursor by the border width, and
-    doing that on a borderless row put it two columns past the text.
+    ``border`` says whether a row carries a frame the caller must step
+    over before placing the cursor. Both forms drawn today report False
+    — the rules are their own rows, and the content rows start at column
+    zero — and it is kept because the question is the caller's to ask,
+    not to assume.
     """
 
     __slots__ = ("rows", "cursor", "hint_row", "border")
@@ -252,26 +249,31 @@ def render_box(text: str, cursor: int, width: int, hint: str = "") -> BoxView:
     if width < MIN_WIDTH:
         return _narrow_row(text, cursor, width)
 
-    inner = width - 4
-    border = _TOP_LEFT + _HORIZONTAL * (width - 2) + _TOP_RIGHT
+    # Two rules, not a frame. A closed box has to defend its right edge
+    # on every keystroke and at every width, and it buys nothing the
+    # rules do not: the eye reads "this is where you type" from the line
+    # above and the line below. It also gives the text four more columns
+    # and removes the whole class of faults that lived in the borders.
+    inner = max(1, width - 1)
+    rule = _HORIZONTAL * inner
     # The prompt rides at the start of the wrapped stream; it is part
     # of row 0 and the cursor offset is measured through it.
     stream = PROMPT + text
     wrapped = _wrap(stream, inner)
 
-    rows: list[str] = [border]
+    rows: list[str] = [rule]
     cursor_pos = _cursor_position(wrapped, len(PROMPT) + cursor, inner)
-    for row_text, row_w in wrapped:
-        drawn = row_text.removesuffix("\n")
-        rows.append(_VERTICAL + " " + _pad_to(drawn, inner) + " "
-                    + _VERTICAL)
-    rows.append(_BOTTOM_LEFT + _HORIZONTAL * (width - 2) + _BOTTOM_RIGHT)
+    for row_text, _row_w in wrapped:
+        rows.append(row_text.removesuffix("\n"))
+    rows.append(rule)
 
     hint_row = None
     if hint:
-        rows.append("  " + _truncate_hint(hint, width - 4))
+        rows.append("  " + _truncate_hint(hint, inner - 2))
         hint_row = len(rows) - 1
-    return BoxView(rows, cursor_pos, hint_row)
+    # border=False: there is no left border to step over, so the caller
+    # places the cursor at the column this module reports.
+    return BoxView(rows, cursor_pos, hint_row, border=False)
 
 
 def viewport(view: BoxView, height: int) -> BoxView:
@@ -301,14 +303,11 @@ def viewport(view: BoxView, height: int) -> BoxView:
               len(content) - height)
     shown = content[top:top + height]
     rows = [view.rows[0]]
-    inner = string_width(shown[0]) - 4
     if top > 0:
-        rows.append(_VERTICAL + " " + _pad_to("…", inner) + " "
-                    + _VERTICAL)
+        rows.append("…")
     rows.extend(shown)
     if top + height < len(content):
-        rows.append(_VERTICAL + " " + _pad_to("…", inner) + " "
-                    + _VERTICAL)
+        rows.append("…")
     if view.hint_row is not None:
         rows.append(view.rows[view.hint_row - 1])   # bottom border
         rows.append(view.rows[view.hint_row])
@@ -319,4 +318,9 @@ def viewport(view: BoxView, height: int) -> BoxView:
     # sat one row high the moment the window scrolled — on a full line
     # of text rather than at its end.
     cursor = (cur_row - top + (1 if top > 0 else 0), view.cursor[1])
-    return BoxView(rows, cursor, view.hint_row, border=view.border)
+    # The hint sits at the end of the NEW picture, which is shorter than
+    # the one it was windowed from. Carrying the old index forward made
+    # view.rows[view.hint_row] point past the end -- unread today, and
+    # wrong the moment anything asks.
+    new_hint = (len(rows) - 1) if view.hint_row is not None else None
+    return BoxView(rows, cursor, new_hint, border=view.border)

@@ -1,4 +1,4 @@
-"""The framed prompt is drawn by escapes. So it is judged on a screen.
+"""The input area is drawn by escapes. So it is judged on a screen.
 
 The box was built and merged with no test that ever ran ``_draw``: the
 pure renderer had eleven cases, the wiring had eleven more, and between
@@ -13,7 +13,7 @@ lived in that gap, and every one of them destroys the user's transcript:
   the redraw mixed two      it walked DOWN by the old box's height and
   geometries                UP by the new one's, so a line that wrapped
                             ate one more transcript row and a line that
-                            unwrapped left a stray border
+                            unwrapped left a stray row of the old box
 
   the erase was sized       ``_clear_box`` built its view from the
   from the wrong box        decoder, which had already dropped its
@@ -33,6 +33,7 @@ import io
 import pytest
 
 from delfin.agent import repl as R
+from delfin.agent import repl_box as rb
 from delfin.agent import repl_keys as rk
 
 
@@ -150,6 +151,24 @@ TRANSCRIPT = ["answer line one", "answer line two", "answer line three",
               "answer line four", ""]
 
 
+def _box_rows_on(screen, typed: str) -> list[str]:
+    """The rows of *screen* that can only belong to the box.
+
+    The box draws no side borders any more, so there is no border
+    character to pick its rows out by. What identifies them is the rest
+    of what it draws: a rule, the prompt, the hint, or the character
+    being typed — none of which appears anywhere in TRANSCRIPT.
+    """
+    return [row for row in screen.text()
+            if row.strip()
+            and (set(row) == {rb._HORIZONTAL}
+                 or row.startswith(rb.PROMPT)
+                 # the hint keeps its END when it is truncated, so the
+                 # last word of _BOX_HINT identifies that row at any width
+                 or row.strip().endswith(R._BOX_HINT.rsplit(" ", 1)[-1])
+                 or typed in row)]
+
+
 # --- what the missing instrument shows -------------------------------------
 
 def test_the_first_box_does_not_paint_over_the_transcript(boxed):
@@ -171,21 +190,22 @@ def test_a_line_that_wraps_does_not_eat_another_row(boxed):
             f"wrapping ate {line!r}:\n" + "\n".join(shown))
 
 
-def test_a_line_that_unwraps_leaves_no_stray_border(boxed):
+def test_a_line_that_unwraps_leaves_no_stray_row(boxed):
     # grow to two content rows, then delete back to one
     keys = ["y" * 80] + ["\x7f"] * 60 + ["\r"]
     _text, screen = boxed(keys, width=40, transcript=list(TRANSCRIPT))
-    shown = [r for r in screen.text() if r.strip()]
-    tops = [r for r in shown if r.startswith("╭")]
-    assert len(tops) <= 1, "a border of the old box was left:\n" + "\n".join(shown)
+    # The old form counted rows opening with "╭"; a stray row of the
+    # shrunken box is now any row of the box still standing — rule,
+    # prompt or typed text — after the submit erased it.
+    assert not _box_rows_on(screen, "y"), (
+        "a row of the old box was left:\n" + "\n".join(screen.text()))
 
 
 def test_a_submitted_wrapped_line_leaves_nothing_behind(boxed):
     long = "z" * 80
     _text, screen = boxed([long, "\r"], width=40, transcript=list(TRANSCRIPT))
-    shown = [r for r in screen.text() if r.strip()]
-    assert not [r for r in shown if r.startswith(("╭", "╰", "│"))], (
-        "the box outlived its submit:\n" + "\n".join(shown))
+    assert not _box_rows_on(screen, "z"), (
+        "the box outlived its submit:\n" + "\n".join(screen.text()))
 
 
 def test_the_transcript_is_untouched_after_a_submit(boxed):
