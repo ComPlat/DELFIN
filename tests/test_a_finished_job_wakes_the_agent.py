@@ -67,7 +67,10 @@ def test_the_wake_message_names_what_finished_and_links_it():
         "ok": False, "description": f"CI for {_SHA} on main",
         "signatures": ["CI › tests (py3.11) › Run fast test suite"],
         "url": "https://github.com/ComPlat/DELFIN/actions/runs/7"}])
-    assert text.startswith("[watch]")
+    # "[watch" rather than "[watch]": the marker now carries who is
+    # speaking. A turn nobody typed arrives through the same input box as
+    # everything else, and unsaid it was read as the user asking.
+    assert text.startswith("[watch")
     assert "FAILURE" in text and "Run fast test suite" in text
     assert text.count("runs/7") == 1
     assert T._job_wake_prompt([]) == ""
