@@ -475,6 +475,45 @@ build_runtime_context() {
     [ -f "$DELFIN_DIR/README.md" ] && cp -a "$DELFIN_DIR/README.md" "$build_dir/"
 }
 
+venv_can_build_a_wheel() {
+    # The wheel is built with the job's own venv and without build isolation:
+    # a compute node has no dependable way to a package index, so pip cannot
+    # fetch what pyproject.toml asks for and uses what the venv has.  A venv
+    # made with "python -m venv" has setuptools 65 and no "wheel" -- and
+    # setuptools runs bdist_wheel by itself only from 70.1 on.  Without either,
+    # the build ends in "error: invalid command 'bdist_wheel'".
+    python - >/dev/null 2>&1 <<'PY'
+import sys
+from importlib.util import find_spec
+try:
+    from importlib.metadata import version
+    have = tuple(int(part) for part in version("setuptools").split(".")[:2])
+except Exception:
+    have = (0, 0)
+sys.exit(0 if find_spec("wheel") or have >= (70, 1) else 1)
+PY
+}
+
+build_runtime_wheel_into() {
+    local wheel_dir="$1"
+    local build_dir="$2"
+
+    if ! venv_can_build_a_wheel; then
+        echo "This venv cannot build a wheel yet; adding the build tools..."
+        python -m pip install --quiet --disable-pip-version-check \
+            "setuptools>=77" wheel || true
+    fi
+    venv_can_build_a_wheel || return 1
+
+    build_runtime_context "$build_dir"
+    python -m pip wheel \
+        --quiet \
+        --no-build-isolation \
+        --no-deps \
+        --wheel-dir "$wheel_dir" \
+        "$build_dir"
+}
+
 ensure_runtime_wheel() {
     local runtime_root=""
     local lock_fd_opened=0
@@ -510,20 +549,18 @@ ensure_runtime_wheel() {
     rm -rf "$tmp_build_dir" "$tmp_wheel_dir"
     mkdir -p "$tmp_build_dir" "$tmp_wheel_dir"
 
-    build_runtime_context "$tmp_build_dir"
-    python -m pip wheel \
-        --quiet \
-        --no-build-isolation \
-        --no-deps \
-        --wheel-dir "$tmp_wheel_dir" \
-        "$tmp_build_dir"
-
-    built_wheel="$(find "$tmp_wheel_dir" -maxdepth 1 -type f -name 'delfin_complat-*.whl' | sort | tail -n 1)"
+    built_wheel=""
+    if build_runtime_wheel_into "$tmp_wheel_dir" "$tmp_build_dir"; then
+        built_wheel="$(find "$tmp_wheel_dir" -maxdepth 1 -type f -name 'delfin_complat-*.whl' | sort | tail -n 1)"
+    fi
     if [ -z "$built_wheel" ] || [ ! -f "$built_wheel" ]; then
-        echo "ERROR: Failed to build runtime wheel for $RUNTIME_KEY"
+        # The cache only saves start-up time.  A calculation must not be lost
+        # over it, so the job runs from $DELFIN_DIR as it did before the cache.
+        echo "WARNING: no runtime wheel could be built for $RUNTIME_KEY; running from $DELFIN_DIR instead."
         rm -rf "$tmp_build_dir" "$tmp_wheel_dir"
         [ "$lock_fd_opened" -eq 1 ] && { flock -u 9; exec 9>&-; }
-        exit 1
+        RUNTIME_WHEEL=""
+        return 1
     fi
 
     mv "$built_wheel" "$runtime_root/"
@@ -542,7 +579,10 @@ install_cached_runtime_wheel() {
         return 0
     fi
 
-    ensure_runtime_wheel
+    if ! ensure_runtime_wheel; then
+        export DELFIN_RUNTIME_KEY="editable-home-fallback"
+        return 0
+    fi
     echo "Installing cached runtime wheel into local venv ($RUNTIME_KEY)..."
     "$VENV_LOCAL/bin/python" -m pip install \
         --quiet \

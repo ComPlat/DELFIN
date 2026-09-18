@@ -159,8 +159,12 @@ print_step "Schritt 4: DELFIN installieren"
 source "$VENV_NAME/bin/activate"
 print_success "Virtual Environment aktiviert"
 
+# Die Bau-Werkzeuge gehoeren dazu: ein Job baut sich auf dem Rechenknoten
+# ein Rad ohne Netz, und "python -m venv" bringt weder "wheel" noch ein
+# setuptools, das bdist_wheel selbst kann.
 echo "Upgrade pip..."
 pip install --upgrade pip -q
+pip install --upgrade "setuptools>=77" wheel -q
 
 echo "Installiere DELFIN im Development-Modus..."
 pip install -e . -q
