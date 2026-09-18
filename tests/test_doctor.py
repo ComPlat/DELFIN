@@ -429,12 +429,22 @@ def test_cli_doctor_survives_exploding_probes(monkeypatch, capsys):
 
 
 def _isolation_row(monkeypatch, mode, usable):
+    """``usable`` means THIS HOST CAN ISOLATE — all three mechanisms, not
+    bubblewrap alone.
+
+    It used to patch only ``_bwrap_functional``, from when the check asked
+    about nothing else. Left that way, "unusable" would still find the
+    real Landlock of the machine the suite runs on, and the cases below
+    would test whichever mechanism that machine happens to have.
+    """
     import delfin.agent.doctor as doc
     import delfin.user_settings as us
     monkeypatch.setattr(
         us, "load_settings", lambda: {"agent": {"bash_isolation": mode}})
     import delfin.agent.api_client as ac
     monkeypatch.setattr(ac, "_bwrap_functional", lambda: usable)
+    monkeypatch.setattr(ac, "_landlock_functional", lambda: False)
+    monkeypatch.setattr(ac, "_seatbelt_functional", lambda: False)
     return doc._check_bash_isolation({})[0]
 
 
@@ -444,8 +454,10 @@ def test_isolation_active_is_a_pass(monkeypatch):
 
 
 def test_isolation_configured_but_unusable_is_a_failure(monkeypatch):
+    """Unusable now means no mechanism at all — and then the command is
+    not run unisolated, it is refused, which is what the row must say."""
     row = _isolation_row(monkeypatch, "bwrap", False)
-    assert row["status"] == "FAIL" and "does not work here" in row["detail"]
+    assert row["status"] == "FAIL" and "refused" in row["detail"]
 
 
 def test_auto_mode_says_when_it_does_not_isolate(monkeypatch):
