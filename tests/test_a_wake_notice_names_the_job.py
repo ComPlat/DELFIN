@@ -113,14 +113,21 @@ def test_each_shell_wakes_once(registry):
 def test_the_producer_speaks_the_renderer_s_keys():
     """Structural, so a future edit to either side fails here rather than
     in somebody's session."""
+    # The producer moved into delfin.agent.job_wake, which the terminal
+    # reads too; the dashboard's closure delegates to it. The pair must
+    # still agree, and now there is only one pair to keep agreeing.
+    import inspect as _inspect
+    from delfin.agent import job_wake as _jw
     produced = {
         node.value
-        for node in ast.walk(ast.parse(_nested_source("_finished_shells")))
+        for node in ast.walk(ast.parse(
+            _inspect.getsource(_jw.finished_shells)))
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
     rendered = {
         node.args[0].value
-        for node in ast.walk(ast.parse(inspect.getsource(T._job_wake_prompt)))
+        for node in ast.walk(ast.parse(
+            _inspect.getsource(_jw.wake_prompt)))
         if isinstance(node, ast.Call)
         and getattr(node.func, "attr", "") == "get"
         and node.args and isinstance(node.args[0], ast.Constant)

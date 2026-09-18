@@ -310,33 +310,13 @@ _BACKGROUND_REFRESH_S = 10.0
 def _job_wake_prompt(done: list) -> str:
     """The message a finished watched job sends an idle agent; "" for none.
 
-    It says who is speaking. A turn nobody typed arrives through the input
-    box like anything else, so without a word to the contrary the model
-    reads it as the user asking — and answers the user for something the
-    user never said. Naming it as an event, and saying plainly that no one
-    typed it, costs one line and removes the misreading.
+    Kept as a name here because this module is where it was born and
+    where the tests reach for it; the words live in delfin.agent.job_wake,
+    which the terminal reads too. Two copies of this pair is how the
+    producer and the renderer came to disagree about their keys.
     """
-    lines = []
-    for ev in done or []:
-        line = f"- {ev.get('kind', 'job')} {ev.get('job_id')} [{ev.get('state', '?')}]"
-        if ev.get("description"):
-            line += f" {str(ev['description'])[:80]}"
-        if ev.get("signatures"):
-            line += " — " + ", ".join(str(s) for s in ev["signatures"])
-        if ev.get("degraded"):
-            line += f" — {ev['degraded']}"
-        if ev.get("url"):
-            line += f" — {ev['url']}"
-        lines.append(line)
-    if not lines:
-        return ""
-    return ("[watch — a system event, not the user] A job you were "
-            "watching has finished:\n"
-            + "\n".join(lines)
-            + "\n\nNobody typed this; the job watcher put it here because "
-              "you asked to be told. Say what the result means for the "
-              "work it was waiting on. If it failed, name the cause from "
-              "the evidence before proposing a fix.")
+    from delfin.agent.job_wake import wake_prompt
+    return wake_prompt(done)
 
 
 def _longest_pending_tool(inflight: dict, now: float):
@@ -6977,42 +6957,12 @@ def create_tab(ctx):
         def _finished_shells(seen: set) -> list:
             """Background shells that finished since the last look.
 
-            Reported, not drained: the turn this wakes reads the output
-            through bash_output like any other, and an event consumed
-            here would be one the agent never sees.
+            Delegates: the terminal's idle prompt reports the same
+            events, and a second implementation of this pair is exactly
+            what produced six wake-ups reading "shell None [?]".
             """
-            out: list = []
-            try:
-                from delfin.agent import bash_jobs as _bj_wake
-                registry = _bj_wake.get_registry()
-                for job in registry.list_jobs(include_finished=True):
-                    code = job.poll()
-                    if code is None or job.job_id in seen:
-                        continue
-                    seen.add(job.job_id)
-                    # The keys are _job_wake_prompt's, not this function's
-                    # own: it renders job_id, state and description, and
-                    # an event that spelled them id/status/label produced
-                    # six lines reading "- shell None [?]" in a live
-                    # session -- a wake-up that names nothing it woke for.
-                    if code == 0:
-                        _state = "ok"
-                    elif code < 0:
-                        # Not the command's own status: something outside
-                        # ended it. "exit -9" reads as an ordinary failure.
-                        _state = f"killed by {_bj_wake._signal_name(-code)}"
-                    else:
-                        _state = f"exit {code}"
-                    out.append({
-                        "kind": "shell",
-                        "job_id": job.job_id,
-                        "state": _state,
-                        "ok": code == 0,
-                        "description": str(getattr(job, "command", ""))[:80],
-                    })
-            except Exception:
-                return []
-            return out
+            from delfin.agent.job_wake import finished_shells
+            return finished_shells(seen)
 
         def _job_wake_tick():
             import threading as _threading_wake
