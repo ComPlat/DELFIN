@@ -459,8 +459,7 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     if mode == "bwrap":
         if held_by:
             return [{"check": "bash isolation", "status": "PASS",
-                     "detail": f"{held_by} holds every command to the "
-                               "workspace"}]
+                     "detail": f"{held_by} active for every command"}]
         # Not a silent downgrade: with nothing able to hold the command,
         # the product refuses to run it rather than run it unisolated.
         return [{"check": "bash isolation", "status": "FAIL",
