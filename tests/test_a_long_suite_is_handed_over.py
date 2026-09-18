@@ -31,11 +31,29 @@ from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
 
 
 @pytest.fixture()
-def run_tests(tmp_path):
+def run_tests(tmp_path, monkeypatch):
+    """The handover is what is under test, not the suite it hands over.
+
+    Without a stubbed registry these cases START A REAL BACKGROUND
+    PYTEST RUN — which succeeded on the machine they were written on and
+    failed in CI, where the error came back in place of the answer and
+    the assertion read None. A test that spawns a suite to check a
+    message is measuring the wrong thing either way.
+    """
     perms = KitToolPermissions(workspace=tmp_path)
     perms.mode = "bypassPermissions"
     eng = _DocToolExecutor.__new__(_DocToolExecutor)
     eng._permissions = perms
+
+    class _Job:
+        job_id = "01e5b151"
+
+    class _Registry:
+        def start(self, command, **kw):
+            return _Job()
+
+    from delfin.agent import bash_jobs as bj
+    monkeypatch.setattr(bj, "get_registry", lambda: _Registry())
 
     def _call(**args):
         return json.loads(eng._execute_run_tests(dict(args), perms)), perms
