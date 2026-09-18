@@ -94,6 +94,33 @@ def test_a_killed_job_says_it_was_killed(bash):
     assert "killed by SIGKILL" in out
 
 
+def test_the_peek_stays_small_and_says_how_to_see_more(bash):
+    """A running suite writes thousands of lines. Pasting them into the
+    chat buries the four facts above them, and the count says more about
+    the run than the lines do."""
+    out = bash("01e5b151", [_Job("01e5b151")],
+               output={"stdout": "\n".join(f"line {i}" for i in range(900)),
+                       "stderr": "", "stdout_total_lines": 900})
+    body = [ln for ln in out.splitlines() if ln.startswith("    line ")]
+    assert len(body) == 5, f"{len(body)} lines pasted into the chat"
+    assert "last 5 of 900 lines" in out
+    assert "/bash 01e5b151 200   for more of it" in out
+
+
+def test_asking_for_more_gives_more(bash):
+    out = bash("01e5b151 50", [_Job("01e5b151")],
+               output={"stdout": "\n".join(f"line {i}" for i in range(900)),
+                       "stderr": "", "stdout_total_lines": 900})
+    assert len([ln for ln in out.splitlines()
+                if ln.startswith("    line ")]) == 50
+
+
+def test_a_short_output_needs_no_invitation(bash):
+    out = bash("01e5b151", [_Job("01e5b151")],
+               output={"stdout": "done", "stderr": "", "stdout_total_lines": 1})
+    assert "for more of it" not in out
+
+
 def test_a_job_that_wrote_nothing_says_so(bash):
     out = bash("01e5b151", [_Job("01e5b151")],
                output={"stdout": "", "stderr": ""})
