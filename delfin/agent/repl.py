@@ -1665,6 +1665,37 @@ class TerminalAgent:
         except Exception:
             return ""
 
+    #: How often the line under the prompt re-reads what is running. The
+    #: box is redrawn on every keystroke; asking the registries that
+    #: often would be a poll, and this is a glance.
+    _BACKGROUND_STATUS_EVERY_S = 3.0
+
+    def _background_status(self) -> str:
+        """What is still out, in one line, for under the input area.
+
+        The dashboard has had a panel for this; the terminal had `/bash`,
+        which you had to think of asking — so a suite started twenty
+        minutes ago was remembered or it was not. Same collector as the
+        panel, so the two cannot drift.
+
+        Cached between glances, and never raises: a decoration that can
+        take the prompt with it is not a decoration.
+        """
+        import time as _time
+
+        now = _time.monotonic()
+        if now - getattr(self, "_bg_status_at", 0.0) < \
+                self._BACKGROUND_STATUS_EVERY_S:
+            return getattr(self, "_bg_status", "")
+        self._bg_status_at = now
+        try:
+            from . import background_view as _bgv
+            view = _bgv.collect(self.opts.cwd)
+            self._bg_status = _bgv.status_line(view)
+        except Exception:
+            self._bg_status = ""
+        return self._bg_status
+
     def read_boxed(self) -> str:
         """One message through the framed box, on a raw terminal only.
 
@@ -1717,7 +1748,8 @@ class TerminalAgent:
         def _view(decoder) -> rb.BoxView:
             return rb.viewport(
                 rb.render_box(decoder.buffer, decoder.cursor,
-                              self.transcript.width, _BOX_HINT),
+                              self.transcript.width, _BOX_HINT,
+                              status=self._background_status()),
                 _BOX_MAX_CONTENT_ROWS)
 
         # Where the last _draw left the terminal: rows below the

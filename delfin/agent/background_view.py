@@ -173,6 +173,44 @@ def rows(view: dict, *, now: Optional[float] = None) -> list[dict]:
     return out
 
 
+def status_line(view: dict, *, now: Optional[float] = None,
+                limit: int = 3) -> str:
+    """One line naming what is still out, for under the input area.
+
+    The dashboard has a panel for this; the terminal had `/bash`, which
+    you had to think of asking. A run started twenty minutes ago was
+    therefore remembered or it was not. Same data, same collector — a
+    second reading of it would drift from the panel the way a producer
+    and a renderer did elsewhere in this codebase.
+
+    Empty when nothing is out, so the line costs a row only while it
+    says something.
+    """
+    try:
+        items = rows(view, now=now)
+    except Exception:
+        return ""
+    live = [r for r in items
+            if r.get("group") in ("shells", "agents", "watches")
+            and "running" in str(r.get("detail", "")).lower()
+            or r.get("group") == "agents"]
+    if not live:
+        return ""
+    parts = []
+    for r in live[:max(1, int(limit))]:
+        label = str(r.get("label") or r.get("id") or "?")[:28]
+        # "running · 6m 40s · reading repl.py" -> the duration. How long
+        # it has been out is the fact a glance is looking for; what it is
+        # doing right now belongs in the panel that has room for it.
+        bits = [b.strip() for b in str(r.get("detail") or "").split("·")]
+        detail = bits[1] if len(bits) > 1 else (bits[0] if bits else "")
+        parts.append(f"{label} {detail}".strip())
+    more = len(live) - len(parts)
+    if more > 0:
+        parts.append(f"+{more} more")
+    return "⚙ " + " · ".join(parts)
+
+
 def row_html(row: dict) -> str:
     return ("<div style='display:flex; gap:8px; align-items:baseline; "
             "font-size:11px; color:#546e7a;'>"
