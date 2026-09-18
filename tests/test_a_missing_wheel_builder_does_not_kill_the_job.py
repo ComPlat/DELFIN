@@ -205,3 +205,23 @@ def test_changing_the_code_changes_the_key(tmp_path):
     tree_with_more = _a_checkout_without_git(tmp_path / "second")
     (tree_with_more / "delfin" / "recalc_control.py").write_text("y = 1\n", encoding="utf-8")
     assert _runtime_key_for(tree_with_more) != _runtime_key_for(_a_checkout_without_git(tmp_path / "third"))
+
+
+def test_nothing_shipped_turns_the_wheel_cache_on_by_itself():
+    """It is opt-in, and an example script that sets it is not opt-in.
+
+    The cache saves start-up time and depends on what a site's venv holds.
+    It was switched on for every site once, and calculations died; whoever
+    wants it asks for it, in one place, their own environment.
+    """
+    from delfin.dashboard.backend_slurm import SlurmJobBackend
+
+    assert SlurmJobBackend._GENERIC_ENV.get("DELFIN_RUNTIME_CACHE") != "1"
+    for profile, env in SlurmJobBackend._PROFILE_ENV.items():
+        assert env.get("DELFIN_RUNTIME_CACHE") != "1", profile
+
+    for script in (REPO / "examples").rglob("*.sh"):
+        for line in script.read_text(encoding="utf-8").splitlines():
+            if "DELFIN_RUNTIME_CACHE" in line and not line.lstrip().startswith("#"):
+                assert ":-1}" not in line and "=1" not in line, \
+                    f"{script.relative_to(REPO)} turns the wheel cache on: {line.strip()}"
