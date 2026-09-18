@@ -2243,6 +2243,46 @@ class AgentEngine:
             session_id=str(getattr(self, "session_id", "") or ""),
         )
 
+    def _remind_of_waiting_approvals(self) -> None:
+        """Tell the turn about an approval that expired while nobody was there.
+
+        An expired confirmation is not a refusal, and the model is told
+        so — "carry on, do not retry now". What nothing told it was when
+        the user came back. The request goes to the USER's inbox
+        (/attention); the agent hears nothing, so a task whose only
+        remaining step needs that approval simply stops.
+
+        Measured on 2026-09-18: one session lost the last quarter of its
+        work to exactly this, twice — the window is 300 s and the user
+        was away from the keyboard with four sessions running.
+
+        Once per request, never twice, so a user who is still away is
+        not nagged every turn. Never raises.
+        """
+        try:
+            from . import attention as _att
+            pending = _att.list_pending("confirm_pending") or []
+        except Exception:
+            return
+        seen = self.__dict__.setdefault("_reminded_approvals", set())
+        fresh = [e for e in pending if str(e.get("id") or "") not in seen]
+        if not fresh:
+            return
+        for e in fresh:
+            seen.add(str(e.get("id") or ""))
+        names = ", ".join(str(e.get("title") or "an action")[:80]
+                          for e in fresh[:3])
+        note = (
+            f"[approval] {len(fresh)} request(s) are still waiting for the "
+            f"user, from a window that expired while they were away: "
+            f"{names}. That was absence, not a refusal. If your task still "
+            f"needs it, ask again now — they are here. If it does not, say "
+            f"so and carry on.")
+        try:
+            self.client.push_run_note(note)
+        except Exception:
+            pass
+
     def stream_response(
         self,
         user_message: str,
@@ -2317,6 +2357,8 @@ class AgentEngine:
                     sink(text)
                 except Exception:
                     pass
+
+        self._remind_of_waiting_approvals()
 
         # New user turn: re-arm the one-correction budget — unless this IS
         # a correction turn, which must not re-arm itself. Two shapes of
