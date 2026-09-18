@@ -421,6 +421,20 @@ RUNTIME_WHEEL=""
 
 if [ "${DELFIN_RUNTIME_CACHE:-0}" = "1" ] && [ -n "$DELFIN_DIR" ]; then
 
+compute_runtime_tree_hash() {
+    # What the wheel would be built from, by name, size and modification time.
+    # Reading every file would be surer and costs a walk of the whole package
+    # on a network HOME at the start of every job; this notices an edit, a new
+    # file and a removed one, which is what a changed checkout looks like.
+    local listing=""
+    listing="$( {
+        find "$DELFIN_DIR/delfin" -type f -name '*.py' -printf '%P %s %T@\n' 2>/dev/null
+        find "$DELFIN_DIR" -maxdepth 1 -name 'pyproject.toml' -printf '%P %s %T@\n' 2>/dev/null
+    } | LC_ALL=C sort )"
+    [ -n "$listing" ] || return 0
+    printf '%s' "$listing" | sha256sum | awk '{print $1}'
+}
+
 compute_runtime_dirty_hash() {
     {
         git -C "$DELFIN_DIR" diff --binary HEAD -- delfin pyproject.toml README.md 2>/dev/null || true
@@ -437,6 +451,7 @@ detect_runtime_key() {
     local head=""
     local tree_state=""
     local dirty_hash=""
+    local tree_hash=""
 
     if [ -d "$DELFIN_DIR/.git" ] && command -v git >/dev/null 2>&1; then
         head="$(git -C "$DELFIN_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
@@ -456,7 +471,16 @@ detect_runtime_key() {
         fi
     fi
 
-    RUNTIME_KEY="tree-default"
+    # No git here -- not installed, or not on the compute node.  The key still
+    # has to follow the code: it names the cached wheel, and a key that stays
+    # the same while DELFIN changes means every job keeps starting the version
+    # that happened to be built first.
+    tree_hash="$(compute_runtime_tree_hash)"
+    if [ -n "$tree_hash" ]; then
+        RUNTIME_KEY="tree-${tree_hash}"
+    else
+        RUNTIME_KEY="tree-default"
+    fi
     RUNTIME_BUILD_MODE="live-repo"
 }
 
