@@ -403,6 +403,32 @@ def _check_benchmark(ctx: dict) -> list[dict]:
     )]
 
 
+def _isolation_mechanism() -> str:
+    """Which mechanism can hold a command on THIS host, or "".
+
+    The product tries three, in this order: bubblewrap, then Landlock on
+    a Linux kernel new enough for it, then Seatbelt on macOS. Asking only
+    about the first one is how a host that is protected gets told to
+    install bubblewrap, and how a host running under Landlock reads as
+    unprotected. Order and names follow ``_bash_isolation_argv``, so the
+    answer is what will actually run rather than what is installed.
+    """
+    try:
+        from delfin.agent.api_client import (
+            _bwrap_functional, _landlock_functional, _seatbelt_functional)
+    except Exception:
+        return ""
+    for name, probe in (("bwrap", _bwrap_functional),
+                        ("Landlock", _landlock_functional),
+                        ("Seatbelt", _seatbelt_functional)):
+        try:
+            if probe():
+                return name
+        except Exception:
+            continue
+    return ""
+
+
 def _check_bash_isolation(ctx: dict) -> list[dict]:
     """Report whether shell commands run in a filesystem namespace.
 
@@ -411,6 +437,10 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     Only namespace isolation contains that, and it is opt-in because it
     can disturb cluster workflows. Surfacing the state (and whether the
     machine even supports it) lets the user decide instead of assuming.
+
+    Which mechanism does it is part of the state: a cluster login node
+    rarely allows the user namespace bubblewrap needs, and the same
+    kernel usually offers Landlock, which the product uses in its place.
     """
     mode = "auto"
     try:
@@ -419,22 +449,27 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
                    .get("bash_isolation", "auto") or "auto").strip().lower()
     except Exception:
         pass
-    try:
-        from delfin.agent.api_client import _bwrap_functional
-        usable = bool(_bwrap_functional())
-    except Exception:
-        usable = False
+    held_by = _isolation_mechanism()
 
     fix = ("set agent.bash_isolation = \"bwrap\" to contain shell writes "
            "in every permission mode")
+    no_mechanism = ("install bubblewrap, or run on a kernel with Landlock "
+                    "(Linux 5.13+); the write-target gate stays active "
+                    "either way")
     if mode == "bwrap":
-        if usable:
+        if held_by:
             return [{"check": "bash isolation", "status": "PASS",
-                     "detail": "bwrap namespace active for every command"}]
+                     "detail": f"{held_by} holds every command to the "
+                               "workspace"}]
+        # Not a silent downgrade: with nothing able to hold the command,
+        # the product refuses to run it rather than run it unisolated.
         return [{"check": "bash isolation", "status": "FAIL",
-                 "detail": "configured as bwrap but bwrap does not work here",
-                 "fix": "install bwrap, or set agent.bash_isolation "
-                        "= \"auto\" to fall back to the write gate"}]
+                 "detail": "isolation is switched on and nothing here can "
+                           "provide it — shell commands are refused",
+                 "fix": "install bubblewrap, or run on a kernel with "
+                        "Landlock (Linux 5.13+); or set "
+                        "agent.bash_isolation = \"auto\" to fall back to "
+                        "the write gate"}]
     if mode == "off":
         return [{"check": "bash isolation", "status": "WARN",
                  "detail": "explicitly off — only the write-target gate "
@@ -442,11 +477,11 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
                  "fix": fix}]
     # "auto": isolated only in the unattended permission mode.
     detail = ("auto — isolated in bypassPermissions only"
-              + ("" if usable else "; bwrap unusable here, so never isolated"))
+              + (f", by {held_by} there" if held_by
+                 else "; nothing here can isolate, so never isolated"))
     return [{"check": "bash isolation", "status": "WARN",
-             "detail": detail, "fix": fix if usable else
-             "install bwrap for real containment; the write-target gate "
-             "stays active either way"}]
+             "detail": detail,
+             "fix": fix if held_by else no_mechanism}]
 
 
 def _check_document_backends(ctx: dict) -> list[dict]:
