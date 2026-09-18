@@ -6995,10 +6995,18 @@ def create_tab(ctx):
                     # an event that spelled them id/status/label produced
                     # six lines reading "- shell None [?]" in a live
                     # session -- a wake-up that names nothing it woke for.
+                    if code == 0:
+                        _state = "ok"
+                    elif code < 0:
+                        # Not the command's own status: something outside
+                        # ended it. "exit -9" reads as an ordinary failure.
+                        _state = f"killed by {_bj_wake._signal_name(-code)}"
+                    else:
+                        _state = f"exit {code}"
                     out.append({
                         "kind": "shell",
                         "job_id": job.job_id,
-                        "state": "ok" if code == 0 else f"exit {code}",
+                        "state": _state,
                         "ok": code == 0,
                         "description": str(getattr(job, "command", ""))[:80],
                     })
