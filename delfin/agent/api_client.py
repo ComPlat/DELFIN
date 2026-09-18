@@ -969,6 +969,51 @@ _BASH_NO_DEST_OPTS: dict[str, frozenset[str]] = {
 }
 
 
+# `git -C <repo>` says WHICH repository to work in. Whether that is a write
+# is decided by the SUBCOMMAND, not by -C: `git -C /elsewhere commit` writes
+# there, `git -C /elsewhere log` reads. Read as a destination for every
+# subcommand, a plain read of another checkout was refused as a write to it
+# — measured 2026-09-18, a session running `git -C <repo> log --oneline -3`
+# was told the path "is in a READ-ONLY location", which is true and beside
+# the point, and lost the call.
+#
+# Fail closed: only these mute the option, and every one of them is
+# read-only with no flag that changes that. `branch`, `tag`, `remote`,
+# `config`, `stash` and `worktree` are deliberately absent — each has a
+# spelling that writes.
+_GIT_READ_ONLY_SUBCOMMANDS: frozenset[str] = frozenset({
+    "log", "show", "status", "diff", "diff-tree", "diff-index", "blame",
+    "shortlog", "describe", "reflog", "for-each-ref", "rev-parse",
+    "rev-list", "ls-files", "ls-tree", "cat-file", "grep", "whatchanged",
+    "merge-base", "show-ref", "name-rev", "count-objects", "check-ignore",
+    "version",
+})
+
+#: git's own options that carry a value, so the subcommand is not mistaken
+#: for one of their arguments.
+_GIT_GLOBAL_OPTS_WITH_VALUE: frozenset[str] = frozenset({
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
+})
+
+
+def _git_subcommand(rest: list[str]) -> str:
+    """The subcommand in a git argument list, or "" when there is none."""
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if not arg.startswith("-"):
+            return arg
+        if "=" not in arg and arg in _GIT_GLOBAL_OPTS_WITH_VALUE:
+            i += 2          # the option, and the value it carries
+        else:
+            i += 1
+    return ""
+
+
+def _git_reads_only(rest: list[str]) -> bool:
+    return _git_subcommand(rest) in _GIT_READ_ONLY_SUBCOMMANDS
+
+
 def _dest_opt_applies(name: str, opt: str) -> bool:
     """Whether *opt* names a destination for command *name*."""
     if opt.startswith("--"):
@@ -1698,6 +1743,12 @@ def _bash_write_targets(cmd: str) -> list[str]:
             # something else -- see _BASH_NO_DEST_OPTS.
             for i, a in enumerate(rest):
                 if a in _BASH_DEST_OPTS and i + 1 < len(rest):
+                    # Only -C, and only for a git that reads: a write
+                    # option on a reading subcommand still counts, so
+                    # `git diff --output=/etc/x` remains a target.
+                    if (a == "-C" and name == "git"
+                            and _git_reads_only(rest)):
+                        continue
                     if _dest_opt_applies(name, a):
                         _add(rest[i + 1])
                 elif "=" in a and a.split("=", 1)[0] in _BASH_DEST_OPTS:
