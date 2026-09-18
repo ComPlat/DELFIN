@@ -30,12 +30,13 @@ import atexit
 import importlib.util
 import os
 import sys
+import termios
 from dataclasses import dataclass, field
 
 __all__ = [
     "KeyEvent", "KeyDecoder", "RawMode", "raw_mode_supported",
     "INTERRUPT", "SUBMIT", "STEER", "CYCLE_MODE", "EXPAND", "REDRAW",
-    "TASKS", "EDIT",
+    "TASKS", "EDIT", "HISTORY_PREV", "HISTORY_NEXT", "COMPLETE", "EOF",
 ]
 
 INTERRUPT = "interrupt"      # Esc — end this turn
@@ -47,6 +48,14 @@ REDRAW = "redraw"            # Ctrl+L
 TASKS = "tasks"              # Ctrl+T — show or hide the open task list
 EDIT = "edit"                # the buffer changed; redraw the input line
 
+# Keys that only matter at the idle prompt. During a turn Up/Down/Tab
+# are swallowed (the turn owns no history and no completion), which is
+# also what the pump loop does with any event it does not recognise.
+HISTORY_PREV = "history_prev"    # Up
+HISTORY_NEXT = "history_next"    # Down
+COMPLETE = "complete"            # Tab — the caller runs its completer
+EOF = "eof"                      # Ctrl+D on an empty line
+
 _ESC = "\x1b"
 _SHIFT_TAB = "\x1b[Z"
 # Cursor movement. Both spellings of each: applications-cursor mode sends
@@ -54,6 +63,9 @@ _SHIFT_TAB = "\x1b[Z"
 # not something this layer gets to decide.
 _LEFT = ("\x1b[D", "\x1bOD")
 _RIGHT = ("\x1b[C", "\x1bOC")
+_UP = ("\x1b[A", "\x1bOA")
+_DOWN = ("\x1b[B", "\x1bOB")
+_TAB = "\t"
 _HOME = ("\x1b[H", "\x1bOH", "\x1b[1~")
 _END = ("\x1b[F", "\x1bOF", "\x1b[4~")
 # Alt+B / Alt+F — one word left, one word right.
@@ -192,6 +204,10 @@ class KeyDecoder:
                     elif seq in _RIGHT:
                         self.cursor = min(len(self.buffer), self.cursor + 1)
                         events.append(KeyEvent(EDIT, text=self.buffer))
+                    elif seq in _UP:
+                        events.append(KeyEvent(HISTORY_PREV))
+                    elif seq in _DOWN:
+                        events.append(KeyEvent(HISTORY_NEXT))
                     elif seq in _HOME:
                         self.cursor = 0
                         events.append(KeyEvent(EDIT, text=self.buffer))
@@ -201,6 +217,21 @@ class KeyDecoder:
                     i = j + 1
                     continue
                 events.append(KeyEvent(INTERRUPT))
+                i += 1
+                continue
+
+            if ch == _TAB:
+                events.append(KeyEvent(COMPLETE))
+                i += 1
+                continue
+
+            if ch == "\x04":                    # Ctrl+D
+                if not self.buffer:
+                    events.append(KeyEvent(EOF))
+                # On a non-empty line Ctrl+D deletes nothing here: the
+                # readline prompt it mirrors deletes forward, but this
+                # decoder has no delete-forward key, and pretending to
+                # would be worse than ignoring it.
                 i += 1
                 continue
 
@@ -417,12 +448,25 @@ class KeyDecoder:
 
 
 def raw_mode_supported(stream=None) -> bool:
-    """POSIX terminal, or nothing. Elsewhere the loop stays line-based."""
+    """POSIX terminal, or nothing. Elsewhere the loop stays line-based.
+
+    isatty() alone is not proof: a StringIO with isatty() patched to
+    True (how the tests fake a terminal) would pass, and the raw loop
+    would then wait on an fd that never delivers. The check that
+    matters is whether termios can actually drive the stream's fd.
+    """
     stream = stream if stream is not None else sys.stdin
     if any(importlib.util.find_spec(m) is None for m in ("termios", "tty")):
         return False
     try:
-        return bool(stream.isatty())
+        if not stream.isatty():
+            return False
+        fd = stream.fileno()
+    except Exception:
+        return False
+    try:
+        termios.tcgetattr(fd)
+        return True
     except Exception:
         return False
 

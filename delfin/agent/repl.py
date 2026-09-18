@@ -1356,7 +1356,14 @@ class TerminalAgent:
                     pending = self.queued.pop(0)
                 if not pending:
                     try:
-                        pending = read_block(self._read_line).strip()
+                        from .repl_keys import raw_mode_supported
+                        if raw_mode_supported(self._stdin):
+                            # The framed box, only on a raw terminal —
+                            # a pipe or a redirect keeps the readline
+                            # path exactly as it was.
+                            pending = self.read_boxed().strip()
+                        else:
+                            pending = read_block(self._read_line).strip()
                     except EOFError:
                         self.transcript.chrome("")
                         return 0
@@ -1562,3 +1569,330 @@ class TerminalAgent:
             state_paths.secure_file(path)
         except Exception:
             pass
+
+
+
+    # -- the framed idle prompt ------------------------------------------
+    def read_boxed(self) -> str:
+        """One message through the framed box, on a raw terminal only.
+
+        Everything the readline prompt did is preserved: history (the
+        same readline list, via _BoxHistory), completion (the SAME
+        completer _install_completer put on readline), multi-line
+        blocks and backslash continuations (read_block's grammar,
+        applied to what the box collected), bracketed paste (the key
+        layer's), and the Ctrl+C-twice-to-leave ladder.
+
+        A pipe, a redirect or a terminal without termios never reaches
+        here: run() falls back to the readline path when
+        raw_mode_supported() is false. The turn path (_pump,
+        _repaint_bottom) is untouched — a turn that cannot be
+        interrupted is worse than a plain prompt.
+
+        Drawing discipline: the box is always the LAST thing on the
+        screen, and it is redrawn row by row with \\r\\x1b[K, so no row
+        ever wraps and no absolute cursor addressing is needed — the
+        cursor is placed by writing the rows and then moving UP and
+        across, relative to where the writes left it. That is why this
+        works without asking the terminal where it is.
+        """
+        from . import repl_keys as rk
+        from . import repl_box as rb
+
+        # Bound to the live RawMode inside read_boxed's `with` — a
+        # detached instance has no fd and read_ready would return ""
+        # forever, which is exactly the hang a first run would show.
+        read_raw: list = []          # [callable] once the context opens
+
+        def _read_chunk() -> str:
+            # RawMode.read_ready: one chunk or "" after a short timeout,
+            # with paste-marker stitching already in the decoder.
+            return read_raw[0](0.1) if read_raw else ""
+
+        class _BlankDecoder:
+            """A decoder-shaped blank, so _clear_box can size a box."""
+            buffer = ""
+            cursor = 0
+
+
+        def _view(decoder) -> rb.BoxView:
+            return rb.viewport(
+                rb.render_box(decoder.buffer, decoder.cursor,
+                              self.transcript.width, _BOX_HINT),
+                _BOX_MAX_CONTENT_ROWS)
+
+        # Where the last _draw left the terminal: rows below the
+        # cursor to the box's end, and what was last painted. Drawing
+        # is relative — the cursor is walked DOWN to the box's end and
+        # UP to its top border, never addressed absolutely — because
+        # the box sits wherever the transcript ended, and asking the
+        # terminal where that is needs a cursor-position reply this
+        # loop has no reader for.
+        _state = {"below": 0, "painted": None}
+
+        def _draw(decoder, *, force: bool = False) -> None:
+            view = _view(decoder)
+            if not force and _state["painted"] == (view.rows,
+                                                    view.cursor):
+                return                      # nothing changed on screen
+            _state["painted"] = (view.rows, view.cursor)
+            out = []
+            if _state["below"]:
+                out.append(f"\x1b[{_state['below']}B")   # to box end
+            out.append(f"\x1b[{len(view.rows) - 1}A\r")  # to top border
+            for i, row in enumerate(view.rows):
+                if i:
+                    out.append("\r\n")
+                out.append("\x1b[K" + row)
+            # Rows written: the cursor sits after the LAST row. Put it
+            # on the cursor's row and column: up by the rows below it,
+            # then across (col 1 is the border; +2 lands after "│ ";
+            # clamped so a cursor on a border column cannot wrap).
+            crow, ccol = view.cursor
+            below = len(view.rows) - 1 - (crow + 1)     # minus top border
+            _state["below"] = below
+            col = min(ccol + 2, max(1, self.transcript.width - 1))
+            if below:
+                out.append(f"\x1b[{below}A")
+            out.append(f"\r\x1b[{col}C")
+            self.err.write("".join(out))
+            self._flush_err()
+
+        def _clear_box(decoder) -> None:
+            """Erase the box and leave the cursor one row BELOW where
+            its end was — the transcript continues from there."""
+            view = _view(decoder)
+            n = len(view.rows)
+            out = []
+            if _state["below"]:
+                out.append(f"\x1b[{_state['below']}B")   # to box end
+            out.append(f"\x1b[{n - 1}A\r")              # to top border
+            out.append(("\x1b[K\r\n") * (n - 1) + "\x1b[K\r\n")
+            _state["below"] = 0
+            _state["painted"] = None
+            self.err.write("".join(out))
+            self._flush_err()
+
+        def _word_before(text: str) -> str:
+            i = len(text)
+            while i > 0 and text[i - 1] not in " \t\n":
+                i -= 1
+            return text[i:]
+
+        def _complete_word(text: str) -> str:
+            """The box's Tab: the same completer readline's Tab runs.
+
+            Delegates to the readline module's completer — the one
+            _install_completer installed — so the two prompts cannot
+            drift. A unique hit completes in place; several list on the
+            transcript, exactly as readline does.
+            """
+            try:
+                import readline
+                fn = readline.get_completer()
+            except Exception:
+                return text
+            if fn is None:
+                return text
+            word = _word_before(text)
+            hits: list[str] = []
+            for state in range(200):            # a runaway completer stops
+                hit = fn(word, state)
+                if hit is None:
+                    break
+                hits.append(hit)
+            if not hits:
+                return text
+            if len(hits) == 1:
+                return text[:len(text) - len(word)] + hits[0]
+            _clear_box(_BlankDecoder())
+            for hit in hits[:20]:
+                self.transcript.chrome(self.transcript.theme.dim(hit))
+            return text
+
+        def _collect() -> str:
+            """read_block's grammar over what the box collects."""
+            decoder = rk.KeyDecoder()
+            history = _BoxHistory()
+            while True:
+                _draw(decoder)          # dedup: only real change paints
+                chunk = _read_chunk()
+                if not chunk:
+                    if self._width_dirty:
+                        self._width_dirty = False
+                        self.transcript.refresh_width()
+                        # rows differ under the new width, so the next
+                        # _draw's own comparison repaints them
+                    continue
+                submit_text = None
+                for event in decoder.feed(chunk):
+                    kind = event.kind
+                    if kind == rk.SUBMIT:
+                        submit_text = event.text
+                    elif kind == rk.HISTORY_PREV:
+                        older = history.up(decoder.buffer)
+                        if older is not None:
+                            decoder.buffer = older
+                            decoder.cursor = len(older)
+                    elif kind == rk.HISTORY_NEXT:
+                        newer = history.down()
+                        if newer is not None:
+                            decoder.buffer = newer
+                            decoder.cursor = len(newer)
+                    elif kind == rk.COMPLETE:
+                        done = _complete_word(decoder.buffer)
+                        if done != decoder.buffer:
+                            decoder.buffer = done
+                            decoder.cursor = len(done)
+                    elif kind == rk.CYCLE_MODE:
+                        _clear_box(decoder)
+                        self._cycle_mode()
+                    elif kind == rk.REDRAW:
+                        self.transcript.refresh_width()
+                    elif kind == rk.EOF:
+                        raise EOFError
+                    elif kind == rk.INTERRUPT:
+                        # Esc at the idle prompt clears the line, like
+                        # readline's Ctrl+U — not the session.
+                        decoder.buffer = ""
+                        decoder.cursor = 0
+
+                if submit_text is None:
+                    if self._width_dirty:
+                        self._width_dirty = False
+                        self.transcript.refresh_width()
+                    continue
+                _clear_box(decoder)
+                return submit_text
+
+        with rk.RawMode(self._stdin) as raw:
+            read_raw.append(raw.read_ready)
+            text = _collect()
+            if text.strip() == _BLOCK_FENCE:
+                block: list[str] = []
+                decoder = rk.KeyDecoder()
+                while True:
+                    _draw(decoder)
+                    chunk = _read_chunk()
+                    if not chunk:
+                        continue
+                    done = False
+                    for event in decoder.feed(chunk):
+                        if event.kind == rk.SUBMIT:
+                            _clear_box(decoder)
+                            if event.text.strip() == _BLOCK_FENCE:
+                                done = True
+                            else:
+                                block.append(event.text)
+                        elif event.kind == rk.EDIT:
+                            pass
+                        elif event.kind == rk.EOF:
+                            raise EOFError
+                    if done:
+                        return "\n".join(block)
+            # Backslash continuation, read_block's other half.
+            parts = [text]
+            while parts[-1].endswith("\\"):
+                parts[-1] = parts[-1][:-1]
+                parts.append(_collect())
+            result = "".join(parts) if len(parts) > 1 else parts[0]
+            _BoxHistory().add(result)
+            return result
+
+# ---------------------------------------------------------------------------
+# The framed idle prompt
+# ---------------------------------------------------------------------------
+
+_BOX_HINT = "esc interrupt · shift+tab approval mode · /help"
+#: Content rows the box shows at most. Anything taller is a viewport
+#: with … markers (repl_box.viewport): a 300-line paste into a 24-row
+#: window would otherwise push the frame off the top of the screen.
+_BOX_MAX_CONTENT_ROWS = 6
+
+
+class _BoxHistory:
+    """History for the box, backed by the SAME store readline uses.
+
+    The readline module's in-memory list is the single source of truth:
+    the readline path (pipes, non-terminals) and the box path (raw
+    terminal) must recall the same lines, and a second file would drift
+    within one session. Only the box path can WRITE through here, so
+    the readline path keeps its own save logic untouched.
+    """
+
+    def __init__(self):
+        self._loaded = False
+        self._index = -1          # -1: browsing; >= 0: walking the list
+        self._draft = ""
+
+    def _ensure(self) -> bool:
+        """readline present; the file is ALREADY loaded.
+
+        ``TerminalAgent.run`` calls ``_load_history`` before the first
+        prompt on every path, so re-reading the file here would load
+        every line twice and double the file on save. All this class
+        needs is the module; the in-memory list is shared state.
+        """
+        if self._loaded:
+            return True
+        try:
+            import readline  # noqa: F401
+        except ImportError:
+            return False
+        self._loaded = True
+        return True
+
+    def up(self, draft: str) -> str | None:
+        """One step back; None when there is nothing older."""
+        if not self._ensure():
+            return None
+        try:
+            import readline
+            n = readline.get_current_history_length()
+        except Exception:
+            return None
+        if n == 0:
+            return None
+        if self._index < 0:
+            self._index = n - 1
+            self._draft = draft
+        elif self._index > 0:
+            self._index -= 1
+        else:
+            return None
+        try:
+            import readline
+            return readline.get_history_item(self._index + 1)
+        except Exception:
+            return None
+
+    def down(self) -> str | None:
+        """One step forward; the draft when the walk runs off the end."""
+        if self._index < 0:
+            return None
+        self._index += 1
+        try:
+            import readline
+            n = readline.get_current_history_length()
+        except Exception:
+            n = 0
+        if self._index >= n:
+            self._index = -1
+            return self._draft
+        try:
+            import readline
+            return readline.get_history_item(self._index + 1)
+        except Exception:
+            return None
+
+    def add(self, text: str) -> None:
+        """Same store, same order, as the readline path's add_history."""
+        if not text:
+            return
+        try:
+            import readline
+            readline.add_history(text)
+        except Exception:
+            pass
+        self._index = -1
+        self._draft = ""
