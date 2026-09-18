@@ -644,6 +644,45 @@ def _forward_filtered_stderr(stream) -> None:
         pass
 
 
+#: Set on the child so the re-exec happens once, not for ever.
+_TMUX_MARKER = "DELFIN_VOILA_UNDER_TMUX"
+
+#: The tmux session a --keep dashboard lives in.
+TMUX_SESSION = "delfin"
+
+
+def _reexec_under_tmux(argv) -> "int | None":
+    """Start this command again inside tmux. Returns an exit code, or None.
+
+    None means "carry on here": already inside tmux, already re-executed,
+    or no tmux on this machine -- in which case it says so rather than
+    pretending the dashboard will survive a closed terminal.
+    """
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    if os.environ.get("TMUX") or os.environ.get(_TMUX_MARKER):
+        return None
+    if not _shutil.which("tmux"):
+        print("--keep asked for a session that survives this terminal, and "
+              "tmux is not installed here. Running in the foreground "
+              "instead: closing this terminal ends the dashboard.",
+              file=sys.stderr)
+        return None
+    inner = [sys.argv[0]] + list(argv if argv is not None else sys.argv[1:])
+    env = dict(os.environ, **{_TMUX_MARKER: "1"})
+    # -A: attach to a session of this name if it exists, create otherwise.
+    # The dashboard keeps the terminal it is given; detaching is Ctrl-b d.
+    try:
+        proc = _subprocess.run(["tmux", "new", "-A", "-s", TMUX_SESSION, "--",
+                                *inner], env=env)
+    except OSError as exc:
+        print(f"--keep could not start tmux ({exc}); running here instead.",
+              file=sys.stderr)
+        return None
+    return int(proc.returncode or 0)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="delfin-voila",
@@ -726,7 +765,24 @@ def main(argv=None):
             "Equivalent to setting the DELFIN_RESUME_SESSION env var."
         ),
     )
+    parser.add_argument(
+        "--keep",
+        action="store_true",
+        help=(
+            "Survive a closed terminal: start inside a tmux session named "
+            "'delfin' (reusing one if it is there) and arm 'Keep session' "
+            "for every session this dashboard opens, so a dropped "
+            "connection costs nothing. Prints how to come back."
+        ),
+    )
     args = parser.parse_args(argv)
+    if getattr(args, "keep", False):
+        _rc = _reexec_under_tmux(argv)
+        if _rc is not None:
+            return _rc
+        # Inside tmux now (or tmux was unavailable and we said so): the
+        # sessions this dashboard opens arm themselves.
+        os.environ["DELFIN_KEEP_SESSIONS"] = "1"
     # This process carries the user's environment, which may hold an
     # exported provider key; the commands the dashboard runs are processes
     # of the same user. Unreadable to them, and said once if a key is there.
