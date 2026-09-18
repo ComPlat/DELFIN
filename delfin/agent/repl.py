@@ -1131,21 +1131,37 @@ class TerminalAgent:
             return False
 
     def _set_bottom(self, text: str) -> None:
+        """The bottom zone: a rule, and the line under it.
+
+        Two rows, so the place you type keeps its shape while a turn
+        runs. It used to be one bare row, and the input area simply
+        vanished for the length of the turn — which is the half of the
+        session a user most wants to know they can still reach.
+
+        The rule is the same one the idle prompt draws, for the same
+        reason: one vocabulary, top and bottom, turn or no turn.
+        """
         if text == self._bottom:
             return
         self._bottom = text
         if not self._can_redraw():
             return
-        self.err.write("\r\x1b[K" + text)
+        rule = "─" * max(1, self.transcript.width - 1)
+        self.err.write("\r\x1b[K" + rule + "\r\n\x1b[K" + text)
         self._flush_err()
 
     def _clear_bottom(self) -> None:
+        """Erase both rows and leave the cursor where the rule began.
+
+        The transcript continues from there, so a line rendered next
+        lands on the rule's row rather than below a rule nobody erased.
+        """
         if not self._bottom:
             return
         self._bottom = ""
         if not self._can_redraw():
             return
-        self.err.write("\r\x1b[K")
+        self.err.write("\r\x1b[K\x1b[1A\r\x1b[K")
         self._flush_err()
 
     def _draw_input_line(self, text: str) -> None:
