@@ -2367,6 +2367,10 @@ def cmd_where(args: argparse.Namespace) -> int:
     """Say where the dashboard is and how to walk back into it."""
     from . import where as _where
 
+    flags = [flag for flag in ("--attach", "--ssh-config", "--write")
+             if getattr(args, flag[2:].replace("-", "_"), False)]
+    if flags:
+        return _where.main(flags)
     print(_where.format_text(_where.dashboard(), _where.sessions()))
     return 0
 
@@ -2943,6 +2947,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Where the dashboard runs and how to get back into it: node, "
              "tmux session, port, and a link per kept session",
     )
+    where_p.add_argument("--attach", action="store_true",
+                         help="Walk into the tmux session the note names "
+                              "(ssh + port forward when it runs elsewhere)")
+    where_p.add_argument("--ssh-config", action="store_true",
+                         help="Print a ready ssh config entry for it")
+    where_p.add_argument("--write", action="store_true",
+                         help="With --ssh-config: append the entry instead "
+                              "of printing (never overwrites)")
     where_p.set_defaults(func=cmd_where)
 
     # sessions — what ran here before, without starting anything
