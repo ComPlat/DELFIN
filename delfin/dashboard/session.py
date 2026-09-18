@@ -431,6 +431,12 @@ def announce_failure(name: str, reason: str) -> None:
     print(line)
 
 
+def _keep_by_default() -> bool:
+    """Whether new sessions arm themselves (set by ``--keep``)."""
+    return os.environ.get("DELFIN_KEEP_SESSIONS", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def build_status_strip():
     """The control that arms the opt-in, and shows it while it is armed.
 
@@ -447,8 +453,13 @@ def build_status_strip():
 
     css = widgets.HTML(_STRIP_CSS)
     note = widgets.HTML(_strip_html(False, "", ""))
+    # `delfin-voila --keep` says the dashboard is meant to outlive the
+    # terminal that started it, so its sessions start armed instead of
+    # waiting for somebody to remember the switch in each window. The
+    # switch still owns the state: turning it off here disarms as always.
+    _armed = _keep_by_default()
     toggle = widgets.ToggleButton(
-        value=False,
+        value=_armed,
         description="Keep session",
         tooltip=(
             "Keep the session running after the browser closes. The agent "
@@ -490,6 +501,14 @@ def build_status_strip():
             announce(name)
 
     toggle.observe(_on_toggle, names="value")
+    if _armed:
+        # The observer fires on a CHANGE; a control that starts armed
+        # never changed, so the record the server reads would be missing
+        # and the session would die with its window despite the switch.
+        try:
+            _on_toggle({"name": "value", "new": True})
+        except Exception:
+            pass
     strip = widgets.HBox(
         [css, toggle, note],
         layout=widgets.Layout(align_items="center", gap="8px",
