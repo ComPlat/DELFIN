@@ -231,6 +231,15 @@ _OUTPUT_HEAD_DEFAULT = 60            # lines kept from head
 _OUTPUT_TAIL_DEFAULT = 200           # lines kept from tail
 _KILL_GRACE_S = 3.0                  # SIGTERM → SIGKILL gap
 
+
+def _signal_name(num: int) -> str:
+    """"SIGKILL" for 9, and the number back when the platform has no name
+    for it. Never raises: this decorates an error path."""
+    try:
+        return signal.Signals(int(num)).name
+    except (ValueError, TypeError):
+        return f"signal {num}"
+
 # --- Persistent registry (crash-safe re-attach + completion events) ------
 _REGISTRY_DIRNAME = ".delfin"        # per-workspace state directory
 _REGISTRY_FILENAME = "bash_jobs.json"
@@ -329,6 +338,22 @@ class BashJob:
             "stdout_path": str(self.stdout_path),
             "stderr_path": str(self.stderr_path),
         }
+        if rc is not None and rc < 0:
+            # A negative code is POSIX shorthand for "killed by signal
+            # |rc|", not a status the command chose. Left as a bare -9 it
+            # is read as an ordinary failure of the work: a session spent
+            # a turn reasoning its way to "something killed it" and still
+            # filed the conclusion as a guess (2026-09-18, two full test
+            # suites killed on a shared login node).
+            status["killed_by_signal"] = -rc
+            status["signal_name"] = _signal_name(-rc)
+            status["note"] = (
+                f"killed by {_signal_name(-rc)} ({-rc}) — this is not the "
+                "command's own exit status and says nothing about its "
+                "work. Something outside it ended it: out of memory, a "
+                "node or scheduler watchdog on a shared machine, or a "
+                "kill from elsewhere. Check the log for where it stops "
+                "and the machine for why before changing the command.")
         if rc is not None and self.children_running():
             status["children_running"] = True
             status["note"] = (
