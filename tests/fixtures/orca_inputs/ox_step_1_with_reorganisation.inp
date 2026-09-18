@@ -1,0 +1,32 @@
+! PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(water) OPT FREQ PModel
+%maxcore 2000
+%pal nprocs 8 end
+%scf maxiter 125 end
+%moinp "input_red_step_1_OCCUPIER.gbw"
+%scf
+  BrokenSym 1,1
+end
+%freq
+  Temp 298.15
+end
+* xyz -1 2
+Co 0.000000 0.000000 0.000000   NewGTO "def2-TZVP" end
+O 2.100000 0.000000 0.000000   NewGTO "def2-TZVP" end
+O -2.400000 0.000000 0.000000   NewGTO "def2-TZVP" end
+N 0.000000 2.050000 0.000000   NewGTO "def2-TZVP" end
+C 3.050000 0.000000 0.000000
+H 3.500000 0.950000 0.000000
+*
+
+$new_job
+! PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(water)
+%base "E_n_cation"
+%pal nprocs 8 end
+%maxcore 2000
+%scf maxiter 125 end
+
+%basis
+  NewGTO Co "def2-TZVP" end
+end
+
+* xyzfile 0 1 ox_step_1_with_reorganisation.xyz

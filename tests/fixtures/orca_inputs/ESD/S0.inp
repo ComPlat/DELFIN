@@ -1,0 +1,27 @@
+! PBE0 RKS def2-SVP D4 RIJCOSX def2/J CPCM(water) OPT FREQ
+%base "S0"
+%pal nprocs 8 end
+%maxcore 2000
+
+* xyz 0 1
+C 0.000000 0.000000 -0.529000
+O 0.000000 0.000000 0.677000
+H 0.000000 0.937000 -1.117000
+H 0.000000 -0.937000 -1.117000
+*
+
+$new_job
+! PBE0 RKS def2-SVP D4 RIJCOSX def2/J CPCM(water)
+%base "S0_TDDFT"
+%pal nprocs 8 end
+%maxcore 2000
+%tddft
+  nroots 15
+  maxdim 10
+  tda true
+  maxiter 500
+  triplets true
+  dosoc false
+end
+
+* xyzfile 0 1 S0.xyz
