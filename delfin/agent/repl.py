@@ -1573,6 +1573,48 @@ class TerminalAgent:
 
 
     # -- the framed idle prompt ------------------------------------------
+    #: How often the idle prompt looks for work that finished. The read
+    #: loop ticks ten times a second; asking the job registry that often
+    #: would be a poll, and this is a look.
+    _WAKE_EVERY_S = 5.0
+
+    def _wake_text(self, typed: str) -> str:
+        """The message a job that finished hands an idle prompt, or "".
+
+        Nothing in the terminal used to wake an agent. A background job
+        that finished DURING a turn was reported at the end of it, but
+        one that finished afterwards sat there: the drain is a pull, and
+        the only thing that pulls is a turn, and the only thing that
+        starts a turn is the user typing. A run started before a quiet
+        night was simply never looked at again (reported 2026-09-18).
+
+        Two guards, both the dashboard's:
+
+        * never while something is typed — a wake-up must not take a
+          half-written message away;
+        * never when the user has turned it off
+          (``agent.wake_on_job_end``).
+
+        Never raises: a wake-up that throws would take the prompt with
+        it, and the prompt is the thing the user is standing at.
+        """
+        import time as _time
+
+        if typed.strip():
+            return ""
+        now = _time.monotonic()
+        if now - getattr(self, "_wake_last_look", 0.0) < self._WAKE_EVERY_S:
+            return ""
+        self._wake_last_look = now
+        try:
+            from . import job_wake
+            if not job_wake.wake_enabled():
+                return ""
+            seen = self.__dict__.setdefault("_wake_seen", set())
+            return job_wake.wake_prompt(job_wake.finished_shells(seen))
+        except Exception:
+            return ""
+
     def read_boxed(self) -> str:
         """One message through the framed box, on a raw terminal only.
 
@@ -1755,6 +1797,10 @@ class TerminalAgent:
                         self.transcript.refresh_width()
                         # rows differ under the new width, so the next
                         # _draw's own comparison repaints them
+                    woke = self._wake_text(decoder.buffer)
+                    if woke:
+                        _clear_box()
+                        return woke
                     continue
                 submit_text = None
                 for event in decoder.feed(chunk):
