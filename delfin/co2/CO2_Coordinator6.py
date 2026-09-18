@@ -1511,7 +1511,7 @@ def main():
         return value
 
     # Orientation at fixed distance (defaults to 5.0 Å)
-    orientation_distance = args.get("orientation_distance", 5.0)
+    orientation_distance = args.get("orientation_distance", 2.0)
     rot_step_deg = args.get("rot_step_deg", 10)     # 0,10,20,...,180
     rot_range_deg = args.get("rot_range_deg", 180)
 
