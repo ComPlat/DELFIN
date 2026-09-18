@@ -8805,6 +8805,20 @@ def create_tab(ctx):
         role = msg["role"]
         if role == "user":
             content = _md_to_html(msg["content"])
+            if msg.get("origin") == "event":
+                # A turn nobody typed: a finished job, a scheduled run, a
+                # message from another session. It starts through the
+                # input box like anything else, so in the transcript it
+                # was indistinguishable from something the user wrote —
+                # and a user asked why the dashboard was quoting them.
+                #
+                # The ROLE stays "user" on purpose: /retry re-sends the
+                # last user message, the citation check reads the user's
+                # words for the paths a task names, and the turn counter
+                # counts them. A different role would quietly change all
+                # three. Only the rendering moves.
+                return ('<div class="delfin-chat-msg delfin-chat-system">'
+                        f'{content}</div>')
             return (
                 f'<div class="delfin-chat-msg delfin-chat-user">{content}</div>'
             )
@@ -15751,7 +15765,10 @@ def create_tab(ctx):
                         user_text = _bi
         elif _first_token in _SLASH_PREFIXES:
             input_textarea.value = ""
-            _append_chat_message("user", user_text)
+            _append_chat_message(
+                "user", user_text,
+                **({"origin": "event"} if state.get("_on_its_own")
+                   else {}))
             _handle_slash_command(user_text)
             return
 
@@ -15785,7 +15802,10 @@ def create_tab(ctx):
                         "and stop; do not search for it.]")
             if _seng is not None and hasattr(_seng, "steer") and _seng.steer(_steer_text):
                 input_textarea.value = ""
-                _append_chat_message("user", user_text)
+                _append_chat_message(
+                    "user", user_text,
+                    **({"origin": "event"} if state.get("_on_its_own")
+                       else {}))
                 _append_system_message(
                     "💬 Sent to the running agent — it picks this up on its next "
                     "step (mid-run steering).")
@@ -15809,7 +15829,10 @@ def create_tab(ctx):
             else:
                 state["message_queue"].append(user_text)
                 input_textarea.value = ""
-                _append_chat_message("user", user_text)
+                _append_chat_message(
+                    "user", user_text,
+                    **({"origin": "event"} if state.get("_on_its_own")
+                       else {}))
                 _append_system_message(
                     f"\U0001f4e8 Queued — agent will receive this after finishing. "
                     f"Type /stop to interrupt."
@@ -15944,7 +15967,10 @@ def create_tab(ctx):
             _update_pipeline_display(engine)
 
         input_textarea.value = ""
-        _append_chat_message("user", user_text)
+        _append_chat_message(
+            "user", user_text,
+            **({"origin": "event"} if state.get("_on_its_own")
+               else {}))
 
         # Fire UserPromptSubmit hooks. Block reasons surface as a system
         # message and abort the send; non-blocking hook output (stderr,
