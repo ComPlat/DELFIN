@@ -66,6 +66,10 @@ class KitConfirmBroker:
         # True when the most recent decision was a TIMEOUT (user absent),
         # not an actual click on deny. Consumers distinguish the two.
         self.last_timed_out = False
+        #: The session this broker belongs to, stamped on every request
+        #: it parks in the inbox. Set by whoever builds the broker; "" is
+        #: honest about not knowing rather than claiming someone else's.
+        self.session_id = ""
         # When a window expired with nobody answering, the moment it did.
         # Until it is cleared (a real decision) or a window has passed,
         # further requests are not made to wait again: the answer would be
@@ -130,6 +134,13 @@ class KitConfirmBroker:
                 "confirm_pending",
                 title=f"Confirmation required: {tool_name}",
                 detail=(preview or summary or "")[:400],
+                # Whose request this was. Without it a later session
+                # reads every stale entry in the inbox as its own: a
+                # fresh CLI session that had only said "Hallo" was told
+                # seven requests were waiting for it, and spent a turn
+                # working out that they belonged to a session that had
+                # ended hours before (2026-09-18).
+                session_id=str(getattr(self, "session_id", "") or ""),
             )
         except Exception:
             attn_id = ""

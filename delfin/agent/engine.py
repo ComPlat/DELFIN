@@ -2243,6 +2243,11 @@ class AgentEngine:
             session_id=str(getattr(self, "session_id", "") or ""),
         )
 
+    #: An unattributed request older than this is somebody else's. Long
+    #: enough for a user who stepped away from their own session, short
+    #: enough that yesterday's inbox is not read as today's work.
+    _APPROVAL_REMINDER_MAX_AGE_S = 3600.0
+
     def _remind_of_waiting_approvals(self) -> None:
         """Tell the turn about an approval that expired while nobody was there.
 
@@ -2264,6 +2269,27 @@ class AgentEngine:
             pending = _att.list_pending("confirm_pending") or []
         except Exception:
             return
+        # Only what this turn could act on. An entry names its session
+        # since 2026-09-18; one that predates that says nothing, so it
+        # counts only while it is recent. Without this a fresh session
+        # that had said "Hallo" was told seven requests were waiting for
+        # it, all from sessions that had ended hours before, and spent a
+        # turn working that out.
+        import time as _time
+        mine = str(getattr(self, "session_id", "") or "")
+        now = _time.time()
+
+        def _is_mine(ev: dict) -> bool:
+            owner = str(ev.get("session_id") or "")
+            if owner:
+                return owner == mine
+            try:
+                age = now - float(ev.get("created_at") or 0.0)
+            except (TypeError, ValueError):
+                return False
+            return 0 <= age <= self._APPROVAL_REMINDER_MAX_AGE_S
+
+        pending = [e for e in pending if _is_mine(e)]
         seen = self.__dict__.setdefault("_reminded_approvals", set())
         fresh = [e for e in pending if str(e.get("id") or "") not in seen]
         if not fresh:
