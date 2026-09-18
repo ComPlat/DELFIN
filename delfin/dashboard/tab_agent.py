@@ -308,7 +308,14 @@ _BACKGROUND_REFRESH_S = 10.0
 
 
 def _job_wake_prompt(done: list) -> str:
-    """The message a finished watched job sends an idle agent; "" for none."""
+    """The message a finished watched job sends an idle agent; "" for none.
+
+    It says who is speaking. A turn nobody typed arrives through the input
+    box like anything else, so without a word to the contrary the model
+    reads it as the user asking — and answers the user for something the
+    user never said. Naming it as an event, and saying plainly that no one
+    typed it, costs one line and removes the misreading.
+    """
     lines = []
     for ev in done or []:
         line = f"- {ev.get('kind', 'job')} {ev.get('job_id')} [{ev.get('state', '?')}]"
@@ -323,11 +330,13 @@ def _job_wake_prompt(done: list) -> str:
         lines.append(line)
     if not lines:
         return ""
-    return ("[watch] A job you were watching has finished:\n"
+    return ("[watch — a system event, not the user] A job you were "
+            "watching has finished:\n"
             + "\n".join(lines)
-            + "\n\nSay what the result means for the work it was waiting on. "
-              "If it failed, name the cause from the evidence before "
-              "proposing a fix.")
+            + "\n\nNobody typed this; the job watcher put it here because "
+              "you asked to be told. Say what the result means for the "
+              "work it was waiting on. If it failed, name the cause from "
+              "the evidence before proposing a fix.")
 
 
 def _longest_pending_tool(inflight: dict, now: float):
@@ -6981,11 +6990,17 @@ def create_tab(ctx):
                     if code is None or job.job_id in seen:
                         continue
                     seen.add(job.job_id)
+                    # The keys are _job_wake_prompt's, not this function's
+                    # own: it renders job_id, state and description, and
+                    # an event that spelled them id/status/label produced
+                    # six lines reading "- shell None [?]" in a live
+                    # session -- a wake-up that names nothing it woke for.
                     out.append({
                         "kind": "shell",
-                        "id": job.job_id,
-                        "label": str(getattr(job, "command", ""))[:80],
-                        "status": "ok" if code == 0 else f"exit {code}",
+                        "job_id": job.job_id,
+                        "state": "ok" if code == 0 else f"exit {code}",
+                        "ok": code == 0,
+                        "description": str(getattr(job, "command", ""))[:80],
                     })
             except Exception:
                 return []
