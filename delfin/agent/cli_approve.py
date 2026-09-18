@@ -50,14 +50,39 @@ _CRED_KEY = re.compile(
 # preview rendered verbatim under a "diff:" heading; see _WRITE_TOOLS.
 
 
-def _redact(value: str) -> str:
-    """Mask anything that looks like a credential value.
+#: `NAME=value`, `--flag value`, `"value"` after a credential-looking key.
+#: The VALUE is what must not be shown; the shape of the command is what
+#: the person is deciding about.
+#: Only the shapes where the value is unambiguous: NAME=value and
+#: --flag value. A header like `Authorization: Bearer sk-…` is NOT one of
+#: them -- the value is the rest of the line, and a pattern that guessed
+#: at it masked the word "Bearer" and left the secret standing (caught by
+#: probe, 2026-09-18). Those fall through to the whole-line redaction.
+_CRED_ASSIGNMENT = re.compile(
+    r"(?i)((?:api[_-]?key|token|secret|password|passwd|credential)"
+    r"[\w.-]*\s*=\s*|--(?:api[_-]?key|token|secret|password)[= ]\s*)"
+    r"(['\"]?)([^\s'\";|&]+)\2")
 
-    Applied to the rendered command and the preview. Redaction is shown,
-    not silent: the user must see that a value was withheld and why.
+
+def _redact(value: str) -> str:
+    """Mask a credential VALUE, keeping the command that carries it.
+
+    Redaction is shown, not silent. It is also as narrow as it can be:
+    an approval prompt that prints "<redacted>" for the whole line asks
+    the person to approve something they can no longer read, which is
+    the opposite of what a confirmation is for. So
+    ``export TOKEN=sk-live-1234 && curl x`` becomes
+    ``export TOKEN=<redacted> && curl x`` -- the decision stays possible,
+    the secret still never reaches the screen.
+
+    A value that carries no recognisable assignment (a bare secret, a
+    path to a key file) is withheld whole: there is nothing to keep.
     """
     if not value:
         return value
+    masked, hits = _CRED_ASSIGNMENT.subn(r"\1<redacted>", value)
+    if hits:
+        return masked
     if _CRED_KEY.search(value):
         return "<redacted: looks like a credential>"
     return value
@@ -85,10 +110,7 @@ def _redact_preview(preview: str) -> str:
     text = rr.strip_control(str(preview or ""))
     out = []
     for line in text.splitlines():
-        if _CRED_KEY.search(line):
-            out.append("<redacted: looks like a credential>")
-        else:
-            out.append(line)
+        out.append(_redact(line))
     return "\n".join(out)
 
 
