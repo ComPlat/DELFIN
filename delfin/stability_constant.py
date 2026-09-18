@@ -903,10 +903,17 @@ def build_orca_input(
     # Geometry block
     lines.append(f"* xyz {charge} {multiplicity}\n")
 
-    # Per-atom NewGTO for metals
+    # Per-atom NewGTO for metals.  The radii are read the way the rest of the
+    # run reads them (xyz_io): with a scale given in CONTROL they are not, and
+    # the built-in table decides the first coordination sphere.  Read here and
+    # not there, the same atom of the same complex got the metal basis in the
+    # run's own jobs and the main basis in this one -- the two tables put the
+    # Co-O cutoff at scale 1.3 at 2.50 and 2.26 A, and a stability constant is
+    # a difference of energies, so the step lands in it.
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
+    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
     radii_all = None
-    if enable_first:
+    if enable_first and not sphere_scale_raw:
         radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009"))
     geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
     lines.extend(geom)
