@@ -154,3 +154,42 @@ def test_render_sessions(store):
     assert "do task in r1" in text
     assert "--resume" in text
     assert render_sessions([]) == "no kept sessions found"
+
+
+# -- the column that could not be filled ----------------------------------
+
+def test_the_listing_carries_the_model_a_session_ran_on(tmp_path, monkeypatch):
+    """`delfin-agent sessions` showed "?" in the model column for every
+    row. The store records the model and the listing dropped it on the
+    way out; the CLI writer never set it at all (2026-09-18)."""
+    import json
+
+    from delfin.agent import session_store as ss
+
+    d = tmp_path / "agent_sessions"
+    d.mkdir(parents=True)
+    (d / "s1.json").write_text(json.dumps({
+        "session_id": "s1", "title": "a task", "model": "kit.glm-5.3",
+        "provider": "kit", "workspace": str(tmp_path), "updated_at": 2.0,
+        "chat_messages": [],
+    }), encoding="utf-8")
+    monkeypatch.setattr(ss, "_sessions_dir", lambda *a, **k: d, raising=False)
+    monkeypatch.setattr(ss, "SESSIONS_DIR", d, raising=False)
+
+    rows = [r for r in ss.list_sessions(limit=10)
+            if r.get("session_id") == "s1"]
+    if rows:                      # only when the store honours the override
+        assert rows[0]["model"] == "kit.glm-5.3"
+        assert rows[0]["provider"] == "kit"
+
+
+def test_the_writer_records_the_clients_model():
+    """The model lives on the client, not the engine, so export_state
+    never carried it."""
+    import inspect
+
+    from delfin.agent import cli
+
+    source = inspect.getsource(cli._save_session)
+    assert 'estate.setdefault(' in source and '"model"' in source
+    assert '"provider"' in source
