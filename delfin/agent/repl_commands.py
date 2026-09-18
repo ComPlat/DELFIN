@@ -1077,7 +1077,7 @@ def _bash(ctx, args: str) -> CommandResult:
         # Anything else is a job id: /bash <job_id> looks inside it.
         return _bash_detail(registry, parts[0],
                             int(parts[1]) if len(parts) > 1
-                            and parts[1].isdigit() else 40)
+                            and parts[1].isdigit() else _BASH_PEEK_LINES)
     try:
         jobs = sorted(registry.list_jobs(), key=lambda j: j.started_at,
                       reverse=True)
@@ -1100,8 +1100,19 @@ def _bash(ctx, args: str) -> CommandResult:
     return CommandResult(output="\n".join(lines))
 
 
+#: How much of a job's output ``/bash <id>`` shows unasked. A running
+#: suite writes thousands of lines; pasting forty of them into the chat
+#: buries the four facts above them. The last few say whether it is
+#: moving, and the line under them says how to see more.
+_BASH_PEEK_LINES = 5
+
+
 def _bash_detail(registry, job_id: str, tail_lines: int) -> CommandResult:
-    """One job: what it is, how long it has run, and what it wrote."""
+    """One job: what it is, how long it has run, and what it wrote.
+
+    Compact on purpose. The count is part of the answer — "5 of 900
+    lines" tells you more about a run than the five lines do.
+    """
     try:
         job = next((j for j in registry.list_jobs(include_finished=True)
                     if str(j.job_id) == job_id), None)
@@ -1142,18 +1153,24 @@ def _bash_detail(registry, job_id: str, tail_lines: int) -> CommandResult:
         read = {}
     out.append("")
     wrote = False
+    more = False
     for stream in ("stdout", "stderr"):
         text = str(read.get(stream) or "").rstrip()
         if not text:
             continue
         wrote = True
         total = read.get(f"{stream}_total_lines")
-        head = f"  {stream} (last {tail_lines} of {total} lines):" if total \
-            else f"  {stream}:"
+        shown = text.splitlines()[-tail_lines:]
+        head = (f"  {stream} — last {len(shown)} of {total} lines:" if total
+                else f"  {stream}:")
         out.append(head)
-        out.extend("    " + ln for ln in text.splitlines())
+        out.extend("    " + ln for ln in shown)
+        if total and total > len(shown):
+            more = True
     if not wrote:
         out.append("  Output:   nothing written yet")
+    elif more:
+        out.append(f"  /bash {job_id} 200   for more of it")
     return CommandResult(output="\n".join(out))
 
 
