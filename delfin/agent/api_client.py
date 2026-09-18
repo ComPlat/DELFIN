@@ -15951,6 +15951,31 @@ class _DocToolExecutor:
         if not isinstance(pytest_args, list):
             return json.dumps({"error": "pytest_args must be a list"})
         timeout = int(arguments.get("timeout_s", 300) or 300)
+        # A suite longer than the shell's own ceiling is HANDED OVER, not
+        # sat on. run_tests accepts up to 1800 s and runs in the
+        # foreground, so one call held a turn for 30 minutes (measured
+        # 2026-09-18, one of 18 calls over five minutes that cost 154
+        # minutes between four sessions).
+        #
+        # Refused here rather than clamped: clamping spends the ceiling
+        # and THEN says the same thing, which is what cost each of those
+        # sessions ten minutes on the bash path. Saying it now costs
+        # nothing, and the way out is real — a finished background job
+        # wakes the session by itself, at the terminal prompt as well as
+        # in the dashboard.
+        ceiling = int(getattr(perms, "bash_max_timeout_s", 600) or 600)
+        if timeout > ceiling:
+            return json.dumps({"error": (
+                f"run_tests with timeout_s={timeout} would hold this turn "
+                f"for longer than a turn should be held. A suite that "
+                f"needs more than {ceiling}s is started, not waited out: "
+                f"bash_background returns a job id at once, a finished "
+                f"job wakes this session by itself, and bash_output reads "
+                f"what it wrote. Pass timeout_s <= {ceiling} to run it "
+                f"here instead."),
+                "max_timeout_s": ceiling,
+                "requested_timeout_s": timeout,
+            })
         # A test file is code the agent may have written itself, so it
         # runs as the agent's shell does: without the provider keys in
         # its environment and inside the same cage. It inherited the full
