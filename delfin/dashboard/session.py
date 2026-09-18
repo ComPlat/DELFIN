@@ -551,12 +551,22 @@ def announce(name: str = "") -> str:
     # Only a kernel has to reach past its own captured stdout; anywhere
     # else -- a test, a CLI -- the parent is not the server, and print
     # is what the caller expects to see.
-    out = _server_stdout() if kernel_id() else None
+    #
+    # A kernel that cannot reach the server's terminal says NOTHING. Its
+    # print is not a terminal: ipykernel forwards it to the frontend, so
+    # the block renders in the page -- and this block carries the server
+    # token inside a URL. Reported from a live session, where it appeared
+    # in the dashboard instead of the terminal: the one surface that does
+    # not need the address (the status strip already offers it behind a
+    # button) and the one where it is worth least, because whoever reads
+    # it is already inside.
+    in_kernel = bool(kernel_id())
+    out = _server_stdout() if in_kernel else None
     if out is not None:
         with out:
             out.write(line + "\n")
             out.flush()
-    else:
+    elif not in_kernel:
         print(line, flush=True)
     return line
 
