@@ -2041,6 +2041,19 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"git\s+tag\s+-d\b",                   # tag delete
     r"git\s+tag\s+--delete\b",
     r"git\s+worktree\s+remove\b",
+    # The stash stack belongs to the REPOSITORY, not to a worktree. Four
+    # sessions working in worktrees of one repository share it, so a pop
+    # takes whatever is on top — which may be another session's work,
+    # applied into the wrong tree with nothing to say it happened. One
+    # session reached for it on 2026-09-18 with three others running.
+    #
+    # Anchored on the SUBCOMMAND, past git's own options: matching the
+    # word anywhere would refuse `git commit -m "drop the stash usage"`,
+    # which is how the shutdown pattern once cost a session its commit.
+    # `list` and `show` are reads and stay available.
+    r"""(?:^|[;|&`(])[\s'\"]*(?:sudo\s+)?git\s+"""
+    r"(?:(?:--no-pager|--paginate|-C\s+\S+|-c\s+\S+)\s+)*"
+    r"stash\b(?!\s+(?:list|show)\b)",
     # `-fd` was the only spelling this caught. `git clean -f -d` and
     # `git clean -xdf` — the forms people actually type, and the more
     # destructive ones — matched nothing and fell through to the confirm
@@ -2485,6 +2498,14 @@ _DENY_HINTS: tuple[tuple[str, str], ...] = (
               "the user: git clean deletes what nothing tracks."),
     ("push", " Push a branch of your own and open a pull request; a forced "
              "or deleting push rewrites what others already have."),
+    ("stash", " The stash belongs to the REPOSITORY, not to your worktree: "
+              "other sessions work in worktrees of this same repository, "
+              "and a pop takes whatever is on top — which may be theirs. "
+              "To set work aside, commit it on your own branch. For a "
+              "control run against an earlier state, use "
+              "enter_worktree(base_ref=\"<commit>\") and run the check "
+              "with cwd set to the path it returns. `git stash list` and "
+              "`git stash show` are reads and stay available."),
 )
 
 
