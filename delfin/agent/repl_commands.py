@@ -1432,6 +1432,15 @@ def _key_rows() -> list[tuple[str, str, str]]:
         (rk.REDRAW, "ctrl+l", "Redraw the screen."),
         (rk.EDIT, "backspace / ctrl+u", "Edit or clear the line you are "
                                         "typing."),
+        # The four below only act at the framed idle prompt (read_boxed);
+        # during a turn the pump swallows them, like any key it does not
+        # recognise.
+        (rk.HISTORY_PREV, "up", "At the prompt: previous history line."),
+        (rk.HISTORY_NEXT, "down", "At the prompt: next history line, back "
+                                  "to what you were typing."),
+        (rk.COMPLETE, "tab", "At the prompt: complete a /command or an "
+                             "@path."),
+        (rk.EOF, "ctrl+d", "At the prompt, on an empty line: leave."),
     ]
 
 
