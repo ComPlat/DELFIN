@@ -149,10 +149,16 @@ def _narrow_row(text: str, cursor: int, width: int) -> BoxView:
         row = cut
     # The cursor column is where it lands after the same cut: offset of
     # the cursor in the uncut row, shifted by what the cut removed.
-    row_before = PROMPT + text[:cursor]
-    cut_from = max(0, len(row) - len(row_before))
-    col = max(0, len(row_before) - cut_from)
-    return BoxView([row], (0, min(col, max(0, width - 1))), None)
+    # Measured in COLUMNS, not characters: a CJK character is one
+    # character and two columns, and len() put the cursor half a glyph
+    # from where it belongs.
+    full = PROMPT + (text or "")
+    row_before = PROMPT + (text or "")[:cursor]
+    cut_chars = len(full) - len(row)
+    visible_before = row_before[cut_chars:] if cut_chars < len(row_before) else ""
+    col = string_width(visible_before)
+    return BoxView([row], (0, min(col, max(0, width - 1))), None,
+                   border=False)
 
 
 class BoxView:
@@ -164,16 +170,21 @@ class BoxView:
     under the top border — with the column in screen columns measured
     from just after the left border's padding. The caller renders the
     rows and then places the cursor; it never re-derives the layout.
+
+    ``border`` is False for the degenerate narrow form, which draws no
+    frame at all: the caller offsets the cursor by the border width, and
+    doing that on a borderless row put it two columns past the text.
     """
 
-    __slots__ = ("rows", "cursor", "hint_row")
+    __slots__ = ("rows", "cursor", "hint_row", "border")
 
     def __init__(self, rows: list[str], cursor: tuple[int, int],
-                 hint_row: int | None):
+                 hint_row: int | None, border: bool = True):
         self.rows = rows
         self.cursor = cursor
         #: Index into ``rows`` of the hint, or None when there is none.
         self.hint_row = hint_row
+        self.border = border
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, BoxView):
@@ -278,9 +289,11 @@ def viewport(view: BoxView, height: int) -> BoxView:
     Pure, like everything else here. ``height`` below 1 shows one row.
     """
     height = max(1, int(height or 1))
-    content = view.rows[1:]           # without the top border
-    if view.hint_row is not None:
-        content = view.rows[1:view.hint_row - 1]
+    # Content is what sits BETWEEN the borders. Taking rows[1:] when
+    # there is no hint row swept the bottom border in as content, and
+    # the same border was appended again below — two "╰────╯" rows.
+    content = (view.rows[1:view.hint_row - 1] if view.hint_row is not None
+               else view.rows[1:-1])
     if len(content) <= height:
         return view
     cur_row = min(view.cursor[0], len(content) - 1)
@@ -301,5 +314,9 @@ def viewport(view: BoxView, height: int) -> BoxView:
         rows.append(view.rows[view.hint_row])
     else:
         rows.append(view.rows[-1])
-    cursor = (cur_row - top, view.cursor[1])
-    return BoxView(rows, cursor, view.hint_row)
+    # A marker row above `shown` is a row of the picture, so every
+    # content row below it moves down by one. Without this the cursor
+    # sat one row high the moment the window scrolled — on a full line
+    # of text rather than at its end.
+    cursor = (cur_row - top + (1 if top > 0 else 0), view.cursor[1])
+    return BoxView(rows, cursor, view.hint_row, border=view.border)
