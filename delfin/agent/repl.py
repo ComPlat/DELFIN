@@ -1628,7 +1628,12 @@ class TerminalAgent:
         # the box sits wherever the transcript ended, and asking the
         # terminal where that is needs a cursor-position reply this
         # loop has no reader for.
-        _state = {"below": 0, "painted": None}
+        # What is ON SCREEN, which is the only thing the walk may be
+        # measured against: how many rows the box has and how many of
+        # them sit below the cursor. The first version kept only
+        # "below" and climbed by the NEW view's height, so every paint
+        # mixed two geometries.
+        _state = {"below": 0, "rows": 0, "painted": None}
 
         def _draw(decoder, *, force: bool = False) -> None:
             view = _view(decoder)
@@ -1636,14 +1641,29 @@ class TerminalAgent:
                                                     view.cursor):
                 return                      # nothing changed on screen
             _state["painted"] = (view.rows, view.cursor)
+            on_screen = _state["rows"]
             out = []
-            if _state["below"]:
-                out.append(f"\x1b[{_state['below']}B")   # to box end
-            out.append(f"\x1b[{len(view.rows) - 1}A\r")  # to top border
+            # Walk back over WHAT IS THERE. On the first paint nothing
+            # is, and climbing would have painted the box over the last
+            # rows of the transcript -- the banner at start-up, the end
+            # of the answer after a turn.
+            if on_screen:
+                if _state["below"]:
+                    out.append(f"\x1b[{_state['below']}B")   # to box end
+                if on_screen > 1:
+                    out.append(f"\x1b[{on_screen - 1}A")     # to its top
+            out.append("\r")
             for i, row in enumerate(view.rows):
                 if i:
                     out.append("\r\n")
                 out.append("\x1b[K" + row)
+            # A box that shrank (a line unwrapped) leaves rows of the
+            # old one standing below it.
+            spare = max(0, on_screen - len(view.rows))
+            for _ in range(spare):
+                out.append("\r\n\x1b[K")
+            if spare:
+                out.append(f"\x1b[{spare}A")
             # Rows written: the cursor sits after the LAST row. Put it
             # on the cursor's row and column: up by the rows below it,
             # then across (col 1 is the border; +2 lands after "│ ";
@@ -1651,6 +1671,7 @@ class TerminalAgent:
             crow, ccol = view.cursor
             below = len(view.rows) - 1 - (crow + 1)     # minus top border
             _state["below"] = below
+            _state["rows"] = len(view.rows)
             col = min(ccol + 2, max(1, self.transcript.width - 1))
             if below:
                 out.append(f"\x1b[{below}A")
@@ -1658,17 +1679,28 @@ class TerminalAgent:
             self.err.write("".join(out))
             self._flush_err()
 
-        def _clear_box(decoder) -> None:
+        def _clear_box(_decoder=None) -> None:
             """Erase the box and leave the cursor one row BELOW where
-            its end was — the transcript continues from there."""
-            view = _view(decoder)
-            n = len(view.rows)
+            its end was — the transcript continues from there.
+
+            Sized from what is ON SCREEN, never from the decoder: after
+            a submit the decoder has already dropped its buffer, so a
+            view built from it describes an empty box while a taller one
+            is still painted. The rows the erase then missed stayed in
+            the scrollback as a stray border.
+            """
+            n = _state["rows"]
+            if not n:
+                return
             out = []
             if _state["below"]:
                 out.append(f"\x1b[{_state['below']}B")   # to box end
-            out.append(f"\x1b[{n - 1}A\r")              # to top border
-            out.append(("\x1b[K\r\n") * (n - 1) + "\x1b[K\r\n")
+            if n > 1:
+                out.append(f"\x1b[{n - 1}A")             # to top border
+            out.append("\r")
+            out.append("\x1b[K\r\n" * n)
             _state["below"] = 0
+            _state["rows"] = 0
             _state["painted"] = None
             self.err.write("".join(out))
             self._flush_err()
