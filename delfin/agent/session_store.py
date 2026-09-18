@@ -911,6 +911,13 @@ def list_sessions(
                 "session_id": data.get("session_id", f.stem),
                 "title": data.get("title", "Untitled"),
                 "mode": _migrate_mode(data.get("mode", "quick")),
+                # Recorded since the store existed and passed on by
+                # nothing: a listing that offers sessions to resume
+                # showed "?" in the model column, because the column
+                # could not be filled from what this returned
+                # (2026-09-18).
+                "model": data.get("model", ""),
+                "provider": data.get("provider", ""),
                 "role_index": data.get("role_index", 0),
                 "route": data.get("route", []),
                 "cost_usd": data.get("cost_usd", 0.0),

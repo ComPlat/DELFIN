@@ -376,6 +376,15 @@ def _save_session(engine, repo_root: Path, *, title: str = "") -> str:
         estate["session_id"] = sid
         if title:
             estate.setdefault("title", title)
+        # The model is the client's, not the engine's, so export_state
+        # never carried it and every session this command saved recorded
+        # an empty one. The dashboard passes both explicitly; a listing
+        # that offers sessions to resume showed "?" for anything the CLI
+        # had written (2026-09-18).
+        estate.setdefault(
+            "model", str(getattr(getattr(engine, "client", None), "model", "")
+                         or ""))
+        estate.setdefault("provider", str(getattr(engine, "provider", "") or ""))
         _ss.save_session(chat_messages=_display_messages(engine),
                          workspace=str(repo_root), **estate)
     except Exception as exc:
