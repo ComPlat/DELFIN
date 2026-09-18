@@ -15178,8 +15178,17 @@ class _DocToolExecutor:
                 "never broad pkill/killall patterns that can match the "
                 "host stack."
             )})
-        timeout = int(arguments.get("timeout_s", perms.bash_timeout_s) or perms.bash_timeout_s)
-        timeout = max(1, min(timeout, perms.bash_max_timeout_s))
+        requested_timeout = int(
+            arguments.get("timeout_s", perms.bash_timeout_s)
+            or perms.bash_timeout_s)
+        timeout = max(1, min(requested_timeout, perms.bash_max_timeout_s))
+        # Asking for more than the ceiling is not an error, but it must not
+        # be silent either: the run is cut at the ceiling, and the message
+        # on the way out used to advise passing a bigger timeout_s -- which
+        # is the one thing that cannot work. Two sessions asked for 1800s,
+        # were cut at 600s, and lost ten minutes each following that advice
+        # (2026-09-18).
+        timeout_was_capped = requested_timeout > timeout
         cwd_arg = arguments.get("cwd", "") or ""
 
         if cwd_arg:
@@ -15263,17 +15272,26 @@ class _DocToolExecutor:
             # to be run -- neither of which the refusal named, so a
             # session hit the same wall twice and lost the work each
             # time (2026-09-17).
+            _how = (
+                f"You asked for {requested_timeout}s; {timeout}s is the "
+                "ceiling for a command run in the foreground, so that is "
+                "where it was cut. A bigger timeout_s cannot help. Start "
+                "it with bash_background"
+                if timeout_was_capped else
+                "For a longer run: pass a bigger timeout_s, or -- better "
+                "for anything over a few minutes -- start it with "
+                "bash_background")
             return json.dumps({
                 "error": (
                     f"command timed out after {timeout}s and was ended, "
                     "with everything it started. Nothing about its work "
-                    "follows from this. For a longer run: pass a bigger "
-                    "timeout_s, or -- better for anything over a few "
-                    "minutes -- start it with bash_background, which "
+                    f"follows from this. {_how}, which "
                     "returns a job id at once; then bash_status(job_id, "
                     "wait_seconds=300) waits for it and bash_output reads "
                     "what it wrote. Do not repeat the command unchanged."),
                 "command": cmd[:200],
+                "requested_timeout_s": requested_timeout,
+                "max_timeout_s": int(perms.bash_max_timeout_s),
                 "description": description,
             })
         except Exception as exc:
