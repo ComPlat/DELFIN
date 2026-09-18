@@ -195,3 +195,47 @@ def test_session_allow_is_thread_safe():
     for t in threads:
         t.join(5)
     assert outcomes and all(outcomes)
+
+
+# -- what the person approving must still be able to read -----------------
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("line, expected", [
+    ("export KIT_TOOLBOX_API_KEY=sk-live-1234 && curl x",
+     "export KIT_TOOLBOX_API_KEY=<redacted> && curl x"),
+    ("delfin-agent credentials set TOKEN=abc",
+     "delfin-agent credentials set TOKEN=<redacted>"),
+    ("git commit -m ok", "git commit -m ok"),
+])
+def test_the_value_is_masked_and_the_command_stays_readable(line, expected):
+    """An approval prompt that prints "<redacted>" for the whole line asks
+    the person to approve something they can no longer read."""
+    from delfin.agent.cli_approve import _redact
+
+    assert _redact(line) == expected
+
+
+@_pytest.mark.parametrize("line", [
+    'curl -H "Authorization: Bearer sk-9999" https://x',
+    "cat /home/u/.env",
+    "scp server:/etc/ssl/private/site.key .",
+])
+def test_where_the_value_cannot_be_told_apart_the_line_goes(line):
+    """A header carries its secret as the rest of the line. A pattern that
+    guessed at it masked the word "Bearer" and left the secret standing
+    (2026-09-18); those fall back to withholding the line."""
+    from delfin.agent.cli_approve import _redact
+
+    out = _redact(line)
+    assert out == "<redacted: looks like a credential>"
+
+
+def test_no_secret_survives_either_path():
+    from delfin.agent.cli_approve import _redact
+
+    for line in ['export TOKEN=sk-live-1234',
+                 'curl -H "Authorization: Bearer sk-live-1234" https://x',
+                 'psql "password=sk-live-1234"']:
+        assert "sk-live-1234" not in _redact(line)
