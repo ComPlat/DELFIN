@@ -1,0 +1,305 @@
+"""Pure rendering of the framed input area at the idle prompt.
+
+No terminal, no I/O, no cursor movement: in goes (text, cursor offset,
+width, hint), out comes a list of rows. Everything hard about a framed
+input line is layout, and layout is decidable without a terminal — which
+is the whole reason this module exists apart from ``repl.py``.
+
+The box:
+
+    ╭────────────────────────────────────────────────────────╮
+    │ > the message being typed                              │
+    ╰────────────────────────────────────────────────────────╯
+      esc interrupt · shift+tab approval mode · /help
+
+Rules the renderer owns:
+
+* Wrapping. Text longer than one inner row wraps onto further rows; the
+  cursor travels with it, and ``BoxView.cursor`` says where on the
+  screen it belongs, as (content-row index, column from the left
+  border), so the caller can move it without re-deriving the layout.
+* The right border. Every content row is padded to the full inner width
+  so the ``│`` on the right lines up with the corners — a ragged border
+  is the bug this module exists to prevent.
+* Double-width characters. CJK and other East Asian wide characters
+  occupy two columns; a wide char that would straddle the inner-width
+  edge moves down to the next row whole rather than being split,
+  because a terminal cannot put half of one in a column.
+* Width below the minimum. The frame alone costs 4 columns; below
+  ``MIN_WIDTH`` the box degenerates to a single unpadded row with the
+  END of the text kept, so nothing is silently dropped and the cursor
+  (where a person is typing) stays visible.
+* A hint that does not fit. The hint is truncated from the left with an
+  ellipsis, keeping its END — the key names, which is what a hint is
+  for. It never wraps and never steals a row from the text.
+"""
+
+from __future__ import annotations
+
+import unicodedata
+
+__all__ = ["BoxView", "render_box", "MIN_WIDTH", "PROMPT",
+           "char_width", "string_width"]
+
+#: The prompt inside the box, drawn before the text on the first row.
+PROMPT = "> "
+
+#: Below this width the frame does not fit; a plain row is returned.
+MIN_WIDTH = 20
+
+_TOP_LEFT, _TOP_RIGHT = "╭", "╮"
+_BOTTOM_LEFT, _BOTTOM_RIGHT = "╰", "╯"
+_HORIZONTAL = "─"
+_VERTICAL = "│"
+
+
+def char_width(ch: str) -> int:
+    """Columns *ch* occupies. Wide (CJK) and fullwidth characters are 2.
+
+    Combining marks are 0 — they stack onto the character before them,
+    and counting one for each would push the right border out of line
+    exactly when the user types Vietnamese or Korean.
+    """
+    if unicodedata.combining(ch):
+        return 0
+    if ch == "\n":
+        # A newline takes no column of its own: _wrap keeps it at the
+        # end of a row as a marker, and the padding must not count it.
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def string_width(text: str) -> int:
+    return sum(char_width(ch) for ch in text)
+
+
+def _pad_to(text: str, width: int) -> str:
+    """Pad *text* to exactly *width* screen columns.
+
+    Padding uses the MEASURED width, not ``len`` — a row holding one
+    CJK character needs one space fewer, or the right border shifts.
+    """
+    return text + " " * max(0, width - string_width(text))
+
+
+def _wrap(text: str, inner: int) -> list[tuple[str, int]]:
+    """Wrap *text* to *inner* columns; one (row, width) pair per row.
+
+    Wrapping is purely graphical — by columns, not by words — because
+    this is an input line: the user's spacing is content, and reflowing
+    it would move what the cursor points at.
+
+    A word longer than the row is split across rows rather than
+    overflowing, and a double-width character that does not fit in the
+    last column moves down WHOLE: a terminal cannot render half of one,
+    and the alternative — a one-column gap — desynchronises the right
+    border from every other row.
+    """
+    if inner <= 0:
+        return [("", 0)]
+    rows: list[tuple[str, int]] = []
+    current = ""
+    used = 0
+    for ch in text:
+        if ch == "\n":
+            # A pasted block keeps its newlines: they hard-wrap the row,
+            # exactly as the terminal would render them. The newline
+            # stays at the END of the row it ends — zero-width, so the
+            # padding ignores it — because the cursor walk needs to tell
+            # a hard break from a wrap edge.
+            rows.append((current + "\n", used))
+            current, used = "", 0
+            continue
+        w = char_width(ch)
+        if w == 0:
+            # A combining mark stacks onto the character before it; it
+            # costs no column and can never force a wrap.
+            current += ch
+            continue
+        if used + w > inner:
+            rows.append((current, used))
+            current, used = "", 0
+        current += ch
+        used += w
+    rows.append((current, used))
+    return rows
+
+
+def _truncate_hint(hint: str, width: int) -> str:
+    """Cut *hint* to *width* columns, keeping its END.
+
+    The end of the hint is the key names — the part a person looks at —
+    and the left side is prose, which is the cheaper half to lose.
+    """
+    if string_width(hint) <= width:
+        return hint
+    keep = "…" + hint
+    while string_width(keep) > width and len(keep) > 1:
+        keep = "…" + keep[2:]
+    return keep
+
+
+def _narrow_row(text: str, cursor: int, width: int) -> BoxView:
+    """The below-MIN_WIDTH degenerate form: one row, END of text kept."""
+    row = PROMPT + (text or "")
+    if string_width(row) > width:
+        cut = row
+        while string_width(cut) > width and len(cut) > 1:
+            cut = cut[1:]
+        row = cut
+    # The cursor column is where it lands after the same cut: offset of
+    # the cursor in the uncut row, shifted by what the cut removed.
+    row_before = PROMPT + text[:cursor]
+    cut_from = max(0, len(row) - len(row_before))
+    col = max(0, len(row_before) - cut_from)
+    return BoxView([row], (0, min(col, max(0, width - 1))), None)
+
+
+class BoxView:
+    """The rendered box: rows plus where the cursor belongs.
+
+    ``rows`` is the full picture (top border, content rows, bottom
+    border, then the hint row when there is one). ``cursor`` is a
+    ``(row, column)`` into the CONTENT rows — row 0 is the first row
+    under the top border — with the column in screen columns measured
+    from just after the left border's padding. The caller renders the
+    rows and then places the cursor; it never re-derives the layout.
+    """
+
+    __slots__ = ("rows", "cursor", "hint_row")
+
+    def __init__(self, rows: list[str], cursor: tuple[int, int],
+                 hint_row: int | None):
+        self.rows = rows
+        self.cursor = cursor
+        #: Index into ``rows`` of the hint, or None when there is none.
+        self.hint_row = hint_row
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, BoxView):
+            return NotImplemented
+        return (self.rows == other.rows
+                and self.cursor == other.cursor
+                and self.hint_row == other.hint_row)
+
+    def __repr__(self) -> str:  # pragma: no cover — debugging aid
+        return (f"BoxView(rows={self.rows!r}, cursor={self.cursor!r},"
+                f" hint_row={self.hint_row!r})")
+
+
+def _cursor_position(wrapped: list[tuple[str, int]], stop: int, inner: int
+                     ) -> tuple[int, int]:
+    """Where character offset *stop* in the stream landed on screen.
+
+    The cursor is located by WALKING the stream, not by summing row
+    widths: a newline consumes a character but no column, and a wide
+    character that moved down a row costs its columns where the layout
+    put them. Summing widths desynchronises the cursor from its row in
+    exactly those two cases.
+
+    Returns (content-row index, column from the row's start). ``stop``
+    past the end lands on the very end of the last row, clamped by the
+    caller beforehand.
+    """
+    row = 0
+    i = 0
+    for row_text, _w in wrapped:
+        col = 0
+        ended_by_newline = row_text.endswith("\n")
+        for ch in row_text:
+            if i == stop:
+                return (row, col)
+            i += 1
+            col += char_width(ch)
+        # End of the row. A stop here sits after the row's last
+        # character. A row ended by a NEWLINE has already consumed that
+        # newline in the loop above, so the cursor belongs at the start
+        # of the next row; a row ended by a WRAP EDGE consumed nothing
+        # extra, so the cursor stays at this row's end. Advancing the
+        # character counter here is the off-by-one that put every
+        # end-of-row cursor one column and one row wrong.
+        if i == stop:
+            if ended_by_newline:
+                return (row + 1, 0)
+            return (row, col)
+        row += 1
+    return (row - 1 if row else 0, inner)
+
+
+def render_box(text: str, cursor: int, width: int, hint: str = "") -> BoxView:
+    """Render the framed input area. Pure; raises nothing.
+
+    ``cursor`` is an offset into ``text`` (0..len). An offset outside
+    the text is clamped, because a caller that moved the cursor and the
+    buffer in the wrong order must not get a crash for it. A newline in
+    ``text`` (a pasted block) hard-wraps the row, matching what the
+    terminal would do with it anyway.
+    """
+    width = int(width or 0)
+    text = text or ""
+    cursor = max(0, min(int(cursor), len(text)))
+    if width < MIN_WIDTH:
+        return _narrow_row(text, cursor, width)
+
+    inner = width - 4
+    border = _TOP_LEFT + _HORIZONTAL * (width - 2) + _TOP_RIGHT
+    # The prompt rides at the start of the wrapped stream; it is part
+    # of row 0 and the cursor offset is measured through it.
+    stream = PROMPT + text
+    wrapped = _wrap(stream, inner)
+
+    rows: list[str] = [border]
+    cursor_pos = _cursor_position(wrapped, len(PROMPT) + cursor, inner)
+    for row_text, row_w in wrapped:
+        drawn = row_text.removesuffix("\n")
+        rows.append(_VERTICAL + " " + _pad_to(drawn, inner) + " "
+                    + _VERTICAL)
+    rows.append(_BOTTOM_LEFT + _HORIZONTAL * (width - 2) + _BOTTOM_RIGHT)
+
+    hint_row = None
+    if hint:
+        rows.append("  " + _truncate_hint(hint, width - 4))
+        hint_row = len(rows) - 1
+    return BoxView(rows, cursor_pos, hint_row)
+
+
+def viewport(view: BoxView, height: int) -> BoxView:
+    """A fixed-height window over *view*, keeping the cursor visible.
+
+    The renderer is honest about how tall the text is; the terminal is
+    not; an unbounded paste into a 24-row window would push the frame
+    off the top of the screen and the caller into cursor-position
+    queries. So the wiring shows a window: the top and bottom borders
+    and the hint always, and at most *height* content rows around the
+    one the cursor is on — with ``…`` markers naming which side was
+    cut, because a box that silently eats the top of a pasted block
+    looks exactly like lost text.
+
+    Pure, like everything else here. ``height`` below 1 shows one row.
+    """
+    height = max(1, int(height or 1))
+    content = view.rows[1:]           # without the top border
+    if view.hint_row is not None:
+        content = view.rows[1:view.hint_row - 1]
+    if len(content) <= height:
+        return view
+    cur_row = min(view.cursor[0], len(content) - 1)
+    top = min(max(0, cur_row - height // 2),
+              len(content) - height)
+    shown = content[top:top + height]
+    rows = [view.rows[0]]
+    inner = string_width(shown[0]) - 4
+    if top > 0:
+        rows.append(_VERTICAL + " " + _pad_to("…", inner) + " "
+                    + _VERTICAL)
+    rows.extend(shown)
+    if top + height < len(content):
+        rows.append(_VERTICAL + " " + _pad_to("…", inner) + " "
+                    + _VERTICAL)
+    if view.hint_row is not None:
+        rows.append(view.rows[view.hint_row - 1])   # bottom border
+        rows.append(view.rows[view.hint_row])
+    else:
+        rows.append(view.rows[-1])
+    cursor = (cur_row - top, view.cursor[1])
+    return BoxView(rows, cursor, view.hint_row)
