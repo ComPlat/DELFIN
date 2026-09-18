@@ -1,0 +1,13 @@
+! PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(water) TightOpt FREQ PModel
+%maxcore 2000
+%pal nprocs 8 end
+%scf MaxIter 300 end
+%freq
+  Temp 298.15
+end
+* xyz 0 1
+C 0.000000 0.000000 -0.529000
+O 0.000000 0.000000 0.677000
+H 0.000000 0.937000 -1.117000
+H 0.000000 -0.937000 -1.117000
+*
