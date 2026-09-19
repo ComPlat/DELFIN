@@ -444,17 +444,26 @@ def create_tab(ctx):
 
     # -- handlers -------------------------------------------------------
     def _pid_elapsed_seconds(pid):
-        """Best-effort elapsed seconds from /proc; fall back to None."""
+        """Best-effort elapsed seconds from /proc; fall back to None.
+
+        The start time is read through ``proc_identity`` rather than by
+        splitting the whole stat line: field 2 is the command name in
+        brackets and may contain spaces, so index 21 of a whole-line
+        split lands on a different field for those processes. Measured
+        on a binary named ``a b``: 0 instead of 26055418, which is a job
+        reported as having run for the machine's entire uptime.
+        """
+        from delfin.agent.proc_identity import start_ticks
+
         try:
             # /proc/uptime gives system uptime in seconds
             with open('/proc/uptime', 'r') as f:
                 uptime = float(f.read().split()[0])
-            with open(f'/proc/{pid}/stat', 'r') as f:
-                stat = f.read().split()
-            # starttime is field 22 (index 21) in clock ticks
-            start_ticks = int(stat[21])
+            ticks = start_ticks(pid)
+            if ticks is None:
+                return None
             clk_tck = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
-            elapsed = max(0, int(uptime - (start_ticks / clk_tck)))
+            elapsed = max(0, int(uptime - (ticks / clk_tck)))
             return elapsed
         except Exception:
             return None
