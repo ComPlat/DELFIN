@@ -268,10 +268,27 @@ def test_isolation_that_cannot_be_delivered_is_announced(tmp_path, capsys,
 
 
 def test_the_banner_points_at_the_flag_that_exists():
+    """Naming a state without the way to act on it leaves the reader
+    stuck — and naming a flag that does not exist is worse.
+
+    The banner used to report isolation as OFF in the attended modes and
+    point at --isolate. It is on by default now, so the line it prints
+    points at --no-isolate; either way the flag it names is checked
+    against the parser rather than against a string written here.
+    """
     import inspect
+    import re
+
     src = inspect.getsource(agent_cli._startup_banner)
-    assert "--isolate" in src, (
-        "naming the weakness without the remedy leaves the reader stuck")
+    named = set(re.findall(r"--[a-z][a-z-]+", src))
+    assert named, "the banner names no flag at all"
+    parser_src = inspect.getsource(agent_cli.build_parser)
+    for flag in named:
+        assert f'"{flag}"' in parser_src, (
+            f"the banner tells the reader to type {flag}, which the "
+            f"command line does not offer")
+    assert "--no-isolate" in named, (
+        "isolation is on by default; the way to let go has to be on screen")
 
 
 def test_the_flag_is_offered_on_the_command_line():
