@@ -412,6 +412,26 @@ class ReplOptions:
     banner: str = ""
 
 
+def _fit_to_width(text: str, width: int) -> str:
+    """*text* cut to *width* display columns, never folded.
+
+    Measured in columns rather than characters: the spinner and the
+    notices carry emoji, and one of those is two columns wide. Counting
+    characters let a line that "fit" wrap anyway, which is the fault this
+    exists to stop.
+    """
+    from .repl_box import string_width
+
+    if width <= 0:
+        return ""
+    if string_width(text) <= width:
+        return text
+    cut = text
+    while cut and string_width(cut) > max(1, width - 1):
+        cut = cut[:-1]
+    return cut + "…"
+
+
 class TerminalAgent:
     """Reads, runs one turn, renders it, repeats.
 
@@ -476,6 +496,7 @@ class TerminalAgent:
         # line being typed and the live status — so they go through one
         # place rather than overwriting each other at 4 Hz.
         self._bottom = ""
+        self._bottom_rows = 0
         self._show_tasks = False
         self._turn_t0 = 0.0
         self._turn_base = (0, 0, 0.0)
@@ -1143,26 +1164,61 @@ class TerminalAgent:
         """
         if text == self._bottom:
             return
+        self._clear_bottom()
         self._bottom = text
         if not self._can_redraw():
             return
-        rule = "─" * max(1, self.transcript.width - 1)
-        self.err.write("\r\x1b[K" + rule + "\r\n\x1b[K" + text)
+        width = max(2, int(getattr(self.transcript, "width", 0) or 80))
+        rule = "─" * (width - 1)
+        # Cut, never folded. A line that wraps takes a second row, the
+        # erase was written for two, and every repaint then left one more
+        # rule standing -- sixty of them during one slow first turn
+        # (reported from a real terminal, 2026-09-19). It is also wrong on
+        # its own terms: the place you type has to keep ONE shape.
+        line = _fit_to_width(text, width - 1)
+        self.err.write("\r\x1b[K" + rule + "\r\n\x1b[K" + line)
+        self._bottom_rows = 2
         self._flush_err()
 
     def _clear_bottom(self) -> None:
-        """Erase both rows and leave the cursor where the rule began.
+        """Erase the rows this zone drew, and leave the cursor on the first.
 
-        The transcript continues from there, so a line rendered next
-        lands on the rule's row rather than below a rule nobody erased.
+        The count is kept rather than assumed. The transcript continues
+        from there, so a line rendered next lands on the rule's row rather
+        than below a rule nobody erased.
         """
         if not self._bottom:
             return
         self._bottom = ""
+        rows = int(getattr(self, "_bottom_rows", 0) or 0)
+        self._bottom_rows = 0
+        if not self._can_redraw() or rows <= 0:
+            return
+        self.err.write("\r\x1b[K" + "\x1b[1A\r\x1b[K" * (rows - 1))
+        self._flush_err()
+
+    def _teardown_screen(self) -> None:
+        """Give the screen back to the shell, on a row of its own.
+
+        Leaving used to draw nothing: the prompt stayed where it was and
+        the shell wrote its own into the middle of it --
+
+            (.venv) [user@host]$ ^C────────────────────────────
+            (.venv) [user@host]$  mode · /help
+
+        Erasing from the cursor to the end of the screen takes the input
+        row and the hint under it; the rule above stays in the scrollback,
+        where it marks the end of the session rather than getting in the
+        way of the next command.
+        """
+        self._clear_bottom()
         if not self._can_redraw():
             return
-        self.err.write("\r\x1b[K\x1b[1A\r\x1b[K")
-        self._flush_err()
+        try:
+            self.err.write("\r\x1b[J")
+            self._flush_err()
+        except Exception:
+            pass
 
     def _draw_input_line(self, text: str) -> None:
         """The typed line always wins the row: it is what the user is doing."""
@@ -1456,6 +1512,7 @@ class TerminalAgent:
                     return 130
                 pending = ""
         finally:
+            self._teardown_screen()
             self._save_history()
             self._restore_sigint()
             self._restore_sigwinch()
