@@ -26,7 +26,6 @@ import importlib.resources
 import json
 import math
 import os
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -105,6 +104,12 @@ _LABEL_REPAINT_INTERVAL = 0.25
 #: histories, and reading which was which off the decimal count is not
 #: something a user should have to do.
 _HARTREE_TO_KCAL = 627.5094740631
+
+#: The scratch directory holding one molecule's GFN-FF bonding. Named
+#: here because two places need the same string: the one that makes the
+#: folder, and the sweep that clears away the ones left by sessions that
+#: were killed rather than closed.
+_GFNFF_TOPOLOGY_PREFIX = 'delfin-gfnff-topo-'
 
 #: How much of a change in the hand's force is taken on one answer.
 #:
@@ -983,6 +988,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     gets the editor's isomer stepper instead, which is what the Submit tab has
     always had.
     """
+    # Sessions before this one that were killed rather than closed left
+    # their bonding folder behind. Clearing them is a listing of the
+    # scratch base and a stat per match, once per editor, and it only ever
+    # takes a folder whose owning process is provably gone.
+    try:
+        from delfin.agent import scratch
+        scratch.sweep(_GFNFF_TOPOLOGY_PREFIX)
+    except Exception:
+        # Tidying up is never worth a tab that does not open.
+        pass
+
     if set_buttons_disabled is None:
         def set_buttons_disabled(*_args, **_kwargs):
             # A tab with no submit buttons of its own has nothing to hold shut
@@ -8703,7 +8719,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         key ignored them too, so a charge changed on screen kept the topology
         perceived under the old one.
         """
-        import tempfile
+        from delfin.agent import scratch
 
         who = _structure_fingerprint(xyz)
         atoms = len(who)
@@ -8714,7 +8730,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 and kept.get('asked') == (charge, uhf)):
             return Path(kept['dir'])
         _drop_gfn_topology()
-        folder = tempfile.mkdtemp(prefix='delfin-gfnff-topo-')
+        # Stamped with this process, so that a session which is killed
+        # rather than closed -- which is how a Voila kernel usually ends --
+        # leaves a folder the next run can recognise as finished and take
+        # away. Measured before this: 1071 of them in /tmp.
+        folder = str(scratch.owned_dir(_GFNFF_TOPOLOGY_PREFIX))
         state['gfn_topology'] = {'dir': folder, 'atoms': atoms, 'who': who,
                                  'asked': (charge, uhf)}
         # Perceived here and now, from the structure as it stood before a hand
@@ -8742,9 +8762,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
     def _drop_gfn_topology():
         """Forget the bonding: the molecule is not the same one any more."""
+        from delfin.agent import scratch
+
         kept = state.pop('gfn_topology', None)
         if kept:
-            shutil.rmtree(kept.get('dir') or '', ignore_errors=True)
+            # Through the same door it was made by, so the folder also
+            # leaves the list this process cleans up on its way out.
+            scratch.release(kept.get('dir') or '')
 
     def _gfn_new_generation():
         """Everything in flight belongs to the structure it was started for.
