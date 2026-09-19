@@ -174,3 +174,73 @@ def test_build_co2_control_dynamic_fields_always_fresh():
     assert "multiplicity=3" in txt
     assert "charge=999" not in txt
     assert "broken_sym=2,1" in txt
+
+
+def test_co2_multiplicity_override_wins_over_detected_spin(tmp_path, monkeypatch, capsys):
+    """An explicit ``co2_multiplicity`` in the main CONTROL.txt overrides
+    the detected per-species multiplicity when the CO2 coordinator
+    CONTROL.txt is generated (fixes: override multiplicities were not
+    carried over to the coordinator)."""
+    from delfin.co2 import chain_setup
+
+    # Job dir with a CONTROL.txt carrying the override + a species xyz
+    (tmp_path / "CONTROL.txt").write_text(
+        "charge=0\nco2_multiplicity=3\n", encoding="utf-8"
+    )
+    (tmp_path / "initial.xyz").write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+
+    # Pretend spin detection found mult=1 / no BS
+    monkeypatch.setattr(
+        chain_setup, "_spin_from_state_json", lambda jd, d: (1, None)
+    )
+
+    chain_setup.setup_co2_from_delfin(tmp_path, 0)
+
+    co2_ctrl = (tmp_path / "CO2_coordination" / "CONTROL.txt").read_text()
+    assert "multiplicity=3" in co2_ctrl, (
+        "co2_multiplicity override from main CONTROL.txt did not reach "
+        f"the CO2 coordinator CONTROL.txt:\n{co2_ctrl}"
+    )
+    assert "multiplicity=1" not in co2_ctrl
+
+
+def test_co2_multiplicity_override_invalid_keeps_detected(tmp_path, monkeypatch, capsys):
+    """A non-int ``co2_multiplicity`` is ignored with a warning; the
+    detected multiplicity survives."""
+    from delfin.co2 import chain_setup
+
+    (tmp_path / "CONTROL.txt").write_text(
+        "charge=0\nco2_multiplicity=abc\n", encoding="utf-8"
+    )
+    (tmp_path / "initial.xyz").write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        chain_setup, "_spin_from_state_json", lambda jd, d: (2, "1,0")
+    )
+
+    chain_setup.setup_co2_from_delfin(tmp_path, 0)
+
+    co2_ctrl = (tmp_path / "CO2_coordination" / "CONTROL.txt").read_text()
+    assert "multiplicity=2" in co2_ctrl
+    assert "WARN" in capsys.readouterr().out
+
+
+def test_plain_multiplicity_still_not_forwarded(tmp_path, monkeypatch):
+    """A plain ``multiplicity`` key (base-species info) must NOT leak into
+    the coordinator CONTROL — only the explicit co2_ prefix overrides."""
+    from delfin.co2 import chain_setup
+
+    (tmp_path / "CONTROL.txt").write_text(
+        "charge=0\nmultiplicity=7\n", encoding="utf-8"
+    )
+    (tmp_path / "initial.xyz").write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        chain_setup, "_spin_from_state_json", lambda jd, d: (2, None)
+    )
+
+    chain_setup.setup_co2_from_delfin(tmp_path, 0)
+
+    co2_ctrl = (tmp_path / "CO2_coordination" / "CONTROL.txt").read_text()
+    assert "multiplicity=2" in co2_ctrl
+    assert "multiplicity=7" not in co2_ctrl
