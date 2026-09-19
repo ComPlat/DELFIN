@@ -37,9 +37,19 @@ def test_a_named_temporary_file_lands_there_too(tmp_path_factory):
     assert base in where.parents
 
 
-def test_the_answer_is_the_same_one_the_product_would_get(tmp_path_factory):
-    """Product code asks ``gettempdir()``; it must see the same place, or
-    the redirect covers the tests and misses what they drive."""
+def test_the_temp_directory_is_the_base_itself(tmp_path_factory, tmp_path):
+    """Not a subdirectory of it.
+
+    ``worktree._default_parent`` asks whether a repository lies under
+    ``gettempdir()``, and puts a throwaway repo's worktree beside it when
+    it does — the protection written after 2532 orphaned ``delfin-wt-*``
+    directories were counted here. Pointed at ``base/scratch``, a fixture
+    repo under ``tmp_path`` was under the base but not under the scratch
+    directory, the answer flipped, and the worktrees went back to temp.
+    A test setting must not switch off what the suite is there to check.
+    """
     base = tmp_path_factory.getbasetemp().resolve()
-    assert base in pathlib.Path(tempfile.gettempdir()).resolve().parents or \
-        base == pathlib.Path(tempfile.gettempdir()).resolve().parent
+    assert pathlib.Path(tempfile.gettempdir()).resolve() == base
+    assert tmp_path.resolve().is_relative_to(base), (
+        "every tmp_path must lie under gettempdir(), or the product sees "
+        "a different world than it does in the field")

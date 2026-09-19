@@ -183,8 +183,16 @@ def _the_suite_leaves_no_scratch_behind(tmp_path_factory):
     inside the run's own directory.
     """
     import tempfile
-    room = tmp_path_factory.getbasetemp() / "scratch"
-    room.mkdir(exist_ok=True)
+    # The base directory ITSELF, not a subdirectory of it. A subdirectory
+    # moved the answer to "is this repository under the temp directory?",
+    # which is how worktree._default_parent decides whether a throwaway
+    # repo's worktree goes beside it or into temp. A fixture repo under
+    # tmp_path is under the base but not under base/scratch, so that
+    # protection switched off and the worktree landed in temp again --
+    # the very thing it was written to stop after 2532 orphaned
+    # directories were counted here. Using the base keeps every tmp_path
+    # inside gettempdir(), so the product sees what it saw before.
+    room = tmp_path_factory.getbasetemp()
     previous = tempfile.tempdir
     tempfile.tempdir = str(room)
     try:
