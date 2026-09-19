@@ -1426,6 +1426,31 @@ class TerminalAgent:
         for i, step in enumerate(steps, 1):
             self.transcript.chrome(theme.dim(f"    {i}  {step[:100]}"))
 
+    def _tab_suggestion(self, buffer: str):
+        """The next suggestion to put on an empty line, or None.
+
+        None means "not mine": the line has something in it, or nothing
+        is on offer, and Tab goes back to completing a ``/command``. That
+        separation is the whole design — the two meanings of the key
+        never meet, because one only applies to an empty line.
+
+        Pressing on past the last suggestion gives the line back empty. A
+        cycle with no way out is a prompt the user has to erase by hand.
+        """
+        steps = getattr(self, "_next_steps", None) or []
+        if not isinstance(steps, list) or not steps:
+            return None
+        text = buffer or ""
+        if not text:
+            return steps[0]
+        try:
+            at = steps.index(text)
+        except ValueError:
+            return None          # the user typed; this is not the offer
+        if at + 1 >= len(steps):
+            return ""            # one past the last: the line comes back
+        return steps[at + 1]
+
     def _expand_next_step(self, text: str) -> str:
         """A bare number at the prompt means the suggestion of that number.
 
@@ -1994,10 +2019,20 @@ class TerminalAgent:
                             decoder.buffer = text
                             decoder.cursor = len(text)
                     elif kind == rk.COMPLETE:
-                        done = _complete_word(decoder.buffer)
-                        if done != decoder.buffer:
-                            decoder.buffer = done
-                            decoder.cursor = len(done)
+                        # On an empty line Tab walks the offer; with
+                        # something typed it completes a /command as it
+                        # always has. It FILLS — pressing return stays the
+                        # user's, because a key that sent the turn would
+                        # make an offer into a trap.
+                        picked = self._tab_suggestion(decoder.buffer)
+                        if picked is not None:
+                            decoder.buffer = picked
+                            decoder.cursor = len(picked)
+                        else:
+                            done = _complete_word(decoder.buffer)
+                            if done != decoder.buffer:
+                                decoder.buffer = done
+                                decoder.cursor = len(done)
                     elif kind == rk.CYCLE_MODE:
                         _clear_box(decoder)
                         self._cycle_mode()
