@@ -204,7 +204,13 @@ def status_line(view: dict, *, now: Optional[float] = None,
         # doing right now belongs in the panel that has room for it.
         bits = [b.strip() for b in str(r.get("detail") or "").split("·")]
         detail = bits[1] if len(bits) > 1 else (bits[0] if bits else "")
-        parts.append(f"{label} {detail}".strip())
+        # The handle: `/bash <id>` is the way in, and the id was the one
+        # thing on screen that was missing — a row that names work you
+        # cannot reach is a report, not a control. Shortened, because a
+        # glance wants enough to type rather than the whole key.
+        handle = str(r.get("id") or "")[:8]
+        piece = f"{label} {detail}".strip()
+        parts.append(f"{piece} [{handle}]" if handle else piece)
     more = len(live) - len(parts)
     if more > 0:
         parts.append(f"+{more} more")
