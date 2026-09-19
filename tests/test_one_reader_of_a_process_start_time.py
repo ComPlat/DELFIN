@@ -75,16 +75,16 @@ def test_the_job_ledger_and_the_lifeline_answer_through_it():
     assert lifeline._start_ticks is proc_identity.start_ticks
 
 
-def test_a_missing_process_has_no_start_time():
-    assert proc_identity.start_ticks(2 ** 22 - 1) is None
+def test_a_missing_process_has_no_start_time(gone_pid):
+    assert proc_identity.start_ticks(gone_pid) is None
     assert proc_identity.start_ticks(0) is None
     assert proc_identity.start_ticks("not a pid") is None
 
 
-def test_a_live_process_is_alive_and_a_gone_one_is_not():
+def test_a_live_process_is_alive_and_a_gone_one_is_not(gone_pid):
     assert proc_identity.alive(os.getpid(),
                                proc_identity.process_start(os.getpid()))
-    assert proc_identity.alive(2 ** 22 - 1, "1") is False
+    assert proc_identity.alive(gone_pid, "1") is False
 
 
 def test_a_pid_from_another_machine_is_not_answered():
