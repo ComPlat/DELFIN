@@ -92,6 +92,16 @@ place_samples=800
 place_clearance_scale=1.0
 no_place_co2=false
 
+# Adduct flow (automatic coordination chain; see delfin/co2/adduct_flow.py)
+# adduct_flow=true: after placement, run the adduct chain (optional GFN2-xTB
+# preopt -> coordination test -> OCCUPIER job preparation) and exit.
+# run_xtb gates the xTB pre-optimization (default off: no ORCA/xTB executed).
+adduct_flow=false
+adduct_start_xyz=complex_aligned_with_CO2.xyz
+substrate_atom_index=
+coord_max_dist=3.0
+run_xtb=false
+
 # Resources
 ------------------------------------
 PAL=12
@@ -202,11 +212,12 @@ def _minimal_read_control_file(path="CONTROL.txt"):
             params[key] = val
 
     # Explicit type coercion
-    for key in ["distance", "scan_end", "orientation_distance", "place_clearance_scale"]:
+    for key in ["distance", "scan_end", "orientation_distance", "place_clearance_scale",
+                "coord_max_dist"]:
         if key in params and isinstance(params[key], str):
             params[key] = float(params[key])
     for key in ["scan_steps", "charge", "multiplicity", "PAL", "maxcore", "rot_step_deg",
-                "rot_range_deg", "place_samples"]:
+                "rot_range_deg", "place_samples", "substrate_atom_index"]:
         if key in params and isinstance(params[key], str):
             params[key] = int(params[key])
 
@@ -1420,6 +1431,26 @@ def main():
         qm_separator=qm_separator
     )
     qmmm_range = (0, qm_atom_count - 1) if qm_atom_count is not None else None
+
+    # --- 2b) Adduct flow: automatic coordination chain (optional) ---
+    # When enabled, the flow (optional GFN2-xTB preopt -> coordination test
+    # -> OCCUPIER job preparation) replaces the orientation/distance scans.
+    if _is_enabled(args.get("adduct_flow", False)):
+        from delfin.co2.adduct_flow import run_adduct_flow
+        start_xyz = args.get("adduct_start_xyz") or combined_path
+        if not os.path.exists(start_xyz):
+            start_xyz = combined_path  # fall back to the fresh placement
+        substrate_idx = args.get("substrate_atom_index")
+        if substrate_idx in (None, ""):
+            substrate_idx = co2_c_idx  # default: CO2 carbon / substrate anchor
+        result = run_adduct_flow(
+            start_xyz,
+            substrate_atom_index=int(substrate_idx),
+            workdir=os.path.dirname(os.path.abspath(start_xyz)) or ".",
+            control=args,
+        )
+        print(f"[INFO] Adduct flow finished with status: {result['status']}")
+        return
 
     # --- 3) Orientation scan at fixed distance (optional) ---
     orientation_flag = args.get("perform_orientation_scan")
