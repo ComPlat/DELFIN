@@ -74,9 +74,9 @@ def test_it_is_made_where_it_was_asked_for(base):
 
 # -- the sweep --------------------------------------------------------------
 
-def test_a_folder_whose_owner_is_gone_is_swept(base):
+def test_a_folder_whose_owner_is_gone_is_swept(base, gone_pid):
     gone = _plant(base, name=PREFIX + "gone",
-                  stamp={"pid": 2 ** 22 - 1, "proc_start": "1",
+                  stamp={"pid": gone_pid, "proc_start": "1",
                          "host": socket.gethostname()})
     scratch.sweep(PREFIX, base=base)
     assert not gone.exists(), "the leak this whole module exists to stop"
@@ -117,9 +117,9 @@ def test_a_folder_from_another_host_is_left_alone(base):
     assert elsewhere.exists()
 
 
-def test_a_different_prefix_is_not_touched(base):
+def test_a_different_prefix_is_not_touched(base, gone_pid):
     other = _plant(base, name="someone-elses-",
-                   stamp={"pid": 2 ** 22 - 1, "proc_start": "1",
+                   stamp={"pid": gone_pid, "proc_start": "1",
                           "host": socket.gethostname()})
     scratch.sweep(PREFIX, base=base)
     assert other.exists()

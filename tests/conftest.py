@@ -140,6 +140,28 @@ def _the_suite_lives_under_no_lifeline():
     yield
 
 
+@pytest.fixture()
+def gone_pid():
+    """A pid whose process has ended and been reaped.
+
+    Not a large constant. ``/proc/sys/kernel/pid_max`` on this machine is
+    2**22 and the counter wraps -- measured within one session, a pid of
+    4110221 was followed by one of 1455746 -- so 2**22 - 1 is an ordinary
+    number the system hands out, and a test resting on it passes until
+    the day it does not. Worse, if that pid belongs to another user the
+    aliveness check answers "running" on the permission error, which is
+    the opposite of what such a test wants to assert.
+
+    A child we started and reaped is gone by construction, and Linux
+    allocates pids upward, so the number is not handed straight back out.
+    """
+    import subprocess
+    import sys
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait(timeout=60)
+    return proc.pid
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _the_suite_leaves_no_scratch_behind(tmp_path_factory):
     """Bare ``mkdtemp`` in a test goes under pytest's own root.
