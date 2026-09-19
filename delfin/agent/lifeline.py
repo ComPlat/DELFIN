@@ -32,19 +32,16 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from delfin.agent import proc_identity
+
 ENV_PID = "DELFIN_LIFELINE_PID"
 ENV_TICKS = "DELFIN_LIFELINE_TICKS"
 _DIR = Path.home() / ".delfin" / "lifeline"
 _POLL_S = 3.0
 
-
-def _start_ticks(pid: int) -> Optional[int]:
-    """Process start time in clock ticks; None where /proc is unavailable."""
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
-        return int(stat[stat.rindex(")") + 1:].split()[19])
-    except Exception:
-        return None
+#: Process start time in clock ticks; None where /proc is unavailable.
+#: Read in one place for the whole codebase -- see ``proc_identity``.
+_start_ticks = proc_identity.start_ticks
 
 
 def _alive(pid: int, ticks: Optional[int]) -> bool:

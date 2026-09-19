@@ -33,6 +33,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from delfin.agent import proc_identity
+
 #: Where the running dashboard leaves its note, when nothing redirects it.
 #: One file: a machine runs one dashboard per user, and a second one would
 #: overwrite the first — which is the truth worth showing, not two stale
@@ -60,34 +62,12 @@ def record_path() -> Path:
     return Path.home() / DEFAULT_RECORD_NAME
 
 
-def _process_start(pid: int) -> str:
-    """A fingerprint that tells one life of a pid from the next, or "".
-
-    Linux hands it over in /proc; everywhere else ``ps`` answers the same
-    question, and where neither does the caller falls back to the plain
-    pid check -- degraded, never wrong in the other direction.
-    """
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return ""
-    if pid <= 0:
-        return ""
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-        # The command name may contain spaces and brackets; everything
-        # after the closing bracket is fixed-width fields, and the 20th
-        # of those is the start time in clock ticks since boot.
-        fields = stat.rsplit(")", 1)[1].split()
-        return fields[19]
-    except (OSError, IndexError, ValueError):
-        pass
-    try:
-        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
-                             capture_output=True, text=True, timeout=2)
-    except Exception:
-        return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
+#: A fingerprint that tells one life of a pid from the next, or "".
+#: The reading of it lives in ``proc_identity``: the scratch directories
+#: ask the same question, and a second reader of /proc drifts from this
+#: one. Kept under its old name -- the note format and every caller in
+#: this file are written in terms of it.
+_process_start = proc_identity.process_start
 
 
 def _tmux_session() -> str:
@@ -192,31 +172,18 @@ def withdraw_dashboard() -> None:
 
 
 def _still_running(record: dict) -> Optional[bool]:
-    """True/False on this machine, None when it cannot be asked."""
+    """True/False on this machine, None when it cannot be asked.
+
+    A note with no host is not answerable either: the pid in it was
+    written somewhere, and this is not known to be that machine. The
+    process question itself -- including the recycled pid, which would
+    otherwise send somebody to a port nothing listens on -- is answered
+    in ``proc_identity``, where the scratch sweep asks it too.
+    """
     if str(record.get("host") or "") != socket.gethostname():
         return None
-    try:
-        pid = int(record.get("pid") or 0)
-    except (TypeError, ValueError):
-        return False
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return None
-    # The number is in use -- by the same process, or by whatever the
-    # system handed it to next. Saying "running" for a stranger sends
-    # somebody to a port nothing listens on.
-    written = str(record.get("proc_start") or "")
-    now = _process_start(pid)
-    if written and now and written != now:
-        return False
-    return True
+    return proc_identity.alive(record.get("pid"),
+                               str(record.get("proc_start") or ""))
 
 
 def dashboard() -> dict:

@@ -84,6 +84,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from delfin.agent import proc_identity
+
 
 _DEFAULT_BG_TIMEOUT_S = 24 * 3600    # 24 h hard cap
 
@@ -854,18 +856,12 @@ def _update_job_record(workspace: str | Path, job_id: str, **fields) -> None:
         pass
 
 
-def _proc_start_ticks(pid: int) -> Optional[int]:
-    """Process start time in clock ticks (``/proc/<pid>/stat`` field 22).
-
-    Recorded at job start and compared on re-attach as a pid-reuse guard:
-    a recycled pid carries a different start time. Best-effort — returns
-    None off Linux, in which case only the aliveness check applies."""
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
-        # comm (field 2) may contain spaces/parens — split after the LAST ')'.
-        return int(stat[stat.rindex(")") + 1:].split()[19])
-    except Exception:
-        return None
+#: Process start time in clock ticks (``/proc/<pid>/stat`` field 22),
+#: recorded at job start and compared on re-attach as a pid-reuse guard:
+#: a recycled pid carries a different start time. Best-effort -- None off
+#: Linux, in which case only the aliveness check applies. Read in one
+#: place for the whole codebase; see ``proc_identity``.
+_proc_start_ticks = proc_identity.start_ticks
 
 
 def _pid_alive(pid: int, start_ticks: Optional[int] = None) -> bool:
