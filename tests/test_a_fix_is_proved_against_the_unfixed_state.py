@@ -60,11 +60,15 @@ def test_every_role_still_has_its_anchor(role):
 def test_the_anchor_did_not_grow_without_paying():
     """A ratchet: a new capability pays from its own text. The write
     anchor may not get longer than it was for adding this."""
-    # 5 rules before; the control rule replaced the weaker half of the
-    # test rule rather than being added beside it.
-    assert len(WRITE_RULES) <= 5, (
+    # The control rule itself paid: it replaced the weaker half of the
+    # test rule rather than being added beside it, leaving 5 rules and
+    # 517 characters. The ceiling was raised once afterwards, to 6 and
+    # 642, by "read why it is there before removing it" — see
+    # test_read_why_before_you_change_it.py, which records what that one
+    # cost and why no line was left to fold it into.
+    assert len(WRITE_RULES) <= 6, (
         f"{len(WRITE_RULES)} rules — the anchor grew instead of paying")
-    assert sum(len(r) for r in WRITE_RULES) <= 560, (
+    assert sum(len(r) for r in WRITE_RULES) <= 642, (
         f"{sum(len(r) for r in WRITE_RULES)} characters in the write anchor")
 
 
