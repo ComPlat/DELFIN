@@ -1547,8 +1547,9 @@ def _key_rows() -> list[tuple[str, str, str]]:
         (rk.HISTORY_PREV, "up", "At the prompt: previous history line."),
         (rk.HISTORY_NEXT, "down", "At the prompt: next history line, back "
                                   "to what you were typing."),
-        (rk.COMPLETE, "tab", "At the prompt: complete a /command or an "
-                             "@path."),
+        (rk.COMPLETE, "tab", "At the prompt, on an empty line: take the "
+                             "next suggestion (again for the one after); "
+                             "otherwise complete a /command or an @path."),
         (rk.EOF, "ctrl+d", "At the prompt, on an empty line: leave."),
     ]
 
