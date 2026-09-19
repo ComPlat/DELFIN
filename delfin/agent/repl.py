@@ -752,6 +752,18 @@ class TerminalAgent:
             f"this backend takes no message mid-turn — queued "
             f"({len(self.queued)}) instead"))
 
+    def _posture_now(self) -> str:
+        """The approval posture, or "" where this backend has no gate.
+
+        Read fresh each time the box is drawn: shift+tab changes it, and
+        a row that shows the posture you had two turns ago is worse than
+        one that shows none.
+        """
+        try:
+            return str(getattr(self.engine.kit_permissions, "mode", "") or "")
+        except Exception:
+            return ""
+
     def _cycle_mode(self) -> None:
         """Shift+Tab, one step along the ladder — never onto bypass.
 
@@ -1846,7 +1858,8 @@ class TerminalAgent:
         def _view(decoder) -> rb.BoxView:
             return rb.viewport(
                 rb.render_box(decoder.buffer, decoder.cursor,
-                              self.transcript.width, _BOX_HINT,
+                              self.transcript.width,
+                              _box_hint(self._posture_now()),
                               status=self._background_status()),
                 _BOX_MAX_CONTENT_ROWS)
 
@@ -2093,6 +2106,19 @@ class TerminalAgent:
 # ---------------------------------------------------------------------------
 
 _BOX_HINT = "esc interrupt · shift+tab approval mode · /help"
+
+
+def _box_hint(posture: str) -> str:
+    """The hint row, with the approval posture in front of it.
+
+    The posture was in the banner, and the banner scrolls away after the
+    first turn. So the one fact that decides what the next command will
+    do — whether it asks, or edits, or asks nothing at all — was off
+    screen for the rest of the session. The hint row was always drawn, so
+    saying it there costs no row at all.
+    """
+    name = str(posture or "").strip()
+    return f"{name} · {_BOX_HINT}" if name else _BOX_HINT
 #: Content rows the box shows at most. Anything taller is a viewport
 #: with … markers (repl_box.viewport): a 300-line paste into a 24-row
 #: window would otherwise push the frame off the top of the screen.
