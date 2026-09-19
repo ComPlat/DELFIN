@@ -18450,19 +18450,36 @@ def _bash_isolation_argv(
                 "this session is locked to its folder, and neither "
                 "bubblewrap, Landlock nor Seatbelt can confine a command on this host")
     elif mode == "auto":
+        # Wherever this host can actually hold a command, not only in the
+        # unattended profile. "auto" used to isolate under bypass and for
+        # a locked scope and nowhere else, so an ordinary attended session
+        # ran through a plain shell -- the banner said so honestly, which
+        # is not the same as being safe. The reasoning was that a human
+        # approves each command there; but approval is given on the
+        # command TEXT, and the text is not the act. An interpreter, a
+        # symlink or a base64 round-trip walks past any reading of it,
+        # which is exactly the argument the locked branch above already
+        # makes. It does not stop being true because somebody is watching.
         perm_mode = str(getattr(perms, "mode", "") or "").strip()
-        if perm_mode == "bypassPermissions" and _bwrap_functional():
+        if _bwrap_functional():
             mode = "bwrap"
             _announce_auto_isolation()
-        elif perm_mode == "bypassPermissions" and _landlock_functional():
-            _announce_isolation_via_landlock("unattended (bypass) run")
+        elif _landlock_functional():
+            _announce_isolation_via_landlock(
+                "unattended (bypass) run"
+                if perm_mode == "bypassPermissions" else "attended session")
             return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
-        elif perm_mode == "bypassPermissions" and _seatbelt_functional():
+        elif _seatbelt_functional():
             return _seatbelt_argv(plain, perms, extra_write)
         elif perm_mode == "bypassPermissions":
             _announce_bypass_without_isolation()
             return _in_process_cage(plain, run_cwd)
         else:
+            # Nothing here can hold it. The command still runs: refusing
+            # every command in an attended session would be secure and
+            # useless, and it is a different promise from the one a locked
+            # scope makes, where refusing IS the answer. The banner is
+            # what tells the user which of the two they have.
             return _in_process_cage(plain, run_cwd)
     if mode == "bwrap" and not shutil.which("bwrap"):
         # Isolation was asked for by name. Landlock gives the same promise;
