@@ -305,6 +305,18 @@ _CHAMPION_FLAGS = (
                           # impl delfin/manta/backbone_reembed.py, converter_backend.py (pair gate at
                           # the re-embed loop).
     "PUCKER_SYMM", "PUCKER_SYMM_ADD",
+    # LANDING 4 (2026-09-19, AB:hplace6k4, register #466): H placement with three guards.
+    # 6000-pool A/B on this 34-flag champion: never-worse, landing gate open, 449 affected
+    # (7.5 %) + 5374 byte-identical, capability 0 lost / 1 gained, every loss term 0, hard
+    # frames -3.0 points on the intersection; the nine blockers of hplace6k3b healed
+    # (register #444/#451: the metal is a substituent -- a coordinated centre keeps its
+    # lone pair, the only move there is the swap H <-> lone pair).  Reach probe 8/24.
+    # Mechanism (delfin/manta/_h_placement.py): H_PLACEMENT = the three-stage H rotor;
+    # H_CONTACT_GATE = whole-frame inter-ligand contact census before/after; H_PARENT_REGAIN
+    # = the topology gate lets an H regain its own parent; H_EYE_GATE = the eye's own
+    # severity profile (0.70 x vdW, lone-pair cones) may not get worse or the frame falls
+    # back; H_SP3_ONLY = the rotor turns only tetrahedral / pyramidal centres.
+    "H_PLACEMENT", "H_CONTACT_GATE", "H_PARENT_REGAIN", "H_EYE_GATE", "H_SP3_ONLY",
                           # #31: ring-pucker symmetry reduction WITH the add guard in front of it --
                           # landed 2026-09-07, label symmfoldadd6k, pool_6000, both historic floors.
                           #   n_compared 5819, affected 123, judged intersection 107,
