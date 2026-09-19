@@ -1684,7 +1684,25 @@ def _bash_write_targets(cmd: str) -> list[str]:
         import shlex
 
         def _add(tok: str) -> None:
-            tok = (tok or "").strip().strip("'\"")
+            tok = (tok or "").strip()
+            # Quotes are shell syntax anywhere in the word, not only at its
+            # ends. Stripping the ends left `"dir"/file` as `dir"/file` --
+            # a path that exists nowhere, so a directory the user had
+            # GRANTED came back "outside what you may modify". Measured:
+            # dir/file and "dir/file" passed, "dir"/file and 'dir'/file
+            # were refused, which punishes exactly the careful quoting a
+            # model writes around a variable. shlex reads the word the way
+            # the shell will; anything it cannot read as ONE word is left
+            # alone, because guessing wider is how a gate stops gating.
+            if "'" in tok or '"' in tok:
+                try:
+                    parts = shlex.split(tok)
+                except ValueError:
+                    parts = []
+                if len(parts) == 1:
+                    tok = parts[0]
+                else:
+                    tok = tok.strip("'\"")
             if not tok or tok.startswith("-") or tok.startswith("$"):
                 return
             if any(c in tok for c in "*?[]"):        # globs: not a literal path
