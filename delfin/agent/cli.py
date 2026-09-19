@@ -1307,7 +1307,23 @@ def cmd_chat(args: argparse.Namespace) -> int:
     # an unattended run and exactly what this command exists to change.
     broker = None
     bind = getattr(engine, "set_kit_confirm_callback", None)
-    if sys.stdin.isatty() and callable(bind):
+    if (getattr(args, "supervised", False) and not sys.stdin.isatty()
+            and callable(bind)):
+        # No terminal, but somebody is watching the approvals directory.
+        # Without this the Self-Modification Guard has no callback and
+        # refuses outright, so a headless run cannot touch the agent's
+        # own safety layer at all -- which is most of the work worth
+        # doing there. Asked for explicitly: a run nobody is watching
+        # keeps the refusal.
+        from .file_confirm import FileConfirmBroker
+        file_broker = FileConfirmBroker(
+            session_id=str(getattr(engine, "session_id", "") or ""))
+        if bind(file_broker.callback):
+            broker = None          # no terminal UI to drive
+            print("[supervised] confirmations go to the approvals "
+                  "directory; answer with: delfin-agent approvals",
+                  file=sys.stderr)
+    elif sys.stdin.isatty() and callable(bind):
         broker = TerminalConfirmBroker(
             persist=lambda pat: engine.persist_kit_pattern(pat, kind="allow"),
             set_mode=engine.set_kit_permission_mode,
@@ -2087,6 +2103,75 @@ def cmd_credentials(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_approvals(args: argparse.Namespace) -> int:
+    """The questions a headless session waits on, and the answers.
+
+    A session with no terminal has nobody to ask, so the Self-Modification
+    Guard refuses outright and the most valuable work is the work it
+    cannot do. This is the other side of ``file_confirm``: what is
+    waiting, what it wants to change, and the two words that let it
+    through or turn it away. ``watch`` prints one line per new question,
+    which is what a supervising process reads.
+    """
+    import time as _time
+
+    from . import file_confirm as _fc
+
+    action = getattr(args, "approvals_action", "") or "ls"
+
+    if action in ("approve", "deny"):
+        ok = _fc.answer(args.request_id, action == "approve",
+                        by=os.environ.get("USER", ""))
+        if not ok:
+            print(f"ERROR: nothing waiting with id {args.request_id!r}",
+                  file=sys.stderr)
+            return 2
+        print(f"{action}: {args.request_id}")
+        return 0
+
+    if action == "show":
+        for row in _fc.pending():
+            if row.get("id") == args.request_id:
+                print(f"id      {row['id']}")
+                print(f"session {row.get('session_id', '')}")
+                print(f"tool    {row.get('tool', '')}")
+                print(f"path    {row.get('path', '')}")
+                print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s"
+                      f" of {int(row.get('timeout_s') or 0)}s")
+                print()
+                print(row.get("preview", ""))
+                return 0
+        print(f"ERROR: nothing waiting with id {args.request_id!r}",
+              file=sys.stderr)
+        return 2
+
+    if action == "watch":
+        seen: set = set()
+        limit = float(getattr(args, "seconds", 0) or 0)
+        deadline = _time.monotonic() + (limit if limit > 0 else 1e9)
+        while _time.monotonic() < deadline:
+            for row in _fc.pending():
+                rid = row.get("id")
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                print(f"{rid}  {row.get('tool', '')}  "
+                      f"{row.get('path') or '-'}  "
+                      f"session={row.get('session_id', '')}", flush=True)
+            _time.sleep(1.0)
+        return 0
+
+    rows = _fc.pending()
+    if not rows:
+        print("(nothing waiting)")
+        return 0
+    for row in rows:
+        waited = int(_time.time() - float(row.get("asked_at") or 0))
+        print(f"{row.get('id', ''):<24} {row.get('tool', ''):<12} "
+              f"{(row.get('path') or '-')[:40]:<40} {waited}s")
+    return 0
+
+
 def cmd_session(args: argparse.Namespace) -> int:
     from . import session_store as _ss
     if args.session_action == "ls":
@@ -2582,6 +2667,14 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Work on a copy, leaving the original untouched")
     chat.add_argument("-n", "--name", default="", dest="session_name",
                       help="Name this session, so --resume can find it")
+    # The one way a run with no terminal can ask anybody anything. Opt-in
+    # on purpose: without it a headless run keeps the behaviour it has,
+    # where the Self-Modification Guard refuses outright because there is
+    # no callback to ask. See delfin/agent/file_confirm.py.
+    chat.add_argument("--supervised", action="store_true",
+                      help="Send confirmations to the approvals directory "
+                           "instead of refusing them (for a run with no "
+                           "terminal; answer with 'delfin-agent approvals')")
     chat.add_argument("--permission-mode", default="", dest="permission_mode",
                       choices=["", "plan", "default", "acceptEdits",
                                "bypassPermissions"],
@@ -2908,6 +3001,26 @@ def build_parser() -> argparse.ArgumentParser:
     srch = sess_sub.add_parser("search", help="Grep across session chats")
     srch.add_argument("query")
     sess.set_defaults(func=cmd_session)
+
+    # approvals — the other side of a supervised headless session
+    appr = sub.add_parser(
+        "approvals",
+        help="Answer the confirmations a supervised headless session is "
+             "waiting on (see 'chat --supervised')")
+    appr_sub = appr.add_subparsers(dest="approvals_action", required=False)
+    appr_sub.add_parser("ls", help="What is waiting (the default)")
+    appr_show = appr_sub.add_parser(
+        "show", help="The full preview of one request, diff included")
+    appr_show.add_argument("request_id")
+    appr_ok = appr_sub.add_parser("approve", help="Let one request through")
+    appr_ok.add_argument("request_id")
+    appr_no = appr_sub.add_parser("deny", help="Turn one request away")
+    appr_no.add_argument("request_id")
+    appr_watch = appr_sub.add_parser(
+        "watch", help="One line per new request, as they arrive")
+    appr_watch.add_argument("--seconds", type=float, default=0.0,
+                            help="Stop after N seconds (0: keep watching)")
+    appr.set_defaults(func=cmd_approvals, approvals_action="ls")
 
     # bug — triage / watch the user bug-report archive (maintainer tool)
     bug = sub.add_parser(

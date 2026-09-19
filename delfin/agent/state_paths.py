@@ -676,6 +676,11 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # and the launcher's atexit hook then deleted it on the way out --
     # leaving a dashboard that was still serving with no way back to it.
     ("delfin.agent.where", "record_path", "dashboard_here.json"),
+    # Questions a headless session asks, and the answers a supervisor
+    # writes beside them. A run that approved something must not leave
+    # the answer in the real directory, where the next session polling
+    # there could read a decision nobody made about its own request.
+    ("delfin.agent.file_confirm", "requests_dir", "approvals"),
     ("delfin.agent.change_journal", "_undo_root", "undo"),
     ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
     ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),
