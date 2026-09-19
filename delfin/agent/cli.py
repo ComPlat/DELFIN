@@ -809,16 +809,28 @@ def _startup_banner(engine, report, workspace: Path,
                      + (f"  [{why}]" if why else ""))
         if isolation_note:
             lines.append(isolation_note)
-        elif perms_mode in ("default", "acceptEdits"):
-            # Nobody has been told this. _bash_isolation_argv engages bwrap
-            # only under bypassPermissions or a locked scope; in the
-            # attended modes with the shipped "auto" setting it returns a
-            # plain /bin/bash -c. A user reading "workspace confinement"
-            # reasonably assumes a sandbox, and what is actually there is
-            # path checking plus a regex list.
-            lines.append(
-                "isolation  off — a command the agent runs can still write "
-                "outside the workspace (--isolate)")
+        else:
+            # Which mechanism will actually run, asked of the one place
+            # that knows -- the doctor reads the same three probes
+            # _bash_isolation_argv picks from, in the same order, so the
+            # line cannot drift from the behaviour it describes.
+            try:
+                from .doctor import _isolation_mechanism
+                held_by = _isolation_mechanism()
+            except Exception:
+                held_by = ""
+            if held_by:
+                lines.append(
+                    f"isolation  on ({held_by}) — a command the agent runs "
+                    "writes only inside the workspace (--no-isolate)")
+            else:
+                # Not a detail to leave out. The agent starts at the safest
+                # posture the host can give; where that is none, the user
+                # is the one who has to know it.
+                lines.append(
+                    "isolation  off — neither bubblewrap, Landlock nor "
+                    "Seatbelt works here, so a command the agent runs can "
+                    "write outside the workspace")
     else:
         # Not decoration: without a permissions object the write and shell
         # tools refuse, and a user staring at a silent agent deserves the
@@ -1243,7 +1255,15 @@ def cmd_chat(args: argparse.Namespace) -> int:
     args.extra_dirs = [str(p) for p in report.granted_dirs]
     args.read_only_dirs = [str(p) for p in report.read_dirs]
     isolation_note = ""
-    if getattr(args, "isolate", False):
+    if getattr(args, "no_isolate", False):
+        # Deliberately disarmed. Said on screen, because a session running
+        # without containment should not look like one that has it.
+        from .api_client import set_bash_isolation_override
+        set_bash_isolation_override("off")
+        isolation_note = (
+            "isolation  OFF by request (--no-isolate) — a command the "
+            "agent runs can write outside the workspace")
+    elif getattr(args, "isolate", False):
         import shutil as _shutil
         from .api_client import set_bash_isolation_override
         set_bash_isolation_override("bwrap")
@@ -2578,7 +2598,14 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Readable this session — the right answer to "
                            "'let it read my other repo'")
     chat.add_argument("--isolate", action="store_true",
-                      help="Run shell commands under filesystem isolation")
+                      help="Force filesystem isolation, and refuse to run "
+                           "commands where this host cannot provide it")
+    # The other half of a default that is ON. A protection nobody can
+    # switch off when it blocks real work gets switched off badly -- by
+    # editing settings, or by not using the tool at all.
+    chat.add_argument("--no-isolate", action="store_true", dest="no_isolate",
+                      help="Run shell commands unisolated — they may then "
+                           "write outside the workspace")
     # Named for what it does, not for what the word suggests: what it
     # covers and the one thing it still cannot reach are both in the help
     # itself rather than left to be discovered — see _BARE_SKIPS and
