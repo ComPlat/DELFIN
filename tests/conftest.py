@@ -141,6 +141,37 @@ def _the_suite_lives_under_no_lifeline():
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _the_suite_leaves_no_scratch_behind(tmp_path_factory):
+    """Bare ``mkdtemp`` in a test goes under pytest's own root.
+
+    105 calls across 65 test files make a scratch directory with
+    ``tempfile.mkdtemp`` rather than the ``tmp_path`` fixture, and none of
+    them removes it. Measured on the login node: 20836 entries in /tmp,
+    among them 1827 ``ws_*``, 427 ``office_*``, 295 ``planmode_*``, 233
+    ``askuser_*`` -- every one of them named after the test that made it.
+
+    Rewriting the call sites would fix the ones that exist and none of the
+    ones written next week. Pointing ``tempfile.tempdir`` at the base
+    directory pytest already manages covers both: pytest keeps the last
+    three runs and removes what is older, so the growth is bounded by the
+    suite rather than by the calendar.
+
+    It is not a cleanup that could delete somebody's work -- nothing is
+    removed here. Only the place new scratch is made moves, and it moves
+    inside the run's own directory.
+    """
+    import tempfile
+    room = tmp_path_factory.getbasetemp() / "scratch"
+    room.mkdir(exist_ok=True)
+    previous = tempfile.tempdir
+    tempfile.tempdir = str(room)
+    try:
+        yield
+    finally:
+        tempfile.tempdir = previous
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _the_suite_opens_no_browser():
     """No test reaches the developer's browser.
 
