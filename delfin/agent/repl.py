@@ -580,9 +580,10 @@ class TerminalAgent:
         # result, so Ctrl+O has something to expand.
         self._input_line = ""
         self._last_result_text = ""
-        # The live composer is one owned region: rule, input, then status.
-        # Input and status used to compete for one row, so an empty input
-        # vanished behind the spinner and typing hid all progress info.
+        # The live composer is one owned region: progress above the same
+        # two-rule input box and key hint used while idle. Input and status
+        # used to compete for one row, so an empty input vanished behind
+        # the spinner and typing hid all progress info.
         self._bottom = ""
         self._bottom_rows = 0
         self._bottom_below = 0
@@ -1260,15 +1261,17 @@ class TerminalAgent:
     def _set_bottom(self, text: str, status: str | None = None) -> None:
         """Paint the live composer without surrendering the answer cursor.
 
-        The active form is three rows::
+        The active form is the idle prompt with progress above it::
 
-            ─────────────────────────────
-            » the next message
             ⠴ 12s  model  mode  ↑0 ↓0  esc to interrupt
+            ─────────────────────────────
+            > the next message
+            ─────────────────────────────
+              mode · esc interrupt · shift+tab approval mode · /help
 
         ``status=None`` retains the small two-row primitive used by a few
         callers and screen-model tests.  In the active form the cursor is
-        returned to the input row, with the status still visible below it.
+        returned to the input row, with the status and help still visible.
 
         If a model sentence is only half streamed, the composer starts on
         the following row.  Clearing it later walks back to the exact
@@ -1276,7 +1279,11 @@ class TerminalAgent:
         movement is intentional: unlike save/restore cursor, it remains
         correct when drawing the composer scrolls a terminal at its edge.
         """
-        state = text if status is None else f"{text}\n{status}"
+        hint = ""
+        if status is not None:
+            hint = self.transcript.theme.dim(
+                "  " + _box_hint(self._posture_now()))
+        state = text if status is None else f"{status}\n{text}\n{hint}"
         if state == self._bottom:
             return
         self._clear_bottom()
@@ -1293,23 +1300,37 @@ class TerminalAgent:
         line = _fit_to_width(text, width - 1)
         status_line = (_fit_to_width(status, width - 1)
                        if status is not None else None)
+        hint_line = (_fit_to_width(hint, width - 1)
+                     if status is not None else None)
         answer_open = bool(getattr(
             self.transcript, "screen_answer_open", False))
         answer_col = int(getattr(
             self.transcript, "screen_answer_column", 0) or 0)
         prefix = "\r\n" if answer_open else ""
-        out = [prefix, "\r\x1b[K", rule, "\r\n\x1b[K", line]
+        out = [prefix]
         rows = 2
         below = 0
         if status_line is not None:
-            out.extend(("\r\n\x1b[K", status_line))
-            rows = 3
-            below = 1
+            # Progress belongs ABOVE the stable input box.  That leaves
+            # the exact same writing surface on screen whether the agent
+            # is idle or working, instead of turning the top rule into a
+            # divider with a spinner stranded underneath it.
+            out.extend((
+                "\r\x1b[K", status_line,
+                "\r\n\x1b[K", rule,
+                "\r\n\x1b[K", line,
+                "\r\n\x1b[K", rule,
+                "\r\n\x1b[K", hint_line or "",
+            ))
+            rows = 5
+            below = 2
             # Keep the real cursor where the next character appears, not
-            # after the status. Raw mode suppresses terminal echo, but the
+            # after the hint. Raw mode suppresses terminal echo, but the
             # cursor is still the strongest cue that this line is live.
             col = min(max(0, self._display_width(line)), width - 1)
-            out.append(f"\x1b[1A\r\x1b[{col}C")
+            out.append(f"\x1b[2A\r\x1b[{col}C")
+        else:
+            out.extend(("\r\x1b[K", rule, "\r\n\x1b[K", line))
         self.err.write("".join(out))
         self._bottom_rows = rows
         self._bottom_below = below
@@ -1472,7 +1493,7 @@ class TerminalAgent:
         person typing has to see the characters they are typing.
         """
         width = max(20, self.transcript.width - 1)
-        row = "» " + (text or "")
+        row = "> " + (text or "")
         if len(row) <= width:
             return row
         return "…" + row[len(row) - (width - 1):]

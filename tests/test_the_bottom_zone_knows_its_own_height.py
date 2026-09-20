@@ -222,7 +222,7 @@ def test_every_exit_from_the_loop_goes_through_the_teardown():
 # -- the live composer -----------------------------------------------------
 
 def test_input_and_status_stay_below_a_streaming_answer():
-    """The real three-row shape, driven on one shared terminal.
+    """The real working-prompt shape, driven on one shared terminal.
 
     A state-only assertion can say the composer exists while its escape
     sequence has actually erased the answer.  This screen applies the
@@ -251,22 +251,26 @@ def test_input_and_status_stay_below_a_streaming_answer():
     agent._repaint_bottom(force=True)
     shown = screen.text()
     answer_at = shown.index("Antwort")
-    rule_at = next(i for i, row in enumerate(shown) if row and set(row) == {"─"})
-    input_at = next(i for i, row in enumerate(shown) if row.startswith("»"))
+    rules_at = [i for i, row in enumerate(shown) if row and set(row) == {"─"}]
+    input_at = next(i for i, row in enumerate(shown) if row.startswith(">"))
     status_at = next(i for i, row in enumerate(shown) if "esc to interrupt" in row)
-    assert (answer_at, rule_at, input_at, status_at) == (
-        answer_at, answer_at + 1, answer_at + 2, answer_at + 3)
+    hint_at = next(i for i, row in enumerate(shown) if row.startswith("  default"))
+    assert (status_at, rules_at, input_at, hint_at) == (
+        answer_at + 1, [answer_at + 2, answer_at + 4],
+        answer_at + 3, answer_at + 5)
 
     agent._render_around_bottom(R.RenderItem("text", text=" bleibt stehen"))
     agent._draw_input_line("naechste Nachricht")
     shown = screen.text()
     assert "Antwort bleibt stehen" in shown
-    assert any(row == "» naechste Nachricht" for row in shown)
+    assert any(row == "> naechste Nachricht" for row in shown)
     input_at = next(i for i, row in enumerate(shown)
-                    if row == "» naechste Nachricht")
-    assert "esc to interrupt" in shown[input_at + 1], (
-        "the information belongs below the writing line")
-    assert len(screen.rules()) == 1
+                    if row == "> naechste Nachricht")
+    assert "esc to interrupt" in shown[input_at - 2], (
+        "live progress belongs above the stable writing box")
+    assert shown[input_at + 2].startswith("  default"), (
+        "the same key hint as the idle prompt belongs below the box")
+    assert len(screen.rules()) == 2
 
     agent._clear_bottom()
     assert "Antwort bleibt stehen" in screen.text()

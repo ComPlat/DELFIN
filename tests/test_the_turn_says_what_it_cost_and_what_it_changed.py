@@ -116,22 +116,23 @@ def test_what_is_being_typed_and_the_status_are_both_kept():
     agent, _engine, err = _agent()
     agent._turn_active.set()
     agent._draw_input_line("half a sentence")
-    input_row, status_row = agent._bottom.splitlines()
-    assert input_row == "» half a sentence"
+    status_row, input_row, hint_row = agent._bottom.splitlines()
+    assert input_row == "> half a sentence"
     assert "esc to interrupt" in status_row
+    assert "shift+tab approval mode" in hint_row
 
     agent._repaint_bottom(force=True)
-    assert agent._bottom.splitlines()[0] == "» half a sentence", (
+    assert agent._bottom.splitlines()[1] == "> half a sentence", (
         "a status repaint must not overwrite what the user is typing")
 
 
-def test_the_status_takes_the_row_back_when_the_line_is_cleared():
+def test_clearing_text_keeps_an_empty_input_above_the_hint():
     agent, _engine, _err = _agent()
     agent._turn_active.set()
     agent._draw_input_line("typing")
     agent._clear_input_line()
     agent._repaint_bottom(force=True)
-    assert agent._bottom.splitlines()[0] == "» ", (
+    assert agent._bottom.splitlines()[1] == "> ", (
         "an empty input is still a visible place to type")
     assert "esc to interrupt" in agent._bottom
 
@@ -287,7 +288,7 @@ def test_the_composer_stays_while_the_answer_streams():
     err.truncate(0), err.seek(0)
 
     agent._repaint_bottom(force=True)
-    assert agent._bottom.splitlines()[0] == "» "
+    assert agent._bottom.splitlines()[1] == "> "
     assert "esc to interrupt" in agent._bottom
     assert agent._bottom_anchor_gap == 1, (
         "the composer must remember that the answer is directly above it")
@@ -307,6 +308,6 @@ def test_the_composer_returns_after_every_streamed_delta():
     assert agent._bottom, "the status owns the row before any answer text"
 
     agent._render_around_bottom(repl.RenderItem("text", text="Antwort"))
-    assert agent._bottom.splitlines()[0] == "» "
+    assert agent._bottom.splitlines()[1] == "> "
     assert "esc to interrupt" in agent._bottom
     assert agent._bottom_anchor_gap == 1
