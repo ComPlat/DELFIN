@@ -403,12 +403,19 @@ class TerminalConfirmBroker:
                  set_mode: Callable[[str], Any] | None = None,
                  on_abort: Callable[[], None] | None = None,
                  session_id: str = "", session_key: str = "",
-                 poll_s: float = 0.25) -> None:
+                 poll_s: float = 0.25,
+                 on_activity: "Callable[[], Any] | None" = None) -> None:
         self.timeout_s = float(timeout_s or 0.0)
         # How often the waiting thread looks for an answer left outside
         # the pane. It is the tool thread that waits, so the look costs
         # nothing the terminal would otherwise be doing.
         self.poll_s = max(0.01, float(poll_s or 0.25))
+        # Asking is proof of life. Presence was refreshed only from the
+        # idle poll, and a session going from one approval into the next
+        # never reaches it -- so it aged out of the overview exactly
+        # while it was waiting for the supervisor. The broker does not
+        # learn about presence for this: it calls back.
+        self.on_activity = on_activity
         # Only so a published question can name the session it belongs
         # to. Empty is fine: the record is then anonymous, not absent.
         self.session_id = str(session_id or "")
@@ -476,6 +483,11 @@ class TerminalConfirmBroker:
             # A supervisor's convenience does not get to fail an
             # approval: the prompt is asked either way.
             req.published = None
+        if self.on_activity is not None:
+            try:
+                self.on_activity()
+            except Exception:
+                pass            # a heartbeat may never cost a question
         return req
 
     def _wait(self, req: ConfirmRequest) -> Any:
