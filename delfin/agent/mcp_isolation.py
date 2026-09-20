@@ -275,7 +275,14 @@ def builtin_isolation_enabled(settings: dict | None = None) -> bool:
             settings = load_settings() or {}
         value = ((settings.get("agent") or {}).get("mcp_isolation", "off"))
     except Exception:
-        return False
+        value = "off"
+    env = os.environ.get("DELFIN_MCP_ISOLATION", "")
+    if env.strip():
+        # Per-process override, for the one session that runs the trial.
+        # The settings file is one per account and read by every session
+        # on it; flipping it would contain servers that were never meant
+        # to be part of this experiment. Same shape as DELFIN_PROCESS_GUARD.
+        value = env
     return str(value or "off").strip().lower() == "builtin"
 
 
