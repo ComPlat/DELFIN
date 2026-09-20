@@ -73,9 +73,13 @@ class TestPublishing:
         assert rec["session_key"] == "runde2-s1"
         assert rec["session_id"] == "s-123"
 
-    def test_it_says_it_is_not_answerable_here(self, room):
+    def test_it_says_where_it_can_be_answered(self, room):
+        # The first version said "terminal", which was right while there
+        # was no checked way in from outside. There is one now --
+        # file_confirm's, with all of its checks -- so the record says
+        # both ends, and the terminal still wins a race.
         _ask(_broker())
-        assert tc.pending_at_terminals()[0]["answer_at"] == "terminal"
+        assert tc.pending_at_terminals()[0]["answer_at"] == "terminal or supervisor"
 
     def test_an_answer_takes_the_question_away(self, room):
         b = _broker()
@@ -101,7 +105,7 @@ class TestPublishing:
     def test_the_record_is_owner_only(self, room):
         _ask(_broker())
         import os
-        f = next((room / "terminal_confirmations").rglob("*.json"))
+        f = next((room / "terminal_confirmations").rglob("*.request.json"))
         assert oct(os.stat(f).st_mode & 0o777) == "0o600"
 
 

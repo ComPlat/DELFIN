@@ -46,8 +46,9 @@ __all__ = [
 ]
 
 #: Where a question waiting at a terminal is published, whole, for
-#: whoever is supervising. Not a second door: the answer is given at the
-#: terminal, and each record says so.
+#: whoever is supervising -- and where an answer for it may be left. The
+#: room is file_confirm's, so its checks apply unchanged and the terminal
+#: still wins a race: resolve() is the single point that decides.
 _PENDING_DIR = Path.home() / ".delfin" / "terminal_confirmations"
 
 CONFIRM = "confirm"
@@ -144,11 +145,16 @@ def _publish_pending(req: ConfirmRequest, session_id: str,
         "asked_at": time.time(),
         "pid": os.getpid(),
         "host": socket.gethostname(),
-        # Said in the record, because a question that looks answerable
-        # from here and is not would be worse than not publishing it.
-        "answer_at": "terminal",
+        # Answerable from both ends now. The terminal still wins a race:
+        # resolve() is the single point that decides, and the first
+        # answer takes it.
+        "answer_at": "terminal or supervisor",
     }
-    path = room / f"{record['id']}.json"
+    # The same filename file_confirm uses, so its reader, its lister and
+    # its answer writer apply here unchanged -- with every careful part
+    # they carry: not a symlink, this user's, not group-writable, naming
+    # this very question, not older than it.
+    path = room / f"{record['id']}.request.json"
     tmp = room / f".{record['id']}.partial"
     tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
     try:
@@ -175,17 +181,64 @@ def pending_at_terminals() -> list[dict]:
     Never raises: a supervisor's view of the world must not be the thing
     that ends the supervisor.
     """
-    out: list[dict] = []
     try:
-        entries = sorted(_PENDING_DIR.glob("*.json"))
-    except OSError:
-        return out
-    for entry in entries:
-        try:
-            out.append(json.loads(entry.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            continue
-    return out
+        from . import file_confirm as _fc
+        return list(_fc.pending(_PENDING_DIR))
+    except Exception:
+        return []
+
+
+def _note_outside_answer(req: ConfirmRequest, session_key: str,
+                         decision) -> None:
+    """Record that this one was answered from outside the pane.
+
+    An approval given where nobody at the terminal saw it is exactly the
+    kind of thing the containment panel exists to show.
+    """
+    try:
+        from .api_client import _record_security_event
+        _record_security_event(
+            "approval_from_outside", req.tool or "?",
+            f"{session_key or '?'}: {'approved' if decision else 'refused'} "
+            f"{'(PROTECTED) ' if req.is_protected else ''}from outside the "
+            f"terminal", blocked=False)
+    except Exception:
+        pass
+
+
+def answer_waiting(request_id: str, decision: bool, *, by: str = "") -> bool:
+    """Answer a question a terminal session is stuck on. Never raises.
+
+    The decision this reverses is the one the first published record
+    stated in itself -- "answer_at: terminal" -- which was right while
+    there was no checked way in. There is one now, and it is not new:
+    file_confirm answers headless sessions with exactly these checks.
+
+    Reading beats guessing. The supervisor decides on the WHOLE preview,
+    which is more than the pane was ever able to show.
+    """
+    try:
+        from . import file_confirm as _fc
+        return bool(_fc.answer(str(request_id), bool(decision),
+                               room=_PENDING_DIR, by=str(by or "")))
+    except Exception:
+        return False
+
+
+def _answer_from_outside(req: ConfirmRequest) -> "bool | None":
+    """The answer somebody left for *req*, or None. Never raises."""
+    published = getattr(req, "published", None)
+    if not published:
+        return None
+    try:
+        from . import file_confirm as _fc
+        path = Path(published)
+        request_id = path.name[:-len(".request.json")]
+        answer_path = path.with_name(f"{request_id}.answer.json")
+        return _fc._read_answer(answer_path, request_id,
+                                path.stat().st_mtime)
+    except Exception:
+        return None
 
 
 def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
@@ -299,8 +352,13 @@ class TerminalConfirmBroker:
                  persist: Callable[[str], tuple[bool, str]] | None = None,
                  set_mode: Callable[[str], Any] | None = None,
                  on_abort: Callable[[], None] | None = None,
-                 session_id: str = "", session_key: str = "") -> None:
+                 session_id: str = "", session_key: str = "",
+                 poll_s: float = 0.25) -> None:
         self.timeout_s = float(timeout_s or 0.0)
+        # How often the waiting thread looks for an answer left outside
+        # the pane. It is the tool thread that waits, so the look costs
+        # nothing the terminal would otherwise be doing.
+        self.poll_s = max(0.01, float(poll_s or 0.25))
         # Only so a published question can name the session it belongs
         # to. Empty is fine: the record is then anonymous, not absent.
         self.session_id = str(session_id or "")
@@ -373,7 +431,23 @@ class TerminalConfirmBroker:
     def _wait(self, req: ConfirmRequest) -> Any:
         if req.resolved:
             return req.decision
-        got = req.event.wait(self.timeout_s or None)
+        import time as _time
+        deadline = (_time.monotonic() + self.timeout_s) if self.timeout_s else None
+        got = False
+        while True:
+            slice_s = self.poll_s
+            if deadline is not None:
+                slice_s = min(slice_s, max(0.0, deadline - _time.monotonic()))
+            got = req.event.wait(slice_s if slice_s > 0 else 0.001)
+            if got or req.resolved:
+                got = True
+                break
+            outside = _answer_from_outside(req)
+            if outside is not None and self.resolve(req, outside):
+                _note_outside_answer(req, self.session_key, outside)
+                return req.decision
+            if deadline is not None and _time.monotonic() >= deadline:
+                break
         with self._lock:
             if not got and not req.resolved:
                 req.expired = True
