@@ -1761,6 +1761,7 @@ class TerminalAgent:
         # Before the first prompt, so a session is addressable from the
         # moment it exists rather than from its first idle poll.
         self._announce_presence()
+        self._arm_presence_heartbeat()
         if self.opts.banner:
             for line in self.opts.banner.splitlines():
                 self.transcript.chrome(line)
@@ -2020,6 +2021,20 @@ class TerminalAgent:
             return name
         engine = getattr(self, "engine", None)
         return str(getattr(engine, "session_id", "") or "")[:8]
+
+    def _arm_presence_heartbeat(self) -> None:
+        """Let the broker refresh presence whenever it asks something.
+
+        The idle poll is the only other heartbeat, and a session that
+        goes from one approval into the next never reaches it.
+        """
+        broker = getattr(self, "broker", None)
+        if broker is None:
+            return
+        try:
+            broker.on_activity = self._announce_presence
+        except Exception:
+            pass
 
     def _announce_presence(self) -> None:
         """Say this session is open. Never raises.
