@@ -3252,17 +3252,21 @@ def main(argv: list[str] | None = None) -> int:
         _process_guard.protect("terminal agent")
         _show_security_notices()
         _exported = _process_guard.exported_provider_keys()
-        if _exported:
-            # Do it rather than ask for it: the key goes into the 0600
-            # store and the export is commented out, with a copy of the
-            # file kept. Only what could not be decided is left to say.
-            _done = _process_guard.put_exported_keys_away(_exported)
-            if _done:
-                print(_done, file=sys.stderr)
-            else:
-                print("Warning: "
-                      + _process_guard.exported_key_advice(_exported),
-                      file=sys.stderr)
+        # Unconditional, because the environment is not where the worst
+        # case lives: an alias sets a key for one command and leaves the
+        # line in a shell file for good, so nothing ever exports it and
+        # the old `if _exported:` never looked.
+        #
+        # Do it rather than ask for it: an exported key goes into the
+        # 0600 store and the export is commented out, with a copy of the
+        # file kept. Only what could not be decided is left to say.
+        _done = _process_guard.put_exported_keys_away(_exported)
+        if _done:
+            print(_done, file=sys.stderr)
+        elif _exported:
+            print("Warning: "
+                  + _process_guard.exported_key_advice(_exported),
+                  file=sys.stderr)
 
         def _end_with_everything() -> None:
             _stop_own_background_shells()

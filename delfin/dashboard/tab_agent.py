@@ -1977,9 +1977,12 @@ def _register_process_exit_cleanup() -> None:
         except Exception:
             pass
         _exported = _process_guard.exported_provider_keys()
-        if _exported:
+        # Unconditional: an alias sets a key for one command, so nothing
+        # exports it and the shell file keeps the line for good. The old
+        # `if _exported:` never looked at that case.
+        _done = _process_guard.put_exported_keys_away(_exported)
+        if _done or _exported:
             from delfin.agent.api_client import _record_security_event
-            _done = _process_guard.put_exported_keys_away(_exported)
             _record_security_event(
                 "key_exported", "environment",
                 _done or _process_guard.exported_key_advice(_exported),
