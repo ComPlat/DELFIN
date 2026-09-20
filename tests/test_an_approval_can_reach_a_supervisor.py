@@ -142,12 +142,27 @@ def test_a_finished_exchange_leaves_the_pending_list(broker, room):
 # -- the refusing part ------------------------------------------------------
 
 def _plant_answer(room, rid, payload, *, mode=0o600, mtime=None):
+    """Put an answer in place in one step, the way the broker writes one.
+
+    Built under a temporary name and moved into place. Written directly,
+    the file existed for a moment with the CURRENT mtime and the default
+    mode before chmod and utime reached it -- and a poller reading in
+    that window saw a fresh, well-permissioned answer and took it. That
+    is the whole of `test_an_answer_older_than_the_question_is_ignored`
+    failing on a CI runner roughly one run in three while passing every
+    time locally: the race was in this helper, not in the code it drives.
+
+    Proved by widening the window: a 150 ms sleep between the write and
+    the utime makes the old form return APPROVE three times out of three.
+    """
     room.mkdir(parents=True, exist_ok=True)
     path = room / f"{rid}.answer.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    os.chmod(path, mode)
+    tmp = room / f".{rid}.answer.partial"
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.chmod(tmp, mode)
     if mtime is not None:
-        os.utime(path, (mtime, mtime))
+        os.utime(tmp, (mtime, mtime))
+    tmp.replace(path)
     return path
 
 
