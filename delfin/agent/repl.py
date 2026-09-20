@@ -59,6 +59,11 @@ class RenderItem:
     text: str = ""
     name: str = ""
     data: dict | None = None
+    # Kept on a result because apply_patch returns only a success object;
+    # the actual diff lives in the matching call's input.  Carrying it
+    # here lets the renderer show what changed without reading the file a
+    # second time or guessing from the current worktree.
+    tool_input: dict | None = None
 
 
 class Transcript:
@@ -288,6 +293,7 @@ class Transcript:
             if self.show_tools:
                 self.chrome(rr.tool_result_line(
                     item.name, item.text, meta=item.data,
+                    tool_input=item.tool_input,
                     width=self.width, theme=self.theme))
         elif kind == "denied":
             self.chrome(rr.denied_line(item.name, theme=self.theme))
@@ -348,6 +354,7 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     """
     chunks: list[str] = []
     tool_calls: list[dict] = []
+    tool_inputs: list[tuple[str, dict]] = []
     result = TurnResult()
 
     def _emit(item: RenderItem) -> None:
@@ -370,36 +377,55 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
             _emit(RenderItem("thinking", text=text))
 
     def _on_tool_use(name: str, input_json: str) -> None:
-        tool_calls.append({"name": name, "input": rr._as_dict(input_json)})
+        parsed = rr._as_dict(input_json)
+        tool_calls.append({"name": name, "input": parsed})
+        tool_inputs.append((name, parsed))
         _emit(RenderItem("tool_use", name=name, text=input_json or ""))
+
+    def _take_tool_input(name: str) -> dict | None:
+        """Match a result to the oldest outstanding call of that tool."""
+        for index, (queued_name, parsed) in enumerate(tool_inputs):
+            if queued_name == name:
+                tool_inputs.pop(index)
+                return parsed
+        return None
 
     # One result, one line. The engine reports a tool result on two
     # callbacks — the head slice on on_tool_result, the verdict and the
     # true size on on_tool_result_meta — and rendering each as it arrives
     # drew every call twice, the second time with a body it did not have.
     # The text is held until the verdict catches up.
-    pending: dict[str, Any] = {"name": "", "text": "", "held": False}
+    pending: dict[str, Any] = {
+        "name": "", "text": "", "held": False, "tool_input": None,
+    }
 
     def _flush_pending() -> None:
         if pending["held"]:
             _emit(RenderItem("tool_result", name=pending["name"],
-                             text=pending["text"]))
-            pending.update(name="", text="", held=False)
+                             text=pending["text"],
+                             tool_input=pending["tool_input"]))
+            pending.update(name="", text="", held=False, tool_input=None)
 
     def _on_tool_result(name: str, output: str) -> None:
         # A second result before the first was completed means the meta
         # callback is not firing on this path; do not lose the first line.
         _flush_pending()
-        pending.update(name=name, text=output or "", held=True)
+        pending.update(name=name, text=output or "", held=True,
+                       tool_input=_take_tool_input(name))
 
     def _on_tool_result_meta(name: str, meta: dict) -> None:
         text = pending["text"] if pending["held"] and pending["name"] == name else ""
+        tool_input = (pending["tool_input"]
+                      if pending["held"] and pending["name"] == name
+                      else _take_tool_input(name))
         if pending["held"] and pending["name"] != name:
             _flush_pending()
-        pending.update(name="", text="", held=False)
-        _emit(RenderItem("tool_result", name=name, text=text, data=dict(meta)))
+        pending.update(name="", text="", held=False, tool_input=None)
+        _emit(RenderItem("tool_result", name=name, text=text, data=dict(meta),
+                         tool_input=tool_input))
 
     def _on_denied(name: str) -> None:
+        _take_tool_input(name)
         _emit(RenderItem("denied", name=name))
 
     in_before, out_before = _usage(engine)
@@ -579,12 +605,14 @@ class TerminalAgent:
         # What the user is typing WHILE a turn runs, and the last tool
         # result, so Ctrl+O has something to expand.
         self._input_line = ""
+        self._input_cursor = 0
         self._last_result_text = ""
         # The live composer is one owned region: progress above the same
         # two-rule input box and key hint used while idle. Input and status
         # used to compete for one row, so an empty input vanished behind
         # the spinner and typing hid all progress info.
         self._bottom = ""
+        self._bottom_cursor = (-1, -1)
         self._bottom_rows = 0
         self._bottom_below = 0
         self._bottom_anchor_gap = 0
@@ -791,12 +819,12 @@ class TerminalAgent:
         if event.kind == rk.CYCLE_MODE:
             self._clear_input_line()
             self._cycle_mode()
-            self._draw_input_line(decoder.buffer)
+            self._draw_input_line(decoder.buffer, cursor=decoder.cursor)
             return
         if event.kind == rk.EXPAND:
             self._clear_input_line()
             self._expand_last_result()
-            self._draw_input_line(decoder.buffer)
+            self._draw_input_line(decoder.buffer, cursor=decoder.cursor)
             return
         if event.kind == rk.TASKS:
             self._show_tasks = not self._show_tasks
@@ -810,7 +838,7 @@ class TerminalAgent:
             self._repaint_bottom(force=True)
             return
         if event.kind == rk.EDIT:
-            self._draw_input_line(event.text)
+            self._draw_input_line(event.text, cursor=decoder.cursor)
 
     def _steer(self, text: str) -> None:
         """Put what was typed into the turn that is running.
@@ -1258,14 +1286,15 @@ class TerminalAgent:
         except Exception:
             return False
 
-    def _set_bottom(self, text: str, status: str | None = None) -> None:
+    def _set_bottom(self, text: str, status: str | None = None, *,
+                    cursor: int | None = None) -> None:
         """Paint the live composer without surrendering the answer cursor.
 
         The active form is the idle prompt with progress above it::
 
             ⠴ 12s  model  mode  ↑0 ↓0  esc to interrupt
             ─────────────────────────────
-            > the next message
+            > the next message, wrapped onto as many rows as it needs
             ─────────────────────────────
               mode · esc interrupt · shift+tab approval mode · /help
 
@@ -1279,58 +1308,65 @@ class TerminalAgent:
         movement is intentional: unlike save/restore cursor, it remains
         correct when drawing the composer scrolls a terminal at its edge.
         """
-        hint = ""
-        if status is not None:
-            hint = self.transcript.theme.dim(
-                "  " + _box_hint(self._posture_now()))
-        state = text if status is None else f"{status}\n{text}\n{hint}"
-        if state == self._bottom:
+        width = max(2, int(getattr(self.transcript, "width", 0) or 80))
+        if status is None:
+            # The compatibility primitive is still deliberately one line.
+            # The live path below owns wrapping and its dynamic row count.
+            rule = "─" * (width - 1)
+            line = _fit_to_width(text, width - 1)
+            rows_on_screen = [rule, line]
+            cursor_row = 1
+            cursor_col = min(self._display_width(line), width - 1)
+        else:
+            from . import repl_box as rb
+
+            raw = text or ""
+            at = len(raw) if cursor is None else int(cursor)
+            at = max(0, min(at, len(raw)))
+            view = rb.render_box(
+                raw, at, width, _box_hint(self._posture_now()))
+            box_rows = list(view.rows)
+            if view.hint_row is not None:
+                box_rows[view.hint_row] = self.transcript.theme.dim(
+                    box_rows[view.hint_row])
+            rows_on_screen = [_fit_to_width(status, width - 1), *box_rows]
+            # BoxView.cursor is relative to the CONTENT, while the full
+            # form has a rule before its content.  The narrow fallback has
+            # only its content row and therefore no offset.
+            content_offset = 0 if len(view.rows) == 1 else 1
+            cursor_row = 1 + content_offset + view.cursor[0]
+            cursor_col = view.cursor[1] + (2 if view.border else 0)
+            cursor_col = min(max(0, cursor_col), width - 1)
+
+        state = "\n".join(rows_on_screen)
+        cursor_state = (cursor_row, cursor_col)
+        if (state == self._bottom
+                and cursor_state == getattr(self, "_bottom_cursor", None)):
             return
         self._clear_bottom()
         self._bottom = state
+        self._bottom_cursor = cursor_state
         if not self._can_redraw():
             return
-        width = max(2, int(getattr(self.transcript, "width", 0) or 80))
-        rule = "─" * (width - 1)
-        # Cut, never folded. A line that wraps takes a second row, the
-        # erase was written for two, and every repaint then left one more
-        # rule standing -- sixty of them during one slow first turn
-        # (reported from a real terminal, 2026-09-19). It is also wrong on
-        # its own terms: the place you type has to keep ONE shape.
-        line = _fit_to_width(text, width - 1)
-        status_line = (_fit_to_width(status, width - 1)
-                       if status is not None else None)
-        hint_line = (_fit_to_width(hint, width - 1)
-                     if status is not None else None)
+
         answer_open = bool(getattr(
             self.transcript, "screen_answer_open", False))
         answer_col = int(getattr(
             self.transcript, "screen_answer_column", 0) or 0)
-        prefix = "\r\n" if answer_open else ""
-        out = [prefix]
-        rows = 2
-        below = 0
-        if status_line is not None:
-            # Progress belongs ABOVE the stable input box.  That leaves
-            # the exact same writing surface on screen whether the agent
-            # is idle or working, instead of turning the top rule into a
-            # divider with a spinner stranded underneath it.
-            out.extend((
-                "\r\x1b[K", status_line,
-                "\r\n\x1b[K", rule,
-                "\r\n\x1b[K", line,
-                "\r\n\x1b[K", rule,
-                "\r\n\x1b[K", hint_line or "",
-            ))
-            rows = 5
-            below = 2
-            # Keep the real cursor where the next character appears, not
-            # after the hint. Raw mode suppresses terminal echo, but the
-            # cursor is still the strongest cue that this line is live.
-            col = min(max(0, self._display_width(line)), width - 1)
-            out.append(f"\x1b[2A\r\x1b[{col}C")
-        else:
-            out.extend(("\r\x1b[K", rule, "\r\n\x1b[K", line))
+        out = ["\r\n" if answer_open else ""]
+        for i, row in enumerate(rows_on_screen):
+            if i:
+                out.append("\r\n")
+            out.extend(("\r\x1b[K", row))
+        rows = len(rows_on_screen)
+        below = rows - 1 - cursor_row
+        natural_col = self._display_width(rows_on_screen[-1])
+        if below or cursor_col != natural_col:
+            if below:
+                out.append(f"\x1b[{below}A")
+            out.append("\r")
+            if cursor_col:
+                out.append(f"\x1b[{cursor_col}C")
         self.err.write("".join(out))
         self._bottom_rows = rows
         self._bottom_below = below
@@ -1348,6 +1384,7 @@ class TerminalAgent:
         if not self._bottom:
             return
         self._bottom = ""
+        self._bottom_cursor = (-1, -1)
         rows = int(getattr(self, "_bottom_rows", 0) or 0)
         below = int(getattr(self, "_bottom_below", 0) or 0)
         anchor_gap = int(getattr(self, "_bottom_anchor_gap", 0) or 0)
@@ -1421,13 +1458,16 @@ class TerminalAgent:
         except Exception:
             pass
 
-    def _draw_input_line(self, text: str) -> None:
-        """The typed line always wins the row: it is what the user is doing."""
+    def _draw_input_line(self, text: str, *, cursor: int | None = None) -> None:
+        """Record the draft and its cursor, then repaint its whole box."""
         self._input_line = text or ""
+        at = len(self._input_line) if cursor is None else int(cursor)
+        self._input_cursor = max(0, min(at, len(self._input_line)))
         self._repaint_bottom(force=True)
 
     def _clear_input_line(self) -> None:
         self._input_line = ""
+        self._input_cursor = 0
         self._clear_bottom()
 
     def _status_line(self) -> str:
@@ -1476,8 +1516,9 @@ class TerminalAgent:
             return
         self._last_paint = now
         if self._turn_active.is_set():
-            self._set_bottom(self._typed_row(self._input_line),
-                             self._status_line())
+            self._set_bottom(
+                self._input_line, self._status_line(),
+                cursor=getattr(self, "_input_cursor", len(self._input_line)))
         elif self._input_line:
             # Defensive/legacy path: _draw_input_line is a turn-time API,
             # but a direct caller still gets a visible editable row.
@@ -1506,11 +1547,13 @@ class TerminalAgent:
         having rather than merely possible.
         """
         held_input = self._input_line
+        held_cursor = getattr(self, "_input_cursor", len(held_input))
         self._clear_bottom()
         if item.kind == "tool_result" and item.text:
             self._last_result_text = item.text
         self.transcript.render(item)
         self._input_line = held_input
+        self._input_cursor = held_cursor
         self._repaint_bottom(force=True)
 
     def _settle(self, worker: threading.Thread, *,

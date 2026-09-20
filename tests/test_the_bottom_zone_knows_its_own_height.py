@@ -36,6 +36,7 @@ from __future__ import annotations
 import pytest
 
 from delfin.agent import repl as R
+from delfin.agent import repl_box as RB
 
 
 class WrappingScreen:
@@ -128,8 +129,10 @@ def agent():
     a.err = screen
     a._flush_err = screen.flush
     a._bottom = ""
+    a._bottom_cursor = (-1, -1)
     a._bottom_rows = 0
     a._input_line = ""
+    a._input_cursor = 0
 
     class _T:
         width = 40
@@ -254,7 +257,7 @@ def test_input_and_status_stay_below_a_streaming_answer():
     rules_at = [i for i, row in enumerate(shown) if row and set(row) == {"─"}]
     input_at = next(i for i, row in enumerate(shown) if row.startswith(">"))
     status_at = next(i for i, row in enumerate(shown) if "esc to interrupt" in row)
-    hint_at = next(i for i, row in enumerate(shown) if row.startswith("  default"))
+    hint_at = next(i for i, row in enumerate(shown) if row.endswith("/help"))
     assert (status_at, rules_at, input_at, hint_at) == (
         answer_at + 1, [answer_at + 2, answer_at + 4],
         answer_at + 3, answer_at + 5)
@@ -268,10 +271,60 @@ def test_input_and_status_stay_below_a_streaming_answer():
                     if row == "> naechste Nachricht")
     assert "esc to interrupt" in shown[input_at - 2], (
         "live progress belongs above the stable writing box")
-    assert shown[input_at + 2].startswith("  default"), (
+    assert shown[input_at + 2].endswith("/help"), (
         "the same key hint as the idle prompt belongs below the box")
     assert len(screen.rules()) == 2
 
     agent._clear_bottom()
     assert "Antwort bleibt stehen" in screen.text()
     assert not screen.rules()
+
+
+def test_the_working_prompt_wraps_without_hiding_text_or_losing_its_cursor():
+    """The active composer uses the idle prompt's real wrapping layout.
+
+    A cut-to-one-row implementation kept the cursor visible by deleting the
+    beginning of the draft from the screen.  This exercises the actual cursor
+    movements as well as the stored picture: all characters survive, moving
+    left puts the cursor on the right wrapped row, and shortening the draft
+    erases the rows that are no longer needed.
+    """
+    import time
+
+    class Engine:
+        client = type("Client", (), {"model": "kit.glm-5.3"})()
+        kit_permissions = type("Permissions", (), {"mode": "default"})()
+        token_usage = {}
+
+        @staticmethod
+        def get_status():
+            return {}
+
+    screen = WrappingScreen(40, ["earlier output", ""])
+    agent = R.TerminalAgent(
+        Engine(), out=screen, err=screen, opts=R.ReplOptions(color="never"))
+    agent.transcript.width = 40
+    agent._turn_t0 = time.monotonic()
+    agent._turn_active.set()
+
+    draft = "abcdefghijklmnopqrstuvwxyz" * 4
+    cursor = 51
+    agent._draw_input_line(draft, cursor=cursor)
+
+    shown = screen.text()
+    rules_at = [i for i, row in enumerate(shown)
+                if row and set(row) == {"─"}]
+    assert len(rules_at) == 2, shown
+    top, bottom = rules_at
+    assert "".join(shown[top + 1:bottom]) == "> " + draft
+    assert bottom - top > 2, "the long draft was still cut to one row"
+
+    view = RB.render_box(draft, cursor, 40, "default · /help")
+    expected_row = top + 1 + view.cursor[0]
+    assert (screen.row, screen.col) == (expected_row, view.cursor[1])
+
+    agent._draw_input_line("kurz")
+    shown = screen.text()
+    assert "> kurz" in shown
+    assert not any("abcdefghijklmnopqrstuvwxyz" in row for row in shown)
+    assert len(screen.rules()) == 2
