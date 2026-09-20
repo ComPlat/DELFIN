@@ -217,3 +217,57 @@ def test_every_exit_from_the_loop_goes_through_the_teardown():
     assert "_teardown_screen" in finally_block, (
         "the teardown must sit in the finally, or the path that skips it "
         "is the one a user meets")
+
+
+# -- the live composer -----------------------------------------------------
+
+def test_input_and_status_stay_below_a_streaming_answer():
+    """The real three-row shape, driven on one shared terminal.
+
+    A state-only assertion can say the composer exists while its escape
+    sequence has actually erased the answer.  This screen applies the
+    movements and proves all three things coexist, then proves the next
+    streamed delta resumes at the answer rather than inside the prompt.
+    """
+    import time
+
+    class Engine:
+        client = type("Client", (), {"model": "kit.glm-5.3"})()
+        kit_permissions = type("Permissions", (), {"mode": "default"})()
+        token_usage = {}
+
+        @staticmethod
+        def get_status():
+            return {}
+
+    screen = WrappingScreen(40, ["earlier output", ""])
+    agent = R.TerminalAgent(
+        Engine(), out=screen, err=screen, opts=R.ReplOptions(color="never"))
+    agent.transcript.width = 40
+    agent._turn_t0 = time.monotonic()
+    agent._turn_active.set()
+
+    agent.transcript.answer("Antwort")
+    agent._repaint_bottom(force=True)
+    shown = screen.text()
+    answer_at = shown.index("Antwort")
+    rule_at = next(i for i, row in enumerate(shown) if row and set(row) == {"─"})
+    input_at = next(i for i, row in enumerate(shown) if row.startswith("»"))
+    status_at = next(i for i, row in enumerate(shown) if "esc to interrupt" in row)
+    assert (answer_at, rule_at, input_at, status_at) == (
+        answer_at, answer_at + 1, answer_at + 2, answer_at + 3)
+
+    agent._render_around_bottom(R.RenderItem("text", text=" bleibt stehen"))
+    agent._draw_input_line("naechste Nachricht")
+    shown = screen.text()
+    assert "Antwort bleibt stehen" in shown
+    assert any(row == "» naechste Nachricht" for row in shown)
+    input_at = next(i for i, row in enumerate(shown)
+                    if row == "» naechste Nachricht")
+    assert "esc to interrupt" in shown[input_at + 1], (
+        "the information belongs below the writing line")
+    assert len(screen.rules()) == 1
+
+    agent._clear_bottom()
+    assert "Antwort bleibt stehen" in screen.text()
+    assert not screen.rules()

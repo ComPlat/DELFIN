@@ -93,6 +93,15 @@ class Transcript:
         # in a terminal would end up writing escape codes into the file.
         self._answer_theme = rr.theme_for(self.out, color)
         self._markdown = rr.MarkdownStream(self._answer_theme)
+        # stdout and stderr normally name the same terminal.  Remember
+        # that fact explicitly: while an answer is streaming the turn UI
+        # is painted on stderr, then the next answer delta continues on
+        # stdout.  A redirected stdout is a different surface and must
+        # never influence where the stderr cursor is restored.
+        self._shared_terminal = self._streams_share_terminal(
+            self.out, self.err)
+        self._screen_answer_open = False
+        self._screen_answer_column = 0
         # Two flags, because one had to answer two different questions and
         # got one of them wrong. `_out_open` is about the FILE: stdout ends
         # mid-line and needs closing before the process exits.
@@ -132,8 +141,10 @@ class Transcript:
         """
         if not delta:
             return
-        self.out.write(self._markdown.feed(delta))
+        rendered = self._markdown.feed(delta)
+        self.out.write(rendered)
         self._flush(self.out)
+        self._track_screen_answer(rendered)
         self._out_open = not delta.endswith("\n")
         self._break_pending = self._out_open
 
@@ -153,8 +164,17 @@ class Transcript:
         if self._break_pending:
             self.err.write("\n")
             self._break_pending = False
+            if self._shared_terminal:
+                self._screen_answer_open = False
+                self._screen_answer_column = 0
         self.err.write(line + "\n")
         self._flush(self.err)
+        if self._shared_terminal:
+            # Chrome always owns complete lines.  The logical stdout
+            # answer may still be open (and must stay exact in a pipe),
+            # but visually the next answer byte starts on a fresh row.
+            self._screen_answer_open = False
+            self._screen_answer_column = 0
 
     def finish(self) -> None:
         """Close the answer stream, so a redirected stdout ends in a newline."""
@@ -165,22 +185,82 @@ class Transcript:
             # would never be printed at all.
             self.out.write(tail)
             self._flush(self.out)
+            self._track_screen_answer(tail)
         if self._out_open:
             self.out.write("\n")
             self._flush(self.out)
+            self._track_screen_answer("\n")
             self._out_open = False
             self._break_pending = False
 
     @property
     def answer_open(self) -> bool:
-        """True while the cursor sits inside a half-streamed answer line.
+        """True while the logical stdout answer ends mid-line.
 
-        Both streams share one cursor. Anything that erases the current
-        line — a status repaint, an input redraw — erases the answer being
-        written into it, so the bottom row has to stand down until the
-        answer closes its line.
+        This is the file/output contract.  ``screen_answer_open`` is the
+        separate cursor contract used by the live terminal composer.
         """
         return self._out_open
+
+    @property
+    def screen_answer_open(self) -> bool:
+        """Whether the shared terminal cursor is after answer text.
+
+        This differs deliberately from :attr:`answer_open`.  A chrome
+        line may visually break a partial answer while stdout must remain
+        byte-for-byte contiguous for redirection.  The bottom composer
+        cares about the former; output correctness cares about the latter.
+        """
+        return self._shared_terminal and self._screen_answer_open
+
+    @property
+    def screen_answer_column(self) -> int:
+        return self._screen_answer_column if self.screen_answer_open else 0
+
+    @staticmethod
+    def _streams_share_terminal(out, err) -> bool:
+        try:
+            if not (out.isatty() and err.isatty()):
+                return False
+        except Exception:
+            return False
+        try:
+            import os
+            return os.fstat(out.fileno()).st_rdev == os.fstat(err.fileno()).st_rdev
+        except Exception:
+            # String-backed model terminals used by tests have no fd.  If
+            # both claim to be TTYs they model the ordinary shared screen.
+            return True
+
+    def _track_screen_answer(self, rendered: str) -> None:
+        """Track the physical column reached by styled answer bytes.
+
+        ANSI styling costs no columns; wide and combining characters do.
+        Only the column is needed: the live composer is drawn immediately
+        below the answer cursor and can therefore return with one relative
+        move, even if painting it made the terminal scroll.
+        """
+        if not self._shared_terminal or not rendered:
+            return
+        from .repl_box import char_width
+
+        width = max(2, int(self.width or 80))
+        clean = rr.strip_control(rendered)
+        for ch in clean:
+            if ch == "\n":
+                self._screen_answer_column = 0
+                self._screen_answer_open = False
+                continue
+            if ch == "\r":
+                self._screen_answer_column = 0
+                continue
+            if ch == "\t":
+                step = 8 - (self._screen_answer_column % 8)
+            else:
+                step = char_width(ch)
+            self._screen_answer_column = (
+                self._screen_answer_column + step) % width
+            self._screen_answer_open = True
 
     @staticmethod
     def _flush(stream) -> None:
@@ -427,9 +507,14 @@ def _fit_to_width(text: str, width: int) -> str:
 
     if width <= 0:
         return ""
-    if string_width(text) <= width:
+    # UI strings may carry trusted SGR colour.  It occupies no terminal
+    # columns; counting its bytes both shortens a line unnecessarily and
+    # can cut an escape sequence in half.  Keep styling when the visible
+    # text fits, and fall back to safe plain text when truncation is needed.
+    visible = rr.strip_control(text)
+    if string_width(visible) <= width:
         return text
-    cut = text
+    cut = visible
     while cut and string_width(cut) > max(1, width - 1):
         cut = cut[:-1]
     return cut + "…"
@@ -495,11 +580,14 @@ class TerminalAgent:
         # result, so Ctrl+O has something to expand.
         self._input_line = ""
         self._last_result_text = ""
-        # The bottom row has exactly one owner. Two things want it — the
-        # line being typed and the live status — so they go through one
-        # place rather than overwriting each other at 4 Hz.
+        # The live composer is one owned region: rule, input, then status.
+        # Input and status used to compete for one row, so an empty input
+        # vanished behind the spinner and typing hid all progress info.
         self._bottom = ""
         self._bottom_rows = 0
+        self._bottom_below = 0
+        self._bottom_anchor_gap = 0
+        self._bottom_anchor_column = 0
         self._show_tasks = False
         self._turn_t0 = 0.0
         self._turn_base = (0, 0, 0.0)
@@ -686,6 +774,7 @@ class TerminalAgent:
             text = event.text.strip()
             self._clear_input_line()
             if text:
+                self._show_user_input(text, queued=True)
                 self.queued.append(text)
                 self._recall_later(text)
                 self.transcript.chrome(self.transcript.theme.dim(
@@ -694,6 +783,8 @@ class TerminalAgent:
             return
         if event.kind == rk.STEER:
             self._clear_input_line()
+            if event.text.strip():
+                self._show_user_input(event.text.strip())
             self._steer(event.text.strip())
             return
         if event.kind == rk.CYCLE_MODE:
@@ -1152,7 +1243,7 @@ class TerminalAgent:
             return {"answers": []}
         return False
 
-    # -- the bottom row, which has exactly one owner ----------------------
+    # -- the live bottom composer -----------------------------------------
     def _can_redraw(self) -> bool:
         """Only a terminal gets cursor control.
 
@@ -1166,21 +1257,30 @@ class TerminalAgent:
         except Exception:
             return False
 
-    def _set_bottom(self, text: str) -> None:
-        """The bottom zone: a rule, and the line under it.
+    def _set_bottom(self, text: str, status: str | None = None) -> None:
+        """Paint the live composer without surrendering the answer cursor.
 
-        Two rows, so the place you type keeps its shape while a turn
-        runs. It used to be one bare row, and the input area simply
-        vanished for the length of the turn — which is the half of the
-        session a user most wants to know they can still reach.
+        The active form is three rows::
 
-        The rule is the same one the idle prompt draws, for the same
-        reason: one vocabulary, top and bottom, turn or no turn.
+            ─────────────────────────────
+            » the next message
+            ⠴ 12s  model  mode  ↑0 ↓0  esc to interrupt
+
+        ``status=None`` retains the small two-row primitive used by a few
+        callers and screen-model tests.  In the active form the cursor is
+        returned to the input row, with the status still visible below it.
+
+        If a model sentence is only half streamed, the composer starts on
+        the following row.  Clearing it later walks back to the exact
+        answer column before the next stdout delta is written.  Relative
+        movement is intentional: unlike save/restore cursor, it remains
+        correct when drawing the composer scrolls a terminal at its edge.
         """
-        if text == self._bottom:
+        state = text if status is None else f"{text}\n{status}"
+        if state == self._bottom:
             return
         self._clear_bottom()
-        self._bottom = text
+        self._bottom = state
         if not self._can_redraw():
             return
         width = max(2, int(getattr(self.transcript, "width", 0) or 80))
@@ -1191,8 +1291,30 @@ class TerminalAgent:
         # (reported from a real terminal, 2026-09-19). It is also wrong on
         # its own terms: the place you type has to keep ONE shape.
         line = _fit_to_width(text, width - 1)
-        self.err.write("\r\x1b[K" + rule + "\r\n\x1b[K" + line)
-        self._bottom_rows = 2
+        status_line = (_fit_to_width(status, width - 1)
+                       if status is not None else None)
+        answer_open = bool(getattr(
+            self.transcript, "screen_answer_open", False))
+        answer_col = int(getattr(
+            self.transcript, "screen_answer_column", 0) or 0)
+        prefix = "\r\n" if answer_open else ""
+        out = [prefix, "\r\x1b[K", rule, "\r\n\x1b[K", line]
+        rows = 2
+        below = 0
+        if status_line is not None:
+            out.extend(("\r\n\x1b[K", status_line))
+            rows = 3
+            below = 1
+            # Keep the real cursor where the next character appears, not
+            # after the status. Raw mode suppresses terminal echo, but the
+            # cursor is still the strongest cue that this line is live.
+            col = min(max(0, self._display_width(line)), width - 1)
+            out.append(f"\x1b[1A\r\x1b[{col}C")
+        self.err.write("".join(out))
+        self._bottom_rows = rows
+        self._bottom_below = below
+        self._bottom_anchor_gap = 1 if answer_open else 0
+        self._bottom_anchor_column = min(max(0, answer_col), width - 1)
         self._flush_err()
 
     def _clear_bottom(self) -> None:
@@ -1206,11 +1328,54 @@ class TerminalAgent:
             return
         self._bottom = ""
         rows = int(getattr(self, "_bottom_rows", 0) or 0)
+        below = int(getattr(self, "_bottom_below", 0) or 0)
+        anchor_gap = int(getattr(self, "_bottom_anchor_gap", 0) or 0)
+        anchor_col = int(getattr(self, "_bottom_anchor_column", 0) or 0)
         self._bottom_rows = 0
+        self._bottom_below = 0
+        self._bottom_anchor_gap = 0
+        self._bottom_anchor_column = 0
         if not self._can_redraw() or rows <= 0:
             return
-        self.err.write("\r\x1b[K" + "\x1b[1A\r\x1b[K" * (rows - 1))
+        out = []
+        if below:
+            out.append(f"\x1b[{below}B")
+        out.append("\r\x1b[K")
+        out.append("\x1b[1A\r\x1b[K" * (rows - 1))
+        if anchor_gap:
+            out.append("\x1b[1A\r")
+            if anchor_col:
+                out.append(f"\x1b[{anchor_col}C")
+        self.err.write("".join(out))
         self._flush_err()
+
+    @staticmethod
+    def _display_width(text: str) -> int:
+        """Columns in a trusted UI row (ANSI styling costs none)."""
+        from .repl_box import string_width
+        return string_width(rr.strip_control(text or ""))
+
+    def _show_user_input(self, text: str, *, queued: bool = False) -> None:
+        """Keep a submitted message in the transcript after its box clears.
+
+        The editable box is transient by design.  Without this permanent
+        copy, pressing Enter made the user's task disappear precisely when
+        a slow first turn left them waiting minutes for an answer.  Control
+        sequences are stripped because pasted text is still untrusted
+        terminal input; line structure remains so a pasted traceback is
+        recognisable as the message that was sent.
+        """
+        cleaned = rr.strip_control(text or "").strip()
+        if not cleaned:
+            return
+        lines = cleaned.splitlines() or [cleaned]
+        marker = self.transcript.theme.bold("» ")
+        continuation = "  "
+        shown = [marker + lines[0]]
+        shown.extend(continuation + line for line in lines[1:])
+        if queued:
+            shown[-1] += self.transcript.theme.dim("  (queued)")
+        self.transcript.chrome("\n".join(shown))
 
     def _teardown_screen(self) -> None:
         """Give the screen back to the shell, on a row of its own.
@@ -1280,26 +1445,22 @@ class TerminalAgent:
             rr.truncate_middle(line, max(20, self.transcript.width - 1)))
 
     def _repaint_bottom(self, *, force: bool = False) -> None:
-        """One row, one owner: what is being typed, else the live status."""
+        """Keep input and turn information visible at the same time."""
         import time as _time
 
         if not self._can_redraw():
-            return
-        if self.transcript.answer_open:
-            # The model is mid-sentence on the shared cursor line. Painting
-            # here would erase the answer as it streams — the same shared-
-            # cursor hazard as the break that closes a tool line, one step
-            # further along. The row comes back when the answer does.
-            self._clear_bottom()
             return
         now = _time.monotonic()
         if not force and (now - self._last_paint) < _STATUS_TICK_S:
             return
         self._last_paint = now
-        if self._input_line:
+        if self._turn_active.is_set():
+            self._set_bottom(self._typed_row(self._input_line),
+                             self._status_line())
+        elif self._input_line:
+            # Defensive/legacy path: _draw_input_line is a turn-time API,
+            # but a direct caller still gets a visible editable row.
             self._set_bottom(self._typed_row(self._input_line))
-        elif self._turn_active.is_set():
-            self._set_bottom(self._status_line())
 
     def _typed_row(self, text: str) -> str:
         """The line being typed, cut to one screen row like the status row.
@@ -1512,11 +1673,17 @@ class TerminalAgent:
             for line in self.opts.banner.splitlines():
                 self.transcript.chrome(line)
         pending = first_prompt.strip()
+        # A line queued during the preceding turn is printed at the moment
+        # Enter consumes it.  Do not print it a second time when its turn
+        # starts; ordinary idle-prompt input has not been shown yet.
+        pending_already_shown = False
         try:
             while True:
                 if not pending and self.queued:
                     pending = self.queued.pop(0)
+                    pending_already_shown = True
                 if not pending:
+                    pending_already_shown = False
                     try:
                         from .repl_keys import raw_mode_supported
                         if raw_mode_supported(self._stdin):
@@ -1540,6 +1707,9 @@ class TerminalAgent:
                 self._idle_interrupts = 0
                 if not pending:
                     continue
+                if not pending_already_shown:
+                    self._show_user_input(pending)
+                pending_already_shown = False
                 # A bare number stands for the suggestion of that number,
                 # and only while one is on offer.
                 pending = self._expand_next_step(pending)
