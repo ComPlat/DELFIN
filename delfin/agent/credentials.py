@@ -262,6 +262,55 @@ def exported_in_shell_files(name: str, *, home: Path | None = None
     return found
 
 
+def keys_in_readable_shell_files(
+    names: "tuple[str, ...] | list[str]" = (),
+    *,
+    home: Path | None = None,
+) -> list[dict]:
+    """Provider keys sitting in shell files that somebody else can read.
+
+    The environment is the wrong place to start looking. ``adopt_from_
+    environment`` searches the shell files only for keys it already found
+    in ``os.environ``, so a key that never reaches the environment is
+    never searched for -- and that is the worse case, because it stays in
+    the file instead of living only as long as a shell. The shape that
+    hides this way is an alias:
+
+        alias codex-kit='OPENAI_API_KEY="..." ... codex'
+
+    The value is set for the duration of one command and is absent from
+    every environment DELFIN inspects, while the line itself is readable
+    by everyone who may read the file.
+
+    The permission is the finding, not the presence: a key in a 0600
+    ``~/.bashrc`` is where its owner put it and nobody else sees it. Each
+    row is ``{name, file, line_no, mode, readable_by}`` and never carries
+    the value. Read-only, always -- the value is not in the store, and a
+    tool that removes the only copy of a key is worse than the leak.
+    """
+    rows: list[dict] = []
+    for name in (tuple(names) or _WELL_KNOWN_KEYS):
+        for path, number, _line in exported_in_shell_files(name, home=home):
+            try:
+                mode = path.stat().st_mode & 0o777
+            except OSError:
+                continue
+            others = bool(mode & 0o004)
+            group = bool(mode & 0o040)
+            if not (group or others):
+                continue
+            who = ("group, others" if group and others
+                   else "others" if others else "group")
+            rows.append({
+                "name": name,
+                "file": str(path),
+                "line_no": number,
+                "mode": f"{mode:04o}",
+                "readable_by": who,
+            })
+    return rows
+
+
 #: Suffix of the copy kept beside a shell file this touches.
 SHELL_BACKUP_SUFFIX = ".delfin-backup"
 
