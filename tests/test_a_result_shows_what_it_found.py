@@ -18,6 +18,8 @@ screen — the same discipline the headline already follows, where a
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from delfin.agent.repl_render import tool_result_line
@@ -27,6 +29,28 @@ SUITE = ("collected 900 items\n\n"
          "tests/test_a.py ......  [ 40%]\n"
          "tests/test_b.py ..F..   [ 80%]\n"
          "2 failed, 17209 passed in 1908.18s")
+
+EDIT = """Edited delfin/agent/repl.py (1 replacement(s)):
+
+--- a/delfin/agent/repl.py
++++ b/delfin/agent/repl.py
+@@ -1336,5 +1336,5 @@
+         below = rows - 1 - cursor_row
+-        if below:
+-            out.append("move up")
++        if below or cursor_col != natural_col:
++            out.append("move when needed")
+         self.err.write("".join(out))
+"""
+
+PATCH = """--- a/delfin/agent/repl.py
++++ b/delfin/agent/repl.py
+@@ -10,3 +10,3 @@
+ keep
+-old
++new
+ keep too
+"""
 
 
 def _plain(text: str) -> list[str]:
@@ -82,3 +106,58 @@ def test_a_blocked_call_is_unchanged():
         width=70))
     assert len(lines) == 1
     assert "blocked" in lines[0] and "outside the workspace" in lines[0]
+
+
+def test_an_edit_shows_the_file_counts_and_relevant_diff_lines():
+    lines = _plain(tool_result_line(
+        "edit_file", EDIT, meta={"ok": True, "chars": len(EDIT)},
+        width=78))
+
+    assert lines[0] == (
+        "  ⎿ Edited delfin/agent/repl.py (+2 -2)"), lines
+    assert any("1337 -" in line and "if below" in line for line in lines)
+    assert any("1337 +" in line and "natural_col" in line for line in lines)
+    assert not any("lines," in line for line in lines), lines
+    assert all(len(line) <= 78 for line in lines)
+
+
+def test_apply_patch_uses_the_matching_calls_diff():
+    output = json.dumps({
+        "status": "ok", "files_touched": ["delfin/agent/repl.py"],
+    })
+    lines = _plain(tool_result_line(
+        "mcp__kit-coding__apply_patch", output,
+        meta={"ok": True, "chars": len(output)},
+        tool_input={"diff": PATCH}, width=78))
+
+    assert lines[0] == (
+        "  ⎿ Edited delfin/agent/repl.py (+1 -1)"), lines
+    assert any("11 -old" in line for line in lines)
+    assert any("11 +new" in line for line in lines)
+
+
+def test_a_failed_patch_never_claims_that_it_edited_the_file():
+    output = json.dumps({"status": "check_failed", "error": "does not apply"})
+    lines = _plain(tool_result_line(
+        "apply_patch", output, meta={"ok": True, "chars": len(output)},
+        tool_input={"diff": PATCH}, width=78))
+    assert not any("Edited" in line for line in lines)
+
+
+def test_a_large_edit_preview_is_bounded_but_says_what_was_left_out():
+    old = "\n".join(f"-old {i}" for i in range(80))
+    new = "\n".join(f"+new {i}" for i in range(80))
+    diff = ("Edited many.py:\n\n--- a/many.py\n+++ b/many.py\n"
+            "@@ -1,80 +1,80 @@\n" + old + "\n" + new)
+    lines = _plain(tool_result_line("edit_file", diff, width=70))
+
+    assert len(lines) == 26, "header + 24 diff rows + omission notice"
+    assert "more diff lines" in lines[-1]
+
+
+def test_an_edit_diff_cannot_smuggle_terminal_control_sequences():
+    dirty = PATCH.replace("+new", "+new\x1b[2J\x1b]0;pwned\x07")
+    rendered = tool_result_line(
+        "apply_patch", '{"status": "ok", "files_touched": ["x.py"]}',
+        meta={"ok": True}, tool_input={"diff": dirty})
+    assert "\x1b" not in rendered
