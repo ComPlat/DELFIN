@@ -2590,6 +2590,60 @@ def cmd_jobs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _session_id_for(name: str) -> str:
+    """The audit-log session id behind a -n name, or the name itself.
+
+    The log records the engine's id; a supervisor knows the session by
+    the name it was started with. Presence carries both, so the lookup
+    is one read and costs nothing when the name IS an id.
+    """
+    name = str(name or "").strip()
+    if not name:
+        return ""
+    try:
+        from . import session_presence as _pres
+        for record in _pres.open_sessions():
+            if str(record.get("key") or "") == name:
+                return str(record.get("session_id") or "") or name
+    except Exception:
+        pass
+    return name
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Follow every step, and above all every refusal.
+
+    Supervising five sessions meant grepping the audit log by hand, once
+    per question. What was wanted twice over: what a session is doing
+    now, and what it TRIED to do and was refused -- because that is the
+    line to stop on and the moment to step in.
+    """
+    import time as _time
+
+    from . import audit_log as _al
+
+    session = _session_id_for(getattr(args, "session", ""))
+    denied = bool(getattr(args, "denied", False))
+    # Start a little way back, so the first screen has context rather
+    # than an empty prompt that looks like nothing is happening.
+    back = max(0, int(getattr(args, "since", 40) or 0))
+    rows, offset = _al.steps_since(0, session=session, denied_only=denied)
+    for row in rows[-back:] if back else []:
+        print(_al.render_step(row), flush=True)
+    limit = float(getattr(args, "seconds", 0) or 0)
+    deadline = _time.monotonic() + (limit if limit > 0 else 1e9)
+    try:
+        while _time.monotonic() < deadline:
+            rows, offset = _al.steps_since(offset, session=session,
+                                           denied_only=denied)
+            for row in rows:
+                print(_al.render_step(row), flush=True)
+            _time.sleep(1.0)
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -3189,6 +3243,25 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Print the SessionReport as JSON instead of "
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
+
+    # watch — every step every session takes, as it takes it, and above
+    # all the ones the gate refused.
+    watch_p = sub.add_parser(
+        "watch",
+        help="Follow what the open sessions do, step by step; --denied "
+             "keeps only what the gate refused",
+    )
+    watch_p.add_argument("--session", default="",
+                         help="One session: its -n name or the head of its id")
+    watch_p.add_argument("--denied", action="store_true",
+                         help="Only the refusals — what a session tried and "
+                              "was not allowed to do")
+    watch_p.add_argument("--seconds", type=float, default=0.0,
+                         help="Stop after this long (default: until Ctrl+C)")
+    watch_p.add_argument("--since", type=int, default=40,
+                         help="How many recent steps to print before "
+                              "following (default 40)")
+    watch_p.set_defaults(func=cmd_watch)
 
     # where — the dashboard runs on one node, in one multiplexer, behind
     # one forwarded port, and the next login lands anywhere.
