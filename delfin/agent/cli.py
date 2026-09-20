@@ -1346,6 +1346,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
         max_tokens=getattr(args, "max_tokens", 0) or 0,
         show_thinking=bool(getattr(args, "verbose", False)),
         color=getattr(args, "color", "auto"),
+        session_name=getattr(args, "session_name", "") or "",
         banner=(_startup_banner(engine, report, workspace, why,
                                 isolation_note,
                                 tuple(_bounding_notices(args, engine)))

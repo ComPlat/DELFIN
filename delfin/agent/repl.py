@@ -410,6 +410,9 @@ class ReplOptions:
     show_tools: bool = True
     color: str = "auto"
     banner: str = ""
+    #: ``-n/--name``. The address an operator reaches this session by, and
+    #: the title it shows in the list of open sessions.
+    session_name: str = ""
 
 
 def _fit_to_width(text: str, width: int) -> str:
@@ -1502,6 +1505,9 @@ class TerminalAgent:
         self._install_sigint()
         self._load_history()
         self._install_completer()
+        # Before the first prompt, so a session is addressable from the
+        # moment it exists rather than from its first idle poll.
+        self._announce_presence()
         if self.opts.banner:
             for line in self.opts.banner.splitlines():
                 self.transcript.chrome(line)
@@ -1551,6 +1557,7 @@ class TerminalAgent:
         finally:
             self._teardown_screen()
             self._save_history()
+            self._withdraw_presence()
             self._restore_sigint()
             self._restore_sigwinch()
 
@@ -1738,6 +1745,90 @@ class TerminalAgent:
     #: would be a poll, and this is a look.
     _WAKE_EVERY_S = 5.0
 
+    def _presence_key(self) -> str:
+        """The address an operator reaches this session by.
+
+        The name from ``-n`` when there is one, because that is what a
+        person can type; the head of the session id otherwise, so a
+        session is never unreachable for want of a name.
+        """
+        opts = getattr(self, "opts", None)
+        name = str(getattr(opts, "session_name", "") or "").strip()
+        if name:
+            return name
+        engine = getattr(self, "engine", None)
+        return str(getattr(engine, "session_id", "") or "")[:8]
+
+    def _announce_presence(self) -> None:
+        """Say this session is open. Never raises.
+
+        A terminal session announced nothing, so it was missing from
+        ``open_sessions`` and the ``session_message`` tool told other
+        sessions it does not exist. Repeated from the idle poll, which is
+        the heartbeat: ``announce`` writes only when the record changed
+        or the interval elapsed.
+        """
+        try:
+            from . import session_presence
+            session_presence.announce(
+                self._presence_key(),
+                session_id=str(getattr(self.engine, "session_id", "") or ""),
+                title=str(getattr(self.opts, "session_name", "") or ""),
+                workspace=str(getattr(self.opts, "cwd", "") or ""))
+        except Exception:
+            pass
+
+    def _withdraw_presence(self) -> None:
+        """Take the session out of the list. Never raises."""
+        try:
+            from . import session_presence
+            session_presence.withdraw(self._presence_key())
+        except Exception:
+            pass
+
+    def _operator_messages(self, typed: str) -> str:
+        """What was left in this session's inbox, ready for the prompt.
+
+        ``session_messages.send`` wrote a file that nobody read: ``take``
+        was called in the dashboard and nowhere else. The only way into a
+        terminal session was its terminal, and that way has a trap -- an
+        approval dialog reads single keys, so text arriving while one is
+        up does not queue, its first character ANSWERS the dialog.
+
+        Delivered where the job wake-up is delivered: at the idle prompt,
+        between reads. Never during a turn, and never while a dialog
+        holds the reader, so the trap cannot arise here. The remaining
+        guard is the dashboard's -- never while something is typed,
+        because a draft belongs to whoever typed it, and a message that
+        waits is not a message that is lost.
+        """
+        if typed.strip():
+            return ""
+        # One guard around the whole of it. A wake-up that throws takes
+        # the prompt with it, and the prompt is the thing the user is
+        # standing at -- the case that proves it drives a bare object
+        # with no engine and no transcript at all.
+        try:
+            key = self._presence_key()
+            if not key:
+                return ""
+            from . import session_messages as _msgs
+            messages = _msgs.take(key)
+            if not messages:
+                return ""
+            for message in messages:
+                sender = (message.get("from_title") or message.get("from")
+                          or "an operator")
+                # The text too, not only the sender: the message becomes
+                # the next prompt, and a prompt is not echoed. Somebody
+                # watching the pane has to be able to read what arrived.
+                body = " ".join(str(message.get("text") or "").split())
+                self.transcript.chrome(
+                    self.transcript.theme.dim(f"✉ {sender}: {body[:300]}"))
+            return "\n\n".join(_msgs.render(m) for m in messages)
+        except Exception:
+            return ""
+
     def _wake_text(self, typed: str) -> str:
         """The message a job that finished hands an idle prompt, or "".
 
@@ -1766,6 +1857,13 @@ class TerminalAgent:
         if now - getattr(self, "_wake_last_look", 0.0) < self._WAKE_EVERY_S:
             return ""
         self._wake_last_look = now
+        # The operator comes first, and is not subject to
+        # ``agent.wake_on_job_end``: switching off the report of a
+        # finished job must not switch off a person.
+        self._announce_presence()       # the poll doubles as the heartbeat
+        mail = self._operator_messages(typed)
+        if mail:
+            return mail
         try:
             from . import job_wake
             if not job_wake.wake_enabled():
