@@ -2127,8 +2127,15 @@ def cmd_approvals(args: argparse.Namespace) -> int:
     action = getattr(args, "approvals_action", "") or "ls"
 
     if action in ("approve", "deny"):
-        ok = _fc.answer(args.request_id, action == "approve",
-                        by=os.environ.get("USER", ""))
+        who = os.environ.get("USER", "")
+        ok = _fc.answer(args.request_id, action == "approve", by=who)
+        if not ok:
+            # The same id may belong to a session waiting at a terminal.
+            # Answering it here is the point of publishing it whole: the
+            # pane shows 24 cut lines, this shows the question.
+            from . import terminal_confirm as _tc
+            ok = _tc.answer_waiting(args.request_id,
+                                    action == "approve", by=who)
         if not ok:
             print(f"ERROR: nothing waiting with id {args.request_id!r}",
                   file=sys.stderr)
@@ -2156,7 +2163,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print(f"tool    {row.get('tool', '')}")
                 print(f"command {row.get('command', '')}")
                 print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s")
-                print("answer  at that session's terminal — not from here")
+                print("answer  here or at that session's terminal — "
+                      "whichever comes first")
                 print()
                 print(row.get("preview", ""))
                 return 0
@@ -2195,7 +2203,7 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         print(f"{row.get('id', ''):<24} {row.get('tool', ''):<12} "
               f"{(row.get('path') or '-')[:40]:<40} {waited}s")
     if at_terminals:
-        print("\nWaiting at a terminal — answer in that session:")
+        print("\nWaiting at a terminal — answer here or in that session:")
         for row in at_terminals:
             waited = int(_time.time() - float(row.get("asked_at") or 0))
             mark = " PROTECTED" if row.get("protected") else ""

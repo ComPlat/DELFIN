@@ -66,6 +66,10 @@ _KINDS = {
     # The repository is public, and a name in a public history is paid
     # for once and permanently.
     "identity_in_commit": ("🪪", "Identity in a commit message"),
+    # An approval given where nobody at the terminal saw it. The panel is
+    # the only place this is ever visible, which is why it is recorded
+    # rather than merely allowed.
+    "approval_from_outside": ("\U0001f441", "Approved from outside the terminal"),
     "settings_updated": ("🛡", "Settings changed by a security update"),
     "push_unrequested": ("📤", "Push nobody asked for"),
     "push_default_branch": ("🔀", "Contributor push to the default branch"),
