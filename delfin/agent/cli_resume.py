@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import proc_identity
 from .session_store import _SESSIONS_DIR  # location only; never mutated here
 
 
@@ -70,6 +71,7 @@ def _load_row(path: Path) -> dict[str, Any] | None:
                 )
             if isinstance(content, str) and content.strip():
                 last_user = " ".join(content.split())
+    pid = int(data.get("pid", 0) or 0)
     return {
         "id": str(data.get("session_id") or path.stem),
         "started": float(data.get("created_at", 0) or 0),
@@ -78,6 +80,15 @@ def _load_row(path: Path) -> dict[str, Any] | None:
         "workspace": str(data.get("workspace") or ""),
         "turns": len(chat),
         "last_task_line": last_user,
+        # Identity written on every save since 2026-09-19. Liveness goes
+        # through the one reader of that fact: pid AND start fingerprint
+        # AND host. Records predating the fields answer None (unknown),
+        # never a guess -- a guessed "dead" could cost somebody their
+        # running work.
+        "heartbeat_at": float(data.get("heartbeat_at", 0) or 0),
+        "alive": (proc_identity.alive(
+            pid, str(data.get("proc_start", "") or ""),
+            str(data.get("host", "") or "")) if pid else None),
     }
 
 
@@ -182,6 +193,13 @@ def _fmt_line(text: str, width: int = 48) -> str:
     return line
 
 
+def _fmt_life(alive):
+    """LIVE / dead / unknown -- the word the table shows."""
+    if alive is None:
+        return "unknown"
+    return "LIVE" if alive else "dead"
+
+
 def render_sessions(rows: list[dict]) -> str:
     """Render :func:`list_sessions` rows as a terminal table + hint lines.
 
@@ -189,14 +207,17 @@ def render_sessions(rows: list[dict]) -> str:
     """
     if not rows:
         return "no kept sessions found"
-    header = f"{'#':>3}  {'session id':<16}  {'age':>7}  {'model':<14}  task"
+    header = (f"{'#':>3}  {'session id':<16}  {'age':>7}  {'model':<14}  "
+              f"{'life':<7}  {'last seen':>9}  task")
     lines = [header, "-" * len(header)]
     for i, r in enumerate(rows, 1):
         task = _fmt_line(r.get("last_task_line") or "(no user message kept)")
         model = r.get("model") or "?"
+        seen = r.get("heartbeat_at") or r.get("updated_at", 0)
         lines.append(
             f"{i:>3}  {r['id'][:16]:<16}  {_fmt_age(r.get('updated_at', 0)):>7}  "
-            f"{model[:14]:<14}  {task}"
+            f"{model[:14]:<14}  {_fmt_life(r.get('alive')):<7}  "
+            f"{_fmt_age(seen):>9}  {task}"
         )
     lines.append("")
     lines.append("resume with: delfin-agent --resume <id-prefix | #index | ''>")
