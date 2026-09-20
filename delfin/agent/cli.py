@@ -2528,9 +2528,17 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     """What ran here before, as a table that says how to come back."""
     from . import cli_resume as _cr
 
+    # What is open NOW comes first. A table of history read as "nothing
+    # is running" while five sessions were, and the supervisor had to
+    # assemble the live picture from tmux panes and git logs instead.
+    live = _cr.render_open(_cr.open_now())
+    if live:
+        print(live)
+        print()
     rows = _cr.list_sessions(limit=max(1, int(getattr(args, "limit", 20) or 20)))
     if not rows:
-        print("No sessions recorded yet.")
+        if not live:
+            print("No sessions recorded yet.")
         return 0
     print(_cr.render_sessions(rows))
     return 0

@@ -201,3 +201,63 @@ def render_sessions(rows: list[dict]) -> str:
     lines.append("")
     lines.append("resume with: delfin-agent --resume <id-prefix | #index | ''>")
     return "\n".join(lines)
+
+
+def open_now() -> list[dict]:
+    """The sessions open right now, each with what it is waiting on.
+
+    ``sessions`` listed what ran BEFORE, which reads as "nothing is
+    running" while five are. Both halves of the live picture exist: a
+    terminal session announces its presence, and a question waiting at
+    one is published whole. This is the join, and it is the whole of
+    what assembling it by hand used to take -- a pane capture per
+    session, a git log per worktree, a grep through the audit log.
+
+    Never raises: an overview that can end the process supervising with
+    it is not an overview.
+    """
+    try:
+        from . import session_presence as _pres
+        rows = list(_pres.open_sessions())
+    except Exception:
+        return []
+    try:
+        from . import terminal_confirm as _tc
+        waiting = {str(q.get("session_key") or ""): q
+                   for q in _tc.pending_at_terminals()}
+    except Exception:
+        waiting = {}
+    out: list[dict] = []
+    for record in rows:
+        key = str(record.get("key") or "")
+        out.append({
+            "key": key,
+            "title": str(record.get("title") or ""),
+            "workspace": str(record.get("workspace") or ""),
+            "branch": str(record.get("branch") or ""),
+            "host": str(record.get("host") or ""),
+            "pid": record.get("pid"),
+            "waiting": waiting.get(key),
+        })
+    return out
+
+
+def render_open(rows: list[dict]) -> str:
+    """The open sessions as a block, or "" when none are.
+
+    Empty renders as empty rather than as a heading with nothing under
+    it: a heading is a claim that there is something to read.
+    """
+    if not rows:
+        return ""
+    out = [f"Open now ({len(rows)}):"]
+    for row in rows:
+        wait = row.get("waiting")
+        if wait:
+            mark = " PROTECTED" if wait.get("protected") else ""
+            state = f"waiting: {wait.get('tool') or '?'}{mark}"
+        else:
+            state = "working"
+        out.append(f"  {(row.get('key') or '?')[:16]:<16} "
+                   f"{(row.get('branch') or '-')[:24]:<24} {state}")
+    return "\n".join(out)
