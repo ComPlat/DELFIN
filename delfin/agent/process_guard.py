@@ -157,7 +157,12 @@ def uid_of(pid: int) -> Optional[int]:
 
 
 #: The model providers' keys DELFIN itself runs on.
-PROVIDER_KEYS = ("KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+PROVIDER_KEYS = ("KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY",
+                 "ANTHROPIC_API_KEY",
+                 # gh stores its own token at 0600, but one typed
+                 # into a shell file is a token in a shell file,
+                 # and the hygiene check would not have looked.
+                 "GITHUB_TOKEN", "GH_TOKEN")
 
 
 def exported_provider_keys() -> list[str]:

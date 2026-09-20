@@ -1325,14 +1325,14 @@ def cmd_chat(args: argparse.Namespace) -> int:
                   file=sys.stderr)
     elif sys.stdin.isatty() and callable(bind):
         _sid = str(getattr(engine, "session_id", "") or "")
+        _key = _presence_key_for(getattr(args, "session_name", ""), _sid)
         broker = TerminalConfirmBroker(
             persist=lambda pat: engine.persist_kit_pattern(pat, kind="allow"),
             set_mode=engine.set_kit_permission_mode,
-            # So a question waiting in this pane can be read from outside
-            # it, whole. The same address the operator's inbox uses.
+            # So a question waiting in this pane can be read -- and
+            # answered -- from outside it, whole.
             session_id=_sid,
-            session_key=(getattr(args, "session_name", "") or "").strip()
-                        or _sid[:8],
+            session_key=_key,
         )
         # False means this provider carries no permissions object at all,
         # and on that backend the file and shell tools refuse outright —
@@ -1344,6 +1344,11 @@ def cmd_chat(args: argparse.Namespace) -> int:
             perms = engine.kit_permissions
             perms.ask_user_callback = broker.ask_user
             perms.plan_approval_callback = broker.approve_plan
+            # session_message reads this. The dashboard set it and the
+            # CLI never did, so a terminal session was told it does not
+            # exist when it went to warn a parallel one about work it
+            # had found in the tree (2026-09-20).
+            perms.presence_key = _key
 
 
     notices = report.render()
@@ -2596,6 +2601,21 @@ def cmd_jobs(args: argparse.Namespace) -> int:
     else:
         print(_cj.render_jobs(rows))
     return 0
+
+
+def _presence_key_for(name: str, session_id: str) -> str:
+    """The address this session is known by, to a person and to a peer.
+
+    The name from ``-n`` when there is one, because that is what a person
+    types; the head of the session id otherwise, so no session is
+    unreachable for want of a name. One function, because the operator's
+    inbox, the published approval and ``session_message`` must all mean
+    the same session by the same word.
+    """
+    name = str(name or "").strip()
+    if name:
+        return name
+    return str(session_id or "")[:8]
 
 
 def _session_id_for(name: str) -> str:

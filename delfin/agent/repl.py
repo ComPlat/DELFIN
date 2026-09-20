@@ -521,6 +521,30 @@ class ReplOptions:
     session_name: str = ""
 
 
+def _is_a_note(text: str) -> bool:
+    """True when ``text`` is a "#" note rather than a pasted document.
+
+    The check used to be ``startswith("#")`` against the whole
+    submission, and a brief pasted into a terminal arrives as ONE
+    submission. A task beginning "# Gemeinsamer Teil" therefore went
+    into the memory store instead of to the model -- done to five
+    sessions at once on 2026-09-20, each of which printed a line about
+    remembering and then sat at an empty prompt with its assignment
+    gone.
+
+    A note is one line. A document has more than one, and that is the
+    whole distinction: "#" plus a few words is still a note, because
+    guessing otherwise would take the feature away from the people who
+    use it.
+    """
+    body = str(text or "")
+    if not body.startswith("#"):
+        return False
+    if not body[1:].strip():
+        return False                       # a lone "#" says nothing
+    return len([ln for ln in body.strip().splitlines() if ln.strip()]) == 1
+
+
 def _fit_to_width(text: str, width: int) -> str:
     """*text* cut to *width* display columns, never folded.
 
@@ -935,7 +959,7 @@ class TerminalAgent:
         if line.startswith(rc.SHELL_PREFIX) and len(line) > 1:
             self._shell_out(line[1:].strip())
             return ""
-        if line.startswith(rc.MEMORY_PREFIX) and len(line) > 1:
+        if _is_a_note(line):
             self._remember(line[1:].strip())
             return ""
 
@@ -1083,9 +1107,13 @@ class TerminalAgent:
             return
         try:
             from . import memory_store
+            # The names the store actually takes. It was called with
+            # kind=/workspace=/author= and raised on every single note,
+            # so "#" had never once worked on this path -- the error
+            # about remembering was the only thing it ever produced.
             memory_store.save_typed_memory(
-                text=text, kind="user", workspace=self.opts.cwd,
-                author="user")
+                text, memory_type="user", repo_root=self.opts.cwd,
+                scope="project")
             self.transcript.chrome(self.transcript.theme.dim("remembered"))
         except Exception as exc:
             self.transcript.chrome(
