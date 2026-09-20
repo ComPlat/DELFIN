@@ -2668,6 +2668,67 @@ def _prose_blanked(cmd: str) -> str:
     return "".join(out)
 
 
+def _identity_for_commit_texts() -> dict:
+    """Home, account and machine name of the user this process runs as.
+
+    Separate from the check so a test can say whose identity it is
+    without owning a home directory, and so the values are read once per
+    command rather than per message.
+    """
+    try:
+        home = str(Path.home())
+    except Exception:
+        home = ""
+    try:
+        import socket
+        host = socket.gethostname().split(".")[0]
+    except Exception:
+        host = ""
+    return {"home": home,
+            "account": os.path.basename(home) if home else "",
+            "host": host}
+
+
+def _commit_text_identity_hit(cmd: str) -> Optional[str]:
+    """Refusal when a git message carries a home path, account or host.
+
+    The mirror of ``_prose_blanked``. That one blanks the message so the
+    PATH scan does not read it; this one reads exactly that text, for
+    what it must not contain.
+
+    Every brief this project hands an agent repeats the rule -- no home
+    paths, no account names, no machine names in code, comments or commit
+    texts -- because the repository is public. Until now nothing enforced
+    it, and a rule that lives only in a prompt is a hope addressed to the
+    same model that forgets it.
+
+    Only a git message, and only its value: a command that TOUCHES a path
+    is a path question, and the gate already has one of those.
+    """
+    if "-m" not in cmd and "--message" not in cmd:
+        return None
+    try:
+        from .output_guard import home_paths_in
+    except Exception:
+        return None
+    who = _identity_for_commit_texts()
+    for start, end in _segments(cmd):
+        if not _is_a_git_prose_command(cmd[start:end]):
+            continue
+        for value_start, value_end in _message_values(cmd, start, end):
+            if home_paths_in(cmd[value_start:value_end], **who):
+                # What was found is deliberately not repeated: this text
+                # is on its way into a public repository, and the refusal
+                # is read by the same model that would paste it back.
+                return (
+                    "the commit message names a home directory, an account "
+                    "or a machine. This repository is public. Write the path "
+                    "relative to the repository root, and leave out who ran "
+                    "it and where it ran."
+                )
+    return None
+
+
 def _segments(cmd: str) -> list:
     """(start, end) of each command in a pipeline, quotes respected."""
     spans = []
@@ -13718,6 +13779,10 @@ class _DocToolExecutor:
                                        f"{cmd[:80]} → {denied}")
                 return (f"command rejected by deny-pattern {denied!r}: "
                         f"refusing to run.{_denied_command_hint(denied)}")
+            identity = _commit_text_identity_hit(cmd)
+            if identity is not None:
+                _record_security_event("identity_in_commit", "bash", cmd[:80])
+                return identity
             denied_path = self._bash_denied_path(cmd, perms)
             if denied_path is not None:
                 _record_security_event("secret_path", "bash", str(denied_path))
