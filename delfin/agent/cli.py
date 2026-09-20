@@ -1324,9 +1324,15 @@ def cmd_chat(args: argparse.Namespace) -> int:
                   "directory; answer with: delfin-agent approvals",
                   file=sys.stderr)
     elif sys.stdin.isatty() and callable(bind):
+        _sid = str(getattr(engine, "session_id", "") or "")
         broker = TerminalConfirmBroker(
             persist=lambda pat: engine.persist_kit_pattern(pat, kind="allow"),
             set_mode=engine.set_kit_permission_mode,
+            # So a question waiting in this pane can be read from outside
+            # it, whole. The same address the operator's inbox uses.
+            session_id=_sid,
+            session_key=(getattr(args, "session_name", "") or "").strip()
+                        or _sid[:8],
         )
         # False means this provider carries no permissions object at all,
         # and on that backend the file and shell tools refuse outright —
@@ -2142,6 +2148,18 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print()
                 print(row.get("preview", ""))
                 return 0
+        from . import terminal_confirm as _tc
+        for row in _tc.pending_at_terminals():
+            if row.get("id") == args.request_id:
+                print(f"id      {row['id']}")
+                print(f"session {row.get('session_key') or row.get('session_id', '')}")
+                print(f"tool    {row.get('tool', '')}")
+                print(f"command {row.get('command', '')}")
+                print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s")
+                print("answer  at that session's terminal — not from here")
+                print()
+                print(row.get("preview", ""))
+                return 0
         print(f"ERROR: nothing waiting with id {args.request_id!r}",
               file=sys.stderr)
         return 2
@@ -2163,13 +2181,27 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         return 0
 
     rows = _fc.pending()
-    if not rows:
+    # A question waiting in a terminal pane is answered there, not here.
+    # It is listed anyway: the pane cuts the preview to 24 lines and to
+    # its own width, and a supervisor who cannot read a question cannot
+    # give an answer to it. `show` prints these whole.
+    from . import terminal_confirm as _tc
+    at_terminals = _tc.pending_at_terminals()
+    if not rows and not at_terminals:
         print("(nothing waiting)")
         return 0
     for row in rows:
         waited = int(_time.time() - float(row.get("asked_at") or 0))
         print(f"{row.get('id', ''):<24} {row.get('tool', ''):<12} "
               f"{(row.get('path') or '-')[:40]:<40} {waited}s")
+    if at_terminals:
+        print("\nWaiting at a terminal — answer in that session:")
+        for row in at_terminals:
+            waited = int(_time.time() - float(row.get("asked_at") or 0))
+            mark = " PROTECTED" if row.get("protected") else ""
+            print(f"  {row.get('id', ''):<24} "
+                  f"{(row.get('session_key') or '?'):<14} "
+                  f"{row.get('tool', ''):<12} {waited}s{mark}")
     return 0
 
 

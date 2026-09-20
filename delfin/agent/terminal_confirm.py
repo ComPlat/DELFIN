@@ -27,8 +27,14 @@ NOT record the refusal — so the model retries and blocks again.
 from __future__ import annotations
 
 import itertools
+import json
+import os
+import socket
 import threading
+import time
+import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from . import repl_render as rr
@@ -36,7 +42,13 @@ from . import repl_render as rr
 __all__ = [
     "ConfirmRequest", "TerminalConfirmBroker", "Option",
     "options_for", "render_request", "CONFIRM", "ASK", "PLAN",
+    "pending_at_terminals",
 ]
+
+#: Where a question waiting at a terminal is published, whole, for
+#: whoever is supervising. Not a second door: the answer is given at the
+#: terminal, and each record says so.
+_PENDING_DIR = Path.home() / ".delfin" / "terminal_confirmations"
 
 CONFIRM = "confirm"
 ASK = "ask"
@@ -75,6 +87,9 @@ class ConfirmRequest:
     decision: Any = None
     resolved: bool = False
     expired: bool = False
+    #: Where this question was published for a supervisor to read, or
+    #: None. Carried on the request so the answer can take it away again.
+    published: Any = None
 
     @property
     def command(self) -> str:
@@ -95,6 +110,82 @@ class ConfirmRequest:
     @property
     def is_outside_read(self) -> bool:
         return _OUTSIDE_MARKER in self.preview
+
+
+def _publish_pending(req: ConfirmRequest, session_id: str,
+                     session_key: str) -> "Path | None":
+    """Write the whole question where a supervisor can read it.
+
+    The pane renders it capped at 24 lines and cut to the pane's width,
+    which is how an operator came to face a compound command with its
+    middle missing and a guard diff saying "… 30 more lines". The comment
+    above ``render_request`` gives the rule this restores: an approval you
+    cannot read is one you cannot give. Here the preview goes out whole.
+
+    Written under a temporary name and moved into place, so a reader
+    never sees half a question.
+    """
+    room = _PENDING_DIR
+    room.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(room, 0o700)
+    except OSError:
+        pass
+    record = {
+        "id": f"{int(time.time())}-{uuid.uuid4().hex[:8]}",
+        "session_id": str(session_id or ""),
+        "session_key": str(session_key or ""),
+        "kind": str(req.kind or ""),
+        "tool": str(req.tool or ""),
+        "command": req.command,
+        "preview": str(req.preview or ""),
+        "protected": bool(req.is_protected),
+        "outside_read": bool(req.is_outside_read),
+        "asked_at": time.time(),
+        "pid": os.getpid(),
+        "host": socket.gethostname(),
+        # Said in the record, because a question that looks answerable
+        # from here and is not would be worse than not publishing it.
+        "answer_at": "terminal",
+    }
+    path = room / f"{record['id']}.json"
+    tmp = room / f".{record['id']}.partial"
+    tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    tmp.replace(path)
+    return path
+
+
+def _withdraw_pending(path) -> None:
+    """Take a published question away once it has been answered."""
+    if not path:
+        return
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
+
+
+def pending_at_terminals() -> list[dict]:
+    """Every question a terminal session is waiting on, read whole.
+
+    Never raises: a supervisor's view of the world must not be the thing
+    that ends the supervisor.
+    """
+    out: list[dict] = []
+    try:
+        entries = sorted(_PENDING_DIR.glob("*.json"))
+    except OSError:
+        return out
+    for entry in entries:
+        try:
+            out.append(json.loads(entry.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            continue
+    return out
 
 
 def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
@@ -207,8 +298,13 @@ class TerminalConfirmBroker:
     def __init__(self, *, timeout_s: float = 0.0,
                  persist: Callable[[str], tuple[bool, str]] | None = None,
                  set_mode: Callable[[str], Any] | None = None,
-                 on_abort: Callable[[], None] | None = None) -> None:
+                 on_abort: Callable[[], None] | None = None,
+                 session_id: str = "", session_key: str = "") -> None:
         self.timeout_s = float(timeout_s or 0.0)
+        # Only so a published question can name the session it belongs
+        # to. Empty is fine: the record is then anonymous, not absent.
+        self.session_id = str(session_id or "")
+        self.session_key = str(session_key or "")
         self._persist = persist
         self._set_mode = set_mode
         self._on_abort = on_abort
@@ -265,6 +361,13 @@ class TerminalConfirmBroker:
                 req.decision = self._refusal_for(req)
                 return req
             self._queue.append(req)
+        try:
+            req.published = _publish_pending(req, self.session_id,
+                                             self.session_key)
+        except Exception:
+            # A supervisor's convenience does not get to fail an
+            # approval: the prompt is asked either way.
+            req.published = None
         return req
 
     def _wait(self, req: ConfirmRequest) -> Any:
@@ -279,6 +382,11 @@ class TerminalConfirmBroker:
                 self.last_timed_out = True
                 if req in self._queue:
                     self._queue.remove(req)
+                try:
+                    _withdraw_pending(req.published)
+                except Exception:
+                    pass
+                req.published = None
             else:
                 self.last_timed_out = False
         return req.decision
@@ -308,6 +416,11 @@ class TerminalConfirmBroker:
             req.decision = decision
             if req in self._queue:
                 self._queue.remove(req)
+        try:
+            _withdraw_pending(req.published)
+        except Exception:
+            pass        # a stale record is a nuisance; a raise here is a bug
+        req.published = None
         req.event.set()
         return True
 
@@ -321,6 +434,11 @@ class TerminalConfirmBroker:
                 req.decision = self._refusal_for(req)
             self._queue.clear()
         for req in pending:
+            try:
+                _withdraw_pending(req.published)
+            except Exception:
+                pass
+            req.published = None
             req.event.set()
         if self._on_abort:
             try:
