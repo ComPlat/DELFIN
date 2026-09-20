@@ -269,7 +269,12 @@ def test_a_hash_line_writes_a_memory_marked_as_the_users(tmp_path, monkeypatch):
     agent, _engine, err = _agent(tmp_path)
     assert agent._handle_line("#the build needs python 3.11") == ""
     assert saved.get("text") == "the build needs python 3.11"
-    assert saved.get("author") == "user", (
+    # The old form of this asked for author="user". The store has no
+    # such parameter -- its name for this is `source` -- and the fake
+    # below takes **kw, so the call shape was never checked against the
+    # thing it calls and every real note raised. The intent is
+    # unchanged and is the sentence below it.
+    assert saved.get("source") == "user", (
         "model-written and user-written memory must stay distinguishable")
     assert "remembered" in err.getvalue()
 

@@ -1112,8 +1112,8 @@ class TerminalAgent:
             # so "#" had never once worked on this path -- the error
             # about remembering was the only thing it ever produced.
             memory_store.save_typed_memory(
-                text, memory_type="user", repo_root=self.opts.cwd,
-                scope="project")
+                text=text, memory_type="user", repo_root=self.opts.cwd,
+                scope="project", source=memory_store.SOURCE_USER)
             self.transcript.chrome(self.transcript.theme.dim("remembered"))
         except Exception as exc:
             self.transcript.chrome(
