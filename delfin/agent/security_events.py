@@ -62,6 +62,10 @@ _KINDS = {
     "egress":         ("🌐", "Outbound data transfer"),
     "egress_blocked": ("🌐", "Network destination blocked (sandbox)"),
     "key_exported":   ("🔑", "Provider key exported in the environment"),
+    # A commit message naming a home directory, an account or a machine.
+    # The repository is public, and a name in a public history is paid
+    # for once and permanently.
+    "identity_in_commit": ("🪪", "Identity in a commit message"),
     "settings_updated": ("🛡", "Settings changed by a security update"),
     "push_unrequested": ("📤", "Push nobody asked for"),
     "push_default_branch": ("🔀", "Contributor push to the default branch"),
