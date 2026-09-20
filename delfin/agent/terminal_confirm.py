@@ -144,6 +144,10 @@ def _publish_pending(req: ConfirmRequest, session_id: str,
         "outside_read": bool(req.is_outside_read),
         "asked_at": time.time(),
         "pid": os.getpid(),
+        # A pid is a number the system hands out again. The start settles
+        # which process it was -- one reader for that fact, the one
+        # extracted for exactly this class of mistake.
+        "proc_start": _proc_start_of_this_process(),
         "host": socket.gethostname(),
         # Answerable from both ends now. The terminal still wins a race:
         # resolve() is the single point that decides, and the first
@@ -165,6 +169,41 @@ def _publish_pending(req: ConfirmRequest, session_id: str,
     return path
 
 
+def _proc_start_of_this_process() -> str:
+    """When this process began, or "". Never raises."""
+    try:
+        from . import proc_identity
+        return proc_identity.process_start(os.getpid())
+    except Exception:
+        return ""
+
+
+def _asker_is_gone(record: dict) -> bool:
+    """True only when the asking process is provably no longer there.
+
+    Where it cannot be asked -- another machine, a kernel that will not
+    say, a record with no pid -- the question STAYS. Guessing a session
+    dead costs somebody their running work, and that is the expensive
+    direction to be wrong in.
+    """
+    try:
+        pid = int(record.get("pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        # No pid is not a dead pid. ``alive`` answers False for a number
+        # it cannot use, which is the right answer to ITS question and
+        # the wrong one to this one.
+        return False
+    try:
+        from . import proc_identity
+        return proc_identity.alive(pid,
+                                   str(record.get("proc_start") or ""),
+                                   str(record.get("host") or "")) is False
+    except Exception:
+        return False
+
+
 def _withdraw_pending(path) -> None:
     """Take a published question away once it has been answered."""
     if not path:
@@ -183,9 +222,20 @@ def pending_at_terminals() -> list[dict]:
     """
     try:
         from . import file_confirm as _fc
-        return list(_fc.pending(_PENDING_DIR))
+        rows = list(_fc.pending(_PENDING_DIR))
     except Exception:
         return []
+    out: list[dict] = []
+    for record in rows:
+        if _asker_is_gone(record):
+            # Nobody will ever answer it, and read as open it is worse
+            # than not published at all -- eight of these stood in the
+            # list within minutes of the watch going live, the oldest
+            # for 3190 seconds.
+            _withdraw_pending(record.get("_file"))
+            continue
+        out.append(record)
+    return out
 
 
 def _note_outside_answer(req: ConfirmRequest, session_key: str,
