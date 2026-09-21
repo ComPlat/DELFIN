@@ -449,6 +449,16 @@ def bwrap_argv(
     runtime = _runtime_binds(command, home_path)
     for path in runtime:
         argv += ["--ro-bind", path, path]
+    # The command itself runs as an ABSOLUTE, NORMALIZED path. Measured by
+    # the runtime probe (tests/test_a_tool_reached_over_mcp_cannot_read_
+    # outside.py): sys.executable was ".../worktrees/<name>/../../../.venv/
+    # bin/python", _runtime_binds binds the .venv at its normalized path,
+    # and execvp follows the LITERAL one -- hop by hop through "..", into
+    # directories the namespace does not carry. The built-ins survived
+    # only because their workspace happens to be a root; a server
+    # launched from anywhere else died with "execvp: No such file or
+    # directory" while the bind it needed was there all along.
+    command = os.path.normpath(os.path.abspath(command))
     for root in iso.read_roots:
         argv += ["--ro-bind", root, root]
     for root in iso.write_roots:
