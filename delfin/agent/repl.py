@@ -1216,19 +1216,13 @@ class TerminalAgent:
             # [a] abort of a question long since answered, and the turn
             # it belonged to never ran. Check before every key: the
             # answer can land in the middle of the loop too.
-            # An expiry resolves the request too, and it is not an answer
-            # from anywhere: say which of the two ended it.
             if getattr(req, "resolved", False):
-                self._clear_bottom()
-                if getattr(req, "expired", False):
-                    self.transcript.chrome(self.transcript.theme.yellow(
-                        "  too late — that request expired and was refused "
-                        "without you"))
-                else:
-                    self.transcript.chrome(self.transcript.theme.dim(
-                        "  answered elsewhere"))
+                self._say_ended_elsewhere(req)
                 return
-            key = self._read_key(raw, allowed | {"\x1b"})
+            key = self._read_key(raw, allowed | {"\x1b"},
+                                 stop=lambda: getattr(req, "resolved", False))
+            if not key:
+                continue                # answered while waiting: see above
             if key in ("\x1b", "n"):
                 if self._apply(req, self._refuse(req)):
                     self.transcript.chrome(
@@ -1291,6 +1285,23 @@ class TerminalAgent:
             self.transcript.chrome(self.transcript.theme.dim(
                 "  that key does nothing here"))
 
+    def _say_ended_elsewhere(self, req) -> None:
+        """Close a dialog whose question something else already ended.
+
+        An expiry resolves the request too, and it is not an answer from
+        anywhere: say which of the two ended it. Nothing is applied -- the
+        request is resolved, and a second answer would only be discarded
+        and reported as late.
+        """
+        self._clear_bottom()
+        if getattr(req, "expired", False):
+            self.transcript.chrome(self.transcript.theme.yellow(
+                "  too late — that request expired and was refused "
+                "without you"))
+        else:
+            self.transcript.chrome(self.transcript.theme.dim(
+                "  answered elsewhere"))
+
     def _apply(self, req, decision) -> bool:
         """Hand the answer to the broker, and say when it arrived too late.
 
@@ -1341,20 +1352,35 @@ class TerminalAgent:
             # Same as _answer_request: an answer from outside ends the
             # dialog, and later keys belong to the prompt that follows.
             if getattr(req, "resolved", False):
-                self._apply(req, {"answers": []})
+                self._say_ended_elsewhere(req)
                 return
-            key = self._read_key(raw, allowed)
+            key = self._read_key(raw, allowed,
+                                 stop=lambda: getattr(req, "resolved", False))
+            if not key:
+                continue                # answered while waiting
             if key == "\x1b":
                 self._apply(req, {"answers": []})
                 return
             self._apply(req, {"answers": [options[int(key) - 1]]})
 
-    def _read_key(self, raw, allowed: set[str]) -> str:
-        """One keystroke, from the reader the key layer already owns."""
+    def _read_key(self, raw, allowed: set[str], *, stop=None) -> str:
+        """One keystroke, from the reader the key layer already owns.
+
+        ``stop`` is asked between the 0.1 s reads; when it says the
+        question is over, the wait ends with "" and no key is taken. The
+        dialog checked for an outside answer only BEFORE it started to
+        wait, so an answer that landed during the wait -- the usual case,
+        a supervisor answers a dialog that is already on screen -- left
+        it reading on: the session never got back to its prompt, mail
+        waiting there was never delivered, and the next key typed into
+        the pane went to a question long since answered.
+        """
         from . import repl_keys as rk
 
         if raw is not None and getattr(raw, "active", False):
             while True:
+                if stop is not None and stop():
+                    return ""
                 chunk = raw.read_ready(0.1)
                 if not chunk:
                     continue
