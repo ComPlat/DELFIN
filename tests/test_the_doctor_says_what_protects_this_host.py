@@ -54,6 +54,33 @@ def test_the_server_guard_is_a_loadable_server_extension():
     assert "'delfin.dashboard.server_guard': True" in inspect.getsource(cli_voila)
 
 
+def test_the_server_guard_installs_the_xsrf_safe_close_bridge(monkeypatch):
+    from delfin.dashboard import server_guard
+    from delfin.dashboard import window_close
+
+    calls = []
+    monkeypatch.setattr(PG, "protect", lambda label: calls.append(("protect", label)))
+    monkeypatch.setattr(window_close, "bridge_voila_shutdown",
+                        lambda: calls.append(("bridge", None)) or True)
+    monkeypatch.setattr(window_close, "register",
+                        lambda server: calls.append(("route", server)) or "/close")
+
+    class _Log:
+        def warning(self, *args):
+            calls.append(("warning", args))
+
+    class _Server:
+        log = _Log()
+
+    server = _Server()
+    server_guard._load_jupyter_server_extension(server)
+    assert calls == [
+        ("protect", "dashboard server"),
+        ("bridge", None),
+        ("route", server),
+    ]
+
+
 def test_terminal_launcher_and_kernel_warn_about_an_exported_key():
     from delfin import cli_voila
     from delfin.agent import cli
