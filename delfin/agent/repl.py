@@ -14,6 +14,7 @@ nothing about how it was reached.
 
 from __future__ import annotations
 
+import os
 import queue
 import signal
 import sys
@@ -38,6 +39,10 @@ _JOIN_NOTICE_AFTER_S = 2.0
 # through the settle, so the join there has to be bounded: an unbounded one
 # waits for the tool call the interrupt exists to walk away from.
 _JOIN_ABANDON_S = 1.0
+# How long a session whose terminal is gone may take to save and clean up.
+# That work runs on storage that may be the very thing that went wrong, and
+# waiting on it is how a session outlives its terminal.
+_LEAVE_DEADLINE_S = 10.0
 _STATUS_TICK_S = 0.25
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -757,10 +762,13 @@ class TerminalAgent:
             self._turn_base = (0, 0, 0.0)
         compaction_before = getattr(self.engine, "last_compaction_info", None)
 
+        from . import repl_keys as rk
+
         self._turn_active.set()
         worker = threading.Thread(target=_worker, name="agent-turn", daemon=True)
         worker.start()
         abandoning = False
+        leaving = False
         try:
             self._pump(worker)
         except KeyboardInterrupt:
@@ -768,9 +776,17 @@ class TerminalAgent:
             # below, so the settle there must not wait on the running call.
             abandoning = True
             raise
+        except rk.TerminalLeft:
+            # No next turn will run, so there is nothing to settle for: the
+            # worker is told to stop and left behind, and nothing is written
+            # to a terminal that may no longer take it.
+            leaving = True
+            self._stop_for_leaving()
+            raise
         finally:
             self._turn_active.clear()
-            self._settle(worker, abandon=abandoning)
+            if not leaving:
+                self._settle(worker, abandon=abandoning)
         self.transcript.finish()
         self._report_compaction(compaction_before)
         self._report_tasks()
@@ -822,6 +838,12 @@ class TerminalAgent:
     def _on_key(self, event, decoder) -> None:
         from . import repl_keys as rk
 
+        if event.kind == rk.EOF:
+            # ctrl+d on an empty line leaves, during a turn as at the
+            # prompt. It is also all `script` passes down when the terminal
+            # above it goes away, so dropping it here kept a session
+            # running with nobody left to see it.
+            raise rk.TerminalLeft("ctrl+d", 0)
         if event.kind == rk.INTERRUPT:
             self._stop_engine()
             self._clear_input_line()
@@ -1130,6 +1152,25 @@ class TerminalAgent:
 
     # -- approvals --------------------------------------------------------
     def _answer(self, req, raw) -> None:
+        """Answer one request -- or refuse it, when the terminal leaves.
+
+        A request taken off the queue is out of reach of ``abort_all``, so
+        a session leaving from inside the dialog refuses it here. Left
+        alone, the asking thread would wait out the request's expiry.
+        """
+        from . import repl_keys as rk
+
+        try:
+            self._answer_request(req, raw)
+        except rk.TerminalLeft:
+            try:
+                if self.broker is not None:
+                    self.broker.resolve(req, self._refuse(req))
+            except Exception:
+                pass
+            raise
+
+    def _answer_request(self, req, raw) -> None:
         """Render one request and read the answer. Main thread only.
 
         The worker is blocked inside the gate waiting on this, which is
@@ -1269,12 +1310,18 @@ class TerminalAgent:
 
     def _read_key(self, raw, allowed: set[str]) -> str:
         """One keystroke, from the reader the key layer already owns."""
+        from . import repl_keys as rk
+
         if raw is not None and getattr(raw, "active", False):
             while True:
                 chunk = raw.read_ready(0.1)
                 if not chunk:
                     continue
                 for ch in chunk:
+                    if ch == "\x04":
+                        # ctrl+d is leaving, not an unclaimed key: a dialog
+                        # that ignored it waited on a terminal that was gone.
+                        raise rk.TerminalLeft("ctrl+d", 0)
                     if ch in allowed:
                         return ch
                 if chunk[0] == "\x1b":
@@ -1764,6 +1811,8 @@ class TerminalAgent:
 
     # -- the loop --------------------------------------------------------
     def run(self, first_prompt: str = "") -> int:
+        from . import repl_keys as rk
+
         self._install_sigint()
         self._load_history()
         self._install_completer()
@@ -1826,8 +1875,18 @@ class TerminalAgent:
                     self.transcript.chrome("")
                     return 130
                 pending = ""
+        except rk.TerminalLeft as left:
+            # Whatever the session was doing -- at the prompt, in a turn,
+            # in a dialog -- the terminal is gone and so is the session.
+            # Returning (rather than dying) is what saves it for a resume.
+            self._stop_for_leaving()
+            self._arm_leave_deadline(left.code)
+            return left.code
         finally:
-            self._teardown_screen()
+            try:
+                self._teardown_screen()
+            except OSError:
+                pass            # a line that hung up takes no erase sequence
             self._save_history()
             self._withdraw_presence()
             self._restore_sigint()
@@ -1841,7 +1900,66 @@ class TerminalAgent:
             # Not the main thread, or no signal support. The loop still
             # works; Ctrl+C simply behaves as the default.
             self._prev_sigint = None
+        self._install_leave_signals()
         self._install_sigwinch()
+
+    def _install_leave_signals(self) -> None:
+        """SIGHUP and SIGTERM leave the way a closed terminal does.
+
+        Left at their defaults they end the process on the spot: nothing
+        refuses the question in flight, and the conversation, which is
+        saved on the way out, is lost. Caught, they unwind through the
+        loop's cleanup, under the same deadline as any other leave.
+        """
+        self._prev_leave: dict = {}
+        for name in ("SIGHUP", "SIGTERM"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                self._prev_leave[sig] = signal.signal(
+                    sig, self._on_leave_signal)
+            except (ValueError, OSError):
+                pass
+
+    def _on_leave_signal(self, signum, _frame) -> None:
+        """Same rule as the other handlers: never print, only unwind."""
+        from . import repl_keys as rk
+        raise rk.TerminalLeft(signal.Signals(signum).name.lower(),
+                              128 + int(signum))
+
+    def _restore_leave_signals(self) -> None:
+        for sig, prev in (getattr(self, "_prev_leave", None) or {}).items():
+            try:
+                signal.signal(sig, prev)
+            except (ValueError, OSError, TypeError):
+                pass
+        self._prev_leave = {}
+
+    def _stop_for_leaving(self) -> None:
+        """Nothing may go on waiting for a terminal that is gone.
+
+        The turn is told to stop, and every question -- in flight or still
+        to come from a worker that has not noticed yet -- is refused.
+        """
+        self._stop_engine()
+        if self.broker is not None:
+            try:
+                self.broker.abort_all()
+            except Exception:
+                pass
+
+    def _arm_leave_deadline(self, code: int) -> None:
+        """The process ends by *code* within the deadline, cleaned up or not.
+
+        What follows the loop -- saving the session, the report, the
+        lifeline ending what the session started -- normally takes well
+        under a second. When it does not, the terminal is gone either way
+        and the process does not get to outlive it by waiting.
+        """
+        timer = threading.Timer(_LEAVE_DEADLINE_S, os._exit, args=(code,))
+        timer.daemon = True
+        timer.start()
 
     def _install_sigwinch(self) -> None:
         """Notice the window changing size.
@@ -1889,6 +2007,7 @@ class TerminalAgent:
                 signal.signal(signal.SIGINT, self._prev_sigint)
             except (ValueError, OSError):
                 pass
+        self._restore_leave_signals()
 
     @staticmethod
     def history_path() -> Path:

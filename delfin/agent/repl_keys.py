@@ -27,6 +27,7 @@ without a terminal. Only ``RawMode`` touches termios.
 from __future__ import annotations
 
 import atexit
+import errno
 import importlib.util
 import os
 import sys
@@ -34,7 +35,7 @@ import termios
 from dataclasses import dataclass, field
 
 __all__ = [
-    "KeyEvent", "KeyDecoder", "RawMode", "raw_mode_supported",
+    "KeyEvent", "KeyDecoder", "RawMode", "TerminalLeft", "raw_mode_supported",
     "INTERRUPT", "SUBMIT", "STEER", "CYCLE_MODE", "EXPAND", "REDRAW",
     "TASKS", "EDIT", "HISTORY_PREV", "HISTORY_NEXT", "COMPLETE", "EOF",
 ]
@@ -483,6 +484,24 @@ def raw_mode_supported(stream=None) -> bool:
         return False
 
 
+class TerminalLeft(BaseException):
+    """The terminal the session runs in is gone: end, whatever is going on.
+
+    A BaseException, like KeyboardInterrupt, so that none of the
+    ``except Exception`` that keep a turn alive can swallow it. ``code`` is
+    what the session exits with: 0 for ctrl+d, 128 + the signal otherwise.
+    """
+
+    def __init__(self, reason: str = "hangup", code: int = 129):
+        super().__init__(reason)
+        self.reason = reason
+        self.code = code
+
+
+# A read on a line whose far end has closed fails with one of these.
+_HUNG_UP = {errno.EIO, errno.ENXIO}
+
+
 class RawMode:
     """cbreak for the duration of a turn, restored come what may.
 
@@ -556,7 +575,12 @@ class RawMode:
                 self._hooked = False
 
     def read_ready(self, timeout: float) -> str:
-        """One chunk, or "" if nothing arrived within *timeout*."""
+        """One chunk, or "" if nothing arrived within *timeout*.
+
+        A line that has hung up raises ``TerminalLeft`` instead. Returning
+        "" for it too made a closed terminal look like one where nobody
+        was typing, and every loop reading keys waited on it for good.
+        """
         if not self.active or self._fd is None:
             return ""
         import select
@@ -565,6 +589,14 @@ class RawMode:
             if not ready:
                 return ""
             data = os.read(self._fd, 1024)
+        except OSError as exc:
+            if exc.errno in _HUNG_UP:
+                raise TerminalLeft("hangup", 129) from None
+            return ""
         except Exception:
             return ""
+        if not data:
+            # Readable and empty is end of file. cbreak waits for at least
+            # one byte, so a quiet terminal never reads as empty.
+            raise TerminalLeft("hangup", 129)
         return data.decode("utf-8", errors="replace")
