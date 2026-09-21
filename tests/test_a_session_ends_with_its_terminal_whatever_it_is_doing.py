@@ -218,6 +218,39 @@ class TestLeavingUnwinds:
         assert armed == [129]
 
 
+def test_what_the_session_started_goes_with_it(monkeypatch):
+    """Background shells and MCP servers end on the way out, not at atexit.
+
+    The atexit hook that stopped the shells runs only after the interpreter
+    has joined every worker thread -- a subagent's among them -- and the
+    deadline's os._exit skips it altogether. So the leave ends them itself,
+    and only after the deadline is armed, since ending them can hang too.
+    """
+    from delfin.agent import bash_jobs, mcp_client
+
+    order: list[str] = []
+
+    class _Jobs:
+        def stop_running(self, session_id=None):
+            order.append("shells")
+            return []
+
+    monkeypatch.setattr(bash_jobs, "get_registry", lambda: _Jobs())
+    monkeypatch.setattr(mcp_client, "reset_registry",
+                        lambda workspace=None: order.append("mcp"))
+    agent, _engine, _err = _agent()
+
+    def _gone(_prompt):
+        raise rk.TerminalLeft("hangup", 129)
+
+    agent._read_line = _gone
+    monkeypatch.setattr(agent, "_arm_leave_deadline",
+                        lambda code: order.append("deadline"))
+    agent.run()
+    assert order[0] == "deadline"
+    assert "shells" in order and "mcp" in order
+
+
 # ---------------------------------------------------------------------------
 # SIGHUP and SIGTERM leave through the same door
 # ---------------------------------------------------------------------------

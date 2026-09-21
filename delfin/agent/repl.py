@@ -1879,8 +1879,10 @@ class TerminalAgent:
             # Whatever the session was doing -- at the prompt, in a turn,
             # in a dialog -- the terminal is gone and so is the session.
             # Returning (rather than dying) is what saves it for a resume.
-            self._stop_for_leaving()
+            # The deadline comes first: everything after it can hang.
             self._arm_leave_deadline(left.code)
+            self._stop_for_leaving()
+            self._end_what_it_started()
             return left.code
         finally:
             try:
@@ -1948,6 +1950,25 @@ class TerminalAgent:
                 self.broker.abort_all()
             except Exception:
                 pass
+
+    def _end_what_it_started(self) -> None:
+        """Background shells and MCP servers go with the session.
+
+        An atexit hook stops the shells at a normal exit, but it runs only
+        after the interpreter has joined every worker thread -- a
+        subagent's among them -- and the deadline's os._exit skips it. A
+        session whose terminal is gone ends them itself.
+        """
+        try:
+            from . import bash_jobs
+            bash_jobs.get_registry().stop_running()
+        except Exception:
+            pass
+        try:
+            from . import mcp_client
+            mcp_client.reset_registry()
+        except Exception:
+            pass
 
     def _arm_leave_deadline(self, code: int) -> None:
         """The process ends by *code* within the deadline, cleaned up or not.
