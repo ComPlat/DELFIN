@@ -70,6 +70,14 @@ class Isolation:
     write_roots: tuple[str, ...] = ()
     read_roots: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
+    # True for the roots DELFIN inferred for its own servers, False for
+    # the ones the user wrote down. The distinction is policy at the
+    # launch: a DECLARED containment that cannot be honoured refuses
+    # the start, because running without it is not a lesser version of
+    # what was asked for; a DERIVED one falls back to the uncontained
+    # start with a note, because an inference that stops the server
+    # would be the derivation making policy (see delfin_roots).
+    derived: bool = False
 
     @property
     def roots(self) -> tuple[str, ...]:
@@ -165,6 +173,8 @@ def delfin_roots(settings: dict | None = None,
         return str(paths.get(key) or "").strip() or str(home_path / default)
 
     write = [
+        # These roots are inferred, not asked for; the derived flag on
+        # the result is what every launch decision below reads.
         configured("calculations_dir", "calc"),
         configured("office_dir", "office"),
         str(home_path / "agent_workspace"),
@@ -210,7 +220,7 @@ def delfin_roots(settings: dict | None = None,
     read_roots = [r for r in usable(read) if r not in write_roots]
     if not write_roots and not read_roots:
         return None
-    partial = Isolation(tuple(write_roots), tuple(read_roots))
+    partial = Isolation(tuple(write_roots), tuple(read_roots), derived=True)
     # DELFIN's own source, read-only, and ASKED FOR rather than assumed.
     # Measured: with only the data roots bound, the tools server died with
     # "No module named 'delfin'". Taking the answer from this process was
@@ -222,7 +232,7 @@ def delfin_roots(settings: dict | None = None,
                             _start_dir(partial, None))
     if package and package not in write_roots and package not in read_roots:
         read_roots.append(package)
-    return Isolation(tuple(write_roots), tuple(read_roots))
+    return Isolation(tuple(write_roots), tuple(read_roots), derived=True)
 
 
 _PACKAGE_PROBE = (
@@ -523,16 +533,40 @@ def reset_probe_cache() -> None:
 
 
 def refusal_reason(name: str, iso: Isolation) -> str:
-    """Why a declared server was not started, or "" if it may start."""
+    """Why a server was not started contained, or "" if it may start.
+
+    A DECLARED containment (iso.derived is False) that cannot be
+    honoured refuses: the user wrote the containment down, and running
+    without it is not a lesser version of what they asked for. A
+    DERIVED one does not refuse here -- it falls back to the
+    uncontained start, and the caller carries the note from
+    ``derived_isolation_refusal`` so the fallback is not a silent one.
+    """
     if iso.missing:
         return (f"isolation for '{name}' names a path that does not exist: "
                 + ", ".join(iso.missing)
                 + " — fix the root or set \"isolation\": \"off\"")
     if not bwrap_functional():
+        if iso.derived:
+            return ""
         return (f"'{name}' declares isolation ({iso.describe()}) but "
                 "bubblewrap is not usable here, so the server was not "
                 "started. Set \"isolation\": \"off\" to run it uncontained.")
     return ""
+
+
+def derived_isolation_refusal(name: str) -> str:
+    """The note a DERIVED containment leaves when the host cannot
+    honour it. Not a refusal: the roots were inferred, and an inference
+    that stops the server would be the derivation making policy --
+    delfin_roots settled this class of question for absent directories
+    already. On a host without bubblewrap the uncontained start is also
+    not a new hole: it is exactly what runs there today with the
+    setting off. This note keeps the fallback from being a silent one.
+    """
+    return (f"the derived isolation for '{name}' could not be applied: "
+            "bubblewrap is not usable here, so the server was started "
+            "uncontained")
 
 
 def uncontained_note(rows) -> str:
@@ -564,6 +598,7 @@ __all__ = [
     "bwrap_argv",
     "bwrap_functional",
     "delfin_roots",
+    "derived_isolation_refusal",
     "isolation_disabled",
     "parse_isolation",
     "refusal_reason",
