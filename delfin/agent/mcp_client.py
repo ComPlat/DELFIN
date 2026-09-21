@@ -348,6 +348,12 @@ class MCPServer:
     # Applied at the launch because it cannot be applied at the call: see
     # mcp_isolation's module docstring.
     isolation: Optional["mcp_isolation.Isolation"] = None
+    # Set at the launch when a DERIVED containment could not be honoured
+    # (no usable bubblewrap) and the server started uncontained instead.
+    # The note is shown, not just logged, so the fallback is a fact a
+    # user reads rather than discovers. Empty in every other case --
+    # in particular a DECLARED containment never sets it, it refuses.
+    containment_note: str = ""
     session_id: str = ""        # Mcp-Session-Id, set from the initialize reply
     proc: Optional[subprocess.Popen] = None
     _id_counter: itertools.count = field(default_factory=lambda: itertools.count(1))
@@ -397,8 +403,18 @@ class MCPServer:
                     self.last_error = reason
                     self.proc = None
                     return
-                argv = mcp_isolation.bwrap_argv(
-                    self.command, self.args, self.isolation)
+                if self.isolation.derived and not mcp_isolation.bwrap_functional():
+                    # The derived roots were an inference, not a request;
+                    # on a host that cannot honour them the server starts
+                    # as it always ran there, with the note saying so. A
+                    # refusal here would take delfin-ops -- the prescribed
+                    # first step of every ORCA question -- off every host
+                    # without bubblewrap.
+                    self.containment_note = mcp_isolation.derived_isolation_refusal(
+                        self.name)
+                else:
+                    argv = mcp_isolation.bwrap_argv(
+                        self.command, self.args, self.isolation)
             try:
                 # stderr is PIPED, not discarded. It used to be DEVNULL,
                 # which threw away the only account a dying server ever
@@ -1345,6 +1361,12 @@ def effective_servers(workspace: Path | None) -> list[dict]:
         # The same decision the registry makes, so the listing and the
         # banner cannot disagree with what actually launches.
         iso = None if url else _isolation_for(name, cfg, workspace)
+        shown = iso.describe() if iso else ""
+        if iso is not None and iso.derived \
+                and not mcp_isolation.bwrap_functional():
+            # Will start uncontained (the launch fallback): the row must
+            # not claim a containment the process will not have.
+            shown = ""
         out.append({
             "name": name,
             "command": cfg.get("command", ""),
@@ -1356,7 +1378,7 @@ def effective_servers(workspace: Path | None) -> list[dict]:
             # A string, not the object: this row is rendered, logged and
             # compared, and an empty one is the answer to "what contains
             # this server" rather than a missing field.
-            "isolation": iso.describe() if iso else "",
+            "isolation": shown,
         })
     out.sort(key=lambda r: r["name"])
     return out
