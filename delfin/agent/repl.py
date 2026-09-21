@@ -1210,6 +1210,17 @@ class TerminalAgent:
 
         allowed = {o.key for o in options}
         while True:
+            # Answered from outside (approvals approve/deny) while the
+            # dialog was waiting: it is OVER. Reading on would take the
+            # keys of the next prompt line -- a typed command acted as
+            # [a] abort of a question long since answered, and the turn
+            # it belonged to never ran. Check before every key: the
+            # answer can land in the middle of the loop too.
+            if getattr(req, "resolved", False):
+                self._clear_bottom()
+                self.transcript.chrome(self.transcript.theme.dim(
+                    "  answered elsewhere"))
+                return
             key = self._read_key(raw, allowed | {"\x1b"})
             if key in ("\x1b", "n"):
                 if self._apply(req, self._refuse(req)):
@@ -1319,11 +1330,17 @@ class TerminalAgent:
             self._apply(req, {"answers": []})
             return
         allowed = {str(i) for i in range(1, len(options) + 1)} | {"\x1b"}
-        key = self._read_key(raw, allowed)
-        if key == "\x1b":
-            self._apply(req, {"answers": []})
-            return
-        self._apply(req, {"answers": [options[int(key) - 1]]})
+        while True:
+            # Same as _answer_request: an answer from outside ends the
+            # dialog, and later keys belong to the prompt that follows.
+            if getattr(req, "resolved", False):
+                self._apply(req, {"answers": []})
+                return
+            key = self._read_key(raw, allowed)
+            if key == "\x1b":
+                self._apply(req, {"answers": []})
+                return
+            self._apply(req, {"answers": [options[int(key) - 1]]})
 
     def _read_key(self, raw, allowed: set[str]) -> str:
         """One keystroke, from the reader the key layer already owns."""
