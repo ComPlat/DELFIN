@@ -38,8 +38,10 @@ __all__ = [
     "KeyEvent", "KeyDecoder", "RawMode", "TerminalLeft", "raw_mode_supported",
     "INTERRUPT", "SUBMIT", "STEER", "CYCLE_MODE", "EXPAND", "REDRAW",
     "TASKS", "EDIT", "HISTORY_PREV", "HISTORY_NEXT", "COMPLETE", "EOF",
+    "SEARCH",
 ]
 
+SEARCH = "search"                  # Ctrl+R — reverse history search
 INTERRUPT = "interrupt"      # Esc — end this turn
 SUBMIT = "submit"            # Enter — queue what was typed
 STEER = "steer"              # Ctrl+G — send what was typed INTO the running turn
@@ -295,6 +297,11 @@ class KeyDecoder:
                 line, self.buffer = self.buffer, ""
                 self.cursor = 0
                 events.append(KeyEvent(STEER, text=line))
+                i += 1
+                continue
+
+            if ch == "\x12":                      # Ctrl+R — reverse search
+                events.append(KeyEvent(SEARCH))
                 i += 1
                 continue
 
