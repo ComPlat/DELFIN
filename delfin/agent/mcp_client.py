@@ -408,25 +408,33 @@ class MCPServer:
                 # on stderr — while the caller was told "server not
                 # running", which is true, useless, and looks like a
                 # configuration mistake rather than a broken install.
-                self.proc = subprocess.Popen(
-                    argv,
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=env, text=True, bufsize=1,
-                    # Its own process group. A stdio server is long-lived
-                    # across turns, and under a terminal front-end it would
-                    # otherwise sit in the foreground group and take every
-                    # Ctrl+C the user aims at the agent — so interrupting
-                    # one turn would tear down every configured server for
-                    # the rest of the session. The dashboard never had a
-                    # controlling terminal, so nothing surfaced this.
-                    # stop() still terminates it explicitly.
-                    start_new_session=True,
-                )
+                from . import lifeline as _lifeline
+
+                # Started on first use, which is usually a tool call's
+                # thread. Under isolation the server runs with bwrap's
+                # --die-with-parent, which follows the forking THREAD: it
+                # died when that call returned. Forked from a thread that
+                # lives as long as the process, it ends with the process.
+                self.proc = _lifeline.start_bound_to_process(
+                    lambda: subprocess.Popen(
+                        argv,
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=env, text=True, bufsize=1,
+                        # Its own process group. A stdio server is
+                        # long-lived across turns, and under a terminal
+                        # front-end it would otherwise sit in the foreground
+                        # group and take every Ctrl+C the user aims at the
+                        # agent — so interrupting one turn would tear down
+                        # every configured server for the rest of the
+                        # session. The dashboard never had a controlling
+                        # terminal, so nothing surfaced this. stop() still
+                        # terminates it explicitly.
+                        start_new_session=True,
+                    ))
                 # A group of its own is out of reach of the terminal's
                 # Ctrl+C, so the lifeline ledger ends it with delfin-voila.
                 try:
-                    from . import lifeline as _lifeline
                     _lifeline.record_child(self.proc.pid, "mcp")
                 except Exception:
                     pass
