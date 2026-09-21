@@ -731,6 +731,22 @@ class TerminalAgent:
                 pass
 
     # -- one turn --------------------------------------------------------
+    def _begin_turn_resets_the_abort(self) -> None:
+        """An abort belongs to the turn it ended, not to the session.
+
+        [a] abort refuses everything still in flight -- "refuse
+        everything that arrives after". Without this reset the refusal
+        posture survived into every later turn, and a session that
+        aborted ONCE answered every question for hours with a silent
+        "user denied" nobody had decided. The next turn starts from a
+        clean posture: its questions are asked.
+        """
+        if self.broker is not None:
+            try:
+                self.broker.reset_abort()
+            except Exception:
+                pass
+
     def turn(self, prompt: str) -> TurnResult:
         result_box: list[TurnResult] = []
 
@@ -747,6 +763,7 @@ class TerminalAgent:
 
         import time as _time
 
+        self._begin_turn_resets_the_abort()
         self._interrupts = 0
         self._turn_t0 = _time.monotonic()
         self._last_paint = 0.0
