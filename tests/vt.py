@@ -33,6 +33,19 @@ class Screen:
         self.rows: list[list[str]] = [list(r) for r in transcript] or [[]]
         self.row = len(self.rows) - 1
         self.col = 0
+        self._seen: list[str] = []      # every row ever shown, for asserts
+        # about TRANSIENT states (a prompt that was on screen before a
+        # clear erased it) that the final grid cannot answer.
+
+    def _snapshot(self) -> None:
+        self._seen.extend(self.text())
+
+    def seen(self) -> list[str]:
+        """Every row the screen ever showed, in order, blanks removed.
+
+        For asserting a transient state: a box that was drawn and then
+        erased leaves nothing in text(), but it stays in seen()."""
+        return [r for r in self._seen if r.strip()]
 
     # -- bookkeeping ------------------------------------------------------
 
@@ -81,6 +94,7 @@ class Screen:
             else:
                 self._put(ch)
             i += 1
+        self._snapshot()
 
     def _escape(self, data: str, i: int) -> int:
         """Apply one escape sequence starting at *i*; return the next index."""

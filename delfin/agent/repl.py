@@ -2414,11 +2414,21 @@ class TerminalAgent:
 
 
         def _view(decoder) -> rb.BoxView:
+            if search.active:
+                # The search prompt is the box while it lasts: the query
+                # where typed text went, the readline-style label as the
+                # hint row, so it is visible WHICH mode the keys drive.
+                return rb.viewport(
+                    rb.render_box(search.query, len(search.query),
+                                    self.transcript.width,
+                                    search.hint(),
+                                    status=self._background_status()),
+                    _BOX_MAX_CONTENT_ROWS)
             return rb.viewport(
                 rb.render_box(decoder.buffer, decoder.cursor,
-                              self.transcript.width,
-                              _box_hint(self._posture_now()),
-                              status=self._background_status()),
+                                self.transcript.width,
+                                _box_hint(self._posture_now()),
+                                status=self._background_status()),
                 _BOX_MAX_CONTENT_ROWS)
 
         # Where the last _draw left the terminal: rows below the
@@ -2515,6 +2525,71 @@ class TerminalAgent:
                 i -= 1
             return text[i:]
 
+        class _ReverseSearch:
+            """Ctrl+R's mode, over the SAME readline store the arrows use.
+
+            The decoder reports the key; the history is here, in the
+            loop, where _BoxHistory lives — a decoder that knew about
+            history would be a key layer reading a data store. Typing
+            extends the query (chars the box would otherwise insert),
+            Ctrl+R again steps to an older match, Enter accepts — and
+            submits, like readline — Esc restores the draft and leaves.
+            """
+
+            def __init__(self):
+                self.active = False
+                self.query = ""
+                self.draft = ""
+                self.pos = 0          # index into the history, newest first
+
+            def start(self, buffer: str) -> None:
+                self.active = True
+                self.query = ""
+                self.draft = buffer
+                self.pos = 0
+
+            def _entries(self) -> list[str]:
+                try:
+                    import readline
+                    n = readline.get_current_history_length()
+                    return [readline.get_history_item(i)
+                            for i in range(n, 0, -1)]
+                except Exception:
+                    return []
+
+            def _match(self) -> str | None:
+                if not self.query:
+                    return self.draft or None
+                for offset, entry in enumerate(self._entries()):
+                    if offset < self.pos:
+                        continue
+                    if self.query in entry:
+                        self.pos = offset
+                        return entry
+                return None
+
+            def older(self) -> None:
+                """Ctrl+R again: keep the query, take the next match up."""
+                self.pos += 1
+
+            def hint(self) -> str:
+                match = self._match()
+                if match is None:
+                    return f"(reverse-i-search)`{self.query}': no match"
+                return f"(reverse-i-search)`{self.query}': {match}"
+
+            def accept(self) -> str:
+                """What Enter submits: the match, else the query."""
+                match = self._match()
+                return match if match is not None else self.query
+
+            def leave(self) -> str:
+                """What Esc restores: the draft from before the search."""
+                self.active = False
+                return self.draft
+
+        search = _ReverseSearch()
+
         def _complete_word(text: str) -> str:
             """The box's Tab: the same completer readline's Tab runs.
 
@@ -2578,7 +2653,25 @@ class TerminalAgent:
                 submit_text = None
                 for event in decoder.feed(chunk):
                     kind = event.kind
-                    if kind == rk.SUBMIT:
+                    if search.active and kind == rk.EDIT:
+                        # While searching, printable keys extend the
+                        # query; the decoder already put them in its
+                        # buffer, so the query follows the buffer.
+                        search.query = decoder.buffer
+                    elif search.active and kind in (rk.SUBMIT, rk.STEER):
+                        submit_text = search.accept()
+                        search.active = False
+                    elif search.active and kind == rk.INTERRUPT:
+                        restored = search.leave()
+                        decoder.buffer = restored
+                        decoder.cursor = len(restored)
+                    elif search.active and kind == rk.SEARCH:
+                        search.older()
+                    elif kind == rk.SEARCH:
+                        search.start(decoder.buffer)
+                        decoder.buffer = ""
+                        decoder.cursor = 0
+                    elif kind == rk.SUBMIT:
                         submit_text = event.text
                     elif kind == rk.HISTORY_PREV:
                         older = history.up(decoder.buffer)
