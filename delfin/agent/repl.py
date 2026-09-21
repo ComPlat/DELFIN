@@ -2541,6 +2541,17 @@ class TerminalAgent:
                 return text
             if len(hits) == 1:
                 return text[:len(text) - len(word)] + hits[0]
+            # Readline fills the longest common prefix FIRST and lists
+            # only beside it. Listing alone — what this did — left the
+            # box at what was typed, so "/mod" + Tab showed /mode and
+            # /model below and the user retyped the four letters the
+            # hits already shared.
+            prefix = hits[0]
+            for hit in hits[1:]:
+                while not hit.startswith(prefix):
+                    prefix = prefix[:-1]
+            if len(prefix) > len(word):
+                text = text[:len(text) - len(word)] + prefix
             _clear_box(_BlankDecoder())
             for hit in hits[:20]:
                 self.transcript.chrome(self.transcript.theme.dim(hit))
