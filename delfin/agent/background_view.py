@@ -174,7 +174,7 @@ def rows(view: dict, *, now: Optional[float] = None) -> list[dict]:
 
 
 def status_line(view: dict, *, now: Optional[float] = None,
-                limit: int = 3) -> str:
+                limit: int = 3, selected: int | None = None) -> str:
     """One line naming what is still out, for under the input area.
 
     The dashboard has a panel for this; the terminal had `/bash`, which
@@ -185,6 +185,11 @@ def status_line(view: dict, *, now: Optional[float] = None,
 
     Empty when nothing is out, so the line costs a row only while it
     says something.
+
+    ``selected`` marks one row (an index into what the line shows), for
+    the arrow-key walk under the prompt: a list you can reach with
+    Enter needs a mark saying which one Enter would take. Out of range
+    marks nothing — a stale selection must not invent a row.
     """
     try:
         items = rows(view, now=now)
@@ -211,10 +216,34 @@ def status_line(view: dict, *, now: Optional[float] = None,
         handle = str(r.get("id") or "")[:8]
         piece = f"{label} {detail}".strip()
         parts.append(f"{piece} [{handle}]" if handle else piece)
+    if selected is not None and 0 <= int(selected) < len(parts):
+        parts[int(selected)] = "▶ " + parts[int(selected)]
     more = len(live) - len(parts)
     if more > 0:
         parts.append(f"+{more} more")
     return "⚙ " + " · ".join(parts)
+
+
+def selected_id(view: dict, index: int, *, now: Optional[float] = None,
+                limit: int = 3) -> str:
+    """The id Enter would take for ``index``, or "" when there is none.
+
+    The walk under the prompt needs the row's id — the same string
+    ``/bash <id>`` takes — not its label. Same filter as status_line,
+    so what is marked and what Enter acts on cannot disagree.
+    """
+    try:
+        items = rows(view, now=now)
+    except Exception:
+        return ""
+    live = [r for r in items
+            if r.get("group") in ("shells", "agents", "watches")
+            and "running" in str(r.get("detail", "")).lower()
+            or r.get("group") == "agents"]
+    shown = live[:max(1, int(limit))]
+    if 0 <= int(index) < len(shown):
+        return str(shown[int(index)].get("id") or "")
+    return ""
 
 
 def row_html(row: dict) -> str:

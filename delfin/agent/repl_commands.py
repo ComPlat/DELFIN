@@ -1544,9 +1544,14 @@ def _key_rows() -> list[tuple[str, str, str]]:
         # The ones below only act at the framed idle prompt (read_boxed);
         # during a turn the pump swallows them, like any key it does not
         # recognise.
-        (rk.HISTORY_PREV, "up", "At the prompt: previous history line."),
-        (rk.HISTORY_NEXT, "down", "At the prompt: next history line, back "
-                                  "to what you were typing."),
+        (rk.HISTORY_PREV, "up", "At the prompt: on an empty line with "
+                                "jobs listed below it, mark the next job "
+                                "(Enter opens it); otherwise the previous "
+                                "history line."),
+        (rk.HISTORY_NEXT, "down", "At the prompt: mark the job above, or "
+                                  "leave the jobs; otherwise the next "
+                                  "history line, back to what you were "
+                                  "typing."),
         (rk.COMPLETE, "tab", "At the prompt, on an empty line: take the "
                              "next suggestion (again for the one after); "
                              "otherwise complete a /command or an @path."),
