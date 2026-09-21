@@ -170,6 +170,13 @@ def delfin_roots(settings: dict | None = None,
         str(home_path / "agent_workspace"),
         str(home_path / ".delfin" / "applications"),
         str(home_path / ".delfin" / "adapters"),
+        # The doc index, by name and writable. The ops server's working
+        # data: check_orca_manual_indexed reads it, index_new_pdf rewrites
+        # it. Measured (this session, walled vs loose): without this bind a
+        # contained ops server answered "indexed: false" on an account
+        # with a healthy index. A file, not the directory — credentials
+        # live next to it and stay outside.
+        str(home_path / ".delfin" / "doc_index.json"),
     ]
     if workspace:
         write.append(str(workspace))
@@ -193,7 +200,9 @@ def delfin_roots(settings: dict | None = None,
             # An absent directory is dropped, not refused. Unlike a root
             # the user typed, this one was inferred — and an inference
             # that stops the server would be the derivation making policy.
-            if resolved.is_dir() and str(resolved) not in out:
+            # A file counts too: the doc index is bound by name.
+            if (resolved.is_dir() or resolved.is_file()) \
+                    and str(resolved) not in out:
                 out.append(str(resolved))
         return out
 
@@ -335,9 +344,9 @@ def _runtime_binds(command: str, home: Path) -> list[str]:
     return out
 
 
-def _runtime_symlinks(command: str, bound: list[str]) -> list[tuple[str, str]]:
-    """``(target, link)`` for each symlink on the way to the interpreter that
-    lies outside everything the sandbox binds.
+def _path_symlinks(path: str, roots: list[str]) -> list[tuple[str, str]]:
+    """``(target, link)`` for each symlink on the way to *path* that lies
+    outside everything *roots* covers.
 
     Binding the interpreter's resolved directory is not enough: the kernel
     follows the path as written, hop by hop. On bwUniCluster a venv's python
@@ -349,12 +358,10 @@ def _runtime_symlinks(command: str, bound: list[str]) -> list[tuple[str, str]]:
     directory is already there and is left alone: bwrap refuses to create a
     symlink where a file exists.
     """
-    exe = command if os.path.isabs(command) else (shutil.which(command) or "")
-    if not exe:
+    if not path:
         return []
-    roots = list(_SYSTEM_ROOTS) + list(bound)
     out: list[tuple[str, str]] = []
-    parts = list(Path(os.path.abspath(exe)).parts)
+    parts = list(Path(os.path.abspath(path)).parts)
     current, rest = Path(parts[0]), parts[1:]    # start at the filesystem root
     hops = 0
     while rest and hops < 40:                    # 40: the kernel's own limit
@@ -376,6 +383,14 @@ def _runtime_symlinks(command: str, bound: list[str]) -> list[tuple[str, str]]:
         base_parts = list(Path(os.path.normpath(base)).parts)
         current, rest = Path(base_parts[0]), base_parts[1:] + rest
     return out
+
+
+def _runtime_symlinks(command: str, bound: list[str]) -> list[tuple[str, str]]:
+    """``_path_symlinks`` for the interpreter's own path."""
+    exe = command if os.path.isabs(command) else (shutil.which(command) or "")
+    if not exe:
+        return []
+    return _path_symlinks(exe, list(_SYSTEM_ROOTS) + list(bound))
 
 
 def _start_dir(iso: Isolation, cwd: Path | str | None) -> str:
@@ -416,6 +431,8 @@ def bwrap_argv(
     home that was just blanked.
     """
     home_path = Path(home) if home is not None else Path.home()
+    home_as_named = str(Path(home).expanduser()) if home is not None \
+        else os.environ.get("HOME", str(home_path))
     try:
         home_path = home_path.resolve()
     except OSError:            # pragma: no cover - resolve on a live $HOME
@@ -437,7 +454,21 @@ def bwrap_argv(
     for root in iso.write_roots:
         argv += ["--bind", root, root]
     bound = runtime + list(iso.read_roots) + list(iso.write_roots)
-    for target, link in _runtime_symlinks(command, bound):
+    # Links on the way to a root too, not just the interpreter. Measured on
+    # this session's own server: $HOME was /home/... on a host where /home
+    # links into /pfs/..., and a root bound only at its resolved /pfs path
+    # was invisible to every reader that asked for it the way the server
+    # does -- Path.home(), hop by hop through the missing link.
+    links: list[tuple[str, str]] = list(_runtime_symlinks(command, bound))
+    all_roots = list(_SYSTEM_ROOTS) + list(bound)
+    # The home as the launcher names it, not as it resolves: on this host
+    # $HOME may name a link (/home/... into another filesystem), and a server
+    # asking for ~/.delfin/doc_index.json walks the link, not the target.
+    for named in [home_as_named] + bound:
+        for pair in _path_symlinks(named, all_roots):
+            if pair not in links:
+                links.append(pair)
+    for target, link in links:
         argv += ["--symlink", target, link]
     argv += ["--chdir", _start_dir(iso, cwd), "--die-with-parent", command]
     argv += [str(a) for a in (args or ())]
