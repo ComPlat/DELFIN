@@ -77,6 +77,35 @@ def string_width(text: str) -> int:
     return sum(char_width(ch) for ch in text)
 
 
+def _visible_text(text: str) -> str:
+    """Make pasted controls inert without changing character offsets.
+
+    The decoder deliberately keeps every byte inside bracketed paste: the
+    message sent to the model must remain what the user pasted.  The box is
+    a different surface.  Writing ESC, CR or a tab into a terminal there can
+    clear the screen, overwrite the prompt, or move the cursor somewhere the
+    painter did not account for.  Each control therefore becomes exactly one
+    printable character here, so cursor offsets into the original text still
+    address the same position in the rendered copy.
+    """
+    shown: list[str] = []
+    for ch in text or "":
+        code = ord(ch)
+        if ch == "\n":
+            shown.append(ch)                 # a deliberate hard wrap
+        elif ch == "\t":
+            shown.append("⇥")                # visible horizontal tab
+        elif code < 32:
+            shown.append(chr(0x2400 + code))  # ESC -> ␛, CR -> ␍
+        elif code == 127:
+            shown.append("␡")
+        elif 0x80 <= code < 0xA0:
+            shown.append("�")                # C1 terminal controls
+        else:
+            shown.append(ch)
+    return "".join(shown)
+
+
 def _wrap(text: str, inner: int) -> list[tuple[str, int]]:
     """Wrap *text* to *inner* columns; one (row, width) pair per row.
 
@@ -135,25 +164,45 @@ def _truncate_hint(hint: str, width: int) -> str:
 
 
 def _narrow_row(text: str, cursor: int, width: int) -> BoxView:
-    """The below-MIN_WIDTH degenerate form: one row, END of text kept."""
-    row = PROMPT + (text or "")
-    if string_width(row) > width:
-        cut = row
-        while string_width(cut) > width and len(cut) > 1:
-            cut = cut[1:]
-        row = cut
-    # The cursor column is where it lands after the same cut: offset of
-    # the cursor in the uncut row, shifted by what the cut removed.
-    # Measured in COLUMNS, not characters: a CJK character is one
-    # character and two columns, and len() put the cursor half a glyph
-    # from where it belongs.
-    full = PROMPT + (text or "")
-    row_before = PROMPT + (text or "")[:cursor]
-    cut_chars = len(full) - len(row)
-    visible_before = row_before[cut_chars:] if cut_chars < len(row_before) else ""
-    col = string_width(visible_before)
-    return BoxView([row], (0, min(col, max(0, width - 1))), None,
-                   border=False)
+    """The below-MIN_WIDTH form: one safe, cursor-following row.
+
+    It is a horizontal viewport, biased toward what precedes the cursor.
+    Keeping the unconditional END made a cursor moved into the middle point
+    at unrelated text.  The budget is ``width - 1`` for the same reason as
+    the full box: writing the terminal's final column enables autowrap and
+    silently turns this one-row fallback into two physical rows.
+    """
+    budget = max(0, int(width or 0) - 1)
+    if budget <= 0:
+        return BoxView([""], (0, 0), None, border=False)
+
+    # A newline cannot exist in a one-row view.  Keep it visible and keep
+    # its one-character offset, just as _visible_text does for other
+    # controls.
+    full = (PROMPT + (text or "")).replace("\n", "↵")
+    stop = max(0, min(len(PROMPT) + cursor, len(full)))
+    if string_width(full) <= budget:
+        start, end = 0, len(full)
+    else:
+        start = stop
+        used = 0
+        while start > 0:
+            step = char_width(full[start - 1])
+            if used + step > budget:
+                break
+            start -= 1
+            used += step
+        end = stop
+        while end < len(full):
+            step = char_width(full[end])
+            if used + step > budget:
+                break
+            end += 1
+            used += step
+
+    row = full[start:end]
+    col = string_width(full[start:stop])
+    return BoxView([row], (0, min(col, budget)), None, border=False)
 
 
 class BoxView:
@@ -247,8 +296,9 @@ def render_box(text: str, cursor: int, width: int, hint: str = "",
     width = int(width or 0)
     text = text or ""
     cursor = max(0, min(int(cursor), len(text)))
+    visible = _visible_text(text)
     if width < MIN_WIDTH:
-        return _narrow_row(text, cursor, width)
+        return _narrow_row(visible, cursor, width)
 
     # Two rules, not a frame. A closed box has to defend its right edge
     # on every keystroke and at every width, and it buys nothing the
@@ -259,7 +309,7 @@ def render_box(text: str, cursor: int, width: int, hint: str = "",
     rule = _HORIZONTAL * inner
     # The prompt rides at the start of the wrapped stream; it is part
     # of row 0 and the cursor offset is measured through it.
-    stream = PROMPT + text
+    stream = PROMPT + visible
     wrapped = _wrap(stream, inner)
 
     rows: list[str] = [rule]

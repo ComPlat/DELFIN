@@ -178,7 +178,8 @@ def test_no_hint_leaves_no_hint_row():
 def test_below_min_width_degenerates_to_one_row():
     view = render_box("hello world this is long", 24, 10, HINT)
     assert len(view.rows) == 1
-    assert string_width(view.rows[0]) <= 10
+    assert string_width(view.rows[0]) <= 9, (
+        "the last terminal column must stay unused or the row autowraps")
     # END of the text survives.
     assert view.rows[0].endswith("long"), view.rows[0]
 
@@ -186,6 +187,47 @@ def test_below_min_width_degenerates_to_one_row():
 def test_narrow_row_cursor_is_visible():
     view = render_box("hello world this is long", 24, 10)
     assert view.cursor == (0, 9), view.cursor
+
+
+def test_narrow_row_follows_a_cursor_moved_into_the_middle():
+    text = "0123456789abcdefghij"
+    view = render_box(text, 7, 10)
+    # The old fallback always kept the END ("bcdefghij"), while placing
+    # the cursor at column zero.  What the user was editing was not on the
+    # screen at all.  The viewport now ends at the cursor when there is
+    # enough text on its left, like a horizontally scrolling input line.
+    assert "0123456" in view.rows[0]
+    assert "bcdefghij" not in view.rows[0]
+    assert view.cursor == (0, 9)
+    assert string_width(view.rows[0]) <= 9
+
+
+def test_even_a_two_column_terminal_never_autowraps_its_fallback():
+    view = render_box("abcdef", 6, 2)
+    assert string_width(view.rows[0]) <= 1
+    assert view.cursor[1] <= 1
+
+
+def test_pasted_terminal_controls_are_visible_text_not_terminal_commands():
+    raw = "before\x1b[2J\r\tafter"
+    view = render_box(raw, len(raw), 40)
+    picture = "\n".join(view.rows)
+    assert "\x1b" not in picture
+    assert "\r" not in picture
+    assert "\t" not in picture
+    assert "␛" in picture and "␍" in picture and "⇥" in picture
+    assert view.cursor[1] > 0
+
+
+def test_rendering_controls_does_not_change_the_submitted_buffer():
+    """The renderer makes controls harmless; the decoder/model keep bytes."""
+    from delfin.agent import repl_keys as rk
+
+    raw = "a\x1b[31m\tb"
+    decoder = rk.KeyDecoder()
+    decoder.feed("\x1b[200~" + raw + "\x1b[201~")
+    render_box(decoder.buffer, decoder.cursor, 40)
+    assert decoder.buffer == raw
 
 
 def test_at_min_width_the_rules_are_drawn():
