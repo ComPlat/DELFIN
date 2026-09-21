@@ -2133,19 +2133,27 @@ def cmd_approvals(args: argparse.Namespace) -> int:
 
     if action in ("approve", "deny"):
         who = os.environ.get("USER", "")
-        ok = _fc.answer(args.request_id, action == "approve", by=who)
+        # A refusal may say what to do instead, and the model reads it in
+        # the same turn -- instead of guessing the same thing spelled
+        # differently, which is one more dialog for the person here.
+        reason = (getattr(args, "reason", "") or "") if action == "deny" else ""
+        ok = _fc.answer(args.request_id, action == "approve", by=who,
+                        reason=reason)
         if not ok:
             # The same id may belong to a session waiting at a terminal.
             # Answering it here is the point of publishing it whole: the
             # pane shows 24 cut lines, this shows the question.
             from . import terminal_confirm as _tc
             ok = _tc.answer_waiting(args.request_id,
-                                    action == "approve", by=who)
+                                    action == "approve", by=who,
+                                    reason=reason)
         if not ok:
             print(f"ERROR: nothing waiting with id {args.request_id!r}",
                   file=sys.stderr)
             return 2
         print(f"{action}: {args.request_id}")
+        if reason:
+            print(f"reason: {reason}")
         return 0
 
     if action == "show":
@@ -3139,6 +3147,10 @@ def build_parser() -> argparse.ArgumentParser:
     appr_ok.add_argument("request_id")
     appr_no = appr_sub.add_parser("deny", help="Turn one request away")
     appr_no.add_argument("request_id")
+    appr_no.add_argument(
+        "--reason", default="",
+        help="Tell the agent why, and what to do instead — it reads this "
+             "in the same turn instead of guessing")
     appr_watch = appr_sub.add_parser(
         "watch", help="One line per new request, as they arrive")
     appr_watch.add_argument("--seconds", type=float, default=0.0,
