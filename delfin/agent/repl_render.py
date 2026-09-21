@@ -284,6 +284,42 @@ _PATCH_FILE_RE = re.compile(
     r"^\*\*\*\s+(?:Update|Add|Delete) File:\s*(.+?)\s*$")
 
 
+#: The field a one-line JSON envelope carries its real output in. Not
+#: a list of tool names: the SHAPE decides, so a provider whose wrapper
+#: looks different is neither silently mangled nor silently unwrapped.
+_CARRYING_FIELDS = ("stdout", "output", "text", "result")
+
+
+def _envelope_carrying(output: str) -> str | None:
+    """The output a ONE-LINE JSON envelope carries, or None.
+
+    ``{"exit_code": 0, "stdout": "136\\n", "cwd": "."}`` is what a shell
+    tool returns: the answer rides in ``stdout`` and the envelope's one
+    line is exactly the middle ``truncate_middle`` destroys, so the line
+    watched during the turn lost the answer while /trace kept it. The
+    carrying field alone goes on the screen instead.
+
+    Only the one-line form: a pretty-printed envelope has real lines and
+    keeps today's tail behaviour. A payload with no carrying field (a
+    search result, a summary table) is data, not packaging; one with
+    several is ambiguous. A lone flag like ``exit_code`` is not a
+    payload -- unwrapping it would print a bare ``0``.
+    """
+    if "\n" in output or not output.strip():
+        return None
+    try:
+        payload = json.loads(output)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    values = [payload[field] for field in _CARRYING_FIELDS if field in payload]
+    if len(values) != 1 or not isinstance(values[0], str):
+        return None
+    value = values[0]
+    return value if value.strip() else None
+
+
 def _result_tail(output: str, width: int) -> list[str]:
     """The last few non-empty lines of a result, ready to print."""
     if not output or not output.strip():
@@ -576,15 +612,29 @@ def tool_result_line(name: str, output: str, *, meta: dict | None = None,
     if not output and not meta:
         return "  ⎿ " + theme.dim("(no output)")
 
-    lines = output.count("\n") + (1 if output else 0)
+    # A one-line JSON envelope is packaging: its byte count is not the
+    # answer's size and its single line is the middle truncate_middle
+    # cuts. Show what the carrying field says, nothing about the box.
+    carrying = _envelope_carrying(output)
+    if carrying is not None:
+        # json-escaped controls surface only after decoding, so the
+        # carrying field needs its own pass.
+        carrying = strip_control(carrying)
+        tail = _result_tail(carrying, width)
+        if tail:
+            return "\n".join(theme.dim(t) for t in tail)
+        return "  ⎿ " + theme.dim("(no output)")
+
+    lines = len(output.rstrip("\n").splitlines())
     exact = "chars" in meta and int(meta.get("chars") or 0) >= len(output)
     chars = int(meta.get("chars") or len(output))
     truncated = bool(meta.get("truncated"))
 
+    word = "line" if lines == 1 else "lines"
     if exact and not truncated:
-        body = f"{lines} lines, {human_size(chars)}"
+        body = f"{lines} {word}, {human_size(chars)}"
     else:
-        body = f"{lines}+ lines, {human_size(chars)}"
+        body = f"{lines}+ {word}, {human_size(chars)}"
     if truncated:
         body += " (truncated)"
     notes = _WS_RE.sub(" ", str(meta.get("notes") or "").strip())
