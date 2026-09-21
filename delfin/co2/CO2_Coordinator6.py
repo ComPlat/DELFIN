@@ -211,14 +211,19 @@ def _minimal_read_control_file(path="CONTROL.txt"):
 
             params[key] = val
 
-    # Explicit type coercion
+    # Explicit type coercion. Placeholder values like "[CHARGE]" (template
+    # not yet filled) must stay strings — a blank or placeholder value is
+    # skipped so the coordinator does not crash on an unfilled template.
+    def _coercible(value):
+        return isinstance(value, str) and value.strip() and "[" not in value
+
     for key in ["distance", "scan_end", "orientation_distance", "place_clearance_scale",
                 "coord_max_dist"]:
-        if key in params and isinstance(params[key], str):
+        if key in params and _coercible(params[key]):
             params[key] = float(params[key])
     for key in ["scan_steps", "charge", "multiplicity", "PAL", "maxcore", "rot_step_deg",
                 "rot_range_deg", "place_samples", "substrate_atom_index"]:
-        if key in params and isinstance(params[key], str):
+        if key in params and _coercible(params[key]):
             params[key] = int(params[key])
 
     # Optional: replace /n with a line break
@@ -1435,20 +1440,12 @@ def main():
     # --- 2b) Adduct flow: automatic coordination chain (optional) ---
     # When enabled, the flow (optional GFN2-xTB preopt -> coordination test
     # -> OCCUPIER job preparation) replaces the orientation/distance scans.
+    # The chain reads its own settings from the coordinator CONTROL.txt
+    # (adduct_start_xyz defaults to the placement geometry written above).
     if _is_enabled(args.get("adduct_flow", False)):
         from delfin.co2.adduct_flow import run_adduct_flow
-        start_xyz = args.get("adduct_start_xyz") or combined_path
-        if not os.path.exists(start_xyz):
-            start_xyz = combined_path  # fall back to the fresh placement
-        substrate_idx = args.get("substrate_atom_index")
-        if substrate_idx in (None, ""):
-            substrate_idx = co2_c_idx  # default: CO2 carbon / substrate anchor
-        result = run_adduct_flow(
-            start_xyz,
-            substrate_atom_index=int(substrate_idx),
-            workdir=os.path.dirname(os.path.abspath(start_xyz)) or ".",
-            control=args,
-        )
+        control_dir = os.path.dirname(os.path.abspath("CONTROL.txt")) or "."
+        result = run_adduct_flow(control_dir, workdir=control_dir)
         print(f"[INFO] Adduct flow finished with status: {result['status']}")
         return
 

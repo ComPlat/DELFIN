@@ -93,14 +93,26 @@ def _run_xtb_preopt(atoms, xyz_path: str, control: Dict[str, Any], workdir: str)
         return None
 
 
+def _int_or_default(value, default: int) -> int:
+    """Cast to int, falling back to the default for blanks/placeholders."""
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip() and "[" not in value:
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    return default
+
+
 def _prepare_occupier_job(workdir: str, xyz_path: str, control: Dict[str, Any]) -> str:
     """Write a small OCCUPIER-ready job directory (no execution)."""
     job_dir = os.path.join(workdir, "occupier_job")
     os.makedirs(job_dir, exist_ok=True)
     shutil.copy(xyz_path, os.path.join(job_dir, "input.xyz"))
 
-    charge = int(control.get("charge", -2))
-    multiplicity = int(control.get("multiplicity", 1))
+    charge = _int_or_default(control.get("charge"), -2)
+    multiplicity = _int_or_default(control.get("multiplicity"), 1)
     broken_sym = _coord._clean_str(control.get("broken_sym"))
     functional = _coord._clean_str(control.get("functional"), "PBE0") or "PBE0"
     basis = _coord._clean_str(control.get("main_basisset"), "def2-SVP") or "def2-SVP"
