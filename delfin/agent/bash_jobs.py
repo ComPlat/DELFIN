@@ -1250,7 +1250,12 @@ class _Registry:
         if env:
             run_env.update(env)
 
-        proc = subprocess.Popen(
+        from . import lifeline as _lifeline
+
+        # Forked from a thread that lives as long as the process: the cage's
+        # --die-with-parent follows the forking THREAD, and a tool call's
+        # thread ends as soon as the call returns -- taking the job with it.
+        proc = _lifeline.start_bound_to_process(lambda: subprocess.Popen(
             list(argv) if argv else ["/bin/bash", "-c", command],
             cwd=cwd,
             env=run_env,
@@ -1260,7 +1265,7 @@ class _Registry:
             # New process group so we can SIGTERM the whole tree.
             preexec_fn=os.setsid,
             text=True,
-        )
+        ))
 
         with self._lock:
             jid = self._new_job_id()
@@ -1280,7 +1285,6 @@ class _Registry:
         # Its own session keeps a restart from taking it down; the lifeline
         # ledger is what still ends it with delfin-voila's terminal.
         try:
-            from . import lifeline as _lifeline
             _lifeline.record_child(proc.pid, "shell")
         except Exception:
             pass

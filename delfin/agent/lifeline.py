@@ -30,7 +30,7 @@ import signal
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, TypeVar
 
 from delfin.agent import proc_identity
 
@@ -230,6 +230,57 @@ def guard_daemon() -> Optional[threading.Thread]:
         if sid != os.getpid():
             os.environ.update(_env_for(sid, _start_ticks(sid)))
     return watch(exit_now)
+
+
+_T = TypeVar("_T")
+_FORKER_LOCK = threading.Lock()
+_forker: Optional[tuple[int, threading.Thread, "queue.Queue"]] = None
+
+
+def _forker_loop(jobs: "queue.Queue") -> None:
+    while True:
+        start, box, done = jobs.get()
+        try:
+            box.append((True, start()))
+        except BaseException as exc:            # noqa: BLE001
+            box.append((False, exc))
+        finally:
+            done.set()
+
+
+def start_bound_to_process(start: Callable[[], _T]) -> _T:
+    """Run *start* -- one that forks -- on a thread that lives as long as the
+    process, and return what it returned.
+
+    PR_SET_PDEATHSIG, which bubblewrap's ``--die-with-parent`` and
+    ``parent_death_signal`` set, fires when the THREAD that forked ends,
+    not the process. A caged child started from a tool call's thread was
+    SIGKILLed as soon as the call returned: every background job, and an
+    MCP server started on first use. Forked from here, the child ends when
+    the process does, which is what the flag is there for.
+    """
+    import queue
+
+    global _forker
+    with _FORKER_LOCK:
+        if _forker is None or _forker[0] != os.getpid() \
+                or not _forker[1].is_alive():
+            jobs: queue.Queue = queue.Queue()
+            thread = threading.Thread(target=_forker_loop, args=(jobs,),
+                                      name="delfin-forker", daemon=True)
+            thread.start()
+            _forker = (os.getpid(), thread, jobs)
+        _pid, thread, jobs = _forker
+    if threading.current_thread() is thread:
+        return start()
+    box: list = []
+    done = threading.Event()
+    jobs.put((start, box, done))
+    done.wait()
+    ok, value = box[0]
+    if ok:
+        return value
+    raise value
 
 
 def parent_death_signal() -> None:
