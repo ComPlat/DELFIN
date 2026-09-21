@@ -54,6 +54,12 @@ DENY = "deny"
 #: The same 300 s the dashboard has always used.
 DEFAULT_TIMEOUT_S = 300.0
 
+#: A refusal may say why, and the reason is operator text that the model
+#: will read verbatim. Capped so one answer file cannot smuggle a whole
+#: prompt, and stripped to printable characters so it cannot carry escape
+#: sequences either.
+REASON_MAX = 512
+
 _POLL_S = 0.25
 
 
@@ -76,6 +82,7 @@ class FileConfirmBroker:
         self.timeout_s = float(timeout_s or DEFAULT_TIMEOUT_S)
         self.poll_s = float(poll_s or _POLL_S)
         self._timed_out = threading.local()
+        self._refusal_reason = threading.local()
 
     # -- the contract the gate reads -------------------------------------
     @property
@@ -93,6 +100,7 @@ class FileConfirmBroker:
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Bound on purpose: the gate reads last_timed_out off __self__."""
         self.last_timed_out = False
+        self.last_refusal_reason = ""
         try:
             request_id, path = self._write_request(tool_name, args, preview)
         except OSError:
@@ -102,7 +110,20 @@ class FileConfirmBroker:
         if answer is None:
             self.last_timed_out = True
             return False
-        return answer
+        decision, reason = answer
+        if decision is False and reason:
+            self.last_refusal_reason = reason
+        return decision
+
+    @property
+    def last_refusal_reason(self) -> str:
+        """Why THIS thread's last dialog was refused, if it said. See
+        ``last_timed_out`` for why it is per thread."""
+        return str(getattr(self._refusal_reason, "value", "") or "")
+
+    @last_refusal_reason.setter
+    def last_refusal_reason(self, value: str) -> None:
+        self._refusal_reason.value = str(value or "")
 
     # -- writing the question --------------------------------------------
     def _write_request(self, tool_name, args, preview) -> tuple[str, Path]:
@@ -129,16 +150,21 @@ class FileConfirmBroker:
         return request_id, path
 
     # -- waiting for the answer ------------------------------------------
-    def _wait_for(self, request_id: str, request_path: Path) -> Optional[bool]:
-        """True/False once answered, None when the time runs out."""
+    def _wait_for(self, request_id: str, request_path: Path) -> "Optional[tuple[bool, str]]":
+        """(decision, refusal_reason) once answered, None when time runs out.
+
+        The refusal reason is stored per THREAD, exactly like the expiry
+        flag: the gate reads it off ``__self__`` in the same turn as the
+        refusal, and requests arrive on overlapping threads.
+        """
         answer_path = request_path.with_name(f"{request_id}.answer.json")
         deadline = time.monotonic() + self.timeout_s
         asked_at = _mtime(request_path)
         while True:
-            decision = _read_answer(answer_path, request_id, asked_at)
-            if decision is not None:
-                _retire(request_path, answer_path, decision)
-                return decision
+            answer = _read_answer(answer_path, request_id, asked_at)
+            if answer is not None:
+                _retire(request_path, answer_path, answer[0])
+                return answer
             if time.monotonic() >= deadline:
                 _retire(request_path, answer_path, None)
                 return None
@@ -166,9 +192,20 @@ def pending(room: Optional[Path] = None) -> list:
     return out
 
 
+def _sanitize_reason(text: str) -> str:
+    """Operator text made safe to hand to a model: printable only, capped."""
+    return "".join(c for c in str(text or "") if c.isprintable())[:REASON_MAX].strip()
+
+
 def answer(request_id: str, decision: bool, *, room: Optional[Path] = None,
-           by: str = "") -> bool:
-    """Write the answer to *request_id*. True when it was written."""
+           by: str = "", reason: str = "") -> bool:
+    """Write the answer to *request_id*. True when it was written.
+
+    A refusal may carry a reason; an approval never does. The reason is
+    what the refusing person wants the agent to do instead, and it reaches
+    the model in the same turn as the refusal -- see ``_read_answer`` for
+    the checks it is read under.
+    """
     room = Path(room) if room else requests_dir()
     request_path = room / f"{request_id}.request.json"
     if not request_path.is_file():
@@ -176,6 +213,10 @@ def answer(request_id: str, decision: bool, *, room: Optional[Path] = None,
     record = {"id": str(request_id),
               "decision": APPROVE if decision else DENY,
               "by": str(by or ""), "at": time.time()}
+    if not decision:
+        reason = _sanitize_reason(reason)
+        if reason:
+            record["reason"] = reason
     path = room / f"{request_id}.answer.json"
     tmp = room / f".{request_id}.answer.partial"
     try:
@@ -191,11 +232,17 @@ def answer(request_id: str, decision: bool, *, room: Optional[Path] = None,
 # -- the careful parts ------------------------------------------------------
 
 def _read_answer(path: Path, request_id: str,
-                 asked_at: float) -> Optional[bool]:
-    """The decision in *path*, or None when there is no answer to read.
+                 asked_at: float) -> Optional[tuple[bool, str]]:
+    """The decision in *path*, with its refusal reason, or None.
 
     Every reason to doubt the file returns None: doubt is not approval,
     and it is not refusal either -- the question simply stays open.
+
+    The reason rides along under the SAME checks as the decision, not a
+    laxer set of its own: it is operator text the model will read, so a
+    file that fails any check here (wrong owner, group-writable, older
+    than the question, another id) must not deliver text either. There is
+    deliberately no second reader.
     """
     try:
         info = path.lstat()
@@ -214,9 +261,12 @@ def _read_answer(path: Path, request_id: str,
         return None                      # an answer to something else
     decision = record.get("decision")
     if decision == APPROVE:
-        return True
+        return (True, "")
     if decision == DENY:
-        return False
+        # Only printable, only capped -- and even then it went through the
+        # checks above, because there is no other path that reads it.
+        reason = _sanitize_reason(record.get("reason"))
+        return (False, reason)
     return None                          # unrecognised is not an answer
 
 
@@ -274,5 +324,5 @@ def _hostname() -> str:
         return ""
 
 
-__all__ = ["APPROVE", "DENY", "DEFAULT_TIMEOUT_S", "FileConfirmBroker",
-           "answer", "pending", "requests_dir"]
+__all__ = ["APPROVE", "DENY", "DEFAULT_TIMEOUT_S", "REASON_MAX",
+           "FileConfirmBroker", "answer", "pending", "requests_dir"]
