@@ -793,7 +793,13 @@ class TerminalAgent:
                     # The handler recorded the new size; the repaint
                     # happens here, on the thread that owns the terminal.
                     self._width_dirty = False
+                    # Erase with the OLD geometry, then ask for the new
+                    # width before laying the composer out again.  Reversing
+                    # that order sizes the erase from a picture that is not
+                    # on screen; omitting refresh_width repaints forever at
+                    # the launch-time width after SIGWINCH.
                     self._clear_bottom()
+                    self.transcript.refresh_width()
                     self._repaint_bottom(force=True)
                 if raw.active:
                     for event in decoder.feed(raw.read_ready(_PUMP_TICK_S)):
@@ -859,6 +865,9 @@ class TerminalAgent:
             return
         if event.kind == rk.REDRAW:
             self._clear_bottom()
+            # Ctrl+L is also the recovery key when a multiplexer swallowed
+            # SIGWINCH.  A redraw at the stale width is not a recovery.
+            self.transcript.refresh_width()
             self._repaint_bottom(force=True)
             return
         if event.kind == rk.EDIT:

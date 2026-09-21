@@ -68,6 +68,7 @@ _DOWN = ("\x1b[B", "\x1bOB")
 _TAB = "\t"
 _HOME = ("\x1b[H", "\x1bOH", "\x1b[1~")
 _END = ("\x1b[F", "\x1bOF", "\x1b[4~")
+_DELETE = ("\x1b[3~",)
 # Alt+B / Alt+F — one word left, one word right.
 _WORD_LEFT = "\x1bb"
 _WORD_RIGHT = "\x1bf"
@@ -214,6 +215,9 @@ class KeyDecoder:
                     elif seq in _END:
                         self.cursor = len(self.buffer)
                         events.append(KeyEvent(EDIT, text=self.buffer))
+                    elif seq in _DELETE:
+                        if self._delete_forward():
+                            events.append(KeyEvent(EDIT, text=self.buffer))
                     i = j + 1
                     continue
                 events.append(KeyEvent(INTERRUPT))
@@ -228,10 +232,8 @@ class KeyDecoder:
             if ch == "\x04":                    # Ctrl+D
                 if not self.buffer:
                     events.append(KeyEvent(EOF))
-                # On a non-empty line Ctrl+D deletes nothing here: the
-                # readline prompt it mirrors deletes forward, but this
-                # decoder has no delete-forward key, and pretending to
-                # would be worse than ignoring it.
+                elif self._delete_forward():
+                    events.append(KeyEvent(EDIT, text=self.buffer))
                 i += 1
                 continue
 
@@ -256,9 +258,7 @@ class KeyDecoder:
                 # halves matter: stopping at the first space would take a
                 # keystroke to delete nothing when the cursor sits after
                 # one, which is where it usually sits.
-                left = self.buffer[:self.cursor]
-                trimmed = left.rstrip()
-                cut = trimmed.rfind(" ") + 1
+                cut = self._word_left()
                 self.buffer = self.buffer[:cut] + self.buffer[self.cursor:]
                 self.cursor = cut
                 events.append(KeyEvent(EDIT, text=self.buffer))
@@ -345,23 +345,35 @@ class KeyDecoder:
 
     # -- cursor ----------------------------------------------------------
 
+    def _delete_forward(self) -> bool:
+        """Delete the character under the cursor, like readline/Ctrl+D."""
+        if self.cursor >= len(self.buffer):
+            return False
+        self.buffer = (self.buffer[:self.cursor]
+                       + self.buffer[self.cursor + 1:])
+        return True
+
     def _word_left(self) -> int:
         """The start of the word behind the cursor.
 
         Whitespace first, then the word — the same two steps Ctrl+W
         deletes, so moving and deleting agree about where a word begins.
         """
-        left = self.buffer[:self.cursor].rstrip()
-        return left.rfind(" ") + 1
+        i = self.cursor
+        while i > 0 and self.buffer[i - 1].isspace():
+            i -= 1
+        while i > 0 and not self.buffer[i - 1].isspace():
+            i -= 1
+        return i
 
     def _word_right(self) -> int:
         """The start of the word after the cursor, or the end of the line."""
-        rest = self.buffer[self.cursor:]
-        skipped = len(rest) - len(rest.lstrip())
-        nxt = rest.lstrip().find(" ")
-        if nxt < 0:
-            return len(self.buffer)
-        return self.cursor + skipped + nxt + 1
+        i = self.cursor
+        while i < len(self.buffer) and not self.buffer[i].isspace():
+            i += 1
+        while i < len(self.buffer) and self.buffer[i].isspace():
+            i += 1
+        return i
 
     # -- bracketed paste -------------------------------------------------
 
