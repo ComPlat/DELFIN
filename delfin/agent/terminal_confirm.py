@@ -256,7 +256,8 @@ def _note_outside_answer(req: ConfirmRequest, session_key: str,
         pass
 
 
-def answer_waiting(request_id: str, decision: bool, *, by: str = "") -> bool:
+def answer_waiting(request_id: str, decision: bool, *, by: str = "",
+                   reason: str = "") -> bool:
     """Answer a question a terminal session is stuck on. Never raises.
 
     The decision this reverses is the one the first published record
@@ -265,18 +266,25 @@ def answer_waiting(request_id: str, decision: bool, *, by: str = "") -> bool:
     file_confirm answers headless sessions with exactly these checks.
 
     Reading beats guessing. The supervisor decides on the WHOLE preview,
-    which is more than the pane was ever able to show.
+    which is more than the pane was ever able to show. A refusal may say
+    what to do instead; the reason reaches the model in the same turn as
+    the refusal, so it does not have to guess the same file differently.
     """
     try:
         from . import file_confirm as _fc
         return bool(_fc.answer(str(request_id), bool(decision),
-                               room=_PENDING_DIR, by=str(by or "")))
+                               room=_PENDING_DIR, by=str(by or ""),
+                               reason=str(reason or "")))
     except Exception:
         return False
 
 
-def _answer_from_outside(req: ConfirmRequest) -> "bool | None":
-    """The answer somebody left for *req*, or None. Never raises."""
+def _answer_from_outside(req: ConfirmRequest) -> "tuple[bool, str] | None":
+    """The answer somebody left for *req*, with a refusal reason, or None.
+
+    Never raises. The reason comes from file_confirm's single checked
+    reader -- there is deliberately no laxer second path for text.
+    """
     published = getattr(req, "published", None)
     if not published:
         return None
@@ -435,6 +443,10 @@ class TerminalConfirmBroker:
         # off ``__self__`` by the gate, so it stays an attribute and
         # keeps its name; only its storage moved.
         self._timed_out = threading.local()
+        # Per thread for the same reason as _timed_out: requests overlap
+        # across the turn worker, subagents and background jobs, and a
+        # reason from one thread's refusal must not land on another's.
+        self._refusal_reason = threading.local()
         self.aborted = False
 
     # -- the three bindings ----------------------------------------------
@@ -447,6 +459,18 @@ class TerminalConfirmBroker:
     @last_timed_out.setter
     def last_timed_out(self, value: bool) -> None:
         self._timed_out.value = bool(value)
+
+    @property
+    def last_refusal_reason(self) -> str:
+        """Why THIS thread's last dialog was refused, if it said why.
+        Set by the thread that asked, read by the gate in the same turn,
+        and cleared by every new dialog -- a reason never outlives its
+        refusal. Per thread like last_timed_out, and for the same reason."""
+        return str(getattr(self._refusal_reason, "value", "") or "")
+
+    @last_refusal_reason.setter
+    def last_refusal_reason(self, value: str) -> None:
+        self._refusal_reason.value = str(value or "")
 
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Bound on purpose: the gate reads last_timed_out off __self__."""
@@ -491,6 +515,10 @@ class TerminalConfirmBroker:
         return req
 
     def _wait(self, req: ConfirmRequest) -> Any:
+        # A reason never outlives its refusal: every new dialog starts
+        # from none, whatever the last one carried -- also when it was
+        # resolved before waiting, by an abort.
+        self.last_refusal_reason = ""
         if req.resolved:
             return req.decision
         import time as _time
@@ -505,8 +533,10 @@ class TerminalConfirmBroker:
                 got = True
                 break
             outside = _answer_from_outside(req)
-            if outside is not None and self.resolve(req, outside):
-                _note_outside_answer(req, self.session_key, outside)
+            if outside is not None and self.resolve(req, outside[0]):
+                if outside[0] is False and outside[1]:
+                    self.last_refusal_reason = outside[1]
+                _note_outside_answer(req, self.session_key, outside[0])
                 return req.decision
             if deadline is not None and _time.monotonic() >= deadline:
                 break
