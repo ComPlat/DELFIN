@@ -13560,6 +13560,39 @@ class _DocToolExecutor:
             getattr(perms.confirm_callback, "__self__", None),
             "last_timed_out", False))
 
+    @staticmethod
+    def _refusal_reason(perms: "KitToolPermissions") -> str:
+        """Why the user refused THIS dialog, if they said.
+
+        Read once per refusal, immediately after it: like the timeout
+        flag, it lives on the broker, per thread, for one dialog.
+        Empty when the callback is not a bound broker method (e.g. a
+        test double) or the refusal said nothing.
+        """
+        try:
+            return str(getattr(
+                getattr(perms.confirm_callback, "__self__", None),
+                "last_refusal_reason", "") or "")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _clear_refusal_reason(perms: "KitToolPermissions") -> None:
+        """Drop any leftover reason before a gate run.
+
+        A reason must never reach a refusal that did not ask: the
+        deny-list and auto-allow paths never open a dialog, so an
+        uncleared reason from an earlier refusal would attach to them
+        and read as the user's word. The brokers clear it themselves at
+        dialog start; this is the executor-side backstop.
+        """
+        try:
+            _self = getattr(perms.confirm_callback, "__self__", None)
+            if _self is not None:
+                _self.last_refusal_reason = ""
+        except Exception:
+            pass
+
     def _gate_write_path(
         self, path_arg: str, perms: "KitToolPermissions",
         name: str, args: dict,
@@ -13712,6 +13745,11 @@ class _DocToolExecutor:
     ) -> Optional[str]:
         """Run the policy + callback gate. Returns error string or None."""
         mode = effective_mode(perms)
+        # A reason never outlives its refusal: anything left on the
+        # broker from an earlier dialog is dropped before this gate run
+        # decides anything, so a refusal that asked nothing (deny list,
+        # auto-allow) can never carry a stale reason as the user's word.
+        self._clear_refusal_reason(perms)
 
         if mode == "plan":
             return (
@@ -14035,9 +14073,12 @@ class _DocToolExecutor:
                     )
                 _record_security_event("denied_by_user", "bash", cmd[:80])
                 perms.record_denied_action("bash", cmd)
+                _why = self._refusal_reason(perms)
+                _why_txt = f" The user said why: {_why}" if _why else ""
                 return (
                     f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
                     "it or work around it — ask the user what to do instead."
+                    + _why_txt
                 )
             # default / acceptEdits without a UI callback (head-less / CLI):
             # the command must match an auto-allow regex; otherwise tell the
