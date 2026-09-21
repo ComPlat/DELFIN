@@ -1216,10 +1216,17 @@ class TerminalAgent:
             # [a] abort of a question long since answered, and the turn
             # it belonged to never ran. Check before every key: the
             # answer can land in the middle of the loop too.
+            # An expiry resolves the request too, and it is not an answer
+            # from anywhere: say which of the two ended it.
             if getattr(req, "resolved", False):
                 self._clear_bottom()
-                self.transcript.chrome(self.transcript.theme.dim(
-                    "  answered elsewhere"))
+                if getattr(req, "expired", False):
+                    self.transcript.chrome(self.transcript.theme.yellow(
+                        "  too late — that request expired and was refused "
+                        "without you"))
+                else:
+                    self.transcript.chrome(self.transcript.theme.dim(
+                        "  answered elsewhere"))
                 return
             key = self._read_key(raw, allowed | {"\x1b"})
             if key in ("\x1b", "n"):
