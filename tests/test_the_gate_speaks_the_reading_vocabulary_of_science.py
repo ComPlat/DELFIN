@@ -169,6 +169,15 @@ WRITING_COMMANDS = [
     "nvidia-smi -e 0",
     "nvidia-smi -ac 2500,875",
     "nvidia-smi --gpu-reset",
+    # The three spellings the FIRST attempt at this change would have
+    # allowed: its top-level `|` put the guard only in one branch, and
+    # the unguarded second branch matched the querying prefix and let
+    # everything after it through (found in operator review, 2026-09-21).
+    # A pattern with top-level alternatives needs its guard in EVERY
+    # branch — or only one branch.
+    "nvidia-smi -q -pm 1",
+    "nvidia-smi --help --gpu-reset",
+    "nvidia-smi --query-gpu name --format=csv -pl 100",
     # running the real solver on an input is a calculation, not a question
     "xtb input.xyz",
     "xtb input.xyz --opt",

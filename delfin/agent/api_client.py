@@ -2199,6 +2199,44 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # sockets.
     r"^\s*(?:ps|pgrep|netstat|lsof)\b",
     r"^\s*ss\b(?![^|;&]*(?:-K\b|--kill\b))",
+    # -- (a2) the reading vocabulary of scientific work -------------------
+    # Measured 2026-09-19: 12 of 49 purely READING commands in mode
+    # default were denied — 24 %. The agent could not ask the queue what
+    # became of its own calculation, and no program for its version. Every
+    # entry here is either a pure query (squeue/sinfo/sacct: no mutating
+    # subcommand exists) or ARGUMENT-anchored so the writing sister of the
+    # same program stays behind the confirm gate. The pairs are pinned by
+    # tests/test_the_gate_speaks_the_reading_vocabulary_of_science.py:
+    # squeue yes / scancel no; --version yes / running the solver no.
+    r"^\s*(?:squeue|sinfo|sacct)\b",
+    # scontrol: only `show` reads. update/shutdown/suspend/hold/requeue/
+    # resume write or act — anchored so they cannot ride along.
+    r"^\s*scontrol\s+show\b",
+    # module: only the asking subcommands. load/unload/swap/switch mutate
+    # the environment (they persist into every later command's shell).
+    r"^\s*module\s+(?:list|avail|show|whatis|what-is|is-loaded|help)\b",
+    # Hardware inventory. nvidia-smi: a SINGLE branch with an end anchor
+    # and a token whitelist — every writing flag (-pm, -pl, -e, -ac,
+    # --gpu-reset, -r, …) is simply not a token of this pattern, so any
+    # line containing one falls off the whitelist and is refused. The
+    # first attempt at this entry used top-level alternatives and its
+    # second branch had neither guard nor end anchor; that shape is the
+    # reason this one has exactly one branch.
+    r"^\s*nvidia-smi(?:\s+(?:-[qLhi]|\?|--help|--query-gpu(?:=\S+|\s+\S+)?|"
+    r"--format=\S+|--id=\S+|-i\s+\S+))*\s*$",
+    # nproc and friends: pure counters.
+    r"^\s*(?:nproc|lscpu|lsblk)\b",
+    # checksums of files one can already read (cat is allowed; the digest
+    # reveals strictly less than the content).
+    r"^\s*(?:md5sum|sha1sum|sha256sum|sha512sum|cksum)\b",
+    # column tools with no output-file argument (paste writes to stdout;
+    # a redirect goes through the write-target gate).
+    r"^\s*(?:paste|column|join|pr|nl)\b",
+    r"^\s*seq\b",
+    # Asking a chemistry tool about itself. Anchored to the exact asking
+    # forms: `xtb input.xyz` (a real calculation) is not matched, and the
+    # flags are end-anchored so nothing rides after --help.
+    r"^\s*(?:xtb|orca_2mkl|crest)\s+(?:--version|--help|-h)\s*$",
     # cd <literal-path>: harmless on its own (it executes nothing, and each
     # bash call is a fresh subprocess) and the common prefix in
     # `cd /path && <cmd>`. Auto-allowed ONLY for a literal path — the char class
@@ -2297,7 +2335,7 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*python(?:3(?:\.\d+)?)?\s+-m\s+(?!pip\s+(?:install|uninstall|download)\b)"
     r"[A-Za-z_][\w.]*",
     r"^\s*python(?:3(?:\.\d+)?)?\s+\S+\.py\b",                             # run a script in repo
-    r"^\s*pip\s+(?:show|list|freeze|check)\b",
+    r"^\s*pip\s+(?:--version|-V|show|list|freeze|check)\b",
     r"^\s*conda\s+(?:info|list|env\s+list|search)\b",
     r"^\s*(?:pytest|py\.test)\b",
     r"^\s*(?:ruff|black|isort|flake8|pylint|mypy|pyright|pyflakes|bandit)\b",
@@ -5129,6 +5167,37 @@ _LOOP_RE = re.compile(
 #: What must not appear in the part of a loop that is not its body: it
 #: runs a command nobody looked at.
 _RUNS_SOMETHING_RE = re.compile(r"\$\(|`")
+
+
+#: Reading forms of tools whose writing form is refused. Keyed by the
+#: command's first word. A refusal that names the sanctioned question
+#: turns the next turn into the right command instead of a near-miss
+#: retry — measured 2026-09-19, the denial text never said the reading
+#: form exists. scancel deliberately names only the QUESTION (squeue):
+#: the hint must not read as a way to cancel through another door.
+_READING_ALTERNATIVES: dict[str, str] = {
+    "scancel": "squeue -u $USER (what became of the job)",
+    "sbatch": "squeue -u $USER (the queue's answer), sinfo",
+    "scontrol": "scontrol show <job|partition|node> (the reading half)",
+    "module": "module list / module avail / module show <name>",
+    "nvidia-smi": "nvidia-smi -q (read-only inventory)",
+    "xtb": "xtb --version (a calculation is not auto-allowed)",
+    "conda": "conda info / conda list",
+}
+
+
+def _reading_alternative_hint(cmd: str) -> str:
+    """Suffix for the auto-allow refusal: the reading form, where one
+    exists. Empty when the tool has none on the list — silence there is
+    honest, not terse."""
+    first = (cmd or "").lstrip().split(" ", 1)[0] if cmd else ""
+    alt = _READING_ALTERNATIVES.get(first)
+    if not alt:
+        return ""
+    return (
+        f" NOTE: the READING form of '{first}' is auto-allowed: {alt}. "
+        "If that is the question you were asking, ask it that way."
+    )
 
 
 def _loop_body(cmd: str) -> "list[str] | None":
@@ -14112,6 +14181,7 @@ class _DocToolExecutor:
                 "and ask them to either approve it (remember_permission("
                 "kind='allow_pattern', value='^\\\\s*<cmd>\\\\b')) or switch "
                 "the Perms/KIT mode. Then STOP and wait." + hint
+                + _reading_alternative_hint(cmd)
             )
 
         return None
