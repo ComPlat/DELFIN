@@ -163,6 +163,23 @@ def _truncate_hint(hint: str, width: int) -> str:
     return keep
 
 
+def _truncate_status(status: str, width: int) -> str:
+    """Cut *status* to *width* columns, keeping its START.
+
+    The status line is not prose-with-keys: its start carries the ⚙ and
+    — while a walk is on — the ▶ that says which row Enter would take.
+    Hint-style end-keeping moved that mark off the screen on exactly
+    the busy line the walk is for. The handles later in the line are
+    reached by walking to them; the mark is not.
+    """
+    if string_width(status) <= width:
+        return status
+    keep = status
+    while string_width(keep) > width - 1 and len(keep) > 1:
+        keep = keep[:-1]
+    return keep + "…"
+
+
 def _narrow_row(text: str, cursor: int, width: int) -> BoxView:
     """The below-MIN_WIDTH form: one safe, cursor-following row.
 
@@ -323,7 +340,7 @@ def render_box(text: str, cursor: int, width: int, hint: str = "",
     # sub-agent still out. It was reachable only by asking (`/bash`), so
     # a run started twenty minutes ago was remembered or it was not.
     if status:
-        rows.append("  " + _truncate_hint(status, inner - 2))
+        rows.append("  " + _truncate_status(status, inner - 2))
     if hint:
         rows.append("  " + _truncate_hint(hint, inner - 2))
         hint_row = len(rows) - 1

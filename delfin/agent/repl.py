@@ -2355,6 +2355,12 @@ class TerminalAgent:
 
         Cached between glances, and never raises: a decoration that can
         take the prompt with it is not a decoration.
+
+        The last view is kept, not just its line: the arrow walk under
+        the prompt walks THAT list, and re-rendering the line with a
+        selection needs the same rows the unselected line came from —
+        two collectors could return two different worlds between two
+        keys.
         """
         import time as _time
 
@@ -2366,10 +2372,45 @@ class TerminalAgent:
         try:
             from . import background_view as _bgv
             view = _bgv.collect(self.opts.cwd)
-            self._bg_status = _bgv.status_line(view)
+            self._bg_view = view
+            self._bg_now = _time.time()
+            self._bg_status = _bgv.status_line(view, now=self._bg_now)
         except Exception:
             self._bg_status = ""
         return self._bg_status
+
+    def _bg_status_selected(self, selected: int | None) -> str:
+        """The status line with one row marked, from the cached view.
+
+        ``selected`` is an index into what the line shows. None (or a
+        stale index, or no view) gives the unselected line unchanged —
+        a mark that outlives its row must not move onto another one.
+
+        Rendered with the ``now`` the cached view was collected at, so
+        a walk between two glances cannot jump a duration forward: the
+        rows are frozen with the list they came from.
+        """
+        view = getattr(self, "_bg_view", None)
+        if selected is None or not view:
+            return self._background_status()
+        try:
+            from . import background_view as _bgv
+            return _bgv.status_line(view, selected=selected,
+                                    now=getattr(self, "_bg_now", None))
+        except Exception:
+            return self._background_status()
+
+    def _bg_id_at(self, index: int) -> str:
+        """The id Enter would take for the row at *index*, or ""."""
+        view = getattr(self, "_bg_view", None)
+        if not view:
+            return ""
+        try:
+            from . import background_view as _bgv
+            return _bgv.selected_id(view, index,
+                                    now=getattr(self, "_bg_now", None))
+        except Exception:
+            return ""
 
     def read_boxed(self) -> str:
         """One message through the framed box, on a raw terminal only.
@@ -2420,7 +2461,7 @@ class TerminalAgent:
             cursor = 0
 
 
-        def _view(decoder) -> rb.BoxView:
+        def _view(decoder, selected: int | None = None) -> rb.BoxView:
             if search.active:
                 # The search prompt is the box while it lasts: the query
                 # where typed text went, the readline-style label as the
@@ -2435,7 +2476,7 @@ class TerminalAgent:
                 rb.render_box(decoder.buffer, decoder.cursor,
                                 self.transcript.width,
                                 _box_hint(self._posture_now()),
-                                status=self._background_status()),
+                                status=self._bg_status_selected(selected)),
                 _BOX_MAX_CONTENT_ROWS)
 
         # Where the last _draw left the terminal: rows below the
@@ -2452,8 +2493,9 @@ class TerminalAgent:
         # mixed two geometries.
         _state = {"below": 0, "rows": 0, "painted": None}
 
-        def _draw(decoder, *, force: bool = False) -> None:
-            view = _view(decoder)
+        def _draw(decoder, selected: int | None = None, *,
+                  force: bool = False) -> None:
+            view = _view(decoder, selected)
             if not force and _state["painted"] == (view.rows,
                                                     view.cursor):
                 return                      # nothing changed on screen
@@ -2520,6 +2562,14 @@ class TerminalAgent:
                 out.append(f"\x1b[{n - 1}A")             # to top border
             out.append("\r")
             out.append("\x1b[K\r\n" * n)
+            # A row that WRAPPED on the physical screen occupies more
+            # rows than the view counted — the status line under the
+            # input can exceed the width the box was sized for — so the
+            # counted erase misses its tail, and the tail shows through
+            # the next answer. Erase to the end of the screen as well:
+            # it reaches below the box only, and the transcript above
+            # is untouched because the walk never climbs past the top.
+            out.append("\x1b[J")
             _state["below"] = 0
             _state["rows"] = 0
             _state["painted"] = None
@@ -2643,8 +2693,13 @@ class TerminalAgent:
             """read_block's grammar over what the box collects."""
             decoder = rk.KeyDecoder()
             history = _BoxHistory()
+            # The arrow walk over the status line's rows. None means no
+            # walk is on; an index marks the row Enter would take. It
+            # lives only while the buffer is EMPTY — one letter types a
+            # message, and a message goes to the model, not to a job.
+            selected: int | None = None
             while True:
-                _draw(decoder)          # dedup: only real change paints
+                _draw(decoder, selected)    # dedup: only real change paints
                 chunk = _read_chunk()
                 if not chunk:
                     if self._width_dirty:
@@ -2675,21 +2730,53 @@ class TerminalAgent:
                     elif search.active and kind == rk.SEARCH:
                         search.older()
                     elif kind == rk.SEARCH:
+                        selected = None     # a search is not a walk
                         search.start(decoder.buffer)
                         decoder.buffer = ""
                         decoder.cursor = 0
                     elif kind == rk.SUBMIT:
+                        # Enter with a row of the status line selected
+                        # walks INTO that job — the list below the input
+                        # was always a report you had to retype a handle
+                        # for; now Enter is the way in. Only on an empty
+                        # buffer: a message is a message.
+                        if selected is not None and not event.text.strip():
+                            job_id = self._bg_id_at(selected)
+                            if job_id:
+                                _clear_box(decoder)
+                                return f"/bash {job_id}"
                         submit_text = event.text
                     elif kind == rk.HISTORY_PREV:
-                        older = history.up(decoder.buffer)
-                        if older is not None:
-                            decoder.buffer = older
-                            decoder.cursor = len(older)
+                        # On an empty line the arrows walk the status
+                        # line's jobs first — the thing under the prompt
+                        # is what the empty prompt is about. Only when
+                        # there is nothing to walk (or the walk is off
+                        # the end) does the readline history take over,
+                        # as it always did.
+                        if not decoder.buffer and selected is None \
+                                and self._bg_id_at(0):
+                            selected = 0
+                        elif not decoder.buffer and selected is not None \
+                                and self._bg_id_at(selected + 1):
+                            selected += 1
+                        else:
+                            older = history.up(decoder.buffer)
+                            if older is not None:
+                                decoder.buffer = older
+                                decoder.cursor = len(older)
+                                selected = None
                     elif kind == rk.HISTORY_NEXT:
-                        newer = history.down()
-                        if newer is not None:
-                            decoder.buffer = newer
-                            decoder.cursor = len(newer)
+                        if not decoder.buffer and selected is not None:
+                            if selected > 0 and self._bg_id_at(selected - 1):
+                                selected -= 1
+                            else:
+                                selected = None    # off the top: back to typing
+                        else:
+                            newer = history.down()
+                            if newer is not None:
+                                decoder.buffer = newer
+                                decoder.cursor = len(newer)
+                            selected = None
                     elif kind in (rk.STEER, rk.EXPAND, rk.TASKS):
                         # Turn-time keys. There is no turn here, and the
                         # decoder has already taken the line into the
@@ -2724,11 +2811,21 @@ class TerminalAgent:
                         raise EOFError
                     elif kind == rk.INTERRUPT:
                         # Esc at the idle prompt clears the line, like
-                        # readline's Ctrl+U — not the session.
+                        # readline's Ctrl+U — not the session. It also
+                        # drops a selection: the escape out of a walk
+                        # leaves the walk.
                         decoder.buffer = ""
                         decoder.cursor = 0
+                        selected = None
 
                 if submit_text is None:
+                    # The walk lives only on an empty buffer: one typed
+                    # letter is a message, and a message goes to the
+                    # model, not to a job. Plain keys never come through
+                    # here as events — the decoder eats them straight
+                    # into its buffer — so the check is on the buffer.
+                    if decoder.buffer and selected is not None:
+                        selected = None
                     if self._width_dirty:
                         self._width_dirty = False
                         self.transcript.refresh_width()
