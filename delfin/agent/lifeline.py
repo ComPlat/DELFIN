@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import signal
 import threading
 import time
@@ -234,10 +235,10 @@ def guard_daemon() -> Optional[threading.Thread]:
 
 _T = TypeVar("_T")
 _FORKER_LOCK = threading.Lock()
-_forker: Optional[tuple[int, threading.Thread, "queue.Queue"]] = None
+_forker: Optional[tuple[int, threading.Thread, queue.Queue]] = None
 
 
-def _forker_loop(jobs: "queue.Queue") -> None:
+def _forker_loop(jobs: queue.Queue) -> None:
     while True:
         start, box, done = jobs.get()
         try:
@@ -259,8 +260,6 @@ def start_bound_to_process(start: Callable[[], _T]) -> _T:
     MCP server started on first use. Forked from here, the child ends when
     the process does, which is what the flag is there for.
     """
-    import queue
-
     global _forker
     with _FORKER_LOCK:
         if _forker is None or _forker[0] != os.getpid() \
