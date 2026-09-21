@@ -157,7 +157,10 @@ def _launch(records, log, *, stay_up: bool):
     with open(log, "wb") as handle:
         proc = subprocess.Popen(
             [sys.executable, "-m", "delfin.cli_voila",
-             "--port", str(port), "--ip", "127.0.0.1", "--token", _TOKEN],
+             "--port", str(port), "--ip", "127.0.0.1", "--token", _TOKEN,
+             # Run from a VS Code terminal the launcher opened this test
+             # server in the developer's own browser.
+             "--no-browser"],
             cwd=str(_REPO), env=env, stdout=handle, stderr=subprocess.STDOUT,
         )
     return proc, port

@@ -131,6 +131,7 @@ _AGENT_SETTINGS_ALLOWED = frozenset({
     "max_tool_rounds", "output_guard", "permission_mode",
     "permission_profile", "provider", "model", "role_models", "routing",
     "session_retention_days", "state_retention_days", "subagents",
+    "commit_coauthor", "git_role", "wake_on_job_end",
 })
 
 # Key names whose VALUE is never published, at any depth. The allow-list
@@ -267,6 +268,47 @@ def _resolve_referenced(
     return (None, "outside-workspace") if escaped else (None, "")
 
 
+def _secret_reason(src: Path, workspace: Path | None) -> str:
+    """Why ``src`` must never be copied into the shared report archive, or "".
+
+    The report writer runs as the user, outside every agent gate, and the
+    archive is readable by the whole group. The dashboard collects the path
+    of every file the agent TRIED to touch -- including reads the secret
+    deny list refused -- so a prompt-injected read_file("~/.ssh/id_rsa")
+    that was denied still put the real key into the report (security review
+    2026-09-16). Two rules:
+
+    * the agent's own secret deny list (.env, *.key, *.pem, .ssh, .netrc,
+      credentials*, secrets*, id_rsa, ...), matched on the name, the path
+      relative to the workspace and the absolute path;
+    * outside the session workspace, any path with a hidden component
+      (~/.bash_history, ~/.config/..., ~/.docker/config.json, ~/.kube/...):
+      dotfiles outside the project are the user's private configuration.
+    """
+    import fnmatch
+    try:
+        from .api_client import _DEFAULT_PATH_DENY_GLOBS as globs
+    except Exception:
+        return "deny-list-unavailable"
+    resolved = src.resolve()
+    spellings = {resolved.name, str(resolved)}
+    inside = False
+    if workspace is not None:
+        try:
+            rel = resolved.relative_to(Path(workspace).expanduser().resolve())
+            spellings.add(str(rel))
+            inside = True
+        except (ValueError, OSError):
+            inside = False
+    for sp in spellings:
+        sp = sp.replace("\\", "/")
+        if any(fnmatch.fnmatch(sp, g) for g in globs):
+            return "skipped-secret"
+    if not inside and any(part.startswith(".") for part in resolved.parts[1:]):
+        return "skipped-private-dotfile"
+    return ""
+
+
 def _bundle_files(
     referenced: list, report_dir: Path,
     *, workspace: str | Path | None = None,
@@ -310,6 +352,11 @@ def _bundle_files(
                 records.append(rec)
                 continue
             rec["resolved_via"] = via
+            _why = _secret_reason(src, ws_base)
+            if _why:
+                rec["status"] = _why
+                records.append(rec)
+                continue
             size = src.stat().st_size
             rec["bytes"] = size
             if bundled >= _MAX_FILES:
@@ -333,7 +380,14 @@ def _bundle_files(
                 n += 1
             used_names.add(name)
             ws.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, ws / name)
+            # Text goes through the same redactor as the report itself: a
+            # config or log the agent read can hold a token that no file
+            # name gives away. Binary files are copied as they are.
+            _data = src.read_bytes()
+            if b"\0" not in _data[:8192]:
+                _guarded_write(ws / name, _data.decode("utf-8", errors="replace"))
+            else:
+                shutil.copy2(src, ws / name)
             manifest.append(f"{name}\t{src}")
             rec["status"] = "bundled"
             rec["bundled"] = f"workspace/{name}"
@@ -399,6 +453,7 @@ def _render_markdown(
     referenced_files: list | None = None,
     tool_trace: list | None = None,
     turn_metrics: list | None = None,
+    request_metrics: list | None = None,
 ) -> str:
     lines = ["# DELFIN Agent — Bug Report", ""]
     if meta.get("description"):
@@ -449,6 +504,17 @@ def _render_markdown(
         try:
             from .turn_metrics import format_summary as _fmt_tm
             lines += ["```", _fmt_tm(turn_metrics, limit=40), "```"]
+        except Exception:
+            pass
+    if request_metrics:
+        lines += ["", "## Requests", "",
+                  "One line per model request — full data in "
+                  "`request_metrics.jsonl`. `cold` = 60 s or more to the "
+                  "first token (the prompt was not served from the cache).",
+                  ""]
+        try:
+            from .turn_metrics import format_requests as _fmt_req
+            lines += ["```", _fmt_req(request_metrics, limit=40), "```"]
         except Exception:
             pass
     if system_prompt and system_prompt.strip():
@@ -618,6 +684,21 @@ def write_bug_report(
     except Exception:
         turn_metrics = []
 
+    # Per request: which ones re-read their prompt cold, and how much of it
+    # came from the cache. Written as each request ends, so a report filed
+    # during a turn has it too.
+    request_metrics: list = []
+    try:
+        from . import turn_metrics as _tm_req
+        request_metrics = _tm_req.read_requests(trace_session or session_id)
+        if request_metrics:
+            _guarded_write(
+                report_dir / "request_metrics.jsonl",
+                "\n".join(json.dumps(e, ensure_ascii=False)
+                          for e in request_metrics) + "\n")
+    except Exception:
+        request_metrics = []
+
     payload = {
         **meta,
         "system_prompt": system_prompt or "",
@@ -626,8 +707,11 @@ def write_bug_report(
         "referenced_files": bundled_files,
         "tool_trace": tool_trace,
         "turn_metrics": turn_metrics,
+        "request_metrics": request_metrics,
         "settings": settings_snapshot(settings),
-        "recent_outcomes": recent_outcomes(),
+        # Not the outcome history: it holds the prompts of EVERY session of
+        # this user, and the archive is shared with the group.
+        "recent_outcomes": [],
         "chat_messages": chat_messages or [],
         "engine_messages": engine_messages or [],
         "cycle_history": cycle_history or [],
@@ -649,6 +733,7 @@ def write_bug_report(
             referenced_files=bundled_files,
             tool_trace=tool_trace,
             turn_metrics=turn_metrics,
+            request_metrics=request_metrics,
         ),
     )
     if n_redacted:

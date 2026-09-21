@@ -28,6 +28,15 @@ also permits 3.10, but nothing verifies it — do not rely on it.
   were found by running, not by reading.
 - **Add the test that would have caught it.** Name it after the behaviour it
   protects, not after the function it calls.
+- **If you change what an input looks like, say so in the diff.** The inputs
+  DELFIN writes for two fixture systems are recorded under
+  `tests/fixtures/orca_inputs/`, and the suite compares what the writers
+  produce with them. When the change is intended, run the suite once with
+  `DELFIN_UPDATE_GOLDEN=1` and commit the changed inputs with their reason;
+  the review then sees what every user's next run will look like. The same
+  inputs are put through every recovery strategy, and the CONTROL templates
+  DELFIN has shipped (`tests/fixtures/control_templates/`) are validated on
+  every run, so a file somebody kept for a year keeps working.
 - **Say what you measured.** "Fixes the retry" is not reviewable. "Benzene
   Hessian: 161 s cold, 8 s resumed, 0 displacements recomputed" is.
 

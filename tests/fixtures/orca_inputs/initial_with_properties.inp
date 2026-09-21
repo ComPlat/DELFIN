@@ -1,0 +1,31 @@
+! PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(water) OPT FREQ PModel
+%maxcore 2000
+%pal nprocs 8 end
+%scf maxiter 125 end
+%freq
+  Temp 298.15
+end
+* xyz 0 1
+C 0.000000 0.000000 -0.529000
+O 0.000000 0.000000 0.677000
+H 0.000000 0.937000 -1.117000
+H 0.000000 -0.937000 -1.117000
+*
+
+$new_job
+! PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(water)
+%base "initial_with_properties_IP"
+%pal nprocs 8 end
+%maxcore 2000
+%scf maxiter 125 end
+
+* xyzfile 1 2 initial.xyz
+
+$new_job
+! PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(water)
+%base "initial_with_properties_EA"
+%pal nprocs 8 end
+%maxcore 2000
+%scf maxiter 125 end
+
+* xyzfile -1 2 initial.xyz

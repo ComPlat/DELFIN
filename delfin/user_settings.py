@@ -172,6 +172,19 @@ DEFAULT_SETTINGS = {
         #   "off"             — disable.
         "auto_verify": "smart",
         "auto_verify_command": "",
+        # Who may push to the default branch. "contributor" (default): the
+        # agent pushes a branch and hands over the pull-request link; a push
+        # to main/master is refused. "maintainer": pushes to the default
+        # branch are allowed, one per user request.
+        "git_role": "contributor",
+        # The address the agent's Co-Authored-By trailer carries. GitHub
+        # attaches a co-author to an account by its email, so an address
+        # nobody owns renders a line with no avatar that counts for
+        # nobody; this is the DELFIN agent's own machine account, in its
+        # noreply form so no personal address appears in the history.
+        # The commits stay the user's: the agent is the co-author.
+        "commit_coauthor_email":
+            "330454853+delfin-agent@users.noreply.github.com",
         # Directory the "Bug Report" button writes reproducible bug
         # bundles into. Empty = per-user fallback (~/.delfin/agent_bugs).
         # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE
@@ -208,6 +221,22 @@ DEFAULT_SETTINGS = {
         #   "off"            — explicit escape hatch: never isolate (e.g. an HPC
         #                      node whose MPI/module workflow needs raw bash).
         "bash_isolation": "auto",
+        # The network of an ISOLATED command (a locked session, an
+        # unattended run, a forced isolation) -- modelled on the sandboxes
+        # of coding agents: the command reaches the network only through
+        # DELFIN's egress proxy, which lets through the allowed domains.
+        #   mode "proxy" (default) -- allowed domains only, plus the SLURM
+        #                          controller from slurm.conf;
+        #        "none"          -- no network;
+        #        "open"          -- unrestricted.
+        # Cloud metadata addresses are refused in every mode, attended
+        # commands included. allowed_domains ADDS to the built-in list
+        # (PyPI, conda, GitHub); "*.example.org" covers subdomains.
+        "sandbox_network": {
+            "mode": "proxy",
+            "allowed_domains": [],
+            "allowed_ports": [80, 443],
+        },
         # Eval loop (Stufe 4): mine outcome history for recurring failure
         # patterns, scaffold draft benchmark tasks, write a report. The
         # default pass is LLM-free (0 tokens); a live benchmark run stays
@@ -720,11 +749,67 @@ def _legacy_transfer_path(settings_path):
     return Path(settings_path).with_name(LEGACY_TRANSFER_CONFIG_NAME)
 
 
+#: One-time security updates applied to an existing settings file. Each runs
+#: once per file and is recorded under "security_updates_applied", so a
+#: choice the user makes afterwards is kept.
+_ISOLATION_ON = "2026-09-shell-isolation-auto"
+
+
+def _apply_security_updates(settings):
+    """Apply the security updates this settings file has not had yet.
+
+    2026-09: the shell isolation (bubblewrap, Landlock, Seatbelt, the socket
+    guard and the network proxy) is what confines an unattended or locked
+    session. A file that had ``agent.bash_isolation = "off"`` ran those
+    sessions with none of it, usually because "off" was set once for an old
+    reason. It is switched to "auto" once, with a notice the next front end
+    shows; setting "off" again afterwards is respected.
+    """
+    applied = list(settings.get("security_updates_applied") or [])
+    if _ISOLATION_ON in applied:
+        return settings
+    updated = dict(settings)
+    agent = dict(updated.get("agent") or {})
+    if str(agent.get("bash_isolation", "auto")).strip().lower() == "off":
+        agent["bash_isolation"] = "auto"
+        updated["agent"] = agent
+        notices = list(updated.get("security_notices") or [])
+        notices.append(
+            "Security update: agent.bash_isolation was \"off\" and is now "
+            "\"auto\". Locked and unattended sessions run isolated again "
+            "(filesystem, the user's sessions, network through the proxy). If "
+            "a workflow really needs raw bash, set it back to \"off\" in "
+            "~/.delfin_settings.json; it will not be changed again.")
+        updated["security_notices"] = notices
+    updated["security_updates_applied"] = applied + [_ISOLATION_ON]
+    return updated
+
+
+def take_security_notices(settings_path=None):
+    """The security notices not shown yet, removed from the settings file."""
+    path = get_settings_path(settings_path)
+    try:
+        if not path.exists():
+            return []
+        data = _normalized_settings_dict(_read_json(path))
+    except Exception:
+        return []
+    notices = [str(n) for n in (data.get("security_notices") or []) if n]
+    if notices:
+        data["security_notices"] = []
+        try:
+            _write_json_atomic(path, data)
+        except Exception:
+            pass
+    return notices
+
+
 def load_settings(settings_path=None):
     path = get_settings_path(settings_path)
     if path.exists():
         normalized = _normalized_settings_dict(_read_json(path))
-        merged = _merge_missing_defaults(normalized, DEFAULT_SETTINGS)
+        merged = _merge_missing_defaults(_apply_security_updates(normalized),
+                                         DEFAULT_SETTINGS)
         if merged != normalized:
             _write_json_atomic(path, merged)
         return merged

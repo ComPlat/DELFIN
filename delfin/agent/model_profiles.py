@@ -185,7 +185,11 @@ _GLM_5_3 = ModelProfile(
     # 2026-09-07, and a module triggered on turn two left 19% of the prompt
     # cold on turn two, measured 2026-09-11.
     all_prompt_modules=True,
-    max_effort="medium",
+    # Low only, decided 2026-09-15 after report 20260915-084010: at medium
+    # the session spent 222k characters of hidden reasoning, often minutes
+    # before a single tool call, on a 45-line change -- and the arms above
+    # showed no answer that low did not give.
+    max_effort="low",
     notes=(
         "KIT GLM-5.3 — strongest of the KIT-hosted open models, slowest to "
         "start. Reasoning-first: needs the thinking token floor. Cold "

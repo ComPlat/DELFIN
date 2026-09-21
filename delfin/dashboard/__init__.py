@@ -316,7 +316,13 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
     ctx.remote_archive_refs = refs7
     tab_lit, _ = tab_literature.create_tab(ctx)
-    tab_ag, _ = tab_agent.create_tab(ctx)
+    # The agent tab is a list of sessions, each a whole agent tab. Should the
+    # list itself fail to build, the single tab it wraps still works.
+    try:
+        from . import agent_sessions
+        tab_ag, _ = agent_sessions.create_tab(ctx)
+    except Exception:
+        tab_ag, _ = tab_agent.create_tab(ctx)
     tab_ag_act = tab_agent_activity.create_tab(ctx)
     # Tools & Platform tab (defensive: never let it break dashboard startup)
     try:
@@ -946,7 +952,17 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # kernel -- never offers to go back to the page you are on.
     _returning = _session.build_returning_banner()
 
-    _header_root = widgets.VBox(([_returning] if _returning else []) + [
+    # One beacon, so the server can tell a page that was closed from a
+    # connection that dropped. It renders nothing.
+    try:
+        from delfin.dashboard import window_close as _window_close
+        _closing_beacon = _window_close.beacon_widget()
+    except Exception:
+        _closing_beacon = None
+
+    _header_root = widgets.VBox(([_returning] if _returning else [])
+                                + ([_closing_beacon] if _closing_beacon else [])
+                                + [
         busy_css,
         create_page_css(),
         widgets.HBox([

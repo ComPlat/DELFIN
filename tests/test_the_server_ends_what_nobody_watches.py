@@ -83,9 +83,19 @@ def manager(tmp_path, monkeypatch):
 
 
 def _age(manager, kid, seconds):
-    """Move a kernel's unwatched-since back in time."""
+    """Move a kernel's unwatched-since back in time.
+
+    The window that went announced its closing on the way out, which is
+    what a page being unloaded does and what makes the short grace
+    apply. A connection that merely stopped answering is the other
+    case, and it is pinned in
+    test_a_closed_window_is_not_a_dropped_connection.py.
+    """
     since, had = manager._delfin_unwatched()[kid]
     manager._delfin_unwatched()[kid] = (since - seconds, had)
+    if had:
+        manager.delfin_window_closed(kid)
+        manager._delfin_closed()[kid] = since - seconds
 
 
 def _keep(kid, name="kept-one", root=None):

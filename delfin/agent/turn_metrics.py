@@ -488,6 +488,139 @@ def format_summary(entries: list[dict], *, limit: int = 30) -> str:
     return "\n".join(rows)
 
 
+# ---------------------------------------------------------------------------
+# Per request
+# ---------------------------------------------------------------------------
+# A turn is many requests. Report 20260915-132613 carried one entry for a
+# 2.9-hour turn: 64 tool calls, 3.2M input tokens, 11% cached -- with no way
+# to tell the cold requests (200+ s to the first token on kit.glm-5.3) from
+# the warm ones (7-12 s), nor where the cache broke. Reports filed during a
+# turn carried nothing at all, because the turn entry is written at its end.
+# One line per request, written as each request finishes, answers both.
+
+# A request this long to its first token re-read its prompt from scratch.
+_COLD_TTFT_MS = 60_000
+
+
+def requests_path(session: str) -> Path:
+    return _DIR / f"{_safe(session)}.requests.jsonl"
+
+
+def record_request(
+    session: str,
+    *,
+    model: str = "",
+    ttft_ms: int | None = None,
+    total_ms: int = 0,
+    input_tokens: int = 0,
+    cached_tokens: int = 0,
+    output_tokens: int = 0,
+    tool_calls: int = 0,
+    finish_reason: str = "",
+    system_hash: str = "",
+    prefix_hash: str = "",
+) -> None:
+    """Append one request's timing and token counts. Never raises.
+
+    ``system_hash`` fingerprints the system prompt, ``prefix_hash`` the
+    system prompt plus every message before this turn's rows. A cold
+    request whose hashes equal the previous request's lost the endpoint's
+    cache; one whose hashes differ was sent a different prefix. Three GLM
+    sessions on 2026-09-16 served half their requests cold and nothing
+    could tell those two apart.
+    """
+    try:
+        from .state_paths import ensure_dir, open_append, secure_file
+        from .state_paths import write_text as _write_secure
+        ensure_dir(_DIR)
+        p = requests_path(session)
+        try:
+            if p.exists() and p.stat().st_size > _MAX_BYTES:
+                lines = p.read_text(encoding="utf-8").splitlines()[-_KEEP_TAIL:]
+                _write_secure(p, "\n".join(lines) + "\n")
+        except Exception:
+            pass
+        entry = {
+            "ts": time.time(),
+            "model": str(model or ""),
+            "ttft_ms": (int(ttft_ms) if ttft_ms is not None else None),
+            "total_ms": int(total_ms),
+            "input_tokens": int(input_tokens or 0),
+            "cached_tokens": int(cached_tokens or 0),
+            "output_tokens": int(output_tokens or 0),
+            "tool_calls": int(tool_calls),
+            "finish_reason": str(finish_reason or ""),
+        }
+        if system_hash:
+            entry["system_hash"] = str(system_hash)
+        if prefix_hash:
+            entry["prefix_hash"] = str(prefix_hash)
+        with open_append(p) as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        secure_file(p)
+    except Exception:
+        pass
+
+
+def read_requests(session: str, *, last_n: int | None = None) -> list[dict]:
+    """Return the request entries for ``session`` (optionally the last N)."""
+    try:
+        p = requests_path(session)
+        if not p.exists():
+            return []
+        out = []
+        for line in p.read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                continue
+        return out[-last_n:] if last_n else out
+    except Exception:
+        return []
+
+
+def format_requests(entries: list[dict], *, limit: int = 40) -> str:
+    """A totals line, then one line per request; cold ones flagged."""
+    if not entries:
+        return ""
+    total_in = sum(_int(e, "input_tokens") for e in entries)
+    total_cached = sum(_int(e, "cached_tokens") for e in entries)
+    cold = [e for e in entries
+            if e.get("ttft_ms") is not None and int(e["ttft_ms"]) >= _COLD_TTFT_MS]
+    waited = sum(_int(e, "ttft_ms") for e in entries)
+    rows = [
+        f"{len(entries)} request(s)  cached={_pct(total_cached, total_in)} of "
+        f"{total_in} input tokens  cold={len(cold)}  "
+        f"waited for first token={waited / 1000:.0f}s"
+    ]
+    shown = entries[-limit:]
+    for idx, e in enumerate(shown):
+        ttft = e.get("ttft_ms")
+        ttft_s = f"{int(ttft) / 1000:.1f}s" if ttft is not None else "—"
+        flag = ("  ⚠ cold" if ttft is not None and int(ttft) >= _COLD_TTFT_MS
+                else "")
+        # Why it was cold, when the hashes can say: the same prefix as the
+        # request before means the endpoint dropped its cache.
+        if flag and idx > 0 and e.get("prefix_hash") and shown[idx - 1].get("prefix_hash"):
+            prev = shown[idx - 1]
+            if e.get("system_hash") and e.get("system_hash") != prev.get("system_hash"):
+                flag += " (system prompt changed)"
+            elif e.get("prefix_hash") == prev.get("prefix_hash"):
+                flag += " (same prefix: endpoint cache lost)"
+        rows.append(
+            f"ttft={ttft_s}  total={_int(e, 'total_ms') / 1000:.1f}s  "
+            f"in={_int(e, 'input_tokens')}  "
+            f"cached={_pct(_int(e, 'cached_tokens'), _int(e, 'input_tokens'))}  "
+            f"out={_int(e, 'output_tokens')}  tools={_int(e, 'tool_calls')}  "
+            f"{e.get('finish_reason') or ''}{flag}".rstrip())
+    return "\n".join(rows)
+
+
+def _pct(part: int, whole: int) -> str:
+    return f"{100 * part / whole:.0f}%" if whole else "—"
+
+
 __all__ = ["metrics_path", "record", "read", "is_stall", "is_never_started",
            "is_crashed", "silence_kind", "format_summary",
-           "aggregate_turn_stats"]
+           "aggregate_turn_stats", "requests_path", "record_request",
+           "read_requests", "format_requests"]

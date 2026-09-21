@@ -216,6 +216,33 @@ def test_the_fix_rounds_are_bounded(tmp_path):
     assert len(sent) <= 5, f"the loop ran {len(sent)} rounds"
 
 
+def test_the_check_is_not_presented_as_the_users_request(tmp_path):
+    """The feedback travels as a user-role message, and "Fix it, then
+    finish" read as the user's instruction: the agent of report
+    20260915-085107 fixed a test that was not its own and chained commit
+    and push onto it."""
+    sent = _loop_over_a_broken_edit(
+        tmp_path, ["Fertig, sieht gut aus.", "Erledigt."])
+    feedback = [m for m in sent[-1]
+                if _VERIFY_FEEDBACK in str(m.get("content") or "")]
+    assert feedback
+    text = feedback[0]["content"]
+    assert "not a message from the user" in text
+    assert "do not change other code or tests" in text
+
+
+def test_the_answer_before_the_check_stays_in_the_conversation(tmp_path):
+    """Dropped, the model never saw that it had answered, and the report
+    arrived a second time in full."""
+    sent = _loop_over_a_broken_edit(
+        tmp_path, ["Fertig, sieht gut aus.", "Erledigt."])
+    last = sent[-1]
+    i = next(i for i, m in enumerate(last)
+             if _VERIFY_FEEDBACK in str(m.get("content") or ""))
+    assert last[i - 1].get("role") == "assistant"
+    assert "Fertig, sieht gut aus." in str(last[i - 1].get("content"))
+
+
 def test_a_repaired_file_ends_the_turn(tmp_path):
     """A gate that never lets go would be switched off within a week."""
     import json
@@ -287,34 +314,122 @@ def _ws_with_matching_test(tmp_path):
     return tmp_path
 
 
-def test_timeout_falls_back_to_scoped_run(tmp_path, monkeypatch):
-    """A full-suite timeout used to blacklist the workspace and return ''
-    (clean) forever after — verification silently OFF. Now it retries scoped
-    to the edited modules' tests and remembers that command."""
+def test_the_tests_covering_the_edit_run_instead_of_the_suite(tmp_path, monkeypatch):
+    """Report 20260915-084010: the whole suite ran at the end of the turn,
+    stopped at a test that had been red on main for months, and the agent
+    was sent to fix it. What runs is the tests that cover the edit -- the
+    suite is never started when there are some."""
     from delfin.agent import api_client as A
     ws = _ws_with_matching_test(tmp_path)
     calls = []
 
     def fake_run(cmd, workspace, timeout):
         calls.append(cmd)
-        if "test_mod.py" in cmd:
-            return f"`{cmd}` failed (exit 1):\nboom", False
-        return "", True                       # full suite: timeout
+        return f"`{cmd}` failed (exit 1):\nboom", False
 
     monkeypatch.setattr(A, "_run_test_command", fake_run)
     status: dict = {}
     prob = A._run_auto_verify([str(ws / "mod.py")], "smart", "", str(ws),
                               status=status)
+    assert "failed" in prob
+    assert status.get("scoped") is True
+    assert len(calls) == 1 and "test_mod.py" in calls[0]
+    assert str(ws) not in A._SLOW_TEST_WS
+
+
+def test_a_suite_that_timed_out_is_not_started_again(tmp_path, monkeypatch):
+    """A full-suite timeout used to return '' (clean) with no word said.
+    It is a visible skip now, and the suite is not re-run every turn."""
+    from delfin.agent import api_client as A
+    (tmp_path / "lonely.py").write_text("x = 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_other.py").write_text(
+        "def test_other():\n    assert True\n")
+    monkeypatch.setattr(A, "_run_test_command",
+                        lambda cmd, workspace, timeout: ("", True))
     try:
-        assert "failed" in prob               # scoped result, NOT silent clean
-        assert status.get("scoped") is True
-        assert "test_mod.py" in status.get("command", "")
-        assert str(ws) in A._SLOW_TEST_WS     # full suite stays blacklisted
-        assert "test_mod.py" in A._SLOW_WS_SCOPED_CMD[str(ws)]
-        assert len(calls) == 2                # full (timed out) + scoped
+        status: dict = {}
+        assert A._run_auto_verify([str(tmp_path / "lonely.py")], "smart", "",
+                                  str(tmp_path), status=status) == ""
+        assert status.get("skipped") is True
+        assert status.get("timed_out") is True
+        assert str(tmp_path) in A._SLOW_TEST_WS
     finally:
-        A._SLOW_TEST_WS.discard(str(ws))
-        A._SLOW_WS_SCOPED_CMD.pop(str(ws), None)
+        A._SLOW_TEST_WS.discard(str(tmp_path))
+
+
+def test_a_packages_own_tests_dir_is_not_the_projects_suite(tmp_path):
+    """DELFIN keeps two old tests, one of them red, in the git-ignored
+    delfin/tests/ and its suite in tests/. An edit in delfin/dashboard/ was
+    verified against the two (report 20260915-084010)."""
+    pkg = tmp_path / "viewerpkg"
+    (pkg / "ui").mkdir(parents=True)
+    (pkg / "tests").mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "ui" / "__init__.py").write_text("")
+    (pkg / "ui" / "view.py").write_text(
+        "def notice():\n    return 'bottom left'\n")
+    (pkg / "tests" / "test_old.py").write_text(
+        "def test_old():\n    assert {'IP'} == {'IP', 'IP_eV'}\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_view.py").write_text(
+        "from viewerpkg.ui import view\n\n"
+        "def test_notice():\n    assert view.notice() == 'bottom left'\n")
+
+    status: dict = {}
+    prob = _run_auto_verify([str(pkg / "ui" / "view.py")], "smart", "",
+                            str(tmp_path), status=status)
+    assert prob == "", prob[:300]
+    assert "test_view.py" in status.get("command", "")
+    assert "test_old.py" not in status.get("command", "")
+
+
+def test_a_red_suite_no_test_of_the_edit_is_part_of_forces_no_fix(tmp_path):
+    """No test names the edited module, so the suite's red holds the edit to
+    nothing. It is a skip with the failing file named -- not a fix round on
+    somebody else's test."""
+    (tmp_path / "lonely.py").write_text("x = 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_collector.py").write_text(
+        "def test_keys():\n    assert {'IP'} == {'IP', 'IP_eV'}\n")
+    status: dict = {}
+    prob = _run_auto_verify([str(tmp_path / "lonely.py")], "smart", "",
+                            str(tmp_path), status=status)
+    assert prob == ""
+    assert status.get("skipped") is True
+    assert status.get("unrelated_failure") is True
+    assert "test_collector.py" in status.get("reason", "")
+
+
+def test_a_coloured_pytest_summary_still_names_the_failing_file():
+    """Where pytest colours its output, "FAILED" arrives inside escape codes
+    and no summary line matched -- this file's own test failed that way in
+    the agent's suite run (report 20260915-125310)."""
+    from delfin.agent.api_client import _failing_test_files
+    out = ("\x1b[31mFAILED\x1b[0m tests/test_collector.py::"
+           "\x1b[1mtest_keys\x1b[0m - AssertionError")
+    assert _failing_test_files(out) == {"tests/test_collector.py"}
+
+
+def test_the_tests_that_import_an_edited_module_are_found(tmp_path):
+    from delfin.agent.api_client import _related_test_files
+    src = tmp_path / "pkg" / "dashboard"
+    src.mkdir(parents=True)
+    (src / "tab_orca_builder.py").write_text("x = 1\n")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_one_viewer.py").write_text(
+        "from pkg.dashboard import tab_orca_builder\n")
+    (tests / "test_lazy.py").write_text(
+        "def test_x():\n    import pkg.dashboard.tab_orca_builder as T\n")
+    (tests / "test_similar_name.py").write_text(
+        "from pkg.dashboard import tab_orca_builder_old\n")
+    (tests / "test_mentions.py").write_text(
+        "# tab_orca_builder is only named here, not imported\n")
+
+    found = {Path(f).name for f in _related_test_files(
+        [str(src / "tab_orca_builder.py")], tmp_path)}
+    assert found == {"test_one_viewer.py", "test_lazy.py"}
 
 
 def test_blacklisted_workspace_runs_scoped_not_silent_clean(tmp_path, monkeypatch):
@@ -332,7 +447,6 @@ def test_blacklisted_workspace_runs_scoped_not_silent_clean(tmp_path, monkeypatc
         assert status.get("scoped") is True
     finally:
         A._SLOW_TEST_WS.discard(str(ws))
-        A._SLOW_WS_SCOPED_CMD.pop(str(ws), None)
 
 
 def test_blacklisted_workspace_without_scoped_match_reports_skip(tmp_path):

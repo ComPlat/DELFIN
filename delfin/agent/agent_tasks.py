@@ -43,6 +43,10 @@ _VALID_STATUSES = {
 # is a different fact from "not started" and from "done", and before it
 # existed the three were indistinguishable in the list the user reads.
 OPEN_STATUSES: tuple[str, ...] = ("in_progress", "pending", "blocked")
+# Open tasks another session left untouched for longer than this are no
+# longer offered to a new session (open_foreign_tasks); task_list still
+# shows them.
+FOREIGN_TASKS_MAX_AGE_DAYS = 14
 
 # What the agent can advance by itself. ``blocked`` is deliberately not
 # here: auto-continue must not spin on work that waits on someone else.
@@ -292,17 +296,14 @@ class TaskStore:
                             t["started_at"] = _now_iso()
                     if new_status == "completed" and t.get("status") not in (
                             "in_progress", "completed"):
-                        # No silent pending -> completed. The step is what
-                        # makes the work window exist at all; without it a
-                        # completion claim has nothing to be checked
-                        # against, and the list never showed the user what
-                        # was being worked on.
-                        raise ValueError(
-                            f"task #{task_id} is '{t.get('status')}' — mark "
-                            "it in_progress before completed, so the list "
-                            "shows what you are on and the work has a "
-                            "recorded window"
-                        )
+                        # A task finished without being marked started is a
+                        # task finished. Refusing it cost report
+                        # 20260915-112305 a round per refusal: two tasks
+                        # worked together through parallel sub-agents could
+                        # not both be in_progress, so the second could not
+                        # be completed either. Its work window is empty,
+                        # and a completion check against it says so.
+                        t["started_at"] = t.get("started_at") or _now_iso()
                     t.update({k: v for k, v in fields.items() if v is not None})
                     # Apply dependency edits + keep reverse index in sync
                     if add_blockers or rem_blockers:
@@ -531,6 +532,7 @@ def format_open_tasks_notice(summary: dict) -> str:
 
 def open_foreign_tasks(
     base_dir: Path, current_session_id: str, *, cap: int = 5,
+    max_age_days: int | None = FOREIGN_TASKS_MAX_AGE_DAYS,
 ) -> dict:
     """Summary of open (pending / in_progress / blocked) tasks owned by
     OTHER sessions of this workspace.
@@ -543,16 +545,24 @@ def open_foreign_tasks(
     merges the lists automatically: session scoping is a deliberate
     leak fix (bug 20260616-183359) and stays authoritative.
 
-    Returns ``{"count", "oldest_age_days", "tasks"}`` where ``tasks``
-    holds at most ``cap`` summaries — oldest first, each
+    Returns ``{"count", "oldest_age_days", "tasks", "stale_count"}`` where
+    ``tasks`` holds at most ``cap`` summaries — newest first, each
     ``{"id", "subject", "status", "session_id", "age_days"}`` — while
-    ``count``/``oldest_age_days`` describe ALL foreign open tasks. Age
+    ``count``/``oldest_age_days`` describe every foreign open task within
+    ``max_age_days``; older ones are only counted, in ``stale_count``. Age
     is whole days since the task's last update (creation when never
     updated). An empty ``current_session_id`` means the session already
     sees every workspace task, so the summary is empty. Never raises;
     cheap (one JSON read).
+
+    Newest first and within a horizon because reports 20260915-085107 and
+    -110358 opened every session on 28 tasks, the five listed 81 to 127
+    days old (a tetris app, a PNG-to-SMILES script), while work parked
+    that morning fell below the cap. task_list(all_sessions=true) still
+    shows everything.
     """
-    empty: dict = {"count": 0, "oldest_age_days": 0, "tasks": []}
+    empty: dict = {"count": 0, "oldest_age_days": 0, "tasks": [],
+                   "stale_count": 0}
     sid = str(current_session_id or "").strip()
     if not sid:
         return empty
@@ -583,11 +593,17 @@ def open_foreign_tasks(
             })
         except Exception:
             continue
+    stale = 0
+    if max_age_days is not None:
+        fresh = [r for r in foreign if r["age_days"] <= int(max_age_days)]
+        stale = len(foreign) - len(fresh)
+        foreign = fresh
     if not foreign:
-        return empty
-    foreign.sort(key=lambda r: (-r["age_days"], int(r["id"] or 0)))
+        return {**empty, "stale_count": stale}
+    foreign.sort(key=lambda r: (r["age_days"], -int(r["id"] or 0)))
     return {
         "count": len(foreign),
-        "oldest_age_days": foreign[0]["age_days"],
+        "oldest_age_days": foreign[-1]["age_days"],
         "tasks": foreign[: max(1, int(cap))],
+        "stale_count": stale,
     }

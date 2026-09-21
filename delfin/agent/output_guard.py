@@ -80,6 +80,7 @@ _PROVIDER_API_KEY = re.compile(
     r"sk-ant-[A-Za-z0-9\-_]{16,}"        # Anthropic
     r"|sk-proj-[A-Za-z0-9\-_]{16,}"      # OpenAI project
     r"|sk-[A-Za-z0-9]{32,}"              # OpenAI classic / compatible
+    r"|sk-[A-Za-z0-9_\-]{20,31}"         # LiteLLM virtual keys (KIT toolbox)
     r"|AIza[0-9A-Za-z\-_]{30,}"          # Google
     r"|hf_[A-Za-z0-9]{20,}"              # Hugging Face
     r")\b"
@@ -106,6 +107,12 @@ _ASSIGNMENT = re.compile(
     r")\b[\"']?\s*[:=]\s*[\"']?"
     r"([A-Za-z0-9+/=_.\-]{16,})"
 )
+
+# A password inside a URL (``scheme://user:password@host``) and a .netrc
+# line (``machine h login u password p``). Neither has a key name the
+# assignment rule anchors on; both were missed (security review 2026-09-16).
+_URL_PASSWORD = re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^/\s:@]+:([^@\s/]{3,})@")
+_NETRC_PASSWORD = re.compile(r"(?i)\bpassword\s+(\S{3,})")
 
 # Pure-hex strings of standard digest lengths are content hashes
 # (md5 / git sha1 / sha256), not credentials.
@@ -168,6 +175,8 @@ _SECRET_CHECKS: list[tuple[re.Pattern, str, int, bool]] = [
     (_PROVIDER_API_KEY, "provider-api-key", 0, False),
     (_BEARER_TOKEN, "bearer-token", 1, True),
     (_ASSIGNMENT, "credential-assignment", 2, True),
+    (_URL_PASSWORD, "url-password", 1, False),
+    (_NETRC_PASSWORD, "netrc-password", 1, False),
 ]
 
 
@@ -179,6 +188,30 @@ def _redact_secrets(text: str, findings: list) -> str:
         except Exception:
             continue
     return text
+
+
+def scrub_secrets(text: str) -> str:
+    """``text`` without any credential DELFIN holds and without anything
+    shaped like one, for text that is KEPT (memory) or PASSED ON (another
+    session's inbox, a tool result in the transcript).
+
+    Exact values first: a KIT key has no recognisable prefix, so the shape
+    checks alone let it through. Never raises; returns the input when
+    scrubbing itself fails.
+    """
+    if not text:
+        return text
+    try:
+        from .web_tools import _known_secret_values
+        for secret in sorted(set(_known_secret_values()), key=len, reverse=True):
+            if secret in text:
+                text = text.replace(secret, "[redacted:credential]")
+    except Exception:
+        pass
+    try:
+        return _redact_secrets(text, [])
+    except Exception:
+        return text
 
 
 # ---------------------------------------------------------------------------

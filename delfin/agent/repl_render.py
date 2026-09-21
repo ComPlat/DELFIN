@@ -44,6 +44,11 @@ _CONTROL_RE = re.compile(
 
 _WS_RE = re.compile(r"\s+")
 
+# A markdown blockquote marker at the head of a line. Harness speech is
+# never quoting anything, so wherever this appears it is formatting meant
+# for the surface that renders markdown.
+_QUOTE_RE = re.compile(r"^>\s?")
+
 # The argument that says what a call is actually doing. Anything not
 # listed falls back to the first key present in _FALLBACK_KEYS, and a tool
 # with none of them renders as its name plus an argument count — never a
@@ -310,6 +315,13 @@ def notice_line(text: str, *, theme: Theme | None = None) -> str:
     theme = theme or Theme()
     cleaned = strip_control(text or "")
     lines = [_WS_RE.sub(" ", ln).strip() for ln in cleaned.split("\n")]
+    # A notice is written once and read on two surfaces. The dashboard
+    # reads it as markdown, where a leading "> " sets the line apart; the
+    # terminal has its own marker for that, and both together produced
+    #     ! > ⏳ First turn on kit.glm-5.3: the endpoint is building ...
+    # on the first line of a session, which is where a user's impression
+    # of the whole thing is formed.
+    lines = [_QUOTE_RE.sub("", ln, count=1) for ln in lines]
     # Keep interior blanks out; a notice is dense by nature.
     kept = [ln for ln in lines if ln]
     if not kept:

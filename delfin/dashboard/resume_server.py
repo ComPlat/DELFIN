@@ -32,6 +32,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, quote, urlsplit
 
 from delfin.dashboard import session as _session
+from delfin.dashboard import turn_record as _turns
 
 
 # ---------------------------------------------------------------------------
@@ -55,10 +56,24 @@ GRACE_SECONDS = 90.0
 #: dashboard takes a while to build; give it longer than a reload.
 NEVER_CONNECTED_SECONDS = 600.0
 
+#: How long a kernel may go without a window when the window never said
+#: it was closing. That silence is a dropped connection -- a sleeping
+#: laptop, a VPN turning over, a ping timing out -- and the page is
+#: still open on somebody's screen. The short grace above is for the
+#: windows that announce their own closing; this is for every other
+#: kind of quiet, and it is long enough to come back from.
+DROPPED_SECONDS = 900.0
+
+#: How close to the moment the last window went a beacon must arrive to
+#: be about THAT window. One tab of several closing says nothing about
+#: the connection that drops an hour later.
+CLOSE_WINDOW_SECONDS = 15.0
+
 #: How often the server looks. Bounds how late a teardown is.
 POLL_SECONDS = 10
 
 GRACE_ENV = "DELFIN_SESSION_GRACE_SECONDS"
+DROPPED_ENV = "DELFIN_SESSION_DROPPED_SECONDS"
 
 #: Set to 1 to keep the server up after its last window has gone and no
 #: session is kept. By default it stops then and frees its port: the
@@ -80,6 +95,15 @@ def grace_seconds(default: float = GRACE_SECONDS) -> float:
     return value if value > 0 else default
 
 
+def dropped_seconds(default: float = DROPPED_SECONDS) -> float:
+    """How long a dropped connection is given, with an override."""
+    try:
+        value = float(os.environ.get(DROPPED_ENV, ""))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 def cull_config_args(grace: Optional[float] = None) -> list[str]:
     """The server flags that switch the culler on.
 
@@ -89,16 +113,35 @@ def cull_config_args(grace: Optional[float] = None) -> list[str]:
     log lines truthful.
     """
     seconds = max(1, int(round(grace if grace is not None else grace_seconds())))
-    return [
+    args = [
         f"--MappingKernelManager.cull_idle_timeout={seconds}",
         f"--MappingKernelManager.cull_interval={POLL_SECONDS}",
         "--MappingKernelManager.cull_connected=False",
     ]
+    if not stays_up():
+        # The server stopped itself only when a kernel ended -- and a kernel
+        # exists only once somebody opens a window. A launcher that died
+        # before anyone did left a server with no kernel serving nothing:
+        # one ran for five days on port 8868 (2026-09-11 to -16). With no
+        # kernel and no request for this long, the server ends. A kept
+        # session has a live kernel, so it is never cut short by this.
+        args.append("--ServerApp.shutdown_no_activity_timeout="
+                    f"{int(NEVER_CONNECTED_SECONDS)}")
+    return args
 
 
 def kept_kernel_ids(*, root: str = "") -> set[str]:
-    """Every kernel a record says is kept."""
-    return {str(r.get("kernel_id") or "") for r in _session.list_records(root=root)}
+    """Every kernel a LIVING record says is kept.
+
+    A record left behind by a session that is gone used to count: the
+    server then never stopped, because it believed a kept session was
+    still out there. One from another login node could say that for
+    ever, since a pid means nothing across machines -- so the records
+    carry a heartbeat now, and this reads only the ones that have one
+    (2026-09-18).
+    """
+    return {str(r.get("kernel_id") or "")
+            for r in _session.live_records(root=root)}
 
 
 #: The query key that marks a request as a resume, and names which
@@ -246,6 +289,26 @@ def resume_kernel_manager_class(base: type) -> type:
                         "fresh kernel.", name, _session.RECORD_DIR, listing,
                         os.environ.get("HOME", ""))
                 return ""
+            # A kept session is announced in the home directory, which the
+            # login nodes share, but its kernel belongs to the server on the
+            # machine that wrote the record. Asked from anywhere else, this
+            # server does not run it -- and dropping the record because of
+            # that ended three running agent sessions on 2026-09-16: their
+            # own server, finding them no longer kept and unwatched, ended
+            # their kernel ten seconds later.
+            record = next((r for r in _session.list_records()
+                           if r.get("session_name") == name), {})
+            elsewhere = str(record.get("host") or "")
+            here = _session._hostname()
+            if elsewhere and elsewhere != here:
+                if log:
+                    log.warning(
+                        "[delfin] return to session %r: it runs on %s, not on "
+                        "this machine (%s). Its record and its kernel are "
+                        "left alone; open the dashboard on %s to return to "
+                        "it. Starting a fresh kernel here.",
+                        name, elsewhere, here, elsewhere)
+                return ""
             try:
                 known = kid in self
             except Exception:
@@ -288,9 +351,37 @@ def resume_kernel_manager_class(base: type) -> type:
                 self._delfin_unwatched_since = store
             return store
 
+        @property
+        def _delfin_waiting_for_turn(self) -> set:
+            """Kernels already reported as kept for a running turn, so
+            the report is made once an episode and not every poll."""
+            store = getattr(self, "_delfin_waiting_store", None)
+            if store is None:
+                store = set()
+                self._delfin_waiting_store = store
+            return store
+
+        def _delfin_closed(self) -> dict:
+            """kernel id -> when its window said it was closing."""
+            store = getattr(self, "_delfin_closed_at", None)
+            if store is None:
+                store = {}
+                self._delfin_closed_at = store
+            return store
+
+        def delfin_window_closed(self, kernel_id) -> None:
+            """A page is being unloaded. Called by the beacon handler.
+
+            This can only shorten a kernel's stay, and only for the
+            kernel the page was rendered in.
+            """
+            self._delfin_closed()[kernel_id] = time.monotonic()
+
         def notify_connect(self, kernel_id):
             super().notify_connect(kernel_id)
             self._delfin_unwatched().pop(kernel_id, None)
+            self._delfin_waiting_for_turn.discard(kernel_id)
+            self._delfin_closed().pop(kernel_id, None)
 
         def notify_disconnect(self, kernel_id):
             super().notify_disconnect(kernel_id)
@@ -311,20 +402,60 @@ def resume_kernel_manager_class(base: type) -> type:
 
         # -- the decision ---------------------------------------------------
 
+        def _delfin_allowance(self, kernel_id, had_window: bool) -> float:
+            """How long this kernel may go unwatched.
+
+            A page that closed said so on its way out, and the short
+            grace -- which is really about a reload -- is for those. A
+            window that simply stopped answering is a connection that
+            dropped, and the page is still open somewhere.
+            """
+            if not had_window:
+                return NEVER_CONNECTED_SECONDS
+            closed_at = self._delfin_closed().get(kernel_id)
+            if closed_at is None:
+                return dropped_seconds()
+            since, _had = self._delfin_unwatched().get(
+                kernel_id, (closed_at, True))
+            # A beacon belongs to the window that has just gone: it is
+            # sent as the page unloads, a moment before or after the
+            # connection falls away. An older one is about a different
+            # window of the same session.
+            if closed_at >= since - CLOSE_WINDOW_SECONDS:
+                return grace_seconds()
+            return dropped_seconds()
+
         async def cull_kernel_if_idle(self, kernel_id):
             """End a kernel that has had no window for the grace, unless
-            it is kept. Replaces the server's idle rule outright: a
-            dashboard kernel is idle while its agent works in a thread
-            and busy with widget traffic while nobody watches, so
-            activity says nothing here. Windows do.
+            it is kept or a turn is running in it. Replaces the server's
+            idle rule outright: a dashboard kernel is idle while its
+            agent works in a thread and busy with widget traffic while
+            nobody watches, so activity says nothing here. Windows do --
+            and the record a running turn leaves does.
             """
             state = self._delfin_seconds_unwatched(kernel_id)
             if state is None:
                 return
             seconds, had_window = state
-            allowed = grace_seconds() if had_window else NEVER_CONNECTED_SECONDS
+            allowed = self._delfin_allowance(kernel_id, had_window)
             if seconds <= allowed:
                 return
+            if kernel_id in _turns.running_kernel_ids():
+                # Work in flight. A closed tab and a dropped WebSocket
+                # look the same from here, and ending the kernel now
+                # would throw away a run nobody asked to stop. The clock
+                # starts again so the grace is served after the turn,
+                # not during it -- an unwatched session still stops,
+                # just not mid-run.
+                self._delfin_unwatched()[kernel_id] = (time.monotonic(), had_window)
+                if kernel_id not in self._delfin_waiting_for_turn:
+                    self._delfin_waiting_for_turn.add(kernel_id)
+                    self.log.warning(
+                        "[delfin] keeping kernel %s: no window for %ds, but a "
+                        "turn is running; the grace starts again when it ends.",
+                        kernel_id[:8], int(seconds))
+                return
+            self._delfin_waiting_for_turn.discard(kernel_id)
             kept = kept_kernel_ids()
             if kernel_id in kept:
                 return

@@ -402,6 +402,8 @@ def _classify_job_id(jid: str, workspace: str | Path) -> str:
     own jobs, so ask it first and keep the heuristic only for ids it does
     not know (SLURM ids, or bash jobs from a process that is gone).
     """
+    if jid.startswith("ci:"):
+        return "ci"
     try:
         from delfin.agent import bash_jobs as _bj
         if _bj.get_registry().get(jid, workspace) is not None:
@@ -415,6 +417,7 @@ def register_agent_job(
     workspace: str | Path,
     job_id_or_slurm_id: str,
     description: str = "",
+    extra: Optional[dict] = None,
 ) -> dict:
     """Add a watch entry for a job the agent itself started. LLM-free.
 
@@ -436,10 +439,23 @@ def register_agent_job(
         "added_at": time.time(),
         "last_state": "",
     }
+    entry.update(extra or {})
     data.setdefault("jobs", {})[jid] = entry
     save_watched(data, path)
     _note_agent_watch_workspace(workspace)
     return entry
+
+
+def unwatch_agent_job(workspace: str | Path, job_id: str) -> bool:
+    """Stop watching a job. The job itself is not touched: a cluster job or
+    a CI run goes on, only nobody is told when it ends. True if it was
+    watched."""
+    path = _agent_watch_path(workspace)
+    data = load_watched(path)
+    if data.get("jobs", {}).pop(str(job_id), None) is None:
+        return False
+    save_watched(data, path)
+    return True
 
 
 def _emit_watch_attention(kind: str, title: str, detail: str,
@@ -453,13 +469,167 @@ def _emit_watch_attention(kind: str, title: str, detail: str,
         pass
 
 
+# ---------------------------------------------------------------------------
+# CI of a pushed commit (GitHub Actions)
+# ---------------------------------------------------------------------------
+#
+# After report 20260915-085107 pushed to main, CI went red and nobody
+# looked: the agent had no way to read it -- `gh` is not installed on the
+# cluster nodes -- and when the user pasted the log it guessed at a licence
+# header. The runs of a pushed commit are now a watched job like a cluster
+# job, answered by the public API (or GITHUB_TOKEN / GH_TOKEN when set).
+
+_CI_ID_RE = re.compile(r"^ci:([\w.-]+/[\w.-]+)@([0-9a-f]{7,40})$")
+# Unauthenticated, the API allows sixty calls an hour per ADDRESS, and a
+# login node is one address for every user on it; every turn and the daemon
+# come through check_agent_jobs. On 2026-09-15 two watches polling once a
+# minute emptied that budget and every answer was a 403 for the rest of the
+# hour. Twenty calls an hour per watch, and a rate-limited answer waits for
+# the reset GitHub names instead of asking again.
+_CI_MIN_INTERVAL_S = 180.0
+# A push whose commit has no run after this long will not get one.
+_CI_NO_RUN_AFTER_S = 30 * 60.0
+_CI_OK_CONCLUSIONS = frozenset({"success", "skipped", "neutral"})
+
+
+def _default_fetch(url: str) -> Optional[dict]:
+    """GET a GitHub API URL as JSON; None when it cannot be had.
+
+    A refusal comes back as GitHub's own error body, so the reason reaches
+    the user ("API rate limit exceeded"), with ``_retry_at`` (epoch seconds)
+    when GitHub says when the budget returns.
+    """
+    import urllib.error
+    import urllib.request
+
+    headers = {"Accept": "application/vnd.github+json",
+               "User-Agent": "delfin-agent"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8", "replace"))
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        body.setdefault("message", f"HTTP {exc.code}")
+        reset = (exc.headers or {}).get("X-RateLimit-Reset")
+        if (exc.code in (403, 429) and reset
+                and (exc.headers or {}).get("X-RateLimit-Remaining") == "0"):
+            try:
+                body["_retry_at"] = float(reset)
+            except ValueError:
+                pass
+        return body
+    except Exception:
+        return None
+
+
+def query_ci_runs(
+    repo: str,
+    sha: str,
+    branch: str = "",
+    fetch: Callable[[str], Optional[dict]] = _default_fetch,
+) -> dict:
+    """State of the GitHub Actions runs of one commit. LLM-free.
+
+    ``state`` is PENDING (no run yet, or one still going), SUCCESS, FAILURE
+    or :data:`STATE_UNAVAILABLE`. ``failed`` names what went red as
+    ``<workflow> › <job> › <first failed step>``, and ``url`` links the
+    first failed run (the first run when all passed)."""
+    import urllib.parse
+
+    base = f"https://api.github.com/repos/{repo}/actions/runs"
+    if len(sha) == 40:
+        url = f"{base}?head_sha={sha}&per_page=50"
+    elif branch:
+        url = f"{base}?branch={urllib.parse.quote(branch)}&per_page=50"
+    else:
+        url = f"{base}?per_page=50"
+    data = fetch(url)
+    if not isinstance(data, dict) or "workflow_runs" not in data:
+        detail = data.get("message", "") if isinstance(data, dict) else ""
+        retry_at = data.get("_retry_at") if isinstance(data, dict) else None
+        return {"state": STATE_UNAVAILABLE, "runs": [], "failed": [],
+                "url": "", "detail": str(detail or "no answer")[:120],
+                "retry_at": retry_at}
+    runs = [r for r in data["workflow_runs"]
+            if str(r.get("head_sha", "")).startswith(sha)]
+    summary = [{"name": r.get("name", ""), "status": r.get("status", ""),
+                "conclusion": r.get("conclusion"),
+                "url": r.get("html_url", "")} for r in runs]
+    if not runs or any(r.get("status") != "completed" for r in runs):
+        return {"state": "PENDING", "runs": summary, "failed": [], "url": ""}
+    bad = [r for r in runs if r.get("conclusion") not in _CI_OK_CONCLUSIONS]
+    if not bad:
+        return {"state": "SUCCESS", "runs": summary, "failed": [],
+                "url": summary[0]["url"]}
+    failed: list[str] = []
+    for run in bad:
+        jobs = fetch(str(run["jobs_url"])) if run.get("jobs_url") else None
+        names = []
+        for job in (jobs or {}).get("jobs", []) if isinstance(jobs, dict) else []:
+            if job.get("conclusion") in _CI_OK_CONCLUSIONS:
+                continue
+            steps = [s.get("name", "") for s in job.get("steps") or []
+                     if s.get("conclusion")
+                     and s.get("conclusion") not in _CI_OK_CONCLUSIONS]
+            names.append(f"{run.get('name', '')} › {job.get('name', '')}"
+                         + (f" › {steps[0]}" if steps else ""))
+        failed.extend(names or [f"{run.get('name', '')}: {run.get('conclusion')}"])
+    return {"state": "FAILURE", "runs": summary, "failed": failed[:6],
+            "url": str(bad[0].get("html_url", ""))}
+
+
+def register_ci_watch(
+    workspace: str | Path,
+    repo: str,
+    sha: str,
+    branch: str = "",
+    description: str = "",
+    session_id: str = "",
+) -> str:
+    """Watch the CI runs of a pushed commit. Returns the watch id,
+    ``ci:<owner>/<repo>@<sha>``.
+
+    ``session_id`` names the session that pushed. Watches belong to the
+    session that armed them, and check_agent_jobs(session_id=...) reads
+    only that session's: a CI watch registered without one was never
+    reported to the session that had pushed, only to the headless daemon.
+    """
+    jid = f"ci:{repo}@{sha}"
+    if not _CI_ID_RE.match(jid):
+        raise ValueError(f"not a GitHub repository and commit: {repo}@{sha}")
+    extra = {"branch": branch}
+    if session_id:
+        extra["session_id"] = str(session_id)
+    register_agent_job(
+        workspace, jid,
+        description or (f"CI for {sha[:8]}" + (f" on {branch}" if branch else "")),
+        extra=extra)
+    return jid
+
+
 def check_agent_jobs(
     workspace: str | Path,
     run_fn: Callable[[list[str]], Optional[str]] = _default_run,
     *,
     consume: bool = True,
+    fetch_fn: Optional[Callable[[str], Optional[dict]]] = None,
+    marker: str = "daemon_notified",
+    session_id: Optional[str] = None,
 ) -> list[dict]:
     """Report agent-registered jobs that reached a terminal state — once.
+
+    ``session_id`` limits the report to that session's watches: several
+    sessions can work in one workspace, and a job belongs to the
+    conversation that is waiting for it. None (the daemon) reads them all.
 
     LLM-free like :func:`check_once`. Terminal entries are removed from the
     persistent watch file (atomic write), so each completion/failure is
@@ -471,7 +641,9 @@ def check_agent_jobs(
     ``consume=False`` reports without removing anything and marks the entry
     ``daemon_notified`` instead: that is how the headless daemon can watch
     the same list without eating the completion the next agent turn is
-    waiting for.
+    waiting for. ``marker`` names that flag, so each reader that only
+    peeks -- the daemon, and the dashboard that wakes an idle agent -- is
+    told about a completion once without hiding it from the other.
 
     Each result: ``job_id``, ``kind`` ("slurm"/"bash"), ``description``,
     ``state``, ``ok``, ``exit_code`` (bash only; None when the code was
@@ -495,10 +667,16 @@ def check_agent_jobs(
     now = time.time()
     for jid, entry in list(jobs.items()):
         entry = entry or {}
+        if session_id is not None and entry.get("session_id") != session_id:
+            # Another session's watch -- or one from before watches had an
+            # owner, which is no session's: a new conversation must not be
+            # woken by work an old one left behind. The daemon reads those.
+            continue
         if float(entry.get("added_at") or now) < now - _AGENT_WATCH_MAX_AGE_S:
             # Only an entry that never got an answer is worth an alarm. One
             # the daemon already reported on is being pruned as bookkeeping.
             resolved = (entry.get("daemon_notified")
+                        or entry.get("wake_notified")
                         or entry.get("last_state") in _OK_TERMINAL_STATES
                         or entry.get("last_state") in _FAILURE_STATES)
             if not resolved:
@@ -543,7 +721,7 @@ def check_agent_jobs(
                 entry["last_state"] = state
                 changed = True
             if state in _OK_TERMINAL_STATES or state in _FAILURE_STATES:
-                if not consume and entry.get("daemon_notified"):
+                if not consume and entry.get(marker):
                     continue
                 done.append({
                     "job_id": jid,
@@ -558,8 +736,62 @@ def check_agent_jobs(
                 if consume:
                     jobs.pop(jid)
                 else:
-                    entry["daemon_notified"] = True
+                    entry[marker] = True
                 changed = True
+        elif _kind(jid, entry) == "ci":
+            if (now - float(entry.get("last_checked") or 0) < _CI_MIN_INTERVAL_S
+                    or now < float(entry.get("retry_at") or 0)):
+                continue
+            entry["last_checked"] = now
+            changed = True
+            match = _CI_ID_RE.match(jid)
+            if not match:
+                jobs.pop(jid)
+                continue
+            ci = query_ci_runs(match.group(1), match.group(2),
+                               str(entry.get("branch") or ""),
+                               fetch_fn or _default_fetch)
+            state = ci["state"]
+            if ci.get("retry_at"):
+                entry["retry_at"] = ci["retry_at"]
+            else:
+                entry.pop("retry_at", None)
+            if state == STATE_UNAVAILABLE:
+                # Said once, and the watch goes on: an answer that did not
+                # come is not a green run.
+                if not entry.get("unavailable_since"):
+                    entry["unavailable_since"] = now
+                    done.append({
+                        "job_id": jid, "kind": "ci",
+                        "description": entry.get("description", ""),
+                        "state": STATE_UNAVAILABLE, "ok": False,
+                        "exit_code": None, "signatures": [],
+                        "degraded": (
+                            "GitHub could not be asked about this commit's "
+                            f"CI ({ci.get('detail', '')}) — its state is "
+                            "unknown, not green"),
+                    })
+                continue
+            entry.pop("unavailable_since", None)
+            if state == "PENDING":
+                entry["last_state"] = "PENDING"
+                waited = now - float(entry.get("added_at") or now)
+                if ci["runs"] or waited < _CI_NO_RUN_AFTER_S:
+                    continue
+                state = "NO CI RUN"
+            if not consume and entry.get(marker):
+                continue
+            done.append({
+                "job_id": jid, "kind": "ci",
+                "description": entry.get("description", ""),
+                "state": state, "ok": state == "SUCCESS",
+                "exit_code": None, "signatures": ci.get("failed", []),
+                "url": ci.get("url", ""),
+            })
+            if consume:
+                jobs.pop(jid)
+            else:
+                entry[marker] = True
         else:
             # Background-bash job: the bash_jobs registry is the source of
             # truth — in-memory in the same process, re-attached from
@@ -571,7 +803,7 @@ def check_agent_jobs(
                 job = None
             if job is None or job.poll() is None:
                 continue        # unknown yet (age prune applies) or running
-            if not consume and entry.get("daemon_notified"):
+            if not consume and entry.get(marker):
                 continue
             status = job.status_dict()
             rc = status.get("exit_code")
@@ -588,7 +820,7 @@ def check_agent_jobs(
             if consume:
                 jobs.pop(jid)
             else:
-                entry["daemon_notified"] = True
+                entry[marker] = True
             changed = True
     if changed:
         save_watched(data, path)
@@ -980,6 +1212,9 @@ def run_loop(
 
 
 def main() -> int:
+    # Ends with the terminal or dashboard that started it (lifeline).
+    from . import lifeline as _lifeline
+    _lifeline.guard_daemon()
     cfg = monitor_settings()
     if not cfg["enabled"]:
         print("job_monitor is disabled (agent.job_monitor.enabled=false). "

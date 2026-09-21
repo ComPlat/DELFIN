@@ -372,6 +372,16 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
             except FileNotFoundError:
                 pass
         else:
+            if "owner_session" not in entry and f.exists():
+                # The run rewrites its entry at every step without knowing
+                # which session reserved it; the reservation's owner stays.
+                try:
+                    owner = json.loads(f.read_text(encoding="utf-8")).get(
+                        "owner_session")
+                    if owner:
+                        entry = {**entry, "owner_session": owner}
+                except Exception:
+                    pass
             if not f.exists():
                 # Starting an entry is the one moment guaranteed to happen
                 # and cheap enough to carry the cleanup of what an earlier
@@ -383,7 +393,7 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
 
 
 def reserve_running(sa_id: str, *, subagent_type: str = "",
-                    description: str = "") -> None:
+                    description: str = "", owner_session: str = "") -> None:
     """Announce a subagent id BEFORE the work behind it starts.
 
     A background run hands its id to the parent immediately, but the live
@@ -406,9 +416,34 @@ def reserve_running(sa_id: str, *, subagent_type: str = "",
         "last_action": "",
         "transcript": [],
         "reserved": True,
+        # The session that started it. The pid says which process owns a
+        # run, and one dashboard process holds several sessions.
+        **({"owner_session": owner_session} if owner_session else {}),
     })
     _note_pending_report(sa_id, subagent_type=subagent_type,
+                         owner_session=owner_session,
                          description=description)
+
+
+# Background runs the user asked to stop, by the id the panel lists.
+_CANCELLED: set[str] = set()
+
+
+def cancel_background(sa_id: str) -> bool:
+    """Ask a running background sub-agent to stop. True if one is running.
+
+    The run sees it at its next step, as it would see its parent's Stop, and
+    ends with what it has.
+    """
+    sa_id = str(sa_id or "").strip()
+    if not sa_id or sa_id not in read_running():
+        return False
+    _CANCELLED.add(sa_id)
+    return True
+
+
+def cancel_requested(*sa_ids: str) -> bool:
+    return any(str(s or "") in _CANCELLED for s in sa_ids if s)
 
 
 def mark_running_died(sa_id: str, error: str = "") -> None:
@@ -536,7 +571,7 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 
 def _note_pending_report(sa_id: str, *, subagent_type: str = "",
-                         description: str = "") -> None:
+                         description: str = "", owner_session: str = "") -> None:
     """Record that this process owes its parent agent a report for ``sa_id``.
 
     Best-effort: a delegation must never fail because bookkeeping could
@@ -568,11 +603,21 @@ def _note_pending_report(sa_id: str, *, subagent_type: str = "",
         # Atomic AND owner-only: mkstemp creates the temporary file 0600
         # and os.replace carries that mode over, so this satisfies both the
         # torn-read fix and the state-file permission rule.
+        # The session that reserved the run owns its report too: with two
+        # sessions in one dashboard, a marker stamped only with the process
+        # woke both of them (review 2026-09-16).
+        if not owner_session:
+            try:
+                owner_session = str((read_running(include_dead=True).get(sa_id) or {})
+                                    .get("owner_session") or "")
+            except Exception:
+                owner_session = ""
         _atomic_write_json(_pending_path(sa_id), {
             "sa_id": sa_id,
             "type": subagent_type or "",
             "description": (description or "")[:120],
             "started_at": time.time(),
+            **({"owner_session": owner_session} if owner_session else {}),
             **_owner_stamp(),
         })
     except Exception:
@@ -969,6 +1014,11 @@ class SubagentPreset:
     # ``mode`` still applies on top: a "plan" preset refuses writes whatever
     # this list says, and this list binds in the modes where "plan" does not.
     tools: tuple[str, ...] = ()
+    # The model tier this preset runs on when a call names none: "parent",
+    # "cheap", or "" for the routing default. A tier rather than a model
+    # name, so a definition works with any provider. Writer presets keep
+    # the parent model whatever this says (see _resolve_subagent_model).
+    model: str = ""
 
 
 # Tools that cannot mutate anything: they read files, code, documents,
@@ -1140,6 +1190,17 @@ def _md_preset_search_dirs() -> list[Path]:
     ]
 
 
+def _parse_preset_model(value: object) -> str:
+    """Read a ``model:`` frontmatter value: ``parent``, ``cheap`` or "".
+
+    Claude Code's agent definitions name a model; DELFIN's name a tier, so
+    the same definition works on KIT, Anthropic or a local server. Anything
+    else is ignored rather than guessed at.
+    """
+    tier = str(value or "").strip().lower()
+    return tier if tier in ("parent", "cheap") else ""
+
+
 def _load_md_presets() -> dict[str, SubagentPreset]:
     """Discover ``*_subagent.md`` presets with YAML frontmatter.
 
@@ -1181,6 +1242,7 @@ def _load_md_presets() -> dict[str, SubagentPreset]:
                 system_prompt=system_prompt,
                 mode=mode,
                 tools=_parse_preset_tools(meta.get("tools")),
+                model=_parse_preset_model(meta.get("model")),
             )
     return discovered
 
@@ -1227,6 +1289,7 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
                 system_prompt=system_prompt,
                 mode=mode,
                 tools=_parse_preset_tools(meta.get("tools")),
+                model=_parse_preset_model(meta.get("model")),
             )
     return registry
 
@@ -2626,12 +2689,19 @@ def _resolve_subagent_model(
     """
     parent_model = str(getattr(parent_client, "model", "") or "")
     try:
-        override = (model_override or "").strip().lower()
+        # A call's own choice wins; otherwise the preset's definition says.
+        preset = SUBAGENT_PRESETS.get(subagent_type)
+        asked = (model_override or "").strip().lower()
+        override = (asked or getattr(preset, "model", "") or "").strip().lower()
         if override == "parent":
             return parent_model, "parent"
         if is_writer_preset(subagent_type):
             return parent_model, "parent"
-        if override != "cheap" and not _cheap_tier_enabled():
+        # Only the CALL may ask for the cheap tier against the user's
+        # switch. A definition file that says `model: cheap` is a default,
+        # and a default does not override agent.subagents.cheap_tier=false
+        # (review 2026-09-16).
+        if asked != "cheap" and not _cheap_tier_enabled():
             return parent_model, "parent"
         provider = str(
             getattr(parent_client, "_provider", "")
@@ -2653,6 +2723,34 @@ def _resolve_subagent_model(
         return candidate, "cheap"
     except Exception:
         return parent_model, "parent"
+
+
+_REPORT_TAIL_SHORT = 400        # a last remark this short is not the report...
+_REPORT_BODY_MIN = 800          # ...when an earlier segment this long exists
+
+
+def _delegate_report(parts: list[str], segment_starts: list[int]) -> str:
+    """What the delegate reports: its last word, plus the report it wrote
+    before a final check.
+
+    The text after the last tool call is the report; the text between
+    calls ("Now let me find ...") is narration (report 20260915-110358).
+    But a delegate that writes its report and then runs one confirming
+    grep ends on "Confirmed." -- and the report body sat in the segment
+    before it (review 2026-09-16). So when the last word is short and an
+    earlier segment is long, the report is that segment with the last word
+    after it. A run that ended on a tool call has no last word; then
+    everything it said is all there is.
+    """
+    starts = sorted({max(0, int(i)) for i in (segment_starts or [0])} | {0})
+    bounds = list(zip(starts, starts[1:] + [len(parts)]))
+    segments = ["".join(parts[a:b]).strip() for a, b in bounds]
+    tail = segments[-1] if segments else ""
+    body = max(segments[:-1], key=len, default="")
+    if tail and len(tail) < _REPORT_TAIL_SHORT and len(body) >= max(
+            _REPORT_BODY_MIN, 3 * len(tail)):
+        return body + "\n\n" + tail
+    return tail or "".join(parts).strip()
 
 
 def run_subagent(
@@ -2804,6 +2902,19 @@ def run_subagent(
                 except Exception:
                     pass
         sub_client.set_permissions(sub_perms)
+        # The copy inherited the parent's Stop probe; a stop the user gives
+        # this run alone (the × in the Background panel) is heard too.
+        _parent_stop = getattr(parent_client, "should_stop", None)
+
+        def _stop_probe(_ids=(sa_id, resume_from), _parent=_parent_stop):
+            if cancel_requested(*_ids):
+                return True
+            try:
+                return bool(_parent()) if callable(_parent) else False
+            except Exception:
+                return False
+
+        sub_client.should_stop = _stop_probe
     except Exception:
         # Fallback to the legacy swap-on-parent if copying fails.
         sub_client = parent_client
@@ -2872,6 +2983,8 @@ def run_subagent(
     messages.append({"role": "user", "content": prompt})
 
     final_text_parts: list[str] = []
+    _final_from = 0      # where the text after the last tool call starts
+    _segment_starts: list[int] = [0]   # where each text segment between tool calls starts
     tool_calls_seen: list[dict] = []
     in_tokens = out_tokens = 0
     t0 = time.monotonic()
@@ -2960,6 +3073,8 @@ def run_subagent(
                 final_text_parts.append(event.text)
                 _sa_text_buf.append(event.text)
             elif event.type == "tool_use":
+                _final_from = len(final_text_parts)
+                _segment_starts.append(len(final_text_parts))
                 tool_calls_seen.append({
                     "name": event.tool_name,
                     "input": event.tool_input,
@@ -3000,6 +3115,7 @@ def run_subagent(
         error = f"sub-agent stream raised: {exc}"
     finally:
         _running_update(_sa_id, None)
+        _CANCELLED.discard(_sa_id)
         # Restore parent permissions ONLY if we fell back to running on the
         # shared parent client (the normal isolated-copy path never touched it).
         if restore_parent and hasattr(parent_client, "set_permissions"):
@@ -3045,7 +3161,12 @@ def run_subagent(
         # Surface as a soft warning when nothing else went wrong.
         worktree_summary["warning"] = isolation_warning
 
-    final_text = "".join(final_text_parts).strip()
+    # The report is what the delegate said after its last tool call. Its
+    # text between calls -- "Now let me find ..." -- is narration, and handed
+    # back whole it pushed the answer past every cap on the way to the
+    # parent (report 20260915-110358). A run that ended on a tool call has
+    # no last word; then everything it said is all there is.
+    final_text = _delegate_report(final_text_parts, _segment_starts)
     if not final_text and not error:
         error = "sub-agent returned no text"
 

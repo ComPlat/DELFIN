@@ -90,6 +90,28 @@ def test_a_read_is_not_a_write():
     assert engine.client.notes == []
 
 
+def test_a_test_beside_the_suite_is_the_same_work_as_its_code():
+    """Report 20260915-084010: the edit was in delfin/dashboard/, its test
+    went into tests/ where the suite lives, and the agent was told to keep
+    one place -- and spent a round defending the repository's layout."""
+    engine = _engine(pinned="delfin/dashboard")
+    engine._note_stray_write(
+        *_write("tests/test_where_an_empty_viewer_speaks.py"))
+    assert engine.client.notes == []
+
+
+def test_code_after_its_test_is_the_same_work():
+    engine = _engine(pinned="tests")
+    engine._note_stray_write(*_write("delfin/dashboard/tab_orca_builder.py"))
+    assert engine.client.notes == []
+
+
+def test_a_file_that_merely_mentions_test_is_still_a_second_root():
+    engine = _engine()
+    engine._note_stray_write(*_write("/w/latest_results.csv"))
+    assert len(engine.client.notes) == 1
+
+
 def test_a_client_that_cannot_take_notes_does_not_cost_the_turn():
     engine = _engine()
     engine.client = object()

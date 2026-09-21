@@ -376,6 +376,15 @@ def _save_session(engine, repo_root: Path, *, title: str = "") -> str:
         estate["session_id"] = sid
         if title:
             estate.setdefault("title", title)
+        # The model is the client's, not the engine's, so export_state
+        # never carried it and every session this command saved recorded
+        # an empty one. The dashboard passes both explicitly; a listing
+        # that offers sessions to resume showed "?" for anything the CLI
+        # had written (2026-09-18).
+        estate.setdefault(
+            "model", str(getattr(getattr(engine, "client", None), "model", "")
+                         or ""))
+        estate.setdefault("provider", str(getattr(engine, "provider", "") or ""))
         _ss.save_session(chat_messages=_display_messages(engine),
                          workspace=str(repo_root), **estate)
     except Exception as exc:
@@ -409,10 +418,30 @@ def cmd_run(args: argparse.Namespace) -> int:
     # caller that stands in for `_run_once` was written against the
     # signature without it. A turn that streams nothing is called exactly
     # as it always was.
-    _emit = {"emit": _json_line} if stream_json else {}
+    # A terminal that is watching gets the turn rendered as it happens --
+    # the tool being called, then its verdict -- instead of silence until
+    # the answer. cli_stream does the rendering; this only decides when
+    # it applies: a tty, and no machine-readable stream asked for.
+    _human_stream = bool(not stream_json and sys.stdout.isatty())
+    if _human_stream:
+        from .cli_stream import StreamRenderer
+
+        def _render_event(event: dict) -> None:
+            for line in StreamRenderer([event], is_tty=True):
+                print(line, flush=True)
+
+        _emit = {"emit": _render_event}
+    else:
+        _emit = {"emit": _json_line} if stream_json else {}
     out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096,
                     **_emit)
     sid = _save_session(engine, repo)
+    # Session report: best-effort Markdown write; never breaks exit.
+    try:
+        from .session_report import write_session_report
+        write_session_report(sid or getattr(engine, "session_id", ""))
+    except Exception:
+        pass
 
     # Learning signal: record the outcome so provider profiles learn from
     # CLI/headless usage too — previously only dashboard cycles fed the
@@ -553,10 +582,17 @@ def _pick_session(workspace: Path) -> str:
     if not rows:
         print("No previous sessions in this directory.", file=sys.stderr)
         return ""
-    for i, row in enumerate(rows, 1):
-        title = str(row.get("title", "") or "(untitled)")[:60]
-        when = str(row.get("updated_at", "") or "")[:16]
-        print(f"  {i:2}. {when}  {title}", file=sys.stderr)
+    # The listing comes from cli_resume so the terminal and the picker
+    # show the same table -- id, age, model and the task line -- instead
+    # of two renderings of the same rows.
+    try:
+        from .cli_resume import render_sessions
+        print(render_sessions(rows), file=sys.stderr)
+    except Exception:
+        for i, row in enumerate(rows, 1):
+            title = str(row.get("title", "") or "(untitled)")[:60]
+            when = str(row.get("updated_at", "") or "")[:16]
+            print(f"  {i:2}. {when}  {title}", file=sys.stderr)
     try:
         raw = input("resume which? [1] ").strip() or "1"
         idx = int(raw)
@@ -1249,6 +1285,12 @@ def cmd_chat(args: argparse.Namespace) -> int:
     finally:
         _save_session(engine, workspace,
                       title=getattr(args, "session_name", "") or "")
+        # Session report: best-effort Markdown write; never breaks exit.
+        try:
+            from .session_report import write_session_report
+            write_session_report(getattr(engine, "session_id", "") or "")
+        except Exception:
+            pass
         try:
             os.chdir(_cwd_before)
         except Exception:
@@ -1908,6 +1950,8 @@ def cmd_bug(args: argparse.Namespace) -> int:
         if not _bw.acquire_pid_lock():
             print("bug_watcher is already running (PID lock).")
             return 3
+        from . import lifeline as _lifeline
+        _lifeline.guard_daemon()
         try:
             print(f"bug_watcher started (interval {cfg['interval_s']}s, "
                   f"archive={archive}).")
@@ -1972,7 +2016,11 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         if not value:
             print("No value entered, aborting.", file=sys.stderr)
             return 1
-        ok = _cred.set_credential(name, value)
+        try:
+            ok = _cred.set_credential(name, value)
+        except _cred.CredentialStoreNotPrivate as exc:
+            print(f"Not stored: {exc}", file=sys.stderr)
+            return 1
         if ok:
             print(f"Stored {name} = {_cred.mask(value)} "
                   f"in {_cred.credentials_path()} (chmod 0600)")
@@ -2021,6 +2069,145 @@ def cmd_session(args: argparse.Namespace) -> int:
     return 2
 
 
+def _print_stop_all_check(report: dict) -> int:
+    """Print ``stop_all.status()``. Returns 0 when nothing is running, 1
+    when something is."""
+    import time as _time
+
+    def _clock(epoch) -> str:
+        try:
+            return _time.strftime("%m-%d %H:%M", _time.localtime(float(epoch)))
+        except (TypeError, ValueError):
+            return "?"
+
+    from .stop_all import HEARTBEAT_FRESH_S
+
+    host = report.get("host") or "?"
+    print(f"DELFIN agents -- check only, nothing is changed "
+          f"({host}, {_time.strftime('%H:%M:%S', _time.localtime(report['at']))})")
+    print("Every login node (read from the shared home directory):")
+    sessions = report.get("open_sessions") or []
+    fresh = [r for r in sessions
+             if r["seconds_since_heartbeat"] <= HEARTBEAT_FRESH_S]
+    print(f"  Open dashboard sessions: "
+          + (f"{len(fresh)} with a heartbeat in the last "
+             f"{HEARTBEAT_FRESH_S // 60} min" if fresh else "none")
+          + (f", {len(sessions) - len(fresh)} silent (ended)"
+             if len(sessions) > len(fresh) else ""))
+    for row in sessions:
+        age = row["seconds_since_heartbeat"]
+        print(f"    {row['host']}: {row['title']!r} "
+              + (f"(heartbeat {age} s ago)" if age <= HEARTBEAT_FRESH_S
+                 else f"(last heartbeat {age // 60} min ago -- ended)"))
+    kept = report.get("kept_sessions") or []
+    print(f"  Kept sessions:           {len(kept) or 'none'}")
+    for row in kept:
+        where = ("running on this machine" if row.get("alive_here")
+                 else "its process is gone -- left over" if row.get("here")
+                 else f"run this check on {row['host']} to be certain")
+        print(f"    {row['session']} on {row['host']} since "
+              f"{_clock(row['since'])} ({where})")
+    schedules = report.get("active_schedules") or []
+    print(f"  Active schedules:        {len(schedules) or 'none'}"
+          + (f" (could not read them: {report['schedules_error']})"
+             if report.get("schedules_error") else ""))
+    for row in schedules:
+        print(f"    {row['id']} next {_clock(row['next_fire_at'])}: {row['prompt']}")
+    daemons = report.get("daemon_pid_files") or {}
+    print(f"  Daemons (pid files):     {len(daemons) or 'none'}")
+    for name, row in daemons.items():
+        print(f"    {name}: pid {row['pid']} ("
+              + ("running on this machine" if row.get("alive_here") else
+                 "not running on this machine; left over unless it runs on "
+                 "another login node") + ")")
+    stop = report.get("last_stop") or {}
+    print("  Last emergency stop:     "
+          + (f"{_clock(stop.get('at'))} on {stop.get('host')}" if stop else "never"))
+    print(f"This machine only ({host}) -- run this on every login node you used:")
+    here = report.get("agent_processes_here") or []
+    print(f"  Agent processes:         {len(here) or 'none'}")
+    for row in here:
+        print(f"    pid {row['pid']}: {row['command']}")
+    outlived = report.get("outlived_their_start_here") or []
+    print(f"  Outlived their start:    {len(outlived) or 'none'}")
+    for row in outlived:
+        print(f"    pid {row['pid']} ({row['why']}): {row['command']}")
+    running = bool(
+        fresh or schedules or here or outlived
+        or any(r.get("alive_here") for r in kept)
+        or any(r.get("alive_here") for r in daemons.values()))
+    if running:
+        print("Result: something is running or scheduled -- see above. "
+              "To end all of it: delfin-agent stop-all")
+        return 1
+    leftovers = len(sessions) + len(kept) + len(daemons)
+    if leftovers:
+        print("Result: nothing runs on this machine, nothing is scheduled, "
+              f"and no session has sent a heartbeat in the last "
+              f"{HEARTBEAT_FRESH_S // 60} min. The records above are left "
+              "over; where one names another login node, run this check "
+              "there too.")
+        return 0
+    print("Result: no agent is running or scheduled.")
+    return 0
+
+
+def cmd_stop_all(args: argparse.Namespace) -> int:
+    """The emergency stop: end every agent of this user on every login node.
+
+    See ``stop_all``. Asks first unless ``--yes``: it ends dashboards'
+    kernels, not only the agent in them.
+    """
+    import time as _time
+
+    from . import session_presence, stop_all
+
+    if args.check:
+        return _print_stop_all_check(stop_all.status())
+    open_before = session_presence.open_sessions()
+    if not args.yes:
+        hosts = sorted({str(r.get("host") or "?").split(".")[0]
+                        for r in open_before})
+        print("This ends every DELFIN agent of yours on every login node: "
+              "dashboard kernels (with their agents, shells and MCP "
+              "servers) and the daemons. Cluster jobs keep running.")
+        if hosts:
+            print(f"Open sessions right now: {len(open_before)} "
+                  f"on {', '.join(hosts)}.")
+        try:
+            answer = input("Stop everything? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            print("Nothing stopped.")
+            return 1
+    summary = stop_all.request(args.reason or "delfin-agent stop-all")
+    when = _time.strftime("%H:%M:%S", _time.localtime(summary["at"]))
+    print(f"Emergency stop given at {when} on {summary['host']}.")
+    print("  Every kernel and daemon of yours that started before it ends "
+          "within a few seconds, on every login node that shares this home.")
+    found = summary.get("found_here") or []
+    ended = summary.get("ended_here") or []
+    print(f"  On this machine: {len(found)} agent process(es) found; "
+          f"{len(found) - len(ended)} ended on their own, {len(ended)} had "
+          "to be ended" + (f" ({', '.join(map(str, ended))})" if ended else "")
+          + ".")
+    print(f"  Schedules disabled: {summary.get('schedules_disabled', 0)}"
+          + (f" (could not read them: {summary['schedules_error']})"
+             if summary.get("schedules_error") else "") + ".")
+    others: dict[str, int] = {}
+    for record in open_before:
+        host = str(record.get("host") or "?").split(".")[0]
+        if host != summary["host"]:
+            others[host] = others.get(host, 0) + 1
+    if others:
+        print("  Sessions on other machines, which end there on their own: "
+              + ", ".join(f"{h}: {n}" for h, n in sorted(others.items())) + ".")
+    print("  Nothing starts on its own again until you send a session "
+          "something yourself. Cluster jobs keep running (squeue --me).")
+    return 0
+
+
 def cmd_scheduler(args: argparse.Namespace) -> int:
     """Control the headless scheduler daemon: start / status / stop.
 
@@ -2041,13 +2228,21 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         import subprocess as _sp
         log = Path.home() / ".delfin" / "scheduler_daemon.log"
         log.parent.mkdir(parents=True, exist_ok=True)
+        from . import lifeline as _lifeline
         with log.open("a") as lf:
-            _sp.Popen(
+            daemon = _sp.Popen(
                 [sys.executable, "-m", "delfin.agent.scheduler_daemon"],
                 stdout=lf, stderr=lf,
-                start_new_session=True,  # survives shell/dashboard close
+                # Detached from Ctrl+C in the shell, but not from the
+                # terminal: it follows this terminal (or the dashboard it
+                # was started from) through the lifeline, and ends with it.
+                start_new_session=True,
+                env=_lifeline.child_env(),
             )
+        _lifeline.record_child(int(getattr(daemon, "pid", 0) or 0),
+                               "scheduler_daemon")
         print(f"Scheduler daemon started (detached); log: {log}")
+        print("It ends when this terminal closes.")
         print("It executes ONLY entries you explicitly scheduled "
               "(schedule_wakeup / cron_create) — each fire is one paid "
               "agent turn.")
@@ -2154,6 +2349,53 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     results = _doc.run_doctor(workspace)
     print(_doc.format_doctor(results))
     return 1 if any(r.get("status") == "FAIL" for r in results) else 0
+
+
+def cmd_sessions(args: argparse.Namespace) -> int:
+    """What ran here before, as a table that says how to come back."""
+    from . import cli_resume as _cr
+
+    rows = _cr.list_sessions(limit=max(1, int(getattr(args, "limit", 20) or 20)))
+    if not rows:
+        print("No sessions recorded yet.")
+        return 0
+    print(_cr.render_sessions(rows))
+    return 0
+
+
+def cmd_where(args: argparse.Namespace) -> int:
+    """Say where the dashboard is and how to walk back into it."""
+    from . import where as _where
+
+    print(_where.format_text(_where.dashboard(), _where.sessions()))
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """What one agent session actually did: tools, files, commands,
+    tests, denials, cost. `--json` prints the SessionReport itself,
+    otherwise the terminal rendering."""
+    import dataclasses
+    import json as _json
+
+    from . import session_report as _sr
+
+    sid = (getattr(args, "session", "") or "").strip()
+    if not sid:
+        # No id: the most recently updated session, via the same source
+        # `session ls` reads (sorted by updated_at, missing dir -> []).
+        from . import session_store as _ss
+        sid = (_ss.latest_session() or {}).get("session_id", "")
+        if not sid:
+            print("ERROR: no sessions found", file=sys.stderr)
+            return 1
+
+    report = _sr.collect_session_report(sid)
+    if getattr(args, "json", False):
+        print(_json.dumps(dataclasses.asdict(report), indent=2))
+    else:
+        print(_sr.render_terminal(report))
+    return 0
 
 
 def _subcommand_names(parser: argparse.ArgumentParser) -> frozenset[str]:
@@ -2654,6 +2896,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     sched.set_defaults(func=cmd_scheduler, scheduler_action="status")
 
+    stop_all_p = sub.add_parser(
+        "stop-all",
+        help="Emergency stop: end every agent of yours on every login node "
+             "(dashboard kernels, shells, MCP servers, daemons); schedules "
+             "are disabled and nothing starts on its own afterwards",
+    )
+    stop_all_p.add_argument("--yes", action="store_true",
+                            help="Do not ask first")
+    stop_all_p.add_argument("--check", action="store_true",
+                            help="Only show what is open, kept, scheduled or "
+                                 "running on its own; change nothing. Exit "
+                                 "code 1 when something is")
+    stop_all_p.add_argument("--reason", default="",
+                            help="Recorded with the stop")
+    stop_all_p.set_defaults(func=cmd_stop_all)
+
     # doctor — aggregate prerequisite health report
     doctor = sub.add_parser(
         "doctor",
@@ -2665,7 +2923,59 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Workspace directory (default: current dir)")
     doctor.set_defaults(func=cmd_doctor)
 
+    # report — what one session actually did, from the recorded sources
+    report = sub.add_parser(
+        "report",
+        help="What one agent session did: tools, files, commands, tests, "
+             "denials, cost (default: the most recent session)",
+    )
+    report.add_argument("--session", default="",
+                        help="Session ID (default: the most recent session)")
+    report.add_argument("--json", action="store_true",
+                        help="Print the SessionReport as JSON instead of "
+                             "the terminal rendering")
+    report.set_defaults(func=cmd_report)
+
+    # where — the dashboard runs on one node, in one multiplexer, behind
+    # one forwarded port, and the next login lands anywhere.
+    where_p = sub.add_parser(
+        "where",
+        help="Where the dashboard runs and how to get back into it: node, "
+             "tmux session, port, and a link per kept session",
+    )
+    where_p.set_defaults(func=cmd_where)
+
+    # sessions — what ran here before, without starting anything
+    sessions_p = sub.add_parser(
+        "sessions",
+        help="List earlier agent sessions: id, age, model and the task "
+             "they were given (resume one with --resume <id>)",
+    )
+    sessions_p.add_argument("--limit", type=int, default=20,
+                            help="How many to list (default 20)")
+    sessions_p.set_defaults(func=cmd_sessions)
+
     return p
+
+
+def _show_security_notices() -> None:
+    """Print, once, what a security update changed in the settings."""
+    try:
+        from delfin.user_settings import load_settings, take_security_notices
+        load_settings()                     # applies a pending update
+        for notice in take_security_notices():
+            print(notice, file=sys.stderr)
+    except Exception:
+        pass
+
+
+def _stop_own_background_shells() -> None:
+    """End the background shells this process started. Never raises."""
+    try:
+        from . import bash_jobs as _bj
+        _bj.get_registry().stop_running()
+    except Exception:
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2678,6 +2988,38 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))
+    if getattr(args, "func", None) in (cmd_chat, cmd_run):
+        # An agent in a terminal ends with an emergency stop given anywhere
+        # (stop_all), and with the dashboard it was started from, if any.
+        from . import lifeline as _lifeline
+        # The background shells this terminal agent started end with it,
+        # as a dashboard's end with its kernel: at a normal exit, at an
+        # interrupt, and when the lifeline or an emergency stop ends it
+        # (os._exit skips atexit, so that path stops them first).
+        import atexit as _atexit
+        _atexit.register(_stop_own_background_shells)
+        # This process holds the model's key: no command it runs may read it.
+        from . import process_guard as _process_guard
+        _process_guard.protect("terminal agent")
+        _show_security_notices()
+        _exported = _process_guard.exported_provider_keys()
+        if _exported:
+            # Do it rather than ask for it: the key goes into the 0600
+            # store and the export is commented out, with a copy of the
+            # file kept. Only what could not be decided is left to say.
+            _done = _process_guard.put_exported_keys_away(_exported)
+            if _done:
+                print(_done, file=sys.stderr)
+            else:
+                print("Warning: "
+                      + _process_guard.exported_key_advice(_exported),
+                      file=sys.stderr)
+
+        def _end_with_everything() -> None:
+            _stop_own_background_shells()
+            _lifeline.exit_now()
+
+        _lifeline.watch(_end_with_everything)
     try:
         return int(args.func(args) or 0)
     except KeyboardInterrupt:

@@ -36,7 +36,7 @@ _CRITICAL_RULES: dict[str, list[str]] = {
     "write": [
         "NEVER execute destructive actions (rm -rf, git reset --hard, DROP TABLE) without explicit user confirmation.",
         "Grep before Read; ORCA output: typed extract_* tools first, then only the relevant lines.",
-        "Run tests after every code edit: python -m pytest tests/ -x -q",
+        "After a code edit, run the tests that cover it; report unrelated failures, don't fix them.",
         "If a Bash command is BLOCKED/DENIED, STOP. Do not retry it or any variation.",
         "Communicate with the user in German. Code, commits, and artifacts in English.",
     ],
@@ -696,7 +696,8 @@ class PromptLoader:
                         "chars omitted]")
         return f"{_MEMORY_BLOCK_PREAMBLE}\n\n{joined}"
 
-    def _load_episode_recall_context(self, task_text: str = "") -> str:
+    def _load_episode_recall_context(self, task_text: str = "",
+                                     session_id: str = "") -> str:
         """Best-effort recall of similar PAST SESSIONS (episodic memory).
 
         Bridges the write-only session store: every session save also
@@ -720,9 +721,51 @@ class PromptLoader:
             # Same root as the memory store, and for the same reason: the
             # writer keys episodes by the workspace.
             return recall_episodes(
-                Path(self.workspace_root or self.repo_root), task_text)
+                Path(self.workspace_root or self.repo_root), task_text,
+                exclude_session_id=session_id)
         except Exception:
             return ""
+
+    #: Belongs to no account on purpose: a deployment that wants the
+    #: trailer to show an avatar and count in the contributor graph sets
+    #: agent.commit_coauthor_email to an address its bot account owns.
+    _DEFAULT_COAUTHOR_EMAIL = "noreply@delfin-agent.invalid"
+
+    def _commit_attribution_block(self, model: str = "") -> str:
+        """The co-author trailer the agent ends its commits with.
+
+        On by default; ``agent.commit_coauthor = false`` turns it off, and
+        the user's own instructions or remembered preferences win over it --
+        the same order Claude Code keeps for its attribution line.
+        """
+        try:
+            from delfin.user_settings import load_settings
+            agent = (load_settings() or {}).get("agent") or {}
+            if not bool(agent.get("commit_coauthor", True)):
+                return ""
+        except Exception:
+            pass
+        name = f"DELFIN-Agent ({model})" if model else "DELFIN-Agent"
+        # The address decides whether the trailer is a line of text or a
+        # linked contributor: GitHub attaches a co-author to an account by
+        # its email, and the .invalid default belongs to none, so the
+        # trailer renders without an avatar and counts for nobody. Set
+        # agent.commit_coauthor_email to the bot account's
+        # <id>+<name>@users.noreply.github.com to change that.
+        email = self._DEFAULT_COAUTHOR_EMAIL
+        try:
+            from delfin.user_settings import load_settings
+            agent = (load_settings() or {}).get("agent") or {}
+            email = str(agent.get("commit_coauthor_email", "") or "").strip() \
+                or self._DEFAULT_COAUTHOR_EMAIL
+        except Exception:
+            email = self._DEFAULT_COAUTHOR_EMAIL
+        return ("--- Commit attribution ---\n"
+                "End every git commit message you write with this trailer:\n"
+                f"Co-Authored-By: {name} <{email}>\n"
+                "The user's instructions and remembered preferences win: if "
+                "they say to leave the line out or word it differently, do "
+                "that.")
 
     def _build_session_env_block(self) -> str:
         """Build a CLI-style environment summary for the system prompt.
@@ -1684,6 +1727,7 @@ class PromptLoader:
         permission_mode: str = "",
         conversation_text: str = "",
         session_language: str = "",
+        session_id: str = "",
     ) -> list[PromptSection]:
         """Compose the system prompt as an ORDERED list of labelled sections.
 
@@ -1875,7 +1919,8 @@ class PromptLoader:
 
             # Episodic recall — compact records of similar past sessions, so
             # previously write-only session state becomes answerable.
-            episode_ctx = self._load_episode_recall_context(task_text)
+            episode_ctx = self._load_episode_recall_context(
+                task_text, session_id)
             if episode_ctx and not self._should_skip_section(
                     "memory", role_id):
                 add("episodes", self.LAYER_VOLATILE,
@@ -1889,6 +1934,12 @@ class PromptLoader:
             env_block = self._build_session_env_block()
             add("session_env", self.LAYER_VOLATILE,
                 f"--- Session Environment ---\n{env_block}" if env_block else "")
+
+            # Who wrote a commit, named the way Claude Code names itself:
+            # the agent and the model behind it, so a history read later
+            # says which model made which change.
+            add("commit_attribution", self.LAYER_VOLATILE,
+                self._commit_attribution_block(model))
 
             # What this workspace ships that is not in force. Before the
             # live state, because it is stable for as long as the trust is
@@ -2190,7 +2241,8 @@ class PromptLoader:
 
             # Episodic recall — same bridge as solo, small by construction
             # (<=2 entries / 1200 chars).
-            episode_ctx = self._load_episode_recall_context(task_text)
+            episode_ctx = self._load_episode_recall_context(
+                task_text, session_id)
             if episode_ctx and not self._should_skip_section(
                     "memory", role_id):
                 add("episodes", self.LAYER_VOLATILE,
@@ -2270,6 +2322,7 @@ class PromptLoader:
         permission_mode: str = "",
         conversation_text: str = "",
         session_language: str = "",
+        session_id: str = "",
     ) -> str:
         """Compose the full system prompt for a given role.
 
@@ -2314,6 +2367,7 @@ class PromptLoader:
             permission_mode=permission_mode,
             conversation_text=conversation_text,
             session_language=session_language,
+            session_id=session_id,
         )
         return "\n\n".join(s.content for s in sections)
 

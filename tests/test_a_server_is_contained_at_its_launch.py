@@ -126,6 +126,56 @@ def test_an_interpreter_under_home_is_still_reachable(tmp_path):
     assert str((home / ".venv").resolve()) in _argv_pairs(argv, "--ro-bind")
 
 
+def test_a_venv_linked_to_an_interpreter_elsewhere_is_reachable(tmp_path):
+    """A venv's python links to the interpreter it was made from -- on
+    bwUniCluster a module outside $HOME. Binding only the link's target left
+    the venv under the emptied home, and bwrap could not exec it."""
+    home = tmp_path / "home"
+    venv_bin = home / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    module_bin = tmp_path / "software" / "python-3.11" / "bin"
+    module_bin.mkdir(parents=True)
+    real = module_bin / "python3.11"
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o755)
+    (venv_bin / "python").symlink_to(real)
+
+    argv = mcp_isolation.bwrap_argv(
+        str(venv_bin / "python"), ["-m", "server"],
+        mcp_isolation.parse_isolation({"roots": [str(tmp_path)]}), home=home)
+    binds = _argv_pairs(argv, "--ro-bind")
+    assert str(home / ".venv") in binds
+    assert str((tmp_path / "software" / "python-3.11").resolve()) in binds
+
+
+def test_a_link_outside_the_binds_is_recreated_inside(tmp_path):
+    """bwUniCluster: .venv/bin/python -> /opt/bwhpc/.../python3, /opt/bwhpc
+    -> /software/bwhpc, /software -> /pfs/data6/software_uc3. The kernel
+    follows the path as written, so a link nobody bound breaks the chain even
+    when the interpreter's own directory is bound."""
+    home = tmp_path / "home"
+    venv_bin = home / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    real_bin = tmp_path / "pfs" / "software_uc3" / "python" / "bin"
+    real_bin.mkdir(parents=True)
+    real = real_bin / "python3"
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o755)
+    software = tmp_path / "software"
+    software.symlink_to(tmp_path / "pfs" / "software_uc3")
+    (venv_bin / "python").symlink_to(software / "python" / "bin" / "python3")
+
+    argv = mcp_isolation.bwrap_argv(
+        str(venv_bin / "python"), [],
+        mcp_isolation.parse_isolation({"roots": [str(tmp_path / "project")]}),
+        home=home)
+    links = [(argv[i + 1], argv[i + 2]) for i, tok in enumerate(argv)
+             if tok == "--symlink"]
+    assert (str(tmp_path / "pfs" / "software_uc3"), str(software)) in links
+    # The venv's own link is inside the bound venv and already exists there.
+    assert all(link != str(venv_bin / "python") for _t, link in links)
+
+
 # ---------------------------------------------------- the launch decision
 
 

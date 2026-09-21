@@ -33,7 +33,7 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 
 _DEFAULT_TIMEOUT_S = 300
@@ -49,13 +49,46 @@ def _has_json_report() -> bool:
         return False
 
 
-def _tail(text: str, n: int = _TAIL_LINES) -> str:
+def _tail(text, n: int = _TAIL_LINES) -> str:
     if not text:
         return ""
+    # subprocess.TimeoutExpired carries bytes even with text=True; joining
+    # them crashed the timeout path ("sequence item 0: expected str
+    # instance, bytes found", driven 2026-09-16) and hid the timeout.
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
     lines = text.splitlines()
     if len(lines) <= n:
         return text
     return "...\n" + "\n".join(lines[-n:])
+
+
+def split_target(target: str, workspace) -> list[str]:
+    """The pytest arguments a ``target`` string stands for.
+
+    One path or node id stays one argument -- a node id can hold spaces in
+    its parameter brackets. Several space-separated paths become several
+    arguments when every one of them names something in the workspace:
+    "tests/a.py tests/b.py" reached pytest as a single missing path, exit
+    code 4, reported as a failed run (driven 2026-09-16).
+    """
+    import shlex
+    text = str(target or "").strip()
+    if not text:
+        return []
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        return [text]
+    if len(tokens) < 2:
+        return [text]
+    base = Path(str(workspace))
+    for tok in tokens:
+        head = tok.split("::", 1)[0]
+        cand = Path(head) if Path(head).is_absolute() else base / head
+        if not cand.exists():
+            return [text]
+    return tokens
 
 
 def _parse_json_report(path: Path) -> dict[str, Any]:
@@ -157,7 +190,10 @@ def run_tests(
     target: str = "",
     pytest_args: list[str] | None = None,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
+    should_stop=None,
     python: str = "",
+    env: Optional[dict] = None,
+    wrap: Optional[Callable[[list[str], Path], list[str]]] = None,
 ) -> dict[str, Any]:
     """Run pytest on ``target`` (relative to ``workspace``) and return JSON.
 
@@ -173,6 +209,13 @@ def run_tests(
         Wall-clock cap. Hitting it returns ``status='timeout'``.
     python : str
         Python interpreter to use. Default = ``sys.executable``.
+    env : dict, optional
+        The child's environment. The agent passes the shell's scrubbed
+        environment: a test file the agent wrote is code the agent runs.
+    wrap : callable, optional
+        ``wrap(argv, report_dir) -> argv``: runs pytest inside the same
+        cage as the agent's shell. ``report_dir`` must stay reachable
+        from inside it, since the report is read back from there.
     """
     import sys
     workspace = Path(workspace).expanduser().resolve()
@@ -194,7 +237,7 @@ def run_tests(
     report_path = tmpdir / ("report.json" if use_json else "report.xml")
     cmd = [py, "-m", "pytest"]
     if target:
-        cmd.append(target)
+        cmd.extend(split_target(target, workspace))
     if pytest_args:
         cmd.extend(pytest_args)
     if use_json:
@@ -206,18 +249,44 @@ def run_tests(
 
     t0 = time.monotonic()
     try:
-        proc = subprocess.run(
-            cmd, cwd=str(workspace),
-            capture_output=True, text=True,
+        from . import contained_run as _contained
+        proc = _contained.run(
+            wrap(cmd, tmpdir) if wrap is not None else cmd,
+            cwd=str(workspace),
             timeout=max(5, timeout_s),
+            env=env,
+            should_stop=should_stop,
         )
+        if proc.returncode == _contained.STOPPED_RETURNCODE:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return {
+                "status": "stopped",
+                "framework": "pytest",
+                "elapsed_s": round(time.monotonic() - t0, 2),
+                "raw_stdout_tail": _tail(proc.stdout or ""),
+                "raw_stderr_tail": _tail(proc.stderr or ""),
+                "note": ("the run was ended on request before it finished; "
+                         "nothing about the suite's state follows from this"),
+            }
     except subprocess.TimeoutExpired as exc:
+        shutil.rmtree(tmpdir, ignore_errors=True)
         return {
             "status": "timeout",
             "framework": "pytest",
             "elapsed_s": round(time.monotonic() - t0, 2),
             "raw_stdout_tail": _tail(exc.stdout or ""),
             "raw_stderr_tail": _tail(exc.stderr or ""),
+            # A whole suite can run far longer than a turn should wait,
+            # and this tool only runs synchronously: a session waited
+            # 1500 seconds for a run it could have started and come back
+            # to (2026-09-17). Say the way that exists.
+            "note": ("the run was cut off, not finished — nothing about the "
+                     "suite follows from this. A run this long belongs in "
+                     "the background: start it with bash_background "
+                     "(`python -m pytest -q …`), then bash_status(job_id, "
+                     "wait_seconds=300) waits for it and bash_output reads "
+                     "the result. A finished background job wakes the "
+                     "session by itself."),
         }
     except FileNotFoundError as exc:
         return {
@@ -244,7 +313,15 @@ def run_tests(
 
     summary = parsed.get("summary") or {}
     status = "ok"
-    if proc.returncode == 0:
+    if proc.returncode in (4, 5):
+        # 4 = usage error (a path pytest could not find), 5 = no tests
+        # collected. Neither ran a test; "failed" told the agent its tests
+        # were red while the same files passed from bash (2026-09-16).
+        status = "error"
+        parsed.setdefault("_parse_error", (
+            "pytest usage error: a target was not found"
+            if proc.returncode == 4 else "no tests were collected"))
+    elif proc.returncode == 0:
         status = "ok"
     elif summary.get("failed", 0) or summary.get("errors", 0):
         status = "failed"

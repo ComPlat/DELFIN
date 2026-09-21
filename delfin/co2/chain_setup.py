@@ -161,6 +161,10 @@ _CO2_DEFAULTS = {
 # priority and avoids ambiguity for keys that also mean something in
 # the main DELFIN pipeline.
 #
+# "multiplicity" itself stays out — it is set dynamically per species;
+# an explicit "co2_multiplicity" override is handled in
+# setup_co2_from_delfin AFTER spin detection.
+#
 # The base list is every CO2 default key PLUS the level-of-theory
 # fields the main CONTROL.txt already owns. Charge / multiplicity /
 # broken_sym stay out because they are set dynamically per species.
@@ -312,6 +316,19 @@ def setup_co2_from_delfin(job_dir: str | Path, species_delta: int) -> Path:
             f"Could not determine multiplicity for species delta={species_delta} "
             f"({species_name}) in {job_dir}"
         )
+
+    # Explicit override from the main CONTROL.txt wins over the detected
+    # spin. Prefixed key only (co2_multiplicity=...): a plain "multiplicity"
+    # in the main CONTROL.txt describes the base species and must NOT leak
+    # into every redox species' CO2 coordinator CONTROL.
+    override_mult = delfin_ctrl.get("co2_multiplicity", "").strip()
+    if override_mult:
+        try:
+            mult = int(override_mult)
+            source = "CONTROL.txt (co2_multiplicity override)"
+        except ValueError:
+            print(f"[CO2 chain] WARN: co2_multiplicity={override_mult!r} is not an "
+                  f"int — ignoring override, keeping detected multiplicity {mult}")
 
     bs = bs or ""
     broken_sym = f"%scf BrokenSym {bs} end" if bs else ""

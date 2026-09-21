@@ -68,12 +68,14 @@ checked. They are 0600, so the content stays private to the owner.)
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import json
 import os
 import re
 import secrets
 import signal
+import stat as _stat
 import subprocess
 import tempfile
 import threading
@@ -229,6 +231,15 @@ _OUTPUT_HEAD_DEFAULT = 60            # lines kept from head
 _OUTPUT_TAIL_DEFAULT = 200           # lines kept from tail
 _KILL_GRACE_S = 3.0                  # SIGTERM → SIGKILL gap
 
+
+def _signal_name(num: int) -> str:
+    """"SIGKILL" for 9, and the number back when the platform has no name
+    for it. Never raises: this decorates an error path."""
+    try:
+        return signal.Signals(int(num)).name
+    except (ValueError, TypeError):
+        return f"signal {num}"
+
 # --- Persistent registry (crash-safe re-attach + completion events) ------
 _REGISTRY_DIRNAME = ".delfin"        # per-workspace state directory
 _REGISTRY_FILENAME = "bash_jobs.json"
@@ -327,6 +338,22 @@ class BashJob:
             "stdout_path": str(self.stdout_path),
             "stderr_path": str(self.stderr_path),
         }
+        if rc is not None and rc < 0:
+            # A negative code is POSIX shorthand for "killed by signal
+            # |rc|", not a status the command chose. Left as a bare -9 it
+            # is read as an ordinary failure of the work: a session spent
+            # a turn reasoning its way to "something killed it" and still
+            # filed the conclusion as a guess (2026-09-18, two full test
+            # suites killed on a shared login node).
+            status["killed_by_signal"] = -rc
+            status["signal_name"] = _signal_name(-rc)
+            status["note"] = (
+                f"killed by {_signal_name(-rc)} ({-rc}) — this is not the "
+                "command's own exit status and says nothing about its "
+                "work. Something outside it ended it: out of memory, a "
+                "node or scheduler watchdog on a shared machine, or a "
+                "kill from elsewhere. Check the log for where it stops "
+                "and the machine for why before changing the command.")
         if rc is not None and self.children_running():
             status["children_running"] = True
             status["note"] = (
@@ -372,6 +399,8 @@ def cross_process_lock(path: Path):
     :func:`take_lock_timeouts`.
     """
     handle = None
+    lease = None
+    lock_path = None
     try:
         lock_path = Path(str(path) + _LOCK_SUFFIX)
         # A state path is absolute or it is not a state path. A relative
@@ -385,19 +414,29 @@ def cross_process_lock(path: Path):
             yield
             return
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(lock_path, "a+")
         deadline = time.monotonic() + _LOCK_TIMEOUT_S
+        handle = open(lock_path, "a+")
         while True:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except OSError:
+            except OSError as exc:
+                if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                    # The filesystem does not do flock: the lease alone.
+                    handle.close()
+                    handle = None
+                    break
                 if time.monotonic() >= deadline:
                     _note_lock_timeout(lock_path)
                     handle.close()
                     handle = None
+                    deadline = None
                     break
                 time.sleep(0.005)
+        if deadline is not None:
+            lease = _take_lease(Path(str(path) + _LEASE_SUFFIX), deadline)
+            if lease is None:
+                _note_lock_timeout(lock_path)
     except Exception:
         if handle is not None:
             try:
@@ -408,6 +447,8 @@ def cross_process_lock(path: Path):
     try:
         yield
     finally:
+        if lease is not None:
+            _release_lease(lease)
         if handle is not None:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -417,6 +458,103 @@ def cross_process_lock(path: Path):
                 handle.close()
             except OSError:
                 pass
+
+
+_LEASE_SUFFIX = ".lease"
+#: A lease older than this is broken whoever holds it. The cycles it guards
+#: load, change and write one JSON file; half a minute also absorbs the
+#: clock difference between login nodes.
+_LEASE_S = 30.0
+
+
+def _lease_is_stale(lease_path: Path) -> tuple[bool, str]:
+    """(stale, nonce) of the lease on disk."""
+    try:
+        raw = lease_path.read_text(encoding="utf-8")
+        mtime = lease_path.stat().st_mtime
+    except OSError:
+        # Gone: released a moment ago. Not "stale" -- breaking now would
+        # rename the lease somebody else creates next. Just try again.
+        return False, ""
+    try:
+        info = json.loads(raw)
+    except ValueError:
+        # Being written this instant, or torn: judged by its age alone, and
+        # broken only against that same content (see _break_lease).
+        return (time.time() - mtime) > _LEASE_S, "torn:" + raw
+    nonce = str(info.get("nonce") or "")
+    if time.time() - float(info.get("ts") or 0) > _LEASE_S and time.time() - mtime > _LEASE_S:
+        return True, nonce
+    here = this_machine()
+    if (str(info.get("host") or "") == here["host"]):
+        if info.get("boot") and here["boot_id"] and info.get("boot") != here["boot_id"]:
+            return True, nonce              # this machine restarted since
+        if not _pid_alive(int(info.get("pid") or 0)):
+            return True, nonce
+    return False, nonce
+
+
+def _take_lease(lease_path: Path, deadline: float):
+    here = this_machine()
+    nonce = secrets.token_hex(8)
+    body = json.dumps({"host": here["host"], "boot": here["boot_id"],
+                       "pid": os.getpid(), "ts": time.time(), "nonce": nonce})
+    while True:
+        try:
+            fd = os.open(lease_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, body.encode("utf-8"))
+            finally:
+                os.close(fd)
+            return (lease_path, nonce)
+        except FileExistsError:
+            stale, stale_nonce = _lease_is_stale(lease_path)
+            if stale:
+                _break_lease(lease_path, stale_nonce)
+                continue
+        except OSError:
+            return None
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.005)
+
+
+def _break_lease(lease_path: Path, judged_nonce: str) -> None:
+    """Remove a stale lease without removing a fresh one that replaced it
+    between the judgement and the removal."""
+    aside = lease_path.with_name(f"{lease_path.name}.broken-{secrets.token_hex(4)}")
+    try:
+        os.rename(lease_path, aside)
+    except OSError:
+        return
+    try:
+        raw = aside.read_text(encoding="utf-8")
+    except OSError:
+        raw = None
+    try:
+        taken = "torn:" + raw if judged_nonce.startswith("torn:") else \
+            str(json.loads(raw or "{}").get("nonce") or "")
+    except ValueError:
+        taken = "torn:" + (raw or "")
+    if raw is None or taken != judged_nonce:
+        try:
+            os.link(aside, lease_path)          # put the fresh one back
+        except OSError:
+            pass
+    try:
+        aside.unlink()
+    except OSError:
+        pass
+
+
+def _release_lease(lease) -> None:
+    lease_path, nonce = lease
+    try:
+        info = json.loads(lease_path.read_text(encoding="utf-8"))
+        if str(info.get("nonce") or "") == nonce:
+            lease_path.unlink()
+    except (OSError, ValueError):
+        pass
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
@@ -474,6 +612,33 @@ def _base_child_env() -> dict:
         return os.environ.copy()
 
 
+_OWN_OUTPUT_NAME = re.compile(r"^kit_bg_[A-Za-z0-9_-]+\.(?:stdout|stderr)$")
+
+
+def is_own_output_file(path) -> bool:
+    """Whether ``path`` is an output file this module created for a job.
+
+    The registry lives in ``<workspace>/.delfin/bash_jobs.json``, inside
+    the folder the agent may write. A record written there named any file
+    as a job's output: the next completion notice put the last 500
+    characters of it into the model's context (an SSH key, past every
+    read gate), and pruning an old record deleted it (review 2026-09-16).
+    So a path from a record is used only when it looks like what
+    ``start`` creates: a ``kit_bg_*.stdout``/``.stderr`` name, a regular
+    file that is no symlink and has no second hard link, owned by this
+    user. Never raises.
+    """
+    try:
+        raw = str(path or "")
+        if not raw or not _OWN_OUTPUT_NAME.match(os.path.basename(raw)):
+            return False
+        st = os.lstat(raw)
+        return (_stat.S_ISREG(st.st_mode) and st.st_nlink == 1
+                and st.st_uid == os.getuid())
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def _unlink_job_outputs(rec: dict) -> None:
     """Remove a finished job's stdout/stderr tempfiles.
 
@@ -484,7 +649,7 @@ def _unlink_job_outputs(rec: dict) -> None:
     """
     for key in ("stdout_path", "stderr_path"):
         raw = (rec or {}).get(key)
-        if not raw:
+        if not raw or not is_own_output_file(raw):
             continue
         try:
             Path(str(raw)).unlink()
@@ -513,10 +678,60 @@ def _record_deadline(rec: dict) -> float:
     return started + min(timeout_s, float(_DEFAULT_BG_TIMEOUT_S))
 
 
+_MACHINE: Optional[dict] = None
+
+
+def this_machine() -> dict:
+    """``{"host": ..., "boot_id": ...}`` of the machine this process runs on.
+
+    Login nodes share the home directory, and with it every registry file.
+    A pid means something only on the machine, and in the boot, that
+    issued it."""
+    global _MACHINE
+    if _MACHINE is None:
+        import socket
+        try:
+            host = (socket.gethostname() or "").strip()
+        except Exception:
+            host = ""
+        try:
+            boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        except Exception:
+            boot = ""
+        _MACHINE = {"host": host, "boot_id": boot}
+    return dict(_MACHINE)
+
+
+def record_runs_elsewhere(rec: dict) -> bool:
+    """Whether a record's process runs on ANOTHER machine.
+
+    Such a process cannot be looked at or signalled from here: its pid
+    names nothing, or a stranger's process, on this machine. A record
+    without a host predates this and is judged as local."""
+    host = str((rec or {}).get("host") or "")
+    return bool(host) and host != this_machine()["host"]
+
+
+def _record_from_an_earlier_boot(rec: dict) -> bool:
+    """Same machine, but it has restarted since: the process is gone."""
+    boot = str((rec or {}).get("boot_id") or "")
+    here = this_machine()["boot_id"]
+    return (bool(boot) and bool(here) and boot != here
+            and not record_runs_elsewhere(rec))
+
+
 def _record_alive(rec: dict) -> bool:
-    """Is the process behind this record still running?"""
+    """Is the process behind this record still running?
+
+    For a job on another login node this cannot be checked; it counts as
+    running until its wall-clock cap, so nothing here declares it finished
+    or deletes the directory it works in."""
     try:
         if (rec or {}).get("finished_at") is not None:
+            return False
+        if record_runs_elsewhere(rec):
+            return time.time() < _record_deadline(rec)
+        if _record_from_an_earlier_boot(rec):
             return False
         return _pid_alive(int((rec or {}).get("pid") or 0),
                           (rec or {}).get("proc_start_ticks"))
@@ -540,6 +755,8 @@ def _record_holds_the_node(rec: dict, live_pgids: Optional[set] = None,
     optimisation for callers judging many records; ``None`` falls back to
     a per-record probe.
     """
+    if record_runs_elsewhere(rec) or _record_from_an_earlier_boot(rec):
+        return False            # another machine's cores, or none at all
     if _record_alive(rec):
         return True
     pid = int((rec or {}).get("pid") or 0)
@@ -587,6 +804,10 @@ def _enforce_deadline(rec: dict, now: float) -> bool:
     the record was changed. Best-effort — a process we may not signal (a
     different user's recycled pid) is simply left alone.
     """
+    if record_runs_elsewhere(rec):
+        # Never signal a pid from another machine: here it is nothing, or a
+        # stranger's process that happens to carry the same number.
+        return False
     if not _record_alive(rec):
         return False
     if now < _record_deadline(rec):
@@ -747,6 +968,8 @@ _SBATCH_SUBMITTED_RE = re.compile(r"Submitted batch job\s+(\d+)")
 
 def _submitted_slurm_ids(stdout_path: str | Path) -> list[str]:
     """SLURM job ids a finished background command submitted, from its output."""
+    if not is_own_output_file(stdout_path):
+        return []
     try:
         text = Path(stdout_path).read_text(encoding="utf-8", errors="replace")
     except Exception:
@@ -776,12 +999,16 @@ def _watch_submitted_jobs(workspace: str | Path, rec: dict) -> list[str]:
     except Exception:
         return []
     watched: list[str] = []
+    # The shell's session owns what the shell submitted; without it the
+    # watch belonged to no session and its result reached none.
+    sid = str((rec or {}).get("session_id") or "")
     for jid in ids:
         try:
             register_agent_job(
                 workspace, jid,
                 description="submitted by background job "
-                            f"{(rec or {}).get('job_id') or '?'}")
+                            f"{(rec or {}).get('job_id') or '?'}",
+                **({"extra": {"session_id": sid}} if sid else {}))
             watched.append(jid)
         except Exception:
             continue
@@ -863,8 +1090,13 @@ class ReattachedJob:
         self.proc = _ReattachedProc(int(record.get("pid") or 0), self.exit_code)
 
     def poll(self) -> Optional[int]:
+        if self.finished_at is None and record_runs_elsewhere(self._record):
+            # Runs on another login node: reported as running until its
+            # wall-clock cap, never finished or signalled from here.
+            return None if time.time() < self.deadline_at else _RC_UNKNOWN
         if self.finished_at is None:
-            if _pid_alive(self.proc.pid, self._start_ticks):
+            if _pid_alive(self.proc.pid, self._start_ticks) and \
+                    not _record_from_an_earlier_boot(self._record):
                 # Re-arm the wall-clock bound the restart lost: the watchdog
                 # that would have enforced it died with its process, and the
                 # setsid child did not.
@@ -962,7 +1194,13 @@ class _Registry:
         timeout_s: int = _DEFAULT_BG_TIMEOUT_S,
         env: Optional[dict] = None,
         workspace: str | Path | None = None,
+        session_id: str = "",
+        argv: Optional[list[str]] = None,
     ) -> BashJob:
+        """Start ``command``. ``argv`` is what actually runs, when the caller
+        wraps the command -- the agent's shell tool puts it in the process
+        cage (``api_client._bash_isolation_argv``); ``command`` stays what
+        the job is known, capped and shown by."""
         if not command.strip():
             raise ValueError("command must be non-empty")
         if timeout_s <= 0:
@@ -1017,7 +1255,7 @@ class _Registry:
             run_env.update(env)
 
         proc = subprocess.Popen(
-            ["/bin/bash", "-c", command],
+            list(argv) if argv else ["/bin/bash", "-c", command],
             cwd=cwd,
             env=run_env,
             stdout=sout,
@@ -1042,6 +1280,14 @@ class _Registry:
                 timeout_s=timeout_s,
             )
             self._jobs[jid] = job
+            job.session_id = session_id
+        # Its own session keeps a restart from taking it down; the lifeline
+        # ledger is what still ends it with delfin-voila's terminal.
+        try:
+            from . import lifeline as _lifeline
+            _lifeline.record_child(proc.pid, "shell")
+        except Exception:
+            pass
 
         # Persist the job BEFORE the watchdog starts, so its exit update can
         # never race the initial write. After a restart this record is the
@@ -1053,6 +1299,7 @@ class _Registry:
             "job_id": jid,
             "pid": proc.pid,
             "proc_start_ticks": _proc_start_ticks(proc.pid),
+            **this_machine(),
             "command": command,
             "description": description,
             "cwd": cwd,
@@ -1068,6 +1315,9 @@ class _Registry:
             "exit_code": None,
             "finished_at": None,
             "acknowledged": False,
+            # The conversation that started it: several sessions can share
+            # a workspace, and each lists and stops only its own shells.
+            **({"session_id": session_id} if session_id else {}),
         })
         _note_job_workspace(jid, ws)
 
@@ -1150,10 +1400,37 @@ class _Registry:
             jobs = [j for j in jobs if j.poll() is None]
         return jobs
 
+    def stop_running(self, session_id: Optional[str] = None) -> list[str]:
+        """Terminate the running jobs this process started -- all of them, or
+        those of ``session_id``. Returns the ids that were stopped.
+
+        A background shell runs in a session of its own so a restart cannot
+        take it down; that is also why nothing ended it when its dashboard
+        session closed. A closed session and an ending dashboard kernel stop
+        their shells here.
+        """
+        stopped: list[str] = []
+        for job in self.list_jobs(include_finished=False):
+            if session_id is not None and getattr(job, "session_id", "") != session_id:
+                continue
+            try:
+                ok, _message = self.kill(job.job_id)
+            except Exception:
+                ok = False
+            if ok:
+                stopped.append(job.job_id)
+        return stopped
+
     def kill(self, job_id: str, *, sig: int = signal.SIGTERM) -> tuple[bool, str]:
         job = self.get(job_id)
         if job is None:
             return False, f"unknown job_id: {job_id}"
+        rec = getattr(job, "_record", None)
+        if isinstance(rec, dict) and record_runs_elsewhere(rec):
+            return False, (
+                f"job {job_id} runs on {rec.get('host')}, not on this machine "
+                f"({this_machine()['host']}); end it from a session there. "
+                "Its pid means nothing here.")
         if job.poll() is not None:
             return True, f"job already finished (rc={job.proc.returncode})"
         try:
@@ -1191,6 +1468,8 @@ def get_registry() -> _Registry:
 
 def _tail_chars(path: str | Path, limit: int = _EVENT_TAIL_CHARS) -> str:
     """Last ``limit`` characters of a job output file, best-effort."""
+    if not is_own_output_file(path):
+        return ""
     try:
         p = Path(path)
         size = p.stat().st_size
@@ -1239,6 +1518,11 @@ def drain_finished_events(workspace: str | Path) -> list[dict]:
             changed = _prune_old_records(jobs, now)
             for jid, rec in jobs.items():
                 if rec.get("acknowledged"):
+                    continue
+                if record_runs_elsewhere(rec):
+                    # Its own machine reports its end; from here it could
+                    # only be guessed, and a guess would announce a running
+                    # calculation as finished.
                     continue
                 claimed_at = float(rec.get("claimed_at") or 0.0)
                 if claimed_at and (now - claimed_at) < _EVENT_CLAIM_GRACE_S:
@@ -1500,6 +1784,8 @@ def read_output(
 
 
 def _read_lines(path: Path) -> list[str]:
+    if not is_own_output_file(path):
+        return []
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             return fh.read().splitlines()

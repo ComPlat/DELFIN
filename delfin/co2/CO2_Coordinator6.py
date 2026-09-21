@@ -101,6 +101,16 @@ place_samples=800
 place_clearance_scale=1.0
 no_place_co2=false
 
+# Adduct flow (automatic coordination chain; see delfin/co2/adduct_flow.py)
+# adduct_flow=true: after placement, run the adduct chain (optional GFN2-xTB
+# preopt -> coordination test -> OCCUPIER job preparation) and exit.
+# run_xtb gates the xTB pre-optimization (default off: no ORCA/xTB executed).
+adduct_flow=false
+adduct_start_xyz=complex_aligned_with_CO2.xyz
+substrate_atom_index=
+coord_max_dist=3.0
+run_xtb=false
+
 # Resources
 ------------------------------------
 PAL=12
@@ -210,14 +220,19 @@ def _minimal_read_control_file(path="CONTROL.txt"):
 
             params[key] = val
 
-    # Explicit type coercion
+    # Explicit type coercion. Placeholder values like "[CHARGE]" (template
+    # not yet filled) must stay strings — a blank or placeholder value is
+    # skipped so the coordinator does not crash on an unfilled template.
+    def _coercible(value):
+        return isinstance(value, str) and value.strip() and "[" not in value
+
     for key in ["distance", "scan_end", "orientation_distance", "place_clearance_scale",
-                "dissoc_distance"]:
-        if key in params and isinstance(params[key], str):
+                "dissoc_distance", "coord_max_dist"]:
+        if key in params and _coercible(params[key]):
             params[key] = float(params[key])
     for key in ["scan_steps", "charge", "multiplicity", "PAL", "maxcore", "rot_step_deg",
-                "rot_range_deg", "place_samples"]:
-        if key in params and isinstance(params[key], str):
+                "rot_range_deg", "place_samples", "substrate_atom_index"]:
+        if key in params and _coercible(params[key]):
             params[key] = int(params[key])
 
     # Optional: replace /n with a line break
@@ -1655,6 +1670,18 @@ def main():
         qm_separator=qm_separator
     )
     qmmm_range = (0, qm_atom_count - 1) if qm_atom_count is not None else None
+
+    # --- 2b) Adduct flow: automatic coordination chain (optional) ---
+    # When enabled, the flow (optional GFN2-xTB preopt -> coordination test
+    # -> OCCUPIER job preparation) replaces the orientation/distance scans.
+    # The chain reads its own settings from the coordinator CONTROL.txt
+    # (adduct_start_xyz defaults to the placement geometry written above).
+    if _is_enabled(args.get("adduct_flow", False)):
+        from delfin.co2.adduct_flow import run_adduct_flow
+        control_dir = os.path.dirname(os.path.abspath("CONTROL.txt")) or "."
+        result = run_adduct_flow(control_dir, workdir=control_dir)
+        print(f"[INFO] Adduct flow finished with status: {result['status']}")
+        return
 
     # --- 3) Orientation scan at fixed distance (optional) ---
     orientation_flag = args.get("perform_orientation_scan")

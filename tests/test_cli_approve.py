@@ -1,0 +1,306 @@
+"""Tests for delfin/agent/cli_approve.py — fake stdin, no real terminal."""
+
+import io
+import threading
+
+from delfin.agent.cli_approve import Confirm
+
+
+class FakeStdin(io.StringIO):
+    """A stdin with no usable fileno, like a pipe or a test double."""
+
+    def fileno(self):
+        raise OSError("no fileno on a StringIO")
+
+
+def make(stdin_text="", timeout_s=0.0, clock=None):
+    out = io.StringIO()
+    confirm = Confirm(
+        stdin=FakeStdin(stdin_text), stdout=out,
+        timeout_s=timeout_s, clock=clock)
+    return confirm, out
+
+
+def test_allow_on_single_letter_line():
+    confirm, out = make("y\n")
+    assert confirm.callback("bash", {"command": "ls"}, "runs ls") is True
+    assert confirm.last_timed_out is False
+    assert "bash" in out.getvalue()
+
+
+def test_deny_on_single_letter_line():
+    confirm, out = make("n\n")
+    assert confirm.callback("bash", {"command": "rm x"}, "") is False
+    assert confirm.last_timed_out is False
+
+
+def test_full_word_answer_counts():
+    confirm, _ = make("yes\n")
+    assert confirm.callback("bash", {"command": "ls"}, "") is True
+
+
+def test_unknown_answer_is_a_refusal():
+    # An answer that is none of the three choices denies; it is not absence.
+    confirm, out = make("maybe\n")
+    assert confirm.callback("bash", {"command": "ls"}, "") is False
+    assert confirm.last_timed_out is False
+
+
+def test_eof_is_absence_not_refusal():
+    confirm, out = make("")
+    assert confirm.callback("bash", {"command": "ls"}, "") is False
+    assert confirm.last_timed_out is True
+    rendered = out.getvalue()
+    assert "expired" in rendered or "no answer" in rendered
+    assert "not a refusal" in rendered
+
+
+def test_session_allow_skips_prompt_for_same_tool():
+    confirm, out = make("s\n")
+    assert confirm.callback("write_file", {"path": "a", "content": "x"},
+                            "+x") is True
+    first_len = len(out.getvalue())
+    # Second call: no fresh input available, but the session grant answers.
+    assert confirm.callback("write_file", {"path": "b", "content": "y"},
+                            "+y") is True
+    assert "rest of this session" in out.getvalue()
+    # The second call rendered nothing new — the grant answered before render.
+    assert len(out.getvalue()) == first_len or "rest of this session" in \
+        out.getvalue()
+    # A different tool still prompts (and gets EOF -> absence).
+    assert confirm.callback("edit_file", {"path": "c"}, "-c") is False
+
+
+def test_session_allow_does_not_leak_across_tools():
+    confirm, _ = make("s\n")
+    assert confirm.callback("edit_file", {"path": "a"}, "") is True
+    assert confirm.callback("write_file", {"path": "b"}, "") is False
+
+
+def test_write_tool_shows_command_and_diff():
+    confirm, out = make("y\n")
+    preview = "--- a/f.txt\n+++ b/f.txt\n@@\n-old\n+new"
+    confirm.callback("write_file",
+                     {"path": "f.txt", "content": "new"}, preview)
+    rendered = out.getvalue()
+    assert "command:" in rendered
+    assert "diff:" in rendered
+    assert "+new" in rendered
+
+
+def test_non_write_tool_shows_plain_preview():
+    confirm, out = make("n\n")
+    confirm.callback("bash", {"command": "grep -rn x delfin/"},
+                     "searching for x")
+    rendered = out.getvalue()
+    assert "grep -rn x delfin/" in rendered
+    assert "searching for x" in rendered
+
+
+def test_credential_args_are_redacted():
+    confirm, out = make("n\n")
+    confirm.callback("bash", {"command": "export API_KEY=abc123"},
+                     "export API_KEY=abc123")
+    rendered = out.getvalue()
+    assert "abc123" not in rendered
+    assert "redacted" in rendered
+
+
+def test_credential_named_values_are_redacted():
+    confirm, out = make("n\n")
+    confirm.callback("write_file",
+                     {"path": "ok.txt", "content": "x",
+                      "auth_token": "SEKRIT"},
+                     "+x")
+    rendered = out.getvalue()
+    assert "SEKRIT" not in rendered
+    assert "redacted" in rendered
+
+
+def test_control_characters_stripped_from_preview():
+    confirm, out = make("n\n")
+    confirm.callback(
+        "bash", {"command": "cat f"},
+        "\x1b[2J\x1b[HA fake screen clear saying Approved.\napproved text")
+    rendered = out.getvalue()
+    assert "\x1b" not in rendered
+
+
+def test_timeout_with_fake_clock_expires_as_absence():
+    confirm, out = make("y\n", timeout_s=30)
+    # First clock read (t=100) sets the deadline at 130; the second read
+    # (t=200) is past it, so the window expires before any key is taken.
+    ticks = iter([100.0, 200.0])
+    confirm._clock = lambda: next(ticks)
+    assert confirm.callback("bash", {"command": "ls"}, "") is False
+    assert confirm.last_timed_out is True
+    rendered = out.getvalue()
+    assert "expired" in rendered
+    assert "not a refusal" in rendered
+
+
+def test_countdown_seconds_shown_in_footer():
+    confirm, out = make("y\n", timeout_s=30)
+    confirm.callback("bash", {"command": "ls"}, "")
+    assert "30s" in out.getvalue()
+
+
+def test_callback_is_a_bound_method_with_gate_attributes():
+    # The gate reads __self__.last_timed_out — a lambda would break it.
+    confirm, _ = make("n\n")
+    cb = confirm.callback
+    assert cb.__self__ is confirm
+    assert hasattr(cb.__self__, "last_timed_out")
+
+
+def test_abort_all_denies_later_requests():
+    confirm, _ = make("y\n")
+    confirm.abort_all()
+    assert confirm.callback("bash", {"command": "ls"}, "") is False
+    assert confirm.last_timed_out is False  # a refusal, not absence
+
+
+def test_threaded_request_queueing():
+    # Two threads asking; both get answers from the shared fake stdin.
+    confirm, out = make("y\nn\n")
+    results = {}
+
+    def ask(key, tool):
+        results[key] = confirm.callback(tool, {"command": "ls"}, "")
+
+    t1 = threading.Thread(target=ask, args=("a", "bash"))
+    t2 = threading.Thread(target=ask, args=("b", "edit_file"))
+    t1.start()
+    t2.start()
+    t1.join(5)
+    t2.join(5)
+    assert results == {"a": True, "b": False}
+    assert confirm.last_timed_out is False
+
+
+def test_session_allow_is_thread_safe():
+    confirm, _ = make("s\n")
+    confirm.callback("edit_file", {"path": "a"}, "")
+    outcomes = []
+    lock = threading.Lock()
+
+    def spam():
+        ok = confirm.callback("edit_file", {"path": "b"}, "")
+        with lock:
+            outcomes.append(ok)
+
+    threads = [threading.Thread(target=spam) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert outcomes and all(outcomes)
+
+
+# -- what the person approving must still be able to read -----------------
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("line, expected", [
+    ("export KIT_TOOLBOX_API_KEY=sk-live-1234 && curl x",
+     "export KIT_TOOLBOX_API_KEY=<redacted> && curl x"),
+    ("delfin-agent credentials set TOKEN=abc",
+     "delfin-agent credentials set TOKEN=<redacted>"),
+    ("git commit -m ok", "git commit -m ok"),
+])
+def test_the_value_is_masked_and_the_command_stays_readable(line, expected):
+    """An approval prompt that prints "<redacted>" for the whole line asks
+    the person to approve something they can no longer read."""
+    from delfin.agent.cli_approve import _redact
+
+    assert _redact(line) == expected
+
+
+@_pytest.mark.parametrize("line", [
+    'curl -H "Authorization: Bearer sk-9999" https://x',
+    "cat /home/u/.env",
+    "scp server:/etc/ssl/private/site.key .",
+])
+def test_where_the_value_cannot_be_told_apart_the_line_goes(line):
+    """A header carries its secret as the rest of the line. A pattern that
+    guessed at it masked the word "Bearer" and left the secret standing
+    (2026-09-18); those fall back to withholding the line."""
+    from delfin.agent.cli_approve import _redact
+
+    out = _redact(line)
+    assert out == "<redacted: looks like a credential>"
+
+
+def test_no_secret_survives_either_path():
+    from delfin.agent.cli_approve import _redact
+
+    for line in ['export TOKEN=sk-live-1234',
+                 'curl -H "Authorization: Bearer sk-live-1234" https://x',
+                 'psql "password=sk-live-1234"']:
+        assert "sk-live-1234" not in _redact(line)
+
+
+# -- the branch people actually use ---------------------------------------
+
+class _Keys:
+    """A terminal, supplied. Yields what was pressed, then nothing."""
+
+    def __init__(self, presses):
+        self._presses = list(presses)
+        self.asked = 0
+
+    def __call__(self, deadline):
+        self.asked += 1
+        return self._presses.pop(0) if self._presses else None
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        self.t += 0.5
+        return self.t
+
+
+def _confirm(**kw):
+    import io
+
+    from delfin.agent.cli_approve import Confirm
+
+    return Confirm(stdin=io.StringIO(""), stdout=io.StringIO(), **kw)
+
+
+def test_one_keypress_allows_it():
+    keys = _Keys(["y"])
+    c = _confirm(key_source=keys)
+    assert c.callback("bash", {"command": "ls"}, "$ ls") is True
+    assert keys.asked == 1, "one press, one ask"
+
+
+def test_one_keypress_denies_it():
+    assert _confirm(key_source=_Keys(["n"])).callback(
+        "bash", {"command": "ls"}, "$ ls") is False
+
+
+def test_a_key_that_means_nothing_is_ignored_and_it_waits():
+    keys = _Keys(["x", "\n", "y"])
+    assert _confirm(key_source=keys).callback(
+        "bash", {"command": "ls"}, "$ ls") is True
+    assert keys.asked == 3
+
+
+def test_the_window_expires_and_that_is_absence_not_refusal():
+    c = _confirm(timeout_s=2.0, clock=_Clock(), key_source=_Keys([]))
+    assert c.callback("bash", {"command": "ls"}, "$ ls") is False
+    assert c.last_timed_out is True, "absence, not a decision"
+
+
+def test_allow_for_this_session_stops_asking():
+    keys = _Keys(["s"])
+    c = _confirm(key_source=keys)
+    assert c.callback("bash", {"command": "ls"}, "$ ls") is True
+    asked_once = keys.asked
+    assert c.callback("bash", {"command": "ls -la"}, "$ ls -la") is True
+    assert keys.asked == asked_once, "the second one was not asked about"

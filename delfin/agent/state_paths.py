@@ -160,6 +160,37 @@ def write_text(path: Any, text: str, *, encoding: str = "utf-8") -> Path:
     return p
 
 
+def write_text_atomic(path: Any, text: str, *, encoding: str = "utf-8") -> Path:
+    """Write a state file whole: a reader sees the old file or the new one.
+
+    ``write_text`` truncates first and writes second, so a reader racing
+    it -- another dashboard on a login node that shares the home
+    directory, a second session in this one -- can read an empty or torn
+    file. For a registry that is the whole list of open sessions or the
+    presence record other sessions act on, that is the list gone. Temp
+    file beside the target (mkstemp: 0600 from creation), then
+    ``os.replace``, atomic within a directory.
+    """
+    import tempfile
+    p = Path(path)
+    ensure_dir(p.parent)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{p.name}.", suffix=".tmp",
+                                    dir=str(p.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            fh.write(text)
+        secure_file(tmp)
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return p
+
+
 def open_append(path: Any, *, encoding: str = "utf-8"):
     """Open a state file for appending, owner-only from creation.
 
@@ -570,6 +601,21 @@ USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     # ~/.delfin and their next landing page then offered a session that
     # was a test fixture.
     ("delfin.dashboard.session", "RECORD_DIR", "kept_sessions"),
+    # Which agent sessions the session list had open, so the next dashboard
+    # reopens them. A test's list would reopen fixtures in the real one.
+    ("delfin.dashboard.agent_sessions", "_OPEN_SESSIONS_PATH",
+     "agent_open_sessions.json"),
+    # Where each open session works; a test's record would show a fixture
+    # to a real session as another agent in its repository.
+    ("delfin.agent.session_presence", "_DIR", "session_presence"),
+    ("delfin.agent.session_messages", "_DIR", "session_inbox"),
+    # The lifeline ledger: which detached processes a launcher ends when it
+    # stops. A test's ledger in the real home would name the test's pids.
+    ("delfin.agent.lifeline", "_DIR", "lifeline"),
+    # The emergency stop. Every DELFIN process of the user, on every
+    # machine, ends itself when this file names a time after its start: a
+    # test writing it into the real home would end the user's dashboards.
+    ("delfin.agent.stop_all", "_PATH", "stop_all.json"),
     # The benchmark's per-checkout run lock. It lived under tests/fixtures
     # first, where the checkout-leak guard would have caught it, and the
     # move to ~/.delfin brought it into this table's scope instead.
@@ -625,6 +671,11 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
     ("delfin.agent.session_store", "_bundles_path", "bundles"),
     ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
+    # The note that says which node the dashboard runs on, and with which
+    # token. A run that drove the launcher overwrote it with its own pid,
+    # and the launcher's atexit hook then deleted it on the way out --
+    # leaving a dashboard that was still serving with no way back to it.
+    ("delfin.agent.where", "record_path", "dashboard_here.json"),
     ("delfin.agent.change_journal", "_undo_root", "undo"),
     ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
     ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),
@@ -767,7 +818,7 @@ def scratch_state_from_environment(
 __all__ = [
     "DIR_MODE", "FILE_MODE",
     "DEFAULT_RETENTION_DAYS", "DEFAULT_SESSION_RETENTION_DAYS",
-    "StateDir", "ensure_dir", "secure_file", "write_text", "open_append",
+    "StateDir", "ensure_dir", "secure_file", "write_text", "write_text_atomic", "open_append",
     "repair_tree", "prune_old", "state_dirs", "run_startup_maintenance",
     "reset_maintenance_flag",
     "USER_STATE_SINKS", "USER_STATE_RESOLVERS", "PROJECT_LEAVES",
