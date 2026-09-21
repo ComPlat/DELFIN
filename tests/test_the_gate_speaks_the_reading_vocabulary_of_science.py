@@ -105,6 +105,13 @@ COMMAND_SUBSTITUTIONS = [
     "cat `touch y`",           # backticks, same hole
     "seq $(rm -f z) 1 10",     # allowed reader + write payload
     "md5sum <(touch w)",       # process substitution
+    "ls >(touch x)",           # OUTPUT process substitution: bash runs
+    #                           # the payload and wires it to a /dev/fd
+    #                           # path — arbitrary code inside a reader.
+    "echo x > >(sh)",          # redirect INTO a process substitution
+    "cat README.md >(sh)",     # allowed reader + exec payload
+    "wc -l >(id)",             # the payload need not write a file to
+    #                           # be code execution
 ]
 
 
@@ -112,7 +119,10 @@ COMMAND_SUBSTITUTIONS = [
 def test_a_command_substitution_is_not_auto_allowed(cmd, ws):
     """Command substitution runs arbitrary code inside an otherwise
     auto-allowed command. Measured against the unchanged tree first:
-    all four were auto-allowed (gate returned None). The auto-allow
+    all four $( / backtick / <( forms were auto-allowed (gate returned
+    None), and on main 2026-09-21 the four >( forms were free too:
+    ``ls >(touch x)``, ``echo x > >(sh)``, ``cat README.md >(sh)``,
+    ``wc -l >(id)``. The auto-allow
     must not grant a command whose substitution payload the patterns
     never saw. The substitution may still run after an explicit user
     confirm — this pins only the AUTO part."""

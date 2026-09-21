@@ -5111,15 +5111,19 @@ class KitToolPermissions:
 
     def _segment_auto_allowed(self, cmd: str) -> bool:
         # Command substitution ($( … ), `…`) and process substitution
-        # (<( … )) run a command no pattern in the list ever saw. Before
-        # this guard, `ls $(touch x)` was auto-allowed on the strength of
-        # its first word and the payload ran unattended (measured
-        # 2026-09-21, tests/test_the_gate_speaks_the_reading_vocabulary_
-        # of_science.py::test_a_command_substitution_is_not_auto_allowed).
+        # (<( … ) reads, >( … ) writes/executes) run a command no pattern
+        # in the list ever saw. Before this guard, `ls $(touch x)` was
+        # auto-allowed on the strength of its first word and the payload
+        # ran unattended (measured 2026-09-21, tests/test_the_gate_speaks_
+        # the_reading_vocabulary_of_science.py::test_a_command_substitution_
+        # is_not_auto_allowed). The `>(` half (bash runs the payload and
+        # wires it to a /dev/fd path — `echo x > >(sh)` is code
+        # execution) was free until the same date; both halves are one
+        # rule: [<>]\(.
         # Denying the AUTO part is deliberately conservative: arithmetic
         # `$((1+1))` is caught too — it goes to the confirm gate, which
         # is where every unevaluated payload belongs.
-        if _RUNS_SOMETHING_RE.search(cmd) or re.search(r"<\(", cmd):
+        if _RUNS_SOMETHING_RE.search(cmd) or re.search(r"[<>]\(", cmd):
             return False
         for pat in self.bash_auto_allow_patterns:
             if re.search(pat, cmd, re.IGNORECASE):
