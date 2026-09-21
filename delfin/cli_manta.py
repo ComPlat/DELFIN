@@ -368,6 +368,21 @@ _CHAMPION_FLAGS = (
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
 
+# Champion settings that are NOT DELFIN_FFFREE_-prefixed and therefore cannot live in
+# _CHAMPION_FLAGS.  ONE definition for every entry point (CLI and dashboard import it), so the
+# two can never drift apart again -- landing 5 first reached the CLI only.
+# LANDING 5 (2026-09-21, AB:mirrfix6kb): mirror enumeration, one mirror frame per system behind
+# the stereo gate; the stereocentre enumerator no longer counts a mirror frame as a built fold.
+# 6000-pool A/B: never-worse, landing gate open, 1665 affected + 4150 byte-identical,
+# capability 0/0, every loss term 0.
+_CHAMPION_EXTRA_ENV = {
+    "DELFIN_MIRROR_ENUM": "1",
+    "DELFIN_MIRROR_ONE_PER_SYSTEM": "1",
+    "DELFIN_MIRROR_STEREO_GATE": "1",
+    "DELFIN_STEREOCENTER_SKIP_MIRROR": "1",
+}
+
+
 def _apply_construction_env(config: str) -> None:
     """Set the DELFIN_FFFREE_* construction env for the chosen config (before import)."""
     if config == "default":
@@ -379,17 +394,8 @@ def _apply_construction_env(config: str) -> None:
     for f in flags:
         os.environ["DELFIN_FFFREE_" + f] = "1"
     if config == "champion":
-        # LANDING 5 (2026-09-21, AB:mirrfix6kb, register #470): mirror enumeration.  6000-pool
-        # A/B on the 34-flag champion: never-worse, landing gate open, 1665 affected + 4150
-        # byte-identical, capability 0/0, every loss term 0, mean_delta -0.112.  One mirror
-        # frame per system, gated by the stereo gate; the stereocentre enumerator no longer
-        # counts a mirror frame as a built fold (DELFIN_STEREOCENTER_SKIP_MIRROR, the T10 fix).
-        # Not DELFIN_FFFREE_-prefixed, hence set here and not in _CHAMPION_FLAGS.
-        # setdefault: every one of them stays overridable through the environment.
-        os.environ.setdefault("DELFIN_MIRROR_ENUM", "1")
-        os.environ.setdefault("DELFIN_MIRROR_ONE_PER_SYSTEM", "1")
-        os.environ.setdefault("DELFIN_MIRROR_STEREO_GATE", "1")
-        os.environ.setdefault("DELFIN_STEREOCENTER_SKIP_MIRROR", "1")
+        for _k, _v in _CHAMPION_EXTRA_ENV.items():
+            os.environ.setdefault(_k, _v)      # overridable through the environment
 
 
 def _safe_name(label: str, idx: int) -> str:

@@ -791,6 +791,7 @@ def atom_charge_texts(charges, decimals=CHARGE_DECIMALS):
 
 
 from delfin.cli_manta import _CHAMPION_FLAGS as _MANTA_CHAMPION_FLAGS
+from delfin.cli_manta import _CHAMPION_EXTRA_ENV as _MANTA_CHAMPION_EXTRA_ENV
 _MANTA_OPT_TOPN = 10
 _MANTA_OPT_WORKERS = 4
 _MANTA_GIF_DATA_URI_CACHE = None
@@ -834,6 +835,8 @@ def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
         if construction == "champion":
             for _f in _MANTA_CHAMPION_FLAGS:   # de-bloated set (KAPPA4 included; CONF_ENERGY_RANK dropped)
                 env["DELFIN_FFFREE_" + _f] = "1"
+            for _k, _v in _MANTA_CHAMPION_EXTRA_ENV.items():   # non-FFFREE champion settings (mirror enumeration)
+                env.setdefault(_k, _v)
         else:  # builder = lean core + reach
             env["DELFIN_FFFREE_KAPPA4"] = "1"
             env["DELFIN_FFFREE_SIGMA_ENSEMBLE"] = "1"
