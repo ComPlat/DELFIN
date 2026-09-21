@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 
@@ -230,6 +231,42 @@ SHELL_FILES: tuple[str, ...] = (
 )
 
 
+def _sets(name: str, line: str) -> bool:
+    """Whether *line* sets or exports *name* -- not merely reads it.
+
+    ``OPENAI_API_KEY=$KIT_TOOLBOX_API_KEY`` names the second key and sets
+    only the first. Taking every line that held the name and an ``=``
+    anywhere for an export commented out an alias that read the key from
+    a 0600 file (2026-09-20).
+    """
+    n = re.escape(name)
+    return bool(
+        re.search(rf"(?<![\w${{]){n}=", line)
+        or re.search(rf"\b(?:export|declare\s+-\w*x\w*|typeset\s+-\w*x\w*)"
+                     rf"\s+(?:[^\s;&|]+\s+)*{n}\b", line)
+        or re.search(rf"\bsetenv\s+{n}\b", line)
+        or re.search(rf"^\s*{n}\s+(?:DEFAULT|OVERRIDE)=", line))
+
+
+def _written_value(name: str, line: str) -> str:
+    """The value *line* writes for *name*, as it stands in the file.
+
+    Empty when there is none to find there: a bare ``export NAME``, an
+    empty value, or one that is a ``$REFERENCE`` or a command -- those put
+    no key into the file, whoever can read it.
+    """
+    n = re.escape(name)
+    m = (re.search(rf"(?<![\w${{]){n}=(\S*)", line)
+         or re.search(rf"\bsetenv\s+{n}\s+(\S+)", line)
+         or re.search(rf"^\s*{n}\s+(?:DEFAULT|OVERRIDE)=(\S*)", line))
+    if not m:
+        return ""
+    value = m.group(1).lstrip("'\"")
+    if not value or value.startswith(("$", "`")):
+        return ""
+    return value
+
+
 def exported_in_shell_files(name: str, *, home: Path | None = None
                             ) -> list[tuple[Path, int, str]]:
     """Every (file, line number, line) that exports ``name``.
@@ -260,7 +297,7 @@ def exported_in_shell_files(name: str, *, home: Path | None = None
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            if name in stripped and ("export" in stripped or "=" in stripped):
+            if name in stripped and _sets(name, stripped):
                 found.append((path, number, line))
     return found
 
@@ -293,7 +330,9 @@ def keys_in_readable_shell_files(
     """
     rows: list[dict] = []
     for name in (tuple(names) or _WELL_KNOWN_KEYS):
-        for path, number, _line in exported_in_shell_files(name, home=home):
+        for path, number, line in exported_in_shell_files(name, home=home):
+            if not _written_value(name, line):
+                continue
             try:
                 mode = path.stat().st_mode & 0o777
             except OSError:
@@ -329,6 +368,12 @@ def comment_out_exports(name: str, *, home: Path | None = None,
     """
     done: list[dict] = []
     for path, number, line in exported_in_shell_files(name, home=home):
+        # An alias sets a variable for one command and exports nothing
+        # into the shell, so commenting it out stops no export -- it only
+        # breaks the alias. A key written in one is reported by
+        # keys_in_readable_shell_files instead, and never edited.
+        if line.lstrip().startswith("alias "):
+            continue
         try:
             text = path.read_text(encoding="utf-8")
             lines = text.splitlines(keepends=True)
