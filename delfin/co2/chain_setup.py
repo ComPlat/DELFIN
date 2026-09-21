@@ -147,9 +147,12 @@ _CO2_DEFAULTS = {
     "max_workers": "4",
     # Inverse RSS (dissociation scan) — empty/False keeps the classic inward scan
     "binding": "",
+    "adduct_source": "xyz",
+    "manta_smiles": "",
     "adduct_xyz": "",
     "scan_dissoc": "false",
     "dissoc_distance": "6.0",
+    "run_occupier_on_adduct": "false",
     "substrate_atom_index": "",
 }
 
@@ -248,7 +251,8 @@ def _build_co2_control(
         ]),
         ("# Relaxed Distance Scan", ["scan_end", "scan_steps"]),
         ("# Inverse RSS (dissociation scan)", [
-            "binding", "adduct_xyz", "scan_dissoc", "dissoc_distance",
+            "binding", "adduct_source", "manta_smiles", "adduct_xyz",
+            "scan_dissoc", "dissoc_distance", "run_occupier_on_adduct",
             "substrate_atom_index",
         ]),
         ("# Alignment (0-based indices)", ["metal", "metal_index", "align_bond_index", "neighbors"]),

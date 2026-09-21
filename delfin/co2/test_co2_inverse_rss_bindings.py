@@ -257,3 +257,136 @@ def test_main_inverse_rss_writes_scan_input_from_adduct(tmp_path, monkeypatch):
     assert captured["steps"] == 20
     assert captured["metal"] == 0
     assert captured["c"] == 1
+
+
+# ---------------------------------------------------------------------------
+# MANTA -> OCCUPIER -> inverse RSS (#112)
+# ---------------------------------------------------------------------------
+
+def test_main_rejects_manta_source_without_smiles(tmp_path, monkeypatch):
+    """adduct_source=manta without manta_smiles must fail loudly."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mod, "_minimal_read_control_file",
+                        lambda: {"scan_dissoc": "true",
+                                 "adduct_source": "manta",
+                                 "manta_smiles": "",
+                                 "dissoc_distance": "6.0",
+                                 "substrate_atom_index": "1"})
+    with pytest.raises(ValueError, match="manta_smiles"):
+        mod.main()
+
+
+def test_main_rejects_unknown_adduct_source(tmp_path, monkeypatch):
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mod, "_minimal_read_control_file",
+                        lambda: {"scan_dissoc": "true",
+                                 "adduct_source": "xtb",
+                                 "manta_smiles": "[Ni]",
+                                 "dissoc_distance": "6.0",
+                                 "substrate_atom_index": "1"})
+    with pytest.raises(ValueError, match="adduct_source"):
+        mod.main()
+
+
+def _manta_e2e_setup(tmp_path, monkeypatch, run_occupier):
+    """Shared setup: mock MANTA + OCCUPIER + scan writer, run main()."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    def fake_manta(smiles, out_path=None):
+        # best isomer: Ni at origin, substrate C at 2.0 A (matches r0=2.0)
+        path = out_path or "manta_adduct.xyz"
+        with open(path, "w") as f:
+            f.write("2\nbest\nNi 0.0 0.0 0.0\nC 0.0 0.0 2.0\n")
+        return ("NI-atoms", path)
+
+    def fake_occupier(atoms, xyz_path, metal_symbol, charge, multiplicity,
+                      broken_sym, config, work_dir=None):
+        captured["occ_called"] = True
+        captured["occ_n_atoms"] = len(atoms)
+        out = os.path.join(os.path.dirname(xyz_path), "manta_occ.inp")
+        with open(out, "w") as f:
+            f.write("! mocked occupier input\n")
+        return out
+
+    def fake_write(atoms, xyz_path, metal_index, co2_c_index,
+                   start_distance, end_distance=1.7, steps=5, **kw):
+        captured["start"] = start_distance
+        captured["end"] = end_distance
+        captured["xyz"] = xyz_path
+        os.makedirs("relaxed_surface_scan", exist_ok=True)
+        with open(os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat"), "w") as f:
+            f.write("# mocked\n")
+        return "mocked.out"
+
+    monkeypatch.setattr(mod, "_manta_adduct_geometry", fake_manta)
+    monkeypatch.setattr(mod, "_run_occupier_on_adduct", fake_occupier)
+    monkeypatch.setattr(mod, "write_orca_input_and_run", fake_write)
+    monkeypatch.setattr(mod, "plot_scan_result", lambda p: None)
+    monkeypatch.setattr(mod, "_minimal_read_control_file",
+                        lambda: {"scan_dissoc": "true",
+                                 "adduct_source": "manta",
+                                 "manta_smiles": "[Ni](C)",
+                                 "dissoc_distance": "6.0",
+                                 "scan_steps": "20",
+                                 "substrate_atom_index": "1",
+                                 "run_occupier_on_adduct": str(run_occupier),
+                                 "PAL": "4", "maxcore": "1000",
+                                 "charge": "-2", "multiplicity": "1"})
+    mod.main()
+    return captured
+
+
+def test_main_manta_source_builds_adduct_and_scans(tmp_path, monkeypatch):
+    """manta source: best MANTA isomer feeds the scan, no occupier pass."""
+    captured = _manta_e2e_setup(tmp_path, monkeypatch, run_occupier=False)
+    assert captured["start"] == pytest.approx(2.0)
+    assert captured["end"] == pytest.approx(6.0)
+    assert "occ_called" not in captured  # occupier pass disabled
+    assert os.path.basename(captured["xyz"]) == "manta_adduct.xyz"
+
+
+def test_main_manta_source_runs_occupier_before_scan(tmp_path, monkeypatch):
+    """manta source + run_occupier_on_adduct: occupier runs on the adduct."""
+    captured = _manta_e2e_setup(tmp_path, monkeypatch, run_occupier=True)
+    assert captured.get("occ_called") is True
+    assert captured["occ_n_atoms"] == 2
+    assert captured["start"] == pytest.approx(2.0)
+    assert captured["end"] == pytest.approx(6.0)
+
+
+def test_manta_adduct_geometry_writes_best_isomer(tmp_path, monkeypatch):
+    """_manta_adduct_geometry takes isomers[0] and writes a valid XYZ."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+
+    import types, sys
+    fake_api = types.ModuleType("delfin.smiles_converter")
+    fake_api.smiles_to_xyz_isomers = lambda s: (
+        [("Ni 0.0 0.0 0.0\nC 0.0 0.0 2.0", "best"),
+         ("Ni 0.0 0.0 0.0\nC 0.0 0.0 2.5", "second")], None)
+    monkeypatch.setitem(sys.modules, "delfin.smiles_converter", fake_api)
+
+    atoms, path = mod._manta_adduct_geometry("[Ni](C)")
+    assert os.path.basename(path) == "manta_adduct.xyz"
+    assert len(atoms) == 2
+    with open(path) as f:
+        lines = f.read().splitlines()
+    assert lines[0].strip() == "2"          # atom count header
+    assert lines[2].startswith("Ni")
+    assert lines[3].startswith("C")
+
+
+def test_manta_adduct_geometry_raises_on_error(tmp_path, monkeypatch):
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    import types, sys
+    fake_api = types.ModuleType("delfin.smiles_converter")
+    fake_api.smiles_to_xyz_isomers = lambda s: ([], "unbalanced charges")
+    monkeypatch.setitem(sys.modules, "delfin.smiles_converter", fake_api)
+    with pytest.raises(RuntimeError, match="delfin-manta"):
+        mod._manta_adduct_geometry("[Ni](C")
+

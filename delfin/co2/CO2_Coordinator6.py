@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import numpy as np
+from pathlib import Path
 from io import StringIO
 from typing import Optional, Tuple, List, Dict, Sequence
 from ase.io import read, write
@@ -73,13 +74,19 @@ scan_end=1.6
 scan_steps=25
 
 # Inverse RSS (dissociation scan; see scan_dissoc)
+# adduct_source: xyz (use adduct_xyz below) | manta (build the adduct with delfin-manta from manta_smiles)
+# manta_smiles: SMILES of the full complex (metal + ligands + coordinated substrate) for adduct_source=manta
 # adduct_xyz: pre-optimised adduct geometry to start the scan from its M–substrate bond length
 # scan_dissoc=true: scan outward from r0 to dissoc_distance instead of inward to scan_end
 # dissoc_distance: target M–substrate distance for dissociation (default 6.0 A)
+# run_occupier_on_adduct=true: run the OCCUPIER input writer on the best MANTA structure before the scan
 ------------------------------------
+adduct_source=xyz
+manta_smiles=
 adduct_xyz=
 scan_dissoc=false
 dissoc_distance=6.0
+run_occupier_on_adduct=false
 
 # Alignment (0-based indices)
 ------------------------------------
@@ -591,6 +598,98 @@ Hf Ta W Re Os Ir Pt Au Hg La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu
 Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr
 Al Ga In Tl Sn Pb Bi Po
 """.split())
+
+def _manta_adduct_geometry(manta_smiles: str, out_path: Optional[str] = None) -> Tuple[object, str]:
+    """Build the metal–substrate adduct with delfin-manta and return the best isomer.
+
+    Calls ``delfin.smiles_converter.smiles_to_xyz_isomers`` (the same public
+    entry point ``delfin-manta`` uses, cli_manta.py) and takes ``isomers[0]``,
+    the structure MANTA ranks best. Isomers are ``(xyz_block, label)`` pairs
+    where *xyz_block* is a bare coordinate block (count/comment header may be
+    present; both are stripped). Writes the best structure as a standard XYZ
+    file and returns ``(atoms, path)``. ``out_path`` defaults to
+    ``manta_adduct.xyz`` in the current directory.
+    """
+    from delfin.smiles_converter import smiles_to_xyz_isomers
+    from ase import Atoms
+
+    result = smiles_to_xyz_isomers(manta_smiles)
+    if isinstance(result, tuple) and len(result) == 2:
+        isomers, error = result
+    else:
+        isomers, error = result, None
+    if error:
+        raise RuntimeError(f"delfin-manta failed for manta_smiles: {error}")
+    if not isomers:
+        raise RuntimeError(f"delfin-manta produced no structures for: {manta_smiles}")
+    block, label = isomers[0]
+    lines = [ln for ln in block.splitlines() if ln.strip()]
+    if len(lines) >= 2 and lines[0].strip().isdigit():
+        lines = lines[2:]  # already standard XYZ -> drop count + comment
+    if not lines:
+        raise RuntimeError(f"delfin-manta returned an empty structure for: {manta_smiles}")
+    symbols, positions = [], []
+    for ln in lines:
+        parts = ln.split()
+        symbols.append(parts[0])
+        positions.append([float(x) for x in parts[1:4]])
+    atoms = Atoms(symbols=symbols, positions=positions)
+    path = out_path or "manta_adduct.xyz"
+    from ase.io import write as ase_write
+    ase_write(path, atoms, format="xyz")
+    return atoms, path
+
+
+def _run_occupier_on_adduct(atoms, xyz_path: str, metal_symbol: Optional[str],
+                            charge, multiplicity, broken_sym: Optional[str],
+                            config: Dict, work_dir: Optional[str] = None):
+    """Programmatic OCCUPIER pass on the best MANTA adduct structure.
+
+    Writes the adduct to ``input.xyz`` inside *work_dir* (created if needed)
+    and calls ``delfin.occupier.read_and_modify_file_OCCUPIER`` so the scan
+    starts from an OCCUPIER-prepared ORCA input (per-atom NewGTO for the
+    metal and its first coordination sphere, charge/multiplicity, solvent,
+    PAL/maxcore). *config* is the CO2 Coordinator CONTROL args dict; the
+    keys the occupier needs (functional, PAL, maxcore, maxiter_occupier,
+    main/metal basissets, ...) are read from it. Raises on failure so the
+    error is loud, not silent. Returns the ORCA input path written.
+    """
+    from delfin.occupier import read_and_modify_file_OCCUPIER
+    from ase.io import write as ase_write
+
+    wd = Path(work_dir or os.path.dirname(os.path.abspath(xyz_path)))
+    os.makedirs(wd, exist_ok=True)
+    input_xyz = os.path.join(wd, "input.xyz")
+    ase_write(input_xyz, atoms, format="xyz")
+    output_file = os.path.join(wd, "manta_adduct_occupier.inp")
+    found_metals = [metal_symbol] if metal_symbol else [
+        a.symbol.capitalize() for a in atoms if a.symbol in METAL_SYMBOLS
+    ]
+    # The occupier reads these keys with config[...] (hard KeyError if unset):
+    # fill occupier-side defaults for anything the CO2 CONTROL does not set.
+    occ_config = {
+        "functional": "PBE0",
+        "PAL": 32,
+        "maxcore": 3800,
+        "maxiter_occupier": 200,
+        "main_basisset": "def2-SVP",
+        "metal_basisset": "def2-TZVP",
+        "disp_corr": "D4",
+        "ri_jkx": "RIJK",
+        "aux_jk": "def2/J",
+        "geom_opt": "OPT",
+    }
+    occ_config.update({k: v for k, v in dict(config).items() if v not in (None, "")})
+    try:
+        read_and_modify_file_OCCUPIER(
+            1, output_file, charge, multiplicity, occ_config.get("solvent"),
+            found_metals, occ_config.get("metal_basisset"), occ_config.get("main_basisset"),
+            occ_config, broken_sym, work_dir=str(wd),
+        )
+    except Exception as exc:  # noqa: BLE001 - surface any occupier failure loudly
+        raise RuntimeError(f"OCCUPIER pass on the MANTA adduct failed: {exc}") from exc
+    return output_file
+
 
 def detect_metal_index(atoms):
     c = [i for i, a in enumerate(atoms) if a.symbol in METAL_SYMBOLS]
@@ -1556,11 +1655,22 @@ def main():
     adduct_xyz = (args.get("adduct_xyz") or "").strip() if isinstance(args.get("adduct_xyz"), str) else args.get("adduct_xyz")
     scan_dissoc = _is_enabled(args.get("scan_dissoc", False))
     dissoc_distance = args.get("dissoc_distance", 6.0)
+    adduct_source = (_clean_str(args.get("adduct_source")) or "xyz").lower()
+    if adduct_source not in ("xyz", "manta"):
+        raise ValueError(f"adduct_source must be 'xyz' or 'manta', got {adduct_source!r}")
+    manta_smiles = _clean_str(args.get("manta_smiles"))
+    run_occupier_on_adduct = _is_enabled(args.get("run_occupier_on_adduct", False))
     if scan_dissoc:
-        if not adduct_xyz:
-            raise ValueError("scan_dissoc=true requires adduct_xyz (path to the pre-optimised adduct geometry).")
-        if not os.path.exists(adduct_xyz):
-            raise FileNotFoundError(f"adduct_xyz not found: {adduct_xyz}")
+        if adduct_source == "xyz":
+            if not adduct_xyz:
+                raise ValueError("scan_dissoc=true requires adduct_xyz (path to the pre-optimised adduct geometry).")
+            if not os.path.exists(adduct_xyz):
+                raise FileNotFoundError(f"adduct_xyz not found: {adduct_xyz}")
+        else:  # manta
+            if not manta_smiles:
+                raise ValueError("adduct_source=manta requires manta_smiles (SMILES of the full complex).")
+            atoms_adduct, adduct_xyz = _manta_adduct_geometry(manta_smiles, adduct_xyz)
+            print(f"[INFO] MANTA adduct structure written to {adduct_xyz}.")
         try:
             dissoc_distance = float(dissoc_distance)
         except (ValueError, TypeError):
@@ -1575,7 +1685,7 @@ def main():
     # scan simply walks outward from its M–substrate distance r0 to
     # dissoc_distance. No orientation freedom, no jumps between scan points.
     if scan_dissoc:
-        atoms_adduct = _read_xyz_robust(adduct_xyz)
+        atoms_adduct = _read_xyz_robust(adduct_xyz)  # (manta path: re-reads the file written above; cheap and keeps a single code path)
         metal_idx = detect_metal_index(atoms_adduct)
         if metal_idx is None:
             raise ValueError(f"No metal atom found in adduct_xyz '{adduct_xyz}'.")
@@ -1603,6 +1713,17 @@ def main():
         if dissoc_distance <= start_distance:
             print(f"[WARN] dissoc_distance ({dissoc_distance} A) <= r0 "
                   f"({start_distance:.3f} A) — scan will move inward, not dissociate.")
+
+        # MANTA -> OCCUPIER -> scan: run the OCCUPIER input writer on the best
+        # MANTA structure so the scan starts from an occupier-prepared input
+        # (per-atom NewGTO, charge/mult, solvent, PAL/maxcore).
+        if run_occupier_on_adduct:
+            metal_symbol_scan = metal_symbol or atoms_adduct[metal_idx].symbol
+            occ_inp = _run_occupier_on_adduct(
+                atoms_adduct, adduct_xyz, metal_symbol_scan,
+                charge, multiplicity, broken_sym, args,
+            )
+            print(f"[INFO] OCCUPIER pass on the MANTA adduct wrote {occ_inp}.")
 
         metal_symbol_scan = metal_symbol or atoms_adduct[metal_idx].symbol
         write_orca_input_and_run(
