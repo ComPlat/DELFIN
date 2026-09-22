@@ -3154,6 +3154,26 @@ class AgentEngine:
                 self.record_cycle_outcome(
                     "FAIL", user_message, error_type=_etype,
                     start_time=_turn_t0)
+                # A transient endpoint failure that ends the turn ends
+                # MORE than the turn when nobody sits at the terminal:
+                # the session then stands at the prompt for however long
+                # it takes a person to notice (measured 2026-09-21:
+                # 24 minutes, six sessions, most of the operator's day
+                # was finding standstill rather than granting work).
+                # The note goes to the operator session when one is open
+                # -- the recall channel the written instructions
+                # prescribe -- and to nobody otherwise: an inbox entry
+                # no session will ever take is not a report either.
+                # Throttled to one note per minute so a flapping
+                # endpoint cannot fill an inbox turn after turn.
+                if _etype == "transient_api":
+                    try:
+                        self._notify_operator_of_stall(
+                            f"a turn gave up on a transient endpoint error "
+                            f"and this session is now standing at the "
+                            f"prompt: {_turn_exc}")
+                    except Exception:
+                        pass
             except Exception:
                 pass
             raise
@@ -5737,6 +5757,40 @@ class AgentEngine:
             return int(raw) if raw is not None else None
         except (TypeError, ValueError):
             return None
+
+    #: One stall note to the operator at most this often, so a flapping
+    #: endpoint cannot fill the operator's inbox turn after turn.
+    _OPERATOR_NOTE_EVERY_S = 60.0
+
+    def _notify_operator_of_stall(self, what: str) -> None:
+        """Leave the operator session a note about a stalled session.
+
+        A turn that gave up on a transient endpoint error ends more than
+        the turn when nobody sits at the terminal: the session stands at
+        the prompt until a person notices (measured 2026-09-21: 24
+        minutes). The recall channel the written instructions prescribe
+        is ``session_message`` -- so the note goes to the session whose
+        presence key is ``operator``, when one is open. Without one,
+        nothing is written: an inbox entry no session will ever take is
+        not a report either. Best-effort and never raises.
+        """
+        import time as _time
+        now = _time.monotonic()
+        if now - getattr(self, "_operator_note_last", 0.0) \
+                < self._OPERATOR_NOTE_EVERY_S:
+            return
+        self._operator_note_last = now
+        from . import session_messages as _msgs
+        from . import session_presence as _presence
+        me = str(getattr(self.kit_permissions, "presence_key", "")
+                 or "") if getattr(self, "kit_permissions", None) else ""
+        for rec in _presence.open_sessions(exclude_key=me):
+            if str(rec.get("key") or "").strip().lower() != "operator":
+                continue
+            _msgs.send(
+                "operator", what, from_key=me,
+                from_title="a stalled session")
+            return
 
     def _note_turn_price_state(self, cost_delta: float = 0.0) -> None:
         """Count the turn that just ran by what its cost could mean.

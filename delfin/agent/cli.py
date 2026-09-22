@@ -653,7 +653,35 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
         if note:
             print(note, file=sys.stderr)
 
-    return _claim_session(getattr(engine, "session_id", "") or sid)
+    # One chain of decisions, in one order, so what was decided last
+    # is what everything downstream reads:
+    #   1. the engine mints or keeps a session id;
+    #   2. the session id decides the presence key (the -n name wins,
+    #      and the id keeps a nameless session reachable);
+    #   3. the presence key is written to the permissions object LAST,
+    #      so the operator note (which reads it for the sender) and
+    #      session_message agree on which session they speak about.
+    # The order is load-bearing in both directions: reading the key
+    # before the resume would name the session the id had before the
+    # restore, and writing it before the id settles would leave the
+    # broker's key and the note's sender disagreeing.
+    claimed = _claim_session(getattr(engine, "session_id", "") or sid)
+    # Everything downstream -- broker, operator note, session_message
+    # -- reads the key through the permissions object, so it is set
+    # here, once, after both halves of the name exist. The
+    # _presence_key_for call further down (which writes the same
+    # value for the broker) stays: it is the same value by the same
+    # rule, and removing it would leave the broker's key resting on
+    # this distant block.
+    try:
+        _kp = engine.kit_permissions
+        if _kp is not None:
+            _kp.presence_key = _presence_key_for(
+                getattr(args, "session_name", "") or "",
+                str(getattr(engine, "session_id", "") or sid or ""))
+    except Exception:
+        pass
+    return claimed
 
 
 def _tilde(path: Path | str) -> str:
