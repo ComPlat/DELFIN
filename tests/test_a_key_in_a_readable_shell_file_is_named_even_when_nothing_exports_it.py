@@ -42,7 +42,13 @@ ALIAS_LINE = (
 
 
 @pytest.fixture
-def home(tmp_path):
+def home(a_path_others_can_walk):
+    # Genuinely reachable from the root: "others can read it" is
+    # the premise of these tests, and pytest's own base directory
+    # is 0700, so under it nobody can read anything. Before the
+    # check asked about the PATH, the file's mode bits made that
+    # premise true by fiat.
+    tmp_path = a_path_others_can_walk
     rc = tmp_path / ".bashrc"
     rc.write_text("# my shell\n" + ALIAS_LINE + "echo hello\n", encoding="utf-8")
     os.chmod(rc, 0o644)
