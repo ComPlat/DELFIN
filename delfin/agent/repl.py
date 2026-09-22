@@ -1891,6 +1891,33 @@ class TerminalAgent:
                 self.transcript.chrome(self.transcript.theme.dim(line))
 
     # -- the loop --------------------------------------------------------
+    def _checkpoint_session(self) -> None:
+        """Save the conversation after a finished turn. Never raises.
+
+        The conversation used to be saved only on the way out --
+        cmd_chat's finally -- so a process killed by SIGKILL (an
+        expired job, a killed node) lost the whole session and ``-r``
+        came back to an empty conversation. Saving at every turn end
+        makes a kill cost at most the turn it interrupts: the
+        mid-turn checkpoint (session_store.save_turn_checkpoint)
+        still covers that one, and every FINISHED turn is already on
+        disk. The saver is cli._save_session -- the same call the
+        exit path makes, so the record and the resume are one
+        contract, not two.
+
+        Locked sessions are skipped silently: the writer lock exists
+        so two processes never tear the file, and a turn-end save
+        that cannot take it is no reason to end the turn.
+        """
+        try:
+            engine = getattr(self, "engine", None)
+            if engine is None:
+                return
+            from .cli import _save_session
+            _save_session(engine, Path(self.opts.cwd))
+        except Exception:
+            pass
+
     def run(self, first_prompt: str = "") -> int:
         from . import repl_keys as rk
 
@@ -1955,6 +1982,11 @@ class TerminalAgent:
                 except KeyboardInterrupt:
                     self.transcript.chrome("")
                     return 130
+                # The turn finished: the conversation goes on disk now,
+                # not only when the process leaves through its finally.
+                # A SIGKILL at the next prompt must cost nothing (see
+                # _checkpoint_session).
+                self._checkpoint_session()
                 pending = ""
         except rk.TerminalLeft as left:
             # Whatever the session was doing -- at the prompt, in a turn,
