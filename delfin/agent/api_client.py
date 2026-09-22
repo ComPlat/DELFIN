@@ -14342,6 +14342,19 @@ class _DocToolExecutor:
                                        f"{cmd[:80]} → {denied}")
                 return (f"command rejected by deny-pattern {denied!r}: "
                         f"refusing to run.{_denied_command_hint(denied)}")
+            # A walk over a whole file system (find/du/tree/rg, grep -r,
+            # ls -R rooted at the home, an ancestor of it or a mount point)
+            # is refused in every mode, before anything is asked -- the
+            # same rule, from the same function, as the CLI backend's
+            # approval runner. It used to exist on that path only.
+            from .sandbox import tree_walk_refusal as _tree_walk_refusal
+            _wd = Path(perms.workspace)
+            if args.get("cwd"):
+                _wd = _wd / str(args.get("cwd"))
+            walk = _tree_walk_refusal(_prose_blanked(cmd), cwd=_wd)
+            if walk:
+                _record_security_event("tree_walk", "bash", cmd[:80])
+                return f"command rejected: {walk}"
             identity = _commit_text_identity_hit(cmd)
             if identity is not None:
                 _record_security_event("identity_in_commit", "bash", cmd[:80])
