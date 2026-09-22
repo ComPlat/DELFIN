@@ -4241,6 +4241,34 @@ def _bare_tool_name(name: str) -> str:
     return text.rsplit("__", 1)[-1] if text.startswith("mcp__") else text
 
 
+#: The write tools whose arguments carry the whole change, so a refusal can
+#: be held to that change. Every other write -- shell, interpreter,
+#: notebook, sheet -- is held to the refused file.
+_CHANGE_CARRYING_WRITE_TOOLS = frozenset(
+    {"write_file", "edit_file", "multi_edit", "apply_patch"})
+
+
+def _write_change_key(path: str, name: str, args: dict) -> str:
+    """The identity of one proposed write: the file and what it would do.
+
+    A digest of the change-carrying arguments only (content, old/new
+    string, edits, diff), so the same change spelled with another path
+    argument or description is still the same change.
+    """
+    import hashlib
+    body = {k: (args or {}).get(k) for k in
+            ("content", "old_string", "new_string", "replace_all", "edits",
+             "diff") if k in (args or {})}
+    digest = hashlib.sha256(
+        json.dumps([name, body], sort_keys=True, default=str).encode()
+    ).hexdigest()[:24]
+    try:
+        path = str(Path(path).expanduser().resolve(strict=False))
+    except Exception:
+        pass
+    return f"{path}\n{digest}"
+
+
 def _tool_action_signature(name: str, args: dict) -> str:
     """A stable key for a tool call that is neither a path nor a command.
 
@@ -13820,6 +13848,7 @@ class _DocToolExecutor:
                     "is now refused for the rest of the session — do NOT try "
                     "another tool or command to read it. Ask the user what to "
                     "use instead."
+                    + self._said_why(perms)
                 )
             return (
                 f"read of '{resolved}' TIMED OUT — the user is away, this is "
@@ -13849,6 +13878,93 @@ class _DocToolExecutor:
         return bool(getattr(
             getattr(perms.confirm_callback, "__self__", None),
             "last_timed_out", False))
+
+    @classmethod
+    def _said_why(cls, perms: "KitToolPermissions") -> str:
+        """" The user said why: …" for the refusal just made, or "".
+
+        The one place every refusal the model reads gets the user's reason
+        from. It was read on the shell branch only, so a refused write,
+        edit, outside read or tool call told the model "user denied" and
+        nothing more, and the reason arrived -- if at all -- as a message
+        after the turn that needed it.
+        """
+        why = cls._refusal_reason(perms)
+        return f" The user said why: {why}" if why else ""
+
+    @staticmethod
+    def _refuse_write(perms: "KitToolPermissions", path: str, name: str,
+                      args: dict) -> None:
+        """Record a refused write: the change, and the path.
+
+        The change is what the write tools are held to (the same change
+        is not asked again, a different one is). The path is what the
+        shell and interpreter routes are held to -- `python -c "open(p,
+        'w')"` or a redirect cannot carry a refused change past the gate
+        in another form.
+        """
+        perms.record_denied_action("write", path)
+        perms.record_denied_action(
+            "write_change", _write_change_key(path, name, args))
+
+    def _edit_cannot_apply(self, name: str, args: dict, resolved: Path,
+                           perms: "KitToolPermissions") -> Optional[str]:
+        """Why an edit would fail anyway, before anyone is asked; else None.
+
+        The executor checks these after approval. Asked first, the user
+        was shown a dialog with "(no changes)" -- no read baseline after a
+        restart, or an old_string that does not match -- and decided for
+        nothing (measured 2026-09-22: three such dialogs in a row). Same
+        conditions, same wording as the executor; the executor still
+        checks them, this only moves the answer in front of the question.
+        """
+        if name not in ("edit_file", "multi_edit"):
+            return None
+        try:
+            if not resolved.is_file():
+                return None          # the executor says what is wrong
+            path_arg = self._get_path_arg(args)
+            tracked = perms.read_tracker.get(str(resolved))
+            if tracked is None:
+                return (f"call read_file on '{path_arg}' before editing — "
+                        "edits require an established read baseline.")
+            if resolved.stat().st_mtime > tracked + 1e-3:
+                return (f"file '{path_arg}' was modified since last "
+                        "read_file. Re-read first.")
+            text = _text_files.read_text_file(resolved).text
+            from . import editblock as _editblock
+            if name == "edit_file":
+                edits = [args]
+            else:
+                edits = [e for e in (args.get("edits") or [])
+                         if isinstance(e, dict)]
+            for i, ed in enumerate(edits):
+                o = ed.get("old_string", "") or ""
+                n = ed.get("new_string", "") or ""
+                replace_all = bool(ed.get("replace_all", False))
+                if not o or o == n:
+                    return None      # the executor's own message covers it
+                where = f"edit #{i+1}: " if name == "multi_edit" else ""
+                count = text.count(o)
+                if count == 0:
+                    fm = (None if replace_all
+                          else _editblock.fuzzy_replace(text, o, n))
+                    if fm is None:
+                        return (f"{where}old_string not found in "
+                                f"'{path_arg}' (neither exact nor "
+                                "whitespace-tolerant match). Re-read the "
+                                "file and copy the target block verbatim.")
+                    text = fm.new_text
+                    continue
+                if count > 1 and not replace_all:
+                    return (f"{where}old_string matches {count} times in "
+                            f"'{path_arg}'. Provide more surrounding context "
+                            "to make it unique, or pass replace_all=true.")
+                text = (text.replace(o, n) if replace_all
+                        else text.replace(o, n, 1))
+        except Exception:
+            return None              # never block on the check itself
+        return None
 
     @staticmethod
     def _refusal_reason(perms: "KitToolPermissions") -> str:
@@ -13924,7 +14040,19 @@ class _DocToolExecutor:
         # the model not to retry; nothing enforced it, so the identical
         # write simply raised the dialog again — and, through the shell,
         # reached the file with no dialog at all.
-        if perms.action_denied_earlier("write", str(resolved)):
+        # Keyed on the CHANGE, not the path. A path-wide lock made every
+        # refusal final for the whole file: "change X and show me again"
+        # could not be followed, and a supervised session lost the file it
+        # was assigned to for the rest of its run (measured 2026-09-22).
+        # The identical change stays refused; a different one is asked
+        # about. The shell and interpreter routes stay closed by path (see
+        # _refuse_write), so a refusal still cannot be walked around.
+        if (name not in _CHANGE_CARRYING_WRITE_TOOLS
+                and perms.action_denied_earlier("write", str(resolved))):
+            # A shell write, an interpreter, a notebook or sheet edit: no
+            # change to compare, so the refused FILE stays closed to them
+            # -- `sed -i` or `echo >` cannot carry a refused change past
+            # the gate in another form.
             _record_security_event(
                 "denied_again", name, self._display_path(resolved, perms),
                 blocked=True)
@@ -13933,6 +14061,17 @@ class _DocToolExecutor:
                 "session, so it stays refused and is not asked again. Do "
                 "not reach the file through another tool or a shell command "
                 "either — ask the user what they want changed instead."
+            )
+        _change = _write_change_key(str(resolved), name, args)
+        if perms.action_denied_earlier("write_change", _change):
+            _record_security_event(
+                "denied_again", name, self._display_path(resolved, perms),
+                blocked=True)
+            return (
+                f"the user already refused exactly this change to "
+                f"'{path_arg}' in this session, so it is not asked again. "
+                "A DIFFERENT change is asked about; do not reach the file "
+                "through a shell command or an interpreter either."
             )
         try:
             rel_str = str(resolved.relative_to(perms.workspace)).replace("\\", "/")
@@ -13955,6 +14094,12 @@ class _DocToolExecutor:
                     "explicit user confirmation but no confirm_callback is "
                     "configured, so it is refused."
                 )
+            # An edit that cannot apply is answered by the tool, not the
+            # user: asked first, the user saw "(no changes)" and decided
+            # for nothing before the edit failed on its own.
+            _cannot = self._edit_cannot_apply(name, args, resolved, perms)
+            if _cannot:
+                return _cannot
             if is_protected:
                 preview = (
                     "[SELF-MODIFICATION GUARD]\n"
@@ -13988,8 +14133,9 @@ class _DocToolExecutor:
                     "the user is away, this is NOT a denial. Do not try it "
                     "again now; carry on with work that needs no approval, "
                     "or end your turn saying what is waiting for them.")
-            perms.record_denied_action("write", str(resolved))
-            return f"user denied '{name}' on {_w} '{rel_str}'"
+            self._refuse_write(perms, str(resolved), name, args)
+            return (f"user denied '{name}' on {_w} '{rel_str}'"
+                    + self._said_why(perms))
 
         # Inside a writable root. "default" asks before the change; that is
         # what makes acceptEdits mean something — a mode that turns off a
@@ -14004,6 +14150,9 @@ class _DocToolExecutor:
         # picks its own mode, and the sandbox still bounds where it writes.
         if (effective_mode(perms) == "default"
                 and perms.confirm_callback is not None):
+            _cannot = self._edit_cannot_apply(name, args, resolved, perms)
+            if _cannot:
+                return _cannot
             preview = (self._build_change_preview(name, args, resolved)
                        or f"{name} -> {rel_str}")
             try:
@@ -14019,11 +14168,12 @@ class _DocToolExecutor:
                         "now; carry on with work that needs no approval, or "
                         "end your turn saying what is waiting for them.")
                 _record_security_event("denied_by_user", name, rel_str)
-                perms.record_denied_action("write", str(resolved))
+                self._refuse_write(perms, str(resolved), name, args)
                 return (
                     f"user denied '{name}' on '{rel_str}'. Do NOT retry it or "
                     "write the same content by another route — ask the user "
                     "what they would like changed instead."
+                    + self._said_why(perms)
                 )
             return None
 
@@ -14099,7 +14249,8 @@ class _DocToolExecutor:
                 perms.record_denied_action(
                     "tool", _tool_action_signature(name, args))
                 return (f"user denied '{name}'. Do NOT retry it or reach the "
-                        "same destination another way.")
+                        "same destination another way."
+                        + self._said_why(perms))
             return None
 
         if name == "run_tests" and getattr(perms, "scope_locked", False):
@@ -14363,12 +14514,10 @@ class _DocToolExecutor:
                     )
                 _record_security_event("denied_by_user", "bash", cmd[:80])
                 perms.record_denied_action("bash", cmd)
-                _why = self._refusal_reason(perms)
-                _why_txt = f" The user said why: {_why}" if _why else ""
                 return (
                     f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
                     "it or work around it — ask the user what to do instead."
-                    + _why_txt
+                    + self._said_why(perms)
                 )
             # default / acceptEdits without a UI callback (head-less / CLI):
             # the command must match an auto-allow regex; otherwise tell the
@@ -14806,6 +14955,7 @@ class _DocToolExecutor:
             return (
                 f"user denied '{name}'. Do NOT retry it or reach the same "
                 "effect through another server."
+                + self._said_why(perms)
             )
         return None
 
