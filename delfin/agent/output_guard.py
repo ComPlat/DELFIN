@@ -292,3 +292,46 @@ def run_output_guards(text: str, *, config: dict | None = None) -> GuardResult:
 
     return GuardResult(text=guarded, findings=findings,
                        changed=guarded != text)
+
+
+#: A path that points inside somebody's home directory. Three layouts:
+#: Linux, macOS, and the parallel filesystems that put a site prefix in
+#: front of it (``/pfs/<store>/home/<group>/<account>``).
+_HOME_PATH_RE = re.compile(
+    r"(?:/home/|/Users/|/pfs/[\w.\-]+/home/)[\w.\-]+(?:/[\w.\-]+)*"
+)
+
+#: Below this, a name is not distinctive enough to be worth refusing over.
+#: "ab" as an account would match half the prose ever written; the real
+#: ones on a cluster are longer than this by a wide margin.
+_MIN_IDENTIFYING = 4
+
+
+def home_paths_in(text: str, *, home: str = "", account: str = "",
+                  host: str = "") -> list[str]:
+    """Every home path, account name or machine name in *text*.
+
+    Written for the one place where this matters: text that leaves for a
+    public repository. A path relative to the repository root says the
+    same thing about the code and nothing at all about who ran it.
+
+    ``home``/``account``/``host`` are passed in rather than read here, so
+    the caller decides whose identity is being protected and the function
+    stays testable without a home directory. A name already contained in
+    a path that was found is not reported twice -- one finding per thing.
+    """
+    s = str(text or "")
+    if not s:
+        return []
+    hits: list[str] = [m.group(0) for m in _HOME_PATH_RE.finditer(s)]
+    root = str(home or "").rstrip("/")
+    if len(root) >= _MIN_IDENTIFYING and root in s and \
+            not any(root in h for h in hits):
+        hits.append(root)
+    for name in (account, host):
+        n = str(name or "")
+        if len(n) < _MIN_IDENTIFYING or any(n in h for h in hits):
+            continue
+        if re.search(rf"(?<![\w.\-]){re.escape(n)}(?![\w\-])", s):
+            hits.append(n)
+    return hits

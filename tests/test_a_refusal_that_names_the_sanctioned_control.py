@@ -71,7 +71,13 @@ def _err(cmd: str, repo: Path) -> str:
 ])
 def test_the_refusal_names_the_tool_that_does_it(cmd, repo):
     err = _err(cmd, repo)
-    assert "not on the auto-allow list" in err
+    # `git stash` is refused outright now — the stack belongs to the
+    # repository and sessions in sibling worktrees share it — so that one
+    # arrives through the deny list rather than the auto-allow list. What
+    # this file is about is unchanged either way: whatever refuses it must
+    # name the tool that does the job.
+    if "stash" not in cmd:
+        assert "not on the auto-allow list" in err
     assert "enter_worktree" in err
     assert "base_ref" in err
 

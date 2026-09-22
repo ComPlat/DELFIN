@@ -2243,6 +2243,72 @@ class AgentEngine:
             session_id=str(getattr(self, "session_id", "") or ""),
         )
 
+    #: An unattributed request older than this is somebody else's. Long
+    #: enough for a user who stepped away from their own session, short
+    #: enough that yesterday's inbox is not read as today's work.
+    _APPROVAL_REMINDER_MAX_AGE_S = 3600.0
+
+    def _remind_of_waiting_approvals(self) -> None:
+        """Tell the turn about an approval that expired while nobody was there.
+
+        An expired confirmation is not a refusal, and the model is told
+        so — "carry on, do not retry now". What nothing told it was when
+        the user came back. The request goes to the USER's inbox
+        (/attention); the agent hears nothing, so a task whose only
+        remaining step needs that approval simply stops.
+
+        Measured on 2026-09-18: one session lost the last quarter of its
+        work to exactly this, twice — the window is 300 s and the user
+        was away from the keyboard with four sessions running.
+
+        Once per request, never twice, so a user who is still away is
+        not nagged every turn. Never raises.
+        """
+        try:
+            from . import attention as _att
+            pending = _att.list_pending("confirm_pending") or []
+        except Exception:
+            return
+        # Only what this turn could act on. An entry names its session
+        # since 2026-09-18; one that predates that says nothing, so it
+        # counts only while it is recent. Without this a fresh session
+        # that had said "Hallo" was told seven requests were waiting for
+        # it, all from sessions that had ended hours before, and spent a
+        # turn working that out.
+        import time as _time
+        mine = str(getattr(self, "session_id", "") or "")
+        now = _time.time()
+
+        def _is_mine(ev: dict) -> bool:
+            owner = str(ev.get("session_id") or "")
+            if owner:
+                return owner == mine
+            try:
+                age = now - float(ev.get("created_at") or 0.0)
+            except (TypeError, ValueError):
+                return False
+            return 0 <= age <= self._APPROVAL_REMINDER_MAX_AGE_S
+
+        pending = [e for e in pending if _is_mine(e)]
+        seen = self.__dict__.setdefault("_reminded_approvals", set())
+        fresh = [e for e in pending if str(e.get("id") or "") not in seen]
+        if not fresh:
+            return
+        for e in fresh:
+            seen.add(str(e.get("id") or ""))
+        names = ", ".join(str(e.get("title") or "an action")[:80]
+                          for e in fresh[:3])
+        note = (
+            f"[approval] {len(fresh)} request(s) are still waiting for the "
+            f"user, from a window that expired while they were away: "
+            f"{names}. That was absence, not a refusal. If your task still "
+            f"needs it, ask again now — they are here. If it does not, say "
+            f"so and carry on.")
+        try:
+            self.client.push_run_note(note)
+        except Exception:
+            pass
+
     def stream_response(
         self,
         user_message: str,
@@ -2317,6 +2383,8 @@ class AgentEngine:
                     sink(text)
                 except Exception:
                     pass
+
+        self._remind_of_waiting_approvals()
 
         # New user turn: re-arm the one-correction budget — unless this IS
         # a correction turn, which must not re-arm itself. Two shapes of
@@ -2632,6 +2700,10 @@ class AgentEngine:
         # Cleared per turn: a diagnostic left over from an earlier empty
         # turn must not be read as a report about this one.
         self.last_empty_turn = None
+        # The final stop_reason of the last turn, e.g. "length" when the
+        # token ceiling cut it. The terminal REPL reads it to continue a
+        # stalled turn (see stream_response's message_delta handling).
+        self.last_turn_stop_reason = ""
         _usage_before = dict(self.token_usage)
         _turn_ttft: float | None = None
         # Time of the FIRST stream event of any kind — message_start and
@@ -2996,6 +3068,18 @@ class AgentEngine:
 
                 elif event.type == "message_delta":
                     with self._lock:
+                        # The turn's ending, for the UI that has to react
+                        # to it: a turn that stopped at the token ceiling
+                        # ("length") without a tool call is a stall on a
+                        # model that thinks invisibly, and the terminal
+                        # continues it (assignment 8 / operator point d,
+                        # 2026-09-22). Read where the accounting happens,
+                        # which is the only place every final delta passes.
+                        try:
+                            self.last_turn_stop_reason = str(
+                                getattr(event, "stop_reason", "") or "")
+                        except Exception:
+                            pass
                         # Only output tokens and cost from the final event.
                         # Input tokens already counted in message_start.
                         self.token_usage["output"] += event.output_tokens
@@ -3086,6 +3170,26 @@ class AgentEngine:
                 self.record_cycle_outcome(
                     "FAIL", user_message, error_type=_etype,
                     start_time=_turn_t0)
+                # A transient endpoint failure that ends the turn ends
+                # MORE than the turn when nobody sits at the terminal:
+                # the session then stands at the prompt for however long
+                # it takes a person to notice (measured 2026-09-21:
+                # 24 minutes, six sessions, most of the operator's day
+                # was finding standstill rather than granting work).
+                # The note goes to the operator session when one is open
+                # -- the recall channel the written instructions
+                # prescribe -- and to nobody otherwise: an inbox entry
+                # no session will ever take is not a report either.
+                # Throttled to one note per minute so a flapping
+                # endpoint cannot fill an inbox turn after turn.
+                if _etype == "transient_api":
+                    try:
+                        self._notify_operator_of_stall(
+                            f"a turn gave up on a transient endpoint error "
+                            f"and this session is now standing at the "
+                            f"prompt: {_turn_exc}")
+                    except Exception:
+                        pass
             except Exception:
                 pass
             raise
@@ -5669,6 +5773,40 @@ class AgentEngine:
             return int(raw) if raw is not None else None
         except (TypeError, ValueError):
             return None
+
+    #: One stall note to the operator at most this often, so a flapping
+    #: endpoint cannot fill the operator's inbox turn after turn.
+    _OPERATOR_NOTE_EVERY_S = 60.0
+
+    def _notify_operator_of_stall(self, what: str) -> None:
+        """Leave the operator session a note about a stalled session.
+
+        A turn that gave up on a transient endpoint error ends more than
+        the turn when nobody sits at the terminal: the session stands at
+        the prompt until a person notices (measured 2026-09-21: 24
+        minutes). The recall channel the written instructions prescribe
+        is ``session_message`` -- so the note goes to the session whose
+        presence key is ``operator``, when one is open. Without one,
+        nothing is written: an inbox entry no session will ever take is
+        not a report either. Best-effort and never raises.
+        """
+        import time as _time
+        now = _time.monotonic()
+        if now - getattr(self, "_operator_note_last", 0.0) \
+                < self._OPERATOR_NOTE_EVERY_S:
+            return
+        self._operator_note_last = now
+        from . import session_messages as _msgs
+        from . import session_presence as _presence
+        me = str(getattr(self.kit_permissions, "presence_key", "")
+                 or "") if getattr(self, "kit_permissions", None) else ""
+        for rec in _presence.open_sessions(exclude_key=me):
+            if str(rec.get("key") or "").strip().lower() != "operator":
+                continue
+            _msgs.send(
+                "operator", what, from_key=me,
+                from_title="a stalled session")
+            return
 
     def _note_turn_price_state(self, cost_delta: float = 0.0) -> None:
         """Count the turn that just ran by what its cost could mean.

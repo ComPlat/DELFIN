@@ -26,7 +26,7 @@ from delfin.agent.engine import AgentEngine
 # Verbatim from the report, minus the trailing quote mark the user's
 # paste carried.
 ASKED_EN = ("Extract the hyperpolarizability tensor from all folders in "
-            "`/pfs/data6/home/ka/ka_ibcs/ka_ew7404/archive` and calculate "
+            "`/pfs/data6/home/ka/ka_group/ka_user/archive` and calculate "
             "the Hyper-Rayleigh scattering hyperpolarizability BHRS from it.")
 SAID_DE = ("Ich extrahiere die Hyperpolarisierbarkeit-Tensoren aus allen "
            "Ordnern im Archive und berechne das. Zuerst verschaffe ich mir "

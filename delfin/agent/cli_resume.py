@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import proc_identity
 from .session_store import _SESSIONS_DIR  # location only; never mutated here
 
 
@@ -70,6 +71,7 @@ def _load_row(path: Path) -> dict[str, Any] | None:
                 )
             if isinstance(content, str) and content.strip():
                 last_user = " ".join(content.split())
+    pid = int(data.get("pid", 0) or 0)
     return {
         "id": str(data.get("session_id") or path.stem),
         "started": float(data.get("created_at", 0) or 0),
@@ -78,6 +80,15 @@ def _load_row(path: Path) -> dict[str, Any] | None:
         "workspace": str(data.get("workspace") or ""),
         "turns": len(chat),
         "last_task_line": last_user,
+        # Identity written on every save since 2026-09-19. Liveness goes
+        # through the one reader of that fact: pid AND start fingerprint
+        # AND host. Records predating the fields answer None (unknown),
+        # never a guess -- a guessed "dead" could cost somebody their
+        # running work.
+        "heartbeat_at": float(data.get("heartbeat_at", 0) or 0),
+        "alive": (proc_identity.alive(
+            pid, str(data.get("proc_start", "") or ""),
+            str(data.get("host", "") or "")) if pid else None),
     }
 
 
@@ -182,6 +193,13 @@ def _fmt_line(text: str, width: int = 48) -> str:
     return line
 
 
+def _fmt_life(alive):
+    """LIVE / dead / unknown -- the word the table shows."""
+    if alive is None:
+        return "unknown"
+    return "LIVE" if alive else "dead"
+
+
 def render_sessions(rows: list[dict]) -> str:
     """Render :func:`list_sessions` rows as a terminal table + hint lines.
 
@@ -189,15 +207,78 @@ def render_sessions(rows: list[dict]) -> str:
     """
     if not rows:
         return "no kept sessions found"
-    header = f"{'#':>3}  {'session id':<16}  {'age':>7}  {'model':<14}  task"
+    header = (f"{'#':>3}  {'session id':<16}  {'age':>7}  {'model':<14}  "
+              f"{'life':<7}  {'last seen':>9}  task")
     lines = [header, "-" * len(header)]
     for i, r in enumerate(rows, 1):
         task = _fmt_line(r.get("last_task_line") or "(no user message kept)")
         model = r.get("model") or "?"
+        seen = r.get("heartbeat_at") or r.get("updated_at", 0)
         lines.append(
             f"{i:>3}  {r['id'][:16]:<16}  {_fmt_age(r.get('updated_at', 0)):>7}  "
-            f"{model[:14]:<14}  {task}"
+            f"{model[:14]:<14}  {_fmt_life(r.get('alive')):<7}  "
+            f"{_fmt_age(seen):>9}  {task}"
         )
     lines.append("")
     lines.append("resume with: delfin-agent --resume <id-prefix | #index | ''>")
     return "\n".join(lines)
+
+
+def open_now() -> list[dict]:
+    """The sessions open right now, each with what it is waiting on.
+
+    ``sessions`` listed what ran BEFORE, which reads as "nothing is
+    running" while five are. Both halves of the live picture exist: a
+    terminal session announces its presence, and a question waiting at
+    one is published whole. This is the join, and it is the whole of
+    what assembling it by hand used to take -- a pane capture per
+    session, a git log per worktree, a grep through the audit log.
+
+    Never raises: an overview that can end the process supervising with
+    it is not an overview.
+    """
+    try:
+        from . import session_presence as _pres
+        rows = list(_pres.open_sessions())
+    except Exception:
+        return []
+    try:
+        from . import terminal_confirm as _tc
+        waiting = {str(q.get("session_key") or ""): q
+                   for q in _tc.pending_at_terminals()}
+    except Exception:
+        waiting = {}
+    out: list[dict] = []
+    for record in rows:
+        key = str(record.get("key") or "")
+        out.append({
+            "key": key,
+            "title": str(record.get("title") or ""),
+            "workspace": str(record.get("workspace") or ""),
+            "branch": str(record.get("branch") or ""),
+            "host": str(record.get("host") or ""),
+            "pid": record.get("pid"),
+            "waiting": waiting.get(key),
+        })
+    return out
+
+
+def render_open(rows: list[dict]) -> str:
+    """The open sessions as a block, or "" when none are.
+
+    Empty renders as empty rather than as a heading with nothing under
+    it: a heading is a claim that there is something to read.
+    """
+    if not rows:
+        return ""
+    out = [f"Open now ({len(rows)}):"]
+    for row in rows:
+        wait = row.get("waiting")
+        if wait:
+            mark = " PROTECTED" if wait.get("protected") else ""
+            state = f"waiting: {wait.get('tool') or '?'}{mark}"
+        else:
+            state = "working"
+        out.append(f"  {(row.get('key') or '?')[:16]:<16} "
+                   f"{(row.get('branch') or '-')[:24]:<24} {state}")
+    return "\n".join(out)

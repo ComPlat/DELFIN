@@ -264,6 +264,13 @@ _NOT_CARRIED = {
     "_turn_serial", "_turn_id", "_stop_owner_turn",
     # -- the last turn's diagnosis, shown once and cleared next turn ------
     "last_empty_turn",
+    #    How the last turn ended ("length" = cut at the token ceiling).
+    #    Read once, right after that turn, to decide whether to continue
+    #    it; a resumed session has no turn that just ended.
+    "last_turn_stop_reason",
+    #    When this process last told the operator it stalled: a throttle
+    #    for the notes of THIS process, not a fact about the session.
+    "_operator_note_last",
     # -- the live system prompt: its TEXT carries the injected memory and
     #    is deliberately never written to disk. Its SIZE is carried, as
     #    _system_prompt_chars, which is declared.
