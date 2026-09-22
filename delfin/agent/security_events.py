@@ -48,6 +48,9 @@ _KINDS = {
     "denied_by_user": ("✋", "User denied"),
     "denied_again":   ("🚫", "Refusal circumvented"),
     "denied_path_via_bash": ("🚫", "Refused path reached via shell"),
+    # find/du/tree/rg, grep -r or ls -R over a home or a mount point: one
+    # metadata request per file on a shared file system.
+    "tree_walk":      ("🌲", "Walk over a whole file system refused"),
     "read_grant":     ("👁", "Directory opened for reading"),
     # Bypass does not ask before a read outside the roots. Nobody clicked,
     # so the panel is the only place it is ever visible — which is exactly
