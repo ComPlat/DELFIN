@@ -29,7 +29,17 @@ def workspace(tmp_path) -> Path:
 
 
 def _gate(perms: KitToolPermissions, name: str, args: dict) -> str | None:
-    """Invoke the gate directly on the shared executor."""
+    """Invoke the gate directly on the shared executor.
+
+    An edit is given its read baseline first, as a session that read the
+    file has it: the gate answers an edit that could not apply before it
+    asks anyone, and these tests are about the question itself.
+    """
+    target = args.get("path")
+    if name in ("edit_file", "multi_edit") and target:
+        f = Path(perms.workspace) / target
+        if f.is_file():
+            perms.read_tracker[str(f.resolve())] = f.stat().st_mtime
     return _doc_executor._run_permission_gate(name, args, perms)
 
 
