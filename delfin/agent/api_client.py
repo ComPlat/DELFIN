@@ -1066,30 +1066,85 @@ _BASH_CONTENT_READERS: frozenset[str] = frozenset({
 })
 
 
+#: A path-shaped word in a command line: absolute, or home-relative.
+_PATH_WORD_RE = re.compile(
+    r"(?<![A-Za-z0-9_.~$-])(?:~|\$\{HOME\}|\$HOME|/)[^\s;|&<>()`'\"]*")
+
+
+def _path_words(cmd: str) -> list[str]:
+    """The absolute paths a command line names, normalised."""
+    home = str(Path.home())
+    out = []
+    for raw in _PATH_WORD_RE.findall(cmd or ""):
+        word = (raw.replace("${HOME}", home).replace("$HOME", home))
+        if word.startswith("~"):
+            word = os.path.expanduser(word)
+        if word.startswith("/"):
+            word = "/" + word.lstrip("/")
+            out.append(os.path.normpath(word))
+    return out
+
+
+def _path_covers(path: str, words: list[str]) -> bool:
+    """Whether any word names *path* or something inside it."""
+    inside = path.rstrip("/") + "/"
+    for word in words:
+        if word == path or (path != "/" and word.startswith(inside)):
+            return True
+        if any(c in word for c in "*?[") and fnmatch.fnmatch(path, word):
+            return True
+    return False
+
+
+def _deep_enough(path: str) -> bool:
+    """Two or more components: specific enough to match as a substring."""
+    return len([part for part in path.split("/") if part]) >= 2
+
+
 def _bash_reads_denied_path(cmd: str, denied: set) -> str:
     """Reason string when a shell command would fetch a path the user has
     already refused this session, else "".
 
-    Matching is by path prefix so a refused file cannot be reached through
-    its directory either, and it is deliberately independent of the command
-    used: a refusal is about the DATA, not about the tool that asked.
+    A refusal covers the DATA, not the tool that asked, so a refused file is
+    also refused through its directory -- independent of the command used.
+
+    It used to be matched as a plain substring of the command line. A
+    refused '/' (an agent asked to read the filesystem root and was told
+    no) then blocked every later command with a slash in it, the session's
+    own test runner included; a refused '/tests' blocked every path
+    containing '/tests'; and a refused file directly in the home directory
+    extended to the home directory itself, which holds the workspace.
+    Measured in a supervised run: one correct refusal left a session unable
+    to run anything. Now: a short path (the root, one component) matches
+    only as a whole path word, or a path inside it -- the root only as
+    itself; a deeper path still matches as a substring, bounded at its end,
+    so it is also caught glued to an option (``-a/data/secret/x``); and the
+    directory around a refused file is refused with it only when that
+    directory could have been opened by an approved read in the first
+    place -- never the home, a system or a key directory.
     """
     try:
         if not denied or not cmd:
             return ""
+        words = _path_words(cmd)
         for path in denied:
-            p = str(path)
+            p = os.path.normpath(str(path)) if path else ""
             if not p:
                 continue
-            if p in cmd:
+            if _path_covers(p, words) or (
+                    _deep_enough(p) and re.search(
+                        re.escape(p) + r"(?![A-Za-z0-9_.\-])", cmd)):
                 return f"the user refused '{p}' earlier in this session"
             # Refusing a file also refuses reaching it through its directory.
-            parent = p.rsplit("/", 1)[0]
-            if parent and len(parent) > 1 and parent in cmd:
+            parent = os.path.dirname(p)
+            if (_deep_enough(parent) and _is_grantable_read_dir(parent)
+                    and (_path_covers(parent, words) or re.search(
+                        re.escape(parent) + r"(?![A-Za-z0-9_.\-])", cmd))):
                 return (f"the user refused '{p}', and this command reaches "
                         f"its directory '{parent}'")
     except Exception:
         return ""
+    return ""
     return ""
 
 
