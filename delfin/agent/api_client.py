@@ -2761,6 +2761,195 @@ def _prose_blanked(cmd: str) -> str:
     return "".join(out)
 
 
+#: Shapes that RUN inside an argument. A token holding one is never
+#: blanked: ``grep "$(cat ~/.delfin/credentials.json)" f`` runs the cat.
+_RUNS_INSIDE: tuple[str, ...] = ("$(", "${", "`", "<(", ">(")
+
+#: grep options known to take no value -- the whole allow-list. Any other
+#: option (-f FILE, --file, --include, --, a bundle with e or f in it, an
+#: option this list does not name) leaves the command exactly as it is.
+_GREP_BARE_FLAG = re.compile(r"-[nirRlLcvwxEFHhosqIZ]+")
+_GREP_BARE_LONG = frozenset({
+    "--color", "--colour", "--line-number", "--ignore-case", "--recursive",
+    "--count", "--files-with-matches", "--files-without-match",
+    "--invert-match", "--word-regexp", "--line-regexp",
+    "--extended-regexp", "--fixed-strings", "--with-filename",
+    "--no-filename", "--only-matching", "--no-messages", "--quiet",
+    "--silent",
+})
+_GREP_COUNT_ATTACHED = re.compile(
+    r"-[ABCm]\d+|--(?:after-context|before-context|context|max-count)=\d+"
+    r"|--colou?r=\w+")
+_GREP_COUNT_OPTS = frozenset({"-A", "-B", "-C", "-m"})
+
+#: sed options that change nothing about what the script can do.
+_SED_BARE_FLAG = re.compile(r"-[nEsuzr]+")
+_SED_BARE_LONG = frozenset({
+    "--quiet", "--silent", "--regexp-extended", "--separate",
+    "--unbuffered", "--null-data",
+})
+
+_SED_ADDR = r"(?:\d+|\$|/(?:[^/\\\n]|\\.)*/)"
+#: One sed statement that can only select, print or substitute: an
+#: optional address or range, then p, d, n or =, or one s-command with a
+#: punctuation delimiter and flags from g p i I M and digits -- never w
+#: (writes a file) and never e (runs the pattern space as a command).
+#: Anything else -- w, W, r, R, e, a, i, c, braces, labels -- fails.
+_SED_PURE_STMT = re.compile(
+    r"\s*(?:" + _SED_ADDR + r"(?:\s*,\s*" + _SED_ADDR + r")?)?\s*"
+    r"(?:[pdn=]"
+    r"|s(?P<d>[/|#,:@!])(?:[^\\\n]|\\.)*?(?P=d)(?:[^\\\n]|\\.)*?(?P=d)"
+    r"[gpiIM0-9]*)\s*")
+
+
+def _sed_script_is_pure(script: str) -> bool:
+    """Whether a sed script can only select, print and substitute.
+
+    False for anything that can write a file or run a command, and for
+    anything the statement pattern does not fully recognise.
+    """
+    if not script.strip() or any(r in script for r in _RUNS_INSIDE):
+        return False
+    return all(_SED_PURE_STMT.fullmatch(stmt)
+               for stmt in script.split(";") if stmt.strip())
+
+
+def _word_spans(cmd: str, start: int, end: int) -> list:
+    """(start, end) of each shell word in cmd[start:end], offsets kept.
+
+    Quotes and backslashes are honoured the way the shell reads them, so
+    ``"a b"`` and ``a\ b`` are one word each.
+    """
+    spans = []
+    i = start
+    while i < end:
+        while i < end and cmd[i] in " \t":
+            i += 1
+        if i >= end:
+            break
+        w = i
+        quote = ""
+        while i < end:
+            ch = cmd[i]
+            if quote == "'":
+                if ch == "'":
+                    quote = ""
+            elif quote == '"':
+                if ch == "\\":
+                    i += 1
+                elif ch == '"':
+                    quote = ""
+            elif ch == "\\":
+                i += 1
+            elif ch in "'\"":
+                quote = ch
+            elif ch in " \t":
+                break
+            i += 1
+        spans.append((w, min(i, end)))
+    return spans
+
+
+def _unquoted(word: str) -> Optional[str]:
+    """The word as the program receives it, or None if it cannot be read."""
+    try:
+        import shlex
+        parts = shlex.split(word)
+    except ValueError:
+        return None
+    return parts[0] if len(parts) == 1 else None
+
+
+def _pattern_spans(cmd: str, start: int, end: int) -> list:
+    """The pattern (grep) or script (sed) words of one command, or [].
+
+    An allow-list, not a parser: a span comes back only when EVERY
+    option on the line is one this function knows takes no value (or a
+    number), so that which word is the pattern is certain. Anything it
+    does not recognise -- an option with a file value, ``--``, a bundle
+    it cannot read, a substitution anywhere in the pattern -- returns []
+    and the whole command stays visible to the scanners. A false alarm
+    costs a dialog; a word blanked by mistake could hide a secret.
+    """
+    spans = _word_spans(cmd, start, end)
+    words = [cmd[a:b] for a, b in spans]
+    i = 0
+    while i < len(words) and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", words[i]):
+        i += 1
+    if i >= len(words):
+        return []
+    head = os.path.basename(_unquoted(words[i]) or "")
+    i += 1
+    if head in ("grep", "egrep", "fgrep"):
+        found: list = []
+        by_e = False
+        while i < len(words):
+            w = words[i]
+            if w.startswith("-") and w != "-":
+                if w in ("-e", "--regexp"):
+                    if i + 1 >= len(words) or any(
+                            r in words[i + 1] for r in _RUNS_INSIDE):
+                        return []
+                    found.append(spans[i + 1])
+                    by_e = True
+                    i += 2
+                    continue
+                if w in _GREP_COUNT_OPTS:
+                    if i + 1 >= len(words) or not words[i + 1].isdigit():
+                        return []
+                    i += 2
+                    continue
+                if (_GREP_BARE_FLAG.fullmatch(w) or w in _GREP_BARE_LONG
+                        or _GREP_COUNT_ATTACHED.fullmatch(w)):
+                    i += 1
+                    continue
+                return []
+            if by_e:
+                return found      # every free word is a file
+            if any(r in w for r in _RUNS_INSIDE):
+                return []
+            return [spans[i]]
+        return found
+    if head == "sed":
+        while i < len(words):
+            w = words[i]
+            if w.startswith("-") and w != "-":
+                if _SED_BARE_FLAG.fullmatch(w) or w in _SED_BARE_LONG:
+                    i += 1
+                    continue
+                return []
+            script = _unquoted(w)
+            if script is None or not _sed_script_is_pure(script):
+                return []
+            return [spans[i]]
+    return []
+
+
+def _pattern_blanked(cmd: str) -> str:
+    """The command with grep patterns and pure sed scripts blanked out.
+
+    A search pattern is text a command matches against, never a path it
+    opens. Measured 2026-09-21 in a six-session run: the path scanners
+    refused ``grep -n "KEY|credentials|api_key" file.py`` as a secret
+    read, and read the sed address in ``sed -n '/class A/,/def b/p'
+    file.py`` as the path ``/class`` -- each a dialog for a command that
+    touched nothing but its own file.
+
+    Only the pattern word goes, and only in the shapes
+    :func:`_pattern_spans` fully recognises; every file argument on the
+    line is still read as a path. Blanked, not removed, so every other
+    offset is where it was.
+    """
+    if not cmd or ("grep" not in cmd and "sed" not in cmd):
+        return cmd
+    out = list(cmd)
+    for start, end in _segments(cmd):
+        for a, b in _pattern_spans(cmd, start, end):
+            for k in range(a, b):
+                out[k] = " "
+    return "".join(out)
+
+
 def _identity_for_commit_texts() -> dict:
     """Home, account and machine name of the user this process runs as.
 
@@ -13117,7 +13306,11 @@ class _DocToolExecutor:
         # reason for dropping it was that `echo "/home/user/.ssh"` should
         # not confuse the scan; a false positive on an echo costs one
         # confirmation dialog, and this cost a credential.
-        cleaned = re.sub(r"['\"]", " ", _prose_blanked(cmd))
+        # A grep pattern or a pure sed script is text the command matches
+        # against, never a path it opens (_pattern_blanked says which
+        # shapes, and nothing else is blanked).
+        cleaned = re.sub(r"['\"]", " ",
+                         _prose_blanked(_pattern_blanked(cmd)))
         # A path named as something to SKIP is not a path the command
         # touches. Dropping these before the scan removes a refusal that
         # was arbitrary from the caller's side: measured 2026-09-18,
@@ -15370,8 +15563,13 @@ class _DocToolExecutor:
             # read/write scanners below stay in place for normal sessions;
             # here the boundary is the whole answer, so the coarse rule is
             # the correct one.
+            # What the scanners below read: the command with its grep
+            # pattern or pure sed script blanked -- a sed address like
+            # /class A/ is not the path /class. Every file argument is
+            # still there; see _pattern_blanked.
+            scan = _pattern_blanked(cmd)
             if perms.scope_locked:
-                if _bash_climbs_out(cmd):
+                if _bash_climbs_out(scan):
                     _record_security_event(
                         "locked_scope_bash", "bash", cmd[:80], blocked=True)
                     return json.dumps({"error": (
@@ -15379,7 +15577,7 @@ class _DocToolExecutor:
                         f"{perms.workspace} with '..'. This session works "
                         "only inside that folder — use paths relative to it."
                     )})
-                hops = _bash_symlink_escapes(cmd, perms.workspace)
+                hops = _bash_symlink_escapes(scan, perms.workspace)
                 if hops:
                     _record_security_event(
                         "locked_scope_symlink", "bash", cmd[:80], blocked=True)
@@ -15389,7 +15587,7 @@ class _DocToolExecutor:
                         "path looks local but does not stay local. This "
                         "session works only inside that folder."
                     )})
-                strays = _bash_paths_outside(cmd, perms.workspace)
+                strays = _bash_paths_outside(scan, perms.workspace)
                 if strays:
                     _record_security_event(
                         "locked_scope_bash", "bash", cmd[:80], blocked=True)
@@ -15401,7 +15599,7 @@ class _DocToolExecutor:
                         "have to be placed in the folder first."
                     )})
             denied = _bash_reads_denied_path(
-                cmd, getattr(perms, "denied_paths", set()) or set())
+                scan, getattr(perms, "denied_paths", set()) or set())
             if denied:
                 _record_security_event(
                     "denied_path_via_bash", "bash", cmd[:80], blocked=True)
@@ -15410,7 +15608,7 @@ class _DocToolExecutor:
                     "the tool that asked — do not reach it another way. Ask "
                     "the user what to use instead."
                 )})
-            for target in _bash_outside_reads(cmd):
+            for target in _bash_outside_reads(scan):
                 path = Path(target).expanduser()
                 if not path.is_absolute():
                     continue
