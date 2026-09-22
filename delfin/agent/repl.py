@@ -838,6 +838,19 @@ class TerminalAgent:
                     for event in decoder.feed(raw.read_ready(_PUMP_TICK_S)):
                         self._on_key(event, decoder)
                     self._repaint_bottom()
+                    # Operator mail, mid-turn: the dashboard steers a
+                    # message into the running turn between rounds
+                    # (push_steer); the terminal dropped it at the
+                    # prompt instead, so a long turn was deaf to its
+                    # supervisor for exactly as long as it ran
+                    # (assignment 8, point b, 2026-09-22). Same
+                    # throttle as the idle wake, same rendering (it
+                    # reads as coming from another session, never as
+                    # user input).
+                    try:
+                        self._steer_operator_mail()
+                    except Exception:
+                        pass
                     # The heartbeat of a session IN a turn. Presence was
                     # renewed only at the prompt and on a broker question,
                     # so a turn longer than session_presence._STALE_S --
@@ -2269,6 +2282,59 @@ class TerminalAgent:
     #: loop ticks ten times a second; asking the job registry that often
     #: would be a poll, and this is a look.
     _WAKE_EVERY_S = 5.0
+
+    def _steer_operator_mail(self) -> None:
+        """Take waiting mail and steer it into the running turn.
+
+        The mirror of _operator_messages for a session that is not at
+        its prompt: same inbox, same rendering (the header says the
+        message is from another session, never from the user), but the
+        destination is the turn -- engine.steer, the same call the
+        dashboard makes -- so the model sees it between rounds instead
+        of at the end. On the idle wake's throttle, never per read;
+        the rendered text is shown on the transcript because a steer
+        is not echoed either. A backend that takes no steer returns
+        False and the message is put back, unread, so the prompt path
+        delivers it when the turn ends -- a fallback, not a loss.
+        """
+        import time as _time
+        now = _time.monotonic()
+        if now - getattr(self, "_mail_steer_last", 0.0) < self._WAKE_EVERY_S:
+            return
+        self._mail_steer_last = now
+        key = self._presence_key()
+        if not key:
+            return
+        from . import session_messages as _msgs
+        messages = _msgs.take(key)
+        if not messages:
+            return
+        text = "\n\n".join(_msgs.render(m) for m in messages)
+        delivered = False
+        try:
+            delivered = bool(self.engine.steer(text))
+        except Exception:
+            delivered = False
+        if not delivered:
+            # The turn could not take it: the messages go back, newest
+            # last, so the prompt path sees them in the order they
+            # arrived.
+            for message in messages:
+                try:
+                    _msgs.send(key, str(message.get("text") or ""),
+                               from_key=str(message.get("from") or ""),
+                               from_title=str(
+                                   message.get("from_title") or ""))
+                except Exception:
+                    pass
+            return
+        for message in messages:
+            sender = (message.get("from_title") or message.get("from")
+                      or "an operator")
+            body = " ".join(str(message.get("text") or "").split())
+            self.transcript.chrome(
+                self.transcript.theme.dim(f"✉ {sender} → into the running "
+                                          f"turn: {body[:300]}"))
 
     def _presence_key(self) -> str:
         """The address an operator reaches this session by.
