@@ -140,6 +140,67 @@ def _the_suite_lives_under_no_lifeline():
     yield
 
 
+@pytest.fixture()
+def gone_pid():
+    """A pid whose process has ended and been reaped.
+
+    Not a large constant. ``/proc/sys/kernel/pid_max`` on this machine is
+    2**22 and the counter wraps -- measured within one session, a pid of
+    4110221 was followed by one of 1455746 -- so 2**22 - 1 is an ordinary
+    number the system hands out, and a test resting on it passes until
+    the day it does not. Worse, if that pid belongs to another user the
+    aliveness check answers "running" on the permission error, which is
+    the opposite of what such a test wants to assert.
+
+    A child we started and reaped is gone by construction, and Linux
+    allocates pids upward, so the number is not handed straight back out.
+    """
+    import subprocess
+    import sys
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait(timeout=60)
+    return proc.pid
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _the_suite_leaves_no_scratch_behind(tmp_path_factory):
+    """Bare ``mkdtemp`` in a test goes under pytest's own root.
+
+    105 calls across 65 test files make a scratch directory with
+    ``tempfile.mkdtemp`` rather than the ``tmp_path`` fixture, and none of
+    them removes it. Measured on the login node: 20836 entries in /tmp,
+    among them 1827 ``ws_*``, 427 ``office_*``, 295 ``planmode_*``, 233
+    ``askuser_*`` -- every one of them named after the test that made it.
+
+    Rewriting the call sites would fix the ones that exist and none of the
+    ones written next week. Pointing ``tempfile.tempdir`` at the base
+    directory pytest already manages covers both: pytest keeps the last
+    three runs and removes what is older, so the growth is bounded by the
+    suite rather than by the calendar.
+
+    It is not a cleanup that could delete somebody's work -- nothing is
+    removed here. Only the place new scratch is made moves, and it moves
+    inside the run's own directory.
+    """
+    import tempfile
+    # The base directory ITSELF, not a subdirectory of it. A subdirectory
+    # moved the answer to "is this repository under the temp directory?",
+    # which is how worktree._default_parent decides whether a throwaway
+    # repo's worktree goes beside it or into temp. A fixture repo under
+    # tmp_path is under the base but not under base/scratch, so that
+    # protection switched off and the worktree landed in temp again --
+    # the very thing it was written to stop after 2532 orphaned
+    # directories were counted here. Using the base keeps every tmp_path
+    # inside gettempdir(), so the product sees what it saw before.
+    room = tmp_path_factory.getbasetemp()
+    previous = tempfile.tempdir
+    tempfile.tempdir = str(room)
+    try:
+        yield
+    finally:
+        tempfile.tempdir = previous
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _the_suite_opens_no_browser():
     """No test reaches the developer's browser.

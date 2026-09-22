@@ -22,6 +22,7 @@ its own trace.
 from __future__ import annotations
 
 import io
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -229,6 +230,28 @@ def test_a_result_with_no_verdict_is_still_drawn():
     results = [i for i in seen if i.kind == "tool_result"]
     assert len(results) == 1
     assert results[0].text == "body"
+
+
+def test_a_patch_result_keeps_the_diff_from_its_matching_call():
+    """apply_patch returns only a verdict; its visible change is in input."""
+    seen: list[repl.RenderItem] = []
+    diff = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
+    output = '{"status": "ok", "files_touched": ["x.py"]}'
+
+    class _Patch:
+        token_usage = {"input": 0, "output": 0}
+
+        def stream_response(self, **kw):
+            kw["on_tool_use"]("apply_patch", json.dumps({"diff": diff}))
+            kw["on_tool_result"]("apply_patch", output)
+            kw["on_tool_result_meta"](
+                "apply_patch", {"ok": True, "chars": len(output)})
+            return "done"
+
+    repl.run_turn(_Patch(), "go", sink=seen.append)
+
+    result = next(item for item in seen if item.kind == "tool_result")
+    assert result.tool_input == {"diff": diff}
 
 
 def test_a_remote_tool_says_which_server_it_ran_on():

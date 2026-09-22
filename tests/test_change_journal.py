@@ -184,8 +184,11 @@ def test_workspace_guard_skips_outside_paths(home, ws, tmp_path):
 
     res = cj.revert("s1", scope="last", workspace=ws)
     assert res["reverted"] == []
-    assert res["skipped"] == [
-        {"path": str(p), "reason": "outside workspace"}]
+    # Counted, not named. The caller learns that something was left
+    # alone; it does not learn a path belonging to a workspace this run
+    # cannot reach. One shared journal turned that into another run's
+    # file list -- 163 different roots in the bucket measured here.
+    assert res["skipped"] == [{"reason": "outside workspace"}]
     assert p.read_text(encoding="utf-8") == "v2"
 
     # Without the workspace restriction the same entry reverts.

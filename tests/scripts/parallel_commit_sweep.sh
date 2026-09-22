@@ -6,7 +6,7 @@ RESULTS_DIR=/tmp/commit_sweep
 mkdir -p "$RESULTS_DIR"
 LOG_DIR=/tmp/commit_sweep_logs
 mkdir -p "$LOG_DIR"
-SRC_REPO=/home/qmchem_max/ComPlat/DELFIN
+SRC_REPO=/home/localuser/ComPlat/DELFIN
 
 run_one_commit() {
     local sha=$1

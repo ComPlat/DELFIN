@@ -11,7 +11,15 @@ on:
       - "delfin/agent/egress_proxy.py"
       - "delfin/agent/process_guard.py"
       - "delfin/agent/contained_run.py"
+      # The tests drive _bash_isolation_argv, _seatbelt_argv and
+      # _in_process_cage, and all three live here. Leaving it out meant
+      # this workflow watched a surface it could not see changes to: 81
+      # commits passed between two runs, one of them changing the posture
+      # an attended session gets, and the break surfaced only when an
+      # unrelated commit happened to touch a file on this list.
+      - "delfin/agent/api_client.py"
       - "tests/test_the_sandbox_holds_on_macos.py"
+      - "tests/test_a_command_ends_with_everything_it_started.py"
       - ".github/workflows/sandbox-macos.yml"
   workflow_dispatch:
 

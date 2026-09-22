@@ -45,6 +45,9 @@ def _scene(mode, answer=True, locked=True):
         workspace=ws, agent_role="office_agent" if locked else "")
     p.mode = mode
     p.confirm_callback = lambda n, a, prev: (seen.append(n), answer)[1]
+    # a.txt has been read, as it would have been before an edit: the gate
+    # answers an edit that could not apply before it asks anyone.
+    p.read_tracker[str((ws / "a.txt").resolve())] = (ws / "a.txt").stat().st_mtime
     return gate, ws, p, seen
 
 

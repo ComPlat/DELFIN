@@ -184,6 +184,39 @@ def _parse_junitxml(path: Path) -> dict[str, Any]:
     }
 
 
+def build_command(
+    workspace: Path | str,
+    *,
+    target: str = "",
+    pytest_args: list[str] | None = None,
+    python: str = "",
+    report_path: Path | str | None = None,
+) -> list[str]:
+    """The pytest command this module runs, as a list.
+
+    Split out so that a run handed to the background is the SAME command
+    as one run here — a second spelling of it is how a producer and a
+    renderer came to disagree elsewhere in this codebase, and the cost
+    was six wake-ups that named nothing.
+    """
+    import sys
+    py = python or sys.executable
+    cmd = [py, "-m", "pytest"]
+    if target:
+        cmd.extend(split_target(target, workspace))
+    if pytest_args:
+        cmd.extend([str(a) for a in pytest_args])
+    if report_path is not None:
+        if _has_json_report():
+            cmd.extend(["--json-report",
+                        f"--json-report-file={report_path}"])
+        else:
+            cmd.extend([f"--junitxml={report_path}"])
+    # Quiet output keeps the captured stdout small.
+    cmd.append("-q")
+    return cmd
+
+
 def run_tests(
     workspace: Path | str,
     *,
@@ -235,17 +268,8 @@ def run_tests(
     use_json = _has_json_report()
     tmpdir = Path(tempfile.mkdtemp(prefix="delfin_tests_"))
     report_path = tmpdir / ("report.json" if use_json else "report.xml")
-    cmd = [py, "-m", "pytest"]
-    if target:
-        cmd.extend(split_target(target, workspace))
-    if pytest_args:
-        cmd.extend(pytest_args)
-    if use_json:
-        cmd.extend(["--json-report", f"--json-report-file={report_path}"])
-    else:
-        cmd.extend([f"--junitxml={report_path}"])
-    # Quiet output keeps the captured stdout small.
-    cmd.append("-q")
+    cmd = build_command(workspace, target=target, pytest_args=pytest_args,
+                        python=py, report_path=report_path)
 
     t0 = time.monotonic()
     try:

@@ -162,7 +162,19 @@ _BASELINE_TOKENS = 11_422
 # (2026-09-17). One call now reaches every other open session, and a
 # message addressed to a name that is not a key comes back with the
 # roster instead of costing a second call to ask for it.
-_TOKEN_BUDGET = 9_455
+# Raised a tenth time, 9_455 -> 9_460, for run_tests' `background`. 28
+# measured for the first wording; 23 of them were paid out of run_tests'
+# own text (the sentence explaining why to prefer it over raw pytest, the
+# property's description folded into the tool line where it also steers,
+# and two words from `target`). The 5 that remain are the property itself.
+#
+# What they buy: the suite is the work, and every way to run it used to
+# block a turn. bash was capped at 600 s and killed; run_tests accepted
+# 1800 s IN THE FOREGROUND and one call held a turn for 1803 s. Across
+# four sessions on 2026-09-18, eighteen calls ran over five minutes and
+# cost 154 minutes between them. The flag hands the run to a job, and a
+# finished job now wakes the session by itself.
+_TOKEN_BUDGET = 9_460
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

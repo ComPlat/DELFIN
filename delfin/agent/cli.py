@@ -653,7 +653,35 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
         if note:
             print(note, file=sys.stderr)
 
-    return _claim_session(getattr(engine, "session_id", "") or sid)
+    # One chain of decisions, in one order, so what was decided last
+    # is what everything downstream reads:
+    #   1. the engine mints or keeps a session id;
+    #   2. the session id decides the presence key (the -n name wins,
+    #      and the id keeps a nameless session reachable);
+    #   3. the presence key is written to the permissions object LAST,
+    #      so the operator note (which reads it for the sender) and
+    #      session_message agree on which session they speak about.
+    # The order is load-bearing in both directions: reading the key
+    # before the resume would name the session the id had before the
+    # restore, and writing it before the id settles would leave the
+    # broker's key and the note's sender disagreeing.
+    claimed = _claim_session(getattr(engine, "session_id", "") or sid)
+    # Everything downstream -- broker, operator note, session_message
+    # -- reads the key through the permissions object, so it is set
+    # here, once, after both halves of the name exist. The
+    # _presence_key_for call further down (which writes the same
+    # value for the broker) stays: it is the same value by the same
+    # rule, and removing it would leave the broker's key resting on
+    # this distant block.
+    try:
+        _kp = engine.kit_permissions
+        if _kp is not None:
+            _kp.presence_key = _presence_key_for(
+                getattr(args, "session_name", "") or "",
+                str(getattr(engine, "session_id", "") or sid or ""))
+    except Exception:
+        pass
+    return claimed
 
 
 def _tilde(path: Path | str) -> str:
@@ -732,6 +760,40 @@ def _launch_questions_answered(report) -> bool:
     return answer in ("y", "yes")
 
 
+#: The name at the top of a session. A box around a word, not a wordmark
+#: drawn out of half-blocks: block art is a different size in every
+#: terminal font and a smear in the ones that lack the glyphs, and it
+#: costs rows of the work that scrolls away. A name is read in a glance
+#: either way.
+_WORDMARK_TEXT = "DELFIN"
+
+#: Below this the box is wider than the screen, and a wrapped box reads
+#: as damage. The line under it says the same thing anyway.
+_WORDMARK_MIN_WIDTH = 20
+
+
+def _terminal_width(default: int = 80) -> int:
+    """Never raises: a banner is not worth a traceback."""
+    try:
+        import shutil as _sh
+        return int(_sh.get_terminal_size((default, 24)).columns)
+    except Exception:
+        return default
+
+
+def _wordmark(width: int) -> tuple[str, ...]:
+    """The name in a box, or nothing when it would not fit."""
+    if int(width or 0) < _WORDMARK_MIN_WIDTH:
+        return ()
+    inner = len(_WORDMARK_TEXT) + 2
+    return (
+        "╭" + "─" * inner + "╮",
+        "│ " + _WORDMARK_TEXT + " │",
+        "╰" + "─" * inner + "╯",
+        "",
+    )
+
+
 def _startup_banner(engine, report, workspace: Path,
                     why: str = "", isolation_note: str = "",
                     notes: tuple[str, ...] = ()) -> str:
@@ -765,7 +827,8 @@ def _startup_banner(engine, report, workspace: Path,
         # rather than as "this directory is not a repository".
         where = "not a git repository"
 
-    lines = [
+    lines = list(_wordmark(_terminal_width()))
+    lines += [
         f"delfin-agent · {provider}/{model} · {role_mode}",
         f"workspace  {_tilde(workspace)}  ({where})",
     ]
@@ -774,16 +837,28 @@ def _startup_banner(engine, report, workspace: Path,
                      + (f"  [{why}]" if why else ""))
         if isolation_note:
             lines.append(isolation_note)
-        elif perms_mode in ("default", "acceptEdits"):
-            # Nobody has been told this. _bash_isolation_argv engages bwrap
-            # only under bypassPermissions or a locked scope; in the
-            # attended modes with the shipped "auto" setting it returns a
-            # plain /bin/bash -c. A user reading "workspace confinement"
-            # reasonably assumes a sandbox, and what is actually there is
-            # path checking plus a regex list.
-            lines.append(
-                "isolation  off — a command the agent runs can still write "
-                "outside the workspace (--isolate)")
+        else:
+            # Which mechanism will actually run, asked of the one place
+            # that knows -- the doctor reads the same three probes
+            # _bash_isolation_argv picks from, in the same order, so the
+            # line cannot drift from the behaviour it describes.
+            try:
+                from .doctor import _isolation_mechanism
+                held_by = _isolation_mechanism()
+            except Exception:
+                held_by = ""
+            if held_by:
+                lines.append(
+                    f"isolation  on ({held_by}) — a command the agent runs "
+                    "writes only inside the workspace (--no-isolate)")
+            else:
+                # Not a detail to leave out. The agent starts at the safest
+                # posture the host can give; where that is none, the user
+                # is the one who has to know it.
+                lines.append(
+                    "isolation  off — neither bubblewrap, Landlock nor "
+                    "Seatbelt works here, so a command the agent runs can "
+                    "write outside the workspace")
     else:
         # Not decoration: without a permissions object the write and shell
         # tools refuse, and a user staring at a silent agent deserves the
@@ -1208,7 +1283,15 @@ def cmd_chat(args: argparse.Namespace) -> int:
     args.extra_dirs = [str(p) for p in report.granted_dirs]
     args.read_only_dirs = [str(p) for p in report.read_dirs]
     isolation_note = ""
-    if getattr(args, "isolate", False):
+    if getattr(args, "no_isolate", False):
+        # Deliberately disarmed. Said on screen, because a session running
+        # without containment should not look like one that has it.
+        from .api_client import set_bash_isolation_override
+        set_bash_isolation_override("off")
+        isolation_note = (
+            "isolation  OFF by request (--no-isolate) — a command the "
+            "agent runs can write outside the workspace")
+    elif getattr(args, "isolate", False):
         import shutil as _shutil
         from .api_client import set_bash_isolation_override
         set_bash_isolation_override("bwrap")
@@ -1252,10 +1335,32 @@ def cmd_chat(args: argparse.Namespace) -> int:
     # an unattended run and exactly what this command exists to change.
     broker = None
     bind = getattr(engine, "set_kit_confirm_callback", None)
-    if sys.stdin.isatty() and callable(bind):
+    if (getattr(args, "supervised", False) and not sys.stdin.isatty()
+            and callable(bind)):
+        # No terminal, but somebody is watching the approvals directory.
+        # Without this the Self-Modification Guard has no callback and
+        # refuses outright, so a headless run cannot touch the agent's
+        # own safety layer at all -- which is most of the work worth
+        # doing there. Asked for explicitly: a run nobody is watching
+        # keeps the refusal.
+        from .file_confirm import FileConfirmBroker
+        file_broker = FileConfirmBroker(
+            session_id=str(getattr(engine, "session_id", "") or ""))
+        if bind(file_broker.callback):
+            broker = None          # no terminal UI to drive
+            print("[supervised] confirmations go to the approvals "
+                  "directory; answer with: delfin-agent approvals",
+                  file=sys.stderr)
+    elif sys.stdin.isatty() and callable(bind):
+        _sid = str(getattr(engine, "session_id", "") or "")
+        _key = _presence_key_for(getattr(args, "session_name", ""), _sid)
         broker = TerminalConfirmBroker(
             persist=lambda pat: engine.persist_kit_pattern(pat, kind="allow"),
             set_mode=engine.set_kit_permission_mode,
+            # So a question waiting in this pane can be read -- and
+            # answered -- from outside it, whole.
+            session_id=_sid,
+            session_key=_key,
         )
         # False means this provider carries no permissions object at all,
         # and on that backend the file and shell tools refuse outright —
@@ -1267,6 +1372,11 @@ def cmd_chat(args: argparse.Namespace) -> int:
             perms = engine.kit_permissions
             perms.ask_user_callback = broker.ask_user
             perms.plan_approval_callback = broker.approve_plan
+            # session_message reads this. The dashboard set it and the
+            # CLI never did, so a terminal session was told it does not
+            # exist when it went to warn a parallel one about work it
+            # had found in the tree (2026-09-20).
+            perms.presence_key = _key
 
 
     notices = report.render()
@@ -1275,6 +1385,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
         max_tokens=getattr(args, "max_tokens", 0) or 0,
         show_thinking=bool(getattr(args, "verbose", False)),
         color=getattr(args, "color", "auto"),
+        session_name=getattr(args, "session_name", "") or "",
         banner=(_startup_banner(engine, report, workspace, why,
                                 isolation_note,
                                 tuple(_bounding_notices(args, engine)))
@@ -2032,6 +2143,117 @@ def cmd_credentials(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_approvals(args: argparse.Namespace) -> int:
+    """The questions a headless session waits on, and the answers.
+
+    A session with no terminal has nobody to ask, so the Self-Modification
+    Guard refuses outright and the most valuable work is the work it
+    cannot do. This is the other side of ``file_confirm``: what is
+    waiting, what it wants to change, and the two words that let it
+    through or turn it away. ``watch`` prints one line per new question,
+    which is what a supervising process reads.
+    """
+    import time as _time
+
+    from . import file_confirm as _fc
+
+    action = getattr(args, "approvals_action", "") or "ls"
+
+    if action in ("approve", "deny"):
+        who = os.environ.get("USER", "")
+        # A refusal may say what to do instead, and the model reads it in
+        # the same turn -- instead of guessing the same thing spelled
+        # differently, which is one more dialog for the person here.
+        reason = (getattr(args, "reason", "") or "") if action == "deny" else ""
+        ok = _fc.answer(args.request_id, action == "approve", by=who,
+                        reason=reason)
+        if not ok:
+            # The same id may belong to a session waiting at a terminal.
+            # Answering it here is the point of publishing it whole: the
+            # pane shows 24 cut lines, this shows the question.
+            from . import terminal_confirm as _tc
+            ok = _tc.answer_waiting(args.request_id,
+                                    action == "approve", by=who,
+                                    reason=reason)
+        if not ok:
+            print(f"ERROR: nothing waiting with id {args.request_id!r}",
+                  file=sys.stderr)
+            return 2
+        print(f"{action}: {args.request_id}")
+        if reason:
+            print(f"reason: {reason}")
+        return 0
+
+    if action == "show":
+        for row in _fc.pending():
+            if row.get("id") == args.request_id:
+                print(f"id      {row['id']}")
+                print(f"session {row.get('session_id', '')}")
+                print(f"tool    {row.get('tool', '')}")
+                print(f"path    {row.get('path', '')}")
+                print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s"
+                      f" of {int(row.get('timeout_s') or 0)}s")
+                print()
+                print(row.get("preview", ""))
+                return 0
+        from . import terminal_confirm as _tc
+        for row in _tc.pending_at_terminals():
+            if row.get("id") == args.request_id:
+                print(f"id      {row['id']}")
+                print(f"session {row.get('session_key') or row.get('session_id', '')}")
+                print(f"tool    {row.get('tool', '')}")
+                print(f"command {row.get('command', '')}")
+                print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s")
+                print("answer  here or at that session's terminal — "
+                      "whichever comes first")
+                print()
+                print(row.get("preview", ""))
+                return 0
+        print(f"ERROR: nothing waiting with id {args.request_id!r}",
+              file=sys.stderr)
+        return 2
+
+    if action == "watch":
+        seen: set = set()
+        limit = float(getattr(args, "seconds", 0) or 0)
+        deadline = _time.monotonic() + (limit if limit > 0 else 1e9)
+        while _time.monotonic() < deadline:
+            for row in _fc.pending():
+                rid = row.get("id")
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                print(f"{rid}  {row.get('tool', '')}  "
+                      f"{row.get('path') or '-'}  "
+                      f"session={row.get('session_id', '')}", flush=True)
+            _time.sleep(1.0)
+        return 0
+
+    rows = _fc.pending()
+    # A question waiting in a terminal pane is answered there, not here.
+    # It is listed anyway: the pane cuts the preview to 24 lines and to
+    # its own width, and a supervisor who cannot read a question cannot
+    # give an answer to it. `show` prints these whole.
+    from . import terminal_confirm as _tc
+    at_terminals = _tc.pending_at_terminals()
+    if not rows and not at_terminals:
+        print("(nothing waiting)")
+        return 0
+    for row in rows:
+        waited = int(_time.time() - float(row.get("asked_at") or 0))
+        print(f"{row.get('id', ''):<24} {row.get('tool', ''):<12} "
+              f"{(row.get('path') or '-')[:40]:<40} {waited}s")
+    if at_terminals:
+        print("\nWaiting at a terminal — answer here or in that session:")
+        for row in at_terminals:
+            waited = int(_time.time() - float(row.get("asked_at") or 0))
+            mark = " PROTECTED" if row.get("protected") else ""
+            print(f"  {row.get('id', ''):<24} "
+                  f"{(row.get('session_key') or '?'):<14} "
+                  f"{row.get('tool', ''):<12} {waited}s{mark}")
+    return 0
+
+
 def cmd_session(args: argparse.Namespace) -> int:
     from . import session_store as _ss
     if args.session_action == "ls":
@@ -2355,9 +2577,17 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     """What ran here before, as a table that says how to come back."""
     from . import cli_resume as _cr
 
+    # What is open NOW comes first. A table of history read as "nothing
+    # is running" while five sessions were, and the supervisor had to
+    # assemble the live picture from tmux panes and git logs instead.
+    live = _cr.render_open(_cr.open_now())
+    if live:
+        print(live)
+        print()
     rows = _cr.list_sessions(limit=max(1, int(getattr(args, "limit", 20) or 20)))
     if not rows:
-        print("No sessions recorded yet.")
+        if not live:
+            print("No sessions recorded yet.")
         return 0
     print(_cr.render_sessions(rows))
     return 0
@@ -2367,7 +2597,114 @@ def cmd_where(args: argparse.Namespace) -> int:
     """Say where the dashboard is and how to walk back into it."""
     from . import where as _where
 
+    flags = [flag for flag in ("--attach", "--ssh-config", "--write")
+             if getattr(args, flag[2:].replace("-", "_"), False)]
+    if flags:
+        return _where.main(flags)
     print(_where.format_text(_where.dashboard(), _where.sessions()))
+    return 0
+
+
+def cmd_jobs(args: argparse.Namespace) -> int:
+    """The cluster's jobs from a terminal: read-only, answer when asked.
+
+    `jobs watch --on|--off|--status` manages the monitor daemon's
+    setting; the listing itself never starts or signals anything. A host
+    without squeue gets one line and exit 0 — missing is not failing.
+    """
+    import json as _json
+
+    from . import cli_jobs as _cj
+
+    action = getattr(args, "jobs_action", None)
+    if action == "watch":
+        if getattr(args, "on", False):
+            print(_cj.watch_set("on"))
+            return 0
+        if getattr(args, "off", False):
+            print(_cj.watch_set("off"))
+            return 0
+        print(_cj.watch_report())
+        return 0
+
+    try:
+        rows = _cj.collect_job_rows()
+    except _cj.SchedulerUnavailable as exc:
+        print(_cj.scheduler_note(0, exc))
+        return 0
+    if getattr(args, "json", False):
+        print(_json.dumps(rows, indent=2))
+    else:
+        print(_cj.render_jobs(rows))
+    return 0
+
+
+def _presence_key_for(name: str, session_id: str) -> str:
+    """The address this session is known by, to a person and to a peer.
+
+    The name from ``-n`` when there is one, because that is what a person
+    types; the head of the session id otherwise, so no session is
+    unreachable for want of a name. One function, because the operator's
+    inbox, the published approval and ``session_message`` must all mean
+    the same session by the same word.
+    """
+    name = str(name or "").strip()
+    if name:
+        return name
+    return str(session_id or "")[:8]
+
+
+def _session_id_for(name: str) -> str:
+    """The audit-log session id behind a -n name, or the name itself.
+
+    The log records the engine's id; a supervisor knows the session by
+    the name it was started with. Presence carries both, so the lookup
+    is one read and costs nothing when the name IS an id.
+    """
+    name = str(name or "").strip()
+    if not name:
+        return ""
+    try:
+        from . import session_presence as _pres
+        for record in _pres.open_sessions():
+            if str(record.get("key") or "") == name:
+                return str(record.get("session_id") or "") or name
+    except Exception:
+        pass
+    return name
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Follow every step, and above all every refusal.
+
+    Supervising five sessions meant grepping the audit log by hand, once
+    per question. What was wanted twice over: what a session is doing
+    now, and what it TRIED to do and was refused -- because that is the
+    line to stop on and the moment to step in.
+    """
+    import time as _time
+
+    from . import audit_log as _al
+
+    session = _session_id_for(getattr(args, "session", ""))
+    denied = bool(getattr(args, "denied", False))
+    # Start a little way back, so the first screen has context rather
+    # than an empty prompt that looks like nothing is happening.
+    back = max(0, int(getattr(args, "since", 40) or 0))
+    rows, offset = _al.steps_since(0, session=session, denied_only=denied)
+    for row in rows[-back:] if back else []:
+        print(_al.render_step(row), flush=True)
+    limit = float(getattr(args, "seconds", 0) or 0)
+    deadline = _time.monotonic() + (limit if limit > 0 else 1e9)
+    try:
+        while _time.monotonic() < deadline:
+            rows, offset = _al.steps_since(offset, session=session,
+                                           denied_only=denied)
+            for row in rows:
+                print(_al.render_step(row), flush=True)
+            _time.sleep(1.0)
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
@@ -2449,8 +2786,16 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
                    help="Model name (provider-specific)")
     p.add_argument("--effort", default="",
                    help="low/medium/high/xhigh")
+    # 0 means "the role decides" (engine: max_tokens or role budget).
+    # The old 4096 default silently cut a solo session to an eighth of
+    # its 32768 role budget -- on a model that thinks invisibly, a
+    # large edit then ended at finish_reason length with no tool call
+    # and the turn stood at the prompt (operator's point d, 2026-09-22).
+    # Only chat passes 0: run keeps its historical default, and the
+    # scheduler and the benchmark run through run.
     p.add_argument("--max-tokens", type=int, default=max_tokens_default,
-                   dest="max_tokens")
+                   dest="max_tokens",
+                   help="Max output tokens; 0 = the role's budget")
     p.add_argument("--cwd", default="", help="Run in this directory")
 
 
@@ -2489,6 +2834,14 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Work on a copy, leaving the original untouched")
     chat.add_argument("-n", "--name", default="", dest="session_name",
                       help="Name this session, so --resume can find it")
+    # The one way a run with no terminal can ask anybody anything. Opt-in
+    # on purpose: without it a headless run keeps the behaviour it has,
+    # where the Self-Modification Guard refuses outright because there is
+    # no callback to ask. See delfin/agent/file_confirm.py.
+    chat.add_argument("--supervised", action="store_true",
+                      help="Send confirmations to the approvals directory "
+                           "instead of refusing them (for a run with no "
+                           "terminal; answer with 'delfin-agent approvals')")
     chat.add_argument("--permission-mode", default="", dest="permission_mode",
                       choices=["", "plan", "default", "acceptEdits",
                                "bypassPermissions"],
@@ -2505,7 +2858,14 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Readable this session — the right answer to "
                            "'let it read my other repo'")
     chat.add_argument("--isolate", action="store_true",
-                      help="Run shell commands under filesystem isolation")
+                      help="Force filesystem isolation, and refuse to run "
+                           "commands where this host cannot provide it")
+    # The other half of a default that is ON. A protection nobody can
+    # switch off when it blocks real work gets switched off badly -- by
+    # editing settings, or by not using the tool at all.
+    chat.add_argument("--no-isolate", action="store_true", dest="no_isolate",
+                      help="Run shell commands unisolated — they may then "
+                           "write outside the workspace")
     # Named for what it does, not for what the word suggests: what it
     # covers and the one thing it still cannot reach are both in the help
     # itself rather than left to be discovered — see _BARE_SKIPS and
@@ -2560,7 +2920,7 @@ def build_parser() -> argparse.ArgumentParser:
                       choices=["auto", "always", "never"],
                       help="Colour output (auto: only on a terminal, and "
                            "never when NO_COLOR is set)")
-    _add_agent_flags(chat)
+    _add_agent_flags(chat, max_tokens_default=0)
     chat.add_argument("-v", "--verbose", action="store_true")
     # Only this front door inherits the dashboard's saved provider/model.
     chat.set_defaults(func=cmd_chat, settings_defaults=True)
@@ -2809,6 +3169,30 @@ def build_parser() -> argparse.ArgumentParser:
     srch.add_argument("query")
     sess.set_defaults(func=cmd_session)
 
+    # approvals — the other side of a supervised headless session
+    appr = sub.add_parser(
+        "approvals",
+        help="Answer the confirmations a supervised headless session is "
+             "waiting on (see 'chat --supervised')")
+    appr_sub = appr.add_subparsers(dest="approvals_action", required=False)
+    appr_sub.add_parser("ls", help="What is waiting (the default)")
+    appr_show = appr_sub.add_parser(
+        "show", help="The full preview of one request, diff included")
+    appr_show.add_argument("request_id")
+    appr_ok = appr_sub.add_parser("approve", help="Let one request through")
+    appr_ok.add_argument("request_id")
+    appr_no = appr_sub.add_parser("deny", help="Turn one request away")
+    appr_no.add_argument("request_id")
+    appr_no.add_argument(
+        "--reason", default="",
+        help="Tell the agent why, and what to do instead — it reads this "
+             "in the same turn instead of guessing")
+    appr_watch = appr_sub.add_parser(
+        "watch", help="One line per new request, as they arrive")
+    appr_watch.add_argument("--seconds", type=float, default=0.0,
+                            help="Stop after N seconds (0: keep watching)")
+    appr.set_defaults(func=cmd_approvals, approvals_action="ls")
+
     # bug — triage / watch the user bug-report archive (maintainer tool)
     bug = sub.add_parser(
         "bug",
@@ -2936,6 +3320,25 @@ def build_parser() -> argparse.ArgumentParser:
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
 
+    # watch — every step every session takes, as it takes it, and above
+    # all the ones the gate refused.
+    watch_p = sub.add_parser(
+        "watch",
+        help="Follow what the open sessions do, step by step; --denied "
+             "keeps only what the gate refused",
+    )
+    watch_p.add_argument("--session", default="",
+                         help="One session: its -n name or the head of its id")
+    watch_p.add_argument("--denied", action="store_true",
+                         help="Only the refusals — what a session tried and "
+                              "was not allowed to do")
+    watch_p.add_argument("--seconds", type=float, default=0.0,
+                         help="Stop after this long (default: until Ctrl+C)")
+    watch_p.add_argument("--since", type=int, default=40,
+                         help="How many recent steps to print before "
+                              "following (default 40)")
+    watch_p.set_defaults(func=cmd_watch)
+
     # where — the dashboard runs on one node, in one multiplexer, behind
     # one forwarded port, and the next login lands anywhere.
     where_p = sub.add_parser(
@@ -2943,6 +3346,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Where the dashboard runs and how to get back into it: node, "
              "tmux session, port, and a link per kept session",
     )
+    where_p.add_argument("--attach", action="store_true",
+                         help="Walk into the tmux session the note names "
+                              "(ssh + port forward when it runs elsewhere)")
+    where_p.add_argument("--ssh-config", action="store_true",
+                         help="Print a ready ssh config entry for it")
+    where_p.add_argument("--write", action="store_true",
+                         help="With --ssh-config: append the entry instead "
+                              "of printing (never overwrites)")
     where_p.set_defaults(func=cmd_where)
 
     # sessions — what ran here before, without starting anything
@@ -2954,6 +3365,34 @@ def build_parser() -> argparse.ArgumentParser:
     sessions_p.add_argument("--limit", type=int, default=20,
                             help="How many to list (default 20)")
     sessions_p.set_defaults(func=cmd_sessions)
+
+    # jobs — the cluster's jobs, read-only, without starting a session.
+    # Same query and watch files the monitor daemon uses (cli_jobs is
+    # the surface, job_monitor the mechanism).
+    jobs_p = sub.add_parser(
+        "jobs",
+        help="Your watched cluster jobs: id, state, elapsed, workspace "
+             "(read-only); `jobs watch` manages the monitor daemon",
+    )
+    jobs_p.add_argument("--json", action="store_true",
+                        help="Print the rows as JSON instead of the table")
+    jobs_p.set_defaults(func=cmd_jobs)
+
+    jobs_sub = jobs_p.add_subparsers(dest="jobs_action")
+    jobs_watch = jobs_sub.add_parser(
+        "watch",
+        help="Start, stop or report the job-monitor daemon (its setting "
+             "agent.job_monitor.enabled; the watch loop is LLM-free)",
+    )
+    jobs_watch.add_argument("--on", action="store_true",
+                            help="Enable job monitoring (persists the "
+                                 "setting; starts nothing)")
+    jobs_watch.add_argument("--off", action="store_true",
+                            help="Disable job monitoring (a running daemon "
+                                 "exits on its next pass)")
+    jobs_watch.add_argument("--status", action="store_true",
+                            help="Report daemon, setting and watched count "
+                                 "(default)")
 
     return p
 
@@ -3003,17 +3442,21 @@ def main(argv: list[str] | None = None) -> int:
         _process_guard.protect("terminal agent")
         _show_security_notices()
         _exported = _process_guard.exported_provider_keys()
-        if _exported:
-            # Do it rather than ask for it: the key goes into the 0600
-            # store and the export is commented out, with a copy of the
-            # file kept. Only what could not be decided is left to say.
-            _done = _process_guard.put_exported_keys_away(_exported)
-            if _done:
-                print(_done, file=sys.stderr)
-            else:
-                print("Warning: "
-                      + _process_guard.exported_key_advice(_exported),
-                      file=sys.stderr)
+        # Unconditional, because the environment is not where the worst
+        # case lives: an alias sets a key for one command and leaves the
+        # line in a shell file for good, so nothing ever exports it and
+        # the old `if _exported:` never looked.
+        #
+        # Do it rather than ask for it: an exported key goes into the
+        # 0600 store and the export is commented out, with a copy of the
+        # file kept. Only what could not be decided is left to say.
+        _done = _process_guard.put_exported_keys_away(_exported)
+        if _done:
+            print(_done, file=sys.stderr)
+        elif _exported:
+            print("Warning: "
+                  + _process_guard.exported_key_advice(_exported),
+                  file=sys.stderr)
 
         def _end_with_everything() -> None:
             _stop_own_background_shells()

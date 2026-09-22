@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 
@@ -39,6 +40,9 @@ _WELL_KNOWN_KEYS: tuple[str, ...] = (
     "KIT_TOOLBOX_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    # A GitHub token opens the repository this agent pushes to.
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
 )
 
 
@@ -227,6 +231,42 @@ SHELL_FILES: tuple[str, ...] = (
 )
 
 
+def _sets(name: str, line: str) -> bool:
+    """Whether *line* sets or exports *name* -- not merely reads it.
+
+    ``OPENAI_API_KEY=$KIT_TOOLBOX_API_KEY`` names the second key and sets
+    only the first. Taking every line that held the name and an ``=``
+    anywhere for an export commented out an alias that read the key from
+    a 0600 file (2026-09-20).
+    """
+    n = re.escape(name)
+    return bool(
+        re.search(rf"(?<![\w${{]){n}=", line)
+        or re.search(rf"\b(?:export|declare\s+-\w*x\w*|typeset\s+-\w*x\w*)"
+                     rf"\s+(?:[^\s;&|]+\s+)*{n}\b", line)
+        or re.search(rf"\bsetenv\s+{n}\b", line)
+        or re.search(rf"^\s*{n}\s+(?:DEFAULT|OVERRIDE)=", line))
+
+
+def _written_value(name: str, line: str) -> str:
+    """The value *line* writes for *name*, as it stands in the file.
+
+    Empty when there is none to find there: a bare ``export NAME``, an
+    empty value, or one that is a ``$REFERENCE`` or a command -- those put
+    no key into the file, whoever can read it.
+    """
+    n = re.escape(name)
+    m = (re.search(rf"(?<![\w${{]){n}=(\S*)", line)
+         or re.search(rf"\bsetenv\s+{n}\s+(\S+)", line)
+         or re.search(rf"^\s*{n}\s+(?:DEFAULT|OVERRIDE)=(\S*)", line))
+    if not m:
+        return ""
+    value = m.group(1).lstrip("'\"")
+    if not value or value.startswith(("$", "`")):
+        return ""
+    return value
+
+
 def exported_in_shell_files(name: str, *, home: Path | None = None
                             ) -> list[tuple[Path, int, str]]:
     """Every (file, line number, line) that exports ``name``.
@@ -257,9 +297,60 @@ def exported_in_shell_files(name: str, *, home: Path | None = None
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            if name in stripped and ("export" in stripped or "=" in stripped):
+            if name in stripped and _sets(name, stripped):
                 found.append((path, number, line))
     return found
+
+
+def keys_in_readable_shell_files(
+    names: "tuple[str, ...] | list[str]" = (),
+    *,
+    home: Path | None = None,
+) -> list[dict]:
+    """Provider keys sitting in shell files that somebody else can read.
+
+    The environment is the wrong place to start looking. ``adopt_from_
+    environment`` searches the shell files only for keys it already found
+    in ``os.environ``, so a key that never reaches the environment is
+    never searched for -- and that is the worse case, because it stays in
+    the file instead of living only as long as a shell. The shape that
+    hides this way is an alias:
+
+        alias codex-kit='OPENAI_API_KEY="..." ... codex'
+
+    The value is set for the duration of one command and is absent from
+    every environment DELFIN inspects, while the line itself is readable
+    by everyone who may read the file.
+
+    The permission is the finding, not the presence: a key in a 0600
+    ``~/.bashrc`` is where its owner put it and nobody else sees it. Each
+    row is ``{name, file, line_no, mode, readable_by}`` and never carries
+    the value. Read-only, always -- the value is not in the store, and a
+    tool that removes the only copy of a key is worse than the leak.
+    """
+    rows: list[dict] = []
+    for name in (tuple(names) or _WELL_KNOWN_KEYS):
+        for path, number, line in exported_in_shell_files(name, home=home):
+            if not _written_value(name, line):
+                continue
+            try:
+                mode = path.stat().st_mode & 0o777
+            except OSError:
+                continue
+            others = bool(mode & 0o004)
+            group = bool(mode & 0o040)
+            if not (group or others):
+                continue
+            who = ("group, others" if group and others
+                   else "others" if others else "group")
+            rows.append({
+                "name": name,
+                "file": str(path),
+                "line_no": number,
+                "mode": f"{mode:04o}",
+                "readable_by": who,
+            })
+    return rows
 
 
 #: Suffix of the copy kept beside a shell file this touches.
@@ -277,6 +368,12 @@ def comment_out_exports(name: str, *, home: Path | None = None,
     """
     done: list[dict] = []
     for path, number, line in exported_in_shell_files(name, home=home):
+        # An alias sets a variable for one command and exports nothing
+        # into the shell, so commenting it out stops no export -- it only
+        # breaks the alias. A key written in one is reported by
+        # keys_in_readable_shell_files instead, and never edited.
+        if line.lstrip().startswith("alias "):
+            continue
         try:
             text = path.read_text(encoding="utf-8")
             lines = text.splitlines(keepends=True)

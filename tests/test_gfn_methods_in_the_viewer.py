@@ -2992,7 +2992,11 @@ def test_the_bonding_is_kept_for_the_molecule_it_was_perceived_from(editor):
     keeper = source.split("def _gfn_topology_dir")[1].split("\n    def ")[0]
     assert "kept.get('who') == who" in keeper
     dropper = source.split("def _drop_gfn_topology")[1].split("\n    def ")[0]
-    assert "shutil.rmtree" in dropper
+    # The folder goes. Which call removes it is not the promise -- it used
+    # to be shutil.rmtree directly and is now scratch.release, which also
+    # takes the folder off this process's own cleanup list so a later exit
+    # does not reach for a path that is gone.
+    assert "scratch.release" in dropper or "shutil.rmtree" in dropper
 
     edit = source.split("def _apply_structure")[1].split("\n    def ")[0]
     assert "_drop_gfn_topology()" in edit, "a structural edit is another molecule"

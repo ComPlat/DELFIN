@@ -97,13 +97,26 @@ def test_a_command_after_a_message_is_still_a_command(perms):
 
 @pytest.mark.parametrize("cmd", [
     'git tag -m "credentials handling" v1',
-    'git stash push -m "wip on .env parsing"',
     'git notes add -m "keys are skipped"',
     "git commit -m wip-on-credentials",
     'GIT_EDITOR=true git commit -m "credentials"',
 ])
 def test_the_other_places_git_carries_a_message(perms, cmd):
     assert _gate(cmd, perms) is None
+
+
+def test_a_stash_is_refused_for_being_a_stash_not_for_its_message(perms):
+    """`git stash push -m "wip on .env parsing"` stood in the list above
+    until the stash went on the deny list: the stack belongs to the
+    repository, and sessions in sibling worktrees share it.
+
+    It is still worth a case, for the half this file is about — the
+    refusal must be about the stash, never about the .env in the
+    message."""
+    err = _gate('git stash push -m "wip on .env parsing"', perms)
+    assert err is not None
+    assert "stash" in err
+    assert ".env" not in err and "secret" not in err.lower()
 
 
 # -- the blanking itself ----------------------------------------------------
