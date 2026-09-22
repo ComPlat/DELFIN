@@ -19162,6 +19162,11 @@ _INFRA_EXHAUSTION_MARKERS: tuple[str, ...] = (
     "connection pool",
     "sqlalche.me",
     "temporarily unavailable",
+    # The gateway saying its OWN connection to the model server failed
+    # (Open WebUI in front of the KIT endpoint, measured 2026-09-21: the
+    # turn died on this 400 and the session stood 24 minutes at its
+    # prompt). A chat request cannot be malformed into this message.
+    "server connection error",
 )
 
 
