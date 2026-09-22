@@ -838,6 +838,20 @@ class TerminalAgent:
                     for event in decoder.feed(raw.read_ready(_PUMP_TICK_S)):
                         self._on_key(event, decoder)
                     self._repaint_bottom()
+                    # The heartbeat of a session IN a turn. Presence was
+                    # renewed only at the prompt and on a broker question,
+                    # so a turn longer than session_presence._STALE_S --
+                    # one model round after another, no question asked --
+                    # dropped the session out of open_sessions(), and a
+                    # peer got "no other open session 'runde2c-s4'" while
+                    # s4 was working (measured 2026-09-21). The pump runs
+                    # for the whole turn, so the refresh travels with it;
+                    # announce itself throttles unchanged records to one
+                    # write per heartbeat, never one per read.
+                    try:
+                        self._announce_presence()
+                    except Exception:
+                        pass
                 try:
                     item = self._q.get(
                         timeout=0.0 if raw.active else _PUMP_TICK_S)
