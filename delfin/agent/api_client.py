@@ -3942,6 +3942,33 @@ def _hook_workspace(perms) -> "Path | None":
         return None
 
 
+def _mcp_call_refusal(fn_name: str, fn_args: dict,
+                      permissions) -> Optional[str]:
+    """The refusal for an MCP tool call as a JSON result, or None to run it.
+
+    MCP calls skip ``_DocToolExecutor.execute()``, so the PreToolUse hooks
+    and the gate run here, keyed on the un-namespaced base name so a hook
+    on ``bash`` also covers ``mcp__kit-coding__bash``.
+
+    The hooks answer FIRST, and a blocking hook ends it: the gate -- and
+    the confirmation dialog it may raise -- runs only when no hook
+    blocked. Both used to be evaluated before either result was looked
+    at, so a hook that refused a call still put its dialog in front of
+    the user, who decided for nothing before the hook's refusal won
+    anyway. The native path (execute) has always short-circuited.
+    """
+    base = (fn_name.rsplit("__", 1)[-1]
+            if fn_name.startswith("mcp__") else fn_name)
+    hook_block = _doc_executor._run_pre_tool_hooks(base, fn_args, permissions)
+    if hook_block is not None:
+        return json.dumps({"error": "blocked_by_hook",
+                           "reason": hook_block[:1200]})
+    gate_block = _doc_executor._gate_mcp_tool(fn_name, fn_args, permissions)
+    if gate_block is not None:
+        return json.dumps({"error": gate_block})
+    return None
+
+
 def _session_hooks(perms):
     """The hook definitions in force for *perms*, as a ``HooksConfig``.
 
@@ -21174,17 +21201,10 @@ class OpenAIClient(_BaseClient):
                         # REMOTELY and would otherwise bypass the native gate.
                         _mcp_base = (fn_name.rsplit("__", 1)[-1]
                                      if fn_name.startswith("mcp__") else fn_name)
-                        _hook_block = _doc_executor._run_pre_tool_hooks(
-                            _mcp_base, fn_args, self._permissions)
-                        _mcp_block = _doc_executor._gate_mcp_tool(
+                        _refusal = _mcp_call_refusal(
                             fn_name, fn_args, self._permissions)
-                        if _hook_block is not None:
-                            result = json.dumps({
-                                "error": "blocked_by_hook",
-                                "reason": _hook_block[:1200],
-                            })
-                        elif _mcp_block is not None:
-                            result = json.dumps({"error": _mcp_block})
+                        if _refusal is not None:
+                            result = _refusal
                         else:
                             try:
                                 from . import mcp_client as _mcp
