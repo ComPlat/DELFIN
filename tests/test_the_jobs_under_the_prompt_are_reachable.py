@@ -27,12 +27,13 @@ What is judged here, and the instrument:
                             mark must be gone before the letter lands,
                             so Enter after it cannot act on a job
 
-The instrument is the model terminal from the transcript test, grown
-for two things this work needs and that one never saw: ``CSI J`` (the
+The instrument is the shared model terminal, tests/vt.py — this file
+carried its own copy of one until the two drifted; the shared screen
+already knew the two things this work needs: ``CSI J`` (the
 erase-below that a wrapped status row leaves standing) and wrapping (a
 status line longer than the width occupies more physical rows than the
-box counted). Both faults are invisible to a grid that does not wrap,
-which is why the earlier test could not have caught them.
+box counted). The appear-then-leave assertions read its ``seen()``
+ring, every row the screen ever showed, through ``_status_rows``.
 
 The last test drives a REAL pty — a pipe answers ``raw_mode_supported``
 with no, so nothing about the box is ever exercised by one. The pty
@@ -57,110 +58,10 @@ from delfin.agent import repl as R
 from delfin.agent import repl_box as rb
 from delfin.agent import repl_keys as rk
 
+from vt import Screen
 
-# --- the model terminal, grown for CSI J and wrapping ----------------------
 
-class Screen:
-    """Rows of text, a cursor, and the escapes the box emits.
-
-    Two things the transcript test's grid did not do, both of them
-    load-bearing for this work:
-
-      ``CSI J``  the erase-below emitted when a box row wrapped on the
-                 real screen — a grid that ignores it cannot see the
-                 stray tail it is there to remove
-      wrapping   a written row longer than the width hard-wraps, the
-                 way a terminal does, so a status line that outgrew the
-                 input's width occupies the rows the erase must reach
-    """
-
-    def __init__(self, width: int = 40, transcript=()):
-        self.width = width
-        self.rows: list[str] = list(transcript) or [""]
-        self.row = len(self.rows) - 1
-        self.col = 0
-        # Everything ever painted, for the transcript-integrity checks
-        # (a row that survived a submit), and the status rows in order
-        # for the walk's appear-then-leave assertions.
-        self.ever: set[str] = set()
-        self.status_seen: list[str] = []
-
-    def _note(self) -> None:
-        self.ever.update(r.rstrip() for r in self.rows if r.strip())
-        for r in self.rows:
-            r = r.rstrip()
-            if "⚙" in r and (not self.status_seen or self.status_seen[-1] != r):
-                self.status_seen.append(r)
-
-    def _fit(self, row: int) -> None:
-        while len(self.rows) <= row:
-            self.rows.append("")
-
-    def write(self, data: str) -> None:
-        i = 0
-        while i < len(data):
-            ch = data[i]
-            if ch == "\x1b" and data[i + 1:i + 2] == "[":
-                j = i + 2
-                while j < len(data) and not data[j].isalpha():
-                    j += 1
-                arg = data[i + 2:j] or "1"
-                n = int(arg)
-                verb = data[j]
-                if verb == "A":
-                    self.row = max(0, self.row - n)
-                elif verb == "B":
-                    self.row += n
-                    self._fit(self.row)
-                elif verb == "C":
-                    self.col += n
-                elif verb == "K":
-                    self._fit(self.row)
-                    self.rows[self.row] = self.rows[self.row][:self.col]
-                elif verb == "J":
-                    # 0 = cursor to end of screen; the form the erase
-                    # emits. A grid that skipped this let a wrapped
-                    # row's tail stand through the next answer.
-                    self._fit(self.row)
-                    self.rows[self.row] = self.rows[self.row][:self.col]
-                    self.rows = self.rows[:self.row + 1]
-                i = j + 1
-                continue
-            if ch == "\r":
-                self.col = 0
-            elif ch == "\n":
-                self.row += 1
-                self._fit(self.row)
-            else:
-                self._fit(self.row)
-                line = self.rows[self.row]
-                if len(line) < self.col:
-                    line += " " * (self.col - len(line))
-                # wrapping: the width is a wall, not a suggestion. The
-                # status line can outgrow the box's width; the physical
-                # rows it takes are the ones the counted erase misses.
-                if self.col >= self.width:
-                    self.row += 1
-                    self._fit(self.row)
-                    self.col = 0
-                    line = self.rows[self.row]
-                    if len(line) < self.col:
-                        line += " " * (self.col - len(line))
-                self.rows[self.row] = (line[:self.col] + ch
-                                       + line[self.col + 1:])
-                self.col += 1
-            i += 1
-
-    def flush(self):
-        self._note()
-
-    def isatty(self):
-        return True
-
-    def text(self) -> list[str]:
-        self._note()
-        return [r.rstrip() for r in self.rows]
-
+# --- the scripted keyboard and the boxed runner ------------------------------
 
 class _Keys:
     """A RawMode stand-in that hands the loop a scripted keyboard."""
@@ -239,9 +140,10 @@ def boxed(monkeypatch):
 
 
 def _status_rows(screen) -> list[str]:
-    """The rows that carry the status line's marker or handle."""
-    return [r for r in screen.ever
-            if "⚙" in r or "▶" in r]
+    """The status rows the screen EVER showed, in order, from the
+    shared model's ring: the walk's appear-then-leave assertions ask
+    for history, not for the final grid."""
+    return [r for r in screen.seen() if "⚙" in r or "▶" in r]
 
 
 # --- the walk is visible ----------------------------------------------------
@@ -308,11 +210,11 @@ def test_a_typed_letter_drops_the_mark(boxed):
     """One letter makes the line a message; the mark must be gone."""
     text, screen = boxed(["\x1b[A", "x", "\x1b[B", "\r"], width=40)
     assert text == "x", f"got {text!r}"
-    assert any("▶" in r for r in screen.status_seen), (
-        "the walk never showed a mark:\n" + "\n".join(screen.status_seen))
-    assert "▶" not in screen.status_seen[-1], (
-        "the mark outlived the typed letter:\n"
-        + "\n".join(screen.status_seen))
+    rows = _status_rows(screen)
+    assert any("▶" in r for r in rows), (
+        "the walk never showed a mark:\n" + "\n".join(rows))
+    assert "▶" not in rows[-1], (
+        "the mark outlived the typed letter:\n" + "\n".join(rows))
 
 
 def test_a_typed_letter_then_enter_is_a_message_not_a_job(boxed):
@@ -323,10 +225,11 @@ def test_a_typed_letter_then_enter_is_a_message_not_a_job(boxed):
 def test_esc_drops_the_walk(boxed):
     text, screen = boxed(["\x1b[A", "\x1b", "\r"], width=40)
     assert text == ""
-    assert any("▶" in r for r in screen.status_seen), (
-        "the walk never showed a mark:\n" + "\n".join(screen.status_seen))
-    assert "▶" not in screen.status_seen[-1], (
-        "the mark outlived Esc:\n" + "\n".join(screen.status_seen))
+    rows = _status_rows(screen)
+    assert any("▶" in r for r in rows), (
+        "the walk never showed a mark:\n" + "\n".join(rows))
+    assert "▶" not in rows[-1], (
+        "the mark outlived Esc:\n" + "\n".join(rows))
 
 
 # --- a wrapped status row leaves nothing standing ---------------------------
