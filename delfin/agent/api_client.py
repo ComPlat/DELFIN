@@ -5369,6 +5369,15 @@ class KitToolPermissions:
         # is where every unevaluated payload belongs.
         if _RUNS_SOMETHING_RE.search(cmd) or re.search(r"[<>]\(", cmd):
             return False
+        # `set -o pipefail` in front of a command changes nothing but the
+        # exit status of the pipe -- and the gate's own shell note
+        # (_pipe_exit_note) tells the model to write it. Followed, the
+        # advice cost a dialog every time: `set -o pipefail; <gate> ... |
+        # tail` asked although each part alone was free (measured
+        # 2026-09-22). Only the shell's error options count here; `set`
+        # with anything else goes on being asked about.
+        if _SHELL_ERROR_OPTIONS_RE.fullmatch(cmd):
+            return True
         for pat in self.bash_auto_allow_patterns:
             if re.search(pat, cmd, re.IGNORECASE):
                 return True
@@ -5404,6 +5413,12 @@ class KitToolPermissions:
         if candidate is not None and self.find_root_for(candidate) is not None:
             return True
         return False
+
+
+#: A `set` that only turns on the shell's error handling: -e, -u, -x and
+#: -o pipefail, in any bundle (`set -euo pipefail`). Nothing else.
+_SHELL_ERROR_OPTIONS_RE = re.compile(
+    r"\s*set(?:\s+-[eux]+|\s+-[eux]*o\s+pipefail)+\s*")
 
 
 #: `for x in <words>; do <body>; done` and the while/until forms.
