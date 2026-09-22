@@ -77,7 +77,7 @@ def test_a_path_the_file_merely_mentions_is_not_a_write(task_id, content):
 
 @pytest.mark.parametrize("task_id", _GUARDED)
 @pytest.mark.parametrize("target", [
-    "/home/qmchem_max/notes.py",
+    "/home/localuser/notes.py",
     "/etc/cron.d/agent",
     "/usr/local/lib/x.py",
     "/root/.bashrc",
@@ -89,7 +89,7 @@ def test_a_write_that_really_leaves_the_workspace_is_caught(task_id, target):
 
 @pytest.mark.parametrize("task_id", _GUARDED)
 def test_the_file_path_spelling_is_caught_too(task_id):
-    rendered = _rendered({"file_path": "/home/qmchem_max/x.py",
+    rendered = _rendered({"file_path": "/home/localuser/x.py",
                           "content": "x = 1\n"})
     assert _outside_patterns()[task_id].search(rendered)
 

@@ -15,6 +15,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from . import proc_identity
+
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -819,6 +821,17 @@ def save_session(
         "perm_profile": perm_profile or "",
         "provider": provider or "",
         "model": model or "",
+        # Identity of the process that wrote this record: pid, the
+        # start fingerprint that keeps the number honest (a pid alone
+        # names nothing, the system hands it out again), the host it
+        # ran on, and when it was last seen. Set on every save, never
+        # guessed at creation time. Host is the bare hostname -- it
+        # must be comparable across nodes, and it carries no home
+        # path or account name.
+        "pid": os.getpid(),
+        "proc_start": proc_identity.process_start(os.getpid()),
+        "host": _this_host(),
+        "heartbeat_at": time.time(),
         "effort": effort or "",
         "active_gate": active_gate or None,
         "last_compaction_info": last_compaction_info or None,
@@ -918,6 +931,21 @@ def list_sessions(
                 # (2026-09-18).
                 "model": data.get("model", ""),
                 "provider": data.get("provider", ""),
+                # Whether that process still lives, judged through the
+                # one reader of that fact (pid AND start fingerprint
+                # AND host). None means it cannot be asked here: a
+                # record from another machine, or one predating the
+                # fields entirely -- never a guess, because guessing
+                # could cost somebody their running work.
+                "pid": int(data.get("pid", 0) or 0),
+                "proc_start": str(data.get("proc_start", "") or ""),
+                "host": str(data.get("host", "") or ""),
+                "heartbeat_at": float(data.get("heartbeat_at", 0) or 0),
+                "alive": proc_identity.alive(
+                    data.get("pid", 0),
+                    str(data.get("proc_start", "") or ""),
+                    str(data.get("host", "") or ""),
+                ) if data.get("pid") else None,
                 "role_index": data.get("role_index", 0),
                 "route": data.get("route", []),
                 "cost_usd": data.get("cost_usd", 0.0),
@@ -940,6 +968,31 @@ def latest_session(workspace: str | Path | None = None) -> dict[str, Any] | None
     """
     rows = list_sessions(limit=1, workspace=workspace)
     return rows[0] if rows else None
+
+
+def touch_heartbeat(session_id: str) -> bool:
+    """Refresh the heartbeat of a stored session, touching nothing else.
+
+    The conversation, the cost, the title all stay as they are; only
+    ``heartbeat_at`` (and the writer identity, so liveness answers stay
+    honest for a long-running process whose start fingerprint cannot
+    change) move forward. Returns False when there is no such session
+    or the file cannot be rewritten.
+    """
+    filepath = _SESSIONS_DIR / f"{session_id}.json"
+    try:
+        data = json.loads(filepath.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    data["pid"] = os.getpid()
+    data["proc_start"] = proc_identity.process_start(os.getpid())
+    data["host"] = _this_host()
+    data["heartbeat_at"] = time.time()
+    try:
+        _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=1))
+    except OSError:
+        return False
+    return True
 
 
 def delete_session(session_id: str) -> bool:

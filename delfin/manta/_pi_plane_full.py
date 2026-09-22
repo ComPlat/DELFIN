@@ -152,7 +152,7 @@ What is needed is a dispatcher following the pattern of ``_apply_pi_coplanar_fin
 and its call in both chains, immediately around ``_apply_pi_coplanar_final(...)``.
 
 Self-test / measurement (no inline python):
-    PYTHONPATH=/home/qmchem_max/DELFIN_dev python -m delfin.manta._pi_plane_full
+    PYTHONPATH=/home/localuser/DELFIN_dev python -m delfin.manta._pi_plane_full
     PYTHONPATH=... python -m delfin.manta._pi_plane_full --measure <xyz-dir> [N]
     PYTHONPATH=... python -m delfin.manta._pi_plane_full --identity <xyz-dir> [N]
 """
@@ -1312,7 +1312,7 @@ def _selftest() -> int:
 # --- Measurement against the detectors of the eye (READ-ONLY) ---------------------------
 def _load_eye_detectors():
     import sys
-    p = "/home/qmchem_max/agent_workspace/MANTA2/weddell/detectors"
+    p = "/home/localuser/agent_workspace/MANTA2/weddell/detectors"
     if p not in sys.path:
         sys.path.insert(0, p)
     import conjugated_torsion as CT           # type: ignore

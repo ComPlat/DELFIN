@@ -969,6 +969,51 @@ _BASH_NO_DEST_OPTS: dict[str, frozenset[str]] = {
 }
 
 
+# `git -C <repo>` says WHICH repository to work in. Whether that is a write
+# is decided by the SUBCOMMAND, not by -C: `git -C /elsewhere commit` writes
+# there, `git -C /elsewhere log` reads. Read as a destination for every
+# subcommand, a plain read of another checkout was refused as a write to it
+# — measured 2026-09-18, a session running `git -C <repo> log --oneline -3`
+# was told the path "is in a READ-ONLY location", which is true and beside
+# the point, and lost the call.
+#
+# Fail closed: only these mute the option, and every one of them is
+# read-only with no flag that changes that. `branch`, `tag`, `remote`,
+# `config`, `stash` and `worktree` are deliberately absent — each has a
+# spelling that writes.
+_GIT_READ_ONLY_SUBCOMMANDS: frozenset[str] = frozenset({
+    "log", "show", "status", "diff", "diff-tree", "diff-index", "blame",
+    "shortlog", "describe", "reflog", "for-each-ref", "rev-parse",
+    "rev-list", "ls-files", "ls-tree", "cat-file", "grep", "whatchanged",
+    "merge-base", "show-ref", "name-rev", "count-objects", "check-ignore",
+    "version",
+})
+
+#: git's own options that carry a value, so the subcommand is not mistaken
+#: for one of their arguments.
+_GIT_GLOBAL_OPTS_WITH_VALUE: frozenset[str] = frozenset({
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
+})
+
+
+def _git_subcommand(rest: list[str]) -> str:
+    """The subcommand in a git argument list, or "" when there is none."""
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if not arg.startswith("-"):
+            return arg
+        if "=" not in arg and arg in _GIT_GLOBAL_OPTS_WITH_VALUE:
+            i += 2          # the option, and the value it carries
+        else:
+            i += 1
+    return ""
+
+
+def _git_reads_only(rest: list[str]) -> bool:
+    return _git_subcommand(rest) in _GIT_READ_ONLY_SUBCOMMANDS
+
+
 def _dest_opt_applies(name: str, opt: str) -> bool:
     """Whether *opt* names a destination for command *name*."""
     if opt.startswith("--"):
@@ -1021,30 +1066,85 @@ _BASH_CONTENT_READERS: frozenset[str] = frozenset({
 })
 
 
+#: A path-shaped word in a command line: absolute, or home-relative.
+_PATH_WORD_RE = re.compile(
+    r"(?<![A-Za-z0-9_.~$-])(?:~|\$\{HOME\}|\$HOME|/)[^\s;|&<>()`'\"]*")
+
+
+def _path_words(cmd: str) -> list[str]:
+    """The absolute paths a command line names, normalised."""
+    home = str(Path.home())
+    out = []
+    for raw in _PATH_WORD_RE.findall(cmd or ""):
+        word = (raw.replace("${HOME}", home).replace("$HOME", home))
+        if word.startswith("~"):
+            word = os.path.expanduser(word)
+        if word.startswith("/"):
+            word = "/" + word.lstrip("/")
+            out.append(os.path.normpath(word))
+    return out
+
+
+def _path_covers(path: str, words: list[str]) -> bool:
+    """Whether any word names *path* or something inside it."""
+    inside = path.rstrip("/") + "/"
+    for word in words:
+        if word == path or (path != "/" and word.startswith(inside)):
+            return True
+        if any(c in word for c in "*?[") and fnmatch.fnmatch(path, word):
+            return True
+    return False
+
+
+def _deep_enough(path: str) -> bool:
+    """Two or more components: specific enough to match as a substring."""
+    return len([part for part in path.split("/") if part]) >= 2
+
+
 def _bash_reads_denied_path(cmd: str, denied: set) -> str:
     """Reason string when a shell command would fetch a path the user has
     already refused this session, else "".
 
-    Matching is by path prefix so a refused file cannot be reached through
-    its directory either, and it is deliberately independent of the command
-    used: a refusal is about the DATA, not about the tool that asked.
+    A refusal covers the DATA, not the tool that asked, so a refused file is
+    also refused through its directory -- independent of the command used.
+
+    It used to be matched as a plain substring of the command line. A
+    refused '/' (an agent asked to read the filesystem root and was told
+    no) then blocked every later command with a slash in it, the session's
+    own test runner included; a refused '/tests' blocked every path
+    containing '/tests'; and a refused file directly in the home directory
+    extended to the home directory itself, which holds the workspace.
+    Measured in a supervised run: one correct refusal left a session unable
+    to run anything. Now: a short path (the root, one component) matches
+    only as a whole path word, or a path inside it -- the root only as
+    itself; a deeper path still matches as a substring, bounded at its end,
+    so it is also caught glued to an option (``-a/data/secret/x``); and the
+    directory around a refused file is refused with it only when that
+    directory could have been opened by an approved read in the first
+    place -- never the home, a system or a key directory.
     """
     try:
         if not denied or not cmd:
             return ""
+        words = _path_words(cmd)
         for path in denied:
-            p = str(path)
+            p = os.path.normpath(str(path)) if path else ""
             if not p:
                 continue
-            if p in cmd:
+            if _path_covers(p, words) or (
+                    _deep_enough(p) and re.search(
+                        re.escape(p) + r"(?![A-Za-z0-9_.\-])", cmd)):
                 return f"the user refused '{p}' earlier in this session"
             # Refusing a file also refuses reaching it through its directory.
-            parent = p.rsplit("/", 1)[0]
-            if parent and len(parent) > 1 and parent in cmd:
+            parent = os.path.dirname(p)
+            if (_deep_enough(parent) and _is_grantable_read_dir(parent)
+                    and (_path_covers(parent, words) or re.search(
+                        re.escape(parent) + r"(?![A-Za-z0-9_.\-])", cmd))):
                 return (f"the user refused '{p}', and this command reaches "
                         f"its directory '{parent}'")
     except Exception:
         return ""
+    return ""
     return ""
 
 
@@ -1581,6 +1681,43 @@ def _bash_symlink_escapes(cmd: str, workspace: Path) -> list[str]:
     return out
 
 
+def _uncommitted_note(workspace) -> str:
+    """One line when a turn leaves changes nobody committed, else "".
+
+    Four sessions on 2026-09-18 produced four commits between them, each
+    at the very end, and 226 tool calls went into one of them. The one
+    session that committed in two steps -- the failing control first,
+    then the fix -- was the one whose work could be verified in a minute,
+    because the order was the evidence. Two full suites were killed
+    mid-session the same day by a node watchdog: what is committed
+    survives that, and what is not hangs by a thread.
+
+    A line, not a demand: it says what is there and stops. Never raises,
+    and says nothing outside a git checkout.
+    """
+    import subprocess as _sp
+    if not workspace:
+        return ""
+    try:
+        out = _sp.run(["git", "status", "--porcelain"],
+                      cwd=str(workspace), capture_output=True,
+                      text=True, timeout=5)
+        if out.returncode != 0:
+            return ""                     # not a checkout: nothing to say
+        changed = [ln for ln in out.stdout.splitlines()
+                   if ln.strip() and not ln.startswith("?? ")]
+        if not changed:
+            return ""
+        n = len(changed)
+        return (f"[git] {n} tracked file{'s' if n != 1 else ''} changed and "
+                "not committed. A step that stands on its own is worth a "
+                "commit now — a control run that fails, committed before "
+                "the fix that makes it pass, is the one commit that proves "
+                "the most.")
+    except Exception:
+        return ""
+
+
 def _bash_write_targets(cmd: str) -> list[str]:
     """Paths a shell command would plausibly WRITE to.
 
@@ -1602,7 +1739,25 @@ def _bash_write_targets(cmd: str) -> list[str]:
         import shlex
 
         def _add(tok: str) -> None:
-            tok = (tok or "").strip().strip("'\"")
+            tok = (tok or "").strip()
+            # Quotes are shell syntax anywhere in the word, not only at its
+            # ends. Stripping the ends left `"dir"/file` as `dir"/file` --
+            # a path that exists nowhere, so a directory the user had
+            # GRANTED came back "outside what you may modify". Measured:
+            # dir/file and "dir/file" passed, "dir"/file and 'dir'/file
+            # were refused, which punishes exactly the careful quoting a
+            # model writes around a variable. shlex reads the word the way
+            # the shell will; anything it cannot read as ONE word is left
+            # alone, because guessing wider is how a gate stops gating.
+            if "'" in tok or '"' in tok:
+                try:
+                    parts = shlex.split(tok)
+                except ValueError:
+                    parts = []
+                if len(parts) == 1:
+                    tok = parts[0]
+                else:
+                    tok = tok.strip("'\"")
             if not tok or tok.startswith("-") or tok.startswith("$"):
                 return
             if any(c in tok for c in "*?[]"):        # globs: not a literal path
@@ -1698,6 +1853,12 @@ def _bash_write_targets(cmd: str) -> list[str]:
             # something else -- see _BASH_NO_DEST_OPTS.
             for i, a in enumerate(rest):
                 if a in _BASH_DEST_OPTS and i + 1 < len(rest):
+                    # Only -C, and only for a git that reads: a write
+                    # option on a reading subcommand still counts, so
+                    # `git diff --output=/etc/x` remains a target.
+                    if (a == "-C" and name == "git"
+                            and _git_reads_only(rest)):
+                        continue
                     if _dest_opt_applies(name, a):
                         _add(rest[i + 1])
                 elif "=" in a and a.split("=", 1)[0] in _BASH_DEST_OPTS:
@@ -1990,6 +2151,19 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"git\s+tag\s+-d\b",                   # tag delete
     r"git\s+tag\s+--delete\b",
     r"git\s+worktree\s+remove\b",
+    # The stash stack belongs to the REPOSITORY, not to a worktree. Four
+    # sessions working in worktrees of one repository share it, so a pop
+    # takes whatever is on top — which may be another session's work,
+    # applied into the wrong tree with nothing to say it happened. One
+    # session reached for it on 2026-09-18 with three others running.
+    #
+    # Anchored on the SUBCOMMAND, past git's own options: matching the
+    # word anywhere would refuse `git commit -m "drop the stash usage"`,
+    # which is how the shutdown pattern once cost a session its commit.
+    # `list` and `show` are reads and stay available.
+    r"""(?:^|[;|&`(])[\s'\"]*(?:sudo\s+)?git\s+"""
+    r"(?:(?:--no-pager|--paginate|-C\s+\S+|-c\s+\S+)\s+)*"
+    r"stash\b(?!\s+(?:list|show)\b)",
     # `-fd` was the only spelling this caught. `git clean -f -d` and
     # `git clean -xdf` — the forms people actually type, and the more
     # destructive ones — matched nothing and fell through to the confirm
@@ -2080,6 +2254,44 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # sockets.
     r"^\s*(?:ps|pgrep|netstat|lsof)\b",
     r"^\s*ss\b(?![^|;&]*(?:-K\b|--kill\b))",
+    # -- (a2) the reading vocabulary of scientific work -------------------
+    # Measured 2026-09-19: 12 of 49 purely READING commands in mode
+    # default were denied — 24 %. The agent could not ask the queue what
+    # became of its own calculation, and no program for its version. Every
+    # entry here is either a pure query (squeue/sinfo/sacct: no mutating
+    # subcommand exists) or ARGUMENT-anchored so the writing sister of the
+    # same program stays behind the confirm gate. The pairs are pinned by
+    # tests/test_the_gate_speaks_the_reading_vocabulary_of_science.py:
+    # squeue yes / scancel no; --version yes / running the solver no.
+    r"^\s*(?:squeue|sinfo|sacct)\b",
+    # scontrol: only `show` reads. update/shutdown/suspend/hold/requeue/
+    # resume write or act — anchored so they cannot ride along.
+    r"^\s*scontrol\s+show\b",
+    # module: only the asking subcommands. load/unload/swap/switch mutate
+    # the environment (they persist into every later command's shell).
+    r"^\s*module\s+(?:list|avail|show|whatis|what-is|is-loaded|help)\b",
+    # Hardware inventory. nvidia-smi: a SINGLE branch with an end anchor
+    # and a token whitelist — every writing flag (-pm, -pl, -e, -ac,
+    # --gpu-reset, -r, …) is simply not a token of this pattern, so any
+    # line containing one falls off the whitelist and is refused. The
+    # first attempt at this entry used top-level alternatives and its
+    # second branch had neither guard nor end anchor; that shape is the
+    # reason this one has exactly one branch.
+    r"^\s*nvidia-smi(?:\s+(?:-[qLhi]|\?|--help|--query-gpu(?:=\S+|\s+\S+)?|"
+    r"--format=\S+|--id=\S+|-i\s+\S+))*\s*$",
+    # nproc and friends: pure counters.
+    r"^\s*(?:nproc|lscpu|lsblk)\b",
+    # checksums of files one can already read (cat is allowed; the digest
+    # reveals strictly less than the content).
+    r"^\s*(?:md5sum|sha1sum|sha256sum|sha512sum|cksum)\b",
+    # column tools with no output-file argument (paste writes to stdout;
+    # a redirect goes through the write-target gate).
+    r"^\s*(?:paste|column|join|pr|nl)\b",
+    r"^\s*seq\b",
+    # Asking a chemistry tool about itself. Anchored to the exact asking
+    # forms: `xtb input.xyz` (a real calculation) is not matched, and the
+    # flags are end-anchored so nothing rides after --help.
+    r"^\s*(?:xtb|orca_2mkl|crest)\s+(?:--version|--help|-h)\s*$",
     # cd <literal-path>: harmless on its own (it executes nothing, and each
     # bash call is a fresh subprocess) and the common prefix in
     # `cd /path && <cmd>`. Auto-allowed ONLY for a literal path — the char class
@@ -2178,7 +2390,7 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*python(?:3(?:\.\d+)?)?\s+-m\s+(?!pip\s+(?:install|uninstall|download)\b)"
     r"[A-Za-z_][\w.]*",
     r"^\s*python(?:3(?:\.\d+)?)?\s+\S+\.py\b",                             # run a script in repo
-    r"^\s*pip\s+(?:show|list|freeze|check)\b",
+    r"^\s*pip\s+(?:--version|-V|show|list|freeze|check)\b",
     r"^\s*conda\s+(?:info|list|env\s+list|search)\b",
     r"^\s*(?:pytest|py\.test)\b",
     r"^\s*(?:ruff|black|isort|flake8|pylint|mypy|pyright|pyflakes|bandit)\b",
@@ -2418,6 +2630,60 @@ _SUBSTITUTION = re.compile(r"\$\([^()]*\)|\$\{[^{}]*\}|`[^`]*`")
 #: Where one command ends and the next begins.
 _SEGMENT_BREAK = re.compile(r"(?:\|\||&&|[;\n|&()])")
 
+#: An argument that names a path to SKIP rather than one to touch:
+#: find's `-not -path X` / `! -name X`, the --exclude family that grep,
+#: rsync and tar share, and git's own `:(exclude)X` pathspec. The value
+#: goes; nothing else on the line does.
+_EXCLUSION_ARG_RE = re.compile(
+    r"(?:(?:!|-not)\s+-(?:i?path|i?name|i?regex)\s+\S+"
+    r"|--exclude(?:-dir|-from)?(?:=|\s+)\S+"
+    r"|:\(exclude\)\S+)"
+)
+
+
+#: Throwing the ssh configuration away, which is the usual hygiene trick
+#: (`-F /dev/null`, or a GIT_SSH_COMMAND that replaces it) and on a
+#: cluster removes the only route out: the remote is reached through a
+#: ProxyCommand/ProxyJump that lives in exactly that file.
+_SSH_CONFIG_DISCARDED_RE = re.compile(
+    r"-F\s+/dev/null|GIT_SSH_COMMAND\s*=", re.I)
+
+#: What the failure looks like once the route is gone.
+_SSH_NO_ROUTE_RE = re.compile(
+    r"could not resolve hostname"
+    r"|could not read from remote repository"
+    r"|connection timed out|network is unreachable"
+    r"|connect to host \S+ port \d+: permission denied",
+    re.I)
+
+
+def _discarded_ssh_config_note(cmd: str, returncode: Optional[int],
+                               stderr: str) -> str:
+    """Why a remote that worked a moment ago stopped resolving, or "".
+
+    Measured 2026-09-18: a session pushed successfully, then ran
+    ``GIT_SSH_COMMAND="ssh -F /dev/null" git fetch`` and got "Could not
+    resolve hostname github.com". It spent the next eight calls building
+    a replacement ssh config, hit "Bad owner or permissions" on the
+    system one, and ended at "port 22: Permission denied" — all of it
+    solving a problem the flag had created.
+    """
+    if not returncode:
+        return ""
+    if not _SSH_CONFIG_DISCARDED_RE.search(cmd or ""):
+        return ""
+    if not _SSH_NO_ROUTE_RE.search(stderr or ""):
+        return ""
+    return (
+        "This command replaced the ssh configuration (-F /dev/null, or "
+        "GIT_SSH_COMMAND). On a machine that reaches the outside through "
+        "a ProxyCommand/ProxyJump — every cluster login node does — that "
+        "file IS the route, so discarding it is what stopped the host "
+        "resolving. Run the same command WITHOUT overriding it. Do not "
+        "build a replacement config: the one you discarded is the "
+        "working one."
+    )
+
 
 #: A few of the denied commands have a sanctioned way to do the same job.
 #: Naming it turns a dead end into a detour: a session that wanted to
@@ -2434,6 +2700,14 @@ _DENY_HINTS: tuple[tuple[str, str], ...] = (
               "the user: git clean deletes what nothing tracks."),
     ("push", " Push a branch of your own and open a pull request; a forced "
              "or deleting push rewrites what others already have."),
+    ("stash", " The stash belongs to the REPOSITORY, not to your worktree: "
+              "other sessions work in worktrees of this same repository, "
+              "and a pop takes whatever is on top — which may be theirs. "
+              "To set work aside, commit it on your own branch. For a "
+              "control run against an earlier state, use "
+              "enter_worktree(base_ref=\"<commit>\") and run the check "
+              "with cwd set to the path it returns. `git stash list` and "
+              "`git stash show` are reads and stay available."),
 )
 
 
@@ -2485,6 +2759,256 @@ def _prose_blanked(cmd: str) -> str:
                 if i not in keep:
                     out[i] = " "
     return "".join(out)
+
+
+#: Shapes that RUN inside an argument. A token holding one is never
+#: blanked: ``grep "$(cat ~/.delfin/credentials.json)" f`` runs the cat.
+_RUNS_INSIDE: tuple[str, ...] = ("$(", "${", "`", "<(", ">(")
+
+#: grep options known to take no value -- the whole allow-list. Any other
+#: option (-f FILE, --file, --include, --, a bundle with e or f in it, an
+#: option this list does not name) leaves the command exactly as it is.
+_GREP_BARE_FLAG = re.compile(r"-[nirRlLcvwxEFHhosqIZ]+")
+_GREP_BARE_LONG = frozenset({
+    "--color", "--colour", "--line-number", "--ignore-case", "--recursive",
+    "--count", "--files-with-matches", "--files-without-match",
+    "--invert-match", "--word-regexp", "--line-regexp",
+    "--extended-regexp", "--fixed-strings", "--with-filename",
+    "--no-filename", "--only-matching", "--no-messages", "--quiet",
+    "--silent",
+})
+_GREP_COUNT_ATTACHED = re.compile(
+    r"-[ABCm]\d+|--(?:after-context|before-context|context|max-count)=\d+"
+    r"|--colou?r=\w+")
+_GREP_COUNT_OPTS = frozenset({"-A", "-B", "-C", "-m"})
+
+#: sed options that change nothing about what the script can do.
+_SED_BARE_FLAG = re.compile(r"-[nEsuzr]+")
+_SED_BARE_LONG = frozenset({
+    "--quiet", "--silent", "--regexp-extended", "--separate",
+    "--unbuffered", "--null-data",
+})
+
+_SED_ADDR = r"(?:\d+|\$|/(?:[^/\\\n]|\\.)*/)"
+#: One sed statement that can only select, print or substitute: an
+#: optional address or range, then p, d, n or =, or one s-command with a
+#: punctuation delimiter and flags from g p i I M and digits -- never w
+#: (writes a file) and never e (runs the pattern space as a command).
+#: Anything else -- w, W, r, R, e, a, i, c, braces, labels -- fails.
+_SED_PURE_STMT = re.compile(
+    r"\s*(?:" + _SED_ADDR + r"(?:\s*,\s*" + _SED_ADDR + r")?)?\s*"
+    r"(?:[pdn=]"
+    r"|s(?P<d>[/|#,:@!])(?:[^\\\n]|\\.)*?(?P=d)(?:[^\\\n]|\\.)*?(?P=d)"
+    r"[gpiIM0-9]*)\s*")
+
+
+def _sed_script_is_pure(script: str) -> bool:
+    """Whether a sed script can only select, print and substitute.
+
+    False for anything that can write a file or run a command, and for
+    anything the statement pattern does not fully recognise.
+    """
+    if not script.strip() or any(r in script for r in _RUNS_INSIDE):
+        return False
+    return all(_SED_PURE_STMT.fullmatch(stmt)
+               for stmt in script.split(";") if stmt.strip())
+
+
+def _word_spans(cmd: str, start: int, end: int) -> list:
+    """(start, end) of each shell word in cmd[start:end], offsets kept.
+
+    Quotes and backslashes are honoured the way the shell reads them, so
+    ``"a b"`` and ``a\ b`` are one word each.
+    """
+    spans = []
+    i = start
+    while i < end:
+        while i < end and cmd[i] in " \t":
+            i += 1
+        if i >= end:
+            break
+        w = i
+        quote = ""
+        while i < end:
+            ch = cmd[i]
+            if quote == "'":
+                if ch == "'":
+                    quote = ""
+            elif quote == '"':
+                if ch == "\\":
+                    i += 1
+                elif ch == '"':
+                    quote = ""
+            elif ch == "\\":
+                i += 1
+            elif ch in "'\"":
+                quote = ch
+            elif ch in " \t":
+                break
+            i += 1
+        spans.append((w, min(i, end)))
+    return spans
+
+
+def _unquoted(word: str) -> Optional[str]:
+    """The word as the program receives it, or None if it cannot be read."""
+    try:
+        import shlex
+        parts = shlex.split(word)
+    except ValueError:
+        return None
+    return parts[0] if len(parts) == 1 else None
+
+
+def _pattern_spans(cmd: str, start: int, end: int) -> list:
+    """The pattern (grep) or script (sed) words of one command, or [].
+
+    An allow-list, not a parser: a span comes back only when EVERY
+    option on the line is one this function knows takes no value (or a
+    number), so that which word is the pattern is certain. Anything it
+    does not recognise -- an option with a file value, ``--``, a bundle
+    it cannot read, a substitution anywhere in the pattern -- returns []
+    and the whole command stays visible to the scanners. A false alarm
+    costs a dialog; a word blanked by mistake could hide a secret.
+    """
+    spans = _word_spans(cmd, start, end)
+    words = [cmd[a:b] for a, b in spans]
+    i = 0
+    while i < len(words) and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", words[i]):
+        i += 1
+    if i >= len(words):
+        return []
+    head = os.path.basename(_unquoted(words[i]) or "")
+    i += 1
+    if head in ("grep", "egrep", "fgrep"):
+        found: list = []
+        by_e = False
+        while i < len(words):
+            w = words[i]
+            if w.startswith("-") and w != "-":
+                if w in ("-e", "--regexp"):
+                    if i + 1 >= len(words) or any(
+                            r in words[i + 1] for r in _RUNS_INSIDE):
+                        return []
+                    found.append(spans[i + 1])
+                    by_e = True
+                    i += 2
+                    continue
+                if w in _GREP_COUNT_OPTS:
+                    if i + 1 >= len(words) or not words[i + 1].isdigit():
+                        return []
+                    i += 2
+                    continue
+                if (_GREP_BARE_FLAG.fullmatch(w) or w in _GREP_BARE_LONG
+                        or _GREP_COUNT_ATTACHED.fullmatch(w)):
+                    i += 1
+                    continue
+                return []
+            if by_e:
+                return found      # every free word is a file
+            if any(r in w for r in _RUNS_INSIDE):
+                return []
+            return [spans[i]]
+        return found
+    if head == "sed":
+        while i < len(words):
+            w = words[i]
+            if w.startswith("-") and w != "-":
+                if _SED_BARE_FLAG.fullmatch(w) or w in _SED_BARE_LONG:
+                    i += 1
+                    continue
+                return []
+            script = _unquoted(w)
+            if script is None or not _sed_script_is_pure(script):
+                return []
+            return [spans[i]]
+    return []
+
+
+def _pattern_blanked(cmd: str) -> str:
+    """The command with grep patterns and pure sed scripts blanked out.
+
+    A search pattern is text a command matches against, never a path it
+    opens. Measured 2026-09-21 in a six-session run: the path scanners
+    refused ``grep -n "KEY|credentials|api_key" file.py`` as a secret
+    read, and read the sed address in ``sed -n '/class A/,/def b/p'
+    file.py`` as the path ``/class`` -- each a dialog for a command that
+    touched nothing but its own file.
+
+    Only the pattern word goes, and only in the shapes
+    :func:`_pattern_spans` fully recognises; every file argument on the
+    line is still read as a path. Blanked, not removed, so every other
+    offset is where it was.
+    """
+    if not cmd or ("grep" not in cmd and "sed" not in cmd):
+        return cmd
+    out = list(cmd)
+    for start, end in _segments(cmd):
+        for a, b in _pattern_spans(cmd, start, end):
+            for k in range(a, b):
+                out[k] = " "
+    return "".join(out)
+
+
+def _identity_for_commit_texts() -> dict:
+    """Home, account and machine name of the user this process runs as.
+
+    Separate from the check so a test can say whose identity it is
+    without owning a home directory, and so the values are read once per
+    command rather than per message.
+    """
+    try:
+        home = str(Path.home())
+    except Exception:
+        home = ""
+    try:
+        import socket
+        host = socket.gethostname().split(".")[0]
+    except Exception:
+        host = ""
+    return {"home": home,
+            "account": os.path.basename(home) if home else "",
+            "host": host}
+
+
+def _commit_text_identity_hit(cmd: str) -> Optional[str]:
+    """Refusal when a git message carries a home path, account or host.
+
+    The mirror of ``_prose_blanked``. That one blanks the message so the
+    PATH scan does not read it; this one reads exactly that text, for
+    what it must not contain.
+
+    Every brief this project hands an agent repeats the rule -- no home
+    paths, no account names, no machine names in code, comments or commit
+    texts -- because the repository is public. Until now nothing enforced
+    it, and a rule that lives only in a prompt is a hope addressed to the
+    same model that forgets it.
+
+    Only a git message, and only its value: a command that TOUCHES a path
+    is a path question, and the gate already has one of those.
+    """
+    if "-m" not in cmd and "--message" not in cmd:
+        return None
+    try:
+        from .output_guard import home_paths_in
+    except Exception:
+        return None
+    who = _identity_for_commit_texts()
+    for start, end in _segments(cmd):
+        if not _is_a_git_prose_command(cmd[start:end]):
+            continue
+        for value_start, value_end in _message_values(cmd, start, end):
+            if home_paths_in(cmd[value_start:value_end], **who):
+                # What was found is deliberately not repeated: this text
+                # is on its way into a public repository, and the refusal
+                # is read by the same model that would paste it back.
+                return (
+                    "the commit message names a home directory, an account "
+                    "or a machine. This repository is public. Write the path "
+                    "relative to the repository root, and leave out who ran "
+                    "it and where it ran."
+                )
+    return None
 
 
 def _segments(cmd: str) -> list:
@@ -3418,6 +3942,33 @@ def _hook_workspace(perms) -> "Path | None":
         return None
 
 
+def _mcp_call_refusal(fn_name: str, fn_args: dict,
+                      permissions) -> Optional[str]:
+    """The refusal for an MCP tool call as a JSON result, or None to run it.
+
+    MCP calls skip ``_DocToolExecutor.execute()``, so the PreToolUse hooks
+    and the gate run here, keyed on the un-namespaced base name so a hook
+    on ``bash`` also covers ``mcp__kit-coding__bash``.
+
+    The hooks answer FIRST, and a blocking hook ends it: the gate -- and
+    the confirmation dialog it may raise -- runs only when no hook
+    blocked. Both used to be evaluated before either result was looked
+    at, so a hook that refused a call still put its dialog in front of
+    the user, who decided for nothing before the hook's refusal won
+    anyway. The native path (execute) has always short-circuited.
+    """
+    base = (fn_name.rsplit("__", 1)[-1]
+            if fn_name.startswith("mcp__") else fn_name)
+    hook_block = _doc_executor._run_pre_tool_hooks(base, fn_args, permissions)
+    if hook_block is not None:
+        return json.dumps({"error": "blocked_by_hook",
+                           "reason": hook_block[:1200]})
+    gate_block = _doc_executor._gate_mcp_tool(fn_name, fn_args, permissions)
+    if gate_block is not None:
+        return json.dumps({"error": gate_block})
+    return None
+
+
 def _session_hooks(perms):
     """The hook definitions in force for *perms*, as a ``HooksConfig``.
 
@@ -3688,6 +4239,34 @@ def _bare_tool_name(name: str) -> str:
     """
     text = str(name or "")
     return text.rsplit("__", 1)[-1] if text.startswith("mcp__") else text
+
+
+#: The write tools whose arguments carry the whole change, so a refusal can
+#: be held to that change. Every other write -- shell, interpreter,
+#: notebook, sheet -- is held to the refused file.
+_CHANGE_CARRYING_WRITE_TOOLS = frozenset(
+    {"write_file", "edit_file", "multi_edit", "apply_patch"})
+
+
+def _write_change_key(path: str, name: str, args: dict) -> str:
+    """The identity of one proposed write: the file and what it would do.
+
+    A digest of the change-carrying arguments only (content, old/new
+    string, edits, diff), so the same change spelled with another path
+    argument or description is still the same change.
+    """
+    import hashlib
+    body = {k: (args or {}).get(k) for k in
+            ("content", "old_string", "new_string", "replace_all", "edits",
+             "diff") if k in (args or {})}
+    digest = hashlib.sha256(
+        json.dumps([name, body], sort_keys=True, default=str).encode()
+    ).hexdigest()[:24]
+    try:
+        path = str(Path(path).expanduser().resolve(strict=False))
+    except Exception:
+        pass
+    return f"{path}\n{digest}"
 
 
 def _tool_action_signature(name: str, args: dict) -> str:
@@ -4830,6 +5409,30 @@ class KitToolPermissions:
         return all(self._segment_auto_allowed(s) for s in segments)
 
     def _segment_auto_allowed(self, cmd: str) -> bool:
+        # Command substitution ($( … ), `…`) and process substitution
+        # (<( … ) reads, >( … ) writes/executes) run a command no pattern
+        # in the list ever saw. Before this guard, `ls $(touch x)` was
+        # auto-allowed on the strength of its first word and the payload
+        # ran unattended (measured 2026-09-21, tests/test_the_gate_speaks_
+        # the_reading_vocabulary_of_science.py::test_a_command_substitution_
+        # is_not_auto_allowed). The `>(` half (bash runs the payload and
+        # wires it to a /dev/fd path — `echo x > >(sh)` is code
+        # execution) was free until the same date; both halves are one
+        # rule: [<>]\(.
+        # Denying the AUTO part is deliberately conservative: arithmetic
+        # `$((1+1))` is caught too — it goes to the confirm gate, which
+        # is where every unevaluated payload belongs.
+        if _RUNS_SOMETHING_RE.search(cmd) or re.search(r"[<>]\(", cmd):
+            return False
+        # `set -o pipefail` in front of a command changes nothing but the
+        # exit status of the pipe -- and the gate's own shell note
+        # (_pipe_exit_note) tells the model to write it. Followed, the
+        # advice cost a dialog every time: `set -o pipefail; <gate> ... |
+        # tail` asked although each part alone was free (measured
+        # 2026-09-22). Only the shell's error options count here; `set`
+        # with anything else goes on being asked about.
+        if _SHELL_ERROR_OPTIONS_RE.fullmatch(cmd):
+            return True
         for pat in self.bash_auto_allow_patterns:
             if re.search(pat, cmd, re.IGNORECASE):
                 return True
@@ -4867,6 +5470,12 @@ class KitToolPermissions:
         return False
 
 
+#: A `set` that only turns on the shell's error handling: -e, -u, -x and
+#: -o pipefail, in any bundle (`set -euo pipefail`). Nothing else.
+_SHELL_ERROR_OPTIONS_RE = re.compile(
+    r"\s*set(?:\s+-[eux]+|\s+-[eux]*o\s+pipefail)+\s*")
+
+
 #: `for x in <words>; do <body>; done` and the while/until forms.
 _LOOP_RE = re.compile(
     r"^\s*(?:for\s+\w+\s+in\s(?P<words>[^;]*)|while\s+(?P<wcond>[^;]*)|"
@@ -4876,6 +5485,37 @@ _LOOP_RE = re.compile(
 #: What must not appear in the part of a loop that is not its body: it
 #: runs a command nobody looked at.
 _RUNS_SOMETHING_RE = re.compile(r"\$\(|`")
+
+
+#: Reading forms of tools whose writing form is refused. Keyed by the
+#: command's first word. A refusal that names the sanctioned question
+#: turns the next turn into the right command instead of a near-miss
+#: retry — measured 2026-09-19, the denial text never said the reading
+#: form exists. scancel deliberately names only the QUESTION (squeue):
+#: the hint must not read as a way to cancel through another door.
+_READING_ALTERNATIVES: dict[str, str] = {
+    "scancel": "squeue -u $USER (what became of the job)",
+    "sbatch": "squeue -u $USER (the queue's answer), sinfo",
+    "scontrol": "scontrol show <job|partition|node> (the reading half)",
+    "module": "module list / module avail / module show <name>",
+    "nvidia-smi": "nvidia-smi -q (read-only inventory)",
+    "xtb": "xtb --version (a calculation is not auto-allowed)",
+    "conda": "conda info / conda list",
+}
+
+
+def _reading_alternative_hint(cmd: str) -> str:
+    """Suffix for the auto-allow refusal: the reading form, where one
+    exists. Empty when the tool has none on the list — silence there is
+    honest, not terse."""
+    first = (cmd or "").lstrip().split(" ", 1)[0] if cmd else ""
+    alt = _READING_ALTERNATIVES.get(first)
+    if not alt:
+        return ""
+    return (
+        f" NOTE: the READING form of '{first}' is auto-allowed: {alt}. "
+        "If that is the question you were asking, ask it that way."
+    )
 
 
 def _loop_body(cmd: str) -> "list[str] | None":
@@ -6235,16 +6875,16 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "run_tests",
             "description": (
-                "Run pytest with structured output: pass/fail/error counts "
-                "plus failing node-ids. Prefer this over `bash python -m "
-                "pytest`, whose text output is fragile to parse."
+                "Run pytest: pass/fail/error counts plus failing "
+                "node-ids. Prefer it over `bash python -m pytest`. Over "
+                "600s it runs as a job and you are told when it ends."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": "Path or nodeid; empty = discover from cwd.",
+                        "description": "Path or nodeid; empty = discover.",
                     },
                     "pytest_args": {
                         "type": "array",
@@ -6257,6 +6897,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "minimum": 5,
                         "maximum": 1800,
                     },
+                    "background": {"type": "boolean"},
                 },
             },
         },
@@ -12735,7 +13376,21 @@ class _DocToolExecutor:
         # reason for dropping it was that `echo "/home/user/.ssh"` should
         # not confuse the scan; a false positive on an echo costs one
         # confirmation dialog, and this cost a credential.
-        cleaned = re.sub(r"['\"]", " ", _prose_blanked(cmd))
+        # A grep pattern or a pure sed script is text the command matches
+        # against, never a path it opens (_pattern_blanked says which
+        # shapes, and nothing else is blanked).
+        cleaned = re.sub(r"['\"]", " ",
+                         _prose_blanked(_pattern_blanked(cmd)))
+        # A path named as something to SKIP is not a path the command
+        # touches. Dropping these before the scan removes a refusal that
+        # was arbitrary from the caller's side: measured 2026-09-18,
+        #     find … -not -path "*/.git/*" -delete      refused
+        #     grep -rn foo --exclude-dir=.git .         allowed
+        # -- the same intent, told apart by spelling. Only the value of
+        # the exclusion goes; every other token on the line is still
+        # scanned, so `--exclude=x cat ~/.ssh/id_rsa` is caught on its
+        # second half exactly as before.
+        cleaned = _EXCLUSION_ARG_RE.sub(" ", cleaned)
         # Match absolute /paths and ~ / $HOME prefixed paths.
         candidates = set(re.findall(
             r"(?<![A-Za-z0-9_])(?:~|\$HOME|/)[^\s;|&<>()`'\"]+",
@@ -13193,6 +13848,7 @@ class _DocToolExecutor:
                     "is now refused for the rest of the session — do NOT try "
                     "another tool or command to read it. Ask the user what to "
                     "use instead."
+                    + self._said_why(perms)
                 )
             return (
                 f"read of '{resolved}' TIMED OUT — the user is away, this is "
@@ -13222,6 +13878,126 @@ class _DocToolExecutor:
         return bool(getattr(
             getattr(perms.confirm_callback, "__self__", None),
             "last_timed_out", False))
+
+    @classmethod
+    def _said_why(cls, perms: "KitToolPermissions") -> str:
+        """" The user said why: …" for the refusal just made, or "".
+
+        The one place every refusal the model reads gets the user's reason
+        from. It was read on the shell branch only, so a refused write,
+        edit, outside read or tool call told the model "user denied" and
+        nothing more, and the reason arrived -- if at all -- as a message
+        after the turn that needed it.
+        """
+        why = cls._refusal_reason(perms)
+        return f" The user said why: {why}" if why else ""
+
+    @staticmethod
+    def _refuse_write(perms: "KitToolPermissions", path: str, name: str,
+                      args: dict) -> None:
+        """Record a refused write: the change, and the path.
+
+        The change is what the write tools are held to (the same change
+        is not asked again, a different one is). The path is what the
+        shell and interpreter routes are held to -- `python -c "open(p,
+        'w')"` or a redirect cannot carry a refused change past the gate
+        in another form.
+        """
+        perms.record_denied_action("write", path)
+        perms.record_denied_action(
+            "write_change", _write_change_key(path, name, args))
+
+    def _edit_cannot_apply(self, name: str, args: dict, resolved: Path,
+                           perms: "KitToolPermissions") -> Optional[str]:
+        """Why an edit would fail anyway, before anyone is asked; else None.
+
+        The executor checks these after approval. Asked first, the user
+        was shown a dialog with "(no changes)" -- no read baseline after a
+        restart, or an old_string that does not match -- and decided for
+        nothing (measured 2026-09-22: three such dialogs in a row). Same
+        conditions, same wording as the executor; the executor still
+        checks them, this only moves the answer in front of the question.
+        """
+        if name not in ("edit_file", "multi_edit"):
+            return None
+        try:
+            if not resolved.is_file():
+                return None          # the executor says what is wrong
+            path_arg = self._get_path_arg(args)
+            tracked = perms.read_tracker.get(str(resolved))
+            if tracked is None:
+                return (f"call read_file on '{path_arg}' before editing — "
+                        "edits require an established read baseline.")
+            if resolved.stat().st_mtime > tracked + 1e-3:
+                return (f"file '{path_arg}' was modified since last "
+                        "read_file. Re-read first.")
+            text = _text_files.read_text_file(resolved).text
+            from . import editblock as _editblock
+            if name == "edit_file":
+                edits = [args]
+            else:
+                edits = [e for e in (args.get("edits") or [])
+                         if isinstance(e, dict)]
+            for i, ed in enumerate(edits):
+                o = ed.get("old_string", "") or ""
+                n = ed.get("new_string", "") or ""
+                replace_all = bool(ed.get("replace_all", False))
+                if not o or o == n:
+                    return None      # the executor's own message covers it
+                where = f"edit #{i+1}: " if name == "multi_edit" else ""
+                count = text.count(o)
+                if count == 0:
+                    fm = (None if replace_all
+                          else _editblock.fuzzy_replace(text, o, n))
+                    if fm is None:
+                        return (f"{where}old_string not found in "
+                                f"'{path_arg}' (neither exact nor "
+                                "whitespace-tolerant match). Re-read the "
+                                "file and copy the target block verbatim.")
+                    text = fm.new_text
+                    continue
+                if count > 1 and not replace_all:
+                    return (f"{where}old_string matches {count} times in "
+                            f"'{path_arg}'. Provide more surrounding context "
+                            "to make it unique, or pass replace_all=true.")
+                text = (text.replace(o, n) if replace_all
+                        else text.replace(o, n, 1))
+        except Exception:
+            return None              # never block on the check itself
+        return None
+
+    @staticmethod
+    def _refusal_reason(perms: "KitToolPermissions") -> str:
+        """Why the user refused THIS dialog, if they said.
+
+        Read once per refusal, immediately after it: like the timeout
+        flag, it lives on the broker, per thread, for one dialog.
+        Empty when the callback is not a bound broker method (e.g. a
+        test double) or the refusal said nothing.
+        """
+        try:
+            return str(getattr(
+                getattr(perms.confirm_callback, "__self__", None),
+                "last_refusal_reason", "") or "")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _clear_refusal_reason(perms: "KitToolPermissions") -> None:
+        """Drop any leftover reason before a gate run.
+
+        A reason must never reach a refusal that did not ask: the
+        deny-list and auto-allow paths never open a dialog, so an
+        uncleared reason from an earlier refusal would attach to them
+        and read as the user's word. The brokers clear it themselves at
+        dialog start; this is the executor-side backstop.
+        """
+        try:
+            _self = getattr(perms.confirm_callback, "__self__", None)
+            if _self is not None:
+                _self.last_refusal_reason = ""
+        except Exception:
+            pass
 
     def _gate_write_path(
         self, path_arg: str, perms: "KitToolPermissions",
@@ -13264,7 +14040,19 @@ class _DocToolExecutor:
         # the model not to retry; nothing enforced it, so the identical
         # write simply raised the dialog again — and, through the shell,
         # reached the file with no dialog at all.
-        if perms.action_denied_earlier("write", str(resolved)):
+        # Keyed on the CHANGE, not the path. A path-wide lock made every
+        # refusal final for the whole file: "change X and show me again"
+        # could not be followed, and a supervised session lost the file it
+        # was assigned to for the rest of its run (measured 2026-09-22).
+        # The identical change stays refused; a different one is asked
+        # about. The shell and interpreter routes stay closed by path (see
+        # _refuse_write), so a refusal still cannot be walked around.
+        if (name not in _CHANGE_CARRYING_WRITE_TOOLS
+                and perms.action_denied_earlier("write", str(resolved))):
+            # A shell write, an interpreter, a notebook or sheet edit: no
+            # change to compare, so the refused FILE stays closed to them
+            # -- `sed -i` or `echo >` cannot carry a refused change past
+            # the gate in another form.
             _record_security_event(
                 "denied_again", name, self._display_path(resolved, perms),
                 blocked=True)
@@ -13273,6 +14061,17 @@ class _DocToolExecutor:
                 "session, so it stays refused and is not asked again. Do "
                 "not reach the file through another tool or a shell command "
                 "either — ask the user what they want changed instead."
+            )
+        _change = _write_change_key(str(resolved), name, args)
+        if perms.action_denied_earlier("write_change", _change):
+            _record_security_event(
+                "denied_again", name, self._display_path(resolved, perms),
+                blocked=True)
+            return (
+                f"the user already refused exactly this change to "
+                f"'{path_arg}' in this session, so it is not asked again. "
+                "A DIFFERENT change is asked about; do not reach the file "
+                "through a shell command or an interpreter either."
             )
         try:
             rel_str = str(resolved.relative_to(perms.workspace)).replace("\\", "/")
@@ -13295,6 +14094,12 @@ class _DocToolExecutor:
                     "explicit user confirmation but no confirm_callback is "
                     "configured, so it is refused."
                 )
+            # An edit that cannot apply is answered by the tool, not the
+            # user: asked first, the user saw "(no changes)" and decided
+            # for nothing before the edit failed on its own.
+            _cannot = self._edit_cannot_apply(name, args, resolved, perms)
+            if _cannot:
+                return _cannot
             if is_protected:
                 preview = (
                     "[SELF-MODIFICATION GUARD]\n"
@@ -13328,8 +14133,9 @@ class _DocToolExecutor:
                     "the user is away, this is NOT a denial. Do not try it "
                     "again now; carry on with work that needs no approval, "
                     "or end your turn saying what is waiting for them.")
-            perms.record_denied_action("write", str(resolved))
-            return f"user denied '{name}' on {_w} '{rel_str}'"
+            self._refuse_write(perms, str(resolved), name, args)
+            return (f"user denied '{name}' on {_w} '{rel_str}'"
+                    + self._said_why(perms))
 
         # Inside a writable root. "default" asks before the change; that is
         # what makes acceptEdits mean something — a mode that turns off a
@@ -13344,6 +14150,9 @@ class _DocToolExecutor:
         # picks its own mode, and the sandbox still bounds where it writes.
         if (effective_mode(perms) == "default"
                 and perms.confirm_callback is not None):
+            _cannot = self._edit_cannot_apply(name, args, resolved, perms)
+            if _cannot:
+                return _cannot
             preview = (self._build_change_preview(name, args, resolved)
                        or f"{name} -> {rel_str}")
             try:
@@ -13359,11 +14168,12 @@ class _DocToolExecutor:
                         "now; carry on with work that needs no approval, or "
                         "end your turn saying what is waiting for them.")
                 _record_security_event("denied_by_user", name, rel_str)
-                perms.record_denied_action("write", str(resolved))
+                self._refuse_write(perms, str(resolved), name, args)
                 return (
                     f"user denied '{name}' on '{rel_str}'. Do NOT retry it or "
                     "write the same content by another route — ask the user "
                     "what they would like changed instead."
+                    + self._said_why(perms)
                 )
             return None
 
@@ -13375,6 +14185,11 @@ class _DocToolExecutor:
     ) -> Optional[str]:
         """Run the policy + callback gate. Returns error string or None."""
         mode = effective_mode(perms)
+        # A reason never outlives its refusal: anything left on the
+        # broker from an earlier dialog is dropped before this gate run
+        # decides anything, so a refusal that asked nothing (deny list,
+        # auto-allow) can never carry a stale reason as the user's word.
+        self._clear_refusal_reason(perms)
 
         if mode == "plan":
             return (
@@ -13434,7 +14249,8 @@ class _DocToolExecutor:
                 perms.record_denied_action(
                     "tool", _tool_action_signature(name, args))
                 return (f"user denied '{name}'. Do NOT retry it or reach the "
-                        "same destination another way.")
+                        "same destination another way."
+                        + self._said_why(perms))
             return None
 
         if name == "run_tests" and getattr(perms, "scope_locked", False):
@@ -13526,6 +14342,23 @@ class _DocToolExecutor:
                                        f"{cmd[:80]} → {denied}")
                 return (f"command rejected by deny-pattern {denied!r}: "
                         f"refusing to run.{_denied_command_hint(denied)}")
+            # A walk over a whole file system (find/du/tree/rg, grep -r,
+            # ls -R rooted at the home, an ancestor of it or a mount point)
+            # is refused in every mode, before anything is asked -- the
+            # same rule, from the same function, as the CLI backend's
+            # approval runner. It used to exist on that path only.
+            from .sandbox import tree_walk_refusal as _tree_walk_refusal
+            _wd = Path(perms.workspace)
+            if args.get("cwd"):
+                _wd = _wd / str(args.get("cwd"))
+            walk = _tree_walk_refusal(_prose_blanked(cmd), cwd=_wd)
+            if walk:
+                _record_security_event("tree_walk", "bash", cmd[:80])
+                return f"command rejected: {walk}"
+            identity = _commit_text_identity_hit(cmd)
+            if identity is not None:
+                _record_security_event("identity_in_commit", "bash", cmd[:80])
+                return identity
             denied_path = self._bash_denied_path(cmd, perms)
             if denied_path is not None:
                 _record_security_event("secret_path", "bash", str(denied_path))
@@ -13697,6 +14530,7 @@ class _DocToolExecutor:
                 return (
                     f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
                     "it or work around it — ask the user what to do instead."
+                    + self._said_why(perms)
                 )
             # default / acceptEdits without a UI callback (head-less / CLI):
             # the command must match an auto-allow regex; otherwise tell the
@@ -13844,6 +14678,7 @@ class _DocToolExecutor:
                 "and ask them to either approve it (remember_permission("
                 "kind='allow_pattern', value='^\\\\s*<cmd>\\\\b')) or switch "
                 "the Perms/KIT mode. Then STOP and wait." + hint
+                + _reading_alternative_hint(cmd)
             )
 
         return None
@@ -14133,6 +14968,7 @@ class _DocToolExecutor:
             return (
                 f"user denied '{name}'. Do NOT retry it or reach the same "
                 "effect through another server."
+                + self._said_why(perms)
             )
         return None
 
@@ -14932,8 +15768,13 @@ class _DocToolExecutor:
             # read/write scanners below stay in place for normal sessions;
             # here the boundary is the whole answer, so the coarse rule is
             # the correct one.
+            # What the scanners below read: the command with its grep
+            # pattern or pure sed script blanked -- a sed address like
+            # /class A/ is not the path /class. Every file argument is
+            # still there; see _pattern_blanked.
+            scan = _pattern_blanked(cmd)
             if perms.scope_locked:
-                if _bash_climbs_out(cmd):
+                if _bash_climbs_out(scan):
                     _record_security_event(
                         "locked_scope_bash", "bash", cmd[:80], blocked=True)
                     return json.dumps({"error": (
@@ -14941,7 +15782,7 @@ class _DocToolExecutor:
                         f"{perms.workspace} with '..'. This session works "
                         "only inside that folder — use paths relative to it."
                     )})
-                hops = _bash_symlink_escapes(cmd, perms.workspace)
+                hops = _bash_symlink_escapes(scan, perms.workspace)
                 if hops:
                     _record_security_event(
                         "locked_scope_symlink", "bash", cmd[:80], blocked=True)
@@ -14951,7 +15792,7 @@ class _DocToolExecutor:
                         "path looks local but does not stay local. This "
                         "session works only inside that folder."
                     )})
-                strays = _bash_paths_outside(cmd, perms.workspace)
+                strays = _bash_paths_outside(scan, perms.workspace)
                 if strays:
                     _record_security_event(
                         "locked_scope_bash", "bash", cmd[:80], blocked=True)
@@ -14963,7 +15804,7 @@ class _DocToolExecutor:
                         "have to be placed in the folder first."
                     )})
             denied = _bash_reads_denied_path(
-                cmd, getattr(perms, "denied_paths", set()) or set())
+                scan, getattr(perms, "denied_paths", set()) or set())
             if denied:
                 _record_security_event(
                     "denied_path_via_bash", "bash", cmd[:80], blocked=True)
@@ -14972,7 +15813,7 @@ class _DocToolExecutor:
                     "the tool that asked — do not reach it another way. Ask "
                     "the user what to use instead."
                 )})
-            for target in _bash_outside_reads(cmd):
+            for target in _bash_outside_reads(scan):
                 path = Path(target).expanduser()
                 if not path.is_absolute():
                     continue
@@ -15027,7 +15868,10 @@ class _DocToolExecutor:
                     f"'{path.name}' without a prior read_file in this "
                     "session — call read_file on it first. The same rule "
                     "applies to edit_file; the shell is not a way around "
-                    "it."
+                    "it. For a large file you are about to replace whole "
+                    "(a log, a report), read_file with limit=1 is enough: "
+                    "the baseline is what it establishes, not the "
+                    "content."
                 )})
             current = resolved.stat().st_mtime
             if current > tracked + 1e-3:
@@ -15317,6 +16161,20 @@ class _DocToolExecutor:
                         "bash", _tp, _pre, perms, deleted=True)
                 continue
             self._capture_raw_change("bash", _tp, _pre, perms)
+            # The shell just wrote it, through the same gates a file tool
+            # goes through — so the edit baseline moves with it. Without
+            # this, an agent that appends with `cat >> f <<'EOF'` is told
+            # by the next edit_file that "f was modified since last
+            # read_file", which is true and reads as a warning about
+            # somebody else's change. Measured 2026-09-18: three refusals
+            # in one session, each straight after its own heredoc.
+            #
+            # What is given up is small and named: the guard still covers
+            # a change this session did NOT make, which is what it is for.
+            try:
+                perms.read_tracker[str(_tp)] = _tp.stat().st_mtime
+            except Exception:
+                pass
 
         out = proc.stdout or ""
         err = proc.stderr or ""
@@ -15333,6 +16191,9 @@ class _DocToolExecutor:
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
+        _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
+        if _ssh_note:
+            payload["hint"] = _ssh_note
         watched = _auto_watch_submitted_jobs(proc.stdout or "", perms)
         if watched:
             payload["watched_slurm_jobs"] = watched
@@ -15782,6 +16643,54 @@ class _DocToolExecutor:
             "recorded": True,
         }, ensure_ascii=False)
 
+    def _run_tests_in_background(
+        self, target, pytest_args, timeout, ceiling, env, perms
+    ) -> str:
+        """Start the suite as a job and hand back its id.
+
+        The SAME command the foreground path runs -- test_runner owns it
+        (``build_command``), so a run handed over is not a second
+        spelling of the run. A second spelling is how a producer and a
+        renderer came to disagree elsewhere in this codebase, and the
+        cost was six wake-ups that named nothing.
+
+        No report file: a background run is read the way every other one
+        is, with ``bash_output``, and a finished job wakes the session by
+        itself — in the dashboard and at the terminal prompt.
+        """
+        from . import bash_jobs as _bj
+        from . import test_runner as _tr
+        try:
+            cmd = _tr.build_command(
+                perms.workspace, target=target,
+                pytest_args=[str(a) for a in pytest_args])
+        except Exception as exc:
+            return json.dumps({"error": f"could not build the run: {exc}"})
+        import shlex as _shlex
+        line = " ".join(_shlex.quote(c) for c in cmd)
+        try:
+            job = _bj.get_registry().start(
+                line, cwd=str(perms.workspace), env=env,
+                timeout_s=max(timeout, ceiling),
+                workspace=perms.workspace,
+                description=f"pytest {target or 'tests'} (background)",
+                argv=cmd)
+        except Exception as exc:
+            return json.dumps({"error": f"could not start the run: {exc}"})
+        job_id = str(getattr(job, "job_id", "") or "")
+        return json.dumps({
+            "status": "started",
+            "job_id": job_id,
+            "command": line[:300],
+            "requested_timeout_s": timeout,
+            "max_foreground_timeout_s": ceiling,
+            "note": (
+                f"the suite runs as job {job_id}. Do not wait on it: when "
+                "it finishes this session is told, and bash_output("
+                f"'{job_id}') reads what it wrote. bash_status("
+                f"'{job_id}') asks how far it is."),
+        }, ensure_ascii=False)
+
     def _execute_run_tests(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -15795,6 +16704,20 @@ class _DocToolExecutor:
         if not isinstance(pytest_args, list):
             return json.dumps({"error": "pytest_args must be a list"})
         timeout = int(arguments.get("timeout_s", 300) or 300)
+        # A suite longer than the shell's own ceiling is HANDED OVER, not
+        # sat on. run_tests accepts up to 1800 s and runs in the
+        # foreground, so one call held a turn for 30 minutes (measured
+        # 2026-09-18, one of 18 calls over five minutes that cost 154
+        # minutes between four sessions).
+        #
+        # Refused here rather than clamped: clamping spends the ceiling
+        # and THEN says the same thing, which is what cost each of those
+        # sessions ten minutes on the bash path. Saying it now costs
+        # nothing, and the way out is real — a finished background job
+        # wakes the session by itself, at the terminal prompt as well as
+        # in the dashboard.
+        ceiling = int(getattr(perms, "bash_max_timeout_s", 600) or 600)
+
         # A test file is code the agent may have written itself, so it
         # runs as the agent's shell does: without the provider keys in
         # its environment and inside the same cage. It inherited the full
@@ -15804,6 +16727,16 @@ class _DocToolExecutor:
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
         env.setdefault("LANG", "C.UTF-8")
+
+        # A suite longer than the shell's own ceiling is HANDED OVER, not
+        # sat on, and the caller may ask for that outright. run_tests used
+        # to accept up to 1800 s and run in the foreground: one call held
+        # a turn for 30 minutes (measured 2026-09-18, one of 18 calls over
+        # five minutes that cost 154 minutes across four sessions).
+        if bool(arguments.get("background", False)) or timeout > ceiling:
+            return self._run_tests_in_background(
+                target, pytest_args, timeout, ceiling, env, perms)
+
         result = _tr.run_tests(
             workspace=perms.workspace,
             target=target,
@@ -18184,19 +19117,36 @@ def _bash_isolation_argv(
                 "this session is locked to its folder, and neither "
                 "bubblewrap, Landlock nor Seatbelt can confine a command on this host")
     elif mode == "auto":
+        # Wherever this host can actually hold a command, not only in the
+        # unattended profile. "auto" used to isolate under bypass and for
+        # a locked scope and nowhere else, so an ordinary attended session
+        # ran through a plain shell -- the banner said so honestly, which
+        # is not the same as being safe. The reasoning was that a human
+        # approves each command there; but approval is given on the
+        # command TEXT, and the text is not the act. An interpreter, a
+        # symlink or a base64 round-trip walks past any reading of it,
+        # which is exactly the argument the locked branch above already
+        # makes. It does not stop being true because somebody is watching.
         perm_mode = str(getattr(perms, "mode", "") or "").strip()
-        if perm_mode == "bypassPermissions" and _bwrap_functional():
+        if _bwrap_functional():
             mode = "bwrap"
             _announce_auto_isolation()
-        elif perm_mode == "bypassPermissions" and _landlock_functional():
-            _announce_isolation_via_landlock("unattended (bypass) run")
+        elif _landlock_functional():
+            _announce_isolation_via_landlock(
+                "unattended (bypass) run"
+                if perm_mode == "bypassPermissions" else "attended session")
             return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
-        elif perm_mode == "bypassPermissions" and _seatbelt_functional():
+        elif _seatbelt_functional():
             return _seatbelt_argv(plain, perms, extra_write)
         elif perm_mode == "bypassPermissions":
             _announce_bypass_without_isolation()
             return _in_process_cage(plain, run_cwd)
         else:
+            # Nothing here can hold it. The command still runs: refusing
+            # every command in an attended session would be secure and
+            # useless, and it is a different promise from the one a locked
+            # scope makes, where refusing IS the answer. The banner is
+            # what tells the user which of the two they have.
             return _in_process_cage(plain, run_cwd)
     if mode == "bwrap" and not shutil.which("bwrap"):
         # Isolation was asked for by name. Landlock gives the same promise;
@@ -18375,6 +19325,11 @@ _INFRA_EXHAUSTION_MARKERS: tuple[str, ...] = (
     "connection pool",
     "sqlalche.me",
     "temporarily unavailable",
+    # The gateway saying its OWN connection to the model server failed
+    # (Open WebUI in front of the KIT endpoint, measured 2026-09-21: the
+    # turn died on this 400 and the session stood 24 minutes at its
+    # prompt). A chat request cannot be malformed into this message.
+    "server connection error",
 )
 
 
@@ -20414,17 +21369,10 @@ class OpenAIClient(_BaseClient):
                         # REMOTELY and would otherwise bypass the native gate.
                         _mcp_base = (fn_name.rsplit("__", 1)[-1]
                                      if fn_name.startswith("mcp__") else fn_name)
-                        _hook_block = _doc_executor._run_pre_tool_hooks(
-                            _mcp_base, fn_args, self._permissions)
-                        _mcp_block = _doc_executor._gate_mcp_tool(
+                        _refusal = _mcp_call_refusal(
                             fn_name, fn_args, self._permissions)
-                        if _hook_block is not None:
-                            result = json.dumps({
-                                "error": "blocked_by_hook",
-                                "reason": _hook_block[:1200],
-                            })
-                        elif _mcp_block is not None:
-                            result = json.dumps({"error": _mcp_block})
+                        if _refusal is not None:
+                            result = _refusal
                         else:
                             try:
                                 from . import mcp_client as _mcp
@@ -21094,6 +22042,10 @@ class OpenAIClient(_BaseClient):
                 _stop = {"open": "end_turn_open_tasks",
                          "unknown": "end_turn_tasks_unknown"}.get(
                              str(_end_state.get("state", "")), "end_turn")
+            _uncommitted = _uncommitted_note(
+                getattr(self._permissions, "workspace", None))
+            if _uncommitted:
+                yield StreamEvent(type="notice", text="\n" + _uncommitted)
             cost = self._estimate_cost(_total_in, _total_out)
             yield StreamEvent(
                 type="message_delta",

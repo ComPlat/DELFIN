@@ -240,12 +240,43 @@ def test_hooks_is_read_only(tmp_path):
         assert verb not in src, f"the hooks listing reaches {verb}"
 
 
-def test_attention_is_read_only(tmp_path):
+def test_attention_never_decides_for_the_user(tmp_path):
+    """Answering is the one thing this surface must not reach.
+
+    The rule was "the listing writes nothing", and `clear_all(` was on
+    the same list as `answer_item(`. They are not the same act: answering
+    or resolving a request DECIDES something on the user's behalf, and
+    the terminal has no confirmation surface to do that behind. Throwing
+    away one's own notices is the user acting, in their own inbox, with
+    a word they typed.
+
+    So the forbidden set keeps the deciding verbs, and the test below
+    holds the other half: clearing happens only when it was asked for.
+    """
     import inspect
 
     src = inspect.getsource(rc._attention)
-    for verb in ("answer_item(", "dismiss_item(", "clear_all(", "resolve("):
-        assert verb not in src, f"the attention listing reaches {verb}"
+    for verb in ("answer_item(", "dismiss_item(", "resolve("):
+        assert verb not in src, f"the attention surface reaches {verb}"
+
+
+def test_attention_clears_nothing_unless_asked(tmp_path, monkeypatch):
+    """A bare listing must still be a listing."""
+    from delfin.agent import attention
+
+    called: list = []
+    monkeypatch.setattr(attention, "clear_all",
+                        lambda *a, **k: called.append(a) or {"cleared": 0},
+                        raising=False)
+    monkeypatch.setattr(attention, "render_inbox",
+                        lambda kind=None: "inbox", raising=False)
+
+    rc._attention(_ctx(tmp_path), "")
+    rc._attention(_ctx(tmp_path), "confirm_pending")
+    assert called == [], "a listing cleared something"
+
+    rc._attention(_ctx(tmp_path), "clear")
+    assert called, "and the word the user typed was ignored"
 
 
 def test_trace_reports_the_calls_of_this_session(tmp_path):

@@ -150,13 +150,29 @@ def test_the_network_goes_through_the_proxy_only(scene, monkeypatch):
 
 @macos
 def test_an_attended_command_cannot_reach_a_session_door(scene, monkeypatch):
+    """The door is shut, and the workspace is still reachable.
+
+    The second socket used to sit OUTSIDE the workspace and was expected
+    to connect: "auto" isolated under bypass and for a locked scope and
+    nowhere else, so an attended session ran under the socket-only guard,
+    which denies the session doors and nothing more. b01f6bd9 (2026-09-19)
+    made the posture the strongest the host can give in every mode, and
+    on a Seatbelt host that is the full profile -- every unix socket
+    outside the workspace roots is denied, the doors among them.
+
+    The intent of this test is the door. What it must NOT become is
+    "everything is refused", which would pass just as well if the sandbox
+    denied the workspace too and the agent could do nothing at all. So
+    the second socket moves INSIDE the workspace: the door stays shut,
+    and the half of the promise that has to survive is pinned beside it.
+    """
     A, tmp, home, ws = scene
     monkeypatch.setattr(A, "_process_cage_functional", lambda: False)
     monkeypatch.delenv(A._PROCESS_CAGE_ENV, raising=False)
     door_dir = tmp / "sessions"
     door_dir.mkdir()
     door = door_dir / "default"
-    other = tmp / "other.sock"
+    other = ws / "other.sock"
     _unix_server(door)
     _unix_server(other)
     monkeypatch.setattr(SB, "session_doors", lambda: [str(door_dir)])

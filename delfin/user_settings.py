@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy as _copy
 import json
 import os
 from datetime import datetime, timezone
@@ -738,7 +739,20 @@ def _merge_missing_defaults(payload, defaults):
     merged = dict(payload)
     for key, default_value in dict(defaults or {}).items():
         if key not in merged:
-            merged[key] = default_value if not isinstance(default_value, dict) else dict(default_value)
+            # A DEEP copy. `dict(default_value)` copies one level, so a
+            # section two levels down — agent.job_monitor, and every other
+            # nested block — was handed out as the very object that lives
+            # inside DEFAULT_SETTINGS. Anything that then wrote a setting
+            # the ordinary way,
+            #     cfg = settings.setdefault("agent", {}).setdefault(…)
+            #     cfg["enabled"] = True
+            # changed the DEFAULT for the rest of the process. Found on
+            # 2026-09-18 through a suite failure nobody had written a test
+            # for: one module enabled the job monitor, and a test in
+            # another file then read the shipped default as True.
+            merged[key] = (_copy.deepcopy(default_value)
+                           if isinstance(default_value, dict)
+                           else default_value)
             continue
         if isinstance(default_value, dict) and isinstance(merged.get(key), dict):
             merged[key] = _merge_missing_defaults(merged.get(key) or {}, default_value)

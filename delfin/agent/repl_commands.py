@@ -1046,7 +1046,13 @@ def _hooks(ctx, _args: str) -> CommandResult:
 
 
 def _bash(ctx, args: str) -> CommandResult:
-    """Background shell jobs: list them, or kill one by id.
+    """Background shell jobs: list them, look inside one, or kill one.
+
+    Looking inside was the agent's privilege alone -- ``bash_output`` is
+    a tool, and the person who started the run had no way to ask. A run
+    that lasts half an hour is exactly the one somebody wants to watch,
+    so ``/bash <job_id>`` shows what a job is, how long it has been
+    going and what it has written.
 
     Kill is the only mutation, and it needs the id: a /bash that killed
     "the last one" would reach a job the user is not looking at.
@@ -1068,7 +1074,10 @@ def _bash(ctx, args: str) -> CommandResult:
         return CommandResult(output=f"{parts[1]}: {note}" if ok
                              else f"not killed — {note}")
     if action not in ("ls", "jobs"):
-        return CommandResult(output="usage: /bash [ls] | /bash kill <job_id>")
+        # Anything else is a job id: /bash <job_id> looks inside it.
+        return _bash_detail(registry, parts[0],
+                            int(parts[1]) if len(parts) > 1
+                            and parts[1].isdigit() else _BASH_PEEK_LINES)
     try:
         jobs = sorted(registry.list_jobs(), key=lambda j: j.started_at,
                       reverse=True)
@@ -1086,23 +1095,156 @@ def _bash(ctx, args: str) -> CommandResult:
         lines.append(f"  {flag} {st.get('job_id')}  exit={st.get('exit_code')}  "
                      f"{float(st.get('elapsed_s', 0.0) or 0.0):>7.1f}s  "
                      f"{str(st.get('command', ''))[:50]}")
+    lines.append("  /bash <job_id> [lines]   look inside one")
     lines.append("  /bash kill <job_id>")
     return CommandResult(output="\n".join(lines))
+
+
+#: How much of a job's output ``/bash <id>`` shows unasked. A running
+#: suite writes thousands of lines; pasting forty of them into the chat
+#: buries the four facts above them. The last few say whether it is
+#: moving, and the line under them says how to see more.
+_BASH_PEEK_LINES = 5
+
+
+def _bash_detail(registry, job_id: str, tail_lines: int) -> CommandResult:
+    """One job: what it is, how long it has run, and what it wrote.
+
+    Compact on purpose. The count is part of the answer — "5 of 900
+    lines" tells you more about a run than the five lines do.
+    """
+    try:
+        job = next((j for j in registry.list_jobs(include_finished=True)
+                    if str(j.job_id) == job_id), None)
+    except Exception as exc:
+        return CommandResult(output=f"could not read the job ({exc})")
+    if job is None:
+        return CommandResult(
+            output=f"no background job {job_id!r} — /bash lists them")
+    try:
+        st = job.status_dict()
+    except Exception as exc:
+        return CommandResult(output=f"could not read {job_id} ({exc})")
+
+    secs = float(st.get("elapsed_s", 0.0) or 0.0)
+    runtime = (f"{int(secs // 60)}m {secs % 60:4.1f}s" if secs >= 60
+               else f"{secs:.1f}s")
+    if st.get("running"):
+        status = "running"
+    elif st.get("killed_by_signal"):
+        status = f"killed by {st.get('signal_name')}"
+    else:
+        status = f"finished (exit {st.get('exit_code')})"
+
+    out = [f"  Status:   {status}",
+           f"  Runtime:  {runtime}",
+           f"  Command:  {str(st.get('command', ''))[:300]}"]
+    if st.get("description"):
+        out.append(f"  Task:     {st['description']}")
+    if st.get("cwd"):
+        out.append(f"  Cwd:      {st['cwd']}")
+    if st.get("note"):
+        out.append(f"  Note:     {st['note']}")
+
+    try:
+        from . import bash_jobs as _bj
+        read = _bj.read_output(job, head_lines=0, tail_lines=tail_lines)
+    except Exception:
+        read = {}
+    out.append("")
+    wrote = False
+    more = False
+    for stream in ("stdout", "stderr"):
+        text = str(read.get(stream) or "").rstrip()
+        if not text:
+            continue
+        wrote = True
+        total = read.get(f"{stream}_total_lines")
+        shown = text.splitlines()[-tail_lines:]
+        head = (f"  {stream} — last {len(shown)} of {total} lines:" if total
+                else f"  {stream}:")
+        out.append(head)
+        out.extend("    " + ln for ln in shown)
+        if total and total > len(shown):
+            more = True
+    if not wrote:
+        out.append("  Output:   nothing written yet")
+    elif more:
+        out.append(f"  /bash {job_id} 200   for more of it")
+    return CommandResult(output="\n".join(out))
+
+
+def _jobs(ctx, args: str) -> CommandResult:
+    """The cluster's jobs inside a session: same data and formatter as
+    `delfin-agent jobs` (cli_jobs is the one surface over job_monitor).
+
+    Read-only — it answers when asked, no polling. `/jobs watch
+    on|off|status` manages the monitor daemon's setting, and only the
+    flag: it neither launches nor signals anything. Cancelling stays on
+    `/cancel <id>`, which confirms first.
+    """
+    try:
+        from . import cli_jobs
+    except Exception as exc:
+        return CommandResult(output=f"jobs view unavailable ({exc})")
+    parts = args.strip().split()
+    sub = parts[0].lower() if parts else ""
+    if sub == "watch":
+        flag = parts[1].lower() if len(parts) > 1 else "status"
+        if flag in ("on", "off"):
+            return CommandResult(output=cli_jobs.watch_set(flag))
+        if flag == "status":
+            return CommandResult(output=cli_jobs.watch_report())
+        return CommandResult(output=(
+            "usage: /jobs watch on|off|status"))
+    if sub not in ("", "ls"):
+        return CommandResult(output=(
+            "usage: /jobs [ls] | /jobs watch on|off|status"))
+    try:
+        rows = cli_jobs.collect_job_rows()
+    except cli_jobs.SchedulerUnavailable as exc:
+        return CommandResult(output=cli_jobs.scheduler_note(0, exc))
+    return CommandResult(output=cli_jobs.render_jobs(rows))
 
 
 def _attention(ctx, args: str) -> CommandResult:
     """The attention inbox, rendered by the module that owns it.
 
-    Read-only here. Answering and dismissing resolve an item the agent
-    is waiting on, and those belong on the surface that parked it.
+    Listing, and clearing what is no longer wanted. Answering a request
+    belongs on the surface that parked it; throwing one away does not —
+    the inbox outlives the session that filled it, and there was no way
+    to empty it at all. Seven confirmations from sessions that had ended
+    hours before were still being reported as open (2026-09-18).
+
+    `clear` without a kind touches notices only, which is the module's
+    own rule: the gesture for tidying run notices must not also throw
+    away the confirmation an agent is blocked on. Name the kind to mean
+    it.
     """
     try:
         from . import attention
-        kind = args.strip().lower()
+        parts = args.strip().lower().split()
+        if parts and parts[0] == "clear":
+            kind = parts[1] if len(parts) > 1 else ""
+            if kind and kind not in attention.ATTENTION_KINDS:
+                return CommandResult(output=(
+                    "usage: /attention clear [" + "|".join(
+                        sorted(attention.ATTENTION_KINDS)) + "]"))
+            out = attention.clear_all(kind or None,
+                                      include_blocking=bool(kind))
+            n = int((out or {}).get("cleared", 0) or 0)
+            kept = int((out or {}).get("kept", 0) or 0)
+            said = f"cleared {n} item(s)"
+            if kept:
+                said += (f"; kept {kept} the agent is waiting on — name "
+                         "the kind to clear those too")
+            return CommandResult(output=said)
+        kind = parts[0] if parts else ""
         if kind and kind not in attention.ATTENTION_KINDS:
             return CommandResult(output=(
                 "usage: /attention [" + "|".join(
-                    sorted(attention.ATTENTION_KINDS)) + "]"))
+                    sorted(attention.ATTENTION_KINDS)) + "] | "
+                "/attention clear [kind]"))
         return CommandResult(output=attention.render_inbox(kind or None))
     except Exception as exc:
         return CommandResult(output=f"attention inbox unavailable ({exc})")
@@ -1399,6 +1541,23 @@ def _key_rows() -> list[tuple[str, str, str]]:
         (rk.REDRAW, "ctrl+l", "Redraw the screen."),
         (rk.EDIT, "backspace / ctrl+u", "Edit or clear the line you are "
                                         "typing."),
+        # The ones below only act at the framed idle prompt (read_boxed);
+        # during a turn the pump swallows them, like any key it does not
+        # recognise.
+        (rk.HISTORY_PREV, "up", "At the prompt: on an empty line with "
+                                "jobs listed below it, mark the next job "
+                                "(Enter opens it); otherwise the previous "
+                                "history line."),
+        (rk.HISTORY_NEXT, "down", "At the prompt: mark the job above, or "
+                                  "leave the jobs; otherwise the next "
+                                  "history line, back to what you were "
+                                  "typing."),
+        (rk.COMPLETE, "tab", "At the prompt, on an empty line: take the "
+                             "next suggestion (again for the one after); "
+                             "otherwise complete a /command or an @path."),
+        (rk.SEARCH, "ctrl+r", "At the prompt: search the history "
+                              "backwards; again for the next older match."),
+        (rk.EOF, "ctrl+d", "At the prompt, on an empty line: leave."),
     ]
 
 
@@ -1489,7 +1648,12 @@ BUILTINS: dict[str, ReplCommand] = {
                     _git, True),
         ReplCommand("/bash", "workspace", "Background jobs: list or kill one",
                     _bash, True),
-        ReplCommand("/attention", "workspace", "The attention inbox",
+        ReplCommand("/jobs", "workspace",
+                    "Watched cluster jobs: id, state, elapsed, workspace; "
+                    "/jobs watch on|off|status for the monitor daemon",
+                    _jobs, True),
+        ReplCommand("/attention", "workspace",
+                    "The attention inbox; `clear [kind]` empties it",
                     _attention, True),
     ]
 }

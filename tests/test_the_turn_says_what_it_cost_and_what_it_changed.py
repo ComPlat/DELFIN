@@ -109,26 +109,31 @@ def test_a_backend_that_cannot_be_asked_still_paints_a_line():
 
 
 # ---------------------------------------------------------------------------
-# One row, one owner
+# Input and status keep separate rows
 # ---------------------------------------------------------------------------
 
-def test_what_is_being_typed_wins_the_row():
+def test_what_is_being_typed_and_the_status_are_both_kept():
     agent, _engine, err = _agent()
     agent._turn_active.set()
     agent._draw_input_line("half a sentence")
-    assert agent._bottom == "» half a sentence"
+    rows = agent._bottom.splitlines()
+    assert rows[2] == "> half a sentence"
+    assert "esc to interrupt" in rows[0]
+    assert "shift+tab approval mode" in rows[-1]
 
     agent._repaint_bottom(force=True)
-    assert agent._bottom == "» half a sentence", (
-        "the status line must not overwrite what the user is typing")
+    assert agent._bottom.splitlines()[2] == "> half a sentence", (
+        "a status repaint must not overwrite what the user is typing")
 
 
-def test_the_status_takes_the_row_back_when_the_line_is_cleared():
+def test_clearing_text_keeps_an_empty_input_above_the_hint():
     agent, _engine, _err = _agent()
     agent._turn_active.set()
     agent._draw_input_line("typing")
     agent._clear_input_line()
     agent._repaint_bottom(force=True)
+    assert agent._bottom.splitlines()[2] == "> ", (
+        "an empty input is still a visible place to type")
     assert "esc to interrupt" in agent._bottom
 
 
@@ -265,33 +270,44 @@ def test_ctrl_t_toggles_the_task_list():
     assert agent._show_tasks is False
 
 
-def test_the_status_line_stands_down_while_the_answer_streams():
+def test_the_composer_stays_while_the_answer_streams():
     """Found by watching a real turn, not by reading the code.
 
-    Both streams share one cursor. The status repaint erases the current
-    line, and during streaming that line holds the answer — so the spinner
-    was rubbing out the sentence as the model wrote it, four times a
+    Both streams share one cursor.  The composer is drawn below a partial
+    answer and clearing it returns to that answer column, so keeping the
+    spinner visible no longer means rubbing out the sentence four times a
     second.
     """
     agent, _engine, err = _agent()
+    # This case models the ordinary terminal where stdout and stderr are
+    # the same screen.  The helper otherwise keeps stdout in a StringIO so
+    # redirected-output assertions elsewhere remain possible.
+    agent.transcript._shared_terminal = True
     agent._turn_active.set()
     agent.transcript.answer("Der Test schlaegt fehl")   # no trailing newline
     err.truncate(0), err.seek(0)
 
     agent._repaint_bottom(force=True)
-    assert agent._bottom == "", "nothing may touch the answer's own line"
-    assert err.getvalue() == ""
+    assert agent._bottom.splitlines()[2] == "> "
+    assert "esc to interrupt" in agent._bottom
+    assert agent._bottom_anchor_gap == 1, (
+        "the composer must remember that the answer is directly above it")
 
+    agent._clear_bottom()
     agent.transcript.answer("\n")                       # answer closes its line
     agent._repaint_bottom(force=True)
     assert "esc to interrupt" in agent._bottom
+    assert agent._bottom_anchor_gap == 0
 
 
-def test_the_row_is_given_up_when_the_answer_starts_mid_turn():
+def test_the_composer_returns_after_every_streamed_delta():
     agent, _engine, _err = _agent()
+    agent.transcript._shared_terminal = True
     agent._turn_active.set()
     agent._repaint_bottom(force=True)
     assert agent._bottom, "the status owns the row before any answer text"
 
     agent._render_around_bottom(repl.RenderItem("text", text="Antwort"))
-    assert agent._bottom == "", "the answer took the row and keeps it"
+    assert agent._bottom.splitlines()[2] == "> "
+    assert "esc to interrupt" in agent._bottom
+    assert agent._bottom_anchor_gap == 1

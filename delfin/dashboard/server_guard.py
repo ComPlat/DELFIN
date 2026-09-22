@@ -24,9 +24,18 @@ def _load_jupyter_server_extension(serverapp) -> None:
     # person had closed it.
     try:
         from delfin.dashboard import window_close
-        window_close.register(serverapp)
-    except Exception:
-        pass
+        bridged = window_close.bridge_voila_shutdown()
+        route = window_close.register(serverapp)
+        if not bridged or not route:
+            serverapp.log.warning(
+                "[delfin] secure browser-close handling could not be fully "
+                "installed; an unkept dashboard may take longer to stop.")
+    except Exception as exc:
+        # The default Voila route still has Jupyter's XSRF protection.  This
+        # failure therefore loses cleanup convenience, never authentication;
+        # make the degradation visible instead of silently weakening either.
+        serverapp.log.warning(
+            "[delfin] secure browser-close handling was not installed: %s", exc)
 
 
 # Older jupyter_server spelling.

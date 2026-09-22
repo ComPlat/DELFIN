@@ -1,0 +1,98 @@
+"""A suite that takes half an hour is started, not sat on.
+
+Measured across the four sessions of 2026-09-18: eighteen tool calls ran
+longer than five minutes, 154 minutes between them, and every session hit
+the same wall in the same way.
+
+    bash                 capped at 600 s, killed, ten minutes gone — all
+                         four sessions, once or twice each
+    run_tests            accepts timeout_s up to 1800 and runs in the
+                         FOREGROUND: one call held a turn for 1803 s
+    bash_background      the one that works, and the one they reached for
+                         only after losing the ten minutes
+
+`bash` learned this in the morning ("a long run is started, not waited
+out"); `run_tests` did not. It does now — it hands the run to a job and
+returns the id at once, rather than clamping, because clamping spends
+the ceiling before saying the same thing, which is exactly what cost
+each session its ten minutes.
+
+The way out is real as of today: a finished background job wakes the
+session by itself, in the dashboard and at the terminal prompt.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
+
+
+@pytest.fixture()
+def run_tests(tmp_path, monkeypatch):
+    """The handover is what is under test, not the suite it hands over.
+
+    Without a stubbed registry these cases START A REAL BACKGROUND
+    PYTEST RUN — which succeeded on the machine they were written on and
+    failed in CI, where the error came back in place of the answer and
+    the assertion read None. A test that spawns a suite to check a
+    message is measuring the wrong thing either way.
+    """
+    perms = KitToolPermissions(workspace=tmp_path)
+    perms.mode = "bypassPermissions"
+    eng = _DocToolExecutor.__new__(_DocToolExecutor)
+    eng._permissions = perms
+
+    class _Job:
+        job_id = "01e5b151"
+
+    class _Registry:
+        def start(self, command, **kw):
+            return _Job()
+
+    from delfin.agent import bash_jobs as bj
+    monkeypatch.setattr(bj, "get_registry", lambda: _Registry())
+
+    def _call(**args):
+        return json.loads(eng._execute_run_tests(dict(args), perms)), perms
+    return _call
+
+
+def test_a_half_hour_suite_is_not_sat_on(run_tests):
+    """First this refused and named bash_background; now it hands the run
+    over itself, which is the same principle with the last step done."""
+    out, perms = run_tests(pytest_args=["-q", "tests/"], timeout_s=1800)
+    assert out.get("status") == "started"
+    assert out.get("job_id")
+    assert out.get("requested_timeout_s") == 1800
+    assert out.get("max_foreground_timeout_s") == perms.bash_max_timeout_s
+
+
+def test_it_answers_before_spending_the_time(run_tests):
+    """The whole point: the answer costs nothing. A clamp would spend the
+    ceiling first and then say the same sentence."""
+    import time
+    t0 = time.monotonic()
+    run_tests(pytest_args=["-q"], timeout_s=1800)
+    assert time.monotonic() - t0 < 5.0
+
+
+def test_the_ceiling_is_the_shell_s_own(run_tests):
+    """One number for both, so the agent does not have to learn two."""
+    out, perms = run_tests(pytest_args=["-q"], timeout_s=100000)
+    assert out.get("max_foreground_timeout_s") == perms.bash_max_timeout_s
+
+
+@pytest.mark.parametrize("timeout", [5, 60, 300, 600])
+def test_a_run_inside_the_ceiling_is_untouched(run_tests, timeout):
+    """Below it nothing changes — the tool still runs the tests."""
+    out, _ = run_tests(target="nothing_here.py", pytest_args=["-q"],
+                       timeout_s=timeout)
+    assert "started, not waited out" not in str(out.get("error", ""))
+
+
+def test_the_default_is_untouched(run_tests):
+    out, _ = run_tests(target="nothing_here.py", pytest_args=["-q"])
+    assert "started, not waited out" not in str(out.get("error", ""))

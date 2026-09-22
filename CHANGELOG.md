@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-09-19
+
+### Added — Landing 4: hydrogen placement with three guards (AB:hplace6k4)
+
+`H_PLACEMENT`, `H_CONTACT_GATE`, `H_PARENT_REGAIN`, `H_EYE_GATE` and `H_SP3_ONLY`
+join `cli_manta._CHAMPION_FLAGS` (34 -> 39).  The three-stage hydrogen rotor
+(`delfin/manta/_h_placement.py`) now runs by default, fenced by a whole-frame
+inter-ligand contact census before and after, a topology gate that lets an H
+regain its own parent, the eye's own severity profile as an exit gate (a frame
+whose profile got worse falls back), and the rule that only tetrahedral or
+pyramidal centres are rotated — a coordinated centre keeps its lone pair and the
+only move there is the swap H <-> lone pair.  6000-pool A/B on the 34-flag
+champion: never-worse with the landing gate open — 449 systems affected, 5374
+byte-identical, 0 capabilities lost / 1 gained, every loss term 0, hard frames
+-3.0 points on the intersection; the nine blockers of the previous attempt heal.
+Every flag remains overridable through the environment.
+
 ### Changed — The default CONTROL job fits the larger CPU partition
 
 The shipped CONTROL now uses `PAL=48` with `maxcore=4500`, requesting 216 GB

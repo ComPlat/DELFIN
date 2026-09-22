@@ -134,5 +134,10 @@ def test_targets_classified_ephemeral_are_not_blocked(tmp_path, monkeypatch):
     outside = tmp_path / "elsewhere.txt"
     out = json.loads(ex.execute(
         "bash", {"command": f"echo hi > {outside}"}, perms))
-    assert out.get("exit_code") == 0
-    assert outside.read_text().strip() == "hi"
+    # The GATE is what this wires: an ephemeral target skips it, so the
+    # command runs instead of being refused. Whether the write then lands
+    # is the sandbox's business, and since isolation became the default
+    # for attended sessions the sandbox holds it to the workspace — two
+    # layers, and this test is about the first one.
+    assert "blocked:" not in str(out.get("error") or ""), out
+    assert out.get("exit_code") is not None, out

@@ -36,7 +36,8 @@ _CRITICAL_RULES: dict[str, list[str]] = {
     "write": [
         "NEVER execute destructive actions (rm -rf, git reset --hard, DROP TABLE) without explicit user confirmation.",
         "Grep before Read; ORCA output: typed extract_* tools first, then only the relevant lines.",
-        "After a code edit, run the tests that cover it; report unrelated failures, don't fix them.",
+        "Run a new test against the UNFIXED code first: one that passes before the fix proves nothing. Then run what covers the edit; report unrelated failures, don't fix them.",
+        "Before removing or 'tidying' something that looks wrong, read why it is there — the reason is often in the comment beside it.",
         "If a Bash command is BLOCKED/DENIED, STOP. Do not retry it or any variation.",
         "Communicate with the user in German. Code, commits, and artifacts in English.",
     ],
