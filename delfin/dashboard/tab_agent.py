@@ -33,6 +33,121 @@ _PLAN_HINT_NUMBERED = re.compile(r"(?:^|\s)\(?(?:[1-9]|10)\)?[\.\)]")
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
 
 
+#: A question opening with one of these asks for a THING, and a thing is
+#: not yes or no — however comfortably "soll ich" or "should i" sits
+#: further along in the same sentence.
+_OPEN_QUESTION_OPENERS = frozenset({
+    "was", "wie", "welche", "welcher", "welches", "welchen", "welchem",
+    "warum", "wieso", "weshalb", "wann", "wo", "woher", "wohin", "womit",
+    "wer", "wen", "wem", "wessen",
+    "what", "which", "how", "why", "when", "where", "who", "whom", "whose",
+})
+
+
+def _last_question(text: str) -> str:
+    """The last sentence of *text* that ends in a question mark.
+
+    The classifier reads the last three lines together, so a greeting
+    carries its own prose along with the question at the end. Deciding
+    the TYPE of a question means looking at that question, not at
+    everything said before it.
+    """
+    head, mark, _tail = (text or "").rpartition("?")
+    if not mark:
+        return ""
+    cut = max(head.rfind(c) for c in ".!?\n;•")
+    return head[cut + 1:].strip()
+
+
+def detect_question(text: str) -> dict | None:
+    """Detect if the agent's response ends with a question requiring user input.
+
+    Returns a dict with 'type' and 'options' if a question is detected,
+    or None if the response is a normal statement.
+
+    Types:
+    - 'numbered': Options like "1) foo  2) bar  3) baz"
+    - 'yesno': Yes/no confirmation question
+    - 'open': Open-ended question (ends with ?)
+    """
+    if not text or len(text) < 10:
+        return None
+    # Only look at the last ~2000 chars (the tail of the response)
+    tail = text[-2000:].strip()
+    # Skip if the response ended with a code block (likely not a question)
+    if tail.rstrip().endswith("```"):
+        return None
+
+    # --- Numbered options: 1) / 1. / (1) patterns ---
+    # Look for 2+ numbered items in the tail
+    # Patterns: "1) text", "1. text", "(1) text", "**1.** text"
+    option_patterns = [
+        # "1) description" or "1. description" at line start
+        re.compile(r'^\s*\*?\*?(\d+)[).]\*?\*?\s+(.+)', re.MULTILINE),
+        # "(1) description" at line start
+        re.compile(r'^\s*\((\d+)\)\s+(.+)', re.MULTILINE),
+        # "- **Option 1**: description"
+        re.compile(r'^\s*[-*]\s+\*?\*?(?:Option\s+)?(\d+)\*?\*?[.:]\s*(.+)', re.MULTILINE),
+    ]
+    for pat in option_patterns:
+        matches = pat.findall(tail)
+        if len(matches) >= 2:
+            # Distinguish choosable options from numbered explanation steps.
+            # Heuristic: real options are short (< 50 chars avg) and appear
+            # near a question mark. Long numbered items are instructions.
+            avg_len = sum(len(d.strip()) for _, d in matches) / len(matches)
+            has_question = "?" in tail
+            if avg_len > 120 or not has_question:
+                continue  # very long steps or no question context — skip
+            options = []
+            for num, desc in matches:
+                label = desc.strip().rstrip("*").strip()
+                options.append((num, label))
+            return {"type": "numbered", "options": options}
+
+    # --- QUESTION: tag (from solo_agent.md) ---
+    if "QUESTION:" in tail:
+        return {"type": "open", "options": []}
+
+    # --- Yes/No questions ---
+    last_lines = tail.split("\n")[-3:]
+    last_text = " ".join(last_lines).strip().lower()
+    yesno_indicators = [
+        "shall i", "should i", "do you want me to", "would you like me to",
+        "soll ich", "möchtest du dass ich", "willst du dass ich",
+        "proceed?", "continue?", "go ahead?",
+        "fortfahren?", "weitermachen?",
+        "(yes/no)", "(y/n)", "(ja/nein)",
+    ]
+    if any(ind in last_text for ind in yesno_indicators) and "?" in last_text:
+        # An indicator inside the sentence is not the same as the sentence
+        # being a yes/no question. "soll ich" and "should i" sit just as
+        # happily inside "Was soll ich tun?" / "What should I do?", and a
+        # greeting ending that way was answered with two buttons — the
+        # user pressed Yes and the next turn went on recovering from a
+        # word nobody meant (reported 2026-09-22).
+        asked = _last_question(last_text)
+        opener = asked.split(" ", 1)[0].strip("»«\"'(-–—…*_ ") if asked else ""
+        if opener in _OPEN_QUESTION_OPENERS:
+            # A W-question asks for a thing, and a thing is not yes or no.
+            return {"type": "open", "options": []}
+        if " oder " in asked or " or " in asked:
+            # Two answers on offer, and neither of them is "yes".
+            return {"type": "open", "options": []}
+        return {"type": "yesno", "options": []}
+
+    # --- Open question (ends with ?) ---
+    # Only trigger if the very last meaningful line ends with ?
+    for line in reversed(last_lines):
+        line = line.strip()
+        if line:
+            if line.endswith("?"):
+                return {"type": "open", "options": []}
+            break
+
+    return None
+
+
 def _merge_uploads(existing: list, incoming: list) -> list:
     """The attachments waiting for the next send, after another drop.
 
@@ -310,33 +425,13 @@ _BACKGROUND_REFRESH_S = 10.0
 def _job_wake_prompt(done: list) -> str:
     """The message a finished watched job sends an idle agent; "" for none.
 
-    It says who is speaking. A turn nobody typed arrives through the input
-    box like anything else, so without a word to the contrary the model
-    reads it as the user asking — and answers the user for something the
-    user never said. Naming it as an event, and saying plainly that no one
-    typed it, costs one line and removes the misreading.
+    Kept as a name here because this module is where it was born and
+    where the tests reach for it; the words live in delfin.agent.job_wake,
+    which the terminal reads too. Two copies of this pair is how the
+    producer and the renderer came to disagree about their keys.
     """
-    lines = []
-    for ev in done or []:
-        line = f"- {ev.get('kind', 'job')} {ev.get('job_id')} [{ev.get('state', '?')}]"
-        if ev.get("description"):
-            line += f" {str(ev['description'])[:80]}"
-        if ev.get("signatures"):
-            line += " — " + ", ".join(str(s) for s in ev["signatures"])
-        if ev.get("degraded"):
-            line += f" — {ev['degraded']}"
-        if ev.get("url"):
-            line += f" — {ev['url']}"
-        lines.append(line)
-    if not lines:
-        return ""
-    return ("[watch — a system event, not the user] A job you were "
-            "watching has finished:\n"
-            + "\n".join(lines)
-            + "\n\nNobody typed this; the job watcher put it here because "
-              "you asked to be told. Say what the result means for the "
-              "work it was waiting on. If it failed, name the cause from "
-              "the evidence before proposing a fix.")
+    from delfin.agent.job_wake import wake_prompt
+    return wake_prompt(done)
 
 
 def _longest_pending_tool(inflight: dict, now: float):
@@ -1997,9 +2092,12 @@ def _register_process_exit_cleanup() -> None:
         except Exception:
             pass
         _exported = _process_guard.exported_provider_keys()
-        if _exported:
+        # Unconditional: an alias sets a key for one command, so nothing
+        # exports it and the shell file keeps the line for good. The old
+        # `if _exported:` never looked at that case.
+        _done = _process_guard.put_exported_keys_away(_exported)
+        if _done or _exported:
             from delfin.agent.api_client import _record_security_event
-            _done = _process_guard.put_exported_keys_away(_exported)
             _record_security_event(
                 "key_exported", "environment",
                 _done or _process_guard.exported_key_advice(_exported),
@@ -5785,6 +5883,49 @@ def create_tab(ctx):
     )
     input_row.add_class("delfin-agent-send-row")
 
+    # What could come next, under the box you type in. Drawn from the
+    # tasks the agent itself left open -- not a second call to the model
+    # and not a guess about what somebody wants -- and from the same
+    # helper the terminal prompt offers, so the two cannot drift.
+    next_steps_box = widgets.HBox(
+        [], layout=widgets.Layout(margin="2px 0 0 4px", flex_flow="row wrap"))
+
+    def _fill_input(text: str):
+        def _click(_btn):
+            input_textarea.value = text
+        return _click
+
+    def _refresh_next_steps():
+        """Never raises: a courtesy that can take the tab with it is not
+        a courtesy."""
+        try:
+            from delfin.agent.task_ticker import next_steps as _next
+            eng = state.get("engine")
+            ws = None
+            if eng is not None:
+                kp = getattr(eng, "kit_permissions", None)
+                if kp is not None:
+                    ws = kp.workspace
+            if ws is None:
+                ws = ctx.repo_dir or Path.cwd()
+            steps = _next(ws, session_id=str(
+                state.get("active_session_id", "") or ""))
+        except Exception:
+            steps = []
+        if not steps:
+            next_steps_box.children = ()
+            return
+        kids = []
+        for step in steps:
+            b = widgets.Button(
+                description=step[:58],
+                tooltip=step,
+                layout=widgets.Layout(width="auto", margin="0 4px 0 0"))
+            b.add_class("delfin-next-step")
+            b.on_click(_fill_input(step))
+            kids.append(b)
+        next_steps_box.children = tuple(kids)
+
     # Working indicator (animated spinner)
     working_html = widgets.HTML(value="")
 
@@ -6977,42 +7118,12 @@ def create_tab(ctx):
         def _finished_shells(seen: set) -> list:
             """Background shells that finished since the last look.
 
-            Reported, not drained: the turn this wakes reads the output
-            through bash_output like any other, and an event consumed
-            here would be one the agent never sees.
+            Delegates: the terminal's idle prompt reports the same
+            events, and a second implementation of this pair is exactly
+            what produced six wake-ups reading "shell None [?]".
             """
-            out: list = []
-            try:
-                from delfin.agent import bash_jobs as _bj_wake
-                registry = _bj_wake.get_registry()
-                for job in registry.list_jobs(include_finished=True):
-                    code = job.poll()
-                    if code is None or job.job_id in seen:
-                        continue
-                    seen.add(job.job_id)
-                    # The keys are _job_wake_prompt's, not this function's
-                    # own: it renders job_id, state and description, and
-                    # an event that spelled them id/status/label produced
-                    # six lines reading "- shell None [?]" in a live
-                    # session -- a wake-up that names nothing it woke for.
-                    if code == 0:
-                        _state = "ok"
-                    elif code < 0:
-                        # Not the command's own status: something outside
-                        # ended it. "exit -9" reads as an ordinary failure.
-                        _state = f"killed by {_bj_wake._signal_name(-code)}"
-                    else:
-                        _state = f"exit {code}"
-                    out.append({
-                        "kind": "shell",
-                        "job_id": job.job_id,
-                        "state": _state,
-                        "ok": code == 0,
-                        "description": str(getattr(job, "command", ""))[:80],
-                    })
-            except Exception:
-                return []
-            return out
+            from delfin.agent.job_wake import finished_shells
+            return finished_shells(seen)
 
         def _job_wake_tick():
             import threading as _threading_wake
@@ -7104,6 +7215,7 @@ def create_tab(ctx):
             except Exception:
                 pass
         _refresh_task_ticker()
+        _refresh_next_steps()
         _refresh_status_line()
 
     state["_wire_phase5_callbacks"] = _wire_phase5_callbacks
@@ -7130,6 +7242,10 @@ def create_tab(ctx):
                  margin="6px 0 0 0",
              ),
          ),
+         # Directly under the box you type in: what could come next,
+         # each one a click that fills the box rather than sends it —
+         # a suggestion is an offer, and the sending stays the user's.
+         next_steps_box,
          # Below the message box: click • Main / • Subagent to enter its chat.
          # Hidden entirely unless subagents exist this session.
          agent_view_chips,
@@ -7513,6 +7629,7 @@ def create_tab(ctx):
 
         _refresh_chat_html()
         _refresh_task_ticker()
+        _refresh_next_steps()
         _update_status()
         _update_button_states()
 
@@ -8805,6 +8922,20 @@ def create_tab(ctx):
         role = msg["role"]
         if role == "user":
             content = _md_to_html(msg["content"])
+            if msg.get("origin") == "event":
+                # A turn nobody typed: a finished job, a scheduled run, a
+                # message from another session. It starts through the
+                # input box like anything else, so in the transcript it
+                # was indistinguishable from something the user wrote —
+                # and a user asked why the dashboard was quoting them.
+                #
+                # The ROLE stays "user" on purpose: /retry re-sends the
+                # last user message, the citation check reads the user's
+                # words for the paths a task names, and the turn counter
+                # counts them. A different role would quietly change all
+                # three. Only the rendering moves.
+                return ('<div class="delfin-chat-msg delfin-chat-system">'
+                        f'{content}</div>')
             return (
                 f'<div class="delfin-chat-msg delfin-chat-user">{content}</div>'
             )
@@ -15300,79 +15431,6 @@ def create_tab(ctx):
 
     # -- Interactive question detection & UI ------------------------------------
 
-    def _detect_question(text: str) -> dict | None:
-        """Detect if the agent's response ends with a question requiring user input.
-
-        Returns a dict with 'type' and 'options' if a question is detected,
-        or None if the response is a normal statement.
-
-        Types:
-        - 'numbered': Options like "1) foo  2) bar  3) baz"
-        - 'yesno': Yes/no confirmation question
-        - 'open': Open-ended question (ends with ?)
-        """
-        if not text or len(text) < 10:
-            return None
-        # Only look at the last ~2000 chars (the tail of the response)
-        tail = text[-2000:].strip()
-        # Skip if the response ended with a code block (likely not a question)
-        if tail.rstrip().endswith("```"):
-            return None
-
-        # --- Numbered options: 1) / 1. / (1) patterns ---
-        # Look for 2+ numbered items in the tail
-        # Patterns: "1) text", "1. text", "(1) text", "**1.** text"
-        option_patterns = [
-            # "1) description" or "1. description" at line start
-            re.compile(r'^\s*\*?\*?(\d+)[).]\*?\*?\s+(.+)', re.MULTILINE),
-            # "(1) description" at line start
-            re.compile(r'^\s*\((\d+)\)\s+(.+)', re.MULTILINE),
-            # "- **Option 1**: description"
-            re.compile(r'^\s*[-*]\s+\*?\*?(?:Option\s+)?(\d+)\*?\*?[.:]\s*(.+)', re.MULTILINE),
-        ]
-        for pat in option_patterns:
-            matches = pat.findall(tail)
-            if len(matches) >= 2:
-                # Distinguish choosable options from numbered explanation steps.
-                # Heuristic: real options are short (< 50 chars avg) and appear
-                # near a question mark. Long numbered items are instructions.
-                avg_len = sum(len(d.strip()) for _, d in matches) / len(matches)
-                has_question = "?" in tail
-                if avg_len > 120 or not has_question:
-                    continue  # very long steps or no question context — skip
-                options = []
-                for num, desc in matches:
-                    label = desc.strip().rstrip("*").strip()
-                    options.append((num, label))
-                return {"type": "numbered", "options": options}
-
-        # --- QUESTION: tag (from solo_agent.md) ---
-        if "QUESTION:" in tail:
-            return {"type": "open", "options": []}
-
-        # --- Yes/No questions ---
-        last_lines = tail.split("\n")[-3:]
-        last_text = " ".join(last_lines).strip().lower()
-        yesno_indicators = [
-            "shall i", "should i", "do you want me to", "would you like me to",
-            "soll ich", "möchtest du dass ich", "willst du dass ich",
-            "proceed?", "continue?", "go ahead?",
-            "fortfahren?", "weitermachen?",
-            "(yes/no)", "(y/n)", "(ja/nein)",
-        ]
-        if any(ind in last_text for ind in yesno_indicators) and "?" in last_text:
-            return {"type": "yesno", "options": []}
-
-        # --- Open question (ends with ?) ---
-        # Only trigger if the very last meaningful line ends with ?
-        for line in reversed(last_lines):
-            line = line.strip()
-            if line:
-                if line.endswith("?"):
-                    return {"type": "open", "options": []}
-                break
-
-        return None
 
     def _show_question_ui(question_info: dict):
         """Show interactive widgets based on detected question type.
@@ -15751,7 +15809,10 @@ def create_tab(ctx):
                         user_text = _bi
         elif _first_token in _SLASH_PREFIXES:
             input_textarea.value = ""
-            _append_chat_message("user", user_text)
+            _append_chat_message(
+                "user", user_text,
+                **({"origin": "event"} if state.get("_on_its_own")
+                   else {}))
             _handle_slash_command(user_text)
             return
 
@@ -15785,7 +15846,10 @@ def create_tab(ctx):
                         "and stop; do not search for it.]")
             if _seng is not None and hasattr(_seng, "steer") and _seng.steer(_steer_text):
                 input_textarea.value = ""
-                _append_chat_message("user", user_text)
+                _append_chat_message(
+                    "user", user_text,
+                    **({"origin": "event"} if state.get("_on_its_own")
+                       else {}))
                 _append_system_message(
                     "💬 Sent to the running agent — it picks this up on its next "
                     "step (mid-run steering).")
@@ -15809,7 +15873,10 @@ def create_tab(ctx):
             else:
                 state["message_queue"].append(user_text)
                 input_textarea.value = ""
-                _append_chat_message("user", user_text)
+                _append_chat_message(
+                    "user", user_text,
+                    **({"origin": "event"} if state.get("_on_its_own")
+                       else {}))
                 _append_system_message(
                     f"\U0001f4e8 Queued — agent will receive this after finishing. "
                     f"Type /stop to interrupt."
@@ -15944,7 +16011,10 @@ def create_tab(ctx):
             _update_pipeline_display(engine)
 
         input_textarea.value = ""
-        _append_chat_message("user", user_text)
+        _append_chat_message(
+            "user", user_text,
+            **({"origin": "event"} if state.get("_on_its_own")
+               else {}))
 
         # Fire UserPromptSubmit hooks. Block reasons surface as a system
         # message and abort the send; non-blocking hook output (stderr,
@@ -16530,6 +16600,7 @@ def create_tab(ctx):
                     if tool_name in ("task_create", "task_update", "task_list"):
                         try:
                             _refresh_task_ticker()
+                            _refresh_next_steps()
                         except Exception:
                             pass
                     # Live tool-trace panel: reflect every tool call as it lands.
@@ -17488,7 +17559,7 @@ def create_tab(ctx):
                     _hide_question_ui()  # always reset first
                     if chunks and engine.mode in ("solo", "dashboard"):
                         _full_text = "".join(chunks)
-                        _q_info = _detect_question(_full_text)
+                        _q_info = detect_question(_full_text)
                         if _q_info:
                             _show_question_ui(_q_info)
 
@@ -18468,6 +18539,7 @@ def create_tab(ctx):
         session_dropdown.value = ""
         _refresh_chat_html()
         _refresh_task_ticker()
+        _refresh_next_steps()
         _update_status()
         _update_button_states()
 
@@ -18548,6 +18620,7 @@ def create_tab(ctx):
                 state["_cycle_history"] = []
                 _set_active_gate()
                 _refresh_task_ticker()
+                _refresh_next_steps()
                 _append_system_message(
                     f"Mode switched to {new_mode}. Continuing with the "
                     "existing conversation — no need to re-send your "

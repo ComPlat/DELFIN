@@ -157,7 +157,12 @@ def uid_of(pid: int) -> Optional[int]:
 
 
 #: The model providers' keys DELFIN itself runs on.
-PROVIDER_KEYS = ("KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+PROVIDER_KEYS = ("KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY",
+                 "ANTHROPIC_API_KEY",
+                 # gh stores its own token at 0600, but one typed
+                 # into a shell file is a token in a shell file,
+                 # and the hygiene check would not have looked.
+                 "GITHUB_TOKEN", "GH_TOKEN")
 
 
 def exported_provider_keys() -> list[str]:
@@ -173,7 +178,7 @@ def exported_key_advice(names) -> str:
             f"{names[0]}` and remove the export.")
 
 
-def put_exported_keys_away(names=()) -> str:
+def put_exported_keys_away(names=(), *, home=None) -> str:
     """Do it instead of asking for it. Returns one line, or "".
 
     The warning above repeated at every start and left four manual steps
@@ -188,7 +193,8 @@ def put_exported_keys_away(names=()) -> str:
     """
     try:
         from . import credentials as _cred
-        rows = _cred.secure_exported_keys(names or exported_provider_keys())
+        rows = _cred.secure_exported_keys(
+            names or exported_provider_keys(), home=home)
     except Exception:
         return ""
     stored = [r["name"] for r in rows if r["action"] == "stored"]
@@ -220,8 +226,29 @@ def put_exported_keys_away(names=()) -> str:
         parts.append(f"{', '.join(differs)} is exported AND stored with a "
                      "different value — neither was changed; decide which is "
                      "current and store that one")
+    # A key nothing exports is never in ``rows``: that search starts from
+    # the environment. The shape it misses is an alias, which sets the key
+    # for one command and leaves the line in the file for good. Read-only
+    # here -- the value is not in the store, and removing the only copy of
+    # a key is worse than the leak. The permission is the finding: a 0600
+    # file is where its owner put it.
+    try:
+        at_risk = _cred.keys_in_readable_shell_files(home=home)
+    except Exception:
+        at_risk = []
+    for row in at_risk:
+        parts.append(
+            f"{row['name']} sits in {row['file']}:{row['line_no']}, which "
+            f"{row['readable_by']} can read (mode {row['mode']}) — it is not "
+            f"in the store, so nothing was touched: store it with "
+            f"`delfin-agent credentials set {row['name']}`, then take the "
+            f"line out and chmod 600 the file")
     if not parts:
         return ""
-    return ("Key hygiene: " + "; ".join(parts)
-            + ". Open a new shell so the export is gone from it too.")
+    # Only a cleaned export is gone from the shell you are in; a line this
+    # did not touch stays exactly where it is, and saying otherwise would
+    # read as "handled".
+    tail = (" Open a new shell so the export is gone from it too."
+            if cleaned or any(r.get("systemd") for r in rows) else "")
+    return "Key hygiene: " + "; ".join(parts) + "." + tail
 

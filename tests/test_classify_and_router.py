@@ -205,7 +205,7 @@ class TestChampionSpecialist:
         from delfin.class_modules import get_specialist
         register_all_specialists()
         spec = get_specialist("multi_sigma_123a130")
-        # Worktree at /home/qmchem_max/agent_workspace/commit_sweep/worktrees/123a130
+        # Worktree at /home/localuser/agent_workspace/commit_sweep/worktrees/123a130
         # should exist
         assert spec.is_available()
 

@@ -450,6 +450,20 @@ def test_the_setting_gives_the_builtins_their_roots(monkeypatch, tmp_path):
                                      None) is None
 
 
+def test_one_process_can_opt_in_where_the_file_says_off(monkeypatch, tmp_path):
+    """``DELFIN_MCP_ISOLATION=builtin`` switches the builtins on for THIS
+    process alone. The settings file is one per account, read by every
+    session on it; a trial run of the containment must not have to flip
+    the account-wide file and reach into every other session's servers.
+    The same env-override shape as DELFIN_PROCESS_GUARD and friends."""
+    monkeypatch.setenv("DELFIN_MCP_ISOLATION", "builtin")
+    monkeypatch.setattr(mcp_isolation, "delfin_roots",
+                        lambda **k: mcp_isolation.Isolation((str(tmp_path),), ()))
+    name, cfg = _builtin_cfg()
+    iso = mcp_client._isolation_for(name, cfg, None)
+    assert iso is not None and str(tmp_path) in iso.write_roots
+
+
 def test_an_entry_that_turned_it_off_is_not_overruled_by_the_setting(
         monkeypatch):
     monkeypatch.setattr(mcp_isolation, "builtin_isolation_enabled",

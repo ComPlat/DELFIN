@@ -1,6 +1,6 @@
 """Evidence gathered through the shell has to count as evidence.
 
-Field report 20260831-083210_ka_ew7404: read the singlet-triplet gap out
+Field report 20260831-083210_ka_user: read the singlet-triplet gap out
 of nine ORCA runs under /pfs/.../calc/TADFs-Jeneesh_*. The agent did it
 correctly and the grounding guards fought it for two extra turns, because
 the data lives OUTSIDE the workspace and is therefore reached with `grep`

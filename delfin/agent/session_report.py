@@ -249,14 +249,45 @@ def _denials() -> list[dict]:
     return out
 
 
+def _stored_record(session_id: str) -> dict:
+    """The stored session record, or {} on any failure.
+
+    Solo sessions never write agent_metrics rows (``record_turn`` is
+    dashboard-only), but the record ``session_store.save_session`` keeps
+    has carried model, token_usage, cost_usd and created/updated
+    timestamps all along — the report just never looked at it (measured
+    2026-09-19: a 13-minute session reported ``duration 1m 4s``,
+    ``model -``, ``tokens 0``). This is the fallback, never the source
+    of record: metrics rows keep precedence where they exist.
+    """
+    try:
+        from delfin.agent import session_store
+
+        data = session_store.load_session(session_id)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def _numbers(session_id: str, entries: list[dict]) -> tuple:
     """model, started_at, ended_at, cost_usd, input/output tokens, and how
-    many turns were unpriced or non-billing."""
+    many turns were unpriced or non-billing.
+
+    Metrics rows are the source of record where they exist. Solo sessions
+    write none, and for them the stored session record is the fallback:
+    model, token_usage, and the created_at..updated_at span widened by
+    run_elapsed_s. Duration is the UNION of trace and record — a trace
+    spans the tool calls, not the session, and two calls at the end of a
+    5-minute run must not report it as 30 ms.
+    """
     rows = _turn_rows(session_id)
+    record = _stored_record(session_id) if not rows else {}
     model = ""
     for row in rows:  # last row with a non-empty model wins
         if row.get("model"):
             model = str(row["model"])
+    if not model:
+        model = str(record.get("model", "") or "")
     cost = 0.0
     in_tok = 0
     out_tok = 0
@@ -286,6 +317,39 @@ def _numbers(session_id: str, entries: list[dict]) -> tuple:
                 started, ended = min(turn_ts), max(turn_ts)
         except (TypeError, ValueError):
             pass
+    if record:
+        # The record's created/updated span — no metrics rows exist here,
+        # so this is the session's own lifetime as the store saw it.
+        try:
+            created = float(record.get("created_at") or 0.0)
+            updated = float(record.get("updated_at") or 0.0)
+        except (TypeError, ValueError):
+            created = updated = 0.0
+        if created:
+            rec_started = created
+            # A solo session saves once at the end, so created == updated
+            # and the span is zero. run_elapsed_s is the run clock the
+            # engine persists for the resume budget — the real wall-clock
+            # lifetime. It is a sum across resumes, never a span, so a
+            # real updated_at still wins: never stretch a measured span.
+            if updated and updated > created:
+                rec_ended = updated
+            else:
+                try:
+                    elapsed = float(record.get("run_elapsed_s") or 0.0)
+                except (TypeError, ValueError):
+                    elapsed = 0.0
+                rec_ended = created + elapsed if elapsed > 0.0 else created
+            started = min(started, rec_started) if started else rec_started
+            ended = max(ended, rec_ended) if ended else rec_ended
+    if not in_tok and not out_tok and record:
+        usage = record.get("token_usage")
+        if isinstance(usage, dict):
+            try:
+                in_tok = int(usage.get("input") or 0)
+                out_tok = int(usage.get("output") or 0)
+            except (TypeError, ValueError):
+                pass
     return (model, started, ended, cost, in_tok, out_tok,
             unpriced, non_billing)
 

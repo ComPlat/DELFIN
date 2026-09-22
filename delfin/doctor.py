@@ -281,9 +281,27 @@ def check_no_exported_key() -> CheckResult:
         advice = process_guard.exported_key_advice(names) if names else ""
     except Exception:
         names, advice = [], ""
-    if not names:
+    # A key nobody exports can still be readable: an alias sets it for one
+    # command, and the line stays in a file the group may read. Asking the
+    # environment alone answered a narrower question than this check's
+    # name promises.
+    try:
+        from delfin.agent import credentials as _cred
+        at_risk = _cred.keys_in_readable_shell_files()
+    except Exception:
+        at_risk = []
+    if not names and not at_risk:
         return CheckResult("exported_keys", OK,
-                           "no provider key exported in the environment")
+                           "no provider key exported or left in a "
+                           "readable shell file")
+    if not names:
+        first = at_risk[0]
+        return CheckResult(
+            "exported_keys", MISSING,
+            f"{first['name']} sits in {first['file']}:{first['line_no']}, "
+            f"which {first['readable_by']} can read (mode {first['mode']})",
+            f"Store it with `delfin-agent credentials set {first['name']}`, "
+            "take the line out, and chmod 600 the file.")
     return CheckResult("exported_keys", MISSING,
                        f"{', '.join(names)} exported in the environment", advice)
 

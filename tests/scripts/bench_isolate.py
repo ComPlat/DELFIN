@@ -1,13 +1,13 @@
 """Run the benchmark pool, each SMILES in its own subprocess, aggregate JSON."""
 import json, os, pathlib, subprocess, sys
 
-sys.path.insert(0, '/home/qmchem_max/ComPlat/DELFIN')
+sys.path.insert(0, '/home/localuser/ComPlat/DELFIN')
 from tests.test_isomer_benchmark import SMILES_POOL, BASELINE_PATH, FIXTURES_DIR
 
 WORKER = '/tmp/bench_worker.py'
 with open(WORKER, 'w') as fh:
     fh.write("""import sys, json, os
-sys.path.insert(0, '/home/qmchem_max/ComPlat/DELFIN')
+sys.path.insert(0, '/home/localuser/ComPlat/DELFIN')
 from tests.test_isomer_benchmark import _collect_metrics
 smi = sys.argv[1]
 try:

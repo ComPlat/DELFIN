@@ -37,7 +37,7 @@ from delfin.agent import verify_guard as vg
 # The two texts this was built from, quoted from the reports.
 FIELD_QUESTION = (
     "Extract the hyperpolarizability tensor from all folders in "
-    "/pfs/data6/home/ka/ka_ibcs/ka_ew7404/archive and calculate the "
+    "/pfs/data6/home/ka/ka_group/ka_user/archive and calculate the "
     "Hyper-Rayleigh scattering hyperpolarizability betaHRS from it.")
 FIELD_ANSWER = (
     "## Zusammenfassung\nIch habe den Hyperpolarisierbarkeitstensor aus "

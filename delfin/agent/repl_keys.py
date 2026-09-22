@@ -27,17 +27,21 @@ without a terminal. Only ``RawMode`` touches termios.
 from __future__ import annotations
 
 import atexit
+import errno
 import importlib.util
 import os
 import sys
+import termios
 from dataclasses import dataclass, field
 
 __all__ = [
-    "KeyEvent", "KeyDecoder", "RawMode", "raw_mode_supported",
+    "KeyEvent", "KeyDecoder", "RawMode", "TerminalLeft", "raw_mode_supported",
     "INTERRUPT", "SUBMIT", "STEER", "CYCLE_MODE", "EXPAND", "REDRAW",
-    "TASKS", "EDIT",
+    "TASKS", "EDIT", "HISTORY_PREV", "HISTORY_NEXT", "COMPLETE", "EOF",
+    "SEARCH",
 ]
 
+SEARCH = "search"                  # Ctrl+R — reverse history search
 INTERRUPT = "interrupt"      # Esc — end this turn
 SUBMIT = "submit"            # Enter — queue what was typed
 STEER = "steer"              # Ctrl+G — send what was typed INTO the running turn
@@ -47,6 +51,14 @@ REDRAW = "redraw"            # Ctrl+L
 TASKS = "tasks"              # Ctrl+T — show or hide the open task list
 EDIT = "edit"                # the buffer changed; redraw the input line
 
+# Keys that only matter at the idle prompt. During a turn Up/Down/Tab
+# are swallowed (the turn owns no history and no completion), which is
+# also what the pump loop does with any event it does not recognise.
+HISTORY_PREV = "history_prev"    # Up
+HISTORY_NEXT = "history_next"    # Down
+COMPLETE = "complete"            # Tab — the caller runs its completer
+EOF = "eof"                      # Ctrl+D on an empty line
+
 _ESC = "\x1b"
 _SHIFT_TAB = "\x1b[Z"
 # Cursor movement. Both spellings of each: applications-cursor mode sends
@@ -54,8 +66,12 @@ _SHIFT_TAB = "\x1b[Z"
 # not something this layer gets to decide.
 _LEFT = ("\x1b[D", "\x1bOD")
 _RIGHT = ("\x1b[C", "\x1bOC")
+_UP = ("\x1b[A", "\x1bOA")
+_DOWN = ("\x1b[B", "\x1bOB")
+_TAB = "\t"
 _HOME = ("\x1b[H", "\x1bOH", "\x1b[1~")
 _END = ("\x1b[F", "\x1bOF", "\x1b[4~")
+_DELETE = ("\x1b[3~",)
 # Alt+B / Alt+F — one word left, one word right.
 _WORD_LEFT = "\x1bb"
 _WORD_RIGHT = "\x1bf"
@@ -192,15 +208,35 @@ class KeyDecoder:
                     elif seq in _RIGHT:
                         self.cursor = min(len(self.buffer), self.cursor + 1)
                         events.append(KeyEvent(EDIT, text=self.buffer))
+                    elif seq in _UP:
+                        events.append(KeyEvent(HISTORY_PREV))
+                    elif seq in _DOWN:
+                        events.append(KeyEvent(HISTORY_NEXT))
                     elif seq in _HOME:
                         self.cursor = 0
                         events.append(KeyEvent(EDIT, text=self.buffer))
                     elif seq in _END:
                         self.cursor = len(self.buffer)
                         events.append(KeyEvent(EDIT, text=self.buffer))
+                    elif seq in _DELETE:
+                        if self._delete_forward():
+                            events.append(KeyEvent(EDIT, text=self.buffer))
                     i = j + 1
                     continue
                 events.append(KeyEvent(INTERRUPT))
+                i += 1
+                continue
+
+            if ch == _TAB:
+                events.append(KeyEvent(COMPLETE))
+                i += 1
+                continue
+
+            if ch == "\x04":                    # Ctrl+D
+                if not self.buffer:
+                    events.append(KeyEvent(EOF))
+                elif self._delete_forward():
+                    events.append(KeyEvent(EDIT, text=self.buffer))
                 i += 1
                 continue
 
@@ -225,9 +261,7 @@ class KeyDecoder:
                 # halves matter: stopping at the first space would take a
                 # keystroke to delete nothing when the cursor sits after
                 # one, which is where it usually sits.
-                left = self.buffer[:self.cursor]
-                trimmed = left.rstrip()
-                cut = trimmed.rfind(" ") + 1
+                cut = self._word_left()
                 self.buffer = self.buffer[:cut] + self.buffer[self.cursor:]
                 self.cursor = cut
                 events.append(KeyEvent(EDIT, text=self.buffer))
@@ -263,6 +297,11 @@ class KeyDecoder:
                 line, self.buffer = self.buffer, ""
                 self.cursor = 0
                 events.append(KeyEvent(STEER, text=line))
+                i += 1
+                continue
+
+            if ch == "\x12":                      # Ctrl+R — reverse search
+                events.append(KeyEvent(SEARCH))
                 i += 1
                 continue
 
@@ -314,23 +353,35 @@ class KeyDecoder:
 
     # -- cursor ----------------------------------------------------------
 
+    def _delete_forward(self) -> bool:
+        """Delete the character under the cursor, like readline/Ctrl+D."""
+        if self.cursor >= len(self.buffer):
+            return False
+        self.buffer = (self.buffer[:self.cursor]
+                       + self.buffer[self.cursor + 1:])
+        return True
+
     def _word_left(self) -> int:
         """The start of the word behind the cursor.
 
         Whitespace first, then the word — the same two steps Ctrl+W
         deletes, so moving and deleting agree about where a word begins.
         """
-        left = self.buffer[:self.cursor].rstrip()
-        return left.rfind(" ") + 1
+        i = self.cursor
+        while i > 0 and self.buffer[i - 1].isspace():
+            i -= 1
+        while i > 0 and not self.buffer[i - 1].isspace():
+            i -= 1
+        return i
 
     def _word_right(self) -> int:
         """The start of the word after the cursor, or the end of the line."""
-        rest = self.buffer[self.cursor:]
-        skipped = len(rest) - len(rest.lstrip())
-        nxt = rest.lstrip().find(" ")
-        if nxt < 0:
-            return len(self.buffer)
-        return self.cursor + skipped + nxt + 1
+        i = self.cursor
+        while i < len(self.buffer) and not self.buffer[i].isspace():
+            i += 1
+        while i < len(self.buffer) and self.buffer[i].isspace():
+            i += 1
+        return i
 
     # -- bracketed paste -------------------------------------------------
 
@@ -417,14 +468,45 @@ class KeyDecoder:
 
 
 def raw_mode_supported(stream=None) -> bool:
-    """POSIX terminal, or nothing. Elsewhere the loop stays line-based."""
+    """POSIX terminal, or nothing. Elsewhere the loop stays line-based.
+
+    isatty() alone is not proof: a StringIO with isatty() patched to
+    True (how the tests fake a terminal) would pass, and the raw loop
+    would then wait on an fd that never delivers. The check that
+    matters is whether termios can actually drive the stream's fd.
+    """
     stream = stream if stream is not None else sys.stdin
     if any(importlib.util.find_spec(m) is None for m in ("termios", "tty")):
         return False
     try:
-        return bool(stream.isatty())
+        if not stream.isatty():
+            return False
+        fd = stream.fileno()
     except Exception:
         return False
+    try:
+        termios.tcgetattr(fd)
+        return True
+    except Exception:
+        return False
+
+
+class TerminalLeft(BaseException):
+    """The terminal the session runs in is gone: end, whatever is going on.
+
+    A BaseException, like KeyboardInterrupt, so that none of the
+    ``except Exception`` that keep a turn alive can swallow it. ``code`` is
+    what the session exits with: 0 for ctrl+d, 128 + the signal otherwise.
+    """
+
+    def __init__(self, reason: str = "hangup", code: int = 129):
+        super().__init__(reason)
+        self.reason = reason
+        self.code = code
+
+
+# A read on a line whose far end has closed fails with one of these.
+_HUNG_UP = {errno.EIO, errno.ENXIO}
 
 
 class RawMode:
@@ -500,7 +582,12 @@ class RawMode:
                 self._hooked = False
 
     def read_ready(self, timeout: float) -> str:
-        """One chunk, or "" if nothing arrived within *timeout*."""
+        """One chunk, or "" if nothing arrived within *timeout*.
+
+        A line that has hung up raises ``TerminalLeft`` instead. Returning
+        "" for it too made a closed terminal look like one where nobody
+        was typing, and every loop reading keys waited on it for good.
+        """
         if not self.active or self._fd is None:
             return ""
         import select
@@ -509,6 +596,14 @@ class RawMode:
             if not ready:
                 return ""
             data = os.read(self._fd, 1024)
+        except OSError as exc:
+            if exc.errno in _HUNG_UP:
+                raise TerminalLeft("hangup", 129) from None
+            return ""
         except Exception:
             return ""
+        if not data:
+            # Readable and empty is end of file. cbreak waits for at least
+            # one byte, so a quiet terminal never reads as empty.
+            raise TerminalLeft("hangup", 129)
         return data.decode("utf-8", errors="replace")
