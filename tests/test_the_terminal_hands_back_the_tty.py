@@ -270,7 +270,7 @@ def test_a_typed_row_that_fits_is_left_alone():
     agent, _engine, err = _agent()
     agent.transcript.width = 40
     agent._draw_input_line("stop and check the tests")
-    assert err.getvalue().rsplit("\x1b[K", 1)[-1] == "» stop and check the tests"
+    assert err.getvalue().rsplit("\x1b[K", 1)[-1] == "> stop and check the tests"
 
 
 # ---------------------------------------------------------------------------

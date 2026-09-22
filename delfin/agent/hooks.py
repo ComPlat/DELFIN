@@ -352,7 +352,10 @@ def _build_env(
     user_prompt: str = "",
     workspace: Path | str | None = None,
 ) -> dict[str, str]:
-    env = dict(os.environ)
+    # Hooks run on every tool call; the model provider keys the agent runs
+    # on are not theirs to read.
+    from .mcp_client import _DELFIN_PROVIDER_KEYS
+    env = {k: v for k, v in os.environ.items() if k not in _DELFIN_PROVIDER_KEYS}
     env["DELFIN_HOOK_EVENT"] = event
     if tool_name:
         env["DELFIN_TOOL_NAME"] = tool_name
@@ -377,10 +380,10 @@ def _run_command(
     expanded = _expand(cmd.command, arguments or {})
     t0 = time.monotonic()
     try:
-        proc = subprocess.run(
+        from . import contained_run as _contained
+        proc = _contained.run(
             expanded, shell=True, env=env,
             cwd=str(cwd) if cwd else None,
-            capture_output=True, text=True,
             timeout=max(0.1, cmd.timeout_s),
         )
         return proc.returncode, proc.stdout or "", proc.stderr or "", time.monotonic() - t0

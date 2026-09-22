@@ -3088,8 +3088,28 @@ def _resolve_backend():
     """Pick the right backend (local vs slurm) for the running host."""
     import shutil as _sh
     if _sh.which("sbatch") and _sh.which("squeue"):
-        from delfin.dashboard.backend_slurm import SLURMBackend
-        return SLURMBackend(orca_base="")
+        # Built the way the dashboard builds it: SLURMBackend never existed
+        # under that name (the class is SlurmJobBackend), so on a cluster
+        # every agent call that needed the queue -- list_active_calculations,
+        # submit, cancel, recalc -- died on the import.
+        from delfin.dashboard.backend_slurm import SlurmJobBackend
+        from delfin.runtime_setup import (
+            get_packaged_submit_templates_dir, resolve_submit_templates_dir)
+        try:
+            from delfin.user_settings import load_settings
+            runtime = (load_settings() or {}).get("runtime", {}) or {}
+        except Exception:
+            runtime = {}
+        slurm = runtime.get("slurm", {}) or {}
+        return SlurmJobBackend(
+            submit_templates_dir=resolve_submit_templates_dir(
+                runtime, get_packaged_submit_templates_dir()),
+            orca_base="",
+            tool_binaries=runtime.get("tool_binaries", {}) or {},
+            slurm_profile=slurm.get("profile", ""),
+            partitions=slurm.get("partitions", ""),
+            gpu_partitions=slurm.get("gpu_partitions", ""),
+        )
     # The class was renamed under this import and nobody told this
     # function: list_active_calculations answered every call with an
     # ImportError until a model, asked where the tools hurt, said so.

@@ -110,6 +110,8 @@ def test_detect_auto_picks_bwrap_when_available(monkeypatch):
     monkeypatch.setenv("DELFIN_AGENT_SANDBOX", "auto")
     monkeypatch.setattr(sandbox.shutil, "which",
                         lambda b: "/usr/bin/bwrap" if b == "bwrap" else None)
+    # Installed AND working, supplied rather than measured on this host.
+    monkeypatch.setattr(sandbox, "_bwrap_works", lambda: True)
     cfg = sandbox.detect_config()
     assert cfg.mode == "bwrap"
 

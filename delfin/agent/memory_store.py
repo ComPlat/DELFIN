@@ -249,6 +249,15 @@ def load_memories(path: Path | None = None) -> list[dict[str, Any]]:
     return _read(path or _DEFAULT_PATH).get("facts", [])
 
 
+def _without_secrets(text):
+    """Memory text with credentials redacted. Never raises."""
+    try:
+        from .output_guard import scrub_secrets
+        return scrub_secrets(str(text or ""))
+    except Exception:
+        return text
+
+
 def save_memory(
     text: str,
     source: str = "user",
@@ -259,7 +268,7 @@ def save_memory(
     data = _read(p)
     facts = data.get("facts", [])
     facts.append({
-        "text": text.strip(),
+        "text": _without_secrets(text).strip(),
         "source": source,
         "created_at": time.time(),
     })
@@ -858,6 +867,36 @@ def _delfin_global_memory_dir() -> Path:
     return Path.home() / ".delfin" / "memory"
 
 
+_MEMORY_WRITE_LOCK = Path.home() / ".delfin" / "memory_writes"
+
+
+def save_typed_memory(text: str, **kwargs):
+    """Save a memory with every other writer held off while it happens.
+
+    Saving is a read-merge-write cycle over the store: list the memories of
+    that type, pick the near-duplicate to merge into, write the file, then
+    rewrite the MEMORY.md index. Two sessions of one dashboard, or two
+    dashboards on login nodes that share the home directory, can run that
+    cycle at the same time, and the second index rewrite is the first one's
+    line gone. The lock is the one the job registry and the attention inbox
+    use (bash_jobs.cross_process_lock): bounded, and it proceeds unlocked
+    after its deadline rather than holding a turn hostage.
+    """
+    # A memory is read back into every later session's prompt, in every
+    # project for the user-wide store, and sent to whichever provider that
+    # session uses. A key pasted into a chat and distilled, or a token the
+    # model was steered into remember(), must not travel that far.
+    text = _without_secrets(text)
+    if kwargs.get("title"):
+        kwargs["title"] = _without_secrets(kwargs["title"])
+    try:
+        from .bash_jobs import cross_process_lock
+    except Exception:
+        return _save_typed_memory_unlocked(text, **kwargs)
+    with cross_process_lock(_MEMORY_WRITE_LOCK):
+        return _save_typed_memory_unlocked(text, **kwargs)
+
+
 def _memory_dir_for_scope(repo_root: Path | str, scope: str) -> Path:
     """Resolve the store directory for a scope: ``"user"`` → the global
     ``~/.delfin/memory``; anything else → the per-project store."""
@@ -1000,7 +1039,7 @@ def save_plan(
     return fpath
 
 
-def save_typed_memory(
+def _save_typed_memory_unlocked(
     text: str,
     *,
     repo_root: Path | str,

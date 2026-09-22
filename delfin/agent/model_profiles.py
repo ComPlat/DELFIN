@@ -60,22 +60,33 @@ class ModelProfile:
     stale_kill_after_s: float = 120.0
 
     # How many times a turn may write to memory before the tool is held
-    # back. 0 means no cap.
+    # back for the rest of the turn. 0 means no cap (a valid opt-OUT for
+    # a user who wants none).
     #
-    # The memory addendum asks every role to persist durable facts as it
-    # works, and one model takes that as the work. Measured 2026-09-08,
-    # workflow_verify_after_modify in acceptEdits: GLM issued six
-    # consecutive `remember` calls and then answered with a fragment
-    # ending in a colon where the two ACTION lines should have been.
-    # DeepSeek called it zero times on every dashboard task in the same
-    # run and solved that task in two calls at quality 88 — so this is
-    # one model over-applying a shared rule, which is what a per-model
-    # knob is for rather than weakening the rule for everyone.
+    # Universal as of 2026-09-18. It started as one model's knob —
+    # measured 2026-09-08, workflow_verify_after_modify in acceptEdits:
+    # GLM issued six consecutive `remember` calls and then answered
+    # with a fragment ending in a colon where the two ACTION lines
+    # should have been, while DeepSeek on the same run called it zero
+    # times and solved the task in two calls. That read as one model
+    # over-applying a shared rule, so the cap lived on that model's
+    # profile only.
     #
-    # The no-progress guard in api_client does not catch it: it keys on
-    # name AND arguments, and six remembers with different content read
-    # as progress.
-    max_memory_writes_per_turn: int = 0
+    # The trace archive (33 sessions, 99 ts-gap-grouped turns, counted
+    # 2026-09-18) says the CLASS is not model-specific: no recorded turn
+    # ever made more than ONE memory write (`remember` once in the whole
+    # archive, `forget` zero), while every tool that legitimately
+    # repeats — bash to 31 calls/turn, task_create to 5 — is outside the
+    # memory-write class. Two allowed, refused from the third on, has
+    # zero false positives across the entire archive, on any model.
+    # The weak model exposed the shape; every model can hit it.
+    #
+    # The no-progress guard in api_client cannot help: it keys on name
+    # AND arguments, and six remembers with different content read as
+    # progress. This cap keys on the tool NAME alone, per TURN, and
+    # never aborts the turn — the model is steered back to answering
+    # and the tool is held back, nothing more.
+    max_memory_writes_per_turn: int = 2
 
     # Typical seconds for a turn whose prompt the endpoint cannot serve
     # from its prefix cache — the first turn of a session, and any turn
@@ -175,7 +186,9 @@ _GLM_5_3 = ModelProfile(
     stale_kill_after_s=420.0,
     # Six `remember` calls in one turn, measured; two is generous for the
     # facts a turn actually turns up, and the seventh is what turned a
-    # working turn into a fragment.
+    # working turn into a fragment. This is now the dataclass default
+    # (see ModelProfile.max_memory_writes_per_turn); kept here explicitly
+    # so the profile states its own number.
     max_memory_writes_per_turn=2,
     # 199 / 266 / 268s measured. The user cannot be given the time back,
     # but they can be told what the silence is: the same wait reported as
@@ -185,7 +198,11 @@ _GLM_5_3 = ModelProfile(
     # 2026-09-07, and a module triggered on turn two left 19% of the prompt
     # cold on turn two, measured 2026-09-11.
     all_prompt_modules=True,
-    max_effort="medium",
+    # Low only, decided 2026-09-15 after report 20260915-084010: at medium
+    # the session spent 222k characters of hidden reasoning, often minutes
+    # before a single tool call, on a 45-line change -- and the arms above
+    # showed no answer that low did not give.
+    max_effort="low",
     notes=(
         "KIT GLM-5.3 — strongest of the KIT-hosted open models, slowest to "
         "start. Reasoning-first: needs the thinking token floor. Cold "

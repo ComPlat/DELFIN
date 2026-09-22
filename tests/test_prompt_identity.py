@@ -2,7 +2,7 @@
 
 DELFIN runs on whatever backend the user picked (qwen/KIT, GPT, Ollama, Claude).
 A subagent is a fresh instance of the SAME model — not "a fresh Claude". Bug
-20260625 (ka_ew7404, kit.qwen3.5-397b): the prompt said subagents "spawn a fresh
+20260625 (ka_user, kit.qwen3.5-397b): the prompt said subagents "spawn a fresh
 Claude", so the qwen agent told the user its subagents were "Claude instances"
 ("Warum redet er von claude es ist doch qwen"). These guards keep the prompts
 model-neutral. Legitimate references (the "Claude CLI" backend option, the

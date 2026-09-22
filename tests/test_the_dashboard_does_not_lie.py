@@ -134,7 +134,7 @@ def test_the_dropped_engines_conversation_is_carried_to_the_next():
     assert "engine.export_state()" in body
     assert 'state["_engine_carry_over"] = carry' in body
     assert "engine.client.kill()" in body
-    ensure = _body("_ensure_engine", text, 12000)
+    ensure = _body("_ensure_engine", text, 14000)
     assert 'carry = state.pop("_engine_carry_over", None)' in ensure
     assert "_hand_state_to(" in ensure, "the carry-over goes through the one restore site"
     hand = _body("_hand_state_to", text, 900)
@@ -196,8 +196,11 @@ def test_the_first_token_budget_is_armed_in_every_mode():
     assert "kill_after = 0  # disabled (solo mode)" in body
     assert "_due = [b for b in (kill_after, first_token_kill) if b > 0]" in body, (
         "solo mode armed no timer at all, so the first token had no budget")
-    assert "if budget <= 0:\n                    return" in body, (
+    i = body.index("if budget <= 0:")
+    assert "return" in body[i:i + 700], (
         "the mid-stream kill stays off where it was off")
+    assert "_threading.Timer(30.0, _check_kill)" in body[i:i + 700], (
+        "and the watch goes on, for the first-token wait after the next tool")
     assert "3.0 * _slow_cold" in body
     assert "kill_after * 4.0" not in body
 

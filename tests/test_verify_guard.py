@@ -175,6 +175,28 @@ def test_prose_word_alternations_are_not_path_claims(tmp_path):
     assert scan_for_ungrounded_code_claims(text, repo_root=tmp_path) == []
 
 
+def test_an_abbreviation_and_an_elided_path_are_not_citations(tmp_path):
+    """Report 20260915-110358 flagged "d.h" (German "das heißt") and
+    "tests/.../x" as files a sub-agent had invented."""
+    from delfin.agent.verify_guard import scan_for_ungrounded_code_claims
+    (tmp_path / "tests").mkdir()
+    text = ("Der Resolver läuft vorher, d.h. tests/.../test_orca_input "
+            "findet das echte ORCA.")
+    assert scan_for_ungrounded_code_claims(text, repo_root=tmp_path) == []
+
+
+def test_a_module_path_names_its_py_file(tmp_path):
+    from delfin.agent.verify_guard import scan_for_ungrounded_code_claims
+    (tmp_path / "delfin" / "agent").mkdir(parents=True)
+    (tmp_path / "delfin" / "agent" / "api_client.py").write_text("x = 1\n")
+    text = "Die Regel steht in delfin/agent/api_client."
+    assert scan_for_ungrounded_code_claims(
+        text, repo_root=tmp_path,
+        observed_files={"delfin/agent/api_client.py"}) == []
+    flags = scan_for_ungrounded_code_claims(text, repo_root=tmp_path)
+    assert [f.kind for f in flags] == ["unread"]
+
+
 def test_extensionless_path_under_real_directory_still_flags(tmp_path):
     from delfin.agent.verify_guard import scan_for_ungrounded_code_claims
     (tmp_path / "delfin").mkdir()

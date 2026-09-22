@@ -111,8 +111,27 @@ def _build_client(settings: dict | None):
         model = tier_model(provider, "cheap", settings) or ""
         provider, api_key = _resolve_provider_and_key(model, provider)
     from delfin.agent.api_client import create_client
-    return create_client(backend="api", provider=provider,
-                         api_key=api_key, model=model)
+    return _WithoutTools(create_client(backend="api", provider=provider,
+                                       api_key=api_key, model=model))
+
+
+class _WithoutTools:
+    """A distillation client offers the model no tools.
+
+    The excerpt it summarises is chat text, including tool output and
+    messages from other sessions; a model offered read_file or remember
+    there could be steered into reading or writing on the user's behalf.
+    The distiller needs one text answer."""
+
+    def __init__(self, client):
+        self._client = client
+
+    def stream_message(self, **kwargs):
+        kwargs["no_tools"] = True
+        return self._client.stream_message(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
 
 
 def _default_llm(prompt: str, system: str, settings: dict | None) -> str:

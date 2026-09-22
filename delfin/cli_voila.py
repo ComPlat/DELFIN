@@ -8,6 +8,7 @@ Usage::
 """
 
 import argparse
+import atexit
 import importlib.util
 import importlib.resources
 import ipaddress
@@ -101,6 +102,51 @@ def _latest_vscode_ipc_socket() -> str | None:
     return None
 
 
+def _terminal_gone(signum, frame):
+    """SIGTERM or SIGHUP reach the launcher: stop exactly as Ctrl+C does."""
+    raise KeyboardInterrupt
+
+
+def _install_stop_signals() -> dict:
+    """A closed terminal (SIGHUP) or a plain kill (SIGTERM) used to end the
+    launcher without its cleanup, leaving the server and everything under
+    it running: one server stayed up five days. Both now take the Ctrl+C
+    path. Returns the handlers they replaced."""
+    import signal
+    previous: dict = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            previous[sig] = signal.signal(sig, _terminal_gone)
+        except (ValueError, OSError):
+            pass
+    return previous
+
+
+def _restore_signals(previous: dict) -> None:
+    import signal
+    for sig, handler in (previous or {}).items():
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError, TypeError):
+            pass
+
+
+def _end_agent_processes() -> None:
+    """End every detached process started under this launcher: background
+    shells, MCP servers, daemons (the lifeline ledger)."""
+    try:
+        from delfin.agent import lifeline
+        ended = lifeline.end_children()
+    except Exception:
+        return
+    if ended:
+        print(f"Stopped {len(ended)} background process(es) started from "
+              "this dashboard.")
+
+
 def _is_vscode_session(env: dict[str, str] | None = None) -> bool:
     """Return True when the launcher runs inside a VS Code terminal session."""
     env = env or os.environ
@@ -108,6 +154,40 @@ def _is_vscode_session(env: dict[str, str] | None = None) -> bool:
     browser = str(env.get("BROWSER") or "")
     ipc_hook = str(env.get("VSCODE_IPC_HOOK_CLI") or "").strip()
     return term_program == "vscode" or "browser.sh" in browser or bool(ipc_hook)
+
+
+def _launch_is_interactive() -> bool:
+    """True when a person typed the launch: stdin and stdout are terminals."""
+    try:
+        return bool(sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def _decide_open_browser(args, env: dict[str, str] | None = None,
+                         interactive: bool | None = None) -> bool:
+    """Whether this launch opens the dashboard in a browser.
+
+    The explicit switches win. Otherwise a tab opens only for a launch a
+    person typed into a VS Code terminal. A launch from a script, a test,
+    an agent or a service inherits the same VS Code variables, and on
+    2026-09-16 every such launch -- browser drives, dashboard tests --
+    opened a tab on the developer's desktop. Those are never interactive
+    (no terminal on stdin/stdout), and ``DELFIN_NO_BROWSER`` switches the
+    automatic open off for a whole environment.
+    """
+    env = env if env is not None else os.environ
+    if getattr(args, "open_browser", None) is True:
+        return True
+    if getattr(args, "no_browser", None) is True:
+        return False
+    if str(env.get("DELFIN_NO_BROWSER") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return False
+    if interactive is None:
+        interactive = _launch_is_interactive()
+    if not interactive:
+        return False
+    return _is_vscode_session(env)
 
 
 def _prepare_voila_env(open_browser: bool) -> dict[str, str]:
@@ -564,6 +644,45 @@ def _forward_filtered_stderr(stream) -> None:
         pass
 
 
+#: Set on the child so the re-exec happens once, not for ever.
+_TMUX_MARKER = "DELFIN_VOILA_UNDER_TMUX"
+
+#: The tmux session a --keep dashboard lives in.
+TMUX_SESSION = "delfin"
+
+
+def _reexec_under_tmux(argv) -> "int | None":
+    """Start this command again inside tmux. Returns an exit code, or None.
+
+    None means "carry on here": already inside tmux, already re-executed,
+    or no tmux on this machine -- in which case it says so rather than
+    pretending the dashboard will survive a closed terminal.
+    """
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    if os.environ.get("TMUX") or os.environ.get(_TMUX_MARKER):
+        return None
+    if not _shutil.which("tmux"):
+        print("--keep asked for a session that survives this terminal, and "
+              "tmux is not installed here. Running in the foreground "
+              "instead: closing this terminal ends the dashboard.",
+              file=sys.stderr)
+        return None
+    inner = [sys.argv[0]] + list(argv if argv is not None else sys.argv[1:])
+    env = dict(os.environ, **{_TMUX_MARKER: "1"})
+    # -A: attach to a session of this name if it exists, create otherwise.
+    # The dashboard keeps the terminal it is given; detaching is Ctrl-b d.
+    try:
+        proc = _subprocess.run(["tmux", "new", "-A", "-s", TMUX_SESSION, "--",
+                                *inner], env=env)
+    except OSError as exc:
+        print(f"--keep could not start tmux ({exc}); running here instead.",
+              file=sys.stderr)
+        return None
+    return int(proc.returncode or 0)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="delfin-voila",
@@ -646,7 +765,52 @@ def main(argv=None):
             "Equivalent to setting the DELFIN_RESUME_SESSION env var."
         ),
     )
+    parser.add_argument(
+        "--keep",
+        action="store_true",
+        help=(
+            "Survive a closed terminal: start inside a tmux session named "
+            "'delfin' (reusing one if it is there) and arm 'Keep session' "
+            "for every session this dashboard opens, so a dropped "
+            "connection costs nothing. Prints how to come back."
+        ),
+    )
     args = parser.parse_args(argv)
+    if getattr(args, "keep", False):
+        _rc = _reexec_under_tmux(argv)
+        if _rc is not None:
+            return _rc
+        # Inside tmux now (or tmux was unavailable and we said so): the
+        # sessions this dashboard opens arm themselves.
+        os.environ["DELFIN_KEEP_SESSIONS"] = "1"
+    # This process carries the user's environment, which may hold an
+    # exported provider key; the commands the dashboard runs are processes
+    # of the same user. Unreadable to them, and said once if a key is there.
+    try:
+        from delfin.agent import process_guard as _process_guard
+        _process_guard.protect("dashboard launcher")
+        from delfin.user_settings import load_settings as _load_settings, take_security_notices
+        _load_settings()                    # applies a pending security update
+        for _notice in take_security_notices():
+            print(_notice, file=sys.stderr)
+        _exported = _process_guard.exported_provider_keys()
+        # Unconditional, because the environment is not where the worst
+        # case lives: an alias sets a key for one command and leaves the
+        # line in a shell file for good, so nothing ever exports it and
+        # the old `if _exported:` never looked.
+        #
+        # Do it rather than ask for it: an exported key goes into the
+        # 0600 store and the export is commented out, with a copy of the
+        # file kept. Only what could not be decided is left to say.
+        _done = _process_guard.put_exported_keys_away(_exported)
+        if _done:
+            print(_done, file=sys.stderr)
+        elif _exported:
+            print("Warning: "
+                  + _process_guard.exported_key_advice(_exported),
+                  file=sys.stderr)
+    except Exception:
+        pass
     # Record the REAL shell cwd the user launched from, BEFORE Voila resets the
     # kernel's cwd to the notebook's directory (inside the delfin checkout).
     # ONLY the agent tab reads this — to decide where to build (launch dir =
@@ -725,12 +889,7 @@ def main(argv=None):
             f"     Read it with:  cat {_token_file}\n"
         )
 
-    if args.open_browser is True:
-        open_browser = True
-    elif args.no_browser is True:
-        open_browser = False
-    else:
-        open_browser = _is_vscode_session()
+    open_browser = _decide_open_browser(args)
     notebook = _find_notebook()
     root_dir = str(_default_voila_root())
     notebook = _stage_notebook_under_root(notebook, root_dir)
@@ -804,7 +963,8 @@ def main(argv=None):
     # never uses. notebook_shim is left alone (harmless redirect shim).
     _extensions = (
         "{'voila': True, 'jupyterlab': False, 'notebook': False, "
-        "'jupyter_lsp': False, 'jupyter_server_terminals': False}"
+        "'jupyter_lsp': False, 'jupyter_server_terminals': False, "
+        "'delfin.dashboard.server_guard': True}"
     )
     cmd = [
         sys.executable,
@@ -989,11 +1149,37 @@ def main(argv=None):
             "\n"
             f"     Then open http://localhost:{args.port} in your browser."
         )
+    # Leave the note that says where this is running, so a later login
+    # on another node can find its way back instead of guessing which
+    # node it was. Best-effort: a dashboard that starts is worth more
+    # than one that can be found again.
+    try:
+        from delfin.agent import where as _where
+
+        _where.announce_dashboard(
+            port=args.port, token=_token,
+            resume_path=resume_url_path.split("?")[0] if resume_url_path else "")
+        atexit.register(_where.withdraw_dashboard)
+        _back = _where.reconnect_command(_where.dashboard())
+        if _back:
+            print(f"  ↩ Come back with:  {_back}")
+            print("     From anywhere:     delfin-agent where\n")
+    except Exception:
+        pass
     print("Press Ctrl+C to stop.\n")
 
     # Pipe stderr so we can drop the few benign jupyter noise lines that survive
     # Python's warning filters; stdout stays inherited (banner is untouched).
-    proc = subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE)
+    # This process is the lifeline of everything the dashboard starts: the
+    # server dies with it however it dies (parent death signal), kernels and
+    # daemons watch it, and what runs detached is on its ledger.
+    from delfin.agent import lifeline as _lifeline
+    env.update(_lifeline.claim_root())
+    proc = subprocess.Popen(
+        cmd, env=env, stderr=subprocess.PIPE,
+        preexec_fn=_lifeline.parent_death_signal if os.name == "posix" else None,
+    )
+    _previous_signals = _install_stop_signals()
     stderr_stream = getattr(proc, "stderr", None)
     stderr_thread = None
     if stderr_stream is not None:
@@ -1015,18 +1201,29 @@ def main(argv=None):
         rc = proc.wait()
         if stderr_thread is not None:
             stderr_thread.join(timeout=2)
+        _end_agent_processes()
         sys.exit(rc)
     except KeyboardInterrupt:
-        print("\nStopping...")
+        # Ctrl+C, SIGTERM or the terminal closing: the end of everything,
+        # kept sessions included. A second Ctrl+C must not cut it short.
+        try:
+            import signal as _signal
+            _signal.signal(_signal.SIGINT, _signal.SIG_IGN)
+        except Exception:
+            pass
+        print("\nStopping the dashboard and everything it started...")
         proc.terminate()
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
         if stderr_thread is not None:
             stderr_thread.join(timeout=2)
+        _end_agent_processes()
         print("Stopped.")
+    finally:
+        _restore_signals(_previous_signals)
 
 
 if __name__ == "__main__":

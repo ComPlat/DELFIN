@@ -27,8 +27,14 @@ NOT record the refusal — so the model retries and blocks again.
 from __future__ import annotations
 
 import itertools
+import json
+import os
+import socket
 import threading
+import time
+import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from . import repl_render as rr
@@ -36,7 +42,14 @@ from . import repl_render as rr
 __all__ = [
     "ConfirmRequest", "TerminalConfirmBroker", "Option",
     "options_for", "render_request", "CONFIRM", "ASK", "PLAN",
+    "pending_at_terminals",
 ]
+
+#: Where a question waiting at a terminal is published, whole, for
+#: whoever is supervising -- and where an answer for it may be left. The
+#: room is file_confirm's, so its checks apply unchanged and the terminal
+#: still wins a race: resolve() is the single point that decides.
+_PENDING_DIR = Path.home() / ".delfin" / "terminal_confirmations"
 
 CONFIRM = "confirm"
 ASK = "ask"
@@ -75,6 +88,9 @@ class ConfirmRequest:
     decision: Any = None
     resolved: bool = False
     expired: bool = False
+    #: Where this question was published for a supervisor to read, or
+    #: None. Carried on the request so the answer can take it away again.
+    published: Any = None
 
     @property
     def command(self) -> str:
@@ -95,6 +111,192 @@ class ConfirmRequest:
     @property
     def is_outside_read(self) -> bool:
         return _OUTSIDE_MARKER in self.preview
+
+
+def _publish_pending(req: ConfirmRequest, session_id: str,
+                     session_key: str) -> "Path | None":
+    """Write the whole question where a supervisor can read it.
+
+    The pane renders it capped at 24 lines and cut to the pane's width,
+    which is how an operator came to face a compound command with its
+    middle missing and a guard diff saying "… 30 more lines". The comment
+    above ``render_request`` gives the rule this restores: an approval you
+    cannot read is one you cannot give. Here the preview goes out whole.
+
+    Written under a temporary name and moved into place, so a reader
+    never sees half a question.
+    """
+    room = _PENDING_DIR
+    room.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(room, 0o700)
+    except OSError:
+        pass
+    record = {
+        "id": f"{int(time.time())}-{uuid.uuid4().hex[:8]}",
+        "session_id": str(session_id or ""),
+        "session_key": str(session_key or ""),
+        "kind": str(req.kind or ""),
+        "tool": str(req.tool or ""),
+        "command": req.command,
+        "preview": str(req.preview or ""),
+        "protected": bool(req.is_protected),
+        "outside_read": bool(req.is_outside_read),
+        "asked_at": time.time(),
+        "pid": os.getpid(),
+        # A pid is a number the system hands out again. The start settles
+        # which process it was -- one reader for that fact, the one
+        # extracted for exactly this class of mistake.
+        "proc_start": _proc_start_of_this_process(),
+        "host": socket.gethostname(),
+        # Answerable from both ends now. The terminal still wins a race:
+        # resolve() is the single point that decides, and the first
+        # answer takes it.
+        "answer_at": "terminal or supervisor",
+    }
+    # The same filename file_confirm uses, so its reader, its lister and
+    # its answer writer apply here unchanged -- with every careful part
+    # they carry: not a symlink, this user's, not group-writable, naming
+    # this very question, not older than it.
+    path = room / f"{record['id']}.request.json"
+    tmp = room / f".{record['id']}.partial"
+    tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    tmp.replace(path)
+    return path
+
+
+def _proc_start_of_this_process() -> str:
+    """When this process began, or "". Never raises."""
+    try:
+        from . import proc_identity
+        return proc_identity.process_start(os.getpid())
+    except Exception:
+        return ""
+
+
+def _asker_is_gone(record: dict) -> bool:
+    """True only when the asking process is provably no longer there.
+
+    Where it cannot be asked -- another machine, a kernel that will not
+    say, a record with no pid -- the question STAYS. Guessing a session
+    dead costs somebody their running work, and that is the expensive
+    direction to be wrong in.
+    """
+    try:
+        pid = int(record.get("pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        # No pid is not a dead pid. ``alive`` answers False for a number
+        # it cannot use, which is the right answer to ITS question and
+        # the wrong one to this one.
+        return False
+    try:
+        from . import proc_identity
+        return proc_identity.alive(pid,
+                                   str(record.get("proc_start") or ""),
+                                   str(record.get("host") or "")) is False
+    except Exception:
+        return False
+
+
+def _withdraw_pending(path) -> None:
+    """Take a published question away once it has been answered."""
+    if not path:
+        return
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
+
+
+def pending_at_terminals() -> list[dict]:
+    """Every question a terminal session is waiting on, read whole.
+
+    Never raises: a supervisor's view of the world must not be the thing
+    that ends the supervisor.
+    """
+    try:
+        from . import file_confirm as _fc
+        rows = list(_fc.pending(_PENDING_DIR))
+    except Exception:
+        return []
+    out: list[dict] = []
+    for record in rows:
+        if _asker_is_gone(record):
+            # Nobody will ever answer it, and read as open it is worse
+            # than not published at all -- eight of these stood in the
+            # list within minutes of the watch going live, the oldest
+            # for 3190 seconds.
+            _withdraw_pending(record.get("_file"))
+            continue
+        out.append(record)
+    return out
+
+
+def _note_outside_answer(req: ConfirmRequest, session_key: str,
+                         decision) -> None:
+    """Record that this one was answered from outside the pane.
+
+    An approval given where nobody at the terminal saw it is exactly the
+    kind of thing the containment panel exists to show.
+    """
+    try:
+        from .api_client import _record_security_event
+        _record_security_event(
+            "approval_from_outside", req.tool or "?",
+            f"{session_key or '?'}: {'approved' if decision else 'refused'} "
+            f"{'(PROTECTED) ' if req.is_protected else ''}from outside the "
+            f"terminal", blocked=False)
+    except Exception:
+        pass
+
+
+def answer_waiting(request_id: str, decision: bool, *, by: str = "",
+                   reason: str = "") -> bool:
+    """Answer a question a terminal session is stuck on. Never raises.
+
+    The decision this reverses is the one the first published record
+    stated in itself -- "answer_at: terminal" -- which was right while
+    there was no checked way in. There is one now, and it is not new:
+    file_confirm answers headless sessions with exactly these checks.
+
+    Reading beats guessing. The supervisor decides on the WHOLE preview,
+    which is more than the pane was ever able to show. A refusal may say
+    what to do instead; the reason reaches the model in the same turn as
+    the refusal, so it does not have to guess the same file differently.
+    """
+    try:
+        from . import file_confirm as _fc
+        return bool(_fc.answer(str(request_id), bool(decision),
+                               room=_PENDING_DIR, by=str(by or ""),
+                               reason=str(reason or "")))
+    except Exception:
+        return False
+
+
+def _answer_from_outside(req: ConfirmRequest) -> "tuple[bool, str] | None":
+    """The answer somebody left for *req*, with a refusal reason, or None.
+
+    Never raises. The reason comes from file_confirm's single checked
+    reader -- there is deliberately no laxer second path for text.
+    """
+    published = getattr(req, "published", None)
+    if not published:
+        return None
+    try:
+        from . import file_confirm as _fc
+        path = Path(published)
+        request_id = path.name[:-len(".request.json")]
+        answer_path = path.with_name(f"{request_id}.answer.json")
+        return _fc._read_answer(answer_path, request_id,
+                                path.stat().st_mtime)
+    except Exception:
+        return None
 
 
 def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
@@ -164,7 +366,16 @@ def render_request(req: ConfirmRequest, *, theme: rr.Theme | None = None,
         head = theme.yellow(f"┌─ {name}  OUTSIDE the workspace")
 
     lines = [head]
-    body = rr.strip_control(req.preview or "").splitlines()
+    # Masked before anything reaches the screen: this broker printed the
+    # command whole, so a line carrying a token showed it to the terminal
+    # and to the scrollback behind it. The value goes, the command stays
+    # readable -- an approval you cannot read is one you cannot give.
+    try:
+        from .cli_approve import redact_preview as _redact_preview
+        _preview = _redact_preview(req.preview or "")
+    except Exception:
+        _preview = rr.strip_control(req.preview or "")
+    body = _preview.splitlines()
     shown, hidden = body[:body_lines], max(0, len(body) - body_lines)
     for line in shown:
         lines.append("│  " + rr.truncate_middle(line, max(20, width - 4)))
@@ -198,18 +409,69 @@ class TerminalConfirmBroker:
     def __init__(self, *, timeout_s: float = 0.0,
                  persist: Callable[[str], tuple[bool, str]] | None = None,
                  set_mode: Callable[[str], Any] | None = None,
-                 on_abort: Callable[[], None] | None = None) -> None:
+                 on_abort: Callable[[], None] | None = None,
+                 session_id: str = "", session_key: str = "",
+                 poll_s: float = 0.25,
+                 on_activity: "Callable[[], Any] | None" = None) -> None:
         self.timeout_s = float(timeout_s or 0.0)
+        # How often the waiting thread looks for an answer left outside
+        # the pane. It is the tool thread that waits, so the look costs
+        # nothing the terminal would otherwise be doing.
+        self.poll_s = max(0.01, float(poll_s or 0.25))
+        # Asking is proof of life. Presence was refreshed only from the
+        # idle poll, and a session going from one approval into the next
+        # never reaches it -- so it aged out of the overview exactly
+        # while it was waiting for the supervisor. The broker does not
+        # learn about presence for this: it calls back.
+        self.on_activity = on_activity
+        # Only so a published question can name the session it belongs
+        # to. Empty is fine: the record is then anonymous, not absent.
+        self.session_id = str(session_id or "")
+        self.session_key = str(session_key or "")
         self._persist = persist
         self._set_mode = set_mode
         self._on_abort = on_abort
         self._lock = threading.Lock()
         self._queue: list[ConfirmRequest] = []
         self._seq = itertools.count(1)
-        self.last_timed_out = False
+        # Per THREAD, not per broker. Requests arrive on whichever
+        # thread is running tools -- the turn worker, a subagent, a
+        # background job -- and they overlap. With one flag for all of
+        # them, an answer to one request cleared the expiry of another,
+        # and the expired one was then recorded as a REFUSAL: a path
+        # permanently closed that the user never saw. The flag is read
+        # off ``__self__`` by the gate, so it stays an attribute and
+        # keeps its name; only its storage moved.
+        self._timed_out = threading.local()
+        # Per thread for the same reason as _timed_out: requests overlap
+        # across the turn worker, subagents and background jobs, and a
+        # reason from one thread's refusal must not land on another's.
+        self._refusal_reason = threading.local()
         self.aborted = False
 
     # -- the three bindings ----------------------------------------------
+    @property
+    def last_timed_out(self) -> bool:
+        """Whether THIS thread's last dialog expired rather than being
+        refused. See the note in __init__ for why it is per thread."""
+        return bool(getattr(self._timed_out, "value", False))
+
+    @last_timed_out.setter
+    def last_timed_out(self, value: bool) -> None:
+        self._timed_out.value = bool(value)
+
+    @property
+    def last_refusal_reason(self) -> str:
+        """Why THIS thread's last dialog was refused, if it said why.
+        Set by the thread that asked, read by the gate in the same turn,
+        and cleared by every new dialog -- a reason never outlives its
+        refusal. Per thread like last_timed_out, and for the same reason."""
+        return str(getattr(self._refusal_reason, "value", "") or "")
+
+    @last_refusal_reason.setter
+    def last_refusal_reason(self, value: str) -> None:
+        self._refusal_reason.value = str(value or "")
+
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Bound on purpose: the gate reads last_timed_out off __self__."""
         req = self._enqueue(ConfirmRequest(
@@ -238,12 +500,46 @@ class TerminalConfirmBroker:
                 req.decision = self._refusal_for(req)
                 return req
             self._queue.append(req)
+        try:
+            req.published = _publish_pending(req, self.session_id,
+                                             self.session_key)
+        except Exception:
+            # A supervisor's convenience does not get to fail an
+            # approval: the prompt is asked either way.
+            req.published = None
+        if self.on_activity is not None:
+            try:
+                self.on_activity()
+            except Exception:
+                pass            # a heartbeat may never cost a question
         return req
 
     def _wait(self, req: ConfirmRequest) -> Any:
+        # A reason never outlives its refusal: every new dialog starts
+        # from none, whatever the last one carried -- also when it was
+        # resolved before waiting, by an abort.
+        self.last_refusal_reason = ""
         if req.resolved:
             return req.decision
-        got = req.event.wait(self.timeout_s or None)
+        import time as _time
+        deadline = (_time.monotonic() + self.timeout_s) if self.timeout_s else None
+        got = False
+        while True:
+            slice_s = self.poll_s
+            if deadline is not None:
+                slice_s = min(slice_s, max(0.0, deadline - _time.monotonic()))
+            got = req.event.wait(slice_s if slice_s > 0 else 0.001)
+            if got or req.resolved:
+                got = True
+                break
+            outside = _answer_from_outside(req)
+            if outside is not None and self.resolve(req, outside[0]):
+                if outside[0] is False and outside[1]:
+                    self.last_refusal_reason = outside[1]
+                _note_outside_answer(req, self.session_key, outside[0])
+                return req.decision
+            if deadline is not None and _time.monotonic() >= deadline:
+                break
         with self._lock:
             if not got and not req.resolved:
                 req.expired = True
@@ -252,6 +548,11 @@ class TerminalConfirmBroker:
                 self.last_timed_out = True
                 if req in self._queue:
                     self._queue.remove(req)
+                try:
+                    _withdraw_pending(req.published)
+                except Exception:
+                    pass
+                req.published = None
             else:
                 self.last_timed_out = False
         return req.decision
@@ -281,6 +582,11 @@ class TerminalConfirmBroker:
             req.decision = decision
             if req in self._queue:
                 self._queue.remove(req)
+        try:
+            _withdraw_pending(req.published)
+        except Exception:
+            pass        # a stale record is a nuisance; a raise here is a bug
+        req.published = None
         req.event.set()
         return True
 
@@ -294,6 +600,11 @@ class TerminalConfirmBroker:
                 req.decision = self._refusal_for(req)
             self._queue.clear()
         for req in pending:
+            try:
+                _withdraw_pending(req.published)
+            except Exception:
+                pass
+            req.published = None
             req.event.set()
         if self._on_abort:
             try:

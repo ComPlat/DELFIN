@@ -12,7 +12,8 @@ def test_slurm_backend_appends_known_profile_env():
     assert "DELFIN_MODULES=devel/python/3.11.7-gnu-14.2" in env_vars
     assert "DELFIN_STAGE_ORCA=1" in env_vars
     assert "DELFIN_STAGE_VENV=1" in env_vars
-    assert "DELFIN_RUNTIME_CACHE=1" in env_vars
+    # not the wheel cache: this is the site the failing build was found on
+    assert "DELFIN_RUNTIME_CACHE=1" not in env_vars
 
 
 def test_an_unknown_site_still_runs_the_venv_from_node_local_disk(monkeypatch):
@@ -30,9 +31,31 @@ def test_an_unknown_site_still_runs_the_venv_from_node_local_disk(monkeypatch):
 
     assert env_vars.startswith("DELFIN_MODE=delfin,")
     assert "DELFIN_STAGE_VENV=1" in env_vars
-    assert "DELFIN_RUNTIME_CACHE=1" in env_vars
     assert "DELFIN_MODULES" not in env_vars
     assert "DELFIN_NODE_CORES" not in env_vars
+
+
+def test_an_unknown_site_does_not_have_to_build_a_wheel_first(monkeypatch):
+    """The wheel cache is a tried site's setting, not every site's.
+
+    It builds a wheel on the compute node with whatever the site's venv holds.
+    A venv made with "python -m venv" cannot build one, the build failed, and
+    the calculation died with it -- on sites where nobody had tried it and for
+    a saving of start-up time only. Whoever wants it asks for it.
+    """
+    for key in ("DELFIN_STAGE_VENV", "DELFIN_RUNTIME_CACHE"):
+        monkeypatch.delenv(key, raising=False)
+    backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster")
+
+    assert "DELFIN_RUNTIME_CACHE=0" in backend._append_profile_env("DELFIN_MODE=delfin")
+
+
+def test_a_site_that_asks_for_the_wheel_cache_keeps_it(monkeypatch):
+    # sbatch is called with --export=ALL, so their own setting reaches the job
+    monkeypatch.setenv("DELFIN_RUNTIME_CACHE", "1")
+    backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster")
+
+    assert "DELFIN_RUNTIME_CACHE" not in backend._append_profile_env("DELFIN_MODE=delfin")
 
 
 def test_a_staging_choice_the_user_exported_is_theirs(monkeypatch):
@@ -190,9 +213,9 @@ def test_list_jobs_releases_env_hold_on_refresh():
     squeue_out = (
         "       JOBID    PARTITION       NAME       USER  ST         TIME  "
         "NODES NODELIST(REASON)\n"
-        "     5880813          cpu    stuckjob  ka_ew7404  PD         0:00  "
+        "     5880813          cpu    stuckjob  ka_user  PD         0:00  "
         "    1 (user env retrieval failed requeued held)\n"
-        "     5880814          cpu   normaljob  ka_ew7404  PD         0:00  "
+        "     5880814          cpu   normaljob  ka_user  PD         0:00  "
         "    1 (Priority)\n"
     )
     calls = []

@@ -65,7 +65,26 @@ class KitConfirmBroker:
         self._timeout_s = default_timeout_s
         # True when the most recent decision was a TIMEOUT (user absent),
         # not an actual click on deny. Consumers distinguish the two.
-        self.last_timed_out = False
+        # Per THREAD, not per broker. Requests arrive on whichever
+        # thread is running tools -- the turn worker, a subagent, a
+        # background job -- and they overlap. With one flag for all of
+        # them, an answer to one request cleared the expiry of another,
+        # and the expired one was then recorded as a REFUSAL: a path
+        # permanently closed that the user never saw. The flag is read
+        # off ``__self__`` by the gate, so it stays an attribute and
+        # keeps its name; only its storage moved.
+        self._timed_out = threading.local()
+        #: The session this broker belongs to, stamped on every request
+        #: it parks in the inbox. Set by whoever builds the broker; "" is
+        #: honest about not knowing rather than claiming someone else's.
+        self.session_id = ""
+        # When a window expired with nobody answering, the moment it did.
+        # Until it is cleared (a real decision) or a window has passed,
+        # further requests are not made to wait again: the answer would be
+        # the same, and each wait costs the agent the whole window. Two
+        # sessions spent five minutes each this way on 2026-09-17, one of
+        # them on a `git add`.
+        self._away_since: Optional[float] = None
         self._on_request: Optional[Any] = None  # UI callback to refresh the panel
         # UI callback for an EXPIRED request: the panel clears itself when the
         # window closes, which looks to the user like the prompt vanished for
@@ -83,6 +102,16 @@ class KitConfirmBroker:
         self._toast: Any = None
 
     # -- public API --------------------------------------------------------
+
+    @property
+    def last_timed_out(self) -> bool:
+        """Whether THIS thread's last dialog expired rather than being
+        refused. See the note in __init__ for why it is per thread."""
+        return bool(getattr(self._timed_out, "value", False))
+
+    @last_timed_out.setter
+    def last_timed_out(self, value: bool) -> None:
+        self._timed_out.value = bool(value)
 
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Called from the agent worker thread. Blocks until decided.
@@ -123,12 +152,27 @@ class KitConfirmBroker:
                 "confirm_pending",
                 title=f"Confirmation required: {tool_name}",
                 detail=(preview or summary or "")[:400],
+                # Whose request this was. Without it a later session
+                # reads every stale entry in the inbox as its own: a
+                # fresh CLI session that had only said "Hallo" was told
+                # seven requests were waiting for it, and spent a turn
+                # working out that they belonged to a session that had
+                # ended hours before (2026-09-18).
+                session_id=str(getattr(self, "session_id", "") or ""),
             )
         except Exception:
             attn_id = ""
 
-        # Block worker thread until decided or timeout.
-        decided = req.event.wait(timeout=self._timeout_s)
+        # Block worker thread until decided or timeout -- unless a window
+        # has just expired unanswered. Nobody is there to answer this one
+        # either, and the inbox entry above is what the user acts on when
+        # they return.
+        with self._lock:
+            away = self._away_since
+        if away is not None and (time.monotonic() - away) < self._timeout_s:
+            decided = False
+        else:
+            decided = req.event.wait(timeout=self._timeout_s)
 
         with self._lock:
             try:
@@ -144,8 +188,12 @@ class KitConfirmBroker:
                 # denied — never retry", which previously poisoned the rest
                 # of the session after every unattended 300s window.
                 self.last_timed_out = True
+                if self._away_since is None:
+                    self._away_since = time.monotonic()
             else:
                 self.last_timed_out = False
+                # Somebody answered: they are back.
+                self._away_since = None
             timed_out = self.last_timed_out
 
             persist_cb = self._persist_callback

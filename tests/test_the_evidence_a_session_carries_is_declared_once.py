@@ -206,6 +206,11 @@ _NOT_CARRIED = {
     "_saw_message_start", "_floor_captured_this_turn",
     "_claim_guard_active", "_claim_guard_corrected", "_exec_pending",
     "_trace_pending", "_turn_in_flight", "_turn_start_cost",
+    #    What the LAST turn's cost meant (measured / non-billing /
+    #    unpriced). Written into that turn's metrics row as it ends, so
+    #    the row carries it; a resumed session asks the pricing table
+    #    about its own next turn and needs nothing from the old one.
+    "_last_turn_price_state",
     "_cost_cap_hit", "_cost_cap_value", "_ambiguous_columns_turn",
     "_truncated_tools_turn", "_turn_steers", "_stop_requested",
     "_steering_delivered",
@@ -259,6 +264,13 @@ _NOT_CARRIED = {
     "_turn_serial", "_turn_id", "_stop_owner_turn",
     # -- the last turn's diagnosis, shown once and cleared next turn ------
     "last_empty_turn",
+    #    How the last turn ended ("length" = cut at the token ceiling).
+    #    Read once, right after that turn, to decide whether to continue
+    #    it; a resumed session has no turn that just ended.
+    "last_turn_stop_reason",
+    #    When this process last told the operator it stalled: a throttle
+    #    for the notes of THIS process, not a fact about the session.
+    "_operator_note_last",
     # -- the live system prompt: its TEXT carries the injected memory and
     #    is deliberately never written to disk. Its SIZE is carried, as
     #    _system_prompt_chars, which is declared.

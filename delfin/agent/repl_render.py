@@ -44,6 +44,11 @@ _CONTROL_RE = re.compile(
 
 _WS_RE = re.compile(r"\s+")
 
+# A markdown blockquote marker at the head of a line. Harness speech is
+# never quoting anything, so wherever this appears it is formatting meant
+# for the surface that renders markdown.
+_QUOTE_RE = re.compile(r"^>\s?")
+
 # The argument that says what a call is actually doing. Anything not
 # listed falls back to the first key present in _FALLBACK_KEYS, and a tool
 # with none of them renders as its name plus an argument count — never a
@@ -258,7 +263,328 @@ def tool_headline(name: str, tool_input, *, width: int = _DEFAULT_WIDTH,
     return f"{marker}{head}  {theme.dim(value)}" if value else f"{marker}{head}"
 
 
+#: How many lines of a tool's own output are shown under its summary.
+#: Three: enough for a pytest tally, a traceback's last frame or the
+#: path something was written to, and few enough that a thousand-line
+#: run does not push the conversation off the screen.
+_RESULT_TAIL_LINES = 3
+
+# Edits are the one result where the middle, not the tail, is the answer.
+# The native editors return a unified diff; apply_patch returns a compact
+# success object and keeps the diff in its input.  A bounded, dedicated
+# preview makes both paths read like an edit instead of like an arbitrary
+# command that happened to return N bytes.
+_EDIT_TOOLS = frozenset({
+    "write_file", "edit_file", "multi_edit", "apply_patch",
+})
+_EDIT_DIFF_LINES = 24
+_HUNK_RE = re.compile(
+    r"^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@")
+_PATCH_FILE_RE = re.compile(
+    r"^\*\*\*\s+(?:Update|Add|Delete) File:\s*(.+?)\s*$")
+
+
+#: The field a one-line JSON envelope carries its real output in. Not
+#: a list of tool names: the SHAPE decides, so a provider whose wrapper
+#: looks different is neither silently mangled nor silently unwrapped.
+_CARRYING_FIELDS = ("stdout", "output", "text", "result")
+
+
+def _envelope_carrying(output: str) -> str | None:
+    """The output a ONE-LINE JSON envelope carries, or None.
+
+    ``{"exit_code": 0, "stdout": "136\\n", "cwd": "."}`` is what a shell
+    tool returns: the answer rides in ``stdout`` and the envelope's one
+    line is exactly the middle ``truncate_middle`` destroys, so the line
+    watched during the turn lost the answer while /trace kept it. The
+    carrying field alone goes on the screen instead.
+
+    Only the one-line form: a pretty-printed envelope has real lines and
+    keeps today's tail behaviour. A payload with no carrying field (a
+    search result, a summary table) is data, not packaging; one with
+    several is ambiguous. A lone flag like ``exit_code`` is not a
+    payload -- unwrapping it would print a bare ``0``.
+    """
+    if "\n" in output or not output.strip():
+        return None
+    try:
+        payload = json.loads(output)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    values = [payload[field] for field in _CARRYING_FIELDS if field in payload]
+    if len(values) != 1 or not isinstance(values[0], str):
+        return None
+    value = values[0]
+    return value if value.strip() else None
+
+
+def _result_tail(output: str, width: int) -> list[str]:
+    """The last few non-empty lines of a result, ready to print."""
+    if not output or not output.strip():
+        return []
+    lines = [ln.rstrip() for ln in output.splitlines()]
+    lines = [ln for ln in lines if ln.strip()]
+    if not lines:
+        return []
+    budget = max(_MIN_WIDTH, width) - 6
+    return ["      " + truncate_middle(_WS_RE.sub(" ", ln).strip(), budget)
+            for ln in lines[-_RESULT_TAIL_LINES:]]
+
+
+def _extract_diff(text: str) -> list[str]:
+    """Return the unified/apply-patch part of an editor result."""
+    lines = strip_control(text or "").splitlines()
+    start = None
+    patch_form = False
+    for i, line in enumerate(lines):
+        if line == "*** Begin Patch":
+            start, patch_form = i, True
+            break
+        if line.startswith("diff --git "):
+            start = i
+            break
+        if (line.startswith("--- ") and i + 1 < len(lines)
+                and lines[i + 1].startswith("+++ ")):
+            start = i
+            break
+    if start is None:
+        return []
+
+    end = len(lines)
+    if patch_form:
+        for i in range(start + 1, len(lines)):
+            if lines[i] == "*** End Patch":
+                end = i + 1
+                break
+    else:
+        # Native editor advice is appended after the diff, separated by a
+        # truly empty row.  An empty source-code context row is " " in a
+        # unified diff, so it cannot be mistaken for this separator.
+        for i in range(start + 1, len(lines) - 1):
+            if lines[i] == "" and lines[i + 1].lstrip().startswith(
+                    ("Tip:", "Note:", "NOTE:")):
+                end = i
+                break
+    return lines[start:end]
+
+
+def _diff_path(value: str) -> str:
+    value = (value or "").strip().split("\t", 1)[0]
+    if value in ("", "/dev/null"):
+        return ""
+    if value.startswith(("a/", "b/")):
+        value = value[2:]
+    return value
+
+
+def _diff_paths(lines: list[str], output: str,
+                tool_input: dict | None) -> list[str]:
+    paths: list[str] = []
+
+    def keep(value: str) -> None:
+        value = _diff_path(value)
+        if value and value not in paths:
+            paths.append(value)
+
+    for line in lines:
+        match = _PATCH_FILE_RE.match(line)
+        if match:
+            keep(match.group(1))
+        elif line.startswith("+++ "):
+            keep(line[4:])
+        elif line.startswith("--- ") and not paths:
+            keep(line[4:])
+
+    # apply_patch's result names touched files even though its body carries
+    # no diff.  It is also more reliable than parsing a quoted git header.
+    try:
+        payload = json.loads(output or "")
+    except (TypeError, ValueError):
+        payload = None
+    if isinstance(payload, dict):
+        for path in payload.get("files_touched", []) or []:
+            keep(str(path))
+
+    args = tool_input or {}
+    for key in ("path", "file_path"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            keep(value)
+            break
+    return paths
+
+
+def _apply_patch_succeeded(output: str, meta: dict,
+                           tool_input: dict | None) -> bool:
+    args = tool_input or {}
+    if bool(args.get("check_only")):
+        return False
+    try:
+        payload = json.loads(output or "")
+    except (TypeError, ValueError):
+        payload = None
+    if isinstance(payload, dict):
+        if payload.get("error") or payload.get("check_only"):
+            return False
+        status = str(payload.get("status", "") or "").lower()
+        if status in {"staged", "denied", "error", "failed", "check_failed"}:
+            return False
+        if status:
+            return status in {"ok", "success", "applied"}
+        return bool(payload.get("files_touched"))
+    lowered = (output or "").lower()
+    if any(word in lowered for word in ("error", "failed", "refused", "denied")):
+        return False
+    return meta.get("ok") is not False
+
+
+def _numbered_diff_rows(lines: list[str], paths: list[str]
+                        ) -> list[tuple[str, str]]:
+    """Turn diff rows into (style, text), adding useful line numbers."""
+    rows: list[tuple[str, str]] = []
+    old_line: int | None = None
+    new_line: int | None = None
+    current_path = ""
+    multi = len(paths) > 1
+
+    for line in lines:
+        patch_file = _PATCH_FILE_RE.match(line)
+        if patch_file:
+            current_path = _diff_path(patch_file.group(1))
+            old_line = new_line = None
+            if multi:
+                rows.append(("file", current_path))
+            continue
+        if line in {"*** Begin Patch", "*** End Patch"}:
+            continue
+        if line.startswith("+++ "):
+            current_path = _diff_path(line[4:]) or current_path
+            if multi and current_path:
+                rows.append(("file", current_path))
+            continue
+        if line.startswith(("--- ", "diff --git ", "index ",
+                            "new file mode ", "deleted file mode ",
+                            "similarity index ", "rename from ",
+                            "rename to ")):
+            continue
+        if line.startswith("@@"):
+            match = _HUNK_RE.match(line)
+            if match:
+                old_line, new_line = int(match.group(1)), int(match.group(2))
+            else:
+                old_line = new_line = None
+            rows.append(("hunk", line))
+            continue
+        if not line:
+            continue
+        if line.startswith("\\ No newline"):
+            rows.append(("meta", line))
+            continue
+
+        kind = "context"
+        number: int | None = None
+        if line.startswith("+") and not line.startswith("+++"):
+            kind, number = "add", new_line
+            if new_line is not None:
+                new_line += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            kind, number = "delete", old_line
+            if old_line is not None:
+                old_line += 1
+        elif line.startswith(" "):
+            number = new_line if new_line is not None else old_line
+            if old_line is not None:
+                old_line += 1
+            if new_line is not None:
+                new_line += 1
+        else:
+            # apply_patch's compact format can carry unnumbered metadata.
+            kind = "meta"
+
+        if number is not None:
+            rows.append((kind, f"{number:>5} {line}"))
+        else:
+            rows.append((kind, line))
+    return rows
+
+
+def _cut_right(text: str, width: int) -> str:
+    """Keep a diff marker and line number visible when a code row is long."""
+    width = max(1, int(width))
+    if len(text) <= width:
+        return text
+    return text[:max(0, width - 1)] + "…"
+
+
+def _edit_result(name: str, output: str, *, meta: dict,
+                 tool_input: dict | None, width: int,
+                 theme: Theme) -> str | None:
+    bare = _bare_name(name)
+    if bare not in _EDIT_TOOLS:
+        return None
+
+    source = output
+    lines = _extract_diff(source)
+    if bare == "apply_patch":
+        if not _apply_patch_succeeded(output, meta, tool_input):
+            return None
+        args = tool_input or {}
+        source = str(args.get("diff") or args.get("patch") or "")
+        lines = _extract_diff(source)
+    if not lines:
+        return None
+
+    additions = sum(
+        1 for line in lines
+        if line.startswith("+") and not line.startswith("+++"))
+    deletions = sum(
+        1 for line in lines
+        if line.startswith("-") and not line.startswith("---"))
+    paths = _diff_paths(lines, output, tool_input)
+
+    action = "Edited"
+    if any(line.startswith("--- /dev/null") for line in lines) or any(
+            line.startswith("*** Add File:") for line in lines):
+        action = "Created"
+    elif any(line.startswith("+++ /dev/null") for line in lines) or any(
+            line.startswith("*** Delete File:") for line in lines):
+        action = "Deleted"
+
+    label = paths[0] if len(paths) == 1 else f"{len(paths)} files"
+    if not label:
+        label = "file"
+    total_width = max(_MIN_WIDTH, int(width or _DEFAULT_WIDTH))
+    counts = f" (+{additions} -{deletions})"
+    path_budget = max(8, total_width - len("  ⎿ ") - len(action) - 1
+                      - len(counts))
+    label = truncate_middle(label, path_budget)
+    head = "  ⎿ " + theme.bold(f"{action} {label}{counts}")
+
+    rows = _numbered_diff_rows(lines, paths)
+    omitted = max(0, len(rows) - _EDIT_DIFF_LINES)
+    rows = rows[:_EDIT_DIFF_LINES]
+    budget = total_width - 6
+    rendered: list[str] = [head]
+    for kind, row in rows:
+        row = _cut_right(row, budget)
+        if kind == "add":
+            row = theme.green(row)
+        elif kind == "delete":
+            row = theme.red(row)
+        elif kind in {"hunk", "file"}:
+            row = theme.cyan(row)
+        else:
+            row = theme.dim(row)
+        rendered.append("      " + row)
+    if omitted:
+        rendered.append(theme.dim(f"      … {omitted} more diff lines"))
+    return "\n".join(rendered)
+
+
 def tool_result_line(name: str, output: str, *, meta: dict | None = None,
+                     tool_input: dict | None = None,
                      width: int = _DEFAULT_WIDTH,
                      theme: Theme | None = None) -> str:
     """What came back — and whether it worked.
@@ -277,24 +603,53 @@ def tool_result_line(name: str, output: str, *, meta: dict | None = None,
         budget = max(_MIN_WIDTH, width) - 12
         return "  ⎿ " + theme.red(f"blocked: {truncate_middle(reason, budget)}")
 
+    edit = _edit_result(
+        name, output, meta=meta, tool_input=tool_input,
+        width=width, theme=theme)
+    if edit is not None:
+        return edit
+
     if not output and not meta:
         return "  ⎿ " + theme.dim("(no output)")
 
-    lines = output.count("\n") + (1 if output else 0)
+    # A one-line JSON envelope is packaging: its byte count is not the
+    # answer's size and its single line is the middle truncate_middle
+    # cuts. Show what the carrying field says, nothing about the box.
+    carrying = _envelope_carrying(output)
+    if carrying is not None:
+        # json-escaped controls surface only after decoding, so the
+        # carrying field needs its own pass.
+        carrying = strip_control(carrying)
+        tail = _result_tail(carrying, width)
+        if tail:
+            return "\n".join(theme.dim(t) for t in tail)
+        return "  ⎿ " + theme.dim("(no output)")
+
+    lines = len(output.rstrip("\n").splitlines())
     exact = "chars" in meta and int(meta.get("chars") or 0) >= len(output)
     chars = int(meta.get("chars") or len(output))
     truncated = bool(meta.get("truncated"))
 
+    word = "line" if lines == 1 else "lines"
     if exact and not truncated:
-        body = f"{lines} lines, {human_size(chars)}"
+        body = f"{lines} {word}, {human_size(chars)}"
     else:
-        body = f"{lines}+ lines, {human_size(chars)}"
+        body = f"{lines}+ {word}, {human_size(chars)}"
     if truncated:
         body += " (truncated)"
     notes = _WS_RE.sub(" ", str(meta.get("notes") or "").strip())
     if notes:
         body += f" · {truncate_middle(notes, 60)}"
-    return "  ⎿ " + theme.dim(body)
+    head = "  ⎿ " + theme.dim(body)
+
+    # A count is not a result. "34 lines, 2.1 kB" says a command ran and
+    # nothing about what it found, so the reader has to ask the agent
+    # what its own tool said. The last few lines are where the answer
+    # usually is -- a pytest summary, the bottom of a traceback, the file
+    # that was written -- and they cost three rows.
+    tail = _result_tail(output, width)
+    return head + ("\n" + "\n".join(theme.dim(t) for t in tail)
+                   if tail else "")
 
 
 def notice_line(text: str, *, theme: Theme | None = None) -> str:
@@ -310,6 +665,13 @@ def notice_line(text: str, *, theme: Theme | None = None) -> str:
     theme = theme or Theme()
     cleaned = strip_control(text or "")
     lines = [_WS_RE.sub(" ", ln).strip() for ln in cleaned.split("\n")]
+    # A notice is written once and read on two surfaces. The dashboard
+    # reads it as markdown, where a leading "> " sets the line apart; the
+    # terminal has its own marker for that, and both together produced
+    #     ! > ⏳ First turn on kit.glm-5.3: the endpoint is building ...
+    # on the first line of a session, which is where a user's impression
+    # of the whole thing is formed.
+    lines = [_QUOTE_RE.sub("", ln, count=1) for ln in lines]
     # Keep interior blanks out; a notice is dense by nature.
     kept = [ln for ln in lines if ln]
     if not kept:

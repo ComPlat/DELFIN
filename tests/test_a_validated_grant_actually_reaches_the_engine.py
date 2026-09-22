@@ -149,48 +149,90 @@ def test_no_flag_grants_nothing(wired, tmp_path, capsys):
 # The banner named a remedy; the remedy has to exist
 # ---------------------------------------------------------------------------
 
-def test_isolate_is_consulted_before_the_settings_file(monkeypatch, tmp_path):
-    """Tests the OVERRIDE, not whether this host has bubblewrap.
+def _supplied_host(monkeypatch, *, isolation: str, bwrap: bool = False):
+    """Everything the resolver asks about, answered by the test.
 
-    The first version of this asserted that the resolved argv stops being
-    /bin/bash — which passed here (bubblewrap 0.9.0 installed) and failed
-    on CI, where it is not. That is a test of the runner, not of the
-    mechanism: `_bash_isolation_argv` requires shutil.which("bwrap") even
-    for an explicitly forced mode, and falling back to plain bash there is
-    the only thing it can do.
-
-    So the assertion is on what the override DECIDES, with the host's
-    capability supplied by the test rather than by the machine.
+    The host, because a machine with bubblewrap and one without gave
+    opposite results; the SETTING, because it used to be read from this
+    machine's own ~/.delfin/settings.json — so the test passed where
+    isolation was off, failed where it was on, and inside the suite
+    passed only because an earlier test had left the settings cache
+    holding "off". Two sessions reported it as a failure they could not
+    place (2026-09-17).
     """
     from delfin.agent import api_client
+    import delfin.user_settings as us
+
+    monkeypatch.setattr(api_client, "_BASH_ISOLATION_OVERRIDE", "")
+    monkeypatch.setattr(
+        us, "load_settings",
+        lambda *a, **k: {"agent": {"bash_isolation": isolation}})
+    monkeypatch.setattr(api_client.shutil, "which",
+                        lambda name: "/usr/bin/bwrap" if bwrap else None)
+    monkeypatch.setattr(api_client, "_bwrap_functional", lambda: bwrap)
+    monkeypatch.setattr(api_client, "_landlock_functional", lambda: False)
+    monkeypatch.setattr(api_client, "_seatbelt_functional", lambda: False)
+    return api_client
+
+
+def _is_a_refusal(argv) -> bool:
+    return any("refused:" in str(part) for part in argv)
+
+
+def test_isolate_is_consulted_before_the_settings_file(monkeypatch, tmp_path):
+    """The override decides where the settings file said otherwise.
+
+    Asserted on what comes back rather than on which lookups happen: the
+    argv is the decision, and a lookup is only how it was reached.
+    """
     from delfin.agent.api_client import KitToolPermissions
 
     ws = tmp_path / "project"
     ws.mkdir()
     perms = KitToolPermissions(workspace=ws, mode="default")
-    seen: list[str] = []
+    api_client = _supplied_host(monkeypatch, isolation="off", bwrap=False)
 
-    # Stand in for the host: record the mode the resolver settled on, and
-    # report bwrap as absent so the real wrap is never built.
-    monkeypatch.setattr(api_client, "_BASH_ISOLATION_OVERRIDE", "")
-    monkeypatch.setattr(api_client.shutil, "which",
-                        lambda name: seen.append(name) or None)
+    settled = api_client._bash_isolation_argv("echo hi", str(ws), perms)
+    assert not _is_a_refusal(settled), "isolation off runs the command"
+    assert "bwrap" not in settled
 
-    api_client._bash_isolation_argv("echo hi", str(ws), perms)
-    without = list(seen)
-
-    seen.clear()
     api_client.set_bash_isolation_override("bwrap")
     try:
-        api_client._bash_isolation_argv("echo hi", str(ws), perms)
+        forced = api_client._bash_isolation_argv("echo hi", str(ws), perms)
     finally:
         api_client.set_bash_isolation_override("")
+    # The override reached the branch that builds the sandbox; this host
+    # cannot supply one, and the promise is kept by refusing rather than
+    # by running the command unprotected.
+    assert _is_a_refusal(forced)
 
-    assert "bwrap" not in without, (
-        "an attended mode must not even look for a sandbox by default")
-    assert "bwrap" in seen, (
-        "--isolate has to reach the branch that builds the sandbox; "
-        "whether the host can supply one is a separate question")
+
+def test_the_setting_decides_when_no_flag_was_given(monkeypatch, tmp_path):
+    """With no override, the setting decides — and on an unattended run
+    with isolation auto, that means the sandbox. Since every install is
+    migrated to "auto", this is the ordinary case, not the exotic one."""
+    from delfin.agent.api_client import KitToolPermissions
+
+    ws = tmp_path / "project"
+    ws.mkdir()
+    perms = KitToolPermissions(workspace=ws, mode="bypassPermissions")
+    api_client = _supplied_host(monkeypatch, isolation="auto", bwrap=True)
+
+    settled = api_client._bash_isolation_argv("echo hi", str(ws), perms)
+    assert settled and settled[0] == "bwrap"
+
+
+def test_isolation_off_is_honoured_even_unattended(monkeypatch, tmp_path):
+    """"off" is the explicit escape hatch and stays one."""
+    from delfin.agent.api_client import KitToolPermissions
+
+    ws = tmp_path / "project"
+    ws.mkdir()
+    perms = KitToolPermissions(workspace=ws, mode="bypassPermissions")
+    api_client = _supplied_host(monkeypatch, isolation="off", bwrap=True)
+
+    settled = api_client._bash_isolation_argv("echo hi", str(ws), perms)
+    assert "bwrap" not in settled and not _is_a_refusal(settled)
 
 
 def test_isolation_that_cannot_be_delivered_is_announced(tmp_path, capsys,
@@ -226,10 +268,27 @@ def test_isolation_that_cannot_be_delivered_is_announced(tmp_path, capsys,
 
 
 def test_the_banner_points_at_the_flag_that_exists():
+    """Naming a state without the way to act on it leaves the reader
+    stuck — and naming a flag that does not exist is worse.
+
+    The banner used to report isolation as OFF in the attended modes and
+    point at --isolate. It is on by default now, so the line it prints
+    points at --no-isolate; either way the flag it names is checked
+    against the parser rather than against a string written here.
+    """
     import inspect
+    import re
+
     src = inspect.getsource(agent_cli._startup_banner)
-    assert "--isolate" in src, (
-        "naming the weakness without the remedy leaves the reader stuck")
+    named = set(re.findall(r"--[a-z][a-z-]+", src))
+    assert named, "the banner names no flag at all"
+    parser_src = inspect.getsource(agent_cli.build_parser)
+    for flag in named:
+        assert f'"{flag}"' in parser_src, (
+            f"the banner tells the reader to type {flag}, which the "
+            f"command line does not offer")
+    assert "--no-isolate" in named, (
+        "isolation is on by default; the way to let go has to be on screen")
 
 
 def test_the_flag_is_offered_on_the_command_line():

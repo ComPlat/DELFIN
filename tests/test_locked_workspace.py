@@ -303,7 +303,17 @@ def test_filesystem_isolation_is_forced_for_a_locked_session(scene, monkeypatch)
     assert argv[0] == "bwrap"
 
 
-def test_an_unlocked_interactive_session_keeps_plain_bash(scene, monkeypatch):
+def test_an_unlocked_interactive_session_is_contained_too(scene, monkeypatch):
+    """It used to keep a plain shell here: a human approves each command
+    in the attended modes, so the filesystem was left to the path gate.
+
+    But approval is given on the command TEXT, and the text is not the
+    act. Measured before this changed, in acceptEdits, an ordinary
+    workspace: `echo x > "$HOME"/f` returned exit_code 0 and the file was
+    in the home directory, because the path was never in the command the
+    gate reads. So "auto" now means "wherever this host can hold it", and
+    the escape hatch is by name rather than by posture.
+    """
     import delfin.agent.api_client as A
 
     office, _ = scene
@@ -311,7 +321,16 @@ def test_an_unlocked_interactive_session_keeps_plain_bash(scene, monkeypatch):
     perms = KitToolPermissions(workspace=str(office))
     perms.mode = "default"
     argv = A._bash_isolation_argv("ls", office, perms)
-    assert argv[0] != "bwrap"
+    assert argv[0] == "bwrap", argv
+
+    # And it still lets go when asked by name, which is the other half:
+    # a protection nobody can switch off gets switched off badly.
+    A.set_bash_isolation_override("off")
+    try:
+        plain = A._bash_isolation_argv("ls", office, perms)
+        assert plain[-3:] == ["/bin/bash", "-c", "ls"], plain
+    finally:
+        A.set_bash_isolation_override("")
 
 
 # ---------------------------------------------------------------------------

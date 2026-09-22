@@ -144,6 +144,28 @@ def test_readonly_preset_routes_to_cheap_tier(monkeypatch):
     assert res.to_payload()["model"] == "small-model"
 
 
+def test_a_preset_that_names_the_parent_tier_keeps_the_parent_model(monkeypatch):
+    _patch_settings(monkeypatch, _settings())
+    monkeypatch.setitem(SA.SUBAGENT_PRESETS, "deep-review", SA.SubagentPreset(
+        name="deep-review", description="d", system_prompt="s", mode="plan",
+        model="parent"))
+    parent = _FakeClient()
+    res = _run(parent, "deep-review")
+    assert parent.stream_models == ["big-model"]
+    assert res.model_tier == "parent"
+
+
+def test_a_call_that_names_a_tier_wins_over_the_preset(monkeypatch):
+    _patch_settings(monkeypatch, _settings())
+    monkeypatch.setitem(SA.SUBAGENT_PRESETS, "deep-review", SA.SubagentPreset(
+        name="deep-review", description="d", system_prompt="s", mode="plan",
+        model="parent"))
+    parent = _FakeClient()
+    res = _run(parent, "deep-review", model="cheap")
+    assert parent.stream_models == ["small-model"]
+    assert res.model_tier == "cheap"
+
+
 def test_writer_preset_never_switches(monkeypatch):
     _patch_settings(monkeypatch, _settings())
     parent = _FakeClient()

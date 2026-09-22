@@ -41,7 +41,12 @@ def test_an_arrow_key_is_not_an_escape():
     getting it wrong would make every arrow key abort the turn.
     """
     decoder = rk.KeyDecoder()
-    assert decoder.feed("\x1b[A") == []
+    events = decoder.feed("\x1b[A")
+    # Up now carries HISTORY_PREV (it means something at the idle
+    # prompt); during a turn the pump ignores it. What it must NEVER
+    # be is INTERRUPT — an arrow key aborting the turn is the bug this
+    # test was written against — and it must never land in the line.
+    assert all(e.kind != rk.INTERRUPT for e in events)
     assert decoder.buffer == "", "the sequence must not land in the line"
 
 

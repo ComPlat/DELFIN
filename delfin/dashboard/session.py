@@ -137,6 +137,13 @@ def why_not_resumed(*, root: str = "", request_url: str = "") -> str:
                 "ended, or it was kept by another account or on another "
                 f"machine. As seen from this kernel: {listing}; HOME={home}; "
                 f"kernel {mine[:8] or '?'}.")
+    elsewhere = str(record.get("host") or "")
+    if elsewhere and elsewhere != _hostname():
+        return (f"Session \"{name}\" runs on {elsewhere}, not on this login "
+                f"node ({_hostname()}), and was left running there. To return "
+                f"to it, log in to {elsewhere} and open the dashboard address "
+                "delfin-voila printed there. To end it from anywhere: "
+                "delfin-agent stop-all.")
     wanted = str(record.get("kernel_id") or "")
     return (f"A record for \"{name}\" exists (kernel {wanted[:8]}), but the "
             f"server started a fresh kernel ({mine[:8]}) for this page: it no "
@@ -197,18 +204,46 @@ def resume() -> bool:
 # The opt-in
 # ---------------------------------------------------------------------------
 
+#: How often an armed session refreshes its record.
+HEARTBEAT_S = 60.0
+
+#: How long a record from ANOTHER machine may go unrefreshed and still
+#: count as alive. Four missed beats: a busy kernel can be late, and the
+#: cost of believing a dead one is a server that never stops.
+FOREIGN_STALE_S = 300.0
+
+_heartbeat: "threading.Event | None" = None
+
+
+def _beat(name: str, stop: "threading.Event") -> None:
+    while not stop.wait(HEARTBEAT_S):
+        if not write_record(name):
+            return
+
+
 def keep_alive(on: bool, *, session_name: str = "") -> None:
     """Arm or disarm the opt-in. Never called by default.
 
     The state here is what the strip and the terminal describe; what the
     SERVER honours is the record on disk, written and dropped beside
-    this by the control.
+    this by the control. While it is armed the record is refreshed, so
+    another machine can tell a living session from one whose kernel is
+    long gone.
     """
-    global _keep_alive, _session_name
+    global _keep_alive, _session_name, _heartbeat
     with _lock:
         _keep_alive = bool(on)
         if session_name:
             _session_name = session_name
+        who = _session_name
+        if _heartbeat is not None:
+            _heartbeat.set()
+            _heartbeat = None
+        if _keep_alive and who:
+            stop = threading.Event()
+            _heartbeat = stop
+            threading.Thread(target=_beat, args=(who, stop), daemon=True,
+                             name="delfin-keep-alive").start()
 
 
 def is_kept_alive() -> bool:
@@ -396,6 +431,12 @@ def announce_failure(name: str, reason: str) -> None:
     print(line)
 
 
+def _keep_by_default() -> bool:
+    """Whether new sessions arm themselves (set by ``--keep``)."""
+    return os.environ.get("DELFIN_KEEP_SESSIONS", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def build_status_strip():
     """The control that arms the opt-in, and shows it while it is armed.
 
@@ -412,8 +453,13 @@ def build_status_strip():
 
     css = widgets.HTML(_STRIP_CSS)
     note = widgets.HTML(_strip_html(False, "", ""))
+    # `delfin-voila --keep` says the dashboard is meant to outlive the
+    # terminal that started it, so its sessions start armed instead of
+    # waiting for somebody to remember the switch in each window. The
+    # switch still owns the state: turning it off here disarms as always.
+    _armed = _keep_by_default()
     toggle = widgets.ToggleButton(
-        value=False,
+        value=_armed,
         description="Keep session",
         tooltip=(
             "Keep the session running after the browser closes. The agent "
@@ -455,6 +501,14 @@ def build_status_strip():
             announce(name)
 
     toggle.observe(_on_toggle, names="value")
+    if _armed:
+        # The observer fires on a CHANGE; a control that starts armed
+        # never changed, so the record the server reads would be missing
+        # and the session would die with its window despite the switch.
+        try:
+            _on_toggle({"name": "value", "new": True})
+        except Exception:
+            pass
     strip = widgets.HBox(
         [css, toggle, note],
         layout=widgets.Layout(align_items="center", gap="8px",
@@ -497,12 +551,22 @@ def announce(name: str = "") -> str:
     # Only a kernel has to reach past its own captured stdout; anywhere
     # else -- a test, a CLI -- the parent is not the server, and print
     # is what the caller expects to see.
-    out = _server_stdout() if kernel_id() else None
+    #
+    # A kernel that cannot reach the server's terminal says NOTHING. Its
+    # print is not a terminal: ipykernel forwards it to the frontend, so
+    # the block renders in the page -- and this block carries the server
+    # token inside a URL. Reported from a live session, where it appeared
+    # in the dashboard instead of the terminal: the one surface that does
+    # not need the address (the status strip already offers it behind a
+    # button) and the one where it is worth least, because whoever reads
+    # it is already inside.
+    in_kernel = bool(kernel_id())
+    out = _server_stdout() if in_kernel else None
     if out is not None:
         with out:
             out.write(line + "\n")
             out.flush()
-    else:
+    elif not in_kernel:
         print(line, flush=True)
     return line
 
@@ -563,12 +627,20 @@ def write_record(name: str = "", *, root: str = "", kid: str = "") -> str:
     try:
         os.makedirs(directory, exist_ok=True)
         path = record_path(who, root=directory)
+        now = time.time()
         payload = {
             "session_name": who,
             "kernel_id": ident,
             "pid": os.getpid(),
             "host": _hostname(),
-            "started_at": time.time(),
+            "started_at": now,
+            # A sign of life, refreshed while the kernel runs. Without it
+            # a record could only be judged by its pid, which means
+            # nothing on another machine -- so a session kept on one
+            # login node and read from another looked alive for ever,
+            # kept the server from ever stopping, and offered a return
+            # to a kernel that died hours ago (2026-09-18).
+            "updated_at": now,
             "request_url": _request_url(),
         }
         tmp = path + ".tmp"
@@ -702,8 +774,23 @@ def _record_is_dead(record: dict) -> bool:
     the record is left alone and the resume itself decides.
     """
     host = str(record.get("host") or "")
-    if not host or host != _hostname():
+    if not host:
         return False
+    if host != _hostname():
+        # Another machine: its pid means nothing here, but its heartbeat
+        # does. A record nobody has refreshed is not a running session.
+        beat = record.get("updated_at")
+        if beat is None:
+            # Written before the heartbeat existed: judged by age alone,
+            # generously, so an old format is never called dead early.
+            beat = record.get("started_at")
+            if beat is None:
+                return False
+            return (time.time() - float(beat)) > 6 * 3600
+        try:
+            return (time.time() - float(beat)) > FOREIGN_STALE_S
+        except (TypeError, ValueError):
+            return False
     try:
         pid = int(record.get("pid") or 0)
     except (TypeError, ValueError):
@@ -717,6 +804,16 @@ def _record_is_dead(record: dict) -> bool:
     except OSError:
         return False
     return False
+
+
+def live_records(*, root: str = "") -> list[dict]:
+    """Kept records whose session still shows a sign of life.
+
+    Read-only: unlike ``other_sessions`` this drops nothing, because the
+    server asks it while deciding whether to stop and must not rewrite
+    the directory from that path.
+    """
+    return [r for r in list_records(root=root) if not _record_is_dead(r)]
 
 
 def other_sessions(*, root: str = "", exclude_kernel: str = "") -> list[dict]:
@@ -760,8 +857,26 @@ def _banner_html(records: list[dict]) -> str:
                     else f"for {age / 60.0:.0f}&nbsp;min")
         except (TypeError, ValueError):
             when = ""
-        link = (f'<a href="{url}">re-enter</a>' if url
-                else '<span style="color:#8a919e">address unknown</span>')
+        elsewhere = str(record.get("host") or "")
+        if elsewhere and elsewhere != _hostname():
+            # Its kernel is served on that machine; a link here would ask
+            # this server for a kernel it does not run.
+            link = (f'<span style="color:#8a919e">runs on <code>{elsewhere}'
+                    '</code> &mdash; log in there to return</span>')
+        elif url:
+            # A button, and a verb that says what happens. "re-enter"
+            # read as a label for something that had already happened,
+            # and the one control that takes a person back into their
+            # running work is not the place to be clever (2026-09-17).
+            link = (
+                f'<a href="{url}" style="display:inline-block;'
+                ' background:#2f7d4f; color:#fff; text-decoration:none;'
+                ' padding:3px 12px; border-radius:4px; font-weight:600;'
+                '">Open this session &rarr;</a>'
+            )
+        else:
+            link = '<span style="color:#8a919e">address unknown</span>'
+
         rows.append(
             f'<li style="margin:2px 0"><code>{name}</code>'
             f'{" &middot; " + when if when else ""} &middot; {link}</li>')
@@ -769,9 +884,11 @@ def _banner_html(records: list[dict]) -> str:
         '<div style="border:1px solid #d7dbe2; border-left:3px solid #4b9e5f;'
         ' background:#f7f9fb; padding:8px 12px; margin:0 0 8px 0;'
         ' border-radius:4px; font-size:13px">'
-        '<b>A session is still running.</b> '
-        '<span style="color:#5a6270">This window is new &mdash; '
-        'you can continue where you left off.</span>'
+        '<b>A session is still running &mdash; this window is a new, '
+        'empty one.</b> '
+        '<span style="color:#5a6270">What you type here does NOT reach '
+        'it. Use the button to go back into the running session with its '
+        'history, its agent and its work.</span>'
         f'<ul style="margin:6px 0 0 18px; padding:0">{"".join(rows)}</ul>'
         '</div>'
     )

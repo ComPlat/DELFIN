@@ -27,6 +27,7 @@ def _typed(text: str) -> rk.KeyDecoder:
 
 LEFT, RIGHT = "\x1b[D", "\x1b[C"
 HOME, END = "\x1b[H", "\x1b[F"
+DELETE = "\x1b[3~"
 ALT_B, ALT_F = "\x1bb", "\x1bf"
 CTRL_A, CTRL_E, CTRL_W, CTRL_K, CTRL_U = "\x01", "\x05", "\x17", "\x0b", "\x15"
 
@@ -58,6 +59,23 @@ def test_backspace_deletes_at_the_cursor_and_not_at_the_end():
     d.feed(LEFT + LEFT)          # between the third l and the o
     d.feed("\x7f")
     assert d.buffer == "hello"
+
+
+def test_delete_and_ctrl_d_delete_forwards_at_the_cursor():
+    for key in (DELETE, "\x04"):
+        d = _typed("helllo")
+        d.feed(HOME)
+        for _ in range(3):
+            d.feed(RIGHT)
+        events = d.feed(key)
+        assert d.buffer == "hello", key
+        assert events[-1] == rk.KeyEvent(rk.EDIT, text="hello")
+
+
+def test_ctrl_d_at_the_end_of_a_nonempty_line_is_not_eof():
+    d = _typed("keep")
+    assert d.feed("\x04") == []
+    assert d.buffer == "keep"
 
 
 def test_the_cursor_cannot_leave_the_line():
@@ -143,6 +161,21 @@ def test_alt_f_at_the_end_stays_at_the_end():
     d = _typed("one two")
     d.feed(ALT_F)
     assert d.cursor == len("one two")
+
+
+def test_word_keys_treat_tabs_and_newlines_as_whitespace():
+    text = "alpha\tbeta\ngamma"
+    moved = rk.KeyDecoder()
+    moved.feed("\x1b[200~" + text + "\x1b[201~")
+    moved.feed(ALT_B)
+    assert moved.buffer[moved.cursor:] == "gamma"
+    moved.feed(ALT_B)
+    assert moved.buffer[moved.cursor:] == "beta\ngamma"
+
+    deleted = rk.KeyDecoder()
+    deleted.feed("\x1b[200~" + text + "\x1b[201~")
+    deleted.feed(CTRL_W)
+    assert deleted.buffer == "alpha\tbeta\n"
 
 
 def test_moving_and_deleting_agree_about_where_a_word_starts():
@@ -240,6 +273,48 @@ def test_the_loop_is_what_repaints():
     from delfin.agent import repl
     src = inspect.getsource(repl.TerminalAgent._pump)
     assert "_width_dirty" in src
+
+
+def test_the_turn_refreshes_width_between_clearing_and_repainting(monkeypatch):
+    """Clearing uses the OLD geometry; drawing must use the NEW width."""
+    from delfin.agent import repl_keys
+
+    events: list[str] = []
+    agent = TerminalAgent(_engine(), out=_Tty(), err=_Tty(),
+                          opts=ReplOptions(color="never"))
+    agent._width_dirty = True
+    agent._clear_bottom = lambda: events.append("clear")
+    agent.transcript.refresh_width = lambda: events.append("refresh") or 120
+    agent._repaint_bottom = lambda **_kw: events.append("paint")
+
+    class _Raw:
+        active = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    class _Done:
+        @staticmethod
+        def is_alive():
+            return False
+
+    monkeypatch.setattr(repl_keys, "RawMode", lambda *_a, **_kw: _Raw())
+    agent._pump(_Done())
+    assert events[:3] == ["clear", "refresh", "paint"]
+
+
+def test_ctrl_l_rechecks_the_width_before_it_repaints():
+    events: list[str] = []
+    agent = TerminalAgent(_engine(), out=_Tty(), err=_Tty(),
+                          opts=ReplOptions(color="never"))
+    agent._clear_bottom = lambda: events.append("clear")
+    agent.transcript.refresh_width = lambda: events.append("refresh") or 120
+    agent._repaint_bottom = lambda **_kw: events.append("paint")
+    agent._on_key(rk.KeyEvent(rk.REDRAW), rk.KeyDecoder())
+    assert events == ["clear", "refresh", "paint"]
 
 
 def test_a_platform_without_sigwinch_still_starts(monkeypatch):

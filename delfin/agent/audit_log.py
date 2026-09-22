@@ -678,3 +678,81 @@ def format_changes_report(report: dict) -> str:
         return "\n".join(lines)
     except Exception:
         return "No recorded changes — report unavailable."
+
+
+def steps_since(offset: int = 0, *, log_path: Optional[Path] = None,
+                session: str = "", denied_only: bool = False
+                ) -> "tuple[list[dict], int]":
+    """Records written after *offset*, and the offset to pass next time.
+
+    An offset rather than a count, because a follower that asks for "the
+    last 50" prints some records twice and misses others when a burst
+    arrives between two looks. The offset is a byte position in the log:
+    what has been read is read.
+
+    ``denied_only`` keeps what the gate REFUSED, which is the line a
+    supervisor stops on. ``error`` is deliberately not that -- a grep
+    that finds nothing exits 1, and reading those as refusals is how a
+    first draft of the watcher reported 46 false alarms in one session.
+
+    Never raises: a supervisor's view of the world must not be the thing
+    that ends the supervisor.
+    """
+    path = log_path or _default_log_path()
+    out: list[dict] = []
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return out, 0
+    start = int(offset or 0)
+    if start > size:
+        start = 0            # rotated out from under us: begin again
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            fh.seek(start)
+            text = fh.read()
+            end = fh.tell()
+    except OSError:
+        return out, start
+    # A line still being written has no newline yet; leave it for next time.
+    if text and not text.endswith("\n"):
+        keep = text.rfind("\n")
+        if keep < 0:
+            return out, start
+        end = start + len(text[:keep + 1].encode("utf-8", "replace"))
+        text = text[:keep + 1]
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if session and not str(record.get("session_id") or "").startswith(session):
+            continue
+        if denied_only and str(record.get("decision") or "") != "denied":
+            continue
+        out.append(record)
+    return out, end
+
+
+def render_step(record: dict) -> str:
+    """One step, as a supervisor reads it. Never raises."""
+    try:
+        record = record or {}
+        ts = str(record.get("ts") or "")[11:19] or "--:--:--"
+        session = str(record.get("session_id") or "")[:8] or "--------"
+        tool = str(record.get("tool") or "?")[:22]
+        what = str(record.get("command") or record.get("path") or "")
+        what = " ".join(what.split())[:96]
+        decision = str(record.get("decision") or "")
+        if decision == "denied":
+            reason = " ".join(str(record.get("reason") or "").split())[:120]
+            return f"{ts} {session} DENIED {tool}: {what}\n         └─ {reason}"
+        mark = "!" if decision == "error" else " "
+        return f"{ts} {session} {mark}      {tool}: {what}"
+    except Exception:
+        return ""

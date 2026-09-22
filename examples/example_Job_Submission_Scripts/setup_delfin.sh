@@ -212,8 +212,12 @@ fi
 print_step "Schritt 6: DELFIN installieren"
 
 source "$VENV_NAME/bin/activate"
+# Die Bau-Werkzeuge gehoeren dazu: ein Job baut sich auf dem Rechenknoten
+# ein Rad ohne Netz, und "python -m venv" bringt weder "wheel" noch ein
+# setuptools, das bdist_wheel selbst kann.
 print_info "Upgrade pip..."
 pip install --upgrade pip -q
+pip install --upgrade "setuptools>=77" wheel -q
 print_info "Installiere DELFIN..."
 pip install -e . -q
 print_success "DELFIN installiert"

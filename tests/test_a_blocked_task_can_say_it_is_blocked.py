@@ -11,9 +11,11 @@ transition, so ``update(child, status="completed")`` walked straight
 around the DAG — no in_progress step required — and the edge that exists
 to order the two tasks ordered nothing.
 
-Two invariants that were prompt-only and are one-line data checks are
-enforced here too: never two tasks in_progress at once, and no silent
-pending → completed (the step is what makes the work window exist).
+An invariant that was prompt-only and is a one-line data check is enforced
+here too: never two tasks in_progress at once. A pending → completed step
+was refused as well, until report 20260915-112305 showed what that cost:
+tasks worked on together could not all be in_progress, so they could not
+be completed either. It is accepted now, with an empty work window.
 """
 
 from __future__ import annotations
@@ -156,11 +158,17 @@ def test_completed_is_allowed_once_the_predecessor_is_done(store):
 # The two invariants that were prompt-only
 # ---------------------------------------------------------------------------
 
-def test_pending_cannot_jump_straight_to_completed(store):
+def test_a_task_finished_without_being_started_is_finished(store):
+    """It was refused ("mark it in_progress before completed"), and report
+    20260915-112305 paid a round per refusal: two tasks investigated
+    together by parallel sub-agents could not both be in_progress, so the
+    second could not be completed at all. The completion is accepted; its
+    work window is empty, and the completion check has nothing to read in
+    it."""
     t = store.create("Wire the parser", session_id="s")
-    with pytest.raises(ValueError) as exc:
-        store.update(t["id"], status="completed")
-    assert "in_progress" in str(exc.value)
+    done = store.update(t["id"], status="completed")
+    assert done["status"] == "completed"
+    assert done["started_at"]
 
 
 def test_re_completing_a_completed_task_is_not_an_error(store):

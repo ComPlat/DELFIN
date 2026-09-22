@@ -383,6 +383,10 @@ def run_loop(
 
 
 def main() -> int:
+    # Ends with the terminal or dashboard that started it (lifeline): a
+    # scheduled agent turn must not run after that is gone.
+    from . import lifeline as _lifeline
+    _lifeline.guard_daemon()
     if not acquire_pid_lock():
         print("scheduler daemon is already running (PID lock).")
         return 3

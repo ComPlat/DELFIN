@@ -15,6 +15,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from . import proc_identity
+
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -274,19 +276,34 @@ def acquire_session_lock(session_id: str) -> Path:
     d = _ensure_dir()
     p = d / f"{session_id}.lock"
     me = os.getpid()
-    holder, ts = 0, 0.0
+    holder, ts, holder_host = 0, 0.0, ""
     try:
         info = json.loads(p.read_text(encoding="utf-8"))
         holder = int(info.get("pid", 0) or 0)
         ts = float(info.get("ts", 0) or 0)
+        holder_host = str(info.get("host", "") or "")
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         pass
-    if holder and holder != me:
-        if (time.time() - ts) < _LOCK_MAX_AGE_S and _pid_alive(holder):
+    here = _this_host()
+    elsewhere = bool(holder_host) and holder_host != here
+    if holder and (holder != me or elsewhere):
+        fresh = (time.time() - ts) < _LOCK_MAX_AGE_S
+        # A lock taken on another login node (they share this directory)
+        # cannot be judged by a pid, which names nothing here or a stranger;
+        # it holds until it is stale.
+        if fresh and (elsewhere or _pid_alive(holder)):
             raise SessionLockedError(session_id, holder)
         # Stale lock (dead pid or >1h old): break silently.
-    _atomic_write_text(p, json.dumps({"pid": me, "ts": time.time()}))
+    _atomic_write_text(p, json.dumps({"pid": me, "ts": time.time(), "host": here}))
     return p
+
+
+def _this_host() -> str:
+    try:
+        import socket
+        return (socket.gethostname() or "").strip()
+    except Exception:
+        return ""
 
 
 def release_session_lock(session_id: str) -> None:
@@ -294,7 +311,9 @@ def release_session_lock(session_id: str) -> None:
     p = _lock_path(session_id)
     try:
         info = json.loads(p.read_text(encoding="utf-8"))
-        if int(info.get("pid", 0) or 0) == os.getpid():
+        host = str(info.get("host", "") or "")
+        if (int(info.get("pid", 0) or 0) == os.getpid()
+                and (not host or host == _this_host())):
             p.unlink()
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         pass
@@ -802,6 +821,17 @@ def save_session(
         "perm_profile": perm_profile or "",
         "provider": provider or "",
         "model": model or "",
+        # Identity of the process that wrote this record: pid, the
+        # start fingerprint that keeps the number honest (a pid alone
+        # names nothing, the system hands it out again), the host it
+        # ran on, and when it was last seen. Set on every save, never
+        # guessed at creation time. Host is the bare hostname -- it
+        # must be comparable across nodes, and it carries no home
+        # path or account name.
+        "pid": os.getpid(),
+        "proc_start": proc_identity.process_start(os.getpid()),
+        "host": _this_host(),
+        "heartbeat_at": time.time(),
         "effort": effort or "",
         "active_gate": active_gate or None,
         "last_compaction_info": last_compaction_info or None,
@@ -894,6 +924,28 @@ def list_sessions(
                 "session_id": data.get("session_id", f.stem),
                 "title": data.get("title", "Untitled"),
                 "mode": _migrate_mode(data.get("mode", "quick")),
+                # Recorded since the store existed and passed on by
+                # nothing: a listing that offers sessions to resume
+                # showed "?" in the model column, because the column
+                # could not be filled from what this returned
+                # (2026-09-18).
+                "model": data.get("model", ""),
+                "provider": data.get("provider", ""),
+                # Whether that process still lives, judged through the
+                # one reader of that fact (pid AND start fingerprint
+                # AND host). None means it cannot be asked here: a
+                # record from another machine, or one predating the
+                # fields entirely -- never a guess, because guessing
+                # could cost somebody their running work.
+                "pid": int(data.get("pid", 0) or 0),
+                "proc_start": str(data.get("proc_start", "") or ""),
+                "host": str(data.get("host", "") or ""),
+                "heartbeat_at": float(data.get("heartbeat_at", 0) or 0),
+                "alive": proc_identity.alive(
+                    data.get("pid", 0),
+                    str(data.get("proc_start", "") or ""),
+                    str(data.get("host", "") or ""),
+                ) if data.get("pid") else None,
                 "role_index": data.get("role_index", 0),
                 "route": data.get("route", []),
                 "cost_usd": data.get("cost_usd", 0.0),
@@ -916,6 +968,31 @@ def latest_session(workspace: str | Path | None = None) -> dict[str, Any] | None
     """
     rows = list_sessions(limit=1, workspace=workspace)
     return rows[0] if rows else None
+
+
+def touch_heartbeat(session_id: str) -> bool:
+    """Refresh the heartbeat of a stored session, touching nothing else.
+
+    The conversation, the cost, the title all stay as they are; only
+    ``heartbeat_at`` (and the writer identity, so liveness answers stay
+    honest for a long-running process whose start fingerprint cannot
+    change) move forward. Returns False when there is no such session
+    or the file cannot be rewritten.
+    """
+    filepath = _SESSIONS_DIR / f"{session_id}.json"
+    try:
+        data = json.loads(filepath.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    data["pid"] = os.getpid()
+    data["proc_start"] = proc_identity.process_start(os.getpid())
+    data["host"] = _this_host()
+    data["heartbeat_at"] = time.time()
+    try:
+        _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=1))
+    except OSError:
+        return False
+    return True
 
 
 def delete_session(session_id: str) -> bool:

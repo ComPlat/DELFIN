@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-09-19
+
+### Added — Landing 4: hydrogen placement with three guards (AB:hplace6k4)
+
+`H_PLACEMENT`, `H_CONTACT_GATE`, `H_PARENT_REGAIN`, `H_EYE_GATE` and `H_SP3_ONLY`
+join `cli_manta._CHAMPION_FLAGS` (34 -> 39).  The three-stage hydrogen rotor
+(`delfin/manta/_h_placement.py`) now runs by default, fenced by a whole-frame
+inter-ligand contact census before and after, a topology gate that lets an H
+regain its own parent, the eye's own severity profile as an exit gate (a frame
+whose profile got worse falls back), and the rule that only tetrahedral or
+pyramidal centres are rotated — a coordinated centre keeps its lone pair and the
+only move there is the swap H <-> lone pair.  6000-pool A/B on the 34-flag
+champion: never-worse with the landing gate open — 449 systems affected, 5374
+byte-identical, 0 capabilities lost / 1 gained, every loss term 0, hard frames
+-3.0 points on the intersection; the nine blockers of the previous attempt heal.
+Every flag remains overridable through the environment.
+
+### Changed — The default CONTROL job fits the larger CPU partition
+
+The shipped CONTROL now uses `PAL=48` with `maxcore=4500`, requesting 216 GB
+instead of 288 GB. This fits a 256 GB `cpu_il` node, so the default dashboard
+job can start in either `cpu` or `cpu_il` rather than being confined to the
+smaller `cpu` partition. The ORCA Builder keeps its independent
+`PAL=12` / `MaxCore=6000` default (72 GB).
+
 ### Added — Jobs start in whichever partition frees first, and say why they wait
 
 A CPU job is submitted to every partition of the site that can hold it; SLURM starts it in whichever can run it first. On bwUniCluster 3.0 that is `cpu` and `cpu_il` (264 Ice Lake nodes, 64 cores and 256 GB each): for 40 cores, 240 GB and 2 days `sbatch --test-only` expected a start twelve days earlier in `cpu_il` than in `cpu`. PAL, maxcore and the time limit are not touched. Whether a request fits a partition is asked of SLURM with `sbatch --test-only`, once per request shape, because listing a partition the request does not fit makes SLURM reject the whole job. Configurable with `runtime.slurm.partitions` or `DELFIN_SLURM_PARTITIONS`; a site without a profile keeps its template's partition.

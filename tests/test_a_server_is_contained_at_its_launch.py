@@ -126,6 +126,56 @@ def test_an_interpreter_under_home_is_still_reachable(tmp_path):
     assert str((home / ".venv").resolve()) in _argv_pairs(argv, "--ro-bind")
 
 
+def test_a_venv_linked_to_an_interpreter_elsewhere_is_reachable(tmp_path):
+    """A venv's python links to the interpreter it was made from -- on
+    bwUniCluster a module outside $HOME. Binding only the link's target left
+    the venv under the emptied home, and bwrap could not exec it."""
+    home = tmp_path / "home"
+    venv_bin = home / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    module_bin = tmp_path / "software" / "python-3.11" / "bin"
+    module_bin.mkdir(parents=True)
+    real = module_bin / "python3.11"
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o755)
+    (venv_bin / "python").symlink_to(real)
+
+    argv = mcp_isolation.bwrap_argv(
+        str(venv_bin / "python"), ["-m", "server"],
+        mcp_isolation.parse_isolation({"roots": [str(tmp_path)]}), home=home)
+    binds = _argv_pairs(argv, "--ro-bind")
+    assert str(home / ".venv") in binds
+    assert str((tmp_path / "software" / "python-3.11").resolve()) in binds
+
+
+def test_a_link_outside_the_binds_is_recreated_inside(tmp_path):
+    """bwUniCluster: .venv/bin/python -> /opt/bwhpc/.../python3, /opt/bwhpc
+    -> /software/bwhpc, /software -> /pfs/data6/software_uc3. The kernel
+    follows the path as written, so a link nobody bound breaks the chain even
+    when the interpreter's own directory is bound."""
+    home = tmp_path / "home"
+    venv_bin = home / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    real_bin = tmp_path / "pfs" / "software_uc3" / "python" / "bin"
+    real_bin.mkdir(parents=True)
+    real = real_bin / "python3"
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o755)
+    software = tmp_path / "software"
+    software.symlink_to(tmp_path / "pfs" / "software_uc3")
+    (venv_bin / "python").symlink_to(software / "python" / "bin" / "python3")
+
+    argv = mcp_isolation.bwrap_argv(
+        str(venv_bin / "python"), [],
+        mcp_isolation.parse_isolation({"roots": [str(tmp_path / "project")]}),
+        home=home)
+    links = [(argv[i + 1], argv[i + 2]) for i, tok in enumerate(argv)
+             if tok == "--symlink"]
+    assert (str(tmp_path / "pfs" / "software_uc3"), str(software)) in links
+    # The venv's own link is inside the bound venv and already exists there.
+    assert all(link != str(venv_bin / "python") for _t, link in links)
+
+
 # ---------------------------------------------------- the launch decision
 
 
@@ -398,6 +448,20 @@ def test_the_setting_gives_the_builtins_their_roots(monkeypatch, tmp_path):
     # A server the user wired up is not covered by a setting about ours.
     assert mcp_client._isolation_for("someone-elses", {"command": "x"},
                                      None) is None
+
+
+def test_one_process_can_opt_in_where_the_file_says_off(monkeypatch, tmp_path):
+    """``DELFIN_MCP_ISOLATION=builtin`` switches the builtins on for THIS
+    process alone. The settings file is one per account, read by every
+    session on it; a trial run of the containment must not have to flip
+    the account-wide file and reach into every other session's servers.
+    The same env-override shape as DELFIN_PROCESS_GUARD and friends."""
+    monkeypatch.setenv("DELFIN_MCP_ISOLATION", "builtin")
+    monkeypatch.setattr(mcp_isolation, "delfin_roots",
+                        lambda **k: mcp_isolation.Isolation((str(tmp_path),), ()))
+    name, cfg = _builtin_cfg()
+    iso = mcp_client._isolation_for(name, cfg, None)
+    assert iso is not None and str(tmp_path) in iso.write_roots
 
 
 def test_an_entry_that_turned_it_off_is_not_overruled_by_the_setting(

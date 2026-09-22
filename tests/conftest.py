@@ -122,6 +122,107 @@ def _unexpected_under_a_generated_root() -> frozenset:
         entry[3:] for entry in done.stdout.split("\0") if entry[3:])
 
 
+_LIFELINE_NAMES = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
+_LIFELINE_SAVED: dict = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _the_suite_lives_under_no_lifeline():
+    """A suite started from a delfin-voila terminal inherits its lifeline;
+    a test that then built a dashboard tab would put a watcher on that
+    process, and end the test run when the dashboard stops.
+
+    The strip itself happens in pytest_configure, before the first test's
+    DELFIN_* snapshot. Done here, during the first test's setup, it came
+    AFTER that snapshot: the first test was reported for "leaving" the
+    lifeline behind, and the teardown restore put the lifeline back for
+    every later test (seen from a dashboard shell, 2026-09-16)."""
+    yield
+
+
+@pytest.fixture()
+def gone_pid():
+    """A pid whose process has ended and been reaped.
+
+    Not a large constant. ``/proc/sys/kernel/pid_max`` on this machine is
+    2**22 and the counter wraps -- measured within one session, a pid of
+    4110221 was followed by one of 1455746 -- so 2**22 - 1 is an ordinary
+    number the system hands out, and a test resting on it passes until
+    the day it does not. Worse, if that pid belongs to another user the
+    aliveness check answers "running" on the permission error, which is
+    the opposite of what such a test wants to assert.
+
+    A child we started and reaped is gone by construction, and Linux
+    allocates pids upward, so the number is not handed straight back out.
+    """
+    import subprocess
+    import sys
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait(timeout=60)
+    return proc.pid
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _the_suite_leaves_no_scratch_behind(tmp_path_factory):
+    """Bare ``mkdtemp`` in a test goes under pytest's own root.
+
+    105 calls across 65 test files make a scratch directory with
+    ``tempfile.mkdtemp`` rather than the ``tmp_path`` fixture, and none of
+    them removes it. Measured on the login node: 20836 entries in /tmp,
+    among them 1827 ``ws_*``, 427 ``office_*``, 295 ``planmode_*``, 233
+    ``askuser_*`` -- every one of them named after the test that made it.
+
+    Rewriting the call sites would fix the ones that exist and none of the
+    ones written next week. Pointing ``tempfile.tempdir`` at the base
+    directory pytest already manages covers both: pytest keeps the last
+    three runs and removes what is older, so the growth is bounded by the
+    suite rather than by the calendar.
+
+    It is not a cleanup that could delete somebody's work -- nothing is
+    removed here. Only the place new scratch is made moves, and it moves
+    inside the run's own directory.
+    """
+    import tempfile
+    # The base directory ITSELF, not a subdirectory of it. A subdirectory
+    # moved the answer to "is this repository under the temp directory?",
+    # which is how worktree._default_parent decides whether a throwaway
+    # repo's worktree goes beside it or into temp. A fixture repo under
+    # tmp_path is under the base but not under base/scratch, so that
+    # protection switched off and the worktree landed in temp again --
+    # the very thing it was written to stop after 2532 orphaned
+    # directories were counted here. Using the base keeps every tmp_path
+    # inside gettempdir(), so the product sees what it saw before.
+    room = tmp_path_factory.getbasetemp()
+    previous = tempfile.tempdir
+    tempfile.tempdir = str(room)
+    try:
+        yield
+    finally:
+        tempfile.tempdir = previous
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _the_suite_opens_no_browser():
+    """No test reaches the developer's browser.
+
+    delfin-voila opens the dashboard by itself when it believes it runs in a
+    VS Code terminal (TERM_PROGRAM, VSCODE_IPC_HOOK_CLI, a BROWSER helper),
+    and a suite started there inherits exactly those variables: on
+    2026-09-15 a test that launched a real server opened dashboard tabs on
+    the developer's machine. CI never has them, which is why it went unseen.
+    """
+    import os
+    hooks = ("VSCODE_IPC_HOOK_CLI", "BROWSER")
+    saved = {name: os.environ.pop(name) for name in hooks if name in os.environ}
+    term = os.environ.get("TERM_PROGRAM")
+    if term == "vscode":
+        os.environ.pop("TERM_PROGRAM")
+    yield
+    os.environ.update(saved)
+    if term == "vscode":
+        os.environ["TERM_PROGRAM"] = term
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _the_suite_does_not_write_into_the_checkout():
     """Fail the run when new paths appeared in the checkout.
@@ -349,29 +450,16 @@ def _user_state_targets():
     return tuple(out)
 
 
-# The sinks that are resolved per call rather than at import. Redirecting
-# these one by one, rather than swapping Path.home for the whole suite: that
-# was measured, and it breaks 357 tests that legitimately read the real home.
-_USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
-    ("delfin.agent.audit_log", "_default_log_path", "audit.log"),
-    # Which directories the user has trusted to run commands. A test that
-    # granted trust must never grant it in the real store: the entry would
-    # outlive the run and let a later, real session honour a workspace's
-    # hooks and MCP servers on the strength of a pytest tmp directory.
-    ("delfin.agent.workspace_trust", "_trust_store_path",
-     "trusted_workspaces.json"),
-    # The state-tree maintenance sweep walks these three, and its prune
-    # DELETES: pointed at the real home from inside a test run it would
-    # remove the user's archived transcripts, handoffs and bundles.
-    ("delfin.agent.session_store", "_transcript_archive_path",
-     "transcript_archive"),
-    ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
-    ("delfin.agent.session_store", "_bundles_path", "bundles"),
-    ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
-    ("delfin.agent.change_journal", "_undo_root", "undo"),
-    ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
-    ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),
-)
+# Redirecting these one by one, rather than swapping Path.home for the whole
+# suite: that was measured, and it breaks 357 tests that legitimately read the
+# real home.
+#
+# There is no second copy of the table here. A literal one stood at this spot
+# and SHADOWED the import above, so the product's table was read and thrown
+# away on the next statement -- the two copies happened to agree, so nothing
+# failed, and an entry added to the product table would simply not have
+# reached the suite. The redirect is asserted from the product table in
+# test_a_note_is_not_left_by_a_test.py.
 
 
 @pytest.fixture(scope="session")
@@ -386,6 +474,62 @@ def _user_state_resolvers():
         if callable(getattr(mod, attr, None)):
             out.append((mod, attr, rel))
     return tuple(out)
+
+
+try:
+    from delfin.agent import lifeline as _lifeline
+    _REAL_LIFELINE_WATCH = _lifeline.watch
+except Exception:                                   # pragma: no cover
+    _lifeline = None
+    _REAL_LIFELINE_WATCH = None
+
+
+@pytest.fixture(autouse=True)
+def _no_watcher_ends_the_test_run(monkeypatch):
+    """``lifeline.watch`` ends the process it runs in -- a dashboard kernel,
+    a daemon, a terminal agent -- when its lifeline goes or an emergency
+    stop is given. In a test run that process is pytest. A watcher left
+    running by one test (building the agent tab, running the chat command)
+    ended the whole run the moment a later test gave a stop into its own
+    directory: silently, at 29 %, with exit code 0 -- which CI reads as
+    green. Nothing is watched here unless a test asks for the real watch
+    (``real_lifeline_watch``)."""
+    if _lifeline is not None:
+        monkeypatch.setattr(_lifeline, "watch", lambda on_gone, **kw: None)
+
+
+@pytest.fixture
+def real_lifeline_watch(monkeypatch):
+    """The real ``lifeline.watch``, for a test that checks the watch itself
+    and gives it a callback that cannot end the run."""
+    monkeypatch.setattr(_lifeline, "watch", _REAL_LIFELINE_WATCH)
+    return _REAL_LIFELINE_WATCH
+
+
+@pytest.fixture(autouse=True)
+def _the_test_run_stays_debuggable(monkeypatch):
+    """process_guard makes an agent process non-dumpable and registers it.
+    A test building the agent tab or running the chat command would do that
+    to pytest itself; the guard's own tests turn it on in a child."""
+    monkeypatch.setenv("DELFIN_PROCESS_GUARD", "off")
+
+
+@pytest.fixture(autouse=True)
+def _emergency_stop_reaches_no_real_process(monkeypatch):
+    """The emergency stop ends this user's agent processes on the machine it
+    is given from, found by command line and environment. From a test that
+    would be the user's real dashboards: nothing may match here unless a
+    test names its own marker."""
+    try:
+        from delfin.agent import stop_all
+    except Exception:
+        return
+    import os
+    never = "delfin-test-marker-that-matches-no-process-%d" % os.getpid()
+    monkeypatch.setattr(stop_all, "_COMMAND_MARKERS", (never,))
+    monkeypatch.setattr(stop_all, "_DASHBOARD_ENV", (never + "=",))
+    monkeypatch.setattr(stop_all, "_STARTED_AT", None)
+    monkeypatch.setattr(stop_all, "_cache", None)
 
 
 @pytest.fixture(autouse=True)
@@ -436,6 +580,28 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
                     return _o()
                 return fallback / ".delfin" / _rel
         monkeypatch.setattr(mod, attr, _resolve)
+
+    # The settings file is ``~/.delfin_settings.json``, beside ``~/.delfin``
+    # rather than in it, so neither list above reached it. On 2026-09-15 a
+    # run wrote the real file: save_settings merges every missing default
+    # into what it writes, and a new default (agent.git_role) appeared in
+    # the user's own settings, where it would have refused their pushes.
+    # An explicit path, or a test that moved Path.home itself, is left alone.
+    from delfin import user_settings as _user_settings
+    _original_settings_path = _user_settings.get_settings_path
+    # Beside tmp_path, not in it: merely reading settings creates this
+    # directory, and tests that list their tmp_path (test_bug_report's
+    # report listing) must not find an extra entry there.
+    settings_home = tmp_path.parent / f"{tmp_path.name}-settings"
+
+    def _settings_path(base_path=None, _o=_original_settings_path):
+        if base_path or _already_isolated():
+            return _o(base_path)
+        # The real home always exists; save_settings creates no parents.
+        settings_home.mkdir(parents=True, exist_ok=True)
+        return settings_home / _user_settings.SETTINGS_FILE_NAME
+
+    monkeypatch.setattr(_user_settings, "get_settings_path", _settings_path)
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +743,16 @@ def pytest_configure(config):
         "markers",
         "slow: heavy or order-dependent test, excluded from the fast CI gate",
     )
+    import os
+    for name in _LIFELINE_NAMES:
+        if name in os.environ:
+            _LIFELINE_SAVED[name] = os.environ.pop(name)
+
+
+def pytest_unconfigure(config):
+    import os
+    os.environ.update(_LIFELINE_SAVED)
+    _LIFELINE_SAVED.clear()
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):

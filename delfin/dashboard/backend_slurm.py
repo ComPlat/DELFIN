@@ -126,9 +126,14 @@ class SlurmJobBackend(JobBackend):
     # node-local disk when that disk exists and has room, and from where it is
     # otherwise (Section 7 of submit_delfin.sh). A variable the user exported
     # themselves is left as they set it.
+    # The runtime wheel cache is off, and no site profile turns it on. It only
+    # saves start-up time, by building a wheel on the compute node -- and that
+    # build depends on what the site's venv happens to contain. On a venv made
+    # with "python -m venv" it failed and took the calculation with it. Whoever
+    # wants it exports DELFIN_RUNTIME_CACHE=1, which is left as they set it.
     _GENERIC_ENV: dict[str, str] = {
         'DELFIN_STAGE_VENV': '1',
-        'DELFIN_RUNTIME_CACHE': '1',
+        'DELFIN_RUNTIME_CACHE': '0',
     }
 
     # Site-specific environment variables injected into every sbatch call
@@ -138,7 +143,6 @@ class SlurmJobBackend(JobBackend):
             'DELFIN_MODULES': 'devel/python/3.11.7-gnu-14.2',
             'DELFIN_STAGE_ORCA': '1',
             'DELFIN_STAGE_VENV': '1',
-            'DELFIN_RUNTIME_CACHE': '1',
             'DELFIN_NODE_CORES': '96',
             'DELFIN_NODE_MEM_MB': str(384 * 1024),
             'DELFIN_HIGHMEM_MB': str(2304 * 1024),

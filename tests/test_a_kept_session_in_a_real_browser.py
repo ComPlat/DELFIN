@@ -39,7 +39,6 @@ import subprocess
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -157,7 +156,10 @@ def _launch(records, log, *, stay_up: bool):
     with open(log, "wb") as handle:
         proc = subprocess.Popen(
             [sys.executable, "-m", "delfin.cli_voila",
-             "--port", str(port), "--ip", "127.0.0.1", "--token", _TOKEN],
+             "--port", str(port), "--ip", "127.0.0.1", "--token", _TOKEN,
+             # Run from a VS Code terminal the launcher opened this test
+             # server in the developer's own browser.
+             "--no-browser"],
             cwd=str(_REPO), env=env, stdout=handle, stderr=subprocess.STDOUT,
         )
     return proc, port
@@ -196,19 +198,29 @@ def server(tmp_path_factory):
             proc.kill()
 
 
-def _send_goodbye(root: str, kid: str) -> int:
-    """POST what Voila's frontend posts on beforeunload: the kernel's
-    shutdown route. The frontend rides on the page's cookies; a test
-    process authenticates with the token header instead, which the
-    server accepts for its API routes without the xsrf dance."""
-    req = urllib.request.Request(
-        f"{root}/voila/api/shutdown/{kid}", data=b"", method="POST",
-        headers={"Authorization": f"token {_TOKEN}"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status
-    except urllib.error.HTTPError as exc:
-        return exc.code
+def _page_goodbye(page, root: str, kid: str) -> int:
+    """Send Voila's unload POST from the rendered page itself.
+
+    A token header would bypass Jupyter's XSRF check and conceal the exact
+    failure this test guards.  The real page must have received an XSRF
+    cookie, and its cookie-authenticated POST must carry the matching form
+    value just like Voila's ``sendBeacon`` does.
+    """
+    result = page.evaluate(
+        """async ({root, kid}) => {
+          const found = document.cookie.match(/(?:^|;\\s*)_xsrf=([^;]*)/);
+          if (!found) { return {status: 0, xsrf: false}; }
+          const body = new FormData();
+          body.append('_xsrf', found[1]);
+          const response = await fetch(
+            `${root}/voila/api/shutdown/${encodeURIComponent(kid)}`,
+            {method: 'POST', body, credentials: 'same-origin'});
+          return {status: response.status, xsrf: true};
+        }""",
+        {"root": root, "kid": kid},
+    )
+    assert result["xsrf"], "the rendered page was never given an XSRF cookie"
+    return int(result["status"])
 
 def _open_dashboard(page, root: str):
     page.goto(f"{root}/?token={_TOKEN}", wait_until="domcontentloaded",
@@ -326,30 +338,15 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
             page.wait_for_selector(".delfin-session-dot.on", timeout=60_000)
             note = page.locator(".delfin-session-dot.on").last.get_attribute("title") or ""
             resume = page.locator(".delfin-session-link").last.get_attribute("href") or ""
-            # Leave the page the way a person does, not the way a test
-            # harness does. Voila's widget manager listens for
-            # beforeunload and POSTs to voila/api/shutdown/<id> with the
-            # _xsrf cookie; a browser.close() never fired it, which is how
-            # the kernel survived here and died on a cluster, and headless
-            # navigation does not deliver the beacon either. So the goodbye
-            # is sent from here, exactly as the frontend sends it -- the
-            # page's cookies, the _xsrf field, the same route.
-            goodbye_status = _send_goodbye(root, kid)
+            # Send the exact cookie-authenticated request that Voila's
+            # beforeunload listener sends.  The safe bridge records a close;
+            # it does not immediately kill this kept kernel.
+            goodbye_status = _page_goodbye(page, root, kid)
             assert goodbye_status in (200, 204), f"the goodbye was not accepted: HTTP {goodbye_status}"
             page.goto("about:blank", wait_until="domcontentloaded")
             time.sleep(3)
         finally:
             browser.close()
-
-        # The goodbye reached the server and was ignored for a kept
-        # kernel -- the line a person sees on the terminal. If this
-        # assertion ever fails because the line is absent, the harness
-        # no longer reproduces what a browser does on closing.
-        deadline = time.time() + 30
-        while time.time() < deadline and "ignoring the shutdown request" not in log.read_text(errors="replace"):
-            time.sleep(1)
-        assert "ignoring the shutdown request" in log.read_text(errors="replace"), (
-            "the page's goodbye never reached the kernel manager")
 
         assert "Kept as" in note, f"the dot does not say it is kept: {note!r}"
         assert resume.startswith("http"), f"the dot links nowhere: {resume!r}"
@@ -456,29 +453,26 @@ def test_the_server_ends_with_its_last_window(tmp_path):
                 new = [k["id"] for k in _kernels(root)]
                 assert len(new) == 1
                 kid = new[0]
-                # The window closes without keeping the session: the
-                # goodbye the frontend sends, then the page is gone.
-                goodbye = _send_goodbye(root, kid)
+                # The window closes without keeping the session: the exact
+                # XSRF-protected goodbye the frontend sends, then the page is
+                # gone.  No token-header shortcut is allowed here.
+                goodbye = _page_goodbye(page, root, kid)
+                assert goodbye in (200, 204), (
+                    f"the browser goodbye was not accepted: HTTP {goodbye}")
                 page.goto("about:blank", wait_until="domcontentloaded")
                 time.sleep(3)
                 page.close()
             finally:
                 browser.close()
-        # Whether or not the goodbye was accepted (the route wants the
-        # page's own xsrf cookie), the window is gone: the cull rule ends
-        # the un-kept kernel after the grace, and the server stops.
-        print("goodbye status", goodbye)
-        # The goodbye ends an un-kept kernel through the page's own route;
-        # the cull rule is the fallback. Either way nothing is left, and
-        # the server stops.
-        # The server notices a vanished client at its websocket ping
-        # timeout (90 s), then the grace, then the next cull poll.
+        # The safe close notice gets the reload grace; after it expires the
+        # unkept kernel ends and the server frees the port.
         try:
             rc = proc.wait(timeout=_GRACE + 240)
         except subprocess.TimeoutExpired:
             pytest.fail("the server kept running after its last window closed; "
                         "server log:\n" + log.read_text(errors="replace")[-4000:])
         text = log.read_text(errors="replace")
+        assert "403 POST /voila/api/shutdown" not in text, text[-1200:]
         assert "stopping the server and freeing its port" in text, text[-800:]
         s = socket.socket()
         try:

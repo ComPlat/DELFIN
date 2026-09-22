@@ -180,9 +180,20 @@ def test_an_ephemeral_workspace_says_the_write_gate_is_inert(monkeypatch, tmp_pa
     # behaviour for that arrangement and simply not the case under test.
     monkeypatch.setattr(
         Path, "home", classmethod(lambda cls: Path("/nonexistent/home")))
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    report = lg.inspect_launch_dir(scratch, check_trust=False)
+    # Under /tmp itself, not under tmp_path: the gate skips writes below the
+    # literal scratch roots only, and on a node with TMPDIR=/scratch pytest's
+    # tmp_path is not one of them -- the test then asserted a notice for a
+    # directory the gate rightly guards in full.
+    import os
+    import shutil
+    import tempfile
+    if not os.access("/tmp", os.W_OK):
+        pytest.skip("/tmp is not writable here")
+    scratch = Path(tempfile.mkdtemp(prefix="delfin-ephemeral-", dir="/tmp"))
+    try:
+        report = lg.inspect_launch_dir(scratch, check_trust=False)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
     codes = {f.code for f in report.findings}
     assert not report.refused
     assert "ephemeral_root" in codes, (

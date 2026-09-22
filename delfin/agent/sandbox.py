@@ -29,9 +29,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -114,7 +116,9 @@ _DENY_SUBSTRINGS = (
 # The rule derives its roots at runtime from the current user's HOME and the
 # machine's mount table, so it holds for any user on any cluster without
 # knowing site-specific paths.
-_TREE_WALK_COMMANDS = frozenset({"du", "ncdu", "find"})
+_TREE_WALK_COMMANDS = frozenset({"du", "ncdu", "find", "tree", "rg"})
+#: Walk only when told to recurse: grep -r/-R, ls -R.
+_RECURSIVE_ON_FLAG = frozenset({"grep", "egrep", "fgrep", "ls"})
 
 
 def _is_tree_walk_root(resolved: Path) -> bool:
@@ -139,20 +143,49 @@ def _is_tree_walk_root(resolved: Path) -> bool:
         return False
 
 
-def _check_tree_walk(toks: list[str]) -> tuple[bool, str]:
-    """Deny recursive walks rooted at a whole file system; subdirs are fine."""
+def _recurses(base: str, toks: list[str]) -> bool:
+    """Whether this command walks a tree at all."""
+    if base in _TREE_WALK_COMMANDS:
+        return True
+    if base not in _RECURSIVE_ON_FLAG:
+        return False
+    letter = "R" if base == "ls" else "rR"
+    for t in toks[1:]:
+        if t in ("--recursive", "--dereference-recursive"):
+            return True
+        if t.startswith("-") and not t.startswith("--") \
+                and any(c in t[1:] for c in letter):
+            return True
+    return False
+
+
+def _check_tree_walk(toks: list[str], cwd=None) -> tuple[bool, str]:
+    """Deny recursive walks rooted at a whole file system; subdirs are fine.
+
+    The one implementation of this rule. The approval runner of the CLI
+    backend reaches it through is_allowed, and the gate of every API and
+    terminal session through tree_walk_refusal: it used to live on the
+    CLI path only, so the sessions that run most of the work walked past
+    it (measured 2026-09-22: `find ~ -name '*.py'`, three times, and walks
+    over the archive, all executed).
+    """
     base = os.path.basename(toks[0])
-    if base not in _TREE_WALK_COMMANDS:
+    if not _recurses(base, toks):
         return True, "ok"
 
     targets = [t for t in toks[1:] if not t.startswith("-")]
-    if not targets:
-        # No path given: the walk is rooted at the working directory.
-        targets = ["."]
+    if not targets or (base == "rg" and len(targets) == 1) \
+            or (base in ("grep", "egrep", "fgrep") and len(targets) == 1):
+        # No path given (rg/grep: only the pattern): the walk is rooted
+        # at the working directory.
+        targets.append(".")
 
     for target in targets:
         try:
-            resolved = Path(os.path.expanduser(target)).resolve()
+            path = Path(os.path.expanduser(target))
+            if not path.is_absolute() and cwd is not None:
+                path = Path(cwd) / path       # where the COMMAND runs
+            resolved = path.resolve()
         except Exception:
             continue
         if _is_tree_walk_root(resolved):
@@ -163,6 +196,54 @@ def _check_tree_walk(toks: list[str]) -> tuple[bool, str]:
                 f"specific subdirectory."
             )
     return True, "ok"
+
+
+def tree_walk_refusal(cmd: str, cwd=None) -> Optional[str]:
+    """Why *cmd* may not run as a walk over a whole file system, or None.
+
+    Checks every pipeline segment, whatever the command's other merits --
+    a walk rooted at the home, one of its ancestors or a mount point is
+    refused in every mode, before anything is asked. Relative paths are
+    read from *cwd*, the directory the command runs in (not this
+    process's), and a `cd` inside the command moves it: `cd ~ && find .`
+    is a walk over the home.
+    """
+    try:
+        segments = _split_pipeline(cmd.strip())
+    except ValueError:
+        segments = [s for s in re.split(r"\|\||&&|[|;&\n]", cmd) if s.strip()]
+    for seg in segments:
+        try:
+            toks = shlex.split(seg, posix=True)
+        except ValueError:
+            toks = seg.split()
+        while toks and "=" in toks[0] and toks[0].split("=", 1)[0].isidentifier():
+            toks = toks[1:]
+        # Wrappers that run the next word: the walk is that word's.
+        while toks and os.path.basename(toks[0]) in ("nice", "ionice", "time",
+                                                      "timeout", "command",
+                                                      "exec"):
+            toks = toks[1:]
+            # their own options and values: -n 10, -c2, a duration like 5s
+            while toks and (toks[0].startswith("-")
+                            or re.fullmatch(r"\d+[smhd]?", toks[0])):
+                toks = toks[1:]
+        if not toks:
+            continue
+        if toks[0] == "cd":
+            dest = toks[1] if len(toks) > 1 else "~"
+            try:
+                p = Path(os.path.expanduser(dest))
+                if not p.is_absolute() and cwd is not None:
+                    p = Path(cwd) / p
+                cwd = str(p.resolve())
+            except Exception:
+                pass
+            continue
+        ok, reason = _check_tree_walk(toks, cwd)
+        if not ok:
+            return reason
+    return None
 
 
 @dataclass
@@ -264,12 +345,48 @@ def detect_config(env: Optional[dict] = None) -> SandboxConfig:
     if requested == "firejail":
         return SandboxConfig("firejail", allow_net, timeout_s)
 
-    # auto (and any unknown value) — pick best available
-    if shutil.which("bwrap"):
+    # auto (and any unknown value) — pick best available. Installed is not
+    # working: a bwrap whose user namespace is refused made every approved
+    # command fail.
+    if shutil.which("bwrap") and _bwrap_works():
         return SandboxConfig("bwrap", allow_net, timeout_s)
     if shutil.which("firejail"):
         return SandboxConfig("firejail", allow_net, timeout_s)
     return SandboxConfig("allowlist", allow_net, timeout_s)
+
+
+def _bwrap_works() -> bool:
+    try:
+        from .api_client import _bwrap_functional
+        return bool(_bwrap_functional())
+    except Exception:
+        return False
+
+
+def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str) -> list[str]:
+    """``bash -c cmd`` for the modes without bubblewrap or firejail.
+
+    The allowlist mode ran commands with nothing around them: python, pip,
+    awk and env are on the list, and every key was in the environment. Where
+    the kernel has Landlock the command now runs under it (writes only in the
+    repository and a private temp directory, credential folders unreadable),
+    as the agent's own shell does on such a host. "off" stays off."""
+    base = ["bash", "-c", cmd]
+    if mode != "allowlist":
+        return base
+    try:
+        from .api_client import (_home_secret_paths, _landlock_functional,
+                                 _private_tmp_dir)
+        from . import landlock_exec as _ll
+        if not _landlock_functional():
+            return base
+        argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+                "--write", str(Path(repo_dir).resolve())]
+        for h in _home_secret_paths():
+            argv += ["--hide", h]
+        return argv + ["--tmpdir", _private_tmp_dir(), "--strict", "0", "--"] + base
+    except Exception:
+        return base
 
 
 # Home-relative directories that are tmpfs'd inside the sandbox so the agent
@@ -278,7 +395,11 @@ def detect_config(env: Optional[dict] = None) -> SandboxConfig:
 # legitimate commands like ``python -m pytest`` or ``delfin --recalc``.
 _HOME_SECRET_DIRS = (
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".netrc", ".pgpass",
-    ".azure", ".gcp", ".config/gcloud", ".config/gh", ".config/git",
+    ".azure", ".gcp", ".config/gcloud", ".config/gh",
+    # NOT .config/git: it is git's own config and ignore file, no
+    # credential, and hiding it made git fatal ("cannot use
+    # ~/.config/git/ignore as an exclude file"). Credentials live in
+    # .git-credentials and a helper, both denied separately.
     ".git-credentials", ".npmrc", ".pypirc",
     ".anthropic", ".openai", ".claude",
     # The framework's own credential store. The other providers' folders
@@ -451,21 +572,23 @@ def run_agent_command(
         argv = _firejail_argv(cmd, repo_dir, cfg.allow_network)
         shell = False
     else:
-        # 'off' or 'allowlist' or 'auto-fell-back-to-allowlist' — no sandbox.
-        # We still avoid shell=True by routing through bash -c explicitly,
-        # which produces equivalent behavior but makes argv inspectable.
-        argv = ["bash", "-c", cmd]
+        # 'off' or 'allowlist' or 'auto-fell-back-to-allowlist'. Routed
+        # through bash -c explicitly so the argv stays inspectable; the
+        # allowlist mode runs under Landlock where the kernel has it.
+        argv = _unsandboxed_argv(cmd, repo_dir, cfg.mode)
         shell = False
 
     try:
-        proc = subprocess.run(
+        # Every mode: the shell's scrubbed environment (no provider keys),
+        # its own session and process group, no terminal, the whole group
+        # ended at exit and at the timeout.
+        from .api_client import _scrubbed_bash_env
+        from . import contained_run as _contained
+        proc = _contained.run(
             argv,
-            shell=shell,
             cwd=str(repo_dir),
-            capture_output=True,
-            text=True,
+            env=_scrubbed_bash_env(),
             timeout=cfg.timeout_s,
-            check=False,
         )
         elapsed = time.monotonic() - t0
         _audit({

@@ -48,6 +48,9 @@ _KINDS = {
     "denied_by_user": ("✋", "User denied"),
     "denied_again":   ("🚫", "Refusal circumvented"),
     "denied_path_via_bash": ("🚫", "Refused path reached via shell"),
+    # find/du/tree/rg, grep -r or ls -R over a home or a mount point: one
+    # metadata request per file on a shared file system.
+    "tree_walk":      ("🌲", "Walk over a whole file system refused"),
     "read_grant":     ("👁", "Directory opened for reading"),
     # Bypass does not ask before a read outside the roots. Nobody clicked,
     # so the panel is the only place it is ever visible — which is exactly
@@ -55,7 +58,24 @@ _KINDS = {
     "outside_read_bypass": ("👁", "Read outside the roots (Bypass)"),
     "approval_timeout": ("⌛", "Approval window expired"),
     "isolation":      ("🔒", "Filesystem isolation active"),
+    "isolation_missing": ("⚠", "Filesystem isolation NOT active"),
+    # A client built without a permissions policy runs only the index tools.
+    "no_sandbox":     ("🚫", "Refused: no sandbox configured"),
+    "no_sandbox_mcp": ("🚫", "MCP tool refused: no sandbox configured"),
     "egress":         ("🌐", "Outbound data transfer"),
+    "egress_blocked": ("🌐", "Network destination blocked (sandbox)"),
+    "key_exported":   ("🔑", "Provider key exported in the environment"),
+    # A commit message naming a home directory, an account or a machine.
+    # The repository is public, and a name in a public history is paid
+    # for once and permanently.
+    "identity_in_commit": ("🪪", "Identity in a commit message"),
+    # An approval given where nobody at the terminal saw it. The panel is
+    # the only place this is ever visible, which is why it is recorded
+    # rather than merely allowed.
+    "approval_from_outside": ("\U0001f441", "Approved from outside the terminal"),
+    "settings_updated": ("🛡", "Settings changed by a security update"),
+    "push_unrequested": ("📤", "Push nobody asked for"),
+    "push_default_branch": ("🔀", "Contributor push to the default branch"),
     "auto_verify":    ("🔁", "Auto-verify caught a problem"),
     "auto_verify_exhausted": ("🔁", "Auto-verify gave up"),
     "test_tamper":    ("🧪", "Failing test edited"),

@@ -1,0 +1,61 @@
+name: Sandbox (macOS)
+
+# The command isolation on macOS is Seatbelt, which no Linux runner can
+# execute. This drives it where it runs: on changes to the sandbox and on
+# demand. Informational beside CI; the tests it runs skip on Linux.
+on:
+  push:
+    branches: [main, "agent/**"]
+    paths:
+      - "delfin/agent/seatbelt.py"
+      - "delfin/agent/egress_proxy.py"
+      - "delfin/agent/process_guard.py"
+      - "delfin/agent/contained_run.py"
+      # The tests drive _bash_isolation_argv, _seatbelt_argv and
+      # _in_process_cage, and all three live here. Leaving it out meant
+      # this workflow watched a surface it could not see changes to: 81
+      # commits passed between two runs, one of them changing the posture
+      # an attended session gets, and the break surfaced only when an
+      # unrelated commit happened to touch a file on this list.
+      - "delfin/agent/api_client.py"
+      - "tests/test_the_sandbox_holds_on_macos.py"
+      - "tests/test_a_command_ends_with_everything_it_started.py"
+      - ".github/workflows/sandbox-macos.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: sandbox-macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  seatbelt:
+    name: seatbelt (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the package without its chemistry stack
+        # The full dependency set does not resolve on macOS (pymol wants
+        # numpy 2, DELFIN numpy 1) and the sandbox needs none of it: the
+        # agent modules these tests import are standard library only.
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-deps -e .
+          pip install pytest pytest-timeout
+
+      - name: Seatbelt and containment tests
+        run: >
+          pytest -q -p no:cacheprovider --timeout=300 --timeout-method=signal
+          tests/test_the_sandbox_holds_on_macos.py
+          tests/test_a_command_ends_with_everything_it_started.py

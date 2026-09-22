@@ -63,6 +63,7 @@ agent_workspace/
 
 # Local Claude Code state (per-machine, not for the repo)
 .claude/
+.codex/
 
 # Local agent overlays — per-machine learned state must NEVER enter the repo.
 # Canonical location is ~/.delfin/, but guard against accidental writes that

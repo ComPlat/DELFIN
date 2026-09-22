@@ -38,7 +38,7 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -116,6 +116,13 @@ class ScheduleEntry:
         return False
 
 
+# The keys an entry may carry. A file written by a newer build can hold more,
+# and a reader that passed them all to ScheduleEntry dropped such an entry --
+# and then, taking the missing entry for a deletion, removed it on its next
+# save.
+_ENTRY_FIELDS = frozenset(f.name for f in fields(ScheduleEntry))
+
+
 class Scheduler:
     def __init__(self, path: Path | None = None):
         self.path = path or _DEFAULT_PATH
@@ -123,6 +130,10 @@ class Scheduler:
         self._removed: set[str] = set()
         self._lock = threading.RLock()
         self._fire_callback: Optional[Callable[[ScheduleEntry], None]] = None
+        # One per open dashboard session: (key, callback, owns), where
+        # owns(session_id) says whether a wake-up belongs to that session.
+        self._listeners: list[tuple[object, Callable[[ScheduleEntry], None],
+                                    Callable[[str], bool]]] = []
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._load()
@@ -144,7 +155,8 @@ class Scheduler:
         out: dict[str, ScheduleEntry] = {}
         for raw in data.get("entries", []):
             try:
-                ent = ScheduleEntry(**raw)
+                ent = ScheduleEntry(**{k: v for k, v in raw.items()
+                                       if k in _ENTRY_FIELDS})
                 out[ent.id] = ent
             except (TypeError, ValueError):
                 continue
@@ -223,24 +235,100 @@ class Scheduler:
             merged.update(self._entries)
             for entry_id in self._removed:
                 merged.pop(entry_id, None)
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"entries": [asdict(e) for e in merged.values()]}
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=f".{self.path.name}.", suffix=".tmp",
-                dir=str(self.path.parent))
-            tmp = Path(tmp_name)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump(payload, fh, indent=2)
-                os.replace(tmp, self.path)
-            finally:
-                if tmp.exists():
-                    try:
-                        tmp.unlink()
-                    except OSError:
-                        pass
+            self._write_json(self.path,
+                             {"entries": [asdict(e) for e in merged.values()]})
+            owners = self._read_owners()
+            if any(entry_id not in merged for entry_id in owners):
+                self._write_json(self._owners_path(), {
+                    k: v for k, v in owners.items() if k in merged})
         except OSError:
             pass
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict) -> None:
+        """Atomic JSON write: a reader never sees a half-written file."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2)
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+    # --- which session a wake-up belongs to ------------------------------
+    # Kept beside cron.json, not in it: a build from before this field
+    # passes every key of an entry to ScheduleEntry, so an unknown one made
+    # it drop the entry and then delete it as removed elsewhere. The home
+    # directory is shared by every login node, and not all of them run the
+    # same build.
+
+    def _owners_path(self) -> Path:
+        return self.path.with_name(f"{self.path.stem}_owners.json")
+
+    def _read_owners(self) -> dict[str, str]:
+        try:
+            data = json.loads(self._owners_path().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return ({str(k): str(v) for k, v in data.items()}
+                if isinstance(data, dict) else {})
+
+    def owner_of(self, entry_id: str) -> str:
+        """The session that scheduled ``entry_id``; "" when none did."""
+        return self._read_owners().get(str(entry_id), "")
+
+    def _set_owner(self, entry_id: str, session_id: str) -> None:
+        try:
+            owners = self._read_owners()
+            owners[str(entry_id)] = str(session_id)
+            self._write_json(self._owners_path(), owners)
+        except OSError:
+            pass
+
+    def add_fire_listener(
+        self, key: object, callback: Callable[[ScheduleEntry], None],
+        owns: Callable[[str], bool],
+    ) -> None:
+        """Fire this session's wake-ups into ``callback``.
+
+        Several dashboard sessions run in one process; a single callback
+        sent every wake-up to whichever session was built last. A wake-up
+        goes to the session that ``owns`` its owner; one without an owner is
+        no session's. Adding with a key that is already there replaces that
+        listener.
+        """
+        with self._lock:
+            self._listeners = [row for row in self._listeners if row[0] != key]
+            self._listeners.append((key, callback, owns))
+
+    def remove_fire_listener(self, key: object) -> None:
+        with self._lock:
+            self._listeners = [row for row in self._listeners if row[0] != key]
+
+    def _callback_for(self, ent: ScheduleEntry
+                      ) -> Optional[Callable[[ScheduleEntry], None]]:
+        if not self._listeners:
+            return self._fire_callback
+        owner = self.owner_of(ent.id)
+        if not owner:
+            # Scheduled before wake-ups had an owner, or from the command
+            # line: no session's, so a new conversation is not woken by it.
+            return self._fire_callback
+        for _key, callback, owns in reversed(self._listeners):
+            try:
+                if owns(owner):
+                    return callback
+            except Exception:
+                continue
+        # Its session is not open here: it stays due until it is.
+        return None
 
     # --- disable notification (the single choke point) --------------------
 
@@ -271,7 +359,7 @@ class Scheduler:
 
     def schedule_once(
         self, *, delay_seconds: int, prompt: str, reason: str = "",
-        workspace: str = "", budget_usd: float = 0.0,
+        workspace: str = "", budget_usd: float = 0.0, session_id: str = "",
     ) -> ScheduleEntry:
         if delay_seconds < 1:
             raise ValueError("delay_seconds must be >= 1")
@@ -288,6 +376,8 @@ class Scheduler:
             budget_usd=max(0.0, float(budget_usd or 0.0)),
         )
         with self._lock:
+            if session_id:
+                self._set_owner(ent.id, session_id)
             self._entries[ent.id] = ent
             self._save()
         return ent
@@ -295,7 +385,7 @@ class Scheduler:
     def schedule_interval(
         self, *, every_seconds: int, prompt: str, reason: str = "",
         fire_immediately: bool = False,
-        workspace: str = "", budget_usd: float = 0.0,
+        workspace: str = "", budget_usd: float = 0.0, session_id: str = "",
     ) -> ScheduleEntry:
         if every_seconds < 60:
             raise ValueError("every_seconds must be >= 60 (be sensible)")
@@ -311,6 +401,8 @@ class Scheduler:
             budget_usd=max(0.0, float(budget_usd or 0.0)),
         )
         with self._lock:
+            if session_id:
+                self._set_owner(ent.id, session_id)
             self._entries[ent.id] = ent
             self._save()
         return ent
@@ -387,7 +479,15 @@ class Scheduler:
                         "wake-up. Schedule it again if it is still wanted."))
                     changed = True
                     continue
-                cb = fire_callback or self._fire_callback
+                if fire_callback is not None and self.owner_of(ent.id):
+                    # A wake-up a SESSION scheduled is that session's. The
+                    # override is how the headless daemon fires entries, and
+                    # it used to fire these too: with the dashboard closed,
+                    # a session's "check again in 30 min" became an agent
+                    # turn nobody watched (review 2026-09-16, after a tmux
+                    # that ended mid-run). It waits for its session instead.
+                    continue
+                cb = fire_callback or self._callback_for(ent)
                 if cb is None:
                     continue
                 try:

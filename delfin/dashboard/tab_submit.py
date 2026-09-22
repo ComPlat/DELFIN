@@ -1825,7 +1825,7 @@ def create_tab(ctx):
                 mode, co2_delta = resolve_co2_submit_mode(control_content)
                 result = ctx.backend.submit_delfin(
                     job_dir=job_dir, job_name=safe_job_name, mode=mode,
-                    time_limit=time_limit, pal=pal or 48, maxcore=maxcore or 6000,
+                    time_limit=time_limit, pal=pal or 48, maxcore=maxcore or 4500,
                     co2_species_delta=co2_delta,
                 )
 
@@ -1962,7 +1962,7 @@ def create_tab(ctx):
                 mode, co2_delta = resolve_co2_submit_mode(control_content)
                 result = ctx.backend.submit_delfin(
                     job_dir=job_dir, job_name=safe_job_name, mode=mode,
-                    time_limit=time_limit, pal=pal or 48, maxcore=maxcore or 6000,
+                    time_limit=time_limit, pal=pal or 48, maxcore=maxcore or 4500,
                     co2_species_delta=co2_delta,
                 )
 
@@ -2297,7 +2297,7 @@ def create_tab(ctx):
                 result = ctx.backend.submit_delfin(
                     job_dir=job_dir, job_name=safe_job_name,
                     mode='delfin-co2-chain',
-                    time_limit=time_limit, pal=pal or 48, maxcore=maxcore or 6000,
+                    time_limit=time_limit, pal=pal or 48, maxcore=maxcore or 4500,
                     co2_species_delta=delta,
                 )
 
