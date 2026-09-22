@@ -2786,8 +2786,16 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
                    help="Model name (provider-specific)")
     p.add_argument("--effort", default="",
                    help="low/medium/high/xhigh")
+    # 0 means "the role decides" (engine: max_tokens or role budget).
+    # The old 4096 default silently cut a solo session to an eighth of
+    # its 32768 role budget -- on a model that thinks invisibly, a
+    # large edit then ended at finish_reason length with no tool call
+    # and the turn stood at the prompt (operator's point d, 2026-09-22).
+    # Only chat passes 0: run keeps its historical default, and the
+    # scheduler and the benchmark run through run.
     p.add_argument("--max-tokens", type=int, default=max_tokens_default,
-                   dest="max_tokens")
+                   dest="max_tokens",
+                   help="Max output tokens; 0 = the role's budget")
     p.add_argument("--cwd", default="", help="Run in this directory")
 
 
@@ -2912,7 +2920,7 @@ def build_parser() -> argparse.ArgumentParser:
                       choices=["auto", "always", "never"],
                       help="Colour output (auto: only on a terminal, and "
                            "never when NO_COLOR is set)")
-    _add_agent_flags(chat)
+    _add_agent_flags(chat, max_tokens_default=0)
     chat.add_argument("-v", "--verbose", action="store_true")
     # Only this front door inherits the dashboard's saved provider/model.
     chat.set_defaults(func=cmd_chat, settings_defaults=True)
