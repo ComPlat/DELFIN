@@ -33,6 +33,121 @@ _PLAN_HINT_NUMBERED = re.compile(r"(?:^|\s)\(?(?:[1-9]|10)\)?[\.\)]")
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
 
 
+#: A question opening with one of these asks for a THING, and a thing is
+#: not yes or no — however comfortably "soll ich" or "should i" sits
+#: further along in the same sentence.
+_OPEN_QUESTION_OPENERS = frozenset({
+    "was", "wie", "welche", "welcher", "welches", "welchen", "welchem",
+    "warum", "wieso", "weshalb", "wann", "wo", "woher", "wohin", "womit",
+    "wer", "wen", "wem", "wessen",
+    "what", "which", "how", "why", "when", "where", "who", "whom", "whose",
+})
+
+
+def _last_question(text: str) -> str:
+    """The last sentence of *text* that ends in a question mark.
+
+    The classifier reads the last three lines together, so a greeting
+    carries its own prose along with the question at the end. Deciding
+    the TYPE of a question means looking at that question, not at
+    everything said before it.
+    """
+    head, mark, _tail = (text or "").rpartition("?")
+    if not mark:
+        return ""
+    cut = max(head.rfind(c) for c in ".!?\n;•")
+    return head[cut + 1:].strip()
+
+
+def detect_question(text: str) -> dict | None:
+    """Detect if the agent's response ends with a question requiring user input.
+
+    Returns a dict with 'type' and 'options' if a question is detected,
+    or None if the response is a normal statement.
+
+    Types:
+    - 'numbered': Options like "1) foo  2) bar  3) baz"
+    - 'yesno': Yes/no confirmation question
+    - 'open': Open-ended question (ends with ?)
+    """
+    if not text or len(text) < 10:
+        return None
+    # Only look at the last ~2000 chars (the tail of the response)
+    tail = text[-2000:].strip()
+    # Skip if the response ended with a code block (likely not a question)
+    if tail.rstrip().endswith("```"):
+        return None
+
+    # --- Numbered options: 1) / 1. / (1) patterns ---
+    # Look for 2+ numbered items in the tail
+    # Patterns: "1) text", "1. text", "(1) text", "**1.** text"
+    option_patterns = [
+        # "1) description" or "1. description" at line start
+        re.compile(r'^\s*\*?\*?(\d+)[).]\*?\*?\s+(.+)', re.MULTILINE),
+        # "(1) description" at line start
+        re.compile(r'^\s*\((\d+)\)\s+(.+)', re.MULTILINE),
+        # "- **Option 1**: description"
+        re.compile(r'^\s*[-*]\s+\*?\*?(?:Option\s+)?(\d+)\*?\*?[.:]\s*(.+)', re.MULTILINE),
+    ]
+    for pat in option_patterns:
+        matches = pat.findall(tail)
+        if len(matches) >= 2:
+            # Distinguish choosable options from numbered explanation steps.
+            # Heuristic: real options are short (< 50 chars avg) and appear
+            # near a question mark. Long numbered items are instructions.
+            avg_len = sum(len(d.strip()) for _, d in matches) / len(matches)
+            has_question = "?" in tail
+            if avg_len > 120 or not has_question:
+                continue  # very long steps or no question context — skip
+            options = []
+            for num, desc in matches:
+                label = desc.strip().rstrip("*").strip()
+                options.append((num, label))
+            return {"type": "numbered", "options": options}
+
+    # --- QUESTION: tag (from solo_agent.md) ---
+    if "QUESTION:" in tail:
+        return {"type": "open", "options": []}
+
+    # --- Yes/No questions ---
+    last_lines = tail.split("\n")[-3:]
+    last_text = " ".join(last_lines).strip().lower()
+    yesno_indicators = [
+        "shall i", "should i", "do you want me to", "would you like me to",
+        "soll ich", "möchtest du dass ich", "willst du dass ich",
+        "proceed?", "continue?", "go ahead?",
+        "fortfahren?", "weitermachen?",
+        "(yes/no)", "(y/n)", "(ja/nein)",
+    ]
+    if any(ind in last_text for ind in yesno_indicators) and "?" in last_text:
+        # An indicator inside the sentence is not the same as the sentence
+        # being a yes/no question. "soll ich" and "should i" sit just as
+        # happily inside "Was soll ich tun?" / "What should I do?", and a
+        # greeting ending that way was answered with two buttons — the
+        # user pressed Yes and the next turn went on recovering from a
+        # word nobody meant (reported 2026-09-22).
+        asked = _last_question(last_text)
+        opener = asked.split(" ", 1)[0].strip("»«\"'(-–—…*_ ") if asked else ""
+        if opener in _OPEN_QUESTION_OPENERS:
+            # A W-question asks for a thing, and a thing is not yes or no.
+            return {"type": "open", "options": []}
+        if " oder " in asked or " or " in asked:
+            # Two answers on offer, and neither of them is "yes".
+            return {"type": "open", "options": []}
+        return {"type": "yesno", "options": []}
+
+    # --- Open question (ends with ?) ---
+    # Only trigger if the very last meaningful line ends with ?
+    for line in reversed(last_lines):
+        line = line.strip()
+        if line:
+            if line.endswith("?"):
+                return {"type": "open", "options": []}
+            break
+
+    return None
+
+
 def _merge_uploads(existing: list, incoming: list) -> list:
     """The attachments waiting for the next send, after another drop.
 
@@ -15316,79 +15431,6 @@ def create_tab(ctx):
 
     # -- Interactive question detection & UI ------------------------------------
 
-    def _detect_question(text: str) -> dict | None:
-        """Detect if the agent's response ends with a question requiring user input.
-
-        Returns a dict with 'type' and 'options' if a question is detected,
-        or None if the response is a normal statement.
-
-        Types:
-        - 'numbered': Options like "1) foo  2) bar  3) baz"
-        - 'yesno': Yes/no confirmation question
-        - 'open': Open-ended question (ends with ?)
-        """
-        if not text or len(text) < 10:
-            return None
-        # Only look at the last ~2000 chars (the tail of the response)
-        tail = text[-2000:].strip()
-        # Skip if the response ended with a code block (likely not a question)
-        if tail.rstrip().endswith("```"):
-            return None
-
-        # --- Numbered options: 1) / 1. / (1) patterns ---
-        # Look for 2+ numbered items in the tail
-        # Patterns: "1) text", "1. text", "(1) text", "**1.** text"
-        option_patterns = [
-            # "1) description" or "1. description" at line start
-            re.compile(r'^\s*\*?\*?(\d+)[).]\*?\*?\s+(.+)', re.MULTILINE),
-            # "(1) description" at line start
-            re.compile(r'^\s*\((\d+)\)\s+(.+)', re.MULTILINE),
-            # "- **Option 1**: description"
-            re.compile(r'^\s*[-*]\s+\*?\*?(?:Option\s+)?(\d+)\*?\*?[.:]\s*(.+)', re.MULTILINE),
-        ]
-        for pat in option_patterns:
-            matches = pat.findall(tail)
-            if len(matches) >= 2:
-                # Distinguish choosable options from numbered explanation steps.
-                # Heuristic: real options are short (< 50 chars avg) and appear
-                # near a question mark. Long numbered items are instructions.
-                avg_len = sum(len(d.strip()) for _, d in matches) / len(matches)
-                has_question = "?" in tail
-                if avg_len > 120 or not has_question:
-                    continue  # very long steps or no question context — skip
-                options = []
-                for num, desc in matches:
-                    label = desc.strip().rstrip("*").strip()
-                    options.append((num, label))
-                return {"type": "numbered", "options": options}
-
-        # --- QUESTION: tag (from solo_agent.md) ---
-        if "QUESTION:" in tail:
-            return {"type": "open", "options": []}
-
-        # --- Yes/No questions ---
-        last_lines = tail.split("\n")[-3:]
-        last_text = " ".join(last_lines).strip().lower()
-        yesno_indicators = [
-            "shall i", "should i", "do you want me to", "would you like me to",
-            "soll ich", "möchtest du dass ich", "willst du dass ich",
-            "proceed?", "continue?", "go ahead?",
-            "fortfahren?", "weitermachen?",
-            "(yes/no)", "(y/n)", "(ja/nein)",
-        ]
-        if any(ind in last_text for ind in yesno_indicators) and "?" in last_text:
-            return {"type": "yesno", "options": []}
-
-        # --- Open question (ends with ?) ---
-        # Only trigger if the very last meaningful line ends with ?
-        for line in reversed(last_lines):
-            line = line.strip()
-            if line:
-                if line.endswith("?"):
-                    return {"type": "open", "options": []}
-                break
-
-        return None
 
     def _show_question_ui(question_info: dict):
         """Show interactive widgets based on detected question type.
@@ -17517,7 +17559,7 @@ def create_tab(ctx):
                     _hide_question_ui()  # always reset first
                     if chunks and engine.mode in ("solo", "dashboard"):
                         _full_text = "".join(chunks)
-                        _q_info = _detect_question(_full_text)
+                        _q_info = detect_question(_full_text)
                         if _q_info:
                             _show_question_ui(_q_info)
 
