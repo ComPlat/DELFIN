@@ -96,7 +96,11 @@ def test_the_incident_alias_is_not_a_key_in_a_readable_file(tmp_path):
                                              home=home) == []
 
 
-def test_a_literal_key_in_an_alias_is_still_reported(tmp_path):
+def test_a_literal_key_in_an_alias_is_still_reported(a_path_others_can_walk):
+    # The premise is that somebody else CAN read it, and pytest's base
+    # directory is 0700 — so the path has to be made reachable for real
+    # now that the check asks about the path and not only the file.
+    tmp_path = a_path_others_can_walk
     home, _rc = _home(
         tmp_path,
         "alias codex-kit='OPENAI_API_KEY=\"sk-live-abcdef123456\" codex'")

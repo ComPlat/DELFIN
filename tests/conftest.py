@@ -140,6 +140,44 @@ def _the_suite_lives_under_no_lifeline():
     yield
 
 
+
+@pytest.fixture()
+def a_path_others_can_walk(tmp_path):
+    """Make *tmp_path* genuinely reachable from the root, and put it back.
+
+    pytest's own base directory is 0700, so nothing underneath it can be
+    read by another account — correctly, and that is the trouble: a test
+    about a file "others can read" cannot state its premise there. Before
+    reachability was checked at all, the mode bits of the file alone made
+    the premise true by fiat; now the premise has to be real.
+
+    Only directories under pytest's base are touched, and each is put
+    back the way it was.
+    """
+    import os as _os
+
+    changed = []
+    node = tmp_path.resolve()
+    while True:
+        try:
+            mode = node.stat().st_mode & 0o7777
+        except OSError:
+            break
+        if not (mode & 0o001) or not (mode & 0o010):
+            changed.append((node, mode))
+            _os.chmod(node, mode | 0o011)
+        if node.parent == node or str(node) == "/tmp":
+            break
+        node = node.parent
+    try:
+        yield tmp_path
+    finally:
+        for node, mode in reversed(changed):
+            try:
+                _os.chmod(node, mode)
+            except OSError:
+                pass
+
 @pytest.fixture()
 def gone_pid():
     """A pid whose process has ended and been reaped.

@@ -302,6 +302,31 @@ def exported_in_shell_files(name: str, *, home: Path | None = None
     return found
 
 
+def _path_traversable(directory: Path, bit: int) -> bool:
+    """Can somebody holding *bit* walk from the root down to *directory*?
+
+    Every directory on the way needs its execute bit for that class; one
+    without it shuts the door for everything below, however open the rest
+    of the path is. Unreadable or vanished is answered NO -- a check that
+    cannot see is not a check that found nothing, and for this question
+    the safe side is to stay quiet rather than to raise an alarm about a
+    path it could not walk.
+    """
+    try:
+        current = Path(directory).resolve()
+    except OSError:
+        return False
+    while True:
+        try:
+            if not (current.stat().st_mode & bit):
+                return False
+        except OSError:
+            return False
+        if current.parent == current:
+            return True
+        current = current.parent
+
+
 def keys_in_readable_shell_files(
     names: "tuple[str, ...] | list[str]" = (),
     *,
@@ -339,6 +364,17 @@ def keys_in_readable_shell_files(
                 continue
             others = bool(mode & 0o004)
             group = bool(mode & 0o040)
+            if not (group or others):
+                continue
+            # A file is reached by walking the directories above it, and
+            # each of those needs its execute bit for the asker. A 0644
+            # file inside a 0700 home is open to nobody, whatever its own
+            # bits say -- and a 0700 home is the ordinary configuration,
+            # so reading the file's mode alone raised this on almost every
+            # host while naming a door that is shut. A security check
+            # people learn to scroll past has stopped being one.
+            group = group and _path_traversable(path.parent, 0o010)
+            others = others and _path_traversable(path.parent, 0o001)
             if not (group or others):
                 continue
             who = ("group, others" if group and others
