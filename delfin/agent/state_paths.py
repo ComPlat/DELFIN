@@ -650,6 +650,39 @@ USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     # granted by accident.
     ("delfin.agent.hooks_editor", "_USER_SETTINGS", "settings.json"),
     ("delfin.agent.kit_settings", "USER_SETTINGS_PATH", "settings.json"),
+    # The measured case of 2026-09-21: a test asked through
+    # TerminalConfirmBroker, and the question -- "$ ls", no session, the
+    # host a compute node -- was published into the user's real
+    # terminal_confirmations, where the operator read it as a dialog
+    # waiting at a terminal. The room is the file_confirm of the terminal
+    # path: an answer left beside it decides the question.
+    ("delfin.agent.terminal_confirm", "_PENDING_DIR", "terminal_confirmations"),
+    # The agent-process registry. A test that registered itself left a
+    # record naming its host and pid in the real one, and the dashboard's
+    # live panel then showed a fixture process as running.
+    ("delfin.agent.process_guard", "_DIR", "agent_processes"),
+    # The subagent state rooms. The suite redirected these one by one in
+    # conftest before the table owned them (see the comment there); a
+    # room not in the table is invisible to the benchmark's redirect,
+    # which reads the same table and nothing else.
+    ("delfin.agent.subagents", "_TELEMETRY_PATH",
+     "subagent_telemetry.jsonl"),
+    ("delfin.agent.subagents", "_RUNNING_DIR", "subagent_running"),
+    ("delfin.agent.subagents", "_PENDING_DIR", "subagent_pending"),
+    ("delfin.agent.subagents", "_SESSIONS_DIR", "subagent_sessions"),
+    # The sidecar directory holding the write lock over the user-wide
+    # memory store. The lock itself is a file (mkdir + open), so a test
+    # that saved a user-wide memory left lock files in the real home.
+    ("delfin.agent.memory_store", "_MEMORY_WRITE_LOCK", "memory_writes"),
+    # Per-turn telemetry. The state-tree sweep already knew these two
+    # (see _STATE_DIR_SOURCES above); the redirect did not, so a test
+    # that recorded a turn left its trace and metrics in the real home.
+    ("delfin.agent.tool_trace", "_DIR", "tool_traces"),
+    ("delfin.agent.turn_metrics", "_DIR", "turn_metrics"),
+    # The viewer's fallback bug directory: used only when the configured
+    # transfer root is missing, which is exactly what a test setup
+    # produces.
+    ("delfin.dashboard.editor_journal", "_FALLBACK_DIR", "viewer_bugs"),
 )
 
 #: Sinks resolved per call rather than at import: ``(module, function,
@@ -685,6 +718,44 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
     ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),
     ("delfin.agent.memory_store", "_delfin_global_memory_dir", "memory"),
+)
+
+#: Constants that point into the user's real ``~/.delfin`` DELIBERATELY:
+#: ``(module, attribute, one-sentence reason)``. Everything here is a
+#: read-mostly store a run legitimately reads (see the note above the
+#: sink table) or an intermediate alias whose every leaf is in a table
+#: above. A constant on this list that starts WRITING as a matter of
+#: course belongs in USER_STATE_SINKS instead, and the watcher test
+#: keeps this list honest entry by entry.
+USER_STATE_REAL_HOME: tuple[tuple[str, str, str], ...] = (
+    # Read-mostly, by the decision recorded above the sink table: the
+    # indexed manuals, what earlier runs learned about the models, the
+    # credential store (isolated separately, see the secrets deny-list)
+    # and the user's MCP server configuration.
+    ("delfin.agent.manual_extractor", "_DEFAULT_INDEX",
+     "read-mostly: the indexed documentation; redirecting it would only "
+     "hide the real manuals from a run that legitimately searches them"),
+    ("delfin.agent.model_capabilities", "_CACHE_PATH",
+     "read-mostly: what earlier runs learned about the models; a "
+     "redirect would hide the real cache from a run that reads it"),
+    ("delfin.agent.credentials", "_DEFAULT_PATH",
+     "read-mostly and secret: the credential store, isolated separately "
+     "by the secrets deny-list rather than by a redirect"),
+    ("delfin.agent.mcp_editor", "_USER_CONFIG",
+     "the user's MCP server configuration; runs read it to know which "
+     "servers exist, and the write paths go through _user_config_path"),
+    # Intermediate aliases: the constant itself is never the sink -- every
+    # leaf derived from it is in USER_STATE_SINKS above. They are listed
+    # so a leaf added beside them without a table entry fails the watcher.
+    ("delfin.agent.bug_watcher", "_DELFIN_DIR",
+     "alias: its only leaf bug_watcher._PID_PATH is in USER_STATE_SINKS"),
+    ("delfin.agent.job_fix", "_DELFIN_DIR",
+     "alias: its only leaf job_fix._ATTEMPTS_PATH is in USER_STATE_SINKS"),
+    ("delfin.agent.job_monitor", "_DELFIN_DIR",
+     "alias: all four of its leaves are in USER_STATE_SINKS"),
+    ("delfin.agent.scheduler_daemon", "_DELFIN_DIR",
+     "alias: its only leaf scheduler_daemon._PID_PATH is in "
+     "USER_STATE_SINKS"),
 )
 
 #: The resolvers that take a repo root and add a per-project leaf.
@@ -826,7 +897,8 @@ __all__ = [
     "StateDir", "ensure_dir", "secure_file", "write_text", "write_text_atomic", "open_append",
     "repair_tree", "prune_old", "state_dirs", "run_startup_maintenance",
     "reset_maintenance_flag",
-    "USER_STATE_SINKS", "USER_STATE_RESOLVERS", "PROJECT_LEAVES",
+    "USER_STATE_SINKS", "USER_STATE_RESOLVERS", "USER_STATE_REAL_HOME",
+    "PROJECT_LEAVES",
     "KEPT_BY_A_LIVE_RUN", "SCRATCH_STATE_ENV", "RedirectedUserState",
     "scratch_state_from_environment",
 ]
