@@ -809,7 +809,12 @@ class TerminalAgent:
         self._report_tasks()
         self._offer_next_steps()
         self._report_status()
-        return result_box[0] if result_box else TurnResult(error="turn produced nothing")
+        result = result_box[0] if result_box \
+            else TurnResult(error="turn produced nothing")
+        # For the length-continuation: a length end WITH a tool call is
+        # the tool loop's to carry on, not ours.
+        self.__dict__["_turn_used_tools"] = bool(result.tool_calls)
+        return result
 
     def _pump(self, worker: threading.Thread) -> None:
         from . import repl_keys as rk
@@ -1990,6 +1995,7 @@ class TerminalAgent:
                     return 0
                 if not pending:
                     continue
+                pending_prompt = pending          # visible past the try
                 try:
                     self.turn(pending)
                 except KeyboardInterrupt:
@@ -2000,6 +2006,20 @@ class TerminalAgent:
                 # A SIGKILL at the next prompt must cost nothing (see
                 # _checkpoint_session).
                 self._checkpoint_session()
+                # A turn cut at the token ceiling without a tool call is
+                # a stall, not an answer: on a model that thinks
+                # invisibly the ceiling goes to thinking, the visible
+                # answer ends at finish_reason "length", and the session
+                # stands at the prompt half-way through the edit
+                # (operator point d, 2026-09-22). Continue it, at most
+                # twice; the third time the operator hears it.
+                continuation = self._continue_after_length(pending_prompt)
+                while continuation:
+                    self._show_user_input(continuation, queued=True)
+                    self._checkpoint_session()
+                    self.turn(continuation)
+                    self._checkpoint_session()
+                    continuation = self._continue_after_length(continuation)
                 pending = ""
         except rk.TerminalLeft as left:
             # Whatever the session was doing -- at the prompt, in a turn,
@@ -2335,6 +2355,53 @@ class TerminalAgent:
             self.transcript.chrome(
                 self.transcript.theme.dim(f"✉ {sender} → into the running "
                                           f"turn: {body[:300]}"))
+
+    #: At most this many self-continuations of a length-cut turn; the
+    #: next one is the operator's to drive, and the operator is told.
+    _MAX_LENGTH_CONTINUATIONS = 2
+
+    def _continue_after_length(self, answered_prompt: str) -> str:
+        """Whether the finished turn should be continued, and with what.
+
+        A turn that ended at ``length`` WITHOUT a tool call spent its
+        ceiling -- on a model that thinks invisibly, largely on
+        thinking -- and stopped mid-answer. The terminal sends
+        "continue" on its own, at most twice: the same message the
+        person at the keyboard would type, rendered as a continuation
+        and not as their words. A tool-carrying length end is left to
+        the tool loop (the next round carries the work); a normal end
+        needs no help. After the second continuation a third length
+        end goes to the operator over session_message -- the channel
+        that reaches a person not watching six panes -- and the turn
+        is left at the prompt for them.
+        """
+        try:
+            reason = str(getattr(self.engine, "last_turn_stop_reason",
+                                 "") or "")
+        except Exception:
+            return ""
+        if reason != "length":
+            self.__dict__["_length_continuations"] = 0
+            return ""
+        if getattr(self, "_turn_used_tools", False):
+            # The model meant to go on; the tool loop owns it.
+            self.__dict__["_length_continuations"] = 0
+            return ""
+        done = int(getattr(self, "_length_continuations", 0) or 0)
+        if done >= self._MAX_LENGTH_CONTINUATIONS:
+            try:
+                self.engine._notify_operator_of_stall(
+                    "a turn keeps ending at the token ceiling without "
+                    "finishing; the session is standing at the prompt "
+                    "mid-answer after two self-continuations")
+            except Exception:
+                pass
+            return ""
+        self.__dict__["_length_continuations"] = done + 1
+        self.transcript.chrome(self.transcript.theme.dim(
+            "↻ the answer was cut at the token ceiling — continuing "
+            f"({done + 1}/{self._MAX_LENGTH_CONTINUATIONS})"))
+        return "continue"
 
     def _presence_key(self) -> str:
         """The address an operator reaches this session by.

@@ -2700,6 +2700,10 @@ class AgentEngine:
         # Cleared per turn: a diagnostic left over from an earlier empty
         # turn must not be read as a report about this one.
         self.last_empty_turn = None
+        # The final stop_reason of the last turn, e.g. "length" when the
+        # token ceiling cut it. The terminal REPL reads it to continue a
+        # stalled turn (see stream_response's message_delta handling).
+        self.last_turn_stop_reason = ""
         _usage_before = dict(self.token_usage)
         _turn_ttft: float | None = None
         # Time of the FIRST stream event of any kind — message_start and
@@ -3064,6 +3068,18 @@ class AgentEngine:
 
                 elif event.type == "message_delta":
                     with self._lock:
+                        # The turn's ending, for the UI that has to react
+                        # to it: a turn that stopped at the token ceiling
+                        # ("length") without a tool call is a stall on a
+                        # model that thinks invisibly, and the terminal
+                        # continues it (assignment 8 / operator point d,
+                        # 2026-09-22). Read where the accounting happens,
+                        # which is the only place every final delta passes.
+                        try:
+                            self.last_turn_stop_reason = str(
+                                getattr(event, "stop_reason", "") or "")
+                        except Exception:
+                            pass
                         # Only output tokens and cost from the final event.
                         # Input tokens already counted in message_start.
                         self.token_usage["output"] += event.output_tokens
