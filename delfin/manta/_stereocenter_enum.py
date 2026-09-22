@@ -641,6 +641,9 @@ def expand_results(results):
         return results
     max_added = _env_int("DELFIN_STEREOCENTER_MAX_ADDED", 128)
     kmax = _env_int("DELFIN_STEREOCENTER_KMAX", 8)
+    # DELFIN_STEREOCENTER_SKIP_MIRROR=1: frames labelled `*_mirror` neither seed
+    # `present` nor become an isomer representative (see the loop below).
+    _skip_mirror = _env_int("DELFIN_STEREOCENTER_SKIP_MIRROR", 0) == 1
     h_heavy_min = _env_float("DELFIN_STEREOCENTER_H_HEAVY_MIN", 1.45)
     h_h_min = _env_float("DELFIN_STEREOCENTER_H_H_MIN", 1.25)
     # Multi-centre folds beyond KMAX -- rationale in the block above
@@ -698,6 +701,15 @@ def expand_results(results):
             xyz = entry[0]
             lbl = entry[1] if len(entry) > 1 else ""
         except Exception:
+            continue
+        if _skip_mirror and str(lbl).endswith("_mirror"):
+            # A mirror image carries the INVERTED base signs of the frame it was
+            # made from.  Admitting it to `present`/`reps` makes the enumerator
+            # treat one real fold of that isomer as "already built" and skip it:
+            # measured 2026-09-06 (mirrtrace/mirrtrace2), one mirror = one
+            # `_stereo` fold lost at unchanged frame count (ABUSAU 16->15,
+            # JEJROI 29->28).  The mirror is a copy of the manifold, not a fold;
+            # it must not claim a fold slot.  Default OFF; A/B via the switch.
             continue
         try:
             A = _analyze_frame(xyz)

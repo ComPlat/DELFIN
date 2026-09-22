@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -115,7 +116,9 @@ _DENY_SUBSTRINGS = (
 # The rule derives its roots at runtime from the current user's HOME and the
 # machine's mount table, so it holds for any user on any cluster without
 # knowing site-specific paths.
-_TREE_WALK_COMMANDS = frozenset({"du", "ncdu", "find"})
+_TREE_WALK_COMMANDS = frozenset({"du", "ncdu", "find", "tree", "rg"})
+#: Walk only when told to recurse: grep -r/-R, ls -R.
+_RECURSIVE_ON_FLAG = frozenset({"grep", "egrep", "fgrep", "ls"})
 
 
 def _is_tree_walk_root(resolved: Path) -> bool:
@@ -140,20 +143,49 @@ def _is_tree_walk_root(resolved: Path) -> bool:
         return False
 
 
-def _check_tree_walk(toks: list[str]) -> tuple[bool, str]:
-    """Deny recursive walks rooted at a whole file system; subdirs are fine."""
+def _recurses(base: str, toks: list[str]) -> bool:
+    """Whether this command walks a tree at all."""
+    if base in _TREE_WALK_COMMANDS:
+        return True
+    if base not in _RECURSIVE_ON_FLAG:
+        return False
+    letter = "R" if base == "ls" else "rR"
+    for t in toks[1:]:
+        if t in ("--recursive", "--dereference-recursive"):
+            return True
+        if t.startswith("-") and not t.startswith("--") \
+                and any(c in t[1:] for c in letter):
+            return True
+    return False
+
+
+def _check_tree_walk(toks: list[str], cwd=None) -> tuple[bool, str]:
+    """Deny recursive walks rooted at a whole file system; subdirs are fine.
+
+    The one implementation of this rule. The approval runner of the CLI
+    backend reaches it through is_allowed, and the gate of every API and
+    terminal session through tree_walk_refusal: it used to live on the
+    CLI path only, so the sessions that run most of the work walked past
+    it (measured 2026-09-22: `find ~ -name '*.py'`, three times, and walks
+    over the archive, all executed).
+    """
     base = os.path.basename(toks[0])
-    if base not in _TREE_WALK_COMMANDS:
+    if not _recurses(base, toks):
         return True, "ok"
 
     targets = [t for t in toks[1:] if not t.startswith("-")]
-    if not targets:
-        # No path given: the walk is rooted at the working directory.
-        targets = ["."]
+    if not targets or (base == "rg" and len(targets) == 1) \
+            or (base in ("grep", "egrep", "fgrep") and len(targets) == 1):
+        # No path given (rg/grep: only the pattern): the walk is rooted
+        # at the working directory.
+        targets.append(".")
 
     for target in targets:
         try:
-            resolved = Path(os.path.expanduser(target)).resolve()
+            path = Path(os.path.expanduser(target))
+            if not path.is_absolute() and cwd is not None:
+                path = Path(cwd) / path       # where the COMMAND runs
+            resolved = path.resolve()
         except Exception:
             continue
         if _is_tree_walk_root(resolved):
@@ -164,6 +196,54 @@ def _check_tree_walk(toks: list[str]) -> tuple[bool, str]:
                 f"specific subdirectory."
             )
     return True, "ok"
+
+
+def tree_walk_refusal(cmd: str, cwd=None) -> Optional[str]:
+    """Why *cmd* may not run as a walk over a whole file system, or None.
+
+    Checks every pipeline segment, whatever the command's other merits --
+    a walk rooted at the home, one of its ancestors or a mount point is
+    refused in every mode, before anything is asked. Relative paths are
+    read from *cwd*, the directory the command runs in (not this
+    process's), and a `cd` inside the command moves it: `cd ~ && find .`
+    is a walk over the home.
+    """
+    try:
+        segments = _split_pipeline(cmd.strip())
+    except ValueError:
+        segments = [s for s in re.split(r"\|\||&&|[|;&\n]", cmd) if s.strip()]
+    for seg in segments:
+        try:
+            toks = shlex.split(seg, posix=True)
+        except ValueError:
+            toks = seg.split()
+        while toks and "=" in toks[0] and toks[0].split("=", 1)[0].isidentifier():
+            toks = toks[1:]
+        # Wrappers that run the next word: the walk is that word's.
+        while toks and os.path.basename(toks[0]) in ("nice", "ionice", "time",
+                                                      "timeout", "command",
+                                                      "exec"):
+            toks = toks[1:]
+            # their own options and values: -n 10, -c2, a duration like 5s
+            while toks and (toks[0].startswith("-")
+                            or re.fullmatch(r"\d+[smhd]?", toks[0])):
+                toks = toks[1:]
+        if not toks:
+            continue
+        if toks[0] == "cd":
+            dest = toks[1] if len(toks) > 1 else "~"
+            try:
+                p = Path(os.path.expanduser(dest))
+                if not p.is_absolute() and cwd is not None:
+                    p = Path(cwd) / p
+                cwd = str(p.resolve())
+            except Exception:
+                pass
+            continue
+        ok, reason = _check_tree_walk(toks, cwd)
+        if not ok:
+            return reason
+    return None
 
 
 @dataclass

@@ -126,13 +126,48 @@ def sha256_file(path: Path) -> Optional[str]:
     return sha256_text(text)
 
 
+_OWN_BUCKET = ""
+
+
+def _own_bucket() -> str:
+    """A journal name for a run that has no session id.
+
+    Not a constant. The fallback used to be the literal "session", so
+    every id-less run shared one journal: measured here on 2026-09-19 it
+    held 528 records from 163 different path roots -- other runs' pytest
+    trees, scratch checkouts, a /tmp/dgit/repo from two days before. A
+    headless agent is exactly such a run, and ``undo_changes`` hands back
+    the entries it could not use, so it would read paths from workspaces
+    it can never reach.
+
+    The name is this process: its pid and the moment it started, the
+    fingerprint that tells one life of a pid from the next. Stable for the
+    length of the run -- undo reaches back over several calls -- and not
+    inherited by the next process to be given that pid.
+    """
+    global _OWN_BUCKET
+    if _OWN_BUCKET:
+        return _OWN_BUCKET
+    pid = os.getpid()
+    try:
+        from delfin.agent.proc_identity import start_ticks
+        stamp = start_ticks(pid)
+    except Exception:
+        stamp = None
+    _OWN_BUCKET = f"run-{pid}-{stamp}" if stamp else f"run-{pid}"
+    return _OWN_BUCKET
+
+
 def _safe_session_id(session_id: Any) -> str:
     """Sanitize a session id for use as a directory name (no traversal).
 
     Same pattern as ``session_store.save_handoff_brief``: every character
     outside ``[a-zA-Z0-9_-]`` becomes ``_`` (this includes ``.`` and
     ``/``, so ``../../etc`` cannot escape the undo root)."""
-    return re.sub(r"[^a-zA-Z0-9_-]", "_", str(session_id or "") or "session")[:40]
+    raw = str(session_id or "")
+    if not raw:
+        return _own_bucket()
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", raw)[:40]
 
 
 def _undo_root() -> Path:
@@ -728,8 +763,12 @@ def revert(
                 except OSError:
                     inside = False
                 if not inside:
+                    # Counted, not named. The agent has to know something
+                    # was left alone; the path belongs to a workspace this
+                    # run cannot reach, and naming it is how one run's
+                    # files became readable from another.
                     result["skipped"].append(
-                        {"path": path_str, "reason": "outside workspace"})
+                        {"reason": "outside workspace"})
                     continue
 
             if rec.get("undone"):

@@ -29,11 +29,11 @@ def perms():
 
 
 @pytest.mark.parametrize("cmd,label", [
-    ("scancel -u ka_ew7404", "every job of a user"),
-    ("scancel --user=ka_ew7404", "same, long form"),
+    ("scancel -u ka_user", "every job of a user"),
+    ("scancel --user=ka_user", "same, long form"),
     ("scancel -u $USER --state=PENDING", "with extra flags"),
-    ("killall -u ka_ew7404", "every process of a user"),
-    ("pkill -u ka_ew7404", "same via pkill"),
+    ("killall -u ka_user", "every process of a user"),
+    ("pkill -u ka_user", "same via pkill"),
     ("pkill -U 1001", "numeric uid"),
     ("scontrol suspend 12345", "suspending someone's job"),
 ])

@@ -189,17 +189,31 @@ def test_a_connect_from_a_thread_is_answered(proxy, web, tmp_path):
     assert out.stdout.split()[-3] == "connected", out
 
 
-def test_an_uncaged_attended_command_gets_the_guard(tmp_path, monkeypatch):
+def test_an_attended_command_is_caged_and_reaches_the_net_through_the_proxy(
+        tmp_path, monkeypatch):
+    """An attended session used to run its commands through a plain shell
+    with only a socket guard: no filesystem containment, and `--net open`.
+    Since "auto" means "wherever this host can hold it", the same command
+    is now held to the workspace and its network goes through the proxy.
+    Measured before that change: `echo x > "$HOME"/f` in acceptEdits wrote
+    into the home directory, because the gate reads the command TEXT and
+    the path was not in it."""
     monkeypatch.setattr(A, "_process_cage_functional", lambda: False)
     monkeypatch.setattr(A, "_record_security_event", lambda *a, **k: None)
     monkeypatch.setattr(SG, "available", lambda: True)
+    monkeypatch.setattr(A, "_bwrap_functional", lambda: False)
+    monkeypatch.setattr(A, "_landlock_functional", lambda: True)
     monkeypatch.delenv(A._PROCESS_CAGE_ENV, raising=False)
     perms = A.KitToolPermissions(workspace=str(tmp_path), mode="acceptEdits")
     argv = A._bash_isolation_argv("ls", tmp_path, perms, mode="auto")
-    assert argv[2].endswith("landlock_exec.py") and "--deny-socket" in argv
-    assert argv[argv.index("--net") + 1] == "open"
+    assert any(str(a).endswith("landlock_exec.py") for a in argv), argv
+    assert argv[argv.index("--net") + 1] == "proxy", argv
+
+    # And it still lets go when the cage is switched off by name.
+    monkeypatch.setattr(A, "_landlock_functional", lambda: False)
     monkeypatch.setenv(A._PROCESS_CAGE_ENV, "off")
-    assert A._bash_isolation_argv("ls", tmp_path, perms, mode="auto") == ["/bin/bash", "-c", "ls"]
+    assert A._bash_isolation_argv(
+        "ls", tmp_path, perms, mode="auto") == ["/bin/bash", "-c", "ls"]
 
 
 def test_an_isolated_command_under_bubblewrap_runs_the_guard_inside(tmp_path, monkeypatch):

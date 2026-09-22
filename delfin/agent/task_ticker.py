@@ -132,6 +132,41 @@ def render_html(
     )
 
 
+def next_steps(
+    workspace: Path | str, *, session_id: str | None = None,
+    limit: int = 3,
+) -> list[str]:
+    """The open work, shortest first, as things a user could ask for next.
+
+    Not invented: these are the tasks the agent itself left open, so a
+    suggestion is never a guess about what the user wants and never
+    costs a token to produce. Pending before blocked — a blocked item is
+    waiting on something, and offering it as the next step would be an
+    invitation into a wall.
+
+    Never raises: a suggestion is a courtesy, and one that takes the
+    prompt with it is not.
+    """
+    try:
+        store = get_store(Path(workspace))
+        raw = store.list(include_deleted=False,
+                         session_id=resolve_session_scope(session_id),
+                         with_seq=True)
+    except Exception:
+        return []
+    out: list[str] = []
+    for want in ("pending", "in_progress", "blocked"):
+        for t in _sorted(raw or []):
+            if str(t.get("status", "pending")) != want:
+                continue
+            subject = str(t.get("subject", "")).strip()
+            if subject and subject not in out:
+                out.append(subject)
+            if len(out) >= max(0, int(limit)):
+                return out
+    return out
+
+
 def render_text(
     workspace: Path | str, *, session_id: str | None = None, max_rows: int = 30
 ) -> str:
@@ -154,4 +189,4 @@ def render_text(
     return "\n".join(lines)
 
 
-__all__ = ["render_html", "render_text"]
+__all__ = ["render_html", "render_text", "next_steps"]

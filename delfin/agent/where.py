@@ -25,11 +25,15 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
+
+from delfin.agent import proc_identity
 
 #: Where the running dashboard leaves its note, when nothing redirects it.
 #: One file: a machine runs one dashboard per user, and a second one would
@@ -58,34 +62,12 @@ def record_path() -> Path:
     return Path.home() / DEFAULT_RECORD_NAME
 
 
-def _process_start(pid: int) -> str:
-    """A fingerprint that tells one life of a pid from the next, or "".
-
-    Linux hands it over in /proc; everywhere else ``ps`` answers the same
-    question, and where neither does the caller falls back to the plain
-    pid check -- degraded, never wrong in the other direction.
-    """
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return ""
-    if pid <= 0:
-        return ""
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-        # The command name may contain spaces and brackets; everything
-        # after the closing bracket is fixed-width fields, and the 20th
-        # of those is the start time in clock ticks since boot.
-        fields = stat.rsplit(")", 1)[1].split()
-        return fields[19]
-    except (OSError, IndexError, ValueError):
-        pass
-    try:
-        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
-                             capture_output=True, text=True, timeout=2)
-    except Exception:
-        return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
+#: A fingerprint that tells one life of a pid from the next, or "".
+#: The reading of it lives in ``proc_identity``: the scratch directories
+#: ask the same question, and a second reader of /proc drifts from this
+#: one. Kept under its old name -- the note format and every caller in
+#: this file are written in terms of it.
+_process_start = proc_identity.process_start
 
 
 def _tmux_session() -> str:
@@ -190,31 +172,18 @@ def withdraw_dashboard() -> None:
 
 
 def _still_running(record: dict) -> Optional[bool]:
-    """True/False on this machine, None when it cannot be asked."""
+    """True/False on this machine, None when it cannot be asked.
+
+    A note with no host is not answerable either: the pid in it was
+    written somewhere, and this is not known to be that machine. The
+    process question itself -- including the recycled pid, which would
+    otherwise send somebody to a port nothing listens on -- is answered
+    in ``proc_identity``, where the scratch sweep asks it too.
+    """
     if str(record.get("host") or "") != socket.gethostname():
         return None
-    try:
-        pid = int(record.get("pid") or 0)
-    except (TypeError, ValueError):
-        return False
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return None
-    # The number is in use -- by the same process, or by whatever the
-    # system handed it to next. Saying "running" for a stranger sends
-    # somebody to a port nothing listens on.
-    written = str(record.get("proc_start") or "")
-    now = _process_start(pid)
-    if written and now and written != now:
-        return False
-    return True
+    return proc_identity.alive(record.get("pid"),
+                               str(record.get("proc_start") or ""))
 
 
 def dashboard() -> dict:
@@ -350,7 +319,146 @@ def format_text(record: dict, rows: list[dict]) -> str:
 
 
 def main(argv: Optional[list] = None) -> int:
+    """Dispatch on the flags; with none of them, the plain print."""
+    if argv is None:
+        argv = sys.argv[1:]
+    import argparse
+
+    p = argparse.ArgumentParser(
+        prog="delfin-agent where",
+        description="Where the dashboard runs and how to get back into it")
+    p.add_argument("--attach", action="store_true",
+                   help="Walk into the tmux session the note names")
+    p.add_argument("--ssh-config", action="store_true",
+                   help="Print a ready ssh config entry for it")
+    p.add_argument("--write", action="store_true",
+                   help="With --ssh-config: append the entry instead of "
+                        "printing it (refuses to change an existing one)")
+    args = p.parse_args(argv)
+
+    if args.attach:
+        return run_attach(dashboard())
+    if args.ssh_config:
+        if args.write:
+            return write_ssh_config(dashboard())
+        print(ssh_config_entry(dashboard()))
+        return 0
     print(format_text(dashboard(), sessions()))
+    return 0
+
+
+# -- attach: walk into the session the note names -----------------------------
+
+def run_attach(record: dict) -> int:
+    """Replace this process with the way into the note's tmux session.
+
+    Inside that session already: say so, change nothing. On this node:
+    tmux directly. On another node: ssh -t with the port forward the note
+    filled in, so the URL comes back alive in the same step.
+
+    Nothing here starts anything unattended: the only commands run are
+    the ones the user just asked to be placed inside. A host without the
+    tool it needs says so in one line and exits 1 -- never a guess.
+    """
+    if not record:
+        print("No dashboard has left a note — there is nothing to attach to.")
+        return 1
+    session = str(record.get("tmux") or "")
+    if not session:
+        print("The note names no tmux session; nothing to attach to.")
+        return 1
+    if session and session == _tmux_session():
+        print(f"Already inside tmux session {session!r} — this is it.")
+        return 0
+    host = str(record.get("host") or "")
+    here = socket.gethostname()
+    if host and host != here:
+        if not shutil.which("ssh"):
+            print("ssh is not installed here; cannot reach "
+                  f"{host} from this machine.")
+            return 1
+        port = int(record.get("port") or 0)
+        argv = ["ssh", "-t"]
+        if port > 0:
+            argv += ["-L", f"{port}:localhost:{port}"]
+        argv += [host, "tmux", "attach", "-t", session]
+    else:
+        if not shutil.which("tmux"):
+            print("tmux is not installed here; cannot attach to "
+                  f"{session!r}.")
+            return 1
+        argv = ["tmux", "attach", "-t", session]
+    # The token stays in the note: this command line is what a terminal
+    # and a shell history both record, and the forward alone is enough --
+    # the URL on the far side already carries it.
+    os.execvp(argv[0], argv)
+    return 1          # execvp only returns when it could not run
+
+
+# -- ssh-config: the entry that makes `ssh delfin` the whole way back ---------
+
+def ssh_config_entry(record: dict) -> str:
+    """One ssh config entry for the node the dashboard runs on.
+
+    ``RemoteCommand tmux new -A -s`` attaches when the session exists and
+    creates it when it does not -- the exact semantics a reconnect wants.
+    The token is NOT part of it: a config file is copied between machines,
+    and the note already carries everything private.
+    """
+    host = str(record.get("host") or "")
+    port = int(record.get("port") or 0)
+    session = str(record.get("tmux") or "delfin")
+    lines = [
+        "Host delfin",
+        f"    HostName {host or '?'}",
+        f"    RemoteCommand tmux new -A -s {session}",
+        "    RequestTTY yes",
+    ]
+    if port > 0:
+        lines.append(f"    LocalForward {port} localhost:{port}")
+    return "\n".join(lines) + "\n"
+
+
+def write_ssh_config(record: dict) -> int:
+    """Append the entry to ~/.ssh/config, or refuse without changing it.
+
+    An existing ``Host delfin`` block is the user's own work; overwriting
+    it silently is the one destructive thing this command could do. The
+    refusal says what would change -- old entry and new -- and stops.
+    """
+    host = str(record.get("host") or "")
+    if not host:
+        print("No dashboard has left a note — nothing to write.")
+        return 1
+    config_dir = Path.home() / ".ssh"
+    config = config_dir / "config"
+    existing = ""
+    if config.exists():
+        existing = config.read_text(encoding="utf-8")
+    for block in existing.split("\n\n"):
+        if block.strip().startswith("Host delfin"):
+            print("An entry for 'Host delfin' already exists — not "
+                  "overwriting it. It says:\n\n"
+                  f"{block.strip()}\n\nThe new entry would say:\n\n"
+                  f"{ssh_config_entry(record).strip()}\n")
+            return 1
+    entry = ssh_config_entry(record)
+    try:
+        config_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if config.exists():
+            if not existing.endswith("\n"):
+                existing += "\n"
+            config.write_text(existing + "\n" + entry, encoding="utf-8")
+        else:
+            config.write_text(entry, encoding="utf-8")
+            try:
+                os.chmod(config, 0o600)
+            except OSError:
+                pass
+    except OSError as exc:
+        print(f"Could not write {config}: {exc}")
+        return 1
+    print(f"Written to {config} — `ssh delfin` is now the whole way back.")
     return 0
 
 
