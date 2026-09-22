@@ -784,6 +784,20 @@ KEPT_BY_A_LIVE_RUN: frozenset[tuple[str, str]] = frozenset({
     ("delfin.agent.benchmark", "_DEFAULT_RUNS_DIR"),
     ("delfin.agent.benchmark_runner", "_RUN_LOCK_DIR"),
     ("delfin.agent.audit_log", "_default_log_path"),
+    # The three ways a LIVING run must stay reachable through. A scratch
+    # attempt is a real process doing real work; these are not "its
+    # past", they are its connections to whoever runs it:
+    # The emergency stop. A scratch run that polls a scratch stop file
+    # cannot be stopped: `delfin-agent stop-all` writes the real one.
+    ("delfin.agent.stop_all", "_PATH"),
+    # The process registry. A protected process is invisible to /proc
+    # readers (its environment is closed), so stop_all finds it only
+    # through the registry -- a scratch run registered in a scratch
+    # registry is unfindable by a real stop-all.
+    ("delfin.agent.process_guard", "_DIR"),
+    # The confirmation room. A question a scratch run asks must be
+    # published where the operator reads it, or it waits forever.
+    ("delfin.agent.terminal_confirm", "_PENDING_DIR"),
 })
 
 #: Set this to a directory and a ``delfin agent`` process keeps its
