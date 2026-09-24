@@ -946,8 +946,12 @@ max_recovery_attempts=3
 ### How it works
 
 ```
-ORCA fails → detect error type → modify input → continue from .gbw + latest .xyz → retry
+ORCA fails → detect error type → modify input → retry
 ```
+
+Most strategies restart the job from its own last orbitals (`.gbw`) and, for an
+optimisation, its own last geometry. Two do not: after an MPI crash the orbitals
+are usually not written yet, and a memory error is not helped by reading more in.
 
 ### Error types and fixes
 
@@ -956,17 +960,28 @@ ORCA fails → detect error type → modify input → continue from .gbw + lates
 | **SCF not converged** | SlowConv → VerySlowConv + KDIIS + damping → SOSCF (`CNVSOSCF true`) |
 | **TRAH segfault** | NoTRAH + SlowConv |
 | **Geometry not converged** | Smaller trust radius → loose criteria |
-| **MPI crash** | Reduce cores, OpenMPI without single-copy transport |
-| **Memory error** | Raise MaxCore to what ORCA asked for, fewer cores |
-| **LEANSCF failure** (every SCF in ORCA 6) | Same escalation as SCF not converged; FREQ is kept |
+| **MPI crash** | Fewer cores and OpenMPI without single-copy transport, finally serial (one core) |
+| **Memory error** | Fewer cores, SOSCF removed, and MaxCore raised to what ORCA asked for when it named a figure |
+| **LEANSCF failure** (every SCF in ORCA 6) | Outside a Hessian: the same escalation as SCF not converged. Inside one: its own escalation, and from the third attempt the frequency step is dropped |
 | **Frequency failure** | NumFreq, then skip the frequency step |
-| **CIS/TD-DFT failure** | TDA, then tighter SCF and a larger Davidson space |
+| **CIS/TD-DFT failure** | TDA, then tighter SCF and a larger Davidson space, then half the cores |
+| **TD-DFT root collapsed** (ORCA ends "normally") | Treated as a failure and rerun with the TD-DFT instability strategy |
+| **DIIS error** | KDIIS with SlowConv, then SOSCF with damping, then stronger damping |
 | **Optimisation ran out of cycles** (ORCA ends "normally") | Continue from the last geometry with more cycles |
-| **ESD rate negative or not converged** (ORCA ends "normally") | ORCA's own time window, then more points |
+| **ESD rate negative** (ORCA ends "normally") | More points, then more points again with a longer window |
+| **ESD window truncated** (ORCA ends "normally") | The time window is handed back to ORCA; there is no second attempt |
 | **Input ORCA refuses** (e.g. impossible multiplicity) | Named in the log, not retried |
+| **An error DELFIN cannot classify** | Named in the log, not retried |
 | **Transient system error** | Exponential backoff retry |
 
-Recovery state is tracked in `.delfin_recovery_state.json`.
+Recovery is **off** unless `enable_auto_recovery=yes` is set; without it a failed
+ORCA job simply fails. The attempt counts are kept per job and error type in
+`.delfin_recovery_state.json` in the job's own folder, capped by
+`max_recovery_attempts`.
+
+Each failed attempt leaves its output behind as `<job>.old<N>.out`. Together with
+the rewritten `<job>.retryN.inp` those are the two files to read when you want to
+see what recovery tried.
 
 Retry inputs are written as `<job>.retryN.inp`. Only the job that failed is
 changed (in a file with `$new_job`, the one ORCA was running); every other
@@ -984,29 +999,41 @@ For complete details, see [RETRY_LOGIC.md](RETRY_LOGIC.md).
 
 ### Automatic outputs
 
-| File | Content |
-|------|---------|
-| `DELFIN.txt` | Text summary: redox potentials, preferred spin states |
-| `OCCUPIER.txt` | OCCUPIER stage tracking and state selection |
-| `ESD_report.txt` | ESD results (when ESD module is enabled) |
-| `delfin_run.log` | Run-level log with timing and job status |
-| `occupier.log` | OCCUPIER subprocess log |
+Every run writes these, in this order, at the end:
 
-### On-demand reports
+| File | Where | Content |
+|------|-------|---------|
+| `DELFIN.txt` | run root | Redox potentials, preferred spin states, method provenance |
+| `ESD.txt` | run root | Excited-state results, when the ESD module produced data |
+| `DELFIN_Data.json` | run root | Every energy, rate and spectrum, machine-readable |
+| `DELFIN.docx` | run root | The Word report, with the plots embedded |
+| `delfin_run.log` | run root | Run-level log with timing and job status |
+| `OCCUPIER.txt` | **each stage folder** | Which configuration won that stage, and why |
+| `occupier.log` | **each stage folder** | That stage's log |
+
+The DOCX also leaves its plots in the run root as PNG and DOCX files —
+`AFP_spectrum.png`, `Energy_Level_Diagram.png`, `Vertical_Excitation_Energies.png`,
+`Correlation_Diagram.png`, `Dipole_Moment_Visualization.png`, the UV/Vis and IR
+documents, and the electrostatic-potential images.
+
+### Producing a report again, without calculating
 
 ```bash
-delfin --report text          # regenerate DELFIN.txt from existing outputs
-delfin --report docx          # generate DELFIN.docx with embedded spectra/tables
-delfin --json                 # generate DELFIN_Data.json
-delfin --afp                  # generate AFP_spectrum.png
+delfin --report text          # rewrite DELFIN.txt from the existing outputs
+delfin --report docx          # rebuild DELFIN.docx
+delfin --json                 # rebuild DELFIN_Data.json
+delfin --afp                  # rebuild AFP_spectrum.png
 ```
+
+`--report text` works in the **current** directory and leaves out the excited-state
+section and the E₀₀ values; `--report docx` is the complete one.
 
 ### Spectrum tools
 
 ```bash
-delfin_ESD output.out         # UV-Vis spectrum with transitions and oscillator strengths
-delfin_IR output.out          # IR spectrum with vibrational modes and intensities
-delfin_NMR output.out         # NMR spectrum report
+delfin_ESD output.out         # UV-Vis: writes Absorption_Spectrum_S0.docx
+delfin_IR output.out          # IR: writes IR_<name>.docx and IR_<name>.png
+delfin_NMR output.out         # 1H NMR: writes NMR_<name>.png
 ```
 
 ---
@@ -1019,27 +1046,55 @@ Set `backend=slurm` in the Settings tab or let `auto` detect `sbatch`.
 
 DELFIN supports:
 - SLURM submit templates (configurable path)
-- Automatic resource detection on SLURM/PBS/LSF clusters
-- Site profiles (e.g., `bwunicluster3`)
-- Scratch directory via `DELFIN_SCRATCH` environment variable
+- Site profiles (e.g. `bwunicluster3`), detected from the login node
+- SLURM, PBS and LSF are recognised; `PAL` and `maxcore` are taken from the
+  allocation only when CONTROL leaves them empty — and the shipped template sets
+  both, so in practice your CONTROL decides
+- A scratch directory, see below
 
-### bwUniCluster setup
+### Cluster setup from the dashboard
 
-1. **Verify**: Settings → `Verify bwUniCluster` (read-only check)
-2. **Setup**: Settings → `Setup bwUniCluster` (lightweight DELFIN-side config)
-3. **Full install**: Settings → `Full bwUni install` (complete installation including OpenMPI, ORCA, venv)
+Settings offers three buttons, in increasing order of what they touch:
+
+1. `Verify install` — read-only check
+2. `Setup cluster` — the DELFIN-side configuration only
+3. `Full install` — the complete installation, including OpenMPI, ORCA and the venv
+
+### Scratch, and where your results are while the job runs
+
+The submit script **sets `DELFIN_SCRATCH` itself** — to a BeeOND mount, else to
+`$TMPDIR`, else to `/scratch/<user>/delfin_<jobid>` — so exporting it by hand
+before `sbatch` has no effect. It is **deleted when the job ends**.
+
+With `DELFIN_STAGE_IO=1` (the default) the workspace is copied to node-local disk
+and synced back on an interval (`DELFIN_SYNC_INTERVAL`, 900 s). Until a sync fires,
+the submit directory does not yet show the newest results — the usual surprise on
+a first cluster run.
 
 ### Environment variables
 
 | Variable | Purpose |
 |----------|---------|
-| `DELFIN_SCRATCH` | Scratch directory for intermediate files |
+| `DELFIN_SCRATCH` | Scratch directory (set by the submit script on a cluster) |
 | `DELFIN_ORCA_BASE` | ORCA base path override |
+| `DELFIN_STAGE_IO` / `DELFIN_SYNC_INTERVAL` | Stage the workspace on node-local disk, and how often to sync back |
+| `DELFIN_STAGE_ORCA` / `DELFIN_STAGE_VENV` | Stage ORCA and the venv on node-local disk |
+| `DELFIN_PARTITION` / `DELFIN_HIGHMEM_PARTITION` | Force a partition |
+| `DELFIN_NODE_CORES` / `DELFIN_NODE_MEM_MB` | Tell the script the node size |
+| `DELFIN_VENV` / `DELFIN_REPO` / `DELFIN_OMPI_HOME` | Where the job finds DELFIN |
+| `DELFIN_PAL` / `DELFIN_MAXCORE` / `DELFIN_CONTROL` | Override the run's resources and CONTROL file |
+| `DELFIN_SMART_RECALC` | `0` turns smart recalc off |
+| `DELFIN_SLURM_MEM_HEADROOM` | Fraction of the node's memory DELFIN may hand out (default 0.90) |
 | `DELFIN_CHILD_GLOBAL_MANAGER` | Internal: subprocess PAL coordination |
+
+The submit script's own header documents the rest.
 
 ### Resource management
 
-When `parallel_workflows=yes`, DELFIN automatically splits PAL between parallel ox/red workflows (e.g., PAL=12 → 6+6). The global job manager ensures total CPU allocation is never exceeded.
+`PAL` is the total core budget and `pal_jobs` caps how many ORCA jobs run at once.
+Oxidation and reduction do not get a fixed half each: one pool hands out cores as
+jobs become runnable, gives a lone job more, and takes them back when something
+else can start. The total allocation is never exceeded.
 
 ### Example submission scripts
 
@@ -1213,11 +1268,12 @@ maxcore=4000
 ### Thermodynamics (stability constant from SMILES)
 
 ```ini
-SMILES=[Cu+2]([N]1=CC=CC=1)([N]2=CC=CC=2)([N]3=CC=CC=3)([N]4=CC=CC=4)([OH2])([OH2])
+SMILES=[Cu+2]([N]1=CC=CC=C1)([N]2=CC=CC=C2)([N]3=CC=CC=C3)([N]4=CC=CC=C4)([OH2])([OH2])
 charge=2
 solvent=water
 thermodynamics=yes
 thermodynamics_mode=auto
+smiles_converter=ARCHITECTOR
 thdy_smiles_converter=ARCHITECTOR
 thdy_preopt=xtb
 method=OCCUPIER
@@ -1230,21 +1286,26 @@ maxcore=4000
 ```bash
 # Write SMILES to input.txt
 echo "c1ccccc1" > input.txt
-delfin --define
-# In dashboard: Submit → paste SMILES → QUICK CONVERT
+delfin --define          # writes a CONTROL.txt template; an existing input.txt is kept
 ```
+
+`--define` writes the template with its placeholders still in it. Fill in at least
+`charge`, `solvent`, `method` and `smiles_converter` before running `delfin`, or the
+run stops with `Missing required CONTROL values for: …`.
+
+In the dashboard: Submit → paste the SMILES → `QUICK CONVERT SMILES`.
 
 ### Build metal complex from SMILES
 
 ```bash
-echo "[Fe+2]([N]1=CC=CC=1)([N]2=CC=CC=2)([N]3=CC=CC=3)([N]4=CC=CC=4)([N]5=CC=CC=5)[N]6=CC=CC=6" > input.txt
+echo "[Fe+2]([N]1=CC=CC=C1)([N]2=CC=CC=C2)([N]3=CC=CC=C3)([N]4=CC=CC=C4)([N]5=CC=CC=C5)[N]6=CC=CC=C6" > input.txt
 delfin-build input.txt --goat --pal 16 --maxcore 1000
 ```
 
 ### Multi-start sampling with GUPPY
 
 ```bash
-echo "[Ru+2](N1=CC=CC=1)(N2=CC=CC=2)(N3=CC=CC=3)(N4=CC=CC=4)(Cl)(Cl)" > input.txt
+echo "[Ru+2](N1=CC=CC=C1)(N2=CC=CC=C2)(N3=CC=CC=C3)(N4=CC=CC=C4)(Cl)(Cl)" > input.txt
 delfin-guppy input.txt --runs 20 --parallel-jobs 4
 ```
 
@@ -1261,18 +1322,20 @@ delfin --afp                  # AFP spectrum plot
 
 ```yaml
 # workflow.yaml
+name: preopt_then_sp
 steps:
-  - name: preopt
-    type: xtb_opt
+  - step: xtb_opt
     geometry: input.xyz
     charge: 0
-  - name: dft_sp
-    type: orca_sp
-    geometry: preopt.xyz
+  - step: orca_sp
     method: B3LYP
     basis: def2-SVP
-    depends_on: preopt
 ```
+
+A pipeline needs a top-level `name:`, and every entry names its step with `step:`.
+(`type:` exists but is reserved for flow control — `if`, `loop`, `retry`, `map` and
+so on.) Steps run in the order they are written; there is no `depends_on:`.
+`delfin-step --list` prints the step names that can be used.
 
 ```bash
 delfin-pipeline workflow.yaml --cores 8
