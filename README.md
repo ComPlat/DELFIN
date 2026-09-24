@@ -412,7 +412,7 @@ build manifold → screen (one single point per frame and multiplicity)
                → winner written to start.txt
 ```
 
-The ranked unit is a (frame, multiplicity) pair, not a frame. Roughly 26 `MANTA_*` keys control quality, gates, screening method, optimisation, refinement and time budget — `delfin --define` writes them all with their defaults. `delfin-manta` runs the builder on its own.
+The ranked unit is a (frame, multiplicity) pair, not a frame. The `MANTA_*` block in `CONTROL.txt` steers how thorough the construction is, which gates filter the manifold, what the screen and the optimisation use, whether GOAT or CREST refines the winner, and how long the whole thing may take. `delfin --define` writes the block with its defaults. `delfin-manta` runs the builder on its own.
 
 **What MANTA is for:** starting geometries, not production geometries. The output is a constructive geometry of roughly force-field quality — correct in topology and coordination, not xTB- or DFT-accurate.
 
@@ -439,7 +439,7 @@ DELFIN is configured by `CONTROL.txt` in the working directory. `delfin --define
 
 ### Structure
 * `smiles_converter = QUICK | NORMAL | MANTA | ARCHITECTOR` (required for a SMILES run)
-* `MANTA_*` — 26 keys steering the MANTA builder and its funnel
+* `MANTA_*` — the MANTA builder and its funnel: construction quality, gates, screening, optimisation, refinement, time budget
 * `XTB_preOPT = yes | no` / `global_optimizer = GOAT | CREST`
   * the older spellings `XTB_OPT` / `XTB_GOAT` / `CREST` are still accepted
 * `XTB_SOLVATOR = yes | no`
@@ -506,11 +506,11 @@ For parallel research, read-only audits or planning that must not edit, the agen
 - `code-reviewer` — independent read-only review
 - `general-purpose` — self-contained task, inherits permissions
 
-Your own presets can be added as markdown files in `~/.delfin/subagents/`. Subagents run in parallel (a writer preset gets its own git worktree, so concurrent edits cannot clobber) or in the background; a finished one can be continued with its context intact. Per-run limits — 40 tool calls, 900 s wall clock, 16000 output tokens by default — are configurable in Settings, and a subagent may not spawn subagents of its own unless that depth is raised. Launch one with `/explore`, `/review`, `/plan` or `/delegate <task>`.
+Your own presets can be added as markdown files in `~/.delfin/subagents/`. Subagents run in parallel (a writer preset gets its own git worktree, so concurrent edits cannot clobber) or in the background; a finished one can be continued with its context intact. Every delegated run is bounded — in wall-clock time, in how many tool calls it may make and in how much it may write back — so a subagent cannot run away with the session; the bounds are in Settings. A subagent may not spawn subagents of its own unless that depth is raised. Launch one with `/explore`, `/review`, `/plan` or `/delegate <task>`.
 
 ### Tools, MCP and safety
 
-- **Built-in tools** (73): read/edit/write files, grep, sandboxed bash with long-running background jobs, code navigation, test runner, notebooks, documents and spreadsheets, web search and fetch, task tracking, scheduling, git worktrees, delegation, plus DELFIN-specific calculation and manual search.
+- **Built-in tools**: read/edit/write files, grep, sandboxed bash with long-running background jobs, code navigation, test runner, notebooks, documents and spreadsheets, web search and fetch, task tracking, scheduling, git worktrees, delegation, plus DELFIN-specific calculation and manual search.
 - **MCP (Model Context Protocol)**: connect external MCP servers over stdio or Streamable HTTP — their tools, resources and prompts join the agent's surface (configured in `~/.delfin/mcp_servers.json`). A tool reached through MCP runs in a process DELFIN did not launch a command line for, so the shell sandbox is not around it: give a stdio server `"roots": [...]` (read-write) or `"read_roots": [...]` (read-only) and it starts inside a namespace holding only those paths. Servers that declare neither run uncontained, and the startup banner, `/mcp` and `delfin-agent doctor` all say so. DELFIN's own servers can take their roots from your settings instead — `agent.mcp_isolation: "builtin"` binds the calculations, office, workspace and state folders read-write and the archive and runtime trees read-only; it is off by default because the roots are inferred.
 - **Sandboxed execution**: every shell command goes through a layered defence — allow-list, then bubblewrap or firejail — with credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) masked, network denied by default, and every command appended to `~/.cache/delfin/agent-audit.jsonl`. Configurable with `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`.
 - **Permission modes**: `plan` (read-only) · `default` (destructive actions ask) · `diff_approval` (writes stage a diff for `/approve`) · `acceptEdits` (writes allowed, bash still asks) · `bypassPermissions` (no prompts; the sandbox and the deny lists still apply). Per-pattern allow-list rules can be remembered across sessions. Files that define the agent's own permissions always require confirmation, in every mode.
@@ -738,7 +738,7 @@ Enable it with `enable_auto_recovery=yes`; `max_recovery_attempts` (default 3) b
 
 ## 🔌 External programs
 
-DELFIN detects 90+ supported programs: about 55 external binaries through `PATH`, `$MODULEPATH` and HPC fallback directories (so `module load gaussian/16` is enough), and about 35 Python packages by import probe (ML potentials, AI/ML models, wrapper libraries). Programs that cannot be pip-installed — ORCA, Gaussian, VASP, TURBOMOLE, Multiwfn and other licensed or externally managed software — are detected and reported, never installed.
+DELFIN finds the 90+ supported programs by itself, in two ways: external binaries are looked for on `PATH`, through the module system and in the usual HPC directories — so `module load gaussian/16` is all it takes — and Python packages are recognised by probing whether they import. Programs that cannot be pip-installed — ORCA, Gaussian, VASP, TURBOMOLE, Multiwfn and other licensed or externally managed software — are detected and reported, never installed.
 
 Install and update buttons for the pip-installable integrations are in the dashboard under `Settings → Tool Installation`.
 
