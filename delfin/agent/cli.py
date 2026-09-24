@@ -891,7 +891,8 @@ def _startup_banner(engine, report, workspace: Path,
     try:
         from .memory_store import _delfin_memory_dir
         from .memory_tidy import hint as _tidy_hint
-        _line = _tidy_hint(_delfin_memory_dir(Path(workspace)))
+        _line = _tidy_hint(_delfin_memory_dir(Path(workspace)),
+                           repo_root=Path(workspace))
         if _line:
             lines.append(_line)
     except Exception:
@@ -2281,7 +2282,7 @@ def cmd_memory(args: argparse.Namespace) -> int:
 
     root = _P(getattr(args, "workspace", "") or os.getcwd())
     store = _delfin_memory_dir(root)
-    proposal = _tidy.propose(store)
+    proposal = _tidy.propose(store, repo_root=root)
     print(f"store: {store}")
     print(proposal.render())
     if not getattr(args, "apply", False):

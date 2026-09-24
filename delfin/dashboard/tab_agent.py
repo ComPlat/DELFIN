@@ -11292,7 +11292,7 @@ def create_tab(ctx):
 
                 root = _P(getattr(ctx, "repo_dir", None) or ".")
                 store = _delfin_memory_dir(root)
-                proposal = _tidy.propose(store)
+                proposal = _tidy.propose(store, repo_root=root)
                 wants_apply = "apply" in (rest or "").lower()
                 if not wants_apply:
                     _append_system_message(
