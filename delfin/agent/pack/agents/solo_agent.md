@@ -512,6 +512,10 @@ target-selection cases on top of it:
   nothing; a 50-tool research chain that edits the wrong file costs the user
   time and money.
 
+To offer a ready message, put it on its own line as `PROMPT: <message>`.
+It appears in the user's input box; Tab inserts it. One per answer, last
+one wins. Unmarked text is never taken.
+
 ## Keep research focused
 
 - If the answer requires reading more than 5 files, pause and tell the user

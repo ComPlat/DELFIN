@@ -65,8 +65,42 @@ def _last_question(text: str) -> str:
 _PLACEHOLDER_WIDTH = 96
 
 
-def input_placeholder(steps, default: str) -> str:
-    """The grey line in the message box: the next prompt, or the hint.
+#: What the model writes when it wants to put a message in the user's
+#: box. The same shape as ``QUESTION:``, which the role prompt has used
+#: for a long time: a marker at the START of a line, and the rest of the
+#: line is the thing. Anchored there on purpose -- matched anywhere, an
+#: answer that merely mentions the marker would start writing into the
+#: box somebody is about to send.
+_PROMPT_MARKER = re.compile(r"^[ \t>*_-]*PROMPT:[ \t]*(\S.*?)[ \t]*$", re.M)
+
+
+def proposed_prompt(text: str):
+    """The message the agent marked as an offer, or None.
+
+    A statement, not an inference. Fishing a suggestion out of prose means
+    guessing which sentence of an answer is the offer, and a wrong guess
+    lands in the box the user is about to send.
+
+    The LAST marker wins: a long answer may reconsider, and the final word
+    is the offer.
+    """
+    try:
+        found = _PROMPT_MARKER.findall(str(text or ""))
+    except Exception:
+        return None
+    for line in reversed(found):
+        cleaned = " ".join(str(line).split())
+        if cleaned:
+            return cleaned
+    return None
+
+
+def input_placeholder(steps, default: str, proposed=None) -> str:
+    """The line waiting in the message box: an offer, a task, or the hint.
+
+    A marked prompt outranks the open tasks. A task is what is still
+    open; a marked prompt is what the agent just decided to offer, and
+    the second is the more recent decision of the two.
 
     Verbatim, because Tab copies the placeholder into the value. A prefix
     like "Next: " or a trailing "(Tab)" would have to be cut back off in
@@ -78,6 +112,10 @@ def input_placeholder(steps, default: str) -> str:
     nothing to say.
     """
     try:
+        offered = " ".join(str(proposed or "").split())
+        if offered:
+            return (offered if len(offered) <= _PLACEHOLDER_WIDTH
+                    else offered[:_PLACEHOLDER_WIDTH - 1].rstrip() + "\u2026")
         first = ""
         for step in (steps or ()):
             text = " ".join(str(step or "").split())
@@ -687,6 +725,27 @@ _AGENT_CSS = """\
    cap, then scrolls — no more scrolling inside a tiny fixed field. */
 .delfin-agent-input {
     height: auto !important;
+}
+/* A waiting offer, not the resting hint. Grey is what the box says when
+   nobody has proposed anything; green says somebody did, and Tab takes
+   it. The colour sits on the placeholder and on the border, so it reads
+   at a glance without shouting over the text the user then types. */
+/* The text, not the box. A pending offer must be distinguishable from
+   the resting hint -- identical grey would hide that Tab has something
+   to take -- but a border and a tinted background restyle the whole
+   field for a line that disappears on the first keystroke. Colouring the
+   placeholder itself is the smallest difference that carries the
+   information. Blue rather than green: green reads as a result, and this
+   is an offer.
+
+   Bound to :placeholder-shown rather than to the class alone: the class
+   says a proposal is pending, the pseudo-class says it is still visible.
+   The user need not take it, and one typed character must end the
+   colour with the text. Declarative for that reason -- an input listener
+   doing the same is a second copy of the condition. */
+.delfin-agent-input-proposed textarea:placeholder-shown::placeholder {
+    color: #1976d2 !important;
+    opacity: 1;
 }
 .delfin-agent-input textarea {
     min-height: 80px;
@@ -5949,7 +6008,16 @@ def create_tab(ctx):
                 state.get("active_session_id", "") or ""))
         except Exception:
             steps = []
-        input_textarea.placeholder = input_placeholder(steps, _INPUT_HINT)
+        offer = proposed_prompt(str(state.get("_last_answer_text", "") or ""))
+        input_textarea.placeholder = input_placeholder(
+            steps, _INPUT_HINT, proposed=offer)
+        # Green only while an offer waits: a box that stays coloured over
+        # the resting hint says somebody proposed something when nobody
+        # did, and the colour stops meaning anything.
+        if offer:
+            input_textarea.add_class("delfin-agent-input-proposed")
+        else:
+            input_textarea.remove_class("delfin-agent-input-proposed")
         if not steps:
             next_steps_box.children = ()
             return
@@ -15809,6 +15877,12 @@ def create_tab(ctx):
             state["_armed_at"] = time.time()
             state["_held_note_shown"] = False
 
+        # The offer belonged to the answer before this message. Keeping it
+        # would colour the box green through the next turn and put a stale
+        # proposal under the user's hand.
+        state["_last_answer_text"] = ""
+        input_textarea.remove_class("delfin-agent-input-proposed")
+
         # Hide any pending question UI when user sends a message
         _hide_question_ui()
 
@@ -17615,6 +17689,14 @@ def create_tab(ctx):
                     _hide_question_ui()  # always reset first
                     if chunks and engine.mode in ("solo", "dashboard"):
                         _full_text = "".join(chunks)
+                        # Kept for the message box: _refresh_next_steps
+                        # runs after this and reads the marked offer out
+                        # of it. Stored rather than passed, because the
+                        # refresh is also called from places that have no
+                        # answer in hand (a new session, a mode switch),
+                        # and those must clear the offer rather than keep
+                        # the previous turn's.
+                        state["_last_answer_text"] = _full_text
                         _q_info = detect_question(_full_text)
                         if _q_info:
                             _show_question_ui(_q_info)
