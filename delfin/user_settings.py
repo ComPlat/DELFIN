@@ -247,6 +247,12 @@ DEFAULT_SETTINGS = {
         # already injects them into future turns). On by default — one
         # small cheap-tier call per session whose saved memories compound;
         # /memorize triggers it manually anytime, enabled: false opts out.
+        # Which identity names the per-project memory store. "path" keys
+        # on the checkout, so two clones learn separately; "repo" keys on
+        # the first commit of the history, so every clone shares one.
+        # Narrow by default: too wide puts one project's notes into
+        # another's prompt.
+        "memory_key": "path",
         "auto_memory": {
             "enabled": True,
             "model": "",

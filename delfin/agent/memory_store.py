@@ -839,6 +839,56 @@ def _slugify(text: str, max_len: int = 60) -> str:
 _repo_root_cache: dict = {}
 
 
+def _memory_key_mode() -> str:
+    """Which identity names the project store: "path" or "repo".
+
+    "path" (the default) keys on the main worktree's directory, so two
+    clones of one repository learn separately. "repo" keys on the first
+    commit of the history, so every clone shares one store.
+
+    The default stays narrow on purpose: a key that is too narrow costs
+    recall, one that is too wide puts one project's notes into another's
+    prompt. Anything unrecognised reads as the default rather than as an
+    error -- a typo in a setting must not silently point the agent at an
+    empty store.
+    """
+    try:
+        from delfin.user_settings import load_settings
+        value = ((load_settings() or {}).get("agent") or {}).get("memory_key")
+    except Exception:
+        return "path"
+    return "repo" if str(value or "").strip().lower() == "repo" else "path"
+
+
+def _first_commit(root: Path) -> str:
+    """The first commit of *root*'s history, or "".
+
+    Chosen over the origin URL because it survives a remote being renamed
+    or moved, exists in a repository with no remote at all, and is the
+    same in every clone of one history. A repository with several root
+    commits takes the first in rev-list order, which is stable for a
+    given history.
+
+    The limit, measured rather than argued: a commit object is its tree,
+    author, message and timestamp, so two repositories created with all
+    four identical -- a scaffolding script running twice inside one
+    second -- share a first commit and then share a store. Not defended
+    against, because every defence costs the property this exists for:
+    mixing the path back in separates a clone from its original, mixing
+    in the creation time separates a repository from its own backup.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "rev-list", "--max-parents=0", "HEAD"],
+            capture_output=True, text=True, timeout=5)
+        if out.returncode != 0:
+            return ""
+        first = (out.stdout or "").strip().splitlines()
+        return first[0].strip() if first else ""
+    except Exception:
+        return ""
+
+
 def _repository_root(path: Path) -> Path:
     """The main worktree of *path*'s repository, or *path* resolved.
 
@@ -878,6 +928,15 @@ def _repository_root(path: Path) -> Path:
 
 def _project_slug(repo_root: Path) -> str:
     root = _repository_root(Path(repo_root))
+    if _memory_key_mode() == "repo":
+        first = _first_commit(root)
+        if first:
+            # The hash alone. A first draft put the directory name in
+            # front for legibility, which is exactly what differs between
+            # a clone and its original -- the slug has to be the same in
+            # both or the setting does nothing. Legibility is paid for
+            # elsewhere: the store prints its path when asked.
+            return f"-repo-{first[:12]}"
     return "-" + str(root).replace("/", "-").lstrip("-")
 
 

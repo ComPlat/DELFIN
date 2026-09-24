@@ -554,6 +554,58 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     max_tool_rounds_hint = widgets.HTML(
         value='<span style="color:#6b7280; font-size:11px;">'
               '−1 = per-model default · 0 = uncapped</span>')
+    # Which identity names the memory store (agent.memory_key). A dropdown
+    # and not a text field: there are two answers, and a typed third would
+    # point the agent at an empty store without saying so.
+    #
+    # Switching does not move anything. The notes under the old key stay on
+    # disk and stop being read, which is recoverable; a migration that
+    # merged two projects' notes would not be.
+    memory_key_input = widgets.Dropdown(
+        options=[
+            ('this checkout (default)', 'path'),
+            ('this repository (all clones)', 'repo'),
+        ],
+        value='path',
+        description='Memory key',
+        layout=widgets.Layout(width='340px', height='28px'),
+        style={'description_width': '90px'},
+    )
+    memory_key_hint = widgets.HTML(value='')
+
+    def _describe_memory_key(mode):
+        """Name the store the choice resolves to, here, now.
+
+        The slug is the one thing a user can compare between two checkouts
+        to see whether they share a store, so it is shown rather than
+        described. Any failure shows nothing instead of a wrong answer --
+        the settings tab must render on a machine without git.
+        """
+        try:
+            from pathlib import Path as _P
+
+            from delfin.agent import memory_store as _ms
+            root = _ms._repository_root(_P.cwd())
+            if str(mode) == 'repo':
+                first = _ms._first_commit(root)
+                if not first:
+                    return ('<span style="color:#b26500; font-size:11px;">'
+                            'no commit here yet — falls back to the '
+                            'checkout path</span>')
+                slug = f'-repo-{first[:12]}'
+            else:
+                slug = '-' + str(root).replace('/', '-').lstrip('-')
+            return ('<span style="color:#6b7280; font-size:11px;">store: '
+                    f'<code>{html.escape(slug)}</code></span>')
+        except Exception:
+            return ''
+
+    def _on_memory_key_change(change):
+        if change.get('name') == 'value':
+            memory_key_hint.value = _describe_memory_key(change.get('new'))
+
+    memory_key_input.observe(_on_memory_key_change, names='value')
+    memory_key_hint.value = _describe_memory_key(memory_key_input.value)
     agentopt_save_btn = widgets.Button(
         description='Save agent extras', button_style='primary',
         layout=widgets.Layout(width='160px', height='28px'),
@@ -591,6 +643,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             _rounds_val = int(max_tool_rounds_input.value)
             payload['agent']['max_tool_rounds'] = (
                 None if _rounds_val < 0 else _rounds_val)
+            payload['agent']['memory_key'] = str(
+                memory_key_input.value or 'path')
             save_settings(payload, settings_path)
             agentopt_save_status.value = (
                 '<span style="color:#2e7d32; font-size:11px;">saved ✓</span>')
@@ -1187,6 +1241,12 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 -1 if _rounds is None else int(_rounds))
         except Exception:
             max_tool_rounds_input.value = -1
+        # An unknown value reads as the default here for the same reason it
+        # does in the store: a typo must not point the agent at an empty
+        # store, and it must not crash the tab either.
+        _key = str(agent_payload.get('memory_key') or 'path').strip().lower()
+        memory_key_input.value = 'repo' if _key == 'repo' else 'path'
+        memory_key_hint.value = _describe_memory_key(memory_key_input.value)
 
     def _set_runtime_widgets(settings_payload):
         detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
@@ -3410,6 +3470,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 'max_output_tokens': int(subagent_tokens_input.value or _SA_TOKENS),
             })
             settings_payload['agent']['subagents'] = _subs
+            settings_payload['agent']['memory_key'] = str(
+                memory_key_input.value or 'path')
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
             settings_payload.setdefault('scheduling', {})
@@ -3763,6 +3825,23 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 '500 — high enough that long multi-file tasks finish in one '
                 'turn. The cost circuit-breaker and the repeated-error abort '
                 'stay the real safety nets. 0 → uncapped.'
+                '</div>'
+            ),
+            widgets.HTML('<b style="margin-top:6px; display:block;">'
+                         '🗃️ Memory store key</b>'),
+            widgets.HBox([memory_key_input, memory_key_hint],
+                         layout=_row_layout),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                'Which notes the agent recalls here. <b>this checkout</b> '
+                'gives every clone and every worktree-parent its own store. '
+                '<b>this repository</b> keys on the first commit of the '
+                'history, so all clones of one project share one store — the '
+                'first commit never changes as work goes on, is the same in '
+                'every clone, and survives the remote being moved. '
+                'Switching does not move or delete anything: the notes under '
+                'the other key stay on disk and are read again when you '
+                'switch back.'
                 '</div>'
             ),
             widgets.HBox(
