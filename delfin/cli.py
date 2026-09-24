@@ -760,6 +760,33 @@ def _apply_occupier_overrides(
         except Exception:
             override_map[folder_name] = preferred_index
 
+        # Fix: also record the override in .delfin_occ_auto_state.json.
+        # Without this, the state file keeps the pre-override winner and
+        # downstream consumers (e.g. the CO2 coordinator chain via
+        # _spin_from_state_json) read the stale multiplicity, silently
+        # ignoring the manual override.
+        try:
+            from delfin.occupier_auto import record_auto_preference, infer_parity_from_m
+            from delfin.occupier_sequences import infer_species_delta
+            entry_result = result[2] if isinstance(result, tuple) and len(result) > 2 else None
+            if entry_result is not None:
+                m_val = entry_result.get("m") if isinstance(entry_result, dict) else None
+                bs_val = entry_result.get("BS") if isinstance(entry_result, dict) else None
+                parity = infer_parity_from_m(m_val)
+                if parity is not None:
+                    _delta = infer_species_delta(folder_path)
+                    record_auto_preference(
+                        parity, int(preferred_index), _delta,
+                        m_value=m_val, bs_value=bs_val,
+                        root=workspace_root,
+                    )
+                    logger.info(
+                        "[recalc] Recorded override in auto-state: delta=%s index=%s m=%s BS=%s (%s)",
+                        _delta, preferred_index, m_val, bs_val, folder_name,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not update auto-state for %s: %s", folder_name, exc)
+
         # Wipe all top-level classic artefacts for this stage so the pipeline
         # rebuilds `{base}.inp` with OPT+FREQ keywords and reruns ORCA on the
         # new geometry/multiplicity/BS. The OCCUPIER folder only stores OPT
