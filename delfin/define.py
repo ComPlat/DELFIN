@@ -1,6 +1,7 @@
 # delfin/define.py
 # -*- coding: utf-8 -*-
 import re
+from pathlib import Path
 
 from delfin.common.logging import get_logger
 from delfin.common.paths import resolve_path
@@ -389,20 +390,31 @@ def create_control_file(filename: str = "CONTROL.txt",
     Create a CONTROL.txt and create an input file.
     If input_file ends with '.xyz', convert it to 'input.txt' by dropping the first two lines.
     """
+    # The input file belongs beside the CONTROL file it is named in, not in
+    # whichever directory the command was typed in: ``delfin /path/to/project
+    # --define`` used to write CONTROL.txt into the project and input.txt into
+    # the caller's directory, leaving a workspace without its geometry and
+    # saying nothing about it.
+    control_path = resolve_path(filename)
+    workspace = control_path.parent
+
+    def _in_workspace(name: str) -> Path:
+        candidate = Path(name).expanduser()
+        return candidate if candidate.is_absolute() else workspace / candidate
+
     # If user passed an .xyz, convert to input.txt and use that in CONTROL.txt
     target_input = input_file
     if str(input_file).lower().endswith(".xyz"):
-        target_input = convert_xyz_to_input_txt(input_file, "input.txt")
+        target_input = convert_xyz_to_input_txt(input_file, str(_in_workspace("input.txt")))
     else:
         # Ensure empty input file exists
-        target_path = resolve_path(target_input)
+        target_path = resolve_path(_in_workspace(target_input))
         if not target_path.exists():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.touch()
-            message = f"{target_input} has been created (empty)."
+            message = f"{target_path} has been created (empty)."
             print(message)
             logger.info(message)
-
-    control_path = resolve_path(filename)
 
     if control_path.exists() and not overwrite:
         message = f"{filename} already exists. Use --overwrite to replace it."
