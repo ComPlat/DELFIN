@@ -161,7 +161,12 @@ def extract_preferred_spin(folder: Path) -> Tuple[Optional[int], Optional[str]]:
         return None, None
 
     for idx, line in enumerate(lines):
-        if "<-- PREFERRED VALUE" not in line:
+        if "<-- PREFERRED VALUE" not in line and "<-- OVERRIDE" not in line:
+            # A manual override retags the winning FSPE entry from
+            # "<-- PREFERRED VALUE" to "<-- OVERRIDE", so a file carrying
+            # an override no longer marks the winner the old way. Accept
+            # both markers so the override wins over the stale automatic
+            # preference (e.g. for the CO2 coordinator spin handoff).
             continue
         for follow in lines[idx:]:
             stripped = follow.strip()
