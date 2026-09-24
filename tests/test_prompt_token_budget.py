@@ -70,7 +70,22 @@ def _estimate_tokens(text: str) -> int:
         # since properties="scf_converged,single_point" is iterated
         # character by character into keys s, c, f, _, o, n, v ...
         # That part is in delfin/api.py and belongs to another owner.
-        ("solo_agent.md", 10672),
+        # 10672 -> 10735, sixty-three tokens, for two rules added on
+        # 2026-09-24. PROMPT: <message> took 46 of the 48 that were free;
+        # the memory rule needed the remaining 65.
+        #
+        # Measured before the memory rule existed: of 542 per-project
+        # memory stores, 538 were keyed to paths that no longer exist,
+        # holding 358 of the 371 notes ever written, and the role prompt
+        # said nothing about when to write one. The key is fixed in the
+        # same change; the rule is the other half, and a store nobody
+        # writes to is as empty as one nobody can find.
+        #
+        # Raised rather than paid for by trimming, and the reason is the
+        # budget below: the CACHEABLE HEAD is what costs money on every
+        # request, and it still fits with 11 tokens to spare. This file
+        # budget guards the markdown, not the bill.
+        ("solo_agent.md", 10735),
         # Written lean from the start: the shared addenda carry the general
         # contracts, so this prompt only states what is specific to working
         # on someone's real records. Raised as the mode's surface grew —
