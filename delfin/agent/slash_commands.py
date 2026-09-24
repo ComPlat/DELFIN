@@ -8,7 +8,9 @@ no Skill-runtime, just text substitution.
 Search order (later wins on collision):
   1. ``~/.delfin/commands/`` — user-global, survives projects
   2. ``<workspace>/.delfin/commands/`` — project-scoped
-  3. ``~/.claude/commands/`` — canonical CLI compatibility layer
+
+DELFIN reads its own namespace only; other agent frameworks' command
+directories are not searched (see _search_dirs).
 
 Frontmatter (optional, all keys optional)::
 

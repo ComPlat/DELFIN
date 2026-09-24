@@ -7,20 +7,24 @@ Foundation Models:
   - Uni-Mol      — 3D-aware molecular representation & property prediction
   - ChemBERTa    — SMILES-based QSAR/ADMET classification
 
-Generative Models:
+Generative:
   - REINVENT4    — goal-directed molecular design (RL + Transformer)
   - SyntheMol    — synthesisable molecule generation
+
+Conformers:
   - GeoMol       — DL-based 3D conformer generation
   - torsional-diffusion — diffusion-based conformer generation
+
+Crystal Generation:
   - MatterGen    — crystal structure generation (diffusion)
   - CDVAE        — crystal diffusion variational autoencoder
 
-Retrosynthesis & Reactions:
+Retrosynthesis:
   - AiZynthFinder — retrosynthetic route planning
   - RXNMapper     — atom-mapping in chemical reactions
   - LocalRetro    — template-based retrosynthesis
 
-Screening & ADMET:
+Screening:
   - DeepChem     — broad ML platform for life sciences
   - ADMETlab     — ADMET property prediction
 
@@ -30,6 +34,14 @@ Metal Complex ML:
 
 Visualization:
   - plotly       — interactive plots for dashboards
+
+Wrapper Libraries:
+  - pymatgen     — materials analysis and structure handling
+  - QCEngine     — uniform driver for quantum-chemistry programs
+  - MDAnalysis   — trajectory analysis
+  - pymolpro     — Molpro from Python
+
+The headings are the categories of _TOOL_REGISTRY below; keep them in step.
 """
 
 from __future__ import annotations
