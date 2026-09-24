@@ -90,6 +90,45 @@ class TestRunAdductFlow:
         assert result["status"] == "coordinated"
         assert result["metal_substrate_distance_A"] == pytest.approx(2.5, abs=1e-6)
 
+    def test_run_occupier_true_triggers_pipeline(self, tmp_path, monkeypatch):
+        d = _make_coordinator_dir(tmp_path, extra="run_occupier=true\n")
+        calls = []
+
+        def fake_api_run(control_file="CONTROL.txt", **kwargs):
+            calls.append(control_file)
+            # simulate a successful OCCUPIER pass writing a result folder
+            job_dir = os.path.dirname(control_file)
+            occ = os.path.join(job_dir, "adduct_OCCUPIER", "opt")
+            os.makedirs(occ, exist_ok=True)
+            with open(os.path.join(occ, "optimized.xyz"), "w") as f:
+                f.write("3\nopt\nNi 0 0 0\nC 0 0 2.0\nO 0 0 3.2\n")
+            return 0
+
+        import delfin.api as api_mod
+        monkeypatch.setattr(api_mod, "run", fake_api_run, raising=False)
+        # adduct_flow imports api lazily inside _run_occupier_pass, so
+        # patching the module attribute is sufficient.
+        result = adduct_flow.run_adduct_flow(str(d), workdir=str(d))
+
+        assert len(calls) == 1
+        assert calls[0].endswith("CONTROL.txt")
+        assert result["occupier_run"]["status"] == "ok"
+        assert result["occupier_opt_xyz"].endswith("optimized.xyz")
+
+    def test_run_occupier_failure_is_reported(self, tmp_path, monkeypatch):
+        d = _make_coordinator_dir(tmp_path, extra="run_occupier=true\n")
+
+        def fake_api_run(control_file="CONTROL.txt", **kwargs):
+            return 2
+
+        import delfin.api as api_mod
+        monkeypatch.setattr(api_mod, "run", fake_api_run, raising=False)
+        result = adduct_flow.run_adduct_flow(str(d), workdir=str(d))
+
+        assert result["status"] == "coordinated"  # chain itself succeeded
+        assert result["occupier_run"]["status"] == "failed"
+        assert "exit code 2" in result["occupier_run"]["error"]
+
 
 class TestOccupierJobPrep:
     def test_control_forwards_level_of_theory(self, tmp_path):

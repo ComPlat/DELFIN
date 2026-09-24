@@ -151,6 +151,13 @@ _CO2_DEFAULTS = {
     "scan_dissoc": "false",
     "dissoc_distance": "6.0",
     "substrate_atom_index": "",
+    # Adduct flow (automatic chain: xTB preopt -> coordination test -> OCCUPIER)
+    "adduct_flow": "false",
+    "adduct_start_xyz": "complex_aligned_with_CO2.xyz",
+    "coord_max_dist": "3.0",
+    "run_xtb": "false",
+    # Automatic OCCUPIER pass after the chain (runs the prepared job dir)
+    "run_occupier": "false",
 }
 
 # Fields that DELFIN's main CONTROL.txt may set and that should be
@@ -254,6 +261,10 @@ def _build_co2_control(
         ("# Inverse RSS (dissociation scan)", [
             "binding", "adduct_xyz", "scan_dissoc", "dissoc_distance",
             "substrate_atom_index",
+        ]),
+        ("# Adduct flow (automatic chain)", [
+            "adduct_flow", "adduct_start_xyz", "coord_max_dist", "run_xtb",
+            "run_occupier",
         ]),
         ("# Alignment (0-based indices)", ["metal", "metal_index", "align_bond_index", "neighbors"]),
         ("# CO2 placement", [

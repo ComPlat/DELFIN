@@ -155,6 +155,58 @@ def _prepare_occupier_job(workdir: str, xyz_path: str, control: Dict[str, Any]) 
     return job_dir
 
 
+def _run_occupier_pass(job_dir: str) -> Dict[str, Any]:
+    """Execute the prepared OCCUPIER job via the DELFIN pipeline (api.run).
+
+    The job dir contains a CONTROL.txt with method=OCCUPIER and recovery
+    keys, so the pass runs in the full DELFIN style (retries, logging).
+    Returns a status dict; never raises — failures land in the result JSON.
+    """
+    out: Dict[str, Any] = {"status": None, "job_dir": job_dir}
+    try:
+        from delfin import api
+        cwd = os.getcwd()
+        os.chdir(job_dir)
+        try:
+            exit_code = api.run(control_file=os.path.join(job_dir, "CONTROL.txt"))
+        finally:
+            os.chdir(cwd)
+        out["exit_code"] = exit_code
+        if exit_code != 0:
+            out["status"] = "failed"
+            out["error"] = f"pipeline exit code {exit_code}"
+            return out
+        # Locate the optimized geometry of the preferred state: the OCCUPIER
+        # pipeline writes <base>_OCCUPIER folders; take the newest xyz inside.
+        opt = _find_latest_optimized_xyz(job_dir)
+        if opt is None:
+            out["status"] = "failed"
+            out["error"] = "no optimized geometry found after OCCUPIER pass"
+            return out
+        out["status"] = "ok"
+        out["optimized_xyz"] = opt
+    except Exception as exc:  # noqa: BLE001 — reported into the result JSON
+        out["status"] = "error"
+        out["error"] = str(exc)
+    return out
+
+
+def _find_latest_optimized_xyz(job_dir: str) -> Optional[str]:
+    """Newest *.xyz at or below any *_OCCUPIER result folder of the job dir."""
+    candidates: list = []
+    for root, _dirs, files in os.walk(job_dir):
+        rel = os.path.relpath(root, job_dir)
+        if "_OCCUPIER" not in rel:
+            continue
+        for name in files:
+            if name.endswith(".xyz"):
+                path = os.path.join(root, name)
+                candidates.append((os.path.getmtime(path), path))
+    if not candidates:
+        return None
+    return max(candidates)[1]
+
+
 def run_adduct_flow(coordinator_outdir: str, workdir: Optional[str] = None) -> Dict[str, Any]:
     """Run the automatic CO2 adduct chain.
 
@@ -209,11 +261,22 @@ def run_adduct_flow(coordinator_outdir: str, workdir: Optional[str] = None) -> D
     else:
         print(f"[adduct_flow] Coordination detected: metal-substrate distance "
               f"{distance:.3f} A <= coord_max_dist {coord_max_dist:.1f} A")
-        # d) prepare OCCUPIER job (no execution)
+        # d) prepare OCCUPIER job
         job_dir = _prepare_occupier_job(workdir, current_xyz, control)
         result["status"] = "coordinated"
         result["occupier_job_path"] = job_dir
         print(f"[adduct_flow] OCCUPIER job prepared at: {job_dir}")
+
+        # e) optional automatic OCCUPIER pass (full DELFIN pipeline style,
+        #    including recovery, via delfin.api.run with method=OCCUPIER)
+        if _coord._is_enabled(control.get("run_occupier", False)):
+            print("[adduct_flow] run_occupier=true — starting OCCUPIER pass")
+            occ_result = _run_occupier_pass(job_dir)
+            result["occupier_run"] = occ_result
+            if occ_result["status"] != "ok":
+                print(f"[adduct_flow] OCCUPIER pass failed: {occ_result.get('error', 'unknown')}")
+            else:
+                result["occupier_opt_xyz"] = occ_result.get("optimized_xyz")
 
     # e) result JSON
     result_path = os.path.join(workdir, "adduct_flow_result.json")
