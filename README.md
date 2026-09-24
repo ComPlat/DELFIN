@@ -11,7 +11,7 @@
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
 </p>
 
-> 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
+> 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256 · [read it on ChemRxiv](https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a)
 
 **DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
 
@@ -800,7 +800,7 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 If you use DELFIN in a scientific publication, please cite:
 
 - Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.2.0). Zenodo. https://doi.org/10.5281/zenodo.21508364
-- Hartmann, M. (2025). *DELFIN: Automated prediction of preferred spin states and redox potentials*. ChemRxiv. https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
+- Hartmann, M. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials*. ChemRxiv. https://doi.org/10.26434/chemrxiv-2025-4c256
 
 ### BibTeX
 ```bibtex
@@ -816,10 +816,11 @@ If you use DELFIN in a scientific publication, please cite:
 
 @article{hartmann2025chemrxiv,
   author  = {Hartmann, Maximilian},
-  title   = {DELFIN: Automated prediction of preferred spin states and redox potentials},
+  title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
   journal = {ChemRxiv},
   year    = {2025},
-  url     = {https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a}
+  doi     = {10.26434/chemrxiv-2025-4c256},
+  url     = {https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a}
 }
 ```
 
