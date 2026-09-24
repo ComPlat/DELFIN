@@ -33,7 +33,7 @@ Three ways to use it:
 3. **Geometry sanity checks.** Generated structures pass a default-on gate against severe covalent distortion and bad angles; a stricter topology gate (`DELFIN_TOPOLOGY_HARD_GATE=2`) additionally rejects detached metal–donor bonds, extra fragments and atomic collisions. π-system planarity and hapticity are enforced constructively by the MANTA builder rather than checked afterwards.
 4. **From prediction to inverse design.** ChemDarwin enumerates structural variants from a seed molecule, the same pipelines predict their properties, and the computed property becomes the fitness criterion that selects the seeds for the next round. Today that loop is closed by the chemist: DELFIN computes and ranks, ChemDarwin varies, and the selection is a deliberate step rather than an automatic one.
 
-DELFIN is research infrastructure: it does not replace chemical judgement — it makes rigorous computational chemistry (structure generation, DFT, semi-empirical methods, ML potentials, and spectroscopy) routine enough to inform it.
+**DELFIN is research infrastructure: it does not replace chemical judgement — it makes rigorous computational chemistry (structure generation, DFT, semi-empirical methods, ML potentials, and spectroscopy) routine enough to inform it.**
 
 ### What DELFIN can do
 
