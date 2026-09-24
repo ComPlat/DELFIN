@@ -30,6 +30,7 @@ what somebody put there deliberately.
 
 from __future__ import annotations
 
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +58,11 @@ class Note:
     source: str
     updated_at: int
     body: str
+    #: ``<branch>@<commit12>`` where this body was written, or "" for a
+    #: file written before the field existed. An empty stamp reads as
+    #: landed work: a note whose provenance is unknown is never retired
+    #: for it.
+    learned_at: str = ""
 
 
 @dataclass
@@ -71,6 +77,11 @@ class Proposal:
     store: Path
     merges: List[Merge] = field(default_factory=list)
     retire: List[Note] = field(default_factory=list)
+    #: Reported, never applied: notes measured on work that is not in the
+    #: default branch and whose branch is gone. A squash-merged branch
+    #: lands its work under a new commit and reads the same way, so this
+    #: is a question for a reader, not an action. See _unlanded.
+    unlanded: List[Note] = field(default_factory=list)
     before: int = 0
 
     @property
@@ -109,6 +120,17 @@ class Proposal:
                          f"{_AGENT_MEMORY_MAX_AGE_DAYS} days)")
             for n in self.retire:
                 lines.append(f"    {n.name}   {_one_line(n.body)}")
+        if self.unlanded:
+            # Separated from the two lists above on purpose: those are
+            # actions, this is a question. A squash-merged branch reads
+            # the same way as an abandoned one, so a reader decides.
+            lines.append(f"{len(self.unlanded)} learned on work that is not "
+                         f"in the default branch, on a branch since deleted")
+            for n in self.unlanded:
+                lines.append(f"    {n.name}   [{n.learned_at}]")
+                lines.append(f"      {_one_line(n.body)}")
+            lines.append("      not proposed for anything: a squash-merged "
+                         "branch looks identical here")
         if not lines:
             lines.append("nothing to tidy")
         lines.append("")
@@ -155,7 +177,8 @@ def _read(path: Path) -> Optional[Note]:
         return None
     return Note(path=path, name=name, type=mtype,
                 source=(meta.get("source") or "user").strip().lower(),
-                updated_at=updated, body=body.strip())
+                updated_at=updated, body=body.strip(),
+                learned_at=(meta.get("learned_at") or "").strip())
 
 
 def _type_from_name(stem: str) -> str:
@@ -165,7 +188,8 @@ def _type_from_name(stem: str) -> str:
     return ""
 
 
-def hint(store: Path, *, now: Optional[int] = None) -> str:
+def hint(store: Path, *, now: Optional[int] = None,
+         repo_root: Optional[Path] = None) -> str:
     """One line for the session start, or "" when there is nothing to say.
 
     Measured 2026-09-24: proposing over 1000 notes costs 43 ms, and over
@@ -178,7 +202,7 @@ def hint(store: Path, *, now: Optional[int] = None) -> str:
     hint.
     """
     try:
-        p = propose(store, now=now)
+        p = propose(store, now=now, repo_root=repo_root)
         n = len(p.merges) + len(p.retire)
         if not n:
             return ""
@@ -189,8 +213,108 @@ def hint(store: Path, *, now: Optional[int] = None) -> str:
         return ""
 
 
-def propose(store: Path, *, now: Optional[int] = None) -> Proposal:
-    """What tidying this store would do. Writes nothing."""
+def _default_branch(root: Path) -> str:
+    """The ref abandoned work is measured against, or "".
+
+    ``origin/HEAD`` when the remote published one, else a local ``main``
+    or ``master``. "" when none of the three resolve, and the caller then
+    makes no judgement at all -- a wrong default branch would rule every
+    note abandoned at once.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "symbolic-ref", "--quiet",
+             "refs/remotes/origin/HEAD"],
+            capture_output=True, text=True, timeout=5)
+        ref = (out.stdout or "").strip()
+        if out.returncode == 0 and ref:
+            return ref
+        for name in ("main", "master"):
+            probe = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--verify", "--quiet",
+                 f"refs/heads/{name}"],
+                capture_output=True, text=True, timeout=5)
+            if probe.returncode == 0 and (probe.stdout or "").strip():
+                return f"refs/heads/{name}"
+    except Exception:
+        return ""
+    return ""
+
+
+def _unlanded(root: Path, notes: List[Note]) -> set:
+    """The notes measured on work not in the default branch, branch gone.
+
+    Input: a repository and the notes of one store. Output: the paths of
+    the notes measured on a commit that is not an ancestor of the default
+    branch AND on a branch that no longer exists.
+
+    Semantics: both halves are required. A commit that is not an ancestor
+    may simply be work still in progress, which is why the branch still
+    existing protects it; a deleted branch may have been deleted after
+    merging, which is why the ancestry check protects that.
+
+    This is REPORTED and never applied, because it has a false positive in
+    the costly direction. Measured: a branch merged with ``--squash`` and
+    then deleted leaves its original commit unreachable, so work that DID
+    land reads here as work that did not. A fast-forward land does not
+    (control run: ancestor, correctly). Which of the two a project uses is
+    not knowable from the repository, so the finding is shown with its
+    reason and left to a reader, and ``apply`` does not touch it.
+
+    Everything unknown is kept: no stamp, an unparsable stamp, no default
+    branch, a git failure.
+
+    Cost: one git call per distinct commit and per distinct branch, each
+    answered once. Over a store of 189 notes written across a handful of
+    branches that is a handful of calls.
+    """
+    default = _default_branch(root)
+    if not default:
+        return set()
+    landed: dict = {}
+    alive: dict = {}
+    out = set()
+    for note in notes:
+        if note.source != "agent" or "@" not in note.learned_at:
+            continue
+        branch, _, commit = note.learned_at.rpartition("@")
+        if not branch or not commit or branch == "detached":
+            continue
+        if commit not in landed:
+            try:
+                r = subprocess.run(
+                    ["git", "-C", str(root), "merge-base", "--is-ancestor",
+                     commit, default],
+                    capture_output=True, text=True, timeout=5)
+                # Return code 1 is "not an ancestor"; anything else (128 for
+                # an unknown commit) is a question git could not answer, and
+                # an unanswered question keeps the note.
+                landed[commit] = r.returncode != 1
+            except Exception:
+                landed[commit] = True
+        if landed[commit]:
+            continue
+        if branch not in alive:
+            try:
+                r = subprocess.run(
+                    ["git", "-C", str(root), "rev-parse", "--verify",
+                     "--quiet", f"refs/heads/{branch}"],
+                    capture_output=True, text=True, timeout=5)
+                alive[branch] = bool((r.stdout or "").strip())
+            except Exception:
+                alive[branch] = True
+        if not alive[branch]:
+            out.add(note.path)
+    return out
+
+
+def propose(store: Path, *, now: Optional[int] = None,
+            repo_root: Optional[Path] = None) -> Proposal:
+    """What tidying this store would do. Writes nothing.
+
+    *repo_root* enables the abandoned-work check. Without it the proposal
+    is exactly what it was before this argument existed.
+    """
     store = Path(store)
     moment = int(now if now is not None else time.time())
     notes: List[Note] = []
@@ -204,6 +328,11 @@ def propose(store: Path, *, now: Optional[int] = None) -> Proposal:
             notes.append(note)
 
     proposal = Proposal(store=store, before=len(notes))
+    try:
+        flagged = _unlanded(Path(repo_root), notes) if repo_root else set()
+    except Exception:
+        flagged = set()
+    proposal.unlanded = [n for n in notes if n.path in flagged]
     threshold = _merge_similarity_threshold()
 
     # Retire first, so a note on its way out is not also proposed for a

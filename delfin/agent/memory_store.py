@@ -162,7 +162,7 @@ def _atomic_write(path: Path, text: str) -> None:
 # rewrites unchanged via the ``extras`` mapping.
 _KNOWN_FRONT_FIELDS = frozenset({
     "name", "description", "created_at", "updated_at", "use_count",
-    "superseded", "type", "domain", "source",
+    "superseded", "type", "domain", "source", "learned_at",
 })
 
 
@@ -178,6 +178,52 @@ SOURCE_AGENT = "agent"
 # bumps updated_at, so this is disuse, not age: a memory the agent keeps
 # pulling into prompts survives indefinitely.
 _AGENT_MEMORY_MAX_AGE_DAYS = 90
+
+
+def _head_ref(root: Path | str) -> str:
+    """Where a memory is being written: ``<branch>@<commit12>``, or "".
+
+    Input: a path inside a repository. Output: the branch name and the
+    abbreviated commit of HEAD, joined by "@". A detached HEAD has no
+    branch name and reads as ``detached@<commit12>``.
+
+    Semantics: provenance of the BODY, not of the file. It is stamped when
+    a body is written and re-stamped when a body is replaced, so it always
+    names the state of the tree the current text was measured against. It
+    is not touched by recall -- recall says a memory was useful, not that
+    it was learned again.
+
+    Why both halves. The commit alone answers whether the work reached the
+    default branch, which is the question that decides whether a memory
+    describes something that exists. The branch alone answers nothing
+    after it is deleted. Together they separate "learned on work that
+    landed" from "learned on work that was abandoned".
+
+    Every failure -- no git, no commit, a timeout, an unreadable
+    repository -- answers "", and no line is written. A memory without
+    provenance is treated as one that landed, which is the existing
+    behaviour for every file written before this field.
+
+    Cost: two git calls per newly written body, none on recall.
+    """
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short=12", "HEAD"],
+            capture_output=True, text=True, timeout=5)
+        if head.returncode != 0:
+            return ""
+        commit = (head.stdout or "").strip()
+        if not commit:
+            return ""
+        name = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5)
+        branch = (name.stdout or "").strip() if name.returncode == 0 else ""
+        if not branch or branch == "HEAD":
+            branch = "detached"
+        return f"{branch}@{commit}"
+    except Exception:
+        return ""
 
 
 def _normalise_source(value: object) -> str:
@@ -204,6 +250,7 @@ def _compose_frontmatter(
     superseded: str = "",
     domain: str = "",
     source: str = "",
+    learned_at: str = "",
     extras: dict[str, str] | None = None,
 ) -> str:
     """Serialise a typed memory file (frontmatter + body)."""
@@ -219,6 +266,8 @@ def _compose_frontmatter(
         lines.append(f"domain: {domain}")
     if source:
         lines.append(f"source: {_normalise_source(source)}")
+    if learned_at:
+        lines.append(f"learned_at: {learned_at}")
     if superseded:
         lines.append(f"superseded: {superseded}")
     for key, value in (extras or {}).items():
@@ -1325,6 +1374,12 @@ def _save_typed_memory_unlocked(
             # write over the user, so this can promote an agent file to the
             # user's when the user restates it, never the reverse.
             source=source,
+            # Provenance of the BODY. A merge that replaces the text has
+            # learned something new and is stamped where that happened; a
+            # merge that only bumps use_count keeps the original stamp,
+            # because nothing was measured again.
+            learned_at=(_head_ref(repo_root) if old_body != body
+                        else old_meta.get("learned_at", "")),
             extras=extras,
         )
         _atomic_write(fpath, front)
@@ -1356,6 +1411,7 @@ def _save_typed_memory_unlocked(
         name=slug, description=description, created_at=now,
         updated_at=now, use_count=1, memory_type=memory_type, body=body,
         domain=resolved_domain, source=source,
+        learned_at=_head_ref(repo_root),
         extras={"anchors": anchors_json} if anchors_json else None,
     )
     _atomic_write(fpath, front)
@@ -1694,6 +1750,9 @@ def record_memory_recall(
             # without carrying it forward here a single recall would erase
             # the provenance and hand the memory back its exemption.
             source=meta.get("source", ""),
+            # Same trap, same reason. Recall is not learning: it must not
+            # re-stamp, and it must not drop the stamp either.
+            learned_at=meta.get("learned_at", ""),
             extras=meta,
         )
         try:
@@ -1767,6 +1826,7 @@ def record_stale_hits(
             superseded=" ".join(meta.get("superseded", "").split())[:160],
             domain=memory_text_domain(text),
             source=meta.get("source", ""),
+            learned_at=meta.get("learned_at", ""),
             extras=extras,
         )
         try:
