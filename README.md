@@ -15,7 +15,9 @@
 
 **DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
 
-**At its centre is an AI agent** that runs DELFIN for you: it sets up and submits jobs from the dashboard, watches them, reads the outputs and explains what came out — and it edits DELFIN's own code when a workflow needs extending. It runs on hosted models (Claude, OpenAI, the KIT Toolbox) and on local open-source models through Ollama, vLLM or LM Studio, so a group with no cloud budget and no data leaving the building can use it the same way. Sandboxed shell, subagents and persistent memory are part of it; the [AI agent](#-ai-agent) section describes what it may and may not do.
+**DELFIN is operated by an AI agent.** It configures and submits calculations, monitors them, interprets the outputs, and modifies DELFIN's own code where a workflow has to be extended.
+
+Hosted models (Claude, OpenAI, KIT Toolbox) and local open-source models (Ollama, vLLM, LM Studio) are supported alike, so the platform can be run entirely on-premises. Its shell is sandboxed, its permissions are explicit, and what it may do is described under [AI agent](#-ai-agent).
 
 > 🧬 organic chemistry · 🧲 transition-metal complexes · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics
 
