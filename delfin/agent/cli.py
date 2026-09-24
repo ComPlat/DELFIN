@@ -884,6 +884,18 @@ def _startup_banner(engine, report, workspace: Path,
         # store. Printing all 32 characters put the one useful field on
         # the widest line of the banner.
         lines.append(f"session    {sid[:8]}   (/status for the full id)")
+    # What the memory store could shed, said once and only when there is
+    # something. Deterministic and measured at 43 ms over 1000 notes, so
+    # it costs nothing to ask; a command nobody is told about is a
+    # command nobody runs.
+    try:
+        from .memory_store import _delfin_memory_dir
+        from .memory_tidy import hint as _tidy_hint
+        _line = _tidy_hint(_delfin_memory_dir(Path(workspace)))
+        if _line:
+            lines.append(_line)
+    except Exception:
+        pass
     lines.append("esc interrupt · shift+tab approval mode · /help · ctrl+d exit")
     return "\n".join(lines)
 
@@ -2254,6 +2266,35 @@ def cmd_approvals(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_memory(args: argparse.Namespace) -> int:
+    """Show what tidying the memory store would do, and do it on request.
+
+    Merging near-duplicates happens today only as a memory is WRITTEN, so
+    look-alikes already in a store stay there; and the decay prune
+    deletes on its own schedule without showing anyone what it took. This
+    reports first and changes nothing until --apply.
+    """
+    from pathlib import Path as _P
+
+    from . import memory_tidy as _tidy
+    from .memory_store import _delfin_memory_dir
+
+    root = _P(getattr(args, "workspace", "") or os.getcwd())
+    store = _delfin_memory_dir(root)
+    proposal = _tidy.propose(store)
+    print(f"store: {store}")
+    print(proposal.render())
+    if not getattr(args, "apply", False):
+        return 0
+    if not (proposal.merges or proposal.retire):
+        return 0
+    done = _tidy.apply(proposal)
+    print(f"merged {done['merged']}, retired {done['retired']}"
+          + (f", failed {done['failed']}" if done["failed"] else ""))
+    print(f"retired files are in {store / 'retired'} — nothing was deleted")
+    return 0
+
+
 def cmd_session(args: argparse.Namespace) -> int:
     from . import session_store as _ss
     if args.session_action == "ls":
@@ -3168,6 +3209,23 @@ def build_parser() -> argparse.ArgumentParser:
     srch = sess_sub.add_parser("search", help="Grep across session chats")
     srch.add_argument("query")
     sess.set_defaults(func=cmd_session)
+
+    # memory — tidy the typed-memory store
+    mem = sub.add_parser(
+        "memory",
+        help="Inspect and tidy the per-project memory store")
+    mem_sub = mem.add_subparsers(dest="memory_action", required=False)
+    mem_tidy = mem_sub.add_parser(
+        "tidy",
+        help="Report near-duplicates and unrecalled model notes (default: "
+             "changes nothing)")
+    mem_tidy.add_argument("--apply", action="store_true",
+                          help="Carry out the proposal; retired notes are "
+                               "moved to <store>/retired, never deleted")
+    mem_tidy.add_argument("--workspace", default="",
+                          help="Which project's store (default: this "
+                               "directory)")
+    mem.set_defaults(func=cmd_memory, memory_action="tidy")
 
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(

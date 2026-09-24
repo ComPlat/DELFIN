@@ -1762,7 +1762,7 @@ _BUILTIN_SLASH_PREFIXES = frozenset({
     "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
     "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
     "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
-    "/memories", "/memorize", "/remember", "/forget", "/plans", "/plan", "/hooks",
+    "/memories", "/memorize", "/tidy", "/remember", "/forget", "/plans", "/plan", "/hooks",
     "/changes", "/doctor", "/attention", "/pin", "/batch",
     "/pending", "/approve", "/reject",
     "/bugs", "/watch", "/fix", "/grant",
@@ -2058,6 +2058,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Attention", "/attention answer", "Answer a parked item (/attention answer <id> <text>)", True),
     ("Attention", "/attention dismiss", "Dismiss a parked item (/attention dismiss <id|all>)", True),
     ("Memory", "/memorize", "Distill this session into durable memories (one cheap LLM call)", False),
+    ("Memory", "/tidy", "Propose merges and retirements in the memory store (no model call)", False),
     ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
     ("Memory", "/forget", "Delete a memory by index", True),
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
@@ -11275,6 +11276,38 @@ def create_tab(ctx):
                 "(sandbox still blocks everything not granted). "
                 "Session anchored on this project."
             )
+            return True
+
+        # /tidy [apply] — propose merges and retirements over the memory
+        # store. Deterministic: Jaccard similarity and the recall stamp,
+        # no model call. Reports by default; "apply" carries it out, and
+        # retiring MOVES a note to <store>/retired rather than deleting
+        # it, so a wrong call costs a move and not a fact.
+        if cmd == "/tidy":
+            try:
+                from pathlib import Path as _P
+
+                from delfin.agent import memory_tidy as _tidy
+                from delfin.agent.memory_store import _delfin_memory_dir
+
+                root = _P(getattr(ctx, "repo_dir", None) or ".")
+                store = _delfin_memory_dir(root)
+                proposal = _tidy.propose(store)
+                wants_apply = "apply" in (rest or "").lower()
+                if not wants_apply:
+                    _append_system_message(
+                        "🧹 " + proposal.render()
+                        + "\n\nRun `/tidy apply` to carry it out.")
+                elif not (proposal.merges or proposal.retire):
+                    _append_system_message("🧹 Nothing to tidy.")
+                else:
+                    done = _tidy.apply(proposal)
+                    _append_system_message(
+                        f"🧹 Merged {done['merged']}, retired "
+                        f"{done['retired']}. Retired notes are in "
+                        f"{store / 'retired'} — nothing was deleted.")
+            except Exception as exc:
+                _append_system_message(f"Tidy failed: {exc}")
             return True
 
         # /memorize — manually distill THIS session into the memory store
