@@ -11,11 +11,6 @@
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
 </p>
 
-<p align="center">
-  <a href="https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a"><img src="https://img.shields.io/badge/Read%20the%20preprint-ChemRxiv-B31B1B.svg?style=for-the-badge" alt="Read the preprint on ChemRxiv"></a>
-  <a href="https://doi.org/10.26434/chemrxiv-2025-4c256"><img src="https://img.shields.io/badge/DOI-10.26434%2Fchemrxiv--2025--4c256-B31B1B.svg?style=for-the-badge" alt="Preprint DOI"></a>
-</p>
-
 > 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256 · https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
 
 **DELFIN** is an open-source computational chemistry platform that automates molecular property prediction. From a SMILES string or an XYZ geometry it builds the structure, runs the quantum-chemistry workflow, and writes the results as a report — for organic molecules and for transition-metal complexes. It is driven from a browser dashboard, from the command line, or from Python, and it ships an AI agent that operates all three.
