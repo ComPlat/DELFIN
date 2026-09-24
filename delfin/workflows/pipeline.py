@@ -778,9 +778,15 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
     engine = str(config.get('hyperpol_xTB_engine', 'std2')).strip().lower()
     use_bfw = str(config.get('hyperpol_xTB_bfw', 'no')).strip().lower() == 'yes'
     import math
-    raw_wl = str(config.get('hyperpol_xTB_wavelengths', '')).strip()
-    if raw_wl and raw_wl.lower() not in ('', 'none', 'static'):
-        wavelengths = [float(w.strip()) for w in raw_wl.split(',') if w.strip()]
+    # A CONTROL value holding a comma is already a list when it arrives here
+    # (_parse_control_file splits it), so the documented two-wavelength form
+    # "1064,532" used to be stringified to "['1064', '532']" and die in float().
+    raw_wl = config.get('hyperpol_xTB_wavelengths', '')
+    parts = ([str(w) for w in raw_wl] if isinstance(raw_wl, (list, tuple))
+             else str(raw_wl).split(','))
+    parts = [w.strip() for w in parts if str(w).strip()]
+    if parts and ' '.join(parts).lower() not in ('none', 'static'):
+        wavelengths = [float(w) for w in parts]
     else:
         wavelengths = [math.inf]  # static only
     energy_window = float(config.get('hyperpol_xTB_energy_window', 15.0))
