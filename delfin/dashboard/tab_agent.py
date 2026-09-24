@@ -59,6 +59,40 @@ def _last_question(text: str) -> str:
     return head[cut + 1:].strip()
 
 
+#: How much of a suggestion fits in the grey line before it stops being
+#: readable at a glance. A placeholder is one line in every browser that
+#: matters, so a longer step is cut rather than folded.
+_PLACEHOLDER_WIDTH = 96
+
+
+def input_placeholder(steps, default: str) -> str:
+    """The grey line in the message box: the next prompt, or the hint.
+
+    Verbatim, because Tab copies the placeholder into the value. A prefix
+    like "Next: " or a trailing "(Tab)" would have to be cut back off in
+    JavaScript, and string surgery in two languages over one value is how
+    two halves drift apart.
+
+    Nothing open brings the hint back. An empty grey line would say the
+    agent had nothing to propose, which is not the same as the box having
+    nothing to say.
+    """
+    try:
+        first = ""
+        for step in (steps or ()):
+            text = " ".join(str(step or "").split())
+            if text:
+                first = text
+                break
+        if not first:
+            return default
+        if len(first) > _PLACEHOLDER_WIDTH:
+            first = first[:_PLACEHOLDER_WIDTH - 1].rstrip() + "\u2026"
+        return first
+    except Exception:
+        return default
+
+
 def detect_question(text: str) -> dict | None:
     """Detect if the agent's response ends with a question requiring user input.
 
@@ -5855,12 +5889,15 @@ def create_tab(ctx):
     # Input area — textarea stretches to take all remaining width;
     # send + mode buttons keep fixed footprint at full input height
     # so the row looks like one coherent strip.
+    # Kept by name: when nothing is open the grey line goes back to this,
+    # because an empty placeholder would read as "nothing to propose".
+    _INPUT_HINT = (
+        "Message the agent... (Enter = send, Shift+Enter = newline)\n"
+        "KIT tip: say 'also work in /path' to grant write access \u2014 "
+        "the agent persists it after one confirm click."
+    )
     input_textarea = widgets.Textarea(
-        placeholder=(
-            "Message the agent... (Enter = send, Shift+Enter = newline)\n"
-            "KIT tip: say 'also work in /path' to grant write access — "
-            "the agent persists it after one confirm click."
-        ),
+        placeholder=_INPUT_HINT,
         layout=widgets.Layout(
             flex="1 1 auto", width="auto", height="80px",
         ),
@@ -5912,6 +5949,7 @@ def create_tab(ctx):
                 state.get("active_session_id", "") or ""))
         except Exception:
             steps = []
+        input_textarea.placeholder = input_placeholder(steps, _INPUT_HINT)
         if not steps:
             next_steps_box.children = ()
             return
@@ -5947,6 +5985,24 @@ def create_tab(ctx):
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
     document.addEventListener('keydown', function(e) {
+        // Tab in an EMPTY message box takes the grey suggestion waiting
+        // there. It fills the box and stops: sending stays the user's, and
+        // an offer that submits itself is a trap. With something typed,
+        // Tab keeps its normal job and moves focus.
+        if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            var ta = e.target;
+            if (ta && ta.tagName === 'TEXTAREA' && ta.closest
+                    && ta.closest('.delfin-agent-input')
+                    && !ta.value && ta.placeholder
+                    && ta.placeholder.indexOf('Message the agent') !== 0) {
+                e.preventDefault();
+                var setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLTextAreaElement.prototype, 'value').set;
+                setter.call(ta, ta.placeholder);
+                ta.dispatchEvent(new Event('input', {bubbles: true}));
+                return;
+            }
+        }
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             if (e.target && e.target.tagName === 'TEXTAREA') {
                 var container = e.target.closest
