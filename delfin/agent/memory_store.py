@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 import unicodedata
@@ -833,8 +834,51 @@ def _slugify(text: str, max_len: int = 60) -> str:
     return _german.slugify(text, max_len=max_len, fallback="memory")
 
 
+#: Answered once per path. _project_slug is called on every memory read
+#: and write, and the answer cannot change while a process runs.
+_repo_root_cache: dict = {}
+
+
+def _repository_root(path: Path) -> Path:
+    """The main worktree of *path*'s repository, or *path* resolved.
+
+    A linked worktree is the same repository, and ``--git-common-dir``
+    names the main one from inside either. Measured before this existed:
+    538 of 542 stores were keyed to directories that no longer exist --
+    session worktrees, scratch trees, probe directories -- holding 358 of
+    the 371 notes ever written.
+
+    Every failure answers the plain path. A wrong answer that SPLITS a
+    store costs recall; a wrong answer that MERGES two projects puts one
+    project's notes into another's prompt.
+    """
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        return Path(path)
+    cached = _repo_root_cache.get(str(resolved))
+    if cached is not None:
+        return cached
+    answer = resolved
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(resolved), "rev-parse",
+             "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5)
+        common = (out.stdout or "").strip()
+        if out.returncode == 0 and common:
+            root = Path(common).parent
+            if root.is_dir():
+                answer = root.resolve()
+    except Exception:
+        answer = resolved
+    _repo_root_cache[str(resolved)] = answer
+    return answer
+
+
 def _project_slug(repo_root: Path) -> str:
-    return "-" + str(Path(repo_root).resolve()).replace("/", "-").lstrip("-")
+    root = _repository_root(Path(repo_root))
+    return "-" + str(root).replace("/", "-").lstrip("-")
 
 
 def _migrate_legacy_dir(old: Path, new: Path) -> None:

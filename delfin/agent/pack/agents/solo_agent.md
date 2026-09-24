@@ -516,6 +516,11 @@ To offer a ready message, put it on its own line as `PROMPT: <message>`.
 It appears in the user's input box; Tab inserts it. One per answer, last
 one wins. Unmarked text is never taken.
 
+`remember` what a later session would re-derive: a preference, a
+constraint the code does not state, why an approach was rejected — the
+reason, not just the conclusion. Duplicates merge and unused notes decay,
+so a redundant note is cheap; silence is not.
+
 ## Keep research focused
 
 - If the answer requires reading more than 5 files, pause and tell the user
