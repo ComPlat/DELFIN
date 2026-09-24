@@ -12,18 +12,20 @@ For implementation and architecture, see the [README](../README.md).
 1. [Installation](#1-installation)
 2. [Getting Started](#2-getting-started)
 3. [Input Files](#3-input-files)
-4. [CONTROL.txt Reference](#4-controltxt-reference)
-5. [CLI Reference](#5-cli-reference)
-6. [Workflow Modes](#6-workflow-modes)
-7. [Optional Modules](#7-optional-modules)
-8. [Structure Generation & Sampling](#8-structure-generation--sampling)
-9. [Dashboard](#9-dashboard)
-10. [Settings & Runtime Configuration](#10-settings--runtime-configuration)
-11. [Error Recovery & Retry System](#11-error-recovery--retry-system)
-12. [Reporting & Export](#12-reporting--export)
-13. [Cluster & HPC Usage](#13-cluster--hpc-usage)
-14. [Troubleshooting](#14-troubleshooting)
-15. [Recipes & Examples](#15-recipes--examples)
+4. [How DELFIN works](#4-how-delfin-works)
+5. [CONTROL.txt Reference](#5-controltxt-reference)
+6. [CLI Reference](#6-cli-reference)
+7. [Workflow Modes](#7-workflow-modes)
+8. [Optional Modules](#8-optional-modules)
+9. [Structure Generation & Sampling](#9-structure-generation--sampling)
+10. [Dashboard](#10-dashboard)
+11. [Settings & Runtime Configuration](#11-settings--runtime-configuration)
+12. [The AI Agent](#12-the-ai-agent)
+13. [Error Recovery & Retry System](#13-error-recovery--retry-system)
+14. [Reporting & Export](#14-reporting--export)
+15. [Cluster & HPC Usage](#15-cluster--hpc-usage)
+16. [Troubleshooting](#16-troubleshooting)
+17. [Recipes & Examples](#17-recipes--examples)
 
 ---
 
@@ -36,7 +38,28 @@ For implementation and architecture, see the [README](../README.md).
 - **Optional:** `xtb`, `crest` (for xTB/CREST workflows)
 - **Optional:** `xtb4stda`, `stda`, `std2` (for xTB-based screening)
 - **Optional:** `censo`, `anmr`, `c2anmr`, `nmrplot` (for ensemble NMR)
+- **Optional:** OpenMPI (for parallel ORCA), `g-xtb`, `dftb+`, `mopac`, `packmol`, `Multiwfn`
 - **Optional:** JupyterLab/Notebook or Voila (for dashboard)
+
+### The installer (recommended)
+
+One script sets up DELFIN, wires up ORCA, builds OpenMPI as ORCA needs it, and
+installs the QM and analysis tools. It needs no root and no module system.
+
+```bash
+git clone https://github.com/ComPlat/DELFIN.git ~/software/delfin
+bash ~/software/delfin/install.sh              # DELFIN, ORCA wiring, QM/analysis tools
+bash ~/software/delfin/install.sh --all        # everything, ML and AI stacks too (several GB)
+bash ~/software/delfin/install.sh --only crest,gxtb
+bash ~/software/delfin/install.sh --dry-run    # print the plan, change nothing
+bash ~/software/delfin/install.sh --update     # update DELFIN and every installed tool
+bash ~/software/delfin/install.sh --repair     # check everything, fix what is broken
+```
+
+ORCA is licensed and never downloaded; point the script at an unpacked copy with
+`--orca DIR|TARBALL`. What was left out can be added later with `--only`, from the
+dashboard's Settings tab, or automatically when a calculation first needs it.
+`python -m delfin.installer --list` shows what can be installed, `--status` what is.
 
 ### Standard install
 
@@ -57,20 +80,22 @@ pip install -e .
 ### Optional extras (source install)
 
 ```bash
-pip install -e ".[agent,analysis,mlp]"
+pip install -e ".[agent,docs,dev]"      # the agent, the MCP servers, the test tools
+pip install -e ".[analysis,mlp]"        # analysis wrappers and ML potentials
 ```
 
 ### External QM tool setup
 
-After installing the Python package, set up the bundled QM tool wrappers:
+The installer above does this. By hand, **from a source checkout** (the paths are
+relative to it, so this does not work after a plain `pip install`):
 
 ```bash
 source delfin/qm_tools/env.sh
-USE_SYSTEM_TOOLS=1 bash delfin/qm_tools/install_qm_tools.sh
+bash delfin/qm_tools/install_qm_tools.sh
 bash delfin/qm_tools/check_qm_tools.sh
 ```
 
-This can also be done from the dashboard Settings tab (see [Section 10](#10-settings--runtime-configuration)).
+This can also be done from the dashboard Settings tab (see [Section 10](#11-settings--runtime-configuration)).
 
 ---
 
@@ -106,15 +131,20 @@ delfin /path/to/project --define
 
 ### Edit CONTROL.txt
 
-Set at minimum:
+The template is written with placeholders in square brackets. Every one of them
+has to be replaced before the run starts, or DELFIN stops with
+`Missing required CONTROL values for: …`. At minimum:
 
 ```ini
 charge=0
+solvent=water
+method=OCCUPIER
 calc_initial=yes
 oxidation_steps=1
 reduction_steps=1
-method=OCCUPIER
 ```
+
+A run that builds its structure from a SMILES also needs `smiles_converter`.
 
 ### Run
 
@@ -177,11 +207,118 @@ H     1.026719     0.000000    -0.363000
 
 `CONTROL.txt` is the main configuration file. All keys use `key=value` format. Lines starting with `----` are section separators (ignored by the parser). Empty values are allowed and fall back to defaults.
 
-See [Section 4](#4-controltxt-reference) for the complete reference.
+See [Section 4](#5-controltxt-reference) for the complete reference.
 
 ---
 
-## 4. CONTROL.txt Reference
+## 4. How DELFIN works
+
+What happens between typing `delfin` and reading `DELFIN.txt`. Read this once and the rest of the manual is a reference; skip it and the settings are a list of words.
+
+### A run, in order
+
+1. **CONTROL is read and validated.** Every key is checked against its allowed values, missing required keys are named, and everything you left out is filled from the template. A bad value stops the run here, before anything is computed.
+2. **Resources are settled.** `PAL` and `maxcore` come from CONTROL, or from the node when CONTROL leaves them empty. They are read **once** and handed to a global job manager that hands out cores for the whole run.
+3. **The structure is prepared.** A SMILES is built into 3D, an XYZ is taken as it is; then the optional xTB / GOAT / CREST steps refine it. The result is `start.txt`.
+4. **The redox method runs.** `classic`, `manually` or `OCCUPIER` — this is the part that submits ORCA jobs.
+5. **The extras run**, where enabled: excited states, stability constants, CO₂, hyperpolarizability, TADF.
+6. **The reports are written**: `DELFIN.txt`, `ESD.txt`, `DELFIN_Data.json`, the DOCX.
+
+### Two files, one geometry
+
+| File | Who writes it | What it is |
+|------|---------------|------------|
+| `input.txt` | you | Your input, a geometry or a SMILES. **DELFIN never overwrites it.** |
+| `start.txt` | DELFIN | The working geometry, in DELFIN's coordinate format (element and three numbers per line, no XYZ header). Every later step reads and rewrites this one. |
+
+Confusing the two is the most common mistake: editing `input.txt` after a run changes nothing until the structure is built again.
+
+### The structure stage
+
+A SMILES goes through the converter named by `smiles_converter`:
+
+| Value | What it does |
+|-------|--------------|
+| `QUICK` | One embedding. Fast, one structure. |
+| `NORMAL` | Multi-seed embedding with force-field refinement. One structure. The fallback when nothing is set. |
+| `MANTA` | Builds the coordination manifold of a metal complex, ranks it, and picks a winner. See *Structure generation*. |
+| `ARCHITECTOR` | The external Architector builder, for metal complexes. |
+
+Then, if enabled and in this order: `XTB_preOPT` (a quick xTB optimisation), `global_optimizer=GOAT|CREST` (a conformer search), `XTB_SOLVATOR` (explicit solvent shells). Each writes its result back over `start.txt`, so the next step starts from the last one.
+
+Two exceptions worth knowing: MANTA can finish with a GOAT-refined winner, in which case the separate GOAT step is skipped; and in OCCUPIER the solvator runs *after* the first stage, on its winning geometry.
+
+### OCCUPIER
+
+The core idea: **the spin state of a metal complex is not known in advance, so DELFIN computes several and lets the energies decide** — for every charge state, and carrying what it learnt into the next one.
+
+**Vocabulary.** A **stage** is one charge state, and it has a folder: `initial_OCCUPIER`, `ox_step_1_OCCUPIER`, `red_step_1_OCCUPIER`, and so on. Inside a stage, a **FoB** is one candidate electron configuration — a multiplicity, optionally a broken-symmetry label `M,N`, and the earlier FoB whose geometry it starts from. The list of FoBs is the stage's **sequence**.
+
+**How a stage runs.** Each FoB is an ORCA optimisation; FoBs whose parents are independent run at the same time. When all of them are done, one selector job compares them: lowest energy first, ties broken on spin quality, with configurable windows that let a noticeably cleaner solution win against a marginally lower one. The result is written into the stage's `OCCUPIER.txt`, whose last two lines name the winner — that file is what DELFIN reads back.
+
+**The hand-over.** The winner's geometry and orbitals are copied out of the stage folder to `input_<stage>_OCCUPIER.xyz` and `.gbw` beside CONTROL.txt. The next stage starts from them with its charge shifted by one.
+
+**Where the sequence comes from.** With `OCCUPIER_method=auto` you give only the sequence for the neutral species (`even_seq` / `odd_seq`); every later stage is derived from the stage before it. If a pure state won, broken symmetry is tried next; if a broken-symmetry state `BS(M,N)` won, its neighbours `BS(M±1,N)` and `BS(M,N±1)` are tried. When several configurations are thermally populated rather than one clearly winning, all of them seed the next stage. The generated sequence is written into the stage's own CONTROL.txt, so you can read afterwards what was tried. With any other value you give every sequence yourself.
+
+**The frequency job.** After the stages, one ORCA job per stage runs an optimisation *with* frequencies on the winning geometry, in the run root: `initial.inp`, `ox_step_1.inp`, and so on. **Its Gibbs energies are the ones the redox potentials come from** — not the FoB energies. FoBs get frequencies only when `OCCUPIER_compare=G`, and then only to rank configurations against each other.
+
+### Running things at the same time
+
+`PAL` is the total core budget; `pal_jobs` caps how many ORCA jobs run at once. One pool hands out cores: a job that can use more gets more when nothing else is waiting, and gives them back when something is. Jobs that many others depend on are started first.
+
+Oxidation and reduction do not wait for each other — both branch off the initial stage, so they run side by side and share the cores. Excited-state jobs join the same pool rather than queueing behind the redox ladder.
+
+Every ORCA job runs in its own directory, on the scratch disk when one is configured (`DELFIN_SCRATCH`), and its results are copied back.
+
+### When a job fails
+
+Failure detection is not just ORCA's exit: an optimisation that ran out of cycles, a collapsed excited-state root and an unphysical rate count as failures even when ORCA said it terminated normally.
+
+With `enable_auto_recovery=yes`, DELFIN classifies the failure — SCF not converged, geometry not converged, memory, MPI, frequency, excited-state problems, transient system errors — and writes a **new** input `<name>.retry1.inp` with a targeted change: tighter or looser convergence, another SCF strategy, fewer cores, more memory. The original input is never edited, and the failed output is kept as `<name>.old1.out`.
+
+A retry continues from the job's **own** last orbitals and geometry, never from another job's. The same error type recurring escalates the strategy rather than repeating it, up to `max_recovery_attempts`.
+
+Two failures end a job immediately: an input ORCA refuses (no retry changes that) and an error DELFIN cannot classify. Without `enable_auto_recovery=yes` there is no retry at all.
+
+### After the jobs
+
+**Redox potentials** come from the Gibbs energies of the charge states in `initial.out`, `ox_step_*.out`, `red_step_*.out`. `calc_potential_method` selects how: from the neutral species, step by step, or the mean of both.
+
+**Excited states**, with `ESD_modul=yes`, add their own jobs in `ESD/`: the states you listed, then the crossing, conversion and emission rates between them. Note that in classic mode ESD's own S0 job replaces the initial job.
+
+**IMAG** runs after each frequency job when `IMAG=yes`: a structure with an imaginary mode is displaced along it in both directions, the lower side is re-optimised, and the frequencies are recomputed — up to `IMAG_max_rounds` times. The saddle's results are archived rather than deleted.
+
+**The reports** are written last: `DELFIN.txt` (the potentials and the provenance), `ESD.txt` (the rates), `DELFIN_Data.json`, and the DOCX with the plots. A completed run also records the CONTROL it ran with, which is what makes the next point possible.
+
+### Recalculation
+
+`delfin --recalc` continues a run instead of starting over. A job is kept when its output is complete **and** its input has not changed. "Changed" is decided by a fingerprint over the input file — with the core and memory lines removed, because those do not change a result — and over the files it depends on.
+
+What an edited CONTROL causes:
+
+| You changed | What happens |
+|-------------|--------------|
+| Cores, memory, timeouts, the report name | Nothing is recomputed |
+| The structure keys (SMILES, converter, charge, solvent, the pre-optimisation steps) | The structure is built again, and everything that follows from it |
+| Anything else | The ORCA inputs it reaches are written anew and compared; a job runs again only if its input actually came out different |
+
+Within OCCUPIER this is split once more: keys that only the stage frequency jobs are written from do not touch the configurations, and the excited-state, IMAG and side-module keys reach no OCCUPIER input at all.
+
+`--occupier-override <stage>=<index>` forces a different winner for a stage and recomputes what depends on it.
+
+### Names that are easy to confuse
+
+| | |
+|---|---|
+| `input.txt` / `start.txt` | Your input / DELFIN's working geometry |
+| `initial_OCCUPIER/input.xyz` / `input0.xyz` | The live geometry of the first configuration / the stage's untouched start |
+| `input_initial_OCCUPIER.xyz` / `initial.xyz` | The stage's winner / the copy the frequency job uses |
+| `OCCUPIER.txt` / `DELFIN.txt` | Which configuration won, per stage / the potentials, for the run |
+| FoB frequencies / the stage frequency job | Ranking configurations / the energies the potentials use |
+
+---
+
+## 5. CONTROL.txt Reference
 
 ### Input & Identity
 
@@ -196,7 +333,7 @@ See [Section 4](#4-controltxt-reference) for the complete reference.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `implicit_solvation_model` | `CPCM` | Solvation model (`CPCM` or `SMD`) |
+| `implicit_solvation_model` | `CPCM` | Solvation model: `CPCM` (also spelled `C-PCM`) or `SMD` |
 | `solvent` | (required) | Solvent name (e.g., `acetonitrile`, `dmf`, `dcm`, `thf`, `dmso`, `acetone`) |
 | `XTB_SOLVATOR` | `no` | Enable xTB ALPB solvation |
 | `number_explicit_solv_molecules` | `2` | Number of explicit solvent molecules |
@@ -206,13 +343,13 @@ See [Section 4](#4-controltxt-reference) for the complete reference.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `xTB_method` | `XTB2` | xTB method for pre-optimisation |
-| `smiles_converter` | (empty) | SMILES conversion method: `QUICK`, `NORMAL`, `GUPPY`, or `ARCHITECTOR` (own section) |
+| `smiles_converter` | (required for a SMILES run) | `QUICK`, `NORMAL`, `MANTA` or `ARCHITECTOR` (own section). `GUPPY` is still read as a spelling of `MANTA` |
 | `XTB_preOPT` | `no` | Run xTB geometry optimisation before DFT |
 | `global_optimizer` | (empty) | Global optimisation: `GOAT`, `CREST`, or none |
 | `multiplicity_global_opt` | (empty) | Override multiplicity for pre-optimisation |
 
 The older spellings are still accepted, so existing CONTROL.txt files keep
-working unchanged: `XTB_OPT` is read as `XTB_preOPT`, and `XTB_GOAT=yes` /
+working unchanged: `XTB_preOPT` is read as the older `XTB_OPT`, and `XTB_GOAT=yes` /
 `CREST=yes` as `global_optimizer=GOAT` / `global_optimizer=CREST`.
 
 ### Imaginary Frequency Elimination (IMAG)
@@ -250,8 +387,8 @@ to the final geometry. Each round's saddle is kept in `<step>_IMAG/round<n>/`.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `calc_initial` | `yes` | Calculate initial (neutral) state |
-| `oxidation_steps` | (empty) | Number of oxidation steps (1–3) |
-| `reduction_steps` | (empty) | Number of reduction steps (1–3) |
+| `oxidation_steps` | (empty) | **Which** oxidation steps to run, as a list: `1`, `1,2` or `1,2,3`. Not a count — `oxidation_steps=2` runs only the second step, whose chain assumes the first one ran |
+| `reduction_steps` | (empty) | Which reduction steps to run, same form |
 | `method` | (required) | Workflow method: `classic`, `manually`, or `OCCUPIER` |
 | `calc_potential_method` | `2` | Potential calculation method |
 
@@ -261,12 +398,16 @@ to the final geometry. Each round's saddle is kept in `<step>_IMAG/round<n>/`.
 |-----|---------|-------------|
 | `ESD_modul` | `no` | Enable excited-state dynamics |
 | `ESD_modus` | `TDDFT` | Method: `TDDFT`, `deltaSCF`, or `hybrid1` |
-| `ESD_T1_opt` | (empty) | T1 optimisation method: `uks` or `tddft` |
+| `ESD_T1_opt` | `uks` | T1 optimisation method: `uks` or `tddft` |
 | `ESD_frequency` | `yes` | Run frequency calculation for ESD states |
-| `states` | `S1,T1,S2,T2` | Electronic states to compute |
-| `ISCs` | `S1>T1,T1>S1` | Intersystem crossing rates |
-| `ICs` | `S1>S0` | Internal conversion rates. ORCA's ESD(IC) ends in the reference state, so singlets go `Sn>S0` and triplets `Tn>T1` |
-| `emission_rates` | `f,p` | Emission rates: `f` (fluorescence), `p` (phosphorescence) |
+| `states` | (empty) | Electronic states to compute, e.g. `S1,T1,S2,T2`. S1–S6 and T1–T6; a listed `S0` is dropped because S0 is always computed |
+| `ISCs` | (empty) | Intersystem crossing rates, e.g. `S1>T1,T1>S1` |
+| `ICs` | (empty) | Internal conversion rates, e.g. `S1>S0`. ORCA's ESD(IC) ends in the reference state, so singlets go `Sn>S0` and triplets `Tn>T1` |
+| `emission_rates` | (empty) | Emission rates: `f` (fluorescence), `p` (phosphorescence) |
+
+These four are **empty on purpose**: excited-state work is opt-in, and `ESD_modul=yes`
+alone computes nothing. List the states and transitions you want. ESD also requires
+`method=classic` — with `OCCUPIER` or `manually` the run is refused.
 | `phosp_IROOT` | `1,2,3` | Phosphorescence IROOT sublevels |
 | `phosp_keywords` | (empty) | Additional phosphorescence keywords |
 | `fluor_keywords` | (empty) | Additional fluorescence keywords |
@@ -289,7 +430,7 @@ to the final geometry. Each round's saddle is kept in `<step>_IMAG/round<n>/`.
 | `hyperpol_xTB_preopt` | `none` | Pre-optimisation method |
 | `hyperpol_xTB_engine` | `std2` | Calculation engine |
 | `hyperpol_xTB_bfw` | `no` | Bandwidth-filtered weights |
-| `hyperpol_xTB_wavelengths` | (empty) | Wavelengths for frequency-dependent calculations |
+| `hyperpol_xTB_wavelengths` | `1064` | Wavelengths in nm, comma-separated for several (`1064,532`); `none` or `static` for the static tensor only |
 | `hyperpol_xTB_energy_window` | `15.0` | Energy window (eV) |
 
 ### xTB TADF Screening
@@ -310,11 +451,11 @@ to the final geometry. Each round's saddle is kept in `<step>_IMAG/round<n>/`.
 |-----|---------|-------------|
 | `thermodynamics` | `no` | Enable thermodynamics workflow |
 | `thermodynamics_mode` | (empty) | Mode: `auto` or `reaction` |
-| `thermodynamics_reaction` | (empty) | Reaction SMILES: `a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...` |
+| `thermodynamics_reaction` | the template's own pattern | Reaction SMILES: `a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...` |
 | `n_explicit_solvent` | `6` | Number of explicit solvent molecules |
 | `logK_exp` | (empty) | Experimental log K for comparison |
-| `thdy_smiles_converter` | (empty) | Converter: `QUICK`, `NORMAL`, `GUPPY`, or `ARCHITECTOR` |
-| `thdy_preopt` | (empty) | Pre-optimisation: `none`, `xtb`, `crest`, or `goat` |
+| `thdy_smiles_converter` | `NORMAL` | Converter: `QUICK`, `NORMAL`, `MANTA` or `ARCHITECTOR` |
+| `thdy_preopt` | `xtb` | Pre-optimisation: `none`, `xtb`, `crest` or `goat` |
 
 ### Electrical Properties
 
@@ -384,7 +525,7 @@ or `ESD_PHOSP_NROOTS`.
 | `functional` | `PBE0` | Exchange-correlation functional |
 | `disp_corr` | `D4` | Dispersion correction |
 | `ri_jkx` | `RIJCOSX` | RI approximation |
-| `relativity` | `ZORA` | Relativistic method (`ZORA`, `X2C`, `DKH`) |
+| `relativity` | `ZORA` | Relativistic method: `ZORA`, `X2C`, `DKH`, `DKH2` or `none` |
 | `aux_jk` | `def2/J` | Auxiliary basis (non-relativistic) |
 | `aux_jk_rel` | `SARC/J` | Auxiliary basis (relativistic) |
 | `main_basisset` | `def2-SVP` | Main basis set |
@@ -439,14 +580,55 @@ you want and the report gains an "Experimental properties" section.
 | `frequency_timeout_hours` | `36` | Frequency calculation timeout |
 | `sp_timeout_hours` | `3` | Single-point timeout |
 
-### GUPPY Settings
+### MANTA Settings
+
+The builder and its funnel. `delfin --define` writes the whole block with its
+defaults; `KEY=?` in a CONTROL file prints a key's own explanation.
+
+**Building the manifold**
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `GUPPY_RUNS` | `20` | Number of GUPPY sampling runs |
-| `GUPPY_GOAT` | `0` | Number of GOAT runs per GUPPY sample |
-| `GUPPY_PARALLEL_JOBS` | `4` | Parallel GUPPY jobs |
-| `GUPPY_SEED` | `31` | Random seed |
+| `MANTA_QUALITY` | `extreme` | How thorough: `fast`, `normal`, `max`, `extreme` |
+| `MANTA_SEEDS` / `MANTA_NUM_CONFS` | (empty) | Override the seed and conformer counts the quality implies |
+| `MANTA_CONSTRUCTION` | `champion` | The flag set the builder runs with: `champion`, `builder`, `default` |
+| `MANTA_MAX_ISOMERS` | `0` | `0` is the complete manifold; a number shrinks the search, not just the answer |
+| `MANTA_BINDING_MODES` | `yes` | Enumerate binding modes |
+| `MANTA_HAPTO` | `auto` | Hapticity: `auto`, `off` (a hapto SMILES then fails instead of being approximated) |
+| `MANTA_UFF` | `yes` | Force-field refinement of the organic periphery (never at the metal) |
+| `MANTA_DETERMINISTIC` | `yes` | Same SMILES in, same manifold out |
+| `MANTA_ENV` | (empty) | `KEY=VALUE` pairs passed to the builder verbatim — the escape hatch |
+
+**Gates** (each drops frames that are wrong, never frames that are merely unusual)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `MANTA_CLEAN_GATE` | `yes` | Drop collapsed bonds, inter-ligand clashes, decoordinated metals |
+| `MANTA_TOPOLOGY_GATE` | `yes` | Drop frames with a bond the consensus says is not there |
+| `MANTA_DEDUP` | `yes` | Remove permutation duplicates |
+
+**The funnel: screen → optimise → refine**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `MANTA_SCREEN` | (empty) | Single-point method: `none`, `clash`, `gfnff`, `gfn0`, `gfn1`, `gfn2`, `gxtb` |
+| `MANTA_SCREEN_ABOVE` | `30` | Screen first only above this many frames |
+| `MANTA_SCREEN_KEEP` | `all` | How many survivors go on to the optimisation |
+| `MANTA_OPT` | `xtb` | Optimise the survivors: `none` or `xtb` |
+| `MANTA_OPT_METHOD` | (empty) | Override the xTB method used there |
+| `MANTA_MULTIPLICITIES` | `auto` | Which multiplicities are ranked; the ranked unit is a (frame, multiplicity) pair |
+| `MANTA_REFINE` | `goat` | Refine the best: `none`, `goat`, `crest` |
+| `MANTA_REFINE_TOPK` | `0` | How many of the best go into the refinement (ceiling 10) |
+| `MANTA_RMSD_CUTOFF` | `0.3` | Deduplication distance in Å |
+| `MANTA_ENERGY_WINDOW` | `25.0` | Energy window in kcal/mol |
+| `MANTA_PARALLEL_JOBS` | `auto` | Parallel frame jobs; `auto` is PAL/4 |
+| `MANTA_TIME_BUDGET` | `3600` | Seconds the build may take before it is stopped |
+
+Every `MANTA_*` key falls back to its `GUPPY_*` predecessor, so a CONTROL file
+written before the rename keeps working and means the same thing. Still read:
+`GUPPY_RUNS` (`20`), `GUPPY_SEED` (`31`), `GUPPY_GOAT` (the refinement top-k, not a
+number of runs), `GUPPY_PARALLEL_JOBS`, and the bare `GUPPY=yes`, which means
+`smiles_converter=MANTA`.
 
 ### Error Recovery
 
@@ -529,7 +711,7 @@ job has, or a setting DELFIN keeps, as a hint.
 
 ---
 
-## 5. CLI Reference
+## 6. CLI Reference
 
 ### Main command: `delfin`
 
@@ -541,18 +723,18 @@ delfin [WORKSPACE] [OPTIONS]
 |--------|-------------|
 | `WORKSPACE` | Workspace directory (default: current directory) |
 | `-D`, `--define[=FILE]` | Generate CONTROL.txt + input file and exit. `.xyz` files are auto-converted |
-| `--overwrite` | Overwrite existing CONTROL.txt and input file |
+| `--overwrite` | Overwrite an existing CONTROL.txt (an existing input file is kept either way) |
 | `--control FILE` | Use a specific CONTROL.txt |
-| `--recalc` | Keep finished jobs; compute missing, incomplete and (smart mode) changed ones |
+| `--recalc` | Keep finished jobs; compute missing, incomplete and changed ones. Smart mode is **on by default**; `DELFIN_SMART_RECALC=0` falls back to skipping by output alone |
 | `--occupier-override STAGE=INDEX` | Force OCCUPIER index for a stage during recalc |
 | `--report [text\|docx]` | Regenerate report from existing outputs |
 | `--imag` | Run IMAG elimination on existing outputs, then generate report |
 | `--json` | Generate DELFIN_Data.json and exit |
 | `--json-output FILE` | Custom path for DELFIN_Data.json |
 | `--afp` | Generate AFP spectrum plot |
-| `--afp-fwhm NM` | FWHM for AFP Gaussian broadening (default: 50.0 nm) |
+| `--afp-fwhm NM` | FWHM for AFP Gaussian broadening (default: 50.0 nm); also used by `--report docx` |
 | `-C`, `--cleanup` | Remove intermediate files and exit |
-| `--purge` | Remove all DELFIN-generated files (keeps CONTROL.txt + input) |
+| `--purge` | Remove all DELFIN-generated files (keeps CONTROL.txt + input). Asks before it does |
 | `--no-cleanup` | Keep intermediate files after run |
 | `-V`, `--version` | Show version and exit |
 
@@ -560,12 +742,28 @@ delfin [WORKSPACE] [OPTIONS]
 
 ```bash
 delfin cleanup [--dry-run] [--workspace PATH] [--scratch PATH] [--orca]
-delfin stop --workspace PATH
-delfin co2 --define
-delfin qm_check [TOOL ...]
-delfin qm_run TOOL -- [ARGS]
-delfin doctor [--json] [--scratch PATH]
+delfin stop [--workspace PATH] [--signal INT|TERM|KILL] [--dry-run] [--cleanup] [--wait-seconds S]
+delfin co2 [--define] [--recalc] [--charge N] [--multiplicity M] [--solvent S] [--metal M] [--broken_sym B]
+delfin run_orca [file.inp] [-i FILE] [-o FILE]
+delfin tadf_xtb ...            # xTB/sTDA TADF screening
+delfin hyperpol_xtb ...        # xTB hyperpolarizability
 ```
+
+Checking an installation:
+
+```bash
+delfin doctor [--json] [--scratch PATH]   # ORCA, xTB, OpenMPI, scratch, SLURM, keys, doc index
+delfin qm_check [TOOL ...]                # how each QM binary is resolved
+delfin qm_run TOOL [--cwd DIR] [--capture] -- [ARGS]
+delfin mlp_check                          # ML-potential backends, PyTorch, CUDA
+delfin analysis_check                     # Multiwfn, CENSO, ANMR, morfeus
+delfin csp_check                          # Genarris
+```
+
+Excited-state dynamics has no subcommand: set `ESD_modul=yes` in `CONTROL.txt`
+and run `delfin`. A word that is not a subcommand is read as the workspace
+directory, so a typo looks like a missing CONTROL file; an unknown `--flag`
+stops the run with exit code 2.
 
 #### `delfin doctor` — installation self-check
 
@@ -591,25 +789,38 @@ delfin doctor --scratch /path/to/scratch
 |---------|-------------|
 | `delfin-voila` | Launch dashboard as a standalone web app via Voila |
 | `delfin-build INPUT` | Build metal complex stepwise using ORCA XTB DOCKER |
-| `delfin-guppy INPUT` | Multi-start SMILES sampling with ranked XTB trajectories |
+| `delfin-guppy INPUT` | Multi-start sampling with ranked xTB structures (the MANTA builder under its old name) |
+| `delfin-guppy-batch FILE` | The same over every SMILES in a batch file (`--row` for SLURM arrays) |
+| `delfin-manta` | MANTA on its own: the coordination-isomer × conformer manifold from a metal SMILES |
+| `delfin-fukui` | Atomic Fukui indices from three ORCA single points |
 | `delfin-step` | Run a single registered step |
 | `delfin-pipeline YAML` | Execute a YAML-defined multi-step pipeline |
-| `delfin-json` | Collect project outputs into JSON |
-| `delfin_ESD OUTPUT` | UV-Vis spectrum report from ORCA ESD output |
-| `delfin_IR OUTPUT` | IR spectrum report from ORCA frequency output |
-| `delfin_NMR OUTPUT` | NMR spectrum report |
+| `delfin-app` | Application registry: `list`, `template`, `run <keyfile>`, `describe` |
+| `delfin-agent` | The AI agent in the terminal (own chapter) |
+| `delfin-json DIR` | Collect a project's outputs into JSON (the directory is required) |
+| `delfin_ESD OUTPUT` | UV-Vis report from an ORCA output (writes a DOCX) |
+| `delfin_IR OUTPUT` | IR report from an ORCA frequency output (DOCX + PNG) |
+| `delfin_NMR OUTPUT` | ¹H NMR report from an ORCA NMR output (PNG) |
+| `delfin-docs-index` | Build the documentation search index from `literature/` |
+| `delfin-docs-server` · `delfin-ops-server` · `delfin-tools-server` | DELFIN's three MCP servers |
 
 ### delfin-voila
 
 ```bash
-delfin-voila                     # starts on localhost:8866
+delfin-voila                     # starts on 127.0.0.1:8866
 delfin-voila --port 9000         # custom port
 delfin-voila --dark              # dark theme
+delfin-voila --keep              # run inside a tmux session, survives a dropped terminal
+delfin-voila --resume SID        # reopen a previous agent session
 
 # On HPC/login nodes, keep 127.0.0.1 and use an SSH tunnel.
 # Direct network binds require an explicit security override:
 delfin-voila --ip 0.0.0.0 --allow-remote-bind
 ```
+
+Voila prints a URL containing an access token; token authentication is mandatory
+and cannot be switched off. If the port is taken, the next free one is used — read
+the printed URL rather than assuming 8866.
 
 ### delfin-build
 
@@ -647,8 +858,10 @@ Key options:
 | Option | Description |
 |--------|-------------|
 | `--runs N` | Number of sampling runs |
-| `--parallel-jobs M` | Parallel xTB jobs |
-| `--pal P` | Cores per xTB job |
+| `--parallel-jobs M` | How many run at once; they share the core budget |
+| `--pal P` | **Total** core budget for all runs together, not per job |
+| `--screen` / `--optimise` / `--refine` | The funnel stages, as in the `MANTA_*` keys |
+| `--max-isomers` / `--rmsd-cutoff` / `--energy-window-kcal` | How much of the manifold survives |
 
 ### delfin-step
 
@@ -671,7 +884,7 @@ delfin-pipeline workflow.yaml --cores auto --scheduled
 
 ---
 
-## 6. Workflow Modes
+## 7. Workflow Modes
 
 DELFIN supports three workflow methods, selected via `method=` in CONTROL.txt.
 
@@ -714,7 +927,7 @@ Expert-driven workflow where you specify multiplicities and broken-symmetry assi
 
 ---
 
-## 7. Optional Modules
+## 8. Optional Modules
 
 ### Excited-State Dynamics (ESD)
 
@@ -777,7 +990,7 @@ Automatically detects and eliminates imaginary frequencies from converged struct
 
 ```ini
 IMAG=yes
-IMAG_scope=all   # or "initial"
+IMAG_scope=all
 allow_imaginary_freq=-50
 ```
 
@@ -785,20 +998,68 @@ Can also be run standalone: `delfin --imag`.
 
 ---
 
-## 8. Structure Generation & Sampling
+## 9. Structure Generation & Sampling
 
-### SMILES Conversion (Dashboard)
+### Which builder a run uses
 
-The dashboard Submit tab offers multiple conversion methods:
+One CONTROL key decides, and a run that builds from a SMILES must set it:
 
-| Button | Method | Best for |
-|--------|--------|----------|
-| `CONVERT SMILES` | Full isomer/conformer search (RDKit + Open Babel) | Thorough exploration |
-| `QUICK CONVERT` | Fast single-conformer generation | Quick previews |
-| `CONVERT + UFF` | Full search + UFF force-field refinement | Refined geometries |
-| `BUILD COMPLEX` | ORCA/XTB DOCKER stepwise assembly | Metal complexes (job) |
-| `ARCHITECTOR` | Architector automated 3D generation | Metal complexes (instant) |
-| `SUBMIT GUPPY` | Multi-start xTB sampling with ranked trajectories | Robust start structures |
+```ini
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR]
+```
+
+| Value | What it does |
+|-------|--------------|
+| `QUICK` | One embedding. Fast, one structure. |
+| `NORMAL` | Multi-seed embedding with force-field refinement. One structure. The fallback when nothing decides otherwise. |
+| `MANTA` | Builds the coordination manifold of a metal complex and ranks it down to one geometry — see below. |
+| `ARCHITECTOR` | The external Architector builder; needs a metal-containing SMILES. |
+
+`GUPPY` is still read as a spelling of `MANTA`, as is the older bare `GUPPY=yes`.
+
+### MANTA
+
+MANTA is DELFIN's own coordination builder: from a metal SMILES it enumerates the
+coordination isomers by symmetry rather than searching for them, seats each one on
+an ideal polyhedron with metal–donor distances from covalent radii, and expands it
+into conformers. **No force field touches the metal** — UFF and MMFF have no
+transition-metal parameters, which is what distorts metal–donor distances and
+L–M–L angles in conventional builders.
+
+The manifold then goes through a funnel that the `MANTA_*` keys steer:
+
+```
+build the manifold → screen (one single point per frame and multiplicity)
+                   → optimise (xTB per survivor)
+                   → refine (GOAT or CREST on the best)
+                   → winner written to start.txt
+```
+
+The ranked unit is a (frame, multiplicity) pair, not a frame — the same geometry is
+compared in several spin states. Working files land in a `GUPPY/` folder, the
+winner in `best_coordniation.xyz` (the misspelling is the real file name).
+
+**What it is for:** starting geometries, not production geometries. The result is
+correct in topology and coordination, at roughly force-field quality — not
+xTB- or DFT-accurate.
+
+If MANTA's refinement already produced a GOAT-optimised winner, the separate
+`global_optimizer=GOAT` step is skipped.
+
+### In the dashboard
+
+| Button | What it does | Best for |
+|--------|--------------|----------|
+| `CONVERT SMILES` | Isomer and conformer search (RDKit; deterministic by default) | Thorough exploration |
+| `QUICK CONVERT SMILES` | One conformer | Quick previews |
+| `CONVERT SMILES + UFF` | The same search with force-field refinement | Refined geometries |
+| `MANTA` | The coordination manifold, ranked by GFN2 energy, with isomer navigation in the viewer | Metal complexes |
+| `BUILD COMPLEX` | Stepwise assembly with ORCA's `%DOCKER` | Metal complexes (submitted as a job) |
+| `ARCHITECTOR` | Architector 3D generation | Metal complexes (instant preview) |
+| `SUBMIT GUPPY` | MANTA's sampling funnel as a submitted job | Robust start structures |
+
+The first four live in the structure editor, which the Submit, Recalc and ORCA
+Builder tabs all embed; the last three belong to the Submit tab.
 
 ### delfin-build (ORCA/XTB DOCKER)
 
@@ -810,10 +1071,13 @@ delfin-build input.txt --goat --pal 16
 
 ### delfin-guppy
 
-Multi-start SMILES sampling: generates multiple chemically distinct starting geometries, runs parallel xTB optimisations, and ranks by energy.
+MANTA's sampling funnel on the command line, under its old name: it builds the
+manifold, optimises the survivors in parallel with xTB and ranks them by energy.
 
 ```bash
 delfin-guppy input.txt --runs 20 --parallel-jobs 4
+delfin-guppy-batch batch.txt            # every SMILES in a file
+delfin-manta "[Co](N)(N)(N)(N)(Cl)Cl"   # the builder alone, without the funnel
 ```
 
 ### CREST / XTB-GOAT
@@ -830,7 +1094,7 @@ global_optimizer=CREST   # ...or CREST conformer search
 
 ---
 
-## 9. Dashboard
+## 10. Dashboard
 
 ### Starting the dashboard
 
@@ -861,26 +1125,43 @@ delfin-voila --port 9000 --dark
 | **Job Status** | Real-time queue monitoring (local/SLURM), resource usage, job cancellation |
 | **Calculations** | File browser, search, recalculation trigger, energy statistics, NMR/ANMR workflows |
 | **Archive** | Archive browser with statistics |
-| **Agent** | AI co-pilot with multi-agent pipelines, dashboard control, analysis, research |
+| **Remote Archive** | Browse and transfer results on another machine over SSH |
+| **ChemDarwin** | Reaction-SMARTS structure enumeration and chemical-space map |
+| **DELFIN Agent** | The AI agent — see its own chapter |
+| **Agent Activity** | Running and recent agent and subagent work |
+| **Office** | Documents and spreadsheets, with an agent that has no chemistry tools |
+| **Literature** | The indexed literature corpus |
+| **Tools** | The registered tool steps and their parameters |
+| **Ketcher** | 2D structure drawing |
+| **Reactions** | Reaction graph |
+| **Pipelines** | Declarative step pipelines |
 | **Settings** | Tool detection, install/update buttons, runtime configuration, agent settings |
 
-### Ensemble NMR via Calculations tab
+Not every tab is visible: some are hidden until their module or key is present,
+and the set can be changed under Settings → Dashboard Tabs. What you see is
+therefore a subset of this list.
 
-The Calculations browser offers two NMR workflows:
+### Ensemble NMR via the Calculations tab
 
-- **Calc NMR**: Single-structure ORCA NMR
-- **Calc ANMR**: End-to-end ensemble workflow: CREST → CENSO → c2anmr → ANMR → Boltzmann-weighted spectra
+Select an `.xyz` file; the per-file dropdown then offers:
+
+- **Calc NMR** — single-structure ORCA NMR
+- **Calc CENSO/ANMR** — the ensemble chain: CREST → CENSO → c2anmr → ANMR
+
+For an ORCA output file the dropdown offers **Print Mode**, **MO Plot** and
+**Print NMR** instead.
 
 ---
 
-## 10. Settings & Runtime Configuration
+## 11. Settings & Runtime Configuration
 
 User settings are stored in `~/.delfin_settings.json` (outside the git repo, not overwritten by updates).
 
 ### Settings tab sections
 
 **Workspace Paths:**
-- Calculations root (default: `~/calc`)
+- Calculations root (default: `~/calc`, or the repository's own `calc/` when it exists;
+  the archive is then its sibling)
 - Archive root (default: `~/archive`)
 
 **Transfer Target:**
@@ -904,21 +1185,24 @@ User settings are stored in `~/.delfin_settings.json` (outside the git repo, not
 | **Scan ORCA** | Search standard locations for ORCA installations |
 | **Detect local resources** | Detect CPUs and RAM |
 | **Prepare qm_tools** | Stage bundled QM tools to user area |
-| **Install qm_tools** | Install QM tools from staged bundle |
+| **Install qm_tools** | Download and build the QM tools (the staged bundle is what *Prepare* copies) |
 | **Update qm_tools** | Refresh DELFIN-managed QM tools |
-| **Setup bwUniCluster** | Configure DELFIN for bwUniCluster (lighter setup) |
-| **Verify bwUniCluster** | Read-only cluster readiness check |
-| **Full bwUni install** | Full bwUniCluster installation path |
+| **Setup cluster** | Configure DELFIN for the detected cluster (the light setup) |
+| **Verify install** | Read-only readiness check |
+| **Full install** | The complete installation, including OpenMPI, ORCA and the venv |
 
 ### ORCA resolution order
 
-If no explicit path is set, DELFIN resolves ORCA in this order:
+DELFIN takes the first of these that points at a usable ORCA:
 
-1. `DELFIN_ORCA_BASE` environment variable
-2. `ORCA_BINARY` environment variable
-3. `ORCA_PATH` environment variable
-4. `PATH`
-5. Auto-detection in standard locations
+1. A path given explicitly to the call
+2. The **backend-specific** setting — `runtime.local.orca_base` for local runs,
+   `runtime.slurm.orca_base` for SLURM. This beats the global setting.
+3. The global `runtime.orca_base` setting
+4. The environment: `DELFIN_ORCA_BASE`, then `ORCA_BINARY`, then `ORCA_PATH`
+5. Installations the dashboard found beside the notebook directory (SLURM backend),
+   preferring a 6.1.1
+6. `orca` on `PATH`
 
 ### Tool detection
 
@@ -932,7 +1216,130 @@ For the full Settings documentation, see [SETTINGS_AND_SETUP.md](SETTINGS_AND_SE
 
 ---
 
-## 11. Error Recovery & Retry System
+## 12. The AI Agent
+
+A conversational agent that operates DELFIN and edits its code. It runs in the dashboard's **DELFIN Agent** tab and as the terminal program `delfin-agent`. Both surfaces share the same engine, modes and slash commands.
+
+### Starting it
+
+```bash
+delfin-agent                     # chat in the current directory
+delfin-agent run "<task>"        # one turn, headless
+delfin-agent init                # scaffold AGENTS.md + .delfin/ in a project
+delfin-agent doctor              # models, keys, sandbox, MCP servers
+```
+
+In the dashboard: the **DELFIN Agent** tab. Model, mode and permission level are chosen per session.
+
+### Modes
+
+A mode decides the role prompt and the tool surface. `plan` is **not** a mode but a permission level.
+
+| Mode | Where | For |
+|------|-------|-----|
+| `dashboard` (default) | dashboard, terminal | Operating DELFIN: settings, submission, results |
+| `solo`, shown as **Code** | dashboard, terminal | Reading and writing code |
+| `office` | dashboard, terminal | Documents and spreadsheets, without the chemistry tools |
+| `research` | terminal only | Literature and method research |
+
+Switch with `/mode`. Older mode names (`quick`, `reviewed`, `tdd`, `cluster`, `full`, `pipeline`) are retired and resolve to `solo`; the multi-agent review pipeline they belonged to no longer exists.
+
+### Models
+
+| Provider | Authentication | Notes |
+|----------|----------------|-------|
+| `claude` (default) | `ANTHROPIC_API_KEY` | Uses the `claude` CLI when it is on PATH, otherwise the API |
+| `openai` | `OPENAI_API_KEY` | Uses the `codex` CLI when it is on PATH, otherwise the API |
+| `kit` | `KIT_TOOLBOX_API_KEY` | University-hosted, OpenAI-compatible |
+| `ollama` | none | Any OpenAI-compatible endpoint: Ollama, vLLM, LM Studio, llama.cpp-server. `OLLAMA_HOST`, default `http://localhost:11434` |
+
+Choose with `--provider` / `--model` or `/model`. DELFIN detects each model's real context window and its tool, vision and reasoning support — live from the endpoint where that is possible, otherwise from a built-in table — and sizes context management to it. For Ollama it sends the matching `num_ctx`, so a local model is not silently capped.
+
+**A model that cannot call tools is refused.** Every non-trivial action is a tool call, so such a model could only talk. Small models automatically get a shorter prompt and a reduced tool surface.
+
+### Permissions
+
+| Level | Writes | Shell |
+|-------|--------|-------|
+| `plan` | refused | read-only |
+| `default` | destructive actions ask first | asks, except for an allow-list |
+| `diff_approval` | staged as a diff for `/approve` | asks |
+| `acceptEdits` | allowed inside the workspace | asks |
+| `bypassPermissions` | allowed, no prompts | no prompts |
+
+Cycle with `/permissions` or Shift+Tab; the cycle deliberately never lands on bypass. Two things hold at **every** level: the sandbox and the deny lists stay in force, and a file that defines the agent's own permissions always requires explicit confirmation.
+
+Settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
+
+### The shell sandbox
+
+Every command runs through an allow-list and then, where available, bubblewrap or firejail. Credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, the network is denied by default, and every command is appended to `~/.cache/delfin/agent-audit.jsonl`. `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}` selects the mechanism; when isolation is unavailable the agent says so rather than running unprotected in silence.
+
+### Subagents
+
+Self-contained work is delegated to an isolated agent with its own tool loop and usually tighter permissions. The parent sees only the final answer.
+
+| Preset | Permissions | For |
+|--------|-------------|-----|
+| `explore` | read-only | Investigation, reports findings |
+| `plan` | read-only | A plan, no edits |
+| `code-reviewer` | read-only | Independent review |
+| `general-purpose` | inherited | A self-contained task |
+
+Launch with `/explore`, `/review`, `/plan`, `/delegate <task>`, or let the agent delegate on its own. Several run in parallel — a writing preset gets its own git worktree, so concurrent edits cannot collide — or in the background, and a finished one can be continued with its context intact. Each run is bounded in wall-clock time, tool calls and output, and a subagent may not spawn subagents of its own unless that depth is raised; both in Settings.
+
+Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
+
+### Memory and sessions
+
+| What | Where | Lives |
+|------|-------|-------|
+| Facts and preferences | `~/.delfin/agent_memory.json` | Across sessions, recalled by relevance |
+| Project notes | `~/.delfin/projects/<project>/memory/` | Per project |
+| Project instructions | `DELFIN.md` or `AGENTS.md` in the project | Loaded automatically |
+| Conversations | `~/.delfin/agent_sessions/` | Saved, restored, forked, exported |
+
+`/remember`, `/memories`, `/forget` manage memory; a line starting with `#` is a note to memory. Memory is scoped, so a preference recorded while coding does not surface in an office session. Long conversations are compacted token-aware; `/compact` and `/context` show the state.
+
+### Commands
+
+| Group | Commands |
+|-------|----------|
+| Session | `/help` `/status` `/cost` `/usage` `/context` `/compact` `/export` `/undo` `/clear` |
+| Setup | `/model` `/mode` `/permissions` `/effort` `/doctor` `/init` `/mcp` `/trust` `/tools` `/agents` `/skills` |
+| History | `/session` `/rewind` `/tasks` `/memories` `/plans` |
+| Changes | `/pending` `/approve` `/reject` `/undo-file` |
+| Workspace | `/git` `/bash` `/jobs` `/attention` |
+| DELFIN (dashboard) | `/control key <key> <value>` · `/orca set` · `/calc ls\|read\|info\|tree` · `/analyze energy\|convergence\|errors` · `/recalc check-all\|auto` · `/submit` `/cancel` |
+
+`!` runs a shell command directly. A markdown file in `~/.delfin/commands/` (user-wide) or `<workspace>/.delfin/commands/` (project) becomes a slash command of its own; placeholders `$ARGUMENTS`, `$1`, `$2` are substituted. A **skill** (`~/.delfin/skills/<name>/SKILL.md`) can be invoked by you or chosen by the model; DELFIN ships skills for diagnosing a failed run, recalculating one, setting up TD-DFT and CASSCF, frequency thermochemistry, solvation, and tuning CONTROL.
+
+### MCP servers
+
+External Model Context Protocol servers are configured in `~/.delfin/mcp_servers.json` or `<workspace>/.delfin/mcp_servers.json` and reached over stdio or HTTP; their tools, resources and prompts join the agent's surface.
+
+A tool reached through MCP runs in a process DELFIN did not start a command line for, so the shell sandbox is not around it. Give a stdio server `"roots": [...]` (read-write) or `"read_roots": [...]` (read-only) and it is started inside a namespace holding only those paths. A server that declares neither runs uncontained, and the startup banner, `/mcp` and `delfin-agent doctor` all name it as such.
+
+DELFIN ships three servers of its own: `delfin-tools-server` (the tool platform), `delfin-docs-server` (literature and calculation search) and `delfin-ops-server` (typed runtime actions). They can take their roots from your settings with `agent.mcp_isolation: "builtin"`.
+
+### Seeing what runs, and stopping it
+
+```bash
+delfin-agent stop-all --check    # what is open, kept, scheduled or running; changes nothing
+delfin-agent sessions            # earlier sessions: id, age, model, task
+delfin-agent where               # which node the dashboard runs on, and how to get back in
+delfin-agent jobs                # watched cluster jobs
+```
+
+`stop-all --check` reads open dashboard sessions, kept sessions, schedules and PID files from the **shared home**, so they are visible from any login node; **agent processes** it can only see on the machine you run it on. Run it on every login node you have used.
+
+Without `--check` the same command is the emergency stop: it ends every agent of yours, and it **disables every schedule**. That is permanent — a disabled schedule is not resumed, it has to be created again.
+
+The dashboard's **Agent Activity** tab shows running and recent agent and subagent work.
+
+---
+
+## 13. Error Recovery & Retry System
 
 DELFIN can automatically detect and fix common ORCA failures when `enable_auto_recovery=yes`.
 
@@ -995,7 +1402,7 @@ For complete details, see [RETRY_LOGIC.md](RETRY_LOGIC.md).
 
 ---
 
-## 12. Reporting & Export
+## 14. Reporting & Export
 
 ### Automatic outputs
 
@@ -1038,7 +1445,7 @@ delfin_NMR output.out         # 1H NMR: writes NMR_<name>.png
 
 ---
 
-## 13. Cluster & HPC Usage
+## 15. Cluster & HPC Usage
 
 ### SLURM backend
 
@@ -1102,7 +1509,7 @@ See `examples/example_Job_Submission_Scripts/` for SLURM, PBS, and LSF templates
 
 ---
 
-## 14. Troubleshooting
+## 16. Troubleshooting
 
 ### CONTROL.txt not found
 
@@ -1206,7 +1613,7 @@ delfin --no-cleanup
 
 ---
 
-## 15. Recipes & Examples
+## 17. Recipes & Examples
 
 ### Basic redox workflow (organic molecule)
 
