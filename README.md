@@ -932,7 +932,7 @@ Please always check the output files — at the end you will find a list of rele
 
 # Dependencies and Legal Notice
 
-**DISCLAIMER: DELFIN is a workflow tool that interfaces with external quantum chemistry software. Users are responsible for obtaining proper licenses for all required software.**
+**DISCLAIMER: DELFIN is an agentic workflow framework that interfaces with external quantum chemistry software. Users are responsible for obtaining proper licenses for all required software.**
 
 ## ORCA Requirements
 To use DELFIN, you must be authorized to use ORCA 6.1.1. You can download the latest version of ORCA here:
