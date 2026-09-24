@@ -32,12 +32,17 @@ _ALL_ISOMERS = 100_000
 #
 # 2026-07-04 DE-BLOAT: the old ~29-flag champion stack (dense conformer generators + geometry
 # correctors + chelate cap-raisers) was NET-NEGATIVE. Measured on ~450 region-balanced Batch.txt
-# systems via the canonical whole-manifold eye: the full old stack scored 13.7% topology-correct
-# vs 33.6% for zero-flags legacy, WORSE in every donor class (P/S 4x, NO/O 3x, ...). Removing the
-# 20 proven-negative flags -> 2.1x, never-worse in every class, while KEEPING the edge-class
+# systems via the canonical whole-manifold eye: the full old stack scored 13.7% topology-correct,
+# against 33.6% for zero-flags legacy and 28.6% for the de-bloated set that replaced it -- so the
+# old stack was WORSE than no flags at all, in every donor class (P/S 4x, NO/O 3x, ...). Removing
+# the 20 proven-negative flags is the 13.7 -> 28.6 step, i.e. the 2.1x below; never-worse in every
+# class, while KEEPING the edge-class
 # builders (hapto/carbonyl/NHC/metalloid/kappa4/arom) so under-sampled edge chemistry cannot
 # regress, plus main's own never-worse CAGE_MD_GUARD + CN4_BOTH additions. Removed flags stay in
-# git history + remain individually env-gated (DELFIN_FFFREE_<flag>). Spot-verified: KITNEJ/QIDGEP/
+# git history + remain individually env-gated (DELFIN_FFFREE_<flag>). The measurement is commit
+# f8141ce3 on a private CCDC-derived pool and cannot be reproduced from this repository; the
+# percentages are recorded for the decision they justify, not as a published benchmark.
+# Spot-verified: KITNEJ/QIDGEP/
 # VULMOE (50-junk topo-wrong manifolds under the old stack) now build the crystal topology.
 _CHAMPION_FLAGS = (
     "DET_CLASSIFY",       # DETERMINISM: classify conformers without sharing one RDKit mol across
