@@ -13,17 +13,80 @@
 
 > 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256 · https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
 
-**DELFIN** is an open-source computational chemistry platform that automates molecular property prediction. From a SMILES string or an XYZ geometry it builds the structure, runs the quantum-chemistry workflow, and writes the results as a report — for organic molecules and for transition-metal complexes. It is driven from a browser dashboard, from the command line, or from Python, and it ships an AI agent that operates all three.
+**DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
+
+**At its centre is an AI agent** that runs DELFIN for you: it sets up and submits jobs from the dashboard, watches them, reads the outputs and explains what came out — and it edits DELFIN's own code when a workflow needs extending. It runs on hosted models (Claude, OpenAI, the KIT Toolbox) and on local open-source models through Ollama, vLLM or LM Studio, so a group with no cloud budget and no data leaving the building can use it the same way. Sandboxed shell, subagents and persistent memory are part of it; the [AI agent](#-ai-agent) section describes what it may and may not do.
 
 > 🧬 organic chemistry · 🧲 transition-metal complexes · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics
 
-DELFIN is research infrastructure: it does not replace chemical judgement — it makes rigorous computational chemistry routine enough to inform it.
+Three ways to use it:
+- **CLI** — `delfin` runs workflows from a `CONTROL.txt` configuration file
+- **Dashboard** — browser UI for job setup, result analysis, and configuration
+- **Agent** — an autonomous AI coding agent (model-agnostic: Claude, OpenAI, or local via Ollama) that operates the dashboard, runs and interprets workflows, and implements code itself — extending DELFIN and carrying multi-step projects through to completion (sandboxed bash, subagents, persistent memory)
+
+### Design principles
+
+1. **One interface across the QM stack.** Each stage is routed to an established engine — RDKit / Architector for structure, xTB / CREST / GOAT for conformer pre-screening, and ORCA for the DFT workflow — and the outputs are reconciled into a single workflow. Turbomole, the periodic codes and the ML potentials (MACE / ANI and others) are reachable as individual pipeline steps.
+2. **Reproducible, documented runs.** Every prediction ships with its provenance: input SMILES, method choices, solver logs, spectra, and a generated DOCX report — ready for direct inclusion in supplementary information.
+3. **Geometry sanity checks.** Generated structures pass a default-on gate against severe covalent distortion and bad angles; a stricter topology gate (`DELFIN_TOPOLOGY_HARD_GATE=2`) additionally rejects detached metal–donor bonds, extra fragments and atomic collisions. π-system planarity and hapticity are enforced constructively by the MANTA builder rather than checked afterwards.
+4. **From prediction to variation.** ChemDarwin enumerates structural variants from a seed molecule, and the same pipelines then predict their properties.
+
+DELFIN is research infrastructure: it does not replace chemical judgement — it makes rigorous computational chemistry (structure generation, DFT, semi-empirical methods, ML potentials, and spectroscopy) routine enough to inform it.
+
+### What DELFIN can do
+
+Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱 solid state
+
+| Capability | Domain | Description |
+|------------|--------|-------------|
+| **Redox Potentials** | 🔬 both | Automated spin-state prediction and redox potential calculation via OCCUPIER/classic workflows — works for organic radicals AND transition-metal complexes |
+| **Thermodynamics Simulations** | 🔬 both | Automated log K prediction and free-energy analysis via Born-Haber thermodynamic cycles with OCCUPIER-aware metal, ligand, and solvent sub-workflows |
+| **Excited-State Dynamics** | 🔬 both | Automated orchestration of ISC / RISC / IC rates, fluorescence and phosphorescence lifetimes (incl. per-sublevel), SOC coupling, E₀₀ adiabatic energies, and ΔE(S-T) singlet-triplet gaps — from the states and transitions you list in `CONTROL.txt` |
+| **TADF Screening** | 🧪 organic | xTB-based singlet-triplet gap estimation for OLED material discovery |
+| **Spectroscopy** | 🔬 both | UV-Vis absorption, IR vibrational spectra, AFP (absorption/fluorescence/phosphorescence) plots |
+| **Ensemble NMR** | 🧪 organic | CREST → CENSO → c2anmr → ANMR Boltzmann-weighted ensemble shieldings/couplings |
+| **Hyperpolarizability** | 🔬 both | Static and frequency-dependent β tensors for NLO materials (organic and organometallic) |
+| **Structure Generation** | 🔬 both | SMILES→3D for organics (RDKit/Open Babel) AND metal complexes (MANTA, DELFIN's own force-field-free coordination builder; Architector; stepwise ORCA/xTB `%DOCKER` assembly) |
+| **Conformer Sampling** | 🔬 both | MANTA multi-start sampling with energy ranking, CREST conformer search, XTB-GOAT global optimization |
+| **ML Potentials** | 🔬 both | 8 backends (ANI-2x, AIMNet2, MACE, CHGNet, M3GNet, SchNetPack, NequIP, ALIGNN) for fast energy/force evaluation |
+| **Crystal Structure Generation** | 🧱 solid state | Genarris integration for random organic crystal generation with configurable space groups (generation, not lattice-energy ranking) |
+| **Fukui Indices** | 🔬 both | Atomic Fukui indices from three ORCA single points (N, N±1) at fixed geometry, with ESP reporting |
+| **Imaginary-Mode Elimination** | 🔬 both | Iterative saddle escape: displaced single points on both sides of the imaginary mode, re-optimisation and frequency per round. ESD rates are refused on a structure still at a saddle |
+| **CO₂ Coordination** | 🧲 metal | Automated CO₂ placement around metal centers, distance/rotation scans |
+| **Reporting** | 🔬 both | Auto-generated DOCX combining all visualized output — spectra plots (UV-Vis, IR, AFP), ESD rate tables (ISC / RISC / IC, ΔE(S-T), E₀₀), redox-potential summaries, free energies, and full method provenance; JSON export and text summaries also available |
+| **AI Agent** | 🔬 both | Conversational coding agent on any tool-capable model (Claude / OpenAI / KIT / local Ollama) — sandboxed bash, subagents, MCP, persistent memory, dashboard control, literature research, result analysis |
+| **Structure Enumeration** | 🔬 both | ChemDarwin morphs a seed molecule with user-supplied reaction SMARTS over N iterations — forbidden/protected substructure filters, ligand-wise mutation for metal complexes, results drawn and mapped in chemical space. Candidates are submitted to a DELFIN workflow by hand; there is no automated fitness loop |
+
+### Use cases
+
+**Catalysis & energy** 🧲
+- Multi-step redox tuning of transition-metal complexes (up to 3 sequential oxidation/reduction steps per pipeline)
+- Spin-state-resolved energetics with adaptive broken-symmetry configuration evolution
+- Topology-aware structure generation across σ-donors, π-haptic modes (η²–η⁶), and mono- to multi-metallic complexes
+- Born-Haber stability-constant (log K) cycles for individual complexes, for ligand-variant comparison
+- Structural variants enumerated with ChemDarwin, then ranked by computed redox potentials or log K
+
+**Photophysics & emissive materials** 🧪 / 🧱
+- End-to-end TADF screening: ΔE(S-T) from xTB pre-screen → ISC / RISC rates from DFT
+- Phosphorescence design: per-sublevel lifetimes for Ir(III) / Pt(II) / Cu(I) and organic phosphors
+- Excited-state-geometry-aware fluorescence/phosphorescence rates (IC, ISC, RISC; E₀₀ adiabatic energies)
+- NLO chromophore design via β tensors; random organic crystal generation (Genarris)
+
+**Pharmaceutical & medicinal chemistry** 🧪
+- Conformer ensembles and free-energy ranking for drug-like scaffolds (CREST + xTB-GOAT + DFT)
+- Redox-potential and spin-state prediction for metallodrug / metalloenzyme-mimic design
+- Boltzmann-weighted ensemble NMR for stereo-/regioisomer assignment
+
+**Spectroscopy & characterization** 🔬
+- UV-Vis (TD-DFT) absorption, IR vibrational spectra, AFP overlay plots
+- Boltzmann-weighted ensemble NMR (¹H / ¹³C shieldings + J-couplings)
+- Hyperpolarizability β-tensors and dipole moments; imaginary-frequency cleanup (`delfin --imag`)
 
 ---
 
 ## Contents
 
-1. [Overview](#overview) — [what it does](#what-delfin-does) · [ways to use it](#ways-to-use-it) · [design principles](#design-principles) · [use cases](#use-cases)
+1. [Overview](#what-delfin-can-do) — [what it can do](#what-delfin-can-do) · [design principles](#design-principles) · [use cases](#use-cases)
 2. [Installation](#-installation)
 3. [Quick start](#-quick-start) — [dashboard](#the-dashboard) · [command line](#the-command-line) · [Python](#python)
 4. [Dashboard](#-dashboard)
@@ -38,75 +101,6 @@ DELFIN is research infrastructure: it does not replace chemical judgement — it
 13. [Troubleshooting](#-troubleshooting)
 14. [Development](#-development)
 15. [References](#references) · [Dependencies and legal notice](#dependencies-and-legal-notice) · [Please cite](#please-cite) · [License](#license)
-
----
-
-## Overview
-
-### What DELFIN does
-
-Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱 solid state
-
-| Capability | Domain | Description |
-|------------|--------|-------------|
-| **Redox potentials** | 🔬 both | Automated spin-state identification and redox-potential calculation via the OCCUPIER and classic workflows — for organic radicals and for transition-metal complexes |
-| **Stability constants (log K)** | 🧲 metal | log K and ΔG for one coordination complex per run, from a Born-Haber-type cycle with OCCUPIER-aware metal, ligand and solvent sub-workflows |
-| **Excited-state dynamics** | 🔬 both | ISC / RISC / IC rates, fluorescence and phosphorescence lifetimes (incl. per-sublevel), SOC coupling, E₀₀ and ΔE(S-T) — orchestrated from a list of states and transitions you give in `CONTROL.txt` |
-| **TADF screening** | 🧪 organic | xTB/sTDA singlet-triplet gap estimation, oscillator strengths and estimated emission wavelength, for OLED candidate triage |
-| **Spectroscopy** | 🔬 both | UV-Vis absorption, IR vibrational spectra, AFP (absorption/fluorescence/phosphorescence) overlay plots |
-| **Ensemble NMR** | 🧪 organic | Boltzmann-weighted shieldings and couplings via CREST → CENSO → c2anmr → ANMR (all four are external programs) |
-| **Hyperpolarizability** | 🔬 both | Static and frequency-dependent β tensors (β_HRS, β_VEC, DR) for NLO materials |
-| **Fukui indices** | 🔬 both | Atomic Fukui indices from three ORCA single points (N, N±1) at fixed geometry, with ESP reporting |
-| **Structure generation** | 🔬 both | SMILES→3D for organics (RDKit / Open Babel) and for metal complexes: **MANTA** (DELFIN's own force-field-free coordination builder), Architector, and stepwise ORCA/xTB `%DOCKER` assembly |
-| **Conformer sampling** | 🔬 both | MANTA multi-start sampling with energy ranking, CREST conformer search, xTB-GOAT global optimization |
-| **Imaginary-mode elimination** | 🔬 both | Iterative saddle escape: displaced single points on both sides of the imaginary mode, re-optimisation and frequency per round. ESD rates are refused on a structure still at a saddle |
-| **ML potentials** | 🔬 both | 8 backends (ANI-2x, AIMNet2, MACE-OFF, CHGNet, M3GNet, SchNetPack, NequIP, ALIGNN) as ASE calculators, reachable as individual pipeline steps |
-| **Crystal structure generation** | 🧱 solid state | Genarris integration for random organic crystal generation with configurable space groups, Z values and MPI-parallel execution |
-| **CO₂ coordination** | 🧲 metal | Automated CO₂ placement around metal centres, relaxed distance (1.6–4.0 Å) and rotation (±180°) scans |
-| **Reporting** | 🔬 both | DOCX report with embedded spectra and tables, generated at the end of every main run; JSON export and text summaries alongside |
-| **Cluster execution** | 🔬 both | SLURM and SSH-remote backends, automatic resource detection, site profiles, node-local staging, queue monitoring and quota handling |
-| **AI agent** | 🔬 both | Conversational coding agent on any **tool-capable** model (Claude / OpenAI / KIT Toolbox / local Ollama) — sandboxed bash, subagents, MCP, persistent memory, dashboard control |
-| **Structure enumeration (ChemDarwin)** | 🔬 both | Dashboard tab that morphs a seed molecule with **user-supplied reaction SMARTS** over N iterations, with forbidden/protected substructure filters and ligand-wise mutation for metal complexes; draws the results and maps them in chemical space. Candidates are submitted to a DELFIN workflow by hand — there is no automated fitness loop |
-
-### Ways to use it
-
-- **Dashboard** — browser UI for job setup, submission, monitoring and result analysis. This is the usual way to run DELFIN.
-- **Command line** — `delfin` runs a workflow from a `CONTROL.txt` in a working directory, plus 18 companion commands (see the [CLI reference](#-cli-reference)).
-- **Python API** — `delfin.api` for notebooks and workflow engines.
-- **Step and pipeline system** — `delfin-step` runs a single registered tool step, `delfin-pipeline` runs a declarative YAML pipeline with branching and parallel branches. This is how the non-ORCA engines and the ML potentials are reached.
-- **MCP servers** — DELFIN ships three Model Context Protocol servers: `delfin-tools-server` (the tool platform), `delfin-docs-server` (literature and calculation search) and `delfin-ops-server` (typed runtime actions).
-- **AI agent** — in the dashboard tab or as the standalone terminal program `delfin-agent`; it operates the dashboard, runs and interprets workflows, and edits code.
-
-### Design principles
-
-1. **One interface across the QM stack.** Each stage is routed to an established engine: RDKit / Open Babel / Architector / MANTA for structure, xTB / CREST / GOAT for conformer pre-screening, **ORCA for the DFT workflow**. Turbomole, the periodic codes and 30-odd further engines are reachable as individual pipeline steps, as are the ML potentials; the redox / OCCUPIER / ESD workflow itself is ORCA-based.
-2. **Reproducible, documented runs.** Every run records its provenance — input SMILES, method choices, solver logs, spectra — and a DOCX report is generated at the end of each main run, ready for supplementary information.
-3. **Geometry sanity checks.** Generated structures pass a default-on gate against severe covalent distortion and bad angles. A stricter topology gate (`DELFIN_TOPOLOGY_HARD_GATE=2`) additionally rejects detached metal–donor bonds, extra fragments, atom-count mismatches and atomic collisions; it is off by default. π-system planarity and hapticity are enforced constructively by the MANTA builder rather than checked after the fact.
-4. **Structure variation on top of prediction.** The ChemDarwin tab enumerates structural variants from a seed molecule and a reaction SMARTS; their properties are then computed with the same DELFIN workflows.
-
-### Use cases
-
-**Catalysis & energy** 🧲
-- Multi-step redox tuning of transition-metal complexes (up to 3 sequential oxidation and reduction steps per pipeline)
-- Spin-state-resolved energetics with adaptive broken-symmetry configuration evolution
-- Topology-aware structure generation across σ-donors, π-haptic modes (η²–η⁶) and mono- to multi-metallic complexes
-- Born-Haber stability-constant (log K) cycles for individual complexes, for ligand-variant comparison
-
-**Photophysics & emissive materials** 🧪 / 🧱
-- TADF triage: ΔE(S-T) from an xTB/sTDA pre-screen, then ISC / RISC rates from DFT
-- Phosphorescence design: per-sublevel lifetimes for Ir(III) / Pt(II) / Cu(I) and organic phosphors
-- Excited-state-geometry-aware fluorescence and phosphorescence rates (IC, ISC, RISC; E₀₀ adiabatic energies)
-- NLO chromophore design via β tensors; random organic crystal generation (Genarris)
-
-**Pharmaceutical & medicinal chemistry** 🧪
-- Conformer ensembles and free-energy ranking for drug-like scaffolds (CREST + xTB-GOAT + DFT)
-- Redox-potential and spin-state prediction for metallodrug and metalloenzyme-mimic design
-- Boltzmann-weighted ensemble NMR for stereo- and regioisomer assignment
-
-**Spectroscopy & characterization** 🔬
-- UV-Vis (TD-DFT) absorption, IR vibrational spectra, AFP overlay plots
-- Boltzmann-weighted ensemble NMR (¹H / ¹³C shieldings and J-couplings)
-- Hyperpolarizability β tensors and dipole moments; imaginary-frequency cleanup (`delfin --imag`)
 
 ---
 
