@@ -28,7 +28,8 @@ Every result is **deterministic** — same SMILES in, byte-identical manifold ou
 
 ## Usage
 
-The user-facing entry point lives in the DELFIN facade (a dedicated `delfin-manta` CLI is on the roadmap):
+MANTA has its own command, `delfin-manta`, and is reachable from a DELFIN run
+with `smiles_converter=MANTA` in CONTROL.txt. From Python:
 
 ```python
 from delfin.smiles_converter import smiles_to_xyz_isomers

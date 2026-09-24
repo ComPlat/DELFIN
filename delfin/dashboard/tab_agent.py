@@ -19715,7 +19715,7 @@ def _format_role_label(role_id: str) -> str:
 
 
 # User-facing labels for the internal mode ids (the dropdown shows these).
-_MODE_LABELS = {"solo": "Code", "dashboard": "Dashboard"}
+_MODE_LABELS = {"solo": "Code", "dashboard": "Dashboard", "office": "Office", "research": "Research"}
 
 
 def _mode_label(mode: str) -> str:
