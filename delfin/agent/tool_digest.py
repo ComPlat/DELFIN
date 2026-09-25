@@ -8,7 +8,9 @@ replacement: tool name, the arguments that matter, and the few facts an
 agent needs to decide whether re-running is worth it.
 
 Rules (deliberate):
-- No model calls. Same input -> same digest, byte for byte (lru_cache).
+- No model calls. Same input -> same digest, byte for byte. Not cached:
+  each result is elided once, and a cache keyed on whole tool outputs
+  would hold megabytes of them.
 - Never any secret: everything passes through output_guard.scrub_secrets
   before being embedded, and arguments go through it too.
 - The digests encode the REAL output shapes of the api_client tools
@@ -22,7 +24,6 @@ from __future__ import annotations
 
 import json
 import re
-from functools import lru_cache
 
 from .output_guard import scrub_secrets
 
@@ -189,37 +190,11 @@ def _build(tool_name: str, arguments, content: str) -> str:
     return body if len(body) <= _MAX_CHARS else body[:_MAX_CHARS - 1] + "…"
 
 
-@lru_cache(maxsize=512)
-def _digest_uncached(tool_name: str, arg_key: str, content: str) -> str:
-    try:
-        arguments = json.loads(arg_key)
-    except Exception:
-        arguments = {}
-    return _build(tool_name, arguments, content)
-
-
 def digest(tool_name: str, arguments: dict, content: str) -> str:
     """A deterministic, secret-free, <=300-char wanted poster for one tool
-    result. Same inputs -> same string (cached). Never raises.
-
-    Exposed as digest.cache_info()/digest.cache_clear() so callers can
-    inspect the cache the same way the elision path uses it.
-    """
-    def cache_info():
-        return _digest_uncached.cache_info()
-
-    def cache_clear():
-        _digest_uncached.cache_clear()
-
-    digest.cache_info = cache_info  # type: ignore[attr-defined]
-    digest.cache_clear = cache_clear  # type: ignore[attr-defined]
+    result. Same inputs -> same string. Never raises."""
     try:
-        try:
-            arg_key = json.dumps(arguments or {}, sort_keys=True,
-                                 default=str)
-        except Exception:
-            arg_key = "{}"
-        return _digest_uncached(tool_name, arg_key, content or "")
+        return _build(tool_name, arguments, content or "")
     except Exception:
         # The elision path must never crash on a surprising shape.
         try:
