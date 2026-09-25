@@ -1,12 +1,11 @@
-"""The integration the operator will wire: bad arguments are refused
-by tool_args BEFORE the permission gate answers.
+"""tool_args on the execute path (api_client._malformed_arguments).
 
-Strict xfail on purpose: today these fail because nothing calls
-tool_args.check on the execute path (see the characterization in
-test_tool_args_current_behavior.py). When the check is wired in, the
-tests start passing -- strict turns that into an XPASS failure, which
-is the built-in reminder to remove the marker in the same commit that
-does the wiring.
+Wired LAST in the refusal chain, as _missing_required_argument is: a
+role or mode refusal outranks "your call was malformed" (the reason is
+written at the chain). Before any dialog, so a broken call never costs
+the user a question. Aliases (`file_path` for `path`) keep working and
+extra fields pass; an unknown field is named when it explains a
+missing one.
 """
 
 import json
@@ -15,13 +14,6 @@ import pytest
 
 from delfin.agent import api_client as A
 from delfin.agent.api_client import KitToolPermissions
-
-pytestmark = pytest.mark.xfail(
-    strict=True,
-    reason="tool_args.check is not yet called on the execute path; "
-    "remove this marker in the commit that wires it in",
-)
-
 
 @pytest.fixture
 def ws(tmp_path):
@@ -44,13 +36,17 @@ def _error_text(out: str) -> str:
         return ""
 
 
-def test_wrong_field_name_is_refused_with_hint(ws):
-    out = _call(ws, "read_file", {"file_path": "a.txt"})
+def test_a_misspelt_field_is_refused_with_a_hint(ws):
+    out = _call(ws, "read_file", {"pth": "a.txt"})
     err = _error_text(out)
-    assert "file_path" in err
     assert "did you mean 'path'?" in err
-    # and the file was NOT read: the alias table did not run
-    assert "one" not in out
+    assert "two" not in out           # nothing was read (file: one/two)
+
+
+def test_an_alias_still_works(ws):
+    # _ARG_ALIASES is documented tolerance for weak models; kept.
+    out = _call(ws, "read_file", {"file_path": "a.txt"})
+    assert "one" in out
 
 
 def test_wrongly_typed_edits_is_refused_with_shape(ws):
@@ -65,16 +61,12 @@ def test_wrongly_typed_edits_is_refused_with_shape(ws):
 # channel to the caller until api_client builds one.
 
 
-def test_broken_call_never_reaches_the_permission_gate(ws):
-    # A broken call must be refused by the argument check BEFORE any
-    # permission logic could ask a question -- the pre_tool_hook is the
-    # earliest gate signal, so it must not see the broken call.
-    seen = []
-
-    def hook(name, args):
-        seen.append(name)
-
+def test_a_broken_call_asks_nothing(ws):
+    asked = []
     perms = ws[1]
-    perms.pre_tool_hook = hook
-    _call(ws, "read_file", {"file_path": "a.txt"})
-    assert "read_file" not in seen
+    perms.mode = "default"            # a write would ask here
+    perms.confirm_callback = lambda *a: (asked.append(a), True)[1]
+    out = _call(ws, "write_file", {"path": "b.txt", "content": ["x"]})
+    assert "string" in _error_text(out)
+    assert not asked
+    assert not (ws[0] / "b.txt").exists()

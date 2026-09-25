@@ -165,3 +165,18 @@ def test_empty_required_list_is_not_triggered():
     # list_files has no required fields today; the empty call is valid
     res = tool_args.check(_schema("list_files"), {})
     assert res.ok
+
+
+def test_the_executor_mode_leaves_value_limits_to_the_tools():
+    """unknown="hint" (the executor's mode): an enum miss, an out-of-range
+    number and an extra field pass -- the tools clamp or answer with their
+    own message (schedule_wakeup clamps delay_seconds, subagent lists its
+    types). Types and required fields are still checked."""
+    schema = {"type": "object", "required": ["n"], "properties": {
+        "n": {"type": "integer", "maximum": 10},
+        "kind": {"type": "string", "enum": ["a", "b"]}}}
+    ok = tool_args.check(schema, {"n": 99, "kind": "zz", "extra": 1}, unknown="hint")
+    assert ok.ok, ok.error_text
+    assert not tool_args.check(schema, {"n": "x"}, unknown="hint").ok
+    missing = tool_args.check(schema, {"m": 1}, unknown="hint")
+    assert not missing.ok and "missing required field 'n'" in missing.error_text

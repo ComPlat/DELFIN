@@ -161,9 +161,10 @@ def _repair(value: Any, schema: dict, path: str, repairs: list[str]) -> Any:
 
 
 def _check_object(obj: dict, schema: dict, path: str,
-                  repairs: list[str]) -> Optional[str]:
+                  repairs: list[str], unknown: str = "refuse") -> Optional[str]:
     props = schema.get("properties") or {}
     required = schema.get("required") or []
+    strays: list[str] = []
     # Unknown fields FIRST: when a required field is missing and an
     # unknown one is present, the confusion hint is the message that
     # teaches the model something -- "missing path" alone hides the
@@ -172,12 +173,16 @@ def _check_object(obj: dict, schema: dict, path: str,
         here = f"{path}.{key}" if path else key
         if key not in props:
             hint = _suggestion(key, list(props))
-            return (f"unknown field '{key}'"
-                    + (f" -- did you mean '{hint}'?" if hint else "")
-                    + f"; known fields: " + ", ".join(sorted(props)))
+            stray = (f"unknown field '{key}'"
+                     + (f" -- did you mean '{hint}'?" if hint else ""))
+            if unknown == "hint":
+                # Extra fields pass; they only explain a missing one.
+                strays.append(stray)
+                continue
+            return stray + "; known fields: " + ", ".join(sorted(props))
         # repair in place so the caller's dict carries the fixed value
         obj[key] = repaired = _repair(value, props[key], here, repairs)
-        err = _check_value(repaired, props[key], here, repairs)
+        err = _check_value(repaired, props[key], here, repairs, unknown)
         if err:
             return err
     for key in required:
@@ -189,12 +194,13 @@ def _check_object(obj: dict, schema: dict, path: str,
                     + "; required: " + ", ".join(
                         f"{k}" + (f" ({_describe(props[k])})"
                                   if k in props else "")
-                        for k in required))
+                        for k in required)
+                    + ("; " + "; ".join(strays) if strays else ""))
     return None
 
 
 def _check_array(arr: list, schema: dict, path: str,
-                 repairs: list) -> Optional[str]:
+                 repairs: list, unknown: str = "refuse") -> Optional[str]:
     items = schema.get("items") or {}
     if "minItems" in schema and len(arr) < schema["minItems"]:
         return (f"{path}: needs at least {schema['minItems']} items, "
@@ -207,15 +213,19 @@ def _check_array(arr: list, schema: dict, path: str,
         # items schema demands is as safe here as at the property level
         item = _repair(item, items, f"{path}[{i}]", repairs)
         arr[i] = item
-        err = _check_value(item, items, f"{path}[{i}]", repairs)
+        err = _check_value(item, items, f"{path}[{i}]", repairs, unknown)
         if err:
             return err
     return None
 
 
 def _check_value(value: Any, schema: dict, path: str,
-                 repairs: list[str]) -> Optional[str]:
-    if isinstance(schema.get("enum"), list) and schema["enum"]:
+                 repairs: list[str], unknown: str = "refuse") -> Optional[str]:
+    # "hint" is the executor's lenient mode (see check()): value limits
+    # -- enum, minimum/maximum -- stay with the tools, which clamp or
+    # answer with their own, richer message.
+    lenient = unknown == "hint"
+    if not lenient and isinstance(schema.get("enum"), list) and schema["enum"]:
         if value not in schema["enum"]:
             return (f"{path}: must be one of "
                     f"{json.dumps(schema['enum'])}, got "
@@ -230,10 +240,10 @@ def _check_value(value: Any, schema: dict, path: str,
                 f"got {_type_name(value)}: "
                 f"{json.dumps(value, default=str)[:120]}")
     if isinstance(value, dict):
-        return _check_object(value, schema, path, repairs)
+        return _check_object(value, schema, path, repairs, unknown)
     if isinstance(value, list):
-        return _check_array(value, schema, path, repairs)
-    for bound, op in (("minimum", ">="), ("maximum", "<=")):
+        return _check_array(value, schema, path, repairs, unknown)
+    for bound, op in (() if lenient else (("minimum", ">="), ("maximum", "<="))):
         if bound in schema and isinstance(value, (int, float)) \
                 and not isinstance(value, bool):
             if op == ">=" and value < schema[bound]:
@@ -243,8 +253,17 @@ def _check_value(value: Any, schema: dict, path: str,
     return None
 
 
-def check(schema: dict, args: Any) -> Result:
+def check(schema: dict, args: Any, *, unknown: str = "refuse") -> Result:
     """Check ``args`` against a tool's parameter ``schema``.
+
+    ``unknown="refuse"`` rejects any field the schema does not name.
+    ``unknown="hint"`` is the executor's lenient mode: extra fields pass
+    (named only when a required field is missing -- where "did you mean
+    'path'?" is the useful half of the message), and value limits (enum,
+    minimum/maximum) are left to the tools, which clamp or answer with
+    their own, richer message. What stays: required fields, types and
+    shapes, the safe repairs, cut-off JSON. Refusing a call that works
+    today would be a regression, not a check.
 
     ``args`` is the arguments object as the caller received it -- a
     dict for every tool here, but a non-dict is reported, not crashed
@@ -279,7 +298,7 @@ def check(schema: dict, args: Any) -> Result:
                       f"{_type_name(args)}")
     root = schema if schema.get("type") == "object" or "properties" in schema \
         else {"type": "object", "properties": {}}
-    err = _check_object(args, root, "", repairs)
+    err = _check_object(args, root, "", repairs, unknown)
     if err:
         return Result(False, args, err)
     return Result(True, args, None, repairs)
