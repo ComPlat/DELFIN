@@ -88,14 +88,14 @@ def process_tree(pid: int, *, proc_root: str | Path = "/proc") -> list[int]:
         entries = list(root.iterdir())
     except OSError:
         return []
-    pids: list[int] = []
+    pids: set[int] = set()
     for entry in entries:
         if not entry.name.isdigit():
             continue
         other = _read_stat(root, int(entry.name))
         if other is None:
             continue
-        pids.append(other["pid"])
+        pids.add(other["pid"])
         children.setdefault(other["ppid"], []).append(other["pid"])
     out: list[int] = []
     stack = [int(pid)]
