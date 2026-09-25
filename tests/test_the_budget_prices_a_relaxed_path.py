@@ -1985,7 +1985,12 @@ def test_the_scan_controls_say_what_they_are():
     assert ("options=[('closer together', 'in'), ('further apart', 'out'),"
             in source)
     assert "('to a value you give', 'to')]" in source
-    assert "else [('narrower', 'in'), ('wider', 'out')," in source
+    # A three-atom angle is genuinely narrower or wider...
+    assert "[('narrower', 'in'), ('wider', 'out')," in source
+    # ...but a four-atom torsion is turned, so its two directions are the two
+    # arrows (left/anticlockwise and right/clockwise), not narrower/wider.
+    assert "elif kind == 'dihedral':" in source
+    assert "[('↺', 'in'), ('↻', 'out')," in source
     assert "kind = _CONSTRAINT_KINDS.get(picked)" in source
     assert "description='steps'" in source
     assert "description='to'" in source

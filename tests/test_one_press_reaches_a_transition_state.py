@@ -422,13 +422,14 @@ def test_where_a_scan_walks_is_one_question_and_what_is_picked_answers_it():
     assert part.submit_scan_to.value == pytest.approx(1.53)
 
     # And the words follow what is picked -- three answers for a torsion, the
-    # two verbs gone with the bond they were about.
+    # two verbs gone with the bond they were about, and the two directions
+    # shown as the two arrows because a torsion is turned, not narrowed.
     state['picked'] = [0, 1, 2, 3]
     part._refresh_scan()
     assert _values(part.submit_scan_way) == ['in', 'out', 'to']
     assert part.submit_scan_way.value == 'to', 'the answer given was lost'
     assert [label for label, _value in part.submit_scan_way.options][:2] == \
-        ['narrower', 'wider']
+        ['↺', '↻']
 
 
 def test_a_walk_to_where_the_coordinate_already_is_is_refused_rather_than_guessed():
