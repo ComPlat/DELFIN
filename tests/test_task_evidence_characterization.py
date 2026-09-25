@@ -17,7 +17,24 @@ text (then it promises nothing).
 
 from __future__ import annotations
 
-from delfin.agent.api_client import check_completion_claim
+import pytest
+
+from delfin.agent.api_client import (
+    check_completion_claim as _api_check,
+)
+from delfin.agent.task_evidence import check_completion_claim as _new_check
+
+# The two implementations the swap in api_client.py will move between.
+# _api_check is the shipped one (security code in this run: untouched);
+# _new_check is the replacement, same signature, same return shape.
+IMPLS = {"api": _api_check, "new": _new_check}
+
+
+@pytest.fixture(params=["api", "new"])
+def check(request):
+    """Every control case runs against BOTH the shipped check and the
+    replacement: the swap must not change a verdict that was right."""
+    return IMPLS[request.param]
 
 
 def _changes(*paths):
@@ -28,16 +45,16 @@ def _changes(*paths):
 # CONTROL — correct today, must stay correct
 # ---------------------------------------------------------------------------
 
-def test_control_a_named_file_that_was_written_is_verified():
-    res = check_completion_claim(
+def test_control_a_named_file_that_was_written_is_verified(check):
+    res = check(
         "Ergänze eine Tabelle der Testfälle in REIBUNG.md",
         changes=_changes("/w/REIBUNG.md"))
     assert res["verdict"] == "verified"
     assert res["kind"] == "path_write"
 
 
-def test_control_a_named_file_that_was_not_written_is_unmet():
-    res = check_completion_claim(
+def test_control_a_named_file_that_was_not_written_is_unmet(check):
+    res = check(
         "Add mylib/optimizers/wrapper.py",
         changes=_changes("/proj/other.py"),
         observed=["/proj/mylib/optimizers/wrapper.py"])
@@ -45,43 +62,43 @@ def test_control_a_named_file_that_was_not_written_is_unmet():
     assert res["kind"] == "path_unwritten"
 
 
-def test_control_a_read_task_is_finished_by_the_read():
-    res = check_completion_claim(
+def test_control_a_read_task_is_finished_by_the_read(check):
+    res = check(
         "analysiere mylib/core.py", changes=[], observed=["/p/mylib/core.py"])
     assert res["verdict"] == "verified"
     assert res["kind"] == "path_read"
 
 
-def test_control_an_artifact_word_with_a_format_qualifier_still_demands_it():
+def test_control_an_artifact_word_with_a_format_qualifier_still_demands_it(check):
     """The original incident: a PDF task with only a docx on disk."""
-    res = check_completion_claim(
+    res = check(
         "Erstelle den Bericht als PDF",
         changes=_changes("/w/bericht.docx"))
     assert res["verdict"] == "unmet"
     assert res["kind"] == "artifact"
 
 
-def test_control_a_written_pdf_satisfies_a_pdf_task():
-    res = check_completion_claim(
+def test_control_a_written_pdf_satisfies_a_pdf_task(check):
+    res = check(
         "PDF-Bericht für Juni erstellen",
         changes=_changes("/w/bericht.pdf"))
     assert res["verdict"] == "verified"
 
 
-def test_control_an_edit_task_with_no_mutation_is_unmet():
-    res = check_completion_claim("Refactor the optimizer wrapper", changes=[])
+def test_control_an_edit_task_with_no_mutation_is_unmet(check):
+    res = check("Refactor the optimizer wrapper", changes=[])
     assert res["verdict"] == "unmet"
     assert res["kind"] == "no_change"
 
 
-def test_control_a_read_only_task_is_not_asked_to_produce_an_artifact():
-    res = check_completion_claim(
+def test_control_a_read_only_task_is_not_asked_to_produce_an_artifact(check):
+    res = check(
         "Prüfe den Bericht auf Fehler", changes=[], observed=[])
     assert res["verdict"] != "unmet"
 
 
-def test_control_a_subject_with_nothing_to_key_on_is_unchecked():
-    res = check_completion_claim(
+def test_control_a_subject_with_nothing_to_key_on_is_unchecked(check):
+    res = check(
         "Rückfrage mit Jerome klären", changes=[], observed=[], tests=[])
     assert res["verdict"] == "unchecked"
 
@@ -98,7 +115,7 @@ def test_control_a_subject_with_nothing_to_key_on_is_unchecked():
 # 1. A table in a markdown file: "Tabelle" in a subordinate role does not
 #    promise a spreadsheet. Done right: the .md write is the claim.
 def test_misjudgment_a_markdown_table_is_not_a_spreadsheet_promise():
-    res = check_completion_claim(
+    res = _new_check(
         "Ergänze eine Tabelle der Testfälle in REIBUNG.md",
         changes=_changes("/w/REIBUNG.md"),
         observed=[],
@@ -118,7 +135,7 @@ def test_misjudgment_a_table_word_in_a_subordinate_clause():
     """Subject: append a table of test cases to the overview (no file
     named). The session appended a markdown section; the word "Tabelle"
     fired and demanded a .xlsx/.csv."""
-    res = check_completion_claim(
+    res = _new_check(
         "Ergänze die Übersicht um eine Tabelle der Testfälle",
         changes=_changes("/w/README.md"),
         observed=[],
@@ -131,7 +148,7 @@ def test_misjudgment_a_mentioned_file_is_not_a_promised_write():
     """Build the check logic as described in foo.py — the work went into
     a new module, foo.py was only the reference. Today foo.py in the
     text makes the task unmet until foo.py itself is written."""
-    res = check_completion_claim(
+    res = _new_check(
         "Bau die Prüflogik wie in foo.py beschrieben",
         changes=_changes("/w/prueflogik.py"),
         observed=["/w/foo.py"],
@@ -142,7 +159,7 @@ def test_misjudgment_a_mentioned_file_is_not_a_promised_write():
 # 4. The same, comparative: "wie in foo.py" vs. a task that genuinely
 #    targets foo.py. The second must stay unmet when foo.py is untouched.
 def test_misjudgment_a_compared_to_file_is_not_a_promised_write():
-    res = check_completion_claim(
+    res = _new_check(
         "Passe die Validierung an, analog zu check_base.py",
         changes=_changes("/w/validate_new.py"),
         observed=["/w/check_base.py"],
@@ -154,7 +171,7 @@ def test_misjudgment_a_compared_to_file_is_not_a_promised_write():
 #    must not be judged by the write branch just because the description
 #    carries a write verb ("notiere deine Erkenntnisse in Stichpunkten").
 def test_misjudgment_a_read_task_with_a_note_instruction_in_the_body():
-    res = check_completion_claim(
+    res = _new_check(
         "Lies den Stand in engine.py und notiere Stichpunkte",
         description="Ergebnis als Notiz in der Antwort, keine Datei.",
         changes=[],
@@ -170,7 +187,7 @@ def test_misjudgment_the_second_named_file_in_the_description_wins():
     originally came from foo.py. Today the first unmatched candidate
     decides — the ORDER of the paths in the text, not the object of the
     task."""
-    res = check_completion_claim(
+    res = _new_check(
         "Behebe den Fehler in bar.py",
         description="Der Fehler kam ursprünglich aus foo.py.",
         changes=_changes("/w/bar.py"),
