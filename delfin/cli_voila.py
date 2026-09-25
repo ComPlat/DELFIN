@@ -985,6 +985,18 @@ def main(argv=None):
         # Quieter startup: drop the [I …] link/load/serving/302 flood; WARN
         # still surfaces genuine warnings and errors (fail-loud preserved).
         "--ServerApp.log_level=WARN",
+        # The kernel-to-browser channel is rate limited for a notebook, where a
+        # runaway print loop can hang the page. The defaults are 1000 messages
+        # and 1 MB per three seconds, and over them the server *stops sending*
+        # -- so a widget silently keeps its old value and the tab looks stuck
+        # with nothing in the log but "IOPub message rate exceeded". A dashboard
+        # is the opposite case: a file browser showing a photograph, a PDF page
+        # or a five-thousand-row grid sends several MB in one message on
+        # purpose, and dropping it is worse than a busy browser. The window
+        # stays, so a genuine runaway is still bounded, an order of magnitude
+        # further out.
+        "--ZMQChannelsWebsocketConnection.iopub_msg_rate_limit=10000",
+        "--ZMQChannelsWebsocketConnection.iopub_data_rate_limit=200000000",
         # Info-disclosure: never surface Python tracebacks to the browser
         # (they leak paths, usernames, code). Off by default; set explicitly.
         "--VoilaConfiguration.show_tracebacks=False",
