@@ -820,6 +820,52 @@ def _manta_gif_data_uri():
     _MANTA_GIF_DATA_URI_CACHE = uri
     return uri
 
+
+_MANTA_GIF_SRC_CACHE = None
+
+
+def _manta_gif_src():
+    """Return an ``img src`` for the MANTA loading animation, served when possible.
+
+    Inlined as a data URI the 220 KB animation travelled to the browser inside
+    every build's busy caption -- 287 KB of base64 per build, and together
+    with one more large message it crossed Jupyter's 1 MB-per-3 s channel limit,
+    after which the server silently dropped messages and the page looked
+    stuck.  Served as a file it travels once and the browser caches it.
+
+    Under Voila (``DELFIN_VOILA_ROOT_DIR`` set) the gif is staged into
+    ``<root>/delfin_voila_runtime`` -- the directory the notebooks are already
+    served from, and ``.gif`` is on the file allowlist -- and referenced as
+    ``/voila/files/<rel>?v=<size>`` exactly like the Ketcher editor
+    (ketcher.app_url).  Anywhere else, or when staging fails, the data URI
+    is returned so the animation never vanishes.  Cached per kernel.
+    """
+    global _MANTA_GIF_SRC_CACHE
+    if _MANTA_GIF_SRC_CACHE is not None:
+        return _MANTA_GIF_SRC_CACHE
+    src = ''
+    try:
+        from .ketcher import _voila_root
+        root = _voila_root()
+        gif = importlib.resources.files('delfin').joinpath('logo', 'MANTA_readme_demo.gif')
+        if root is not None and gif.is_file():
+            import shutil
+            from urllib.parse import quote
+            staged_dir = root / 'delfin_voila_runtime'
+            staged_dir.mkdir(parents=True, exist_ok=True)
+            staged = staged_dir / 'MANTA_readme_demo.gif'
+            data = gif.read_bytes()
+            if not staged.exists() or staged.stat().st_size != len(data):
+                staged.write_bytes(data)
+            rel = staged.relative_to(root).as_posix()
+            src = f'/voila/files/{quote(rel)}?v={len(data)}'
+    except Exception:
+        src = ''
+    if not src:
+        src = _manta_gif_data_uri()
+    _MANTA_GIF_SRC_CACHE = src
+    return src
+
 def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
     """Env for the chosen construction config + GFN2 energy ranking, GFN2 charge
     from the SMILES. construction: 'champion' (full SHIP-31 rich + KAPPA4 reach,
@@ -21335,7 +21381,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         _clear_mol_status()
         safe_msg = html.escape(str(message))
-        gif_uri = _manta_gif_data_uri()
+        gif_uri = _manta_gif_src()
         if gif_uri:
             visual_html = (
                 f"<img src='{gif_uri}' alt='MANTA working' "
