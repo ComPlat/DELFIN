@@ -882,7 +882,11 @@ def create_tab(ctx):
         layout=widgets.Layout(width='118px', min_width='118px', height='26px'),
     )
 
-    _dotfiles_children = [calc_dotfiles_btn] if _dotfiles_hidden_at_start else []
+    # Offered where a user has reason to look for them, which is the home
+    # directory. Office hides them as it always did, silently: its folder
+    # holds documents, and DELFIN's bookkeeping there is not the user's.
+    _dotfiles_children = ([calc_dotfiles_btn]
+                          if getattr(ctx, 'browser_hides_dotfiles', False) else [])
 
     calc_filter_sort_row = widgets.HBox(
         [calc_folder_search, calc_sort_dropdown],
