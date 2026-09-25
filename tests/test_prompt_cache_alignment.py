@@ -184,7 +184,9 @@ def test_report_sections_match_the_composed_prompt():
     assert report["stable_chars"] + report["volatile_chars"] == \
         report["total_chars"]
     names = [row["name"] for row in report["sections"]]
-    assert names[0] == "honesty_addendum"
+    # The principles open every prompt (2026-09-25); honesty follows.
+    assert names[0] == "principles_addendum"
+    assert names[1] == "honesty_addendum"
     assert names[-1] == "critical_anchor"
     assert "role_prompt" in names
 
