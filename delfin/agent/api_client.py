@@ -1103,7 +1103,8 @@ def _deep_enough(path: str) -> bool:
     return len([part for part in path.split("/") if part]) >= 2
 
 
-def _bash_reads_denied_path(cmd: str, denied: set) -> str:
+def _bash_reads_denied_path(cmd: str, denied: set,
+                            roots: "list | tuple" = ()) -> str:
     """Reason string when a shell command would fetch a path the user has
     already refused this session, else "".
 
@@ -1124,14 +1125,29 @@ def _bash_reads_denied_path(cmd: str, denied: set) -> str:
     directory around a refused file is refused with it only when that
     directory could have been opened by an approved read in the first
     place -- never the home, a system or a key directory.
+
+    A refused directory that CONTAINS the session's workspace (or another
+    of its roots) is refused as itself only. Refusing to list the home
+    directory blocked every later command naming a path under it -- the
+    workspace, the session's own test gate -- and the session could run
+    nothing (supervised night run, 2026-09-25). Reading the workspace is
+    what the session was granted; the refusal was about the directory.
     """
     try:
         if not denied or not cmd:
             return ""
         words = _path_words(cmd)
+        norm_roots = [os.path.normpath(str(r)) for r in roots or () if r]
         for path in denied:
             p = os.path.normpath(str(path)) if path else ""
             if not p:
+                continue
+            if any(r == p or r.startswith(p.rstrip("/") + "/")
+                   for r in norm_roots):
+                # The refused directory holds a granted root: only a
+                # command that names the directory itself is refused.
+                if any(w.rstrip("/") == p.rstrip("/") for w in words):
+                    return f"the user refused '{p}' earlier in this session"
                 continue
             if _path_covers(p, words) or (
                     _deep_enough(p) and re.search(
@@ -16000,7 +16016,9 @@ class _DocToolExecutor:
                         "have to be placed in the folder first."
                     )})
             denied = _bash_reads_denied_path(
-                scan, getattr(perms, "denied_paths", set()) or set())
+                scan, getattr(perms, "denied_paths", set()) or set(),
+                roots=[perms.workspace,
+                       *(getattr(perms, "extra_workspace_dirs", ()) or ())])
             if denied:
                 _record_security_event(
                     "denied_path_via_bash", "bash", cmd[:80], blocked=True)
