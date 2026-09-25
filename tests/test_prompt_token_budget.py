@@ -34,7 +34,16 @@ def _estimate_tokens(text: str) -> int:
         # the plan-first / verify-after-set rules stated above them), the
         # ORCA counter-example lists, and the duplicated tab-set + command-
         # discovery blocks.
-        ("dashboard_agent.md", 7150),
+        # 7150 -> 7206, sixty-two tokens, for the Diagrams section. A ```mermaid
+        # block is drawn as a diagram in the dashboard chat; without a line
+        # saying so the capability exists and is not used, which is the
+        # shape of every prompt rule that was never in the prompt. Paid
+        # here rather than in solo_agent.md or office_agent.md: explaining
+        # a structure is what the dashboard role is for, and neither of the
+        # other two had a token free. The section names the fence tag
+        # instead of writing one: a fence marker inline opens a block that
+        # never closes, and the loader test caught exactly that.
+        ("dashboard_agent.md", 7206),
         # 14200 -> 10600: dropped the worked-example dialogs and the
         # "how these compound" walk-through, folded the three separate
         # workspace-location statements into one, compressed the sandbox
