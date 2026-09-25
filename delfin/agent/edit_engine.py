@@ -7,13 +7,13 @@ permission, path or write is involved lives here, pure:
   ``replace_all``. An ambiguous match without ``replace_all`` is an
   error that names the line numbers of ALL matches (today's message
   names only the count - the s7 report).
-* near-miss diagnosis - when ``old_string`` does not match exactly, the
-  engine says WHERE it almost stands (indentation shift, trailing
-  whitespace, tabs vs spaces) with the line number and the actual text
-  there. It NEVER replaces approximately: the drifted text survives
-  untouched. This replaces the silent whitespace-tolerant fallback in
-  api_client.py (``editblock.fuzzy_replace`` at the ``edit_file`` call
-  site), which applied drifted matches without asking.
+* near-miss diagnosis - when ``old_string`` does not match exactly
+  and the caller's whitespace-tolerant fallback (``editblock.
+  fuzzy_replace``) finds no UNIQUE match either, the engine says WHERE
+  the block almost stands (indentation shift, trailing whitespace, tabs
+  vs spaces) with the line number and the actual text there - every
+  candidate, so an ambiguous near miss can be told apart. It never
+  replaces approximately itself.
 * ``apply_multi_edit`` - all edits applied against the intermediate
   state; if any fails, NONE is applied and the result names the failing
   index and why. (api_client's in-memory loop already behaves this way;
@@ -33,8 +33,9 @@ the file's own convention is the writer's job, not ours.
 from __future__ import annotations
 
 import ast
+import bisect
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 
@@ -99,50 +100,24 @@ class EditResult:
 # ---------------------------------------------------------------------------
 
 
-def _match_lines(text: str, old: str) -> list[int]:
-    """1-based line numbers of every start of an exact ``old`` match."""
-    lines: list[int] = []
-    # Line starts let us translate a char offset to a line number
-    # without scanning for every match.
-    starts = [0]
-    for i, ch in enumerate(text):
-        if ch == "\n":
-            starts.append(i + 1)
-    pos = 0
-    while True:
-        idx = text.find(old, pos)
-        if idx < 0:
-            break
-        # largest start <= idx
-        lo, hi = 0, len(starts) - 1
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if starts[mid] <= idx:
-                lo = mid
-            else:
-                hi = mid - 1
-        lines.append(lo + 1)
-        pos = idx + 1
-    return lines
-
-
 def _line_start_offsets(text: str) -> list[int]:
-    starts = [0]
-    for i, ch in enumerate(text):
-        if ch == "\n":
-            starts.append(i + 1)
-    return starts
+    return [0] + [i + 1 for i, ch in enumerate(text) if ch == "\n"]
 
 
 def _offset_to_line(starts: list[int], offset: int) -> int:
-    lo, hi = 0, len(starts) - 1
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if starts[mid] <= offset:
-            lo = mid
-        else:
-            hi = mid - 1
-    return lo + 1
+    """1-based line of a char offset, given ``_line_start_offsets``."""
+    return bisect.bisect_right(starts, offset)
+
+
+def _match_lines(text: str, old: str) -> list[int]:
+    """1-based line numbers of every start of an exact ``old`` match."""
+    starts = _line_start_offsets(text)
+    lines: list[int] = []
+    idx = text.find(old)
+    while idx >= 0:
+        lines.append(_offset_to_line(starts, idx))
+        idx = text.find(old, idx + 1)
+    return lines
 
 
 _WS_RUN = re.compile(r"[ \t]+")
@@ -285,7 +260,7 @@ def _diagnose_near_misses(text: str, old: str) -> list[NearMiss]:
     return misses
 
 
-def _syntax_regression(
+def syntax_regression(
     before: str, after: str, is_python: bool,
 ) -> Optional[SyntaxRegression]:
     """ast.parse(before) ok and ast.parse(after) not -> the error, else None.
@@ -369,7 +344,7 @@ def apply_edit(
     return EditResult(
         applied=True, new_text=new_text,
         match_lines=_match_lines(text, old_string),
-        syntax_regression=_syntax_regression(
+        syntax_regression=syntax_regression(
             text, new_text, is_python),
     )
 
@@ -415,5 +390,5 @@ def apply_multi_edit(
         current = r.new_text
     return EditResult(
         applied=True, new_text=current,
-        syntax_regression=_syntax_regression(text, current, is_python),
+        syntax_regression=syntax_regression(text, current, is_python),
     )

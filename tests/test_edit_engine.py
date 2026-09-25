@@ -267,7 +267,7 @@ def test_s6_edit_that_wrecks_the_following_indentation_is_reported():
     """s6: 'edit_file destroyed the indentation of the following block'.
     Replay: exact match, but new_string re-indents one statement of a
     block whose other statement keeps the original indent - the mixed
-    block no longer parses. Today's code applies it silently; the
+    block no longer parses. The pre-engine code applied it silently; the
     engine reports the syntax regression while still applying."""
     text = (
         "def a():\n"
