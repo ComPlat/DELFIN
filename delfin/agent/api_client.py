@@ -19390,6 +19390,14 @@ _INFRA_EXHAUSTION_MARKERS: tuple[str, ...] = (
     # turn died on this 400 and the session stood 24 minutes at its
     # prompt). A chat request cannot be malformed into this message.
     "server connection error",
+    # The proxy's connection to vLLM broke off mid-response (litellm
+    # "Response payload is not completed" / aiohttp TransferEncodingError),
+    # and the litellm router's cooldown while every deployment of a model
+    # is down. Both measured 2026-09-25 on kit.glm-5.3, ending turns of
+    # four supervised sessions; neither can be caused by the request.
+    "response payload is not completed",
+    "transferencodingerror",
+    "no deployments available for selected model",
 )
 
 
