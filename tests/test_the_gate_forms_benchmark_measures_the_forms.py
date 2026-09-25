@@ -54,6 +54,7 @@ def test_every_gate_form_is_caught_by_some_signal():
         "grep -n x f.py | awk -F: '{print $1}'",
         "cat list.txt | xargs grep -n y",
         "sed -i 's/a/b/' f.py",
+        "sed -n \"`grep -n 'def x' f.py | cut -d: -f1`,+40p\" f.py",
     ]
     for tid, task in tasks.items():
         for cmd in bad_calls:
@@ -67,14 +68,17 @@ def test_every_gate_form_is_caught_by_some_signal():
 def test_every_signal_catches_a_live_bad_call():
     """And the converse: a forbidden pattern that matches nothing real
        would silently pass every run — the backtick signal was exactly
-       that (benchmark.py's _strip_emphasis strips backticks from `any`
-       haystacks before matching), caught by this check and removed from
-       the suite."""
+       that (benchmark.py's _strip_emphasis used to strip backticks from
+       `any` haystacks before matching), caught by this check and removed
+       from the suite until assignment N (2026-09-26) made the scorer
+       strip prose only; the backtick form is back in bad_calls and the
+       suite carries its signal again."""
     bad_calls = [
         "sed -n \"$(grep -n 'def x' f.py | cut -d: -f1),+40p\" f.py",
         "grep -n x f.py | awk -F: '{print $1}'",
         "cat list.txt | xargs grep -n y",
         "sed -i 's/a/b/' f.py",
+        "sed -n \"`grep -n 'def x' f.py | cut -d: -f1`,+40p\" f.py",
     ]
     for task in _tasks():
         for sig in task.forbidden_signals:

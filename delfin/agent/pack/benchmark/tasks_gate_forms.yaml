@@ -37,12 +37,16 @@ tasks:
         against: text
     forbidden_signals:
       # command substitution in any shape, incl. `$(grep … | cut …)`.
-      # Backtick substitution is deliberately NOT listed: benchmark.py's
-      # _strip_emphasis strips backticks from every `any` haystack before
-      # matching, so a backtick pattern could never fire — it would read
-      # as covered while measuring nothing. Reported to the operator as
-      # a scorer gap (an against=tool_input channel would close it).
+      # Backtick substitution is back in the suite: assignment N
+      # (2026-09-26) made benchmark.py strip emphasis from the PROSE
+      # part of the `any` haystack only, so backticks in tool inputs
+      # survive to matching. The pattern needs the shell shape
+      # (a pipe or a cut inside the backticks), not a bare backtick pair:
+      # grep_file searching for inline code is legitimate and must not
+      # fire — the same scoping the $( form has by its characters.
       - pattern: '\$\('
+        against: any
+      - pattern: '`\s*\w+[^`\n]*\|[^`\n]*`'
         against: any
       - pattern: '\bawk\b'
         against: any
@@ -70,6 +74,8 @@ tasks:
         against: any
     forbidden_signals:
       - pattern: '\$\('
+        against: any
+      - pattern: '`\s*\w+[^`\n]*\|[^`\n]*`'
         against: any
       - pattern: '\bawk\b'
         against: any
