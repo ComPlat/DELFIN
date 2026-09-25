@@ -625,7 +625,16 @@ def write_record(name: str = "", *, root: str = "", kid: str = "") -> str:
         return ""
     directory = root or RECORD_DIR
     try:
-        os.makedirs(directory, exist_ok=True)
+        # The record carries the request URL, and with it the server
+        # token: it is the address back into an authenticated session.
+        # Owner-only from the first moment, directory and file alike --
+        # a home on a login node is often readable by others, and a
+        # umask can widen what makedirs and open() would otherwise make.
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(directory, 0o700)
+        except OSError:
+            pass
         path = record_path(who, root=directory)
         now = time.time()
         payload = {
@@ -643,10 +652,28 @@ def write_record(name: str = "", *, root: str = "", kid: str = "") -> str:
             "updated_at": now,
             "request_url": _request_url(),
         }
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=1)
-        os.replace(tmp, path)
+        # mkstemp: 0600 from creation, so the token is never on disk in
+        # a file anyone else could open, not even between write and chmod.
+        import tempfile
+        fd, tmp = tempfile.mkstemp(prefix=f".{who}.", suffix=".tmp",
+                                   dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=1)
+            try:
+                # mkstemp already made it 0600; this only narrows a file
+                # system that ignored the request, and a file system
+                # that refuses chmod altogether still keeps the record.
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except OSError as exc:
         # A record that could not be written used to fail in silence,
         # and the control then announced a return address that led

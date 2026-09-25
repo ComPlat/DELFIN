@@ -31,7 +31,10 @@ from .input_processing import (
     contains_metal,
     is_smiles,
 )
-from .helpers import disable_spellcheck, save_neb_trajectory_csv, save_neb_trajectory_plot_png
+from .helpers import (
+    disable_spellcheck, js_string_literal, save_neb_trajectory_csv,
+    save_neb_trajectory_plot_png,
+)
 from . import docx_view as _docx
 from . import pdf_view as _pdf
 from . import formula_engine as _formula_engine
@@ -863,14 +866,13 @@ def create_tab(ctx):
     _dotfiles_hidden_at_start = bool(_OFFICE_DOC_FEEL or getattr(ctx, 'browser_hides_dotfiles', False))
     calc_dotfiles_btn = widgets.ToggleButton(
         value=not _dotfiles_hidden_at_start,
-        description='.files',
+        description=('Hide .files' if not _dotfiles_hidden_at_start else 'Show .files'),
         tooltip='Show or hide entries whose name starts with a dot',
-        icon='eye-slash',
-        layout=widgets.Layout(width='84px', min_width='84px', height='26px', margin='0 0 0 4px'),
+        layout=widgets.Layout(width='118px', min_width='118px', height='26px'),
     )
 
     calc_filter_sort_row = widgets.HBox(
-        [calc_folder_search, calc_sort_dropdown, calc_dotfiles_btn],
+        [calc_folder_search, calc_sort_dropdown],
         layout=widgets.Layout(
             width='100%', margin='0 0 8px 0',
             align_items='center', justify_content='flex-start',
@@ -3367,7 +3369,7 @@ def create_tab(ctx):
 
             _mol3d_counter[0] += 1
             viewer_id = f"calc_preselect_3dmol_{_mol3d_counter[0]}"
-            mol_json = json.dumps(mol_block)
+            mol_json = js_string_literal(mol_block)
             style_js = profile['style_js']
             viewer_config_js = profile['viewer_config_js']
             display(HTML(f"""
@@ -4132,7 +4134,7 @@ def create_tab(ctx):
         viewer_id = f"mol3d_{_mol3d_counter[0]}"
         wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
         wrapper_seq = _mol3d_counter[0]
-        data_json = json.dumps(data)
+        data_json = js_string_literal(data)
         view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
         scope_id_json = json.dumps(calc_scope_id)
         style_js = profile['style_js']
@@ -7161,8 +7163,8 @@ def create_tab(ctx):
         viewer_id = f'mol3d_rmsd_{_mol3d_counter[0]}'
         wrapper_id = f'calc_mol_wrap_{_mol3d_counter[0]}'
         wrapper_seq = _mol3d_counter[0]
-        ref_json = json.dumps(reference_xyz)
-        target_json = json.dumps(target_xyz)
+        ref_json = js_string_literal(reference_xyz)
+        target_json = js_string_literal(target_xyz)
         view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
         scope_id_json = json.dumps(calc_scope_id)
         viewer_config_js = profile['viewer_config_js']
@@ -7348,8 +7350,8 @@ def create_tab(ctx):
             viewer_container = (
                 f'<div id="{viewer_id}" style="width:100%;height:{viewer_height};position:relative;"></div>'
             )
-        target_json = json.dumps(target_xyz)
-        ref_json = json.dumps(reference_xyz)
+        target_json = js_string_literal(target_xyz)
+        ref_json = js_string_literal(reference_xyz)
         viewer_config_js = profile['viewer_config_js']
         target_style_js = molecule_view_style_js(profile['style'], color='#1f5fff')
         reference_style_js = molecule_view_style_js(profile['style'], color='#d32f2f')
@@ -7478,6 +7480,7 @@ def create_tab(ctx):
                     f"{calc_scope_id}:{state.get('current_path') or '/'}"
                 )
                 scope_id_json = json.dumps(calc_scope_id)
+                xyz_json = js_string_literal(full_xyz)
                 html_content = f"""
                 <div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">
                     <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
@@ -7578,7 +7581,7 @@ def create_tab(ctx):
                         }}
                         var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                         {VIEWER_MOUSE_PATCH_JS}
-                        var xyz = `{full_xyz}`;
+                        var xyz = {xyz_json};
                         viewer.addModelsAsFrames(xyz, "xyz");
                         viewer.setStyle({{}}, {traj_style_js});
                         if (savedView && typeof viewer.setView === 'function') {{
@@ -11217,7 +11220,8 @@ def create_tab(ctx):
             display(_JS(_js))
 
     def calc_on_dotfiles_change(change):
-        calc_dotfiles_btn.icon = 'eye' if calc_dotfiles_btn.value else 'eye-slash'
+        calc_dotfiles_btn.description = (
+            'Hide .files' if calc_dotfiles_btn.value else 'Show .files')
         saved_filter = calc_folder_search.value
         calc_list_directory()
         if saved_filter:
@@ -14650,7 +14654,8 @@ def create_tab(ctx):
         ),
     )
     calc_nav_selection_row = widgets.HBox(
-        [calc_explorer_new_btn, calc_explorer_rename_btn, calc_duplicate_btn, *_archive_selection_children],
+        [calc_explorer_new_btn, calc_explorer_rename_btn, calc_duplicate_btn,
+         calc_dotfiles_btn, *_archive_selection_children],
         layout=widgets.Layout(
             width='100%', overflow_x='hidden',
             justify_content='flex-start', gap='6px',

@@ -20,6 +20,28 @@ _BOHR_TO_ANGSTROM = 0.529177210903
 _HARTREE_TO_KCAL_MOL = 627.5094740631
 
 
+def js_string_literal(value):
+    """A JavaScript string literal that stays a string, whatever it holds.
+
+    File content (an .xyz comment line, a molblock, a .cube header) ends
+    up inside ``<script>`` blocks the dashboard renders. ``json.dumps``
+    alone is not enough there: it leaves ``<`` and ``>`` alone, so a
+    ``</script>`` inside the content closes the script element early and
+    whatever follows is parsed as markup. A template literal is worse
+    still: a backtick or ``${`` in the content is executed as code.
+
+    Every ``<``, ``>`` and ``&`` is written as a unicode escape (backslash-u and four hex digits),
+    which JavaScript reads back as the same character while the HTML
+    parser never sees it. ``ensure_ascii`` (the default) already covers
+    U+2028/U+2029 and everything else outside ASCII.
+    """
+    import json
+    return (json.dumps(str(value if value is not None else ""))
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026"))
+
+
 def parse_neb_final_interp(text):
     """Parse a ``*.final.interp`` file into Images / Interp. sections."""
     sections = {}
