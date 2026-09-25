@@ -314,8 +314,15 @@ tasks:
     prompt: >-
       wechsle zu dem tab namens "qwertyzzzz"
     expected_signals:
-      # Model should mention that no such tab exists OR list real tabs OR ask
-      - pattern: '(?i)(unbekannt|unknown|nicht.*existi|kein.*tab|no.*such|verfügbar|available|did.*you.*mean|meinten.*sie)'
+      # Model should mention that no such tab exists OR list real tabs OR ask.
+      # `nicht.*existi` assumed verb-first word order and missed the German
+      # verb-second sentence the nightly run actually produced ("Der Tab
+      # „qwertyzzzz“ existiert nicht" — nicht AFTER existi, 2026-09-25,
+      # kit.glm-5.3). Both orders are the same behaviour; the order the
+      # words come in is not. `existi` alone would cover both but also
+      # matches "existiert" inside a confirmation that a tab DOES exist —
+      # so the negation stays, on either side of the verb.
+      - pattern: '(?i)(unbekannt|unknown|existiert nicht|nicht.*existi|gibt es nicht|kein.*tab|no.*such|verfügbar|available|did.*you.*mean|meinten.*sie)'
         against: text
     forbidden_signals:
       # Must NOT silently emit a /tab qwertyzzzz action and pretend it worked
