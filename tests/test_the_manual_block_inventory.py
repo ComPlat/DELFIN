@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from tests.test_the_manual_recipes import load_blocks, repo_root
+from tests.manual_blocks import load_blocks, repo_root
 
 
 def _blocks():
