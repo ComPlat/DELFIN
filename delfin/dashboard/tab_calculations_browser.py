@@ -8248,6 +8248,14 @@ def create_tab(ctx):
             if limit is not None and len(targets) >= limit:
                 return targets
 
+        if getattr(ctx, 'browser_scan_is_bounded', False):
+            # A clone rooted at the home directory: walking it to find every
+            # workspace would walk a micromamba installation and every cache
+            # with it, on each change of directory. The report button then
+            # offers what is in sight, which is what a file browser over a
+            # home directory can honestly offer.
+            return targets
+
         try:
             for control_path in current_dir.rglob('CONTROL.txt'):
                 candidate = control_path.parent
