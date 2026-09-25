@@ -2724,9 +2724,27 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     # What is open NOW comes first. A table of history read as "nothing
     # is running" while five sessions were, and the supervisor had to
     # assemble the live picture from tmux panes and git logs instead.
-    live = _cr.render_open(_cr.open_now())
+    live_rows = _cr.open_now()
+    live = _cr.render_open(live_rows)
     if live:
         print(live)
+        # What the open ones cost this host, in the same breath: the
+        # listing is where an operator looks first, so the load belongs
+        # here too — one quiet line each, alarms and all.
+        try:
+            import socket as _socket
+            from . import session_load as _sl
+            limits = _load_limits()
+            host = _socket.gethostname()
+            for row in live_rows:
+                pid = int(row.get("pid") or 0)
+                key = str(row.get("key") or "?")
+                if str(row.get("host") or host) != host or pid <= 0:
+                    continue
+                load = _sl.load_of(pid)
+                print(format_load_row(key, load, _sl.alarms(load, limits)))
+        except Exception:  # history answers even when /proc cannot
+            pass
         print()
     rows = _cr.list_sessions(limit=max(1, int(getattr(args, "limit", 20) or 20)))
     if not rows:
