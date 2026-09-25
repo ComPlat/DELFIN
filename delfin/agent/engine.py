@@ -5214,8 +5214,31 @@ class AgentEngine:
         except Exception:
             pass
 
+        # Working-state block: rebuilt deterministically from the
+        # session's own records (machine turns, change journal, task
+        # store) — never from model text, never via a model call. A
+        # returning agent needs files-changed, last test outcome, open
+        # tasks, denials-with-reasons and standing instructions; those
+        # only survived the summary by accident before. Built from the
+        # messages ABOUT to be replaced (compactable), so it describes
+        # exactly what was compacted away. Best-effort: a broken store
+        # must not break compaction.
+        _state_block = ""
+        try:
+            from .working_state import build_working_state_block
+            _state_block = build_working_state_block(
+                compactable,
+                session_id=str(getattr(self, "session_id", "") or ""),
+                workspace=getattr(self, "repo_dir", None),
+            )
+        except Exception:
+            _state_block = ""
+
+        _summary_msg = f"[Conversation summary — older messages compacted]\n{summary}"
+        if _state_block:
+            _summary_msg = f"{_state_block}\n{_summary_msg}"
         self.messages = [
-            {"role": "user", "content": f"[Conversation summary — older messages compacted]\n{summary}"},
+            {"role": "user", "content": _summary_msg},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
         ] + pinned_old + recent
         # `recent` starts with an assistant turn whenever compaction fires right
