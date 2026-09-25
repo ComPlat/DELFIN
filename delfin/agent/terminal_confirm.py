@@ -537,6 +537,7 @@ class TerminalConfirmBroker:
                 if outside[0] is False and outside[1]:
                     self.last_refusal_reason = outside[1]
                 _note_outside_answer(req, self.session_key, outside[0])
+                self._audit_dialog(req, by="outside")
                 return req.decision
             if deadline is not None and _time.monotonic() >= deadline:
                 break
@@ -555,7 +556,32 @@ class TerminalConfirmBroker:
                 req.published = None
             else:
                 self.last_timed_out = False
+        self._audit_dialog(req, by="expired" if req.expired else "terminal")
         return req.decision
+
+    def _audit_dialog(self, req: ConfirmRequest, *, by: str) -> None:
+        """One audit record per dialog a person had to answer.
+
+        The audit log recorded what ran and what was refused, never that
+        someone was ASKED: a round's operator load could only be counted
+        by hand (night run 2026-09-25). Carries the session name (-n),
+        so a report can filter by it. Never raises.
+        """
+        try:
+            from . import audit_log as _audit
+            decision = req.decision
+            _audit.append({
+                "event": "dialog",
+                "session_id": self.session_id,
+                "session_key": self.session_key,
+                "tool": str(getattr(req, "tool", "") or ""),
+                "answer": ("expired" if req.expired else
+                           "approved" if decision is True else
+                           "denied" if decision is False else "answered"),
+                "by": by,
+            })
+        except Exception:
+            pass
 
     @staticmethod
     def _refusal_for(req: ConfirmRequest) -> Any:
