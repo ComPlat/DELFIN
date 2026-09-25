@@ -636,6 +636,11 @@ USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.scheduler", "_DEFAULT_PATH", "cron.json"),
     ("delfin.dashboard.schedules", "_DEFAULT_PATH", "schedules.json"),
     ("delfin.agent.memory_store", "_DEFAULT_PATH", "agent_memory.json"),
+    # The retrieval fixture: questions generated once and re-used, keyed
+    # to the index they were built from. Per user, not per checkout -- the
+    # corpus is the user's literature folder, not this repository.
+    ("delfin.doc_server.paraphrase_eval", "_DEFAULT_PATH",
+     "retrieval_paraphrase.json"),
     ("delfin.agent.skill_registry", "_LOCAL_SKILLS_DIR", "skills"),
     ("delfin.agent.job_monitor", "_WATCHED_PATH", "watched_jobs.json"),
     ("delfin.agent.job_monitor", "_AGENT_WATCH_INDEX_PATH",
