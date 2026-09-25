@@ -198,7 +198,7 @@ H     1.026719     0.000000    -0.363000
 **A SMILES string** (single line):
 
 ```
-[Fe+2]([N]1=CC=CC=1)([N]2=CC=CC=2)([N]3=CC=CC=3)([N]4=CC=CC=4)([N]5=CC=CC=5)[N]6=CC=CC=6
+[Fe+2]([N]1=CC=CC=C1)([N]2=CC=CC=C2)([N]3=CC=CC=C3)([N]4=CC=CC=C4)([N]5=CC=CC=C5)[N]6=CC=CC=C6
 ```
 
 **QM/MM region splitting**: Insert a line containing only `$` to separate QM and MM regions. DELFIN preserves this splitting for all follow-up jobs automatically.
