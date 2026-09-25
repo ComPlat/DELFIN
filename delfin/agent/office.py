@@ -129,6 +129,20 @@ class OfficeError(RuntimeError):
 # Backends and file kinds
 # ---------------------------------------------------------------------------
 
+
+def _pymupdf():
+    """PyMuPDF under its own name, falling back to the historical ``fitz``.
+
+    1.28 deprecates ``import fitz`` with a warning on every import and will
+    remove it; asking for ``pymupdf`` first keeps both working.
+    """
+    try:
+        import pymupdf
+        return pymupdf
+    except ImportError:
+        import fitz
+        return fitz
+
 def document_kind(path: Any) -> Optional[str]:
     """The handling family of *path*, or None if there is no reader.
 
@@ -3577,7 +3591,7 @@ def ocr_availability() -> dict:
     detail: list[str] = []
     renderer = False
     try:
-        importlib.import_module("fitz")
+        _pymupdf()
         renderer = True
     except Exception:
         detail.append(
@@ -3643,7 +3657,7 @@ def ocr_availability() -> dict:
 def _render_page(path: Path, number: int, dpi: int = OCR_DPI) -> bytes:
     """One PDF page as PNG bytes. Raises OfficeError if it cannot."""
     try:
-        import fitz
+        fitz = _pymupdf()
     except Exception as exc:
         raise OfficeError(
             f"rendering a page needs pymupdf, which is not installed ({exc})"
@@ -3956,7 +3970,7 @@ def _field_labels(path: Path) -> dict:
     """
     out: dict[str, dict] = {}
     try:
-        import fitz
+        fitz = _pymupdf()
     except Exception:
         return out
     try:

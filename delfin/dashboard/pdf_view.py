@@ -804,9 +804,20 @@ def blend_boxes(pixels: np.ndarray, boxes: Sequence[Sequence[int]],
 # ---------------------------------------------------------------------------
 
 def _fitz():
-    """Import PyMuPDF on demand so a missing binding is a message, not a crash."""
+    """Import PyMuPDF on demand so a missing binding is a message, not a crash.
+
+    ``pymupdf`` is the module's own name; ``fitz`` is the historical one, which
+    1.28 deprecates with a warning on every import and will remove. Asking for
+    the new name first keeps the warning out of the log now and the viewer
+    working when the old name goes.
+    """
     try:
-        import fitz  # noqa: PLC0415 -- optional at import time by design
+        import pymupdf  # noqa: PLC0415 -- optional at import time by design
+        return pymupdf
+    except ImportError:
+        pass
+    try:
+        import fitz  # noqa: PLC0415 -- the name before 1.28
     except Exception as exc:                     # pragma: no cover - env specific
         raise PdfError(
             'PDF viewing is unavailable: PyMuPDF is not installed '

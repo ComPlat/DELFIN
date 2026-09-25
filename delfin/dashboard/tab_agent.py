@@ -3245,7 +3245,10 @@ def _render_pdf_preview(p) -> str | None:
     came out blank.
     """
     try:
-        import fitz  # PyMuPDF
+        try:
+            import pymupdf as fitz      # its own name since 1.28
+        except ImportError:
+            import fitz                 # the name before that
     except Exception:
         return None
     try:
