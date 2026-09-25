@@ -78,6 +78,41 @@ def _extract_pdf_text(
     return pages
 
 
+#: How long an indexed section may be. Taken from the corpus rather than
+#: picked: the ORCA manual's own numbered sections have a median of about
+#: 1500 characters and retrieve well, so a window of that order keeps a
+#: paper's parts comparable to a manual's instead of competing with them
+#: as one large blob.
+_SECTION_TARGET = 2000
+
+
+def _windows(text, target=_SECTION_TARGET):
+    """Split *text* into parts of roughly *target* characters. Keeps all of it.
+
+    Input: a run of text. Output: the same text, in order, in pieces.
+
+    Split on paragraph boundaries and never inside one, so a part is
+    something a reader can read. A single paragraph longer than the target
+    is emitted whole rather than cut: an over-long part costs ranking,
+    a cut sentence costs meaning.
+    """
+    parts = []
+    buf = []
+    size = 0
+    for para in re.split(r"\n\s*\n", text):
+        para = para.strip()
+        if not para:
+            continue
+        if buf and size + len(para) > target:
+            parts.append("\n\n".join(buf))
+            buf, size = [], 0
+        buf.append(para)
+        size += len(para) + 2
+    if buf:
+        parts.append("\n\n".join(buf))
+    return parts or ([text.strip()] if text.strip() else [])
+
+
 def _chunk_pdf_into_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Split extracted PDF pages into sections based on numbered headings.
 
@@ -108,16 +143,34 @@ def _chunk_pdf_into_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]
     matches = list(heading_re.finditer(full_text))
 
     if not matches:
-        # No headings found — treat entire document as one section
+        # No headings found. This kept the first 12000 characters and
+        # dropped the rest without saying so. The corpus measured here has
+        # headings in every PDF, so this branch carried the fault unseen --
+        # it was a test written for it, not a document, that found it.
         clean_text = re.sub(r"--- PAGE \d+ ---\n", "", full_text)
-        return [{
-            "section_id": "full_document",
-            "title": "Full Document",
-            "level": 0,
-            "text": clean_text[:12000],
-        }]
+        return [
+            {"section_id": f"part_{i + 1:03d}",
+             "title": f"Part {i + 1}",
+             "level": 0,
+             "text": part}
+            for i, part in enumerate(_windows(clean_text))
+        ]
 
     sections: list[dict[str, Any]] = []
+
+    # Everything before the first heading. It was dropped entirely, and in
+    # a paper that is the title, the abstract and the introduction -- the
+    # part most searches are aimed at.
+    preamble = re.sub(r"--- PAGE \d+ ---\n?", "",
+                      full_text[:matches[0].start()]).strip()
+    for i, part in enumerate(_windows(preamble)):
+        sections.append({
+            "section_id": f"front_{i + 1:03d}",
+            "title": "Front matter" if i == 0 else f"Front matter {i + 1}",
+            "level": 0,
+            "text": part,
+        })
+
     for i, match in enumerate(matches):
         number = match.group(1)
         title = match.group(2).strip()
@@ -134,16 +187,17 @@ def _chunk_pdf_into_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]
         section_id = re.sub(r"[^a-z0-9]+", "_", f"ch{number}_{title}".lower()).strip("_")
         section_id = section_id[:80]
 
-        # Cap section size
-        if len(section_text) > 12000:
-            section_text = section_text[:12000] + "\n[... truncated]"
-
-        sections.append({
-            "section_id": section_id,
-            "title": f"{number} {title}",
-            "level": level,
-            "text": section_text,
-        })
+        # Split rather than truncate. The cap used to cut at 12000 and
+        # append a "[... truncated]" marker, which is honest and still
+        # unsearchable.
+        for n, part in enumerate(_windows(section_text)):
+            sections.append({
+                "section_id": section_id if n == 0 else f"{section_id}_{n + 1}",
+                "title": (f"{number} {title}" if n == 0
+                          else f"{number} {title} ({n + 1})"),
+                "level": level,
+                "text": part,
+            })
 
     return sections
 
