@@ -953,10 +953,14 @@ Predicts log K values from Born-Haber thermodynamic cycles for coordination comp
 ```ini
 thermodynamics=yes
 thermodynamics_mode=auto
+# required companions of thermodynamics=yes:
+thdy_smiles_converter=ARCHITECTOR
+thdy_preopt=xtb
 ```
 
 **Reaction mode** (explicit reaction):
 
+<!-- recipe: not-runnable — the reaction line is the {SMILES} template from delfin/stability_constant.py; replace a/b/c/d and every {SMILES} before use -->
 ```ini
 thermodynamics=yes
 thermodynamics_mode=reaction
