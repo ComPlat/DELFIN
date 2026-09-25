@@ -2203,6 +2203,19 @@ class PromptLoader:
         if chemistry_reminder and role_id in (
             "solo_agent", "research_agent", "builder_agent", "dashboard_agent",
         ):
+            if role_id == "dashboard_agent":
+                # The protocol is for method QUESTIONS. "stell den orca
+                # functional auf b3lyp ein" is a dashboard action: the
+                # keywords made it a chemistry task, the reminder said
+                # "search_docs BEFORE answering", and the benchmark run of
+                # 2026-09-25 searched twice and set nothing -- against the
+                # dashboard's own rule 1.
+                chemistry_reminder = (
+                    "Applies to method and parameter QUESTIONS. A request "
+                    "to set, open or switch something in the dashboard is "
+                    "answered with its ACTION line first (rule 1: dashboard "
+                    "action first); no search is needed for that.\n"
+                    + chemistry_reminder)
             add("chemistry_protocol", self.LAYER_VOLATILE,
                 f"--- Chemistry Protocol ---\n{chemistry_reminder}")
 
