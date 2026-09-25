@@ -1032,6 +1032,7 @@ L–M–L angles in conventional builders.
 
 The manifold then goes through a funnel that the `MANTA_*` keys steer:
 
+<!-- recipe: not-runnable — prose diagram of the MANTA funnel, not a command -->
 ```
 build the manifold → screen (one single point per frame and multiplicity)
                    → optimise (xTB per survivor)
@@ -1361,6 +1362,7 @@ max_recovery_attempts=3
 
 ### How it works
 
+<!-- recipe: not-runnable — prose diagram of the recovery loop, not a command -->
 ```
 ORCA fails → detect error type → modify input → retry
 ```

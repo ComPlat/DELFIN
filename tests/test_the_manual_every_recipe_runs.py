@@ -507,12 +507,20 @@ def test_yaml_recipe_loads():
         _check_yaml(b)
 
 
-def test_python_recipes_compile_and_import():
+def test_python_recipes_compile_and_import(capsys):
     blocks = [b for b in load_blocks(repo_root())
               if b.lang == "python" and not b.not_runnable_reason]
     assert blocks
+    failures = []
     for b in blocks:
-        _check_python(b)
+        try:
+            _check_python(b)
+        except AssertionError as e:
+            failures.append(str(e))
+    print(f"python blocks: {len(blocks)}, failures: {len(failures)}")
+    for f in failures:
+        print("  " + f)
+    assert not failures
 
 
 def test_every_smiles_in_the_manual_is_a_real_molecule(capsys):
@@ -548,3 +556,29 @@ def test_marked_blocks_carry_a_reason():
         if b.not_runnable_reason is not None:
             assert len(b.not_runnable_reason) > 3, (
                 f"{b.where}: not-runnable marker without a real reason")
+
+
+# Language tags that are documentation, not recipes: output examples and
+# literature.  A block with any OTHER tag must be handled by a check
+# above (or explicitly marked not-runnable), else the inventory grows a
+# kind the tests silently ignore.
+_NON_RECIPE_LANGS = {"text", "bibtex"}
+
+
+def test_every_language_is_accounted_for(capsys):
+    blocks = load_blocks(repo_root())
+    checked_langs = {"bash", "ini", "yaml", "python"}
+    problems = []
+    for b in blocks:
+        if b.not_runnable_reason:
+            continue  # skipped with a reason, whatever its tag
+        if b.lang in checked_langs or b.lang in _NON_RECIPE_LANGS:
+            continue
+        if not b.lang:
+            continue  # untagged: classified by test_untagged_blocks…
+        problems.append(f"{b.where}: unhandled language tag {b.lang!r}")
+    for f in problems:
+        print("  " + f)
+    assert not problems, (
+        "new block kind the recipe tests do not cover — add a check or "
+        "mark the block not-runnable")

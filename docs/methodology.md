@@ -23,6 +23,7 @@ The ground state is determined by comparing total electronic energies or Gibbs f
 
 Redox potentials are computed using the thermodynamic cycle approach, following the methodology established by Marenich et al. (2014):
 
+<!-- recipe: not-runnable — formula, not code -->
 ```
 E°(M^n+/M^(n-1)+) = [G(M^n+) - G(M^(n-1)+)] / nF - E_ref
 ```
@@ -131,6 +132,7 @@ def classify_tm_presence(found_metals):
 
 For transition metal complexes, DELFIN employs sophisticated per-atom basis set assignment:
 
+<!-- recipe: not-runnable — source excerpt, the signature is elided with (...) -->
 ```python
 # From occupier.py:174-296
 def read_and_modify_file_OCCUPIER(...):
@@ -149,6 +151,7 @@ def read_and_modify_file_OCCUPIER(...):
 #### Mathematical Formulation for Spin Projection
 When broken-symmetry solutions are obtained, approximate spin projection corrects for spin contamination:
 
+<!-- recipe: not-runnable — formula, not code -->
 ```
 E_projected = E_BS + (E_HS - E_BS) × [S(S+1) - ⟨S²⟩_BS] / [⟨S²⟩_HS - ⟨S²⟩_BS]
 ```
@@ -198,6 +201,7 @@ def get_E_ref(config):
 
 DELFIN integrates with xTB and CREST for pre-optimization and conformational analysis:
 
+<!-- recipe: not-runnable — source excerpt, the signature is elided with (...) -->
 ```python
 # From xtb_crest.py:23-64
 def XTB(multiplicity, charge, config):
