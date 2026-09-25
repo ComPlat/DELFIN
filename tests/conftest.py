@@ -109,7 +109,14 @@ def _unexpected_under_a_generated_root() -> frozenset:
     import subprocess
     try:
         done = subprocess.run(
-            ["git", "-C", str(_CHECKOUT_ROOT), "status", "--porcelain", "-z",
+            # --no-optional-locks: this is a pure read of the real
+            # checkout, and `git status` otherwise opportunistically
+            # refreshes its index under index.lock. A suite process
+            # killed mid-refresh (the OOM killer did, twice on
+            # 2026-09-22) leaves that lock behind and blocks every
+            # later `git add` in the worktree.
+            ["git", "--no-optional-locks", "-C", str(_CHECKOUT_ROOT),
+             "status", "--porcelain", "-z",
              "--", *_GENERATED_ROOTS],
             capture_output=True, text=True, timeout=60, check=False)
     except (OSError, subprocess.SubprocessError):
