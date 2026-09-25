@@ -285,7 +285,7 @@ def _read(path: Path) -> dict[str, Any]:
 
 
 def _write(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _private_dir(path.parent)
     data["updated_at"] = time.time()
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     try:
@@ -651,7 +651,7 @@ def register_office_workspace(path: Path | str) -> None:
         _office_ws_cache = known
         try:
             f = _office_ws_file()
-            f.parent.mkdir(parents=True, exist_ok=True)
+            _private_dir(f.parent)
             _atomic_write(f, json.dumps(sorted(known), ensure_ascii=False))
         except OSError:
             pass
@@ -989,13 +989,80 @@ def _project_slug(repo_root: Path) -> str:
     return "-" + str(root).replace("/", "-").lstrip("-")
 
 
+def _private_dir(path: Path) -> Path:
+    """Create *path*, owner-only, and repair the levels above it.
+
+    Input: a directory. Output: the same path, created. Every level from
+    ``~/.delfin`` down to *path* ends at mode 0o700 -- newly created ones
+    because they are created with it, already existing ones because they
+    are chmod-ed to it.
+
+    Both halves are needed, measured rather than assumed:
+
+        mkdir(parents=True, mode=0o700)   parents get the umask, not 0o700
+        mkdir(mode=0o700, exist_ok=True)  an EXISTING directory keeps its mode
+
+    So a fix that only passes ``mode=`` protects nothing on any
+    installation that has run before, which is all of them. This is the
+    idiom credentials.py, where.py, pending_changes.py and turn_record.py
+    already use; the memory store was the one place that did not.
+
+    What it protects. The files are 0600 already, so this is about the
+    listing: note names, plan names and the store slug, which under the
+    default ``path`` memory key is the full checkout path. A directory
+    another account cannot traverse cannot be listed either, whatever the
+    modes inside it -- measured: with a 0o600 parent even the owner gets
+    PermissionError on a file in a 0o777 child.
+
+    Why it stops at ``~/.delfin``: a path outside it belongs to the user
+    or to a test, and tightening a directory this tool does not own is
+    not this tool's decision. Such a path is created and left alone.
+
+    Never raises. A store that cannot be tightened is still a store; the
+    caller's write fails on its own terms if the directory is unusable.
+    """
+    path = Path(path)
+    root = Path.home() / ".delfin"
+    try:
+        inside = path == root or root in path.parents
+    except Exception:
+        inside = False
+    if not inside:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return path
+    # Root first, then downward: a level is only reachable once its parent
+    # is, so repairing top-down leaves no window where a deeper level is
+    # already private but its parent still announces it.
+    levels = [root, *[p for p in reversed(path.parents) if root in p.parents],
+              path] if path != root else [root]
+    for level in levels:
+        try:
+            # parents=True matters for the root alone, whose own parent --
+            # the home directory -- may not exist yet. Without it the root
+            # creation fails, every level below it fails too, and this
+            # returns a path that was never made. Ancestors ABOVE ~/.delfin
+            # are created with the umask on purpose: they are not ours to
+            # tighten.
+            level.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError:
+            continue
+        try:
+            os.chmod(level, 0o700)
+        except OSError:
+            pass
+    return path
+
+
 def _migrate_legacy_dir(old: Path, new: Path) -> None:
     """One-time move of a per-project store out of the legacy ~/.claude path
     into DELFIN's own ~/.delfin namespace (same filesystem → cheap rename).
     Best-effort; never raises."""
     try:
         if old.is_dir() and not new.exists():
-            new.parent.mkdir(parents=True, exist_ok=True)
+            _private_dir(new.parent)
             old.rename(new)
     except Exception:
         pass
@@ -1169,7 +1236,7 @@ def save_plan(
     slug = _slugify(display_title)
 
     plans_dir = _delfin_plans_dir(Path(repo_root))
-    plans_dir.mkdir(parents=True, exist_ok=True)
+    _private_dir(plans_dir)
 
     fname = f"{slug}.md"
     fpath = plans_dir / fname
@@ -1277,7 +1344,7 @@ def _save_typed_memory_unlocked(
     slug = _slugify(display_title)
 
     memory_dir = _memory_dir_for_scope(repo_root, scope)
-    memory_dir.mkdir(parents=True, exist_ok=True)
+    _private_dir(memory_dir)
     index_header = (
         _GLOBAL_INDEX_HEADER if scope == "user" else _PROJECT_INDEX_HEADER
     )
