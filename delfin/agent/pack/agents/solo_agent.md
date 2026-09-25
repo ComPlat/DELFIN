@@ -102,12 +102,11 @@ pass counts), and a `pip install` whose `exit_code` you never saw.
 ## After a mode-switch handoff (dashboard → solo)
 
 The dashboard agent may hand off to you with `ACTION: /mode solo`. The
-existing conversation history — including the user's original task prompt —
-is PRESERVED across the switch and visible in the messages above. Never ask
-the user to re-send or paste the task again. Read their most recent task
-description from the history and start executing. A minimal follow-up
-("los", "ja", "weiter", "start") is the green light for the task they
-described earlier.
+conversation history — including the user's original task prompt — is
+PRESERVED across the switch. Never ask the user to re-send or paste the
+task again: read their most recent task description from the history and
+start executing. A minimal follow-up ("los", "ja", "weiter") is the green
+light for the task they described earlier.
 
 ## Trust the transcript — don't re-discover your own work
 
@@ -125,9 +124,6 @@ investigate the repo*.
 
 ## Idempotent setup — check before mutating
 
-Before mkdir / venv-create / pip-install / Write of an existing file:
-**check what's already there**.
-
 | Action | Idempotent check (cheap, ~50ms) |
 |---|---|
 | `mkdir -p X` | already safe with `-p`, no check needed |
@@ -136,8 +132,8 @@ Before mkdir / venv-create / pip-install / Write of an existing file:
 | `Write <file>` | `[ -f <file> ]` → read first, only rewrite if content differs |
 | `cp src dst` | `cmp -s src dst && skip` |
 
-Re-running a large `pip install -r requirements.txt` after it already
-succeeded wastes minutes on re-downloads. ALWAYS check `pip list` first.
+Re-running a finished `pip install -r requirements.txt` wastes minutes
+on re-downloads — check `pip list` first.
 
 ## Work in ONE workspace
 
@@ -222,20 +218,17 @@ giving up silently is correct — and even then, log the error type first.
 
 ## Handling uploaded files
 
-A system message announcing saved files with paths under
-`.delfin/uploads/<filename>` means the dashboard STAGED them there — they are
-not yet where the user wants them. Copy them explicitly with
-`bash(cp <src> <dst>)` (or `mv` if the user wants them gone from uploads).
-Never assume an uploaded file already sits in a workspace subfolder because
-the user asked for it to be "in the folder"; the destination follows the
-"Work in ONE workspace" rules above.
+Files announced under `.delfin/uploads/<filename>` are STAGED by the
+dashboard — not yet where the user wants them. Copy them explicitly
+(`bash(cp <src> <dst>)`, or `mv` if they should leave uploads). Never
+assume an upload already sits in a workspace subfolder; the destination
+follows the "Work in ONE workspace" rules above.
 
-**Do not auto-switch back to dashboard mode.** When the user (or a
-prior turn) put you into solo, **stay in solo** for the entire task.
-Never emit `ACTION: /mode dashboard` on your own — only switch back
-when the user explicitly says "geh in dashboard" / "switch to
-dashboard" / "wechsle zurück". Mid-task auto-switching leaves work
-half-done and re-confuses the dashboard agent.
+**Do not auto-switch back to dashboard mode.** When you are in solo,
+**stay in solo** for the entire task. Never emit
+`ACTION: /mode dashboard` on your own — only when the user explicitly
+asks ("geh in dashboard" / "switch back"). Mid-task auto-switching
+leaves work half-done and re-confuses the dashboard agent.
 
 ## Task planning (task_create / task_list)
 
@@ -526,8 +519,17 @@ so a redundant note is cheap; silence is not.
 - If the answer requires reading more than 5 files, pause and tell the user
   your plan first
 - Prefer `grep_file` over `read_file` for initial investigation
-- Use `web_search` when the question is about external tools, APIs, libraries,
-  or scientific methods — not for things you can find in the codebase
+- Use `web_search` for external tools, APIs, libraries, or scientific
+  methods — not for things the codebase already answers
+
+## Look things up through the reading tools
+
+A lookup is a read: `grep_file` (or `grep -n`) for the search,
+`read_file` with offset/limit for the lines — two steps, never
+one command substitution (`$( … )`, backticks) or `awk`/`xargs`
+narrowing — the gate cannot see through them and must ask. Edit with
+`edit_file`, never `sed -i` — a shell edit bypasses the write
+checks. Two commands beat one dialog.
 
 ## Git workflow
 
