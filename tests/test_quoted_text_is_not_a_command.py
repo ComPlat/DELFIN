@@ -70,3 +70,24 @@ def test_blanking_keeps_offsets_and_double_quoted_substitution():
     assert len(blanked) == len(cmd)
     assert "`" not in blanked
     assert "$(y)" in blanked
+
+
+def test_a_tool_call_folded_into_a_command_is_answered_without_asking(tmp_path):
+    """Measured 2026-09-25: GLM's grep_file call arrived as bash text."""
+    asked: list[str] = []
+    perms = KitToolPermissions(
+        workspace=tmp_path, mode="acceptEdits",
+        confirm_callback=lambda tool, args, reason: (asked.append(reason), True)[1])
+    out = _doc_executor._run_permission_gate("bash", {
+        "command": "grep_file<arg_key>pattern</arg_key>"
+                   "<arg_value>_DocToolExecutor\\("}, perms)
+    assert not asked
+    assert out and "grep_file" in out and "Nothing was run" in out
+
+
+def test_a_grep_for_the_markup_is_an_ordinary_grep(tmp_path):
+    # text_sanitize.py handles exactly these tags; searching for them is work.
+    out = _doc_executor._run_permission_gate(
+        "bash", {"command": "grep -n '<arg_key>' notes.txt"},
+        KitToolPermissions(workspace=tmp_path, mode="acceptEdits"))
+    assert out is None
