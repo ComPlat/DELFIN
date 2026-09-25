@@ -1,27 +1,19 @@
-"""How edit_file / multi_edit behave TODAY, pinned by test.
+"""How edit_file / multi_edit behave, pinned by test.
 
-Characterisation of ``_DocToolExecutor.execute("edit_file"|"multi_edit",
-...)`` in delfin/agent/api_client.py, exercised the same way
-tests/test_editblock_and_bundle.py does it: a real executor, a real
-KitToolPermissions in "default" mode, a file under tmp_path.
+Written as a characterisation of the pre-edit_engine code (2026-09-25,
+runde3-s4) and kept as the contract after edit_engine was wired in:
 
-What is pinned here is deliberate input for the edit_engine work:
-
-* the special cases the engine must keep answering identically
-  (empty old_string, old == new, replace_all, ambiguity, the
-  read-before-edit baseline),
-* one behavior the engine intentionally REPLACES: the whitespace-tolerant
-  fallback that silently applies a drifted match (api_client.py:15146).
-  The engine must diagnose a near miss instead of applying it,
-* one gap the engine closes: a no-match error that names neither a line
-  number nor the text that is nearly there (the s7 report),
-* one regression the engine adds: a Python file that parsed before the
-  edit and does not after is applied today without a word (the s6
-  report),
-* and one stale belief it corrects: multi_edit IS atomic on today's
-  code (the in-memory loop at api_client.py:15268 writes only after all
-  edits validated). The s9 report described a state that no longer
-  exists; this file is the evidence.
+* the special cases answered identically before and after (empty
+  old_string, old == new, replace_all, ambiguity, the read-before-edit
+  baseline, CRLF survival),
+* the whitespace-tolerant fallback STAYS: a unique drifted match is
+  applied and the result says "fuzzy match" (it was never silent -- the
+  first draft of edit_engine wanted to drop it; kept because weaker
+  models lean on it and it reports itself),
+* a Python file that parsed before an edit and does not after is still
+  written, but the result now carries a WARNING with the line (s6),
+* multi_edit is atomic (in-memory loop, one write at the end); the s9
+  report described an older state.
 """
 
 from __future__ import annotations
@@ -128,15 +120,12 @@ def test_edit_requires_a_read_baseline(workspace):
 
 
 # ---------------------------------------------------------------------------
-# What the engine replaces / closes. Each of these documents TODAY'S gap
-# with the observed behavior; edit_engine must do better (see
-# test_edit_engine_regressions.py).
+# Where edit_engine changed or kept the behavior.
 # ---------------------------------------------------------------------------
 
-def test_today_a_drifted_match_is_applied_silently(workspace):
-    """s7's cousin: the whitespace-tolerant fallback (api_client.py:15146)
-    APPLIES a near miss without asking. The engine must diagnose, not
-    apply."""
+def test_a_unique_drifted_match_is_applied_and_says_fuzzy(workspace):
+    """The whitespace-tolerant fallback applies a UNIQUE near miss and
+    says so in the result. Deliberate, kept after edit_engine."""
     t = workspace / "y.py"
     t.write_text(PY_BLOCK)
     perms = KitToolPermissions(workspace=workspace, mode="default")
@@ -146,30 +135,28 @@ def test_today_a_drifted_match_is_applied_silently(workspace):
                      old_string="if cond:\n    print('hi')\n    return 1",
                      new_string="if cond:\n    print('bye')\n    return 7")
     assert "Edited" in out
-    assert "fuzzy" in out.lower()  # it went ahead and applied it
+    assert "fuzzy" in out.lower()  # applied, and it says how
 
 
-def test_today_a_no_match_error_names_no_line(workspace):
-    """s7: 'old_string not found' on a big file, with no hint WHERE the
-    text nearly stands. The engine must report line number + actual text."""
+def test_a_plain_miss_says_nothing_was_replaced(workspace):
+    """Nothing near the old_string: no near miss to name, and the error
+    says the file is untouched."""
     t = workspace / "big.py"
     t.write_text("def a():\n    return 1\n\n\ndef b():\n    return 2\n")
     perms = KitToolPermissions(workspace=workspace, mode="default")
     _read_file(perms, t)
-    # Nothing matches, not even the whitespace-tolerant fallback (the
-    # text simply is not there): today's error names no line number.
     out = _edit_file(perms, t, old_string="def c():\n    return 3",
                      new_string="def c():\n    return 4")
     assert "error" in out
-    msg = out
-    assert "not found" in msg
-    # No line number anywhere in today's message:
-    assert "line" not in msg.lower()
+    assert "not found" in out
+    assert "Nothing was replaced" in out
+    assert t.read_text() == "def a():\n    return 1\n\n\ndef b():\n    return 2\n"
 
 
-def test_today_a_syntax_destroying_edit_is_applied_without_a_word(workspace):
-    """s6: the edit matches exactly but destroys the following block's
-    indentation. Today it is written without any syntax check."""
+def test_a_syntax_destroying_edit_is_applied_with_a_warning(workspace):
+    """s6: the edit matches exactly but destroys the block's indentation.
+    It is still written (a rewrite may pass through a broken state), and
+    the result says the file no longer parses, with the line."""
     t = workspace / "z.py"
     t.write_text(
         "def a():\n"
@@ -184,20 +171,20 @@ def test_today_a_syntax_destroying_edit_is_applied_without_a_word(workspace):
     _read_file(perms, t)
     # Exact unique match; new_string uses 2-space indent where the file
     # uses 4 — the result mixes indents inside one block and no longer
-    # parses. Today it is written without any syntax check.
+    # parses.
     out = _edit_file(perms, t,
                      old_string="    return x",
                      new_string="  return x")
     assert "Edited" in out  # applied...
+    assert "no longer parses" in out and "line 3" in out  # ...and said so
     import ast
     with pytest.raises(SyntaxError):
-        ast.parse(t.read_text())  # ...and left the file unparseable
+        ast.parse(t.read_text())
 
 
-def test_today_multi_edit_is_atomic(workspace):
-    """s9 said a failed batch left earlier edits applied. On today's code
-    (in-memory loop, single write at the end) that is NOT the case —
-    this test is the evidence, and the engine must keep the behavior."""
+def test_multi_edit_is_atomic(workspace):
+    """s9 said a failed batch left earlier edits applied. It does not
+    (in-memory loop, single write at the end) -- this is the evidence."""
     t = workspace / "m.py"
     t.write_text("a\nb\nc\n")
     perms = KitToolPermissions(workspace=workspace, mode="default")
@@ -212,7 +199,7 @@ def test_today_multi_edit_is_atomic(workspace):
     assert t.read_text() == "a\nb\nc\n"  # nothing applied
 
 
-def test_today_multi_edit_names_the_failing_index(workspace):
+def test_multi_edit_names_the_failing_index(workspace):
     t = workspace / "m.py"
     t.write_text("a\nb\na\n")
     perms = KitToolPermissions(workspace=workspace, mode="default")
@@ -227,7 +214,7 @@ def test_today_multi_edit_names_the_failing_index(workspace):
     assert t.read_text() == "a\nb\na\n"
 
 
-def test_today_line_endings_survive_an_edit(workspace):
+def test_line_endings_survive_an_edit(workspace):
     """text_files.write_text_file(like=shape) already preserves CRLF; the
     engine must not regress this (edit point 5)."""
     t = workspace / "w.csv"

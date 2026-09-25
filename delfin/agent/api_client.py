@@ -24,6 +24,7 @@ from . import german as _german
 from . import inline_payload as _inline_payload
 from . import pricing
 from . import text_files as _text_files
+from . import edit_engine as _edit_engine
 
 
 def _auto_install(package: str, pip_spec: str = "") -> None:
@@ -10490,6 +10491,20 @@ def _lang_snippet(line: str) -> str:
     return snippet
 
 
+def _syntax_regression_note(path: Path, before: str, after: str) -> str:
+    """A warning for the edit result when a Python file that parsed before
+    the edit no longer does (the s6 report, 2026-09-21: an edit swallowed
+    the tail of a method and only a later test run noticed). Reported, not
+    refused: a multi-step rewrite may pass through an unparseable state."""
+    regression = _edit_engine.syntax_regression(
+        before, after, path.suffix in (".py", ".pyi"))
+    if regression is None:
+        return ""
+    return (f"\n\nWARNING: {path.name} no longer parses as Python "
+            f"(syntax error on line {regression.line}: {regression.message}); "
+            "it parsed before this edit.")
+
+
 def _language_hint_for_write(path: Path, text: str,
                              inserted: Optional[list] = None) -> str:
     """Advisory note for a successful write/edit whose new code carries
@@ -15179,17 +15194,17 @@ class _DocToolExecutor:
                         f"{fm.strategy}{indent_note} — old_string did not "
                         f"match exactly; whitespace-tolerant fallback found "
                         f"a unique match):\n\n{diff}{lang_hint}"
+                        f"{_syntax_regression_note(resolved, old_text, new_text)}"
                     )
-            return json.dumps({"error": (
-                f"old_string not found in '{path_arg}' "
-                "(neither exact nor whitespace-tolerant match). "
-                "Re-read the file and copy the target block verbatim."
-            )})
-        if count > 1 and not replace_all:
-            return json.dumps({"error": (
-                f"old_string matches {count} times in '{path_arg}'. "
-                "Provide more surrounding context to make it unique, or pass replace_all=true."
-            )})
+        if count == 0 or (count > 1 and not replace_all):
+            # No unique match: the engine says why -- every near miss with
+            # its line and verbatim text, or the lines of every match.
+            refusal = _edit_engine.apply_edit(
+                old_text, old_string, new_string, replace_all=replace_all)
+            tried = (" (the whitespace-tolerant fallback found no unique "
+                     "match either)" if count == 0 and not replace_all else "")
+            return json.dumps(
+                {"error": f"in '{path_arg}'{tried}: {refusal.error}"})
 
         new_text = (
             old_text.replace(old_string, new_string)
@@ -15223,6 +15238,7 @@ class _DocToolExecutor:
         return (
             f"Edited {disp} ({replaced} replacement(s)){fuzzy_note}:\n\n"
             f"{diff}{test_hint}{lang_hint}"
+            f"{_syntax_regression_note(resolved, old_text, new_text)}"
         )
 
     def _execute_multi_edit(
@@ -15287,16 +15303,16 @@ class _DocToolExecutor:
                         per_edit_replacements.append(1)
                         fuzzy_edits.append(i + 1)
                         continue
+            if count == 0 or (count > 1 and not replace_all):
+                refusal = _edit_engine.apply_edit(
+                    text, o, n, replace_all=replace_all)
+                tried = (" (the whitespace-tolerant fallback found no "
+                         "unique match either)"
+                         if count == 0 and not replace_all else "")
                 return json.dumps({"error": (
-                    f"edit #{i+1}: old_string not found "
-                    f"(neither exact nor whitespace-tolerant match, "
-                    f"after applying earlier edits in this batch)"
-                )})
-            if count > 1 and not replace_all:
-                return json.dumps({"error": (
-                    f"edit #{i+1}: old_string matches {count} times. "
-                    "Add context to make it unique, or set replace_all=true."
-                )})
+                    f"edit #{i+1}{tried}: {refusal.error} Nothing in this batch was "
+                    "applied (matched against the text after the earlier "
+                    "edits of the batch).")})
             text = text.replace(o, n) if replace_all else text.replace(o, n, 1)
             per_edit_replacements.append(count if replace_all else 1)
 
@@ -15334,6 +15350,7 @@ class _DocToolExecutor:
             f"Multi-edited {disp} "
             f"({len(edits)} edit(s), {total} replacement(s) total"
             f"{fuzzy_note}):\n\n{diff}{test_hint}{lang_hint}"
+            f"{_syntax_regression_note(resolved, old_text, text)}"
         )
 
     def _suggest_test_for_edit(

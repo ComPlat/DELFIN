@@ -1,20 +1,10 @@
-"""What api_client's edit tools must do once they route through
-edit_engine.
+"""What api_client's edit tools do since they route through edit_engine.
 
-These are RED against today's api_client (they xfail strictly), because
-today:
-
-* a whitespace-drifted old_string is applied by the silent fuzzy
-  fallback (api_client.py:15146) instead of being diagnosed,
-* a no-match error names no line number or near-miss text (s7),
-* an edit that leaves Python unparseable is applied without a word
-  (s6).
-
-After the integration (routing _execute_edit_file / _execute_multi_edit
-through edit_engine.apply_edit / apply_multi_edit, keeping the
-permission/baseline/write apparatus unchanged) each test must turn
-green. strict=True: if one starts passing without the integration, or
-keeps failing after it, that is a finding, not noise.
+The whitespace-tolerant fallback (editblock.fuzzy_replace) still runs
+first and applies a UNIQUE drifted match. What edit_engine adds is what
+happens when there is no unique match: every near miss with its line
+and verbatim text, the lines of every exact match, and a warning when
+an applied edit leaves a Python file unparseable.
 """
 
 from __future__ import annotations
@@ -45,49 +35,39 @@ def _edit_file(perms, path, **args):
     return _doc_executor.execute("edit_file", args, perms)
 
 
-@pytest.mark.xfail(
-    reason="api_client still applies drifted matches via the silent "
-           "fuzzy fallback; edit_engine diagnoses instead",
-    strict=True,
-)
-def test_a_drifted_match_is_diagnosed_not_applied(workspace):
-    """The s7/silent-fuzzy replacement: the engine's near-miss report
-    (line number, actual text) reaches the tool result, and the file is
-    untouched."""
+def test_two_drifted_near_misses_are_named_not_guessed(workspace):
+    """The fallback gives up when the drift fits two places; the error
+    names both, with line and text, and the file is untouched."""
     t = workspace / "y.py"
-    t.write_text("def m():\n    if cond:\n        return 1\n")
+    body = ("def m():\n    if cond:\n        return 1\n"
+            "def n():\n    if cond:\n        return 1\n")
+    t.write_text(body)
     perms = KitToolPermissions(workspace=workspace, mode="default")
     _read_file(perms, t)
     out = _edit_file(perms, t,
                      old_string="if cond:\n    return 1",
                      new_string="if cond:\n    return 2")
     assert "error" in out
-    assert "line 2" in out            # the near miss, with its line
-    assert t.read_text() == "def m():\n    if cond:\n        return 1\n"
+    assert "line 2" in out and "line 5" in out
+    assert t.read_text() == body
 
 
-@pytest.mark.xfail(
-    reason="api_client's no-match error carries no line information",
-    strict=True,
-)
-def test_a_no_match_error_names_the_near_miss_line(workspace):
+def test_a_multi_edit_ambiguity_names_the_lines(workspace):
     t = workspace / "big.py"
-    t.write_text("def a():\n    return 1\n\n\ndef b():\n    return 2\n")
+    body = "def a():\n    return 1\n\n\ndef b():\n    return 1\n"
+    t.write_text(body)
     perms = KitToolPermissions(workspace=workspace, mode="default")
     _read_file(perms, t)
-    # The block stands at a different indent — a near miss.
-    out = _edit_file(perms, t,
-                     old_string="def b():\nreturn 2",
-                     new_string="def b():\nreturn 3")
-    assert "error" in out
-    assert "line 5" in out
-    assert "def b():" in out          # the actual text there, verbatim
+    out = _doc_executor.execute("multi_edit", {"path": str(t), "edits": [
+        {"old_string": "def a():", "new_string": "def a2():"},
+        {"old_string": "return 1\n", "new_string": "return 9\n",
+         "replace_all": False},
+    ]}, perms)
+    assert "edit #2" in out
+    assert "lines 2, 6" in out
+    assert t.read_text() == body
 
 
-@pytest.mark.xfail(
-    reason="api_client reports the match count but not the lines",
-    strict=True,
-)
 def test_an_ambiguous_match_names_the_lines(workspace):
     t = workspace / "a.py"
     t.write_text("a\nb\na\n")
@@ -98,10 +78,6 @@ def test_an_ambiguous_match_names_the_lines(workspace):
     assert "lines 1, 3" in out
 
 
-@pytest.mark.xfail(
-    reason="api_client applies syntax-destroying edits without a word",
-    strict=True,
-)
 def test_a_syntax_regression_is_reported_in_the_result(workspace):
     """The s6 case: the edit lands (that stays the caller's policy),
     but the result says the file no longer parses, with the line."""
