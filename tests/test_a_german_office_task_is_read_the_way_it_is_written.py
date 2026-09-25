@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import pytest
 
-from delfin.agent.api_client import (
-    _READ_VERB_RE, _WRITE_VERB_RE, _artifact_word, check_completion_claim,
+from delfin.agent.task_evidence import (
+    _READ_VERB_RE, _WRITE_VERB_RE, _format_word, check_completion_claim,
 )
+# The judged implementation: api_client.check_completion_claim is the
+# same check, delegated to task_evidence.
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +192,16 @@ def test_a_german_compute_task_over_a_file_is_finished_by_the_read():
 
 
 # ---------------------------------------------------------------------------
-# The artefact noun: a word, not a substring
+# The artefact noun: a format word, not a substring and not a bare noun
+#
+# Rewritten for the new judge (task_evidence): the old _artifact_word
+# let a bare German noun ("Brief", "Bericht", "Tabelle") promise a file
+# on its own. The new rule -- pinned here -- is that a noun promises a
+# FILE TYPE only with an explicit format word attached ("PDF-Bericht",
+# "Bericht als PDF", "Excel-Tabelle"); without one the word describes
+# content and the change journal decides. What the old tests were really
+# about -- word boundaries, not substrings -- is kept via the format
+# matcher: "briefly" still contains "brief" but promises nothing.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("subject", [
@@ -198,25 +209,36 @@ def test_a_german_compute_task_over_a_file_is_finished_by_the_read():
     "Debrief the team",
     "Explain it briefly",
     "The consumption is high",
+    "Schreibe einen Brief an den Kunden",
+    "Schreibe die Briefe an alle Kunden",
+    "Erstelle den Serienbrief",
+    "Erstelle das Anschreiben",
+    "Erstelle den Bericht",
+    "Erstelle die Berichte",
+    "Erstelle eine Tabelle",
+    "Erstelle die Tabellen",
 ])
-def test_an_english_word_that_merely_contains_a_german_noun_promises_nothing(
-        subject):
-    assert _artifact_word(subject) == "", subject
+def test_a_bare_noun_or_a_substring_word_promises_no_file_type(subject):
+    """Neither a noun that merely OCCURS ("brief" in "briefly", "brief" in
+    "Debrief") nor a bare artefact noun without a format word promises a
+    container: the change journal decides what was produced."""
+    assert _format_word(subject) == "", subject
+    out = check_completion_claim(subject, changes=[], observed=[])
+    assert out["kind"] != "artifact", out
 
 
 @pytest.mark.parametrize("subject,word", [
-    ("Schreibe einen Brief an den Kunden", "brief"),
-    ("Schreibe die Briefe an alle Kunden", "brief"),
-    ("Erstelle den Serienbrief", "serienbrief"),
-    ("Erstelle das Anschreiben", "anschreiben"),
-    ("Erstelle den Bericht", "bericht"),
-    ("Erstelle die Berichte", "bericht"),
-    ("Erstelle eine Tabelle", "tabelle"),
-    ("Erstelle die Tabellen", "tabelle"),
+    ("Erstelle den PDF-Bericht", "pdf"),
+    ("Erstelle den Bericht als PDF", "pdf"),
+    ("Erstelle die Excel-Tabelle", "excel"),
+    ("Exportiere die Tabelle als CSV", "csv"),
+    ("Erstelle das Word-Dokument", "word-"),   # matched as a compound
+    ("Create the PDF report", "pdf"),
 ])
-def test_the_german_noun_and_its_plural_still_promise_the_artefact(
-        subject, word):
-    assert _artifact_word(subject) == word, subject
+def test_the_noun_with_a_format_word_promises_the_file_type(subject, word):
+    assert _format_word(subject) == word, subject
+    out = check_completion_claim(subject, changes=[], observed=[])
+    assert out["verdict"] == "unmet" and out["kind"] == "artifact", out
 
 
 def test_a_read_only_task_is_not_asked_to_produce_an_artefact():
