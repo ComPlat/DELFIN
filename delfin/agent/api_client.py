@@ -4681,6 +4681,9 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/sandbox.py",
     "delfin/agent/kit_settings.py",
     "delfin/user_settings.py",
+    # The maintainer's principles, loaded first into every role: an agent
+    # that could rewrite them could rewrite what it is for.
+    "delfin/agent/pack/shared/principles_addendum.md",
     # Every file a workspace can ship that RUNS something. Each is read by
     # a loader (hooks.load_hooks, mcp_client._load_configs) and each is
     # therefore a way for the model to grant itself a shell: settings.json

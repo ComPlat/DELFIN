@@ -270,6 +270,14 @@ def _fit_memory_index(
     return "\n".join(kept)
 
 
+def _has_body(markdown: str) -> bool:
+    """Whether a shared addendum says anything beyond its heading and its
+    HTML comments -- an unwritten scaffold is not injected."""
+    text = re.sub(r"<!--.*?-->", "", markdown or "", flags=re.DOTALL)
+    return any(line.strip() and not line.lstrip().startswith("#")
+               for line in text.splitlines())
+
+
 class PromptLoader:
     """Load and cache markdown prompt files from the DELFIN agent packs.
 
@@ -1769,6 +1777,9 @@ class PromptLoader:
         #  * refusal: destructive / out-of-scope requests are refused
         #    explicitly and never routed around via another mode or tool.
         for _name, _rel in (
+            # First: the maintainer's principles, above every other rule.
+            # Loaded in every role; no setting turns it off.
+            ("principles_addendum", "principles_addendum.md"),
             ("honesty_addendum", "honesty_addendum.md"),
             ("memory_addendum", "memory_addendum.md"),
             ("git_workflow_addendum", "git_workflow_addendum.md"),
@@ -1779,6 +1790,8 @@ class PromptLoader:
             _text = _shared(_rel)
             if _name == "honesty_addendum":
                 _text = self._pin_language_rule(_text, session_language)
+            if _name == "principles_addendum" and not _has_body(_text):
+                continue
             if _text:
                 add(_name, self.LAYER_STABLE, _text)
                 injected.append(_name)
