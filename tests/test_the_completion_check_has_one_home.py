@@ -3,15 +3,9 @@
 Since the swap (night run 2026-09-25), api_client.check_completion_claim
 is a thin delegate to task_evidence. The helpers of the old check were
 left in api_client so their tests could move first; they have moved
-(night run 2026-09-25, Q). What remains in api_client is a dead second
-implementation next to the live one -- two copies of the same heuristics
-that can drift apart, and security code that must be deleted by hand
-(this run's boundary: the agent does not edit api_client).
-
-Until the operator deletes the dead block, this test is xfail: it must
-FAIL now and turn green (strictly, so an XPASS is an error too -- an
-accidental deletion without this test noticing is the other failure
-mode) exactly when the deletion lands.
+(night run 2026-09-25, Q), and the dead block went with the next commit.
+This test keeps a second implementation from growing back next to the
+live one: two copies of the same heuristics drift apart.
 """
 
 from __future__ import annotations
@@ -44,9 +38,6 @@ _DEAD_HELPERS = (
 )
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "the old completion check's helpers are still in api_client; the "
-    "operator's deletion turns this green"))
 def test_api_client_has_no_second_completion_check():
     """No definition of an old-check helper remains in api_client.py.
 
