@@ -1136,6 +1136,14 @@ def _bash_reads_denied_path(cmd: str, denied: set,
     try:
         if not denied or not cmd:
             return ""
+        # A segment's PROGRAM is run, not read: a refused read of the
+        # session's own test gate blocked every later run of that gate
+        # (night run 2026-09-25). Only what follows the program is
+        # scanned -- `cat <refused>` and `bash <refused>` stay refused,
+        # because there the file is an argument that gets read.
+        cmd = " ; ".join(
+            seg.split(None, 1)[1] if len(seg.split(None, 1)) > 1 else ""
+            for seg in _split_shell_segments(cmd))
         words = _path_words(cmd)
         norm_roots = [os.path.normpath(str(r)) for r in roots or () if r]
         for path in denied:

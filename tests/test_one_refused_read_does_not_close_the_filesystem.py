@@ -81,3 +81,14 @@ def test_a_refused_directory_that_holds_the_workspace_is_refused_as_itself():
 def test_a_refused_directory_without_a_granted_root_still_covers_its_contents():
     denied = {"/data/secret"}
     assert refused("cat /data/secret/key.txt", denied, roots=["/work/ws"])
+
+
+def test_a_refused_read_of_a_program_does_not_stop_running_it():
+    # Night run 2026-09-25: refusing to let a session READ its test gate
+    # blocked every later RUN of the gate.
+    gate = "/data/repo/.delfin/gate-tools/gate"
+    denied = {gate}
+    assert refused(f"{gate} tests/test_x.py -q", denied) == ""
+    assert refused(f"cat {gate}", denied)
+    assert refused(f"bash {gate}", denied)
+    assert refused(f"ls -l; sed -n 1,5p {gate}", denied)
