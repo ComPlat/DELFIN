@@ -1535,8 +1535,10 @@ def _is_interpreter_invocation(cmd: str) -> bool:
             if stripped != seg and _INTERPRETER_RE.search(stripped):
                 return True
         # A pipe into a shell or an interpreter: `... | bash`, `... | python3`.
+        # A `|` inside quotes is a character (`grep "a\|python"`).
         return bool(re.search(
-            r"\|\s*(?:ba|z|k|da)?sh\b|\|\s*python[0-9.]*\b", text))
+            r"\|\s*(?:ba|z|k|da)?sh\b|\|\s*python[0-9.]*\b",
+            _blank_quoted(text)))
     except Exception:
         return True
 
@@ -4651,6 +4653,15 @@ def _split_shell_segments(cmd: str) -> list[str]:
     i, n = 0, len(cmd)
     while i < n:
         c = cmd[i]
+        # A backslash takes the next character literally, outside quotes
+        # and inside double ones (not inside single quotes, where bash
+        # keeps it as a plain backslash). Without this `"not\":\|x"`
+        # closed its quote at the escaped `\"` and the `\|` after it split
+        # a grep pattern into a pseudo-command (asked, 2026-09-25).
+        if c == "\\" and q != "'" and i + 1 < n:
+            buf.append(cmd[i:i + 2])
+            i += 2
+            continue
         if q is not None:
             buf.append(c)
             if c == q:
@@ -4705,6 +4716,36 @@ def _split_shell_segments(cmd: str) -> list[str]:
         i += 1
     segs.append("".join(buf))
     return [s.strip() for s in segs if s.strip()]
+
+
+def _blank_quoted(cmd: str, quotes: str = "'\"") -> str:
+    """``cmd`` with the inside of the named quote kinds replaced by spaces.
+
+    For checks that look for shell syntax in the raw text: bash expands
+    nothing between single quotes, and a pipe or `;` between double
+    quotes is a character, not an operator. Command substitution between
+    DOUBLE quotes does run -- blank only ``'`` for that question.
+    Offsets are kept; backslash escapes are honoured as bash reads them.
+    """
+    out = list(cmd)
+    q: str | None = None
+    i, n = 0, len(cmd)
+    while i < n:
+        c = cmd[i]
+        if c == "\\" and q != "'" and i + 1 < n:
+            if q is not None and q in quotes:
+                out[i] = out[i + 1] = " "
+            i += 2
+            continue
+        if q is None:
+            if c in ("'", '"'):
+                q = c
+        elif c == q:
+            q = None
+        elif q in quotes:
+            out[i] = " "
+        i += 1
+    return "".join(out)
 
 
 _HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])(\w+)\2|(\w+))")
@@ -5423,7 +5464,9 @@ class KitToolPermissions:
         # Denying the AUTO part is deliberately conservative: arithmetic
         # `$((1+1))` is caught too — it goes to the confirm gate, which
         # is where every unevaluated payload belongs.
-        if _RUNS_SOMETHING_RE.search(cmd) or re.search(r"[<>]\(", cmd):
+        # Text between single quotes is literal to bash (`grep '```'`).
+        unquoted = _blank_quoted(cmd, "'")
+        if _RUNS_SOMETHING_RE.search(unquoted) or re.search(r"[<>]\(", unquoted):
             return False
         # `set -o pipefail` in front of a command changes nothing but the
         # exit status of the pipe -- and the gate's own shell note
