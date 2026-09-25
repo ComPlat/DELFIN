@@ -8205,206 +8205,6 @@ def _thrash_check(state: dict, fn_name: str, fn_args: dict) -> str:
     return ""
 
 
-# File types a task subject can promise, and the extension that proves it.
-_ARTIFACT_PROMISES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("pdf", (".pdf",)),
-    ("word", (".docx", ".doc")),
-    ("docx", (".docx",)),
-    ("excel", (".xlsx", ".xls", ".csv")),
-    ("xlsx", (".xlsx",)),
-    ("tabelle", (".xlsx", ".xls", ".csv")),
-    ("spreadsheet", (".xlsx", ".xls", ".csv")),
-    ("csv", (".csv",)),
-    ("bericht", (".pdf", ".docx", ".md", ".html")),
-    ("report", (".pdf", ".docx", ".md", ".html")),
-    # German compounds, before the word they end in: matched as whole
-    # words, "Serienbrief" is not "Brief".
-    ("serienbrief", (".docx", ".pdf")),
-    ("anschreiben", (".docx", ".pdf")),
-    ("rechnung", (".pdf", ".docx")),
-    ("brief", (".docx", ".pdf")),
-    ("letter", (".docx", ".pdf")),
-    ("presentation", (".pptx",)),
-)
-
-
-# German inflects its nouns and English does not stop at them: matched as
-# a substring, "brief" sat inside "briefly" and "debrief", so
-# "Summarize the findings briefly" promised a letter. Matched as a bare
-# word it would miss "Berichte" and "Tabellen", which is what a user
-# writes. So: the word, plus the German plural/genitive endings, and
-# nothing else.
-_ARTIFACT_WORD_RES: tuple[tuple[str, "re.Pattern[str]"], ...] = tuple(
-    (word, re.compile(rf"(?i)\b{re.escape(word)}(?:e|es|s|en|n)?\b"))
-    for word, _ in _ARTIFACT_PROMISES
-)
-
-
-def _artifact_word(subject: str) -> str:
-    """The artefact noun a task subject promises ("" when none does)."""
-    try:
-        text = subject or ""
-        for word, pattern in _ARTIFACT_WORD_RES:
-            if pattern.search(text):
-                return word
-    except Exception:
-        return ""
-    return ""
-
-
-def _path_suffixes(paths) -> set:
-    """The file extensions of *paths*, per path.
-
-    Per path, not as a substring of a joined blob: ``".pdf" in
-    "notes.pdf.bak archive.pdf.txt"`` is true and neither is a PDF.
-    """
-    out: set = set()
-    for p in (paths or ()):
-        try:
-            out.add(Path(str(p).replace("\\", "/")).suffix.lower())
-        except Exception:
-            continue
-    return out
-
-
-def _unmet_artifact(subject: str, produced) -> str:
-    """The artefact a task subject promises but the session never made.
-
-    Returns the missing kind, or "" when the subject promises nothing
-    checkable or the evidence shows it was produced. *produced* must be
-    paths the session WROTE -- feeding it a ledger that also counts
-    reads makes "Create the PDF report" satisfiable by having opened an
-    unrelated PDF.
-
-    The failure this exists for: a task marked complete as "PDF report"
-    while create_pdf had failed for a missing library and only a .docx
-    existed. Nothing said so -- not the task, not the summary -- and the
-    user was told the work was done. Advisory on purpose: only the ones
-    with an unambiguous extension are checked, and the answer is a note
-    the model can correct rather than a refusal it has to fight.
-    """
-    try:
-        word = _artifact_word(subject)
-        if not word:
-            return ""
-        suffixes = _path_suffixes(produced)
-        for name, extensions in _ARTIFACT_PROMISES:
-            if name != word:
-                continue
-            return "" if any(ext in suffixes for ext in extensions) else word
-        return ""
-    except Exception:
-        return ""
-
-
-# ---------------------------------------------------------------------------
-# What a completed task claims, and what the session can show for it
-# ---------------------------------------------------------------------------
-
-# Extensions a subject can name unambiguously enough to key a check on.
-# A closed set on purpose: "version 1.2" and "e.g." are not paths, and a
-# check that treats them as one starts refusing honest completions.
-_TASK_PATH_EXTS: frozenset[str] = frozenset({
-    "py", "pyi", "ipynb", "js", "jsx", "ts", "tsx", "json", "yaml", "yml",
-    "toml", "cfg", "ini", "md", "rst", "txt", "csv", "tsv", "sh", "bash",
-    "c", "h", "cc", "cpp", "hpp", "rs", "go", "java", "kt", "rb", "php",
-    "jl", "sql", "html", "htm", "css", "scss", "xml", "tex", "pdf",
-    "docx", "doc", "xlsx", "xls", "pptx", "png", "svg", "jpg", "jpeg",
-    "log", "inp", "out", "xyz", "mol", "sdf", "cif", "dat", "gjf",
-})
-
-_TASK_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~+-]{3,}")
-
-# Verbs that promise a CHANGE. German included on purpose: the user
-# plans in German, so the subjects the check reads are German.
-#
-# The German half used to be a CODING vocabulary — erstell, implementier,
-# refaktor — with no office verb in it at all, and every pattern in it
-# assumed the prefix stays on the stem. German puts the prefix of a
-# separable verb at the end of the clause, so ``anpass\w*`` cannot see
-# "Passe die Tabelle an". Both together produced this, with nothing
-# written and the files only read:
-#
-#     verified  path_read      | Trage die Werte in Buchungen.csv ein
-#     verified  path_read      | Übertrage die Beträge nach Journal.xlsx
-#     unmet     path_unwritten | Write the values into Buchungen.csv
-#
-# The same task, done in German, was signed off. The office half of the
-# vocabulary and the separable-prefix machinery live in german.py.
-_WRITE_VERB_RE = re.compile(
-    r"(?i)\b(?:add|create|write|implement|build|generate|produce|export|"
-    r"save|fix|repair|patch|refactor|rename|move|update|extend|port|"
-    r"migrate|wire|integrate|remove|delete|split|merge|fill\s+in|"
-    r"fill\s+out|enter|record|book|sort|"
-    r"erstell\w*|schreib\w*|füg\w*|hinzufüg\w*|implementier\w*|bau\w*|"
-    r"erzeug\w*|generier\w*|exportier\w*|speicher\w*|beheb\w*|"
-    r"reparier\w*|korrigier\w*|refaktor\w*|umbenenn\w*|verschieb\w*|"
-    r"aktualisier\w*|erweiter\w*|entfern\w*|lösch\w*|anpass\w*|änder\w*|"
-    r"einbau\w*|einbind\w*|ergänz\w*|umstell\w*|überarbeit\w*|"
-    r"integrier\w*|umbau\w*|aufräum\w*|bereinig\w*)\b"
-    r"|" + _german.GERMAN_WRITE_VERB_SOURCE
-)
-
-# Verbs that promise only LOOKING. A task like "analysiere core.py" is
-# honestly complete with no write at all, and a check that demands one
-# would be teaching the model to avoid naming the file.
-#
-# "Rechne die Summe aus" belongs HERE and not above. It is answered by
-# reading and arithmetic — the answer is a number in the chat, not a
-# changed file — and calling it a write would tell a user their finished,
-# honest task wrote nothing.
-_READ_VERB_RE = re.compile(
-    r"(?i)\b(?:read|review|analyse|analyze|inspect|examine|check|"
-    r"understand|summarise|summarize|compare|explore|investigate|study|"
-    r"audit|trace|total|count|"
-    r"lies|lese\w*|les\w*|prüf\w*|überprüf\w*|analysier\w*|untersuch\w*|"
-    r"sicht\w*|versteh\w*|vergleich\w*|durchsuch\w*|betracht\w*|"
-    r"anschau\w*|ansehen|recherchier\w*|bewert\w*)\b"
-    r"|" + _german.GERMAN_READ_VERB_SOURCE
-)
-
-_TEST_TASK_RE = re.compile(
-    r"(?i)(?:\b(?:tests?|testing|testsuite|test-suite|pytest|unittest|"
-    r"regression|verify|verification|validate|"
-    r"teste\w*|testen|verifizier\w*|validier\w*)\b"
-    # German compounds ("Regressionstests", "Unittests"). Plural only:
-    # "\w*test" would make "latest" a test task.
-    r"|\b\w+tests\b|\b\w+testsuite\b)"
-)
-
-
-def _paths_in_text(text) -> list[str]:
-    """File paths a task subject/description names, in order."""
-    out: list[str] = []
-    try:
-        for token in _TASK_PATH_TOKEN_RE.findall(str(text or "")):
-            token = token.strip(".,;:/")
-            if "." not in token:
-                continue
-            stem, _, ext = token.rpartition(".")
-            if ext.lower() not in _TASK_PATH_EXTS:
-                continue
-            if not stem or not any(c.isalnum() for c in stem):
-                continue
-            if token not in out:
-                out.append(token)
-    except Exception:
-        return out
-    return out
-
-
-def _path_matches(candidate: str, recorded: str) -> bool:
-    """Whether *recorded* (an absolute ledger path) is the file the task
-    subject named. Suffix match, so "mylib/opt/wrapper.py" matches
-    "/home/u/proj/mylib/opt/wrapper.py" and nothing shorter."""
-    try:
-        c = str(candidate).replace("\\", "/").strip("/").lower()
-        r = str(recorded).replace("\\", "/").strip("/").lower()
-        return bool(c) and bool(r) and (r == c or r.endswith("/" + c))
-    except Exception:
-        return False
-
-
 def _task_ts_epoch(ts) -> float:
     """A task-store timestamp (UTC, ``...Z``) as epoch seconds."""
     from datetime import datetime as _dt, timezone as _tz
@@ -8472,10 +8272,6 @@ def _open_tasks_notice(state: dict) -> str:
         return ""
 
 
-def _verdict(kind: str, verdict: str, detail: str = "", note: str = "") -> dict:
-    return {"verdict": verdict, "kind": kind, "detail": detail, "note": note}
-
-
 def check_completion_claim(
     subject: str,
     description: str = "",
@@ -8490,9 +8286,9 @@ def check_completion_claim(
     Delegates to :mod:`delfin.agent.task_evidence` (night run 2026-09-25,
     J): the same contract -- ``{"verdict", "kind", "detail", "note"}``,
     ``verified`` / ``unmet`` / ``unchecked``, pure over its arguments --
-    judged on the work rather than on words in the task text. The helpers
-    above this function are the previous implementation's, still used by
-    their own tests until they move to task_evidence.
+    judged on the work rather than on words in the task text. The previous
+    implementation and its helpers are gone; the journal and timestamp
+    helpers above serve the live call site, _verify_task_completion.
     """
     from .task_evidence import check_completion_claim as _check
     return _check(subject, description, changes=changes, observed=observed,
