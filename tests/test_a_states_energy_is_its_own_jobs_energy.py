@@ -33,25 +33,34 @@ CHECK_ENERGY = -1538.677272446181        # the closed-shell check job, job 2
 GROUND_ENERGY = -1538.782807769000       # the optimised ground state
 
 
-def _job_body(energies, *, cycles=2):
-    """The part ORCA prints per calculation, ending in its final energy."""
+def _job_body(energies, *, optimised=False):
+    """The part ORCA prints per calculation, ending in its final energy.
+
+    With *optimised* the markers an optimisation leaves are included, which
+    is what tells a reader a cycle count means anything.
+    """
     lines = []
     for step, energy in enumerate(energies, start=1):
+        if optimised:
+            lines.append(f'         GEOMETRY OPTIMIZATION CYCLE {step}')
         lines += [
-            f'                 GEOMETRY CYCLE {step}',
             f'Total Energy       :    {energy:18.10f} Eh',
             f'FINAL SINGLE POINT ENERGY     {energy:.12f}',
             '',
         ]
+    if optimised:
+        lines += ['       *** THE OPTIMIZATION HAS CONVERGED ***', '']
     return '\n'.join(lines)
 
 
-def _output(echo: str, jobs) -> str:
+def _output(echo: str, jobs, *, optimised=False) -> str:
     """An ORCA output: the echoed input, then one section per job.
 
     ``jobs`` is a list of energy lists, one per ``$new_job``.  A single entry
     produces an output with no JOB NUMBER banners at all, which is what ORCA
-    prints when the input holds one calculation.
+    prints when the input holds one calculation.  With *optimised* the first
+    job carries an optimisation's markers and the rest do not, which is the
+    shape DELFIN writes: an optimisation, then a single-point check job.
     """
     head = ['',
             '                                 INPUT FILE',
@@ -62,13 +71,13 @@ def _output(echo: str, jobs) -> str:
 
     body = []
     if len(jobs) == 1:
-        body.append(_job_body(jobs[0]))
+        body.append(_job_body(jobs[0], optimised=optimised))
     else:
         for number, energies in enumerate(jobs, start=1):
             body += [
                 f'                 $$$$$$$$$$$$$$$$  JOB NUMBER  {number} $$$$$$$$$$$$$$',
                 '',
-                _job_body(energies),
+                _job_body(energies, optimised=optimised and number == 1),
             ]
     body.append('                             ****ORCA TERMINATED NORMALLY****')
     return '\n'.join(head + body)
@@ -185,6 +194,42 @@ def test_the_adiabatic_difference_is_between_the_two_optimised_states(tmp_path):
     assert dele == pytest.approx((OPT_ENERGY - GROUND_ENERGY) * HARTREE_TO_CM1, abs=0.5)
     wrong = (CHECK_ENERGY - GROUND_ENERGY) * HARTREE_TO_CM1
     assert abs(dele - wrong) > 9000, 'the check job is back in the DELE'
+
+
+def test_a_trajectory_counts_the_cycles_of_its_own_job_only(tmp_path):
+    """The check job's single point was read as one more optimisation cycle.
+
+    Measured on an archived T1.out: 10 cycles reported where the optimisation
+    ran 9, and a final energy 1.18 eV above the triplet's.
+    """
+    from delfin.api import extract_optimization_trajectory
+
+    walked = [OPT_ENERGY - 1e-2, OPT_ENERGY - 1e-3, OPT_ENERGY]
+    (tmp_path / 'T1.out').write_text(
+        _output(COMPOUND_T1_ECHO, [walked, [CHECK_ENERGY]], optimised=True),
+        encoding='utf-8')
+
+    result = extract_optimization_trajectory(str(tmp_path))
+
+    assert result.output_file == 'T1.out'
+    assert result.error is None, result.error
+    assert result.n_cycles == len(walked), 'the check job was counted as a cycle'
+    assert result.final_energy_eh == pytest.approx(OPT_ENERGY, abs=1e-9)
+    assert result.converged is True
+
+
+def test_a_trajectory_of_a_single_job_output_is_unchanged(tmp_path):
+    from delfin.api import extract_optimization_trajectory
+
+    echo = '! PBE0 RKS def2-TZVP OPT\n%base "S0"\n* xyz 0 1\n  O 0.0 0.0 0.0\n*'
+    walked = [GROUND_ENERGY - 1e-2, GROUND_ENERGY]
+    (tmp_path / 'S0.out').write_text(_output(echo, [walked], optimised=True),
+                                     encoding='utf-8')
+
+    result = extract_optimization_trajectory(str(tmp_path))
+
+    assert result.n_cycles == len(walked)
+    assert result.final_energy_eh == pytest.approx(GROUND_ENERGY, abs=1e-9)
 
 
 def test_the_state_input_really_is_written_as_two_jobs(tmp_path):

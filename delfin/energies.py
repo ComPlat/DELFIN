@@ -143,7 +143,7 @@ def _bases_of_echoed_jobs(text: str, default: str) -> list:
     return bases
 
 
-def _own_job_text(text: str, path: str) -> str:
+def own_job_text(text: str, path: str) -> str:
     """The part of a multi-job ORCA output that belongs to *path* itself.
 
     ORCA's ``$new_job`` -- deprecated in 6.1, and the manual warns it "might
@@ -257,7 +257,7 @@ def find_electronic_energy(filename: str) -> Optional[float]:
 
     An output holding several ``$new_job`` calculations is read only where it
     speaks about itself: the job whose ``%base`` is the file's own name. See
-    :func:`_own_job_text` for what that costs when it is skipped.
+    :func:`own_job_text` for what that costs when it is skipped.
 
     Args:
         filename: Path to ORCA output file
@@ -274,7 +274,7 @@ def find_electronic_energy(filename: str) -> Optional[float]:
         rf"Total\s+Energy\s*:\s*{FLOAT_RE}",
         rf"Electronic\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
     ]
-    return _last_float_in_text(_own_job_text(text, filename), patterns, filename)
+    return _last_float_in_text(own_job_text(text, filename), patterns, filename)
 
 
 def _extract_excited_state_energy(filename: str, state_number: int = 1, use_soc: bool = False) -> Optional[float]:
