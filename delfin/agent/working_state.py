@@ -21,6 +21,7 @@ Design rules:
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -84,34 +85,32 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
-def _instructions(messages: Iterable[dict]) -> list[str]:
-    """Operator / harness instructions, newest first, deduped.
+_INSTRUCTION_PREFIXES = ("[System]", "[Message from the session")
 
-    These arrive as machine turns ([System], session messages, wake-ups)
-    -- never as the user's own typing -- and are exactly the guidance a
-    returning agent must still obey.
+
+def _instructions(messages: Iterable[dict]) -> list[str]:
+    """Operator / harness messages, newest first, deduped.
+
+    Only turns that ARE guidance ([System], a message from another
+    session): a keyword match on arbitrary machine output ("never",
+    "operator") turned a line of test output into a standing order.
     """
     found: list[str] = []
-    seen: set[str] = set()
     for msg in reversed(list(messages or [])):
         if not isinstance(msg, dict) or msg.get("role") != "user":
             continue
-        text = _message_text(msg)
-        if not text.lstrip().startswith(_MACHINE_TURN_PREFIXES):
+        text = _message_text(msg).strip()
+        if not text.startswith(_INSTRUCTION_PREFIXES):
             continue
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith(("[Command results]", "[Verify]")):
-                continue
-            if ("Operator:" in line or "operator" in line.lower()
-                    or "do NOT" in line or "never" in line.lower()):
-                short = _clip(line, _MAX_INSTRUCTION_CHARS)
-                if short not in seen:
-                    seen.add(short)
-                    found.append(short)
-            if len(found) >= _MAX_INSTRUCTIONS:
-                return found
+        short = _clip(text, _MAX_INSTRUCTION_CHARS)
+        if short not in found:
+            found.append(short)
+        if len(found) >= _MAX_INSTRUCTIONS:
+            break
     return found
+
+
+_DENIAL_RE = re.compile(r"\b(?:denied|refused|not approved)\b", re.I)
 
 
 def _denials(messages: Iterable[dict]) -> list[str]:
@@ -121,7 +120,9 @@ def _denials(messages: Iterable[dict]) -> list[str]:
     for text in reversed(_machine_texts(messages)):
         for line in text.splitlines():
             line = line.strip()
-            if '"error"' not in line and "denied" not in line.lower():
+            # A refusal, not any error: "do not retry" on a plain failure
+            # would stop the agent from fixing and re-running it.
+            if not _DENIAL_RE.search(line):
                 continue
             short = _clip(line, _MAX_DENIAL_CHARS)
             if short not in found:
@@ -131,8 +132,9 @@ def _denials(messages: Iterable[dict]) -> list[str]:
     return found
 
 
-_TEST_LINE_HINTS = ("gate tests/", "pytest", "passed", "failed",
-                    "error", "no tests ran", "exit code")
+# A pytest verdict line: "12 passed", "1 failed, 3 passed", "no tests ran".
+_TEST_VERDICT_RE = re.compile(
+    r"\b\d+ (?:passed|failed|errors?)\b|\bno tests ran\b", re.I)
 
 
 def _test_outcomes(messages: Iterable[dict]) -> list[str]:
@@ -148,7 +150,7 @@ def _test_outcomes(messages: Iterable[dict]) -> list[str]:
     for text in reversed(_machine_texts(messages)):
         for line in text.splitlines():
             line = line.strip()
-            if not any(h in line.lower() for h in _TEST_LINE_HINTS):
+            if not _TEST_VERDICT_RE.search(line):
                 continue
             short = _clip(line, _MAX_TEST_LINE_CHARS)
             if short not in seen:
@@ -198,7 +200,6 @@ def _journal_files(session_id: str, limit: int = _MAX_FILES) -> list[str]:
         path = str(rec.get("path", "") or "")
         if not path:
             continue
-        rel = path
         if path not in out:
             out.append(path)
         if len(out) >= limit:
