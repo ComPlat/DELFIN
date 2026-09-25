@@ -299,3 +299,29 @@ def test_a_normal_answer_ends_the_retry_state(tmp_path):
          ("raise", _transient()), ("answer", None)],
         tmp_path)
     assert engine.turns == 5
+
+
+# -----------------------------------------------------------------------
+# review fixes (operator, 2026-09-25)
+# -----------------------------------------------------------------------
+
+def test_a_terminal_wait_is_not_followed_by_a_second_sleep(tmp_path):
+    # On a terminal the key wait itself takes the whole pause; sleeping
+    # again afterwards doubled every pause.
+    engine, _ = _run([("raise", _transient()), ("answer", None)],
+                     tmp_path, read_key=lambda timeout: "")
+    assert engine.turns == 2
+    assert engine.clock.waits == []
+
+
+def test_ctrl_c_during_the_pause_cancels_it(tmp_path):
+    def interrupted(timeout):
+        raise KeyboardInterrupt
+
+    engine, _ = _run([("raise", _transient()), ("answer", None)],
+                     tmp_path, read_key=interrupted)
+    # No automatic continuation: whatever runs next is the person's own
+    # line, and run() did not leave through the interrupt.
+    assert not any("endpoint failed mid-turn" in p
+                   for p in engine.prompts[1:])
+    assert engine.turns == 2      # the session went on to the next line
