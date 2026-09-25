@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pytest
 
-from delfin.agent.api_client import _unmet_artifact
+from delfin.agent.task_evidence import _unmet_format, check_completion_claim
 from delfin.agent.engine import AgentEngine
 from delfin.agent import verify_guard as vg
 
@@ -36,11 +36,28 @@ from delfin.agent import verify_guard as vg
     ("PDF-Bericht für Juni erstellen", ["out/bericht.docx"], "pdf"),
     ("Create the PDF report", [], "pdf"),
     ("Excel-Tabelle abgleichen", ["notiz.txt"], "excel"),
-    ("Brief an die Verwaltung", [], "brief"),
+    ("Serienbrief als PDF erstellen", [], "pdf"),
 ])
 def test_a_promised_artifact_that_was_never_produced_is_named(
         subject, produced, missing):
-    assert _unmet_artifact(subject, produced) == missing
+    assert _unmet_format(subject, produced) == missing
+
+
+@pytest.mark.parametrize("subject", [
+    "Brief an die Verwaltung",          # bare noun: old check promised a letter
+    "Rundschreiben an alle Teams",      # ... a circular
+])
+def test_a_bare_noun_no_longer_promises_a_file_type(subject):
+    """Old decision, dropped with the task_evidence swap: a bare artefact
+    noun ("Brief", "Bericht", "Tabelle") promised a file TYPE on its own,
+    so "Brief an die Verwaltung" was unmet for lack of a letter file. The
+    new rule: a noun promises a container only with an explicit format
+    word (PDF, Excel, Word, ...); without one it describes content and
+    the change journal decides whether work happened. Pinned here so the
+    narrowing cannot silently come back."""
+    assert _unmet_format(subject, []) == ""
+    out = check_completion_claim(subject, changes=[], observed=[])
+    assert out["kind"] != "artifact", out
 
 
 @pytest.mark.parametrize("subject,produced", [
@@ -50,7 +67,7 @@ def test_a_promised_artifact_that_was_never_produced_is_named(
     ("Word-Vorlage füllen", ["gefuellt.docx"]),
 ])
 def test_a_task_whose_artifact_exists_says_nothing(subject, produced):
-    assert _unmet_artifact(subject, produced) == ""
+    assert _unmet_format(subject, produced) == ""
 
 
 @pytest.mark.parametrize("subject", [
@@ -59,12 +76,12 @@ def test_a_task_whose_artifact_exists_says_nothing(subject, produced):
 def test_a_subject_promising_nothing_checkable_is_left_alone(subject):
     """Advisory and narrow on purpose: only an unambiguous extension is
     checked, so the note cannot become noise the model learns to skip."""
-    assert _unmet_artifact(subject, ["irgendwas.txt"]) == ""
+    assert _unmet_format(subject, ["irgendwas.txt"]) == ""
 
 
 def test_a_broken_input_does_not_raise():
-    assert _unmet_artifact(None, None) == ""
-    assert _unmet_artifact("PDF", object()) in ("", "pdf")
+    assert _unmet_format(None, None) == ""
+    assert _unmet_format("PDF", object()) in ("", "pdf")
 
 
 # ---------------------------------------------------------------------------
