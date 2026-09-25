@@ -69,3 +69,13 @@ def test_an_agent_cannot_edit_the_principles_without_asking():
     from delfin.agent.api_client import _DEFAULT_PATH_PROTECTED_GLOBS
     assert ("delfin/agent/pack/shared/principles_addendum.md"
             in _DEFAULT_PATH_PROTECTED_GLOBS)
+
+
+def test_the_shipped_principles_are_written_and_loaded():
+    from delfin.agent.prompt_loader import PromptLoader
+    body = (_PACK / "shared" / "principles_addendum.md").read_text(
+        encoding="utf-8")
+    assert _has_body(body)
+    prompt = PromptLoader().build_system_prompt(
+        role_id="solo_agent", mode_id="solo", task_text="tidy the workspace")
+    assert "long-term well-being of humanity and the planet" in prompt
