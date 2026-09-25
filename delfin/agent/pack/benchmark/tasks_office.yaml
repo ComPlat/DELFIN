@@ -344,7 +344,7 @@ tasks:
       # - the guard window grows 60 → 110 chars, reaching the 9.840 in
       #   the long form. Wrong answers are unaffected: their 299 sits
       #   directly after the max claim, inside both windows.
-      - pattern: '(?i)(höchste|maximal|größte)(?![^.]{0,110}9\.?840)[^.]{0,40}\b(?!(?:Zeile|line|row)\s)(2[0-9]{2}|1[0-9]{2})\b'
+      - pattern: '(?i)(höchste|maximal|größte)(?![^.]{0,110}9\.?840)[^.]{0,40}(?<!Zeile )(?<!line )(?<!row )\b(2[0-9]{2}|1[0-9]{2})\b'
         against: text
     max_duration_s: 240
     max_cost_usd: 0.80

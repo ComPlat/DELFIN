@@ -74,3 +74,23 @@ def test_a_window_maximum_next_to_the_right_number_still_fails():
     """Naming 299 as the maximum while mentioning the 9.840 elsewhere
     is the half-correct shape the guard window exists to catch."""
     assert not _score(_WINDOW_MAX_LATE).success
+
+
+def test_the_row_exemption_itself_holds_without_the_value():
+    """A lookahead placed before the number could never see the "Zeile"
+    in front of it: the row exemption must hold on its own, not only
+    because the widened window happens to reach 9.840."""
+    import re
+    import yaml
+    from pathlib import Path
+    tasks = yaml.safe_load((Path(__file__).resolve().parent.parent / "delfin"
+                            / "agent" / "pack" / "benchmark"
+                            / "tasks_office.yaml").read_text(encoding="utf-8"))
+    task = next(t for t in tasks["tasks"]
+                if t["id"] == "office_maximum_outside_the_window_is_paged_for")
+    forbidden = [re.compile(sig["pattern"])
+                 for sig in task.get("forbidden_signals", [])]
+    row_only = "Der höchste Verbrauch steht in Zeile 243."
+    wrong = "Der höchste Verbrauch ist 299 kWh."
+    assert not any(p.search(row_only) for p in forbidden)
+    assert any(p.search(wrong) for p in forbidden)
