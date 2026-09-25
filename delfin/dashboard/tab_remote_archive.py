@@ -7,6 +7,8 @@ import csv as _csv
 import html
 import io
 import json
+
+from .helpers import js_string_literal
 import posixpath
 import re
 import shutil
@@ -1457,7 +1459,7 @@ def create_tab(ctx):
         mol3d_counter[0] += 1
         viewer_id = f"remote_mol3d_{mol3d_counter[0]}"
         wrapper_id = f"remote_mol_wrap_{mol3d_counter[0]}"
-        data_json = json.dumps(str(data or ""))
+        data_json = js_string_literal(data or "")
         scope_key_json = json.dumps(scope_id)
         view_scope_json = json.dumps(f"{scope_id}:{state.get('current_relative_path') or '/'}")
         style_js = profile['style_js']
@@ -1640,6 +1642,7 @@ def create_tab(ctx):
             return
 
         full_xyz = "".join(_frame_to_xyz(frame) for frame in frames)
+        xyz_json = js_string_literal(full_xyz)
         mol3d_counter[0] += 1
         viewer_id = f"remote_trj_viewer_{mol3d_counter[0]}"
         wrapper_id = f"remote_mol_wrap_{mol3d_counter[0]}"
@@ -1743,7 +1746,7 @@ def create_tab(ctx):
                             }}
                             var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                             {viewer_mouse_patch_js}
-                            viewer.addModelsAsFrames(`{full_xyz}`, "xyz");
+                            viewer.addModelsAsFrames({xyz_json}, "xyz");
                             viewer.setStyle({{}}, {style_js});
                             if (savedView && typeof viewer.setView === 'function') {{
                                 try {{
