@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import child_env
+
 from delfin.agent import state_paths
 from delfin.agent.benchmark_runner import _PristineWorkspace
 
@@ -196,7 +198,11 @@ def test_the_cli_process_honours_the_variable(tmp_path):
         "from delfin.agent import outcome_tracker; "
         "print(outcome_tracker._DEFAULT_PATH)\n"
     )
-    env = dict(os.environ, **{state_paths.SCRATCH_STATE_ENV: str(scratch)})
+    env = child_env(tmp_path)
+    # The test judges DELFIN_SCRATCH_STATE itself, so it names its own
+    # value rather than the helper's -- the private HOME from child_env
+    # stays, which is what keeps the child off the real one either way.
+    env[state_paths.SCRATCH_STATE_ENV] = str(scratch)
     out = subprocess.run([sys.executable, "-c", code], env=env,
                          capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr[-800:]

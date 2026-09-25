@@ -133,6 +133,41 @@ _LIFELINE_NAMES = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
 _LIFELINE_SAVED: dict = {}
 
 
+def child_env(tmp_path) -> dict:
+    """An environment for a child process a test starts, so that the
+    child -- which inherits none of the suite's in-memory redirects --
+    still resolves every ``~/.delfin`` sink of its own outside the real
+    home.
+
+    The suite redirects its sinks by swapping module attributes in the
+    TEST process (``_isolate_user_state``, from the product's one table
+    in delfin/agent/state_paths.py). That redirect stops at the process
+    boundary. A child a test starts -- a voila server, an agent script,
+    any ``sys.executable -c`` importing delfin -- resolves its sinks at
+    import time against whatever HOME and the environment say: measured
+    2026-09-22, nine confirmation requests from suite children landed
+    in the operator's real ``~/.delfin/terminal_confirmations``.
+
+    Two variables, each doing its half. ``HOME`` is what every
+    ``Path.home()`` sink follows (``terminal_confirm._PENDING_DIR``
+    among them), so a private HOME alone already moves the child's
+    whole user state. ``DELFIN_SCRATCH_STATE`` carries the same for
+    children that honour it through the product's environment route
+    (delfin.agent.cli applies it before any sink import); for the rest
+    it is inert. The directories exist before the child starts, so a
+    first write does not have to race a ``mkdir``.
+    """
+    import os
+    home = tmp_path / "child_home"
+    scratch = tmp_path / "child_scratch"
+    home.mkdir(exist_ok=True)
+    (scratch / ".delfin").mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["DELFIN_SCRATCH_STATE"] = str(scratch)
+    return env
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _the_suite_lives_under_no_lifeline():
     """A suite started from a delfin-voila terminal inherits its lifeline;

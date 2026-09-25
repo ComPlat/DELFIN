@@ -65,6 +65,8 @@ import time
 
 import pytest
 
+from conftest import child_env
+
 from tests.editor_source import EDITOR_SOURCE
 
 
@@ -255,7 +257,7 @@ def test_a_walk_left_at_its_highest_point_is_marked_once():
     assert len([t for t in ax.texts if t.get_text() == '+1.5']) == 1
 
 
-def test_the_picture_is_made_without_a_display_and_without_pyplot():
+def test_the_picture_is_made_without_a_display_and_without_pyplot(tmp_path):
     """It is drawn under Voila, from the scan's own background thread.
 
     Two things follow, and neither is visible from a figure that was built in
@@ -276,7 +278,8 @@ def test_the_picture_is_made_without_a_display_and_without_pyplot():
          '    x_label="C0-C1 (A)", y_label="kcal/mol", title="walked");'
          'print(len(out), "matplotlib.pyplot" in sys.modules)'],
         capture_output=True, text=True, timeout=300,
-        env={'PATH': '/usr/bin:/bin', 'PYTHONPATH': root, 'HOME': '/tmp'},
+        env={**child_env(tmp_path), 'PATH': '/usr/bin:/bin',
+             'PYTHONPATH': root},
         cwd=root)
     assert said.returncode == 0, said.stderr[-2000:]
     size, pyplot = said.stdout.split()
