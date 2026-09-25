@@ -651,6 +651,14 @@ class TerminalAgent:
         self._turn_base = (0, 0, 0.0)
         self._spin = 0
         self._last_paint = 0.0
+        # Characters this turn streamed to the pump as text or thinking
+        # (rendered content). The provider's output-token count is
+        # cumulative but only lands on the FINAL message_delta on
+        # OpenAI-compatible endpoints (usage arrives with the last
+        # chunk, include_usage), so mid-turn the status line would
+        # otherwise show a false ↓0 while tokens are visibly streaming.
+        # This char count is the honest basis for a MARKED estimate.
+        self._streamed_chars = 0
         # Typed during a turn: queued, never injected. A queued message
         # cannot be lost and cannot land in a context nobody could see.
         self.queued: list[str] = []
@@ -767,6 +775,9 @@ class TerminalAgent:
         self._interrupts = 0
         self._turn_t0 = _time.monotonic()
         self._last_paint = 0.0
+        # New turn, new streamed-char count: the estimate must not
+        # carry the previous turn's characters into this one.
+        self._streamed_chars = 0
         # The engine's counters are cumulative for the SESSION, so the live
         # line differences against this baseline. Without it the first turn
         # looks right and every later one reports the whole conversation.
@@ -881,9 +892,22 @@ class TerminalAgent:
                 if item.kind == "done":
                     self._clear_bottom()
                     return
+                self._count_streamed(item)
                 self._render_around_bottom(item)
 
     # -- keys during a turn ----------------------------------------------
+    def _count_streamed(self, item: "RenderItem") -> None:
+        """Feed one rendered item into the streamed-char estimate.
+
+        Called from the pump for every item the worker streamed: the
+        text and thinking the model produced this turn. Tool results
+        are NOT model output and are deliberately not counted --
+        counting them would present a tool's output as the model's
+        tokens.
+        """
+        if item.kind in ("text", "thinking") and item.text:
+            self._streamed_chars += len(item.text)
+
     def _on_key(self, event, decoder) -> None:
         from . import repl_keys as rk
 
@@ -1672,6 +1696,18 @@ class TerminalAgent:
         base_in, base_out, base_cost = self._turn_base
         tin = max(0, int(status.get("input_tokens", 0) or 0) - base_in)
         tout = max(0, int(status.get("output_tokens", 0) or 0) - base_out)
+        # Provider truth wins whenever it exists mid-turn (Anthropic
+        # counts on message_delta). Only where it does not -- OpenAI-
+        # compatible streams, whose usage arrives with the last chunk --
+        # fall back to a MARKED estimate from the streamed characters,
+        # or to an ellipsis before the first token. A bare ↓0 during a
+        # streaming turn is a false exact number, not a missing value.
+        if tout > 0:
+            out_bits = f"↓{tout}"
+        elif self._streamed_chars > 0:
+            out_bits = f"↓~{max(1, self._streamed_chars // 4)}"
+        else:
+            out_bits = "↓…"
         cost = max(0.0, float(status.get("cost_usd", 0.0) or 0.0) - base_cost)
         model = str(getattr(getattr(self.engine, "client", None), "model", "")
                     or "?")
@@ -1680,7 +1716,7 @@ class TerminalAgent:
         bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
         if mode:
             bits.append(mode)
-        bits.append(f"↑{tin} ↓{tout}")
+        bits.append(f"↑{tin} {out_bits}")
         if cost > 0:
             bits.append(f"${cost:.4f}")
         bits.append("esc to interrupt")
