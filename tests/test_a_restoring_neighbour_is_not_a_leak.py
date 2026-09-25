@@ -27,9 +27,11 @@ is not a race. A genuinely new untracked path is reported as before.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -135,3 +137,116 @@ def test_a_file_no_ignore_rule_describes_is_still_reported(
         "leak\n", encoding="utf-8")
     reported = _confirmed(monkeypatch, root)
     assert f"{_WS_REL}/not_described_by_any_rule.txt" in reported
+
+
+# ---------------------------------------------------------------------------
+# The incident as it actually happened: two processes, not a timer
+# ---------------------------------------------------------------------------
+
+_NEIGHBOUR = r"""
+import os
+import sys
+import time
+from pathlib import Path
+
+# A process shaped like the benchmark runner: hold the workspace in
+# its mid-attempt state (tracked files removed, as the agent under
+# test removes them) and restore it after the guard below has scanned.
+root = Path(sys.argv[1])
+ws = root / "tests" / "fixtures" / "office_workspace"
+kept = {p.name: p.read_bytes() for p in ws.iterdir()
+        if p.name.endswith(".csv")}
+
+from delfin.agent import benchmark_runner as br
+
+with br._PristineWorkspace(root):
+    for p in ws.glob("*.csv"):
+        p.unlink()
+    # Hold the window open until the guard has taken its raw scan;
+    # the file this process waits for says so.
+    (ws / ".neighbour-was-here").write_text("", encoding="utf-8")
+    while not (root / ".guard-scan-started").exists():
+        time.sleep(0.02)
+    # A window the guard's confirmation gaps can outwait: 0.1 s after
+    # the raw scan, the restore closes it -- the shape a snapshot
+    # restore has when the attempt ends.
+    time.sleep(0.1)
+    for name, blob in kept.items():
+        (ws / name).write_bytes(blob)
+    (ws / ".neighbour-was-here").unlink()
+os._exit(0)
+"""
+
+
+def test_the_incident_two_processes_no_false_error(tmp_path, monkeypatch):
+    """The report's own reproduction: a parallel suite run, one pytest
+    process per file. One child drives the real workspace guard the
+    way a benchmark attempt does -- tracked CSVs gone for the length
+    of the attempt, restored at the end -- while THIS process runs the
+    guard's teardown scan, unmodified, over the shared checkout.
+
+    Red on the previous commit: the raw scan booked the neighbour's
+    transient deletions as appearances. Green with the confirmation:
+    the neighbour's window is waited out, and no false error.
+    """
+    root = _make_repo(tmp_path)
+    signal_scan = root / ".guard-scan-started"
+    neighbour_log = tmp_path / "neighbour.log"
+    # Extra paths the neighbour legitimately creates inside the
+    # workspace during its attempt: the guard's generated-root scan
+    # reports them only if they SURVIVE, which they do not.
+    script = tmp_path / "neighbour.py"
+    script.write_text(_NEIGHBOUR, encoding="utf-8")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    # A private HOME for the child, the way conftest.child_env gives
+    # one: _PristineWorkspace redirects its user state, and none of it
+    # belongs in the real home.
+    child_home = tmp_path / "neighbour_home"
+    child_home.mkdir()
+    env["HOME"] = str(child_home)
+    neighbour = subprocess.Popen(
+        [sys.executable, str(script), str(root)],
+        stdout=subprocess.PIPE,
+        stderr=open(neighbour_log, "w"), text=True,
+        env=env)
+    try:
+        # Wait until the neighbour's window is open (its marker exists
+        # and the tracked CSVs are gone), then run the guard's own
+        # teardown path -- the raw scan first, for evidence, then the
+        # confirmed one the fixture now uses.
+        marker = root / _WS_REL / ".neighbour-was-here"
+        for _ in range(500):            # up to ~10 s
+            if marker.exists() and not (root / _WS_REL /
+                                        "buchungen.csv").exists():
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("neighbour never opened its window: "
+                                 + neighbour.poll().__repr__())
+        assert f"{_WS_REL}/buchungen.csv" in _scan(monkeypatch, root), (
+            "the raw scan no longer sees the neighbour's window -- "
+            "the reproduction would be vacuous")
+        # Tell the neighbour its window has been seen; the confirmed
+        # scan runs while the window is still open and must wait it
+        # out, reporting nothing that survives.
+        signal_scan.write_text("", encoding="utf-8")
+        reported = _confirmed(monkeypatch, root)
+        rc = neighbour.wait(timeout=120)
+        assert rc == 0, ("the neighbour crashed: "
+                         + neighbour_log.read_text(encoding="utf-8"))
+    finally:
+        if signal_scan.exists():
+            signal_scan.unlink()
+        if neighbour.poll() is None:
+            neighbour.kill()
+            neighbour.wait(timeout=30)
+    # The checkout is whole again and the guard reported nothing.
+    assert reported == frozenset(), (
+        f"a neighbour's restore window was booked as a leak: "
+        f"{sorted(reported)}")
+    assert (root / _WS_REL / "buchungen.csv").is_file()
+    # The real teardown assert shape: nothing appeared AND nothing
+    # under the generated root survived the neighbour.
+    assert not [p for p in (root / _WS_REL).iterdir()
+                if p.name == ".neighbour-was-here"]
