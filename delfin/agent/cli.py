@@ -57,6 +57,19 @@ def _engine_defaults() -> dict[str, str]:
             for k in ("backend", "provider", "model", "effort")}
 
 
+def guard_principles_or_exit(pack_dir: "Path | None" = None) -> None:
+    """Refuse to start when the principles were changed or removed.
+
+    The engine enforces the same check for every entry point; here the
+    terminal gets a clean exit with the reason instead of a traceback.
+    """
+    from .principles_guard import PrinciplesTampered, enforce
+    try:
+        enforce(pack_dir)
+    except PrinciplesTampered as exc:
+        raise SystemExit(f"refusing to start: {exc}") from None
+
+
 def _build_engine(args: argparse.Namespace):
     """Construct an AgentEngine for the given CLI args.
 
@@ -3487,6 +3500,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))
     if getattr(args, "func", None) in (cmd_chat, cmd_run):
+        guard_principles_or_exit()
         # An agent in a terminal ends with an emergency stop given anywhere
         # (stop_all), and with the dashboard it was started from, if any.
         from . import lifeline as _lifeline

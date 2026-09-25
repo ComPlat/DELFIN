@@ -66,18 +66,24 @@ def test_tampered_text_is_reported(tmp_path):
     assert "digest" in result.reason.lower()
 
 
-def test_a_second_expected_digest_is_honoured(tmp_path):
-    """check() also accepts digests the maintainer pinned elsewhere."""
+def test_every_pinned_copy_must_match(tmp_path):
+    """A second copy is a second lock, not a second key: a file that
+    matches one copy but not the other fails."""
     shared = tmp_path / "shared"
     shared.mkdir()
-    body = "# Principles\n\nA different, but officially pinned text.\n"
+    body = _SHIPPED.read_text(encoding="utf-8")
     (shared / "principles_addendum.md").write_text(body, encoding="utf-8")
-    other = hashlib.sha256(_normalise(body).encode("utf-8")).hexdigest()
+    assert principles_guard.check(
+        tmp_path, expected_digests=[principles_guard.EXPECTED_DIGEST]).ok
+    other = "0" * 64
     result = principles_guard.check(tmp_path, expected_digests=[other])
-    assert result.ok, result.reason
-    # Without the extra digest the same file must fail.
-    alone = principles_guard.check(tmp_path)
-    assert not alone.ok
+    assert not result.ok and "1 of 2" in result.reason
+
+
+def test_the_protected_copy_matches_the_shipped_file():
+    from delfin.agent.api_client import PRINCIPLES_DIGEST
+    assert PRINCIPLES_DIGEST == principles_guard.EXPECTED_DIGEST, (
+        "api_client.PRINCIPLES_DIGEST must move with the principles text")
 
 
 def test_normalisation_ignores_line_endings(tmp_path):

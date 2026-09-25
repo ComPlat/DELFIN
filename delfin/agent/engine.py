@@ -405,6 +405,11 @@ class AgentEngine:
         effort: str = "",
         kit_confirm_callback=None,
     ):
+        # No agent without its principles: every entry point builds its
+        # agent here, so a changed or missing principles file stops them
+        # all (principles_guard; the digest is pinned in two places).
+        from .principles_guard import enforce as _enforce_principles
+        _enforce_principles()
         self.repo_dir = Path(repo_dir)
         # DELFIN-bias gate: chemistry/cluster escalation patterns and
         # DELFIN-specific tools are only applied when the engine is

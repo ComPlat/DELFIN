@@ -2753,6 +2753,24 @@ def _delegate_report(parts: list[str], segment_starts: list[int]) -> str:
     return tail or "".join(parts).strip()
 
 
+def _principles_text() -> str:
+    """The maintainer's principles, verbatim, ahead of every preset.
+
+    A subagent's prompt is built from its preset alone, not through the
+    PromptLoader, so the principles that open every role prompt did not
+    reach it (found by the night run's P assignment, 2026-09-25). The
+    file is the same one; nothing is paraphrased.
+    """
+    from pathlib import Path as _P
+    from .prompt_loader import _has_body
+    try:
+        text = (_P(__file__).resolve().parent / "pack" / "shared"
+                / "principles_addendum.md").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return text.rstrip() + "\n\n" if _has_body(text) else ""
+
+
 def run_subagent(
     *,
     subagent_type: str,
@@ -2953,7 +2971,8 @@ def run_subagent(
             pass
 
     system_prompt = (
-        preset.system_prompt
+        _principles_text()
+        + preset.system_prompt
         + f"\n\nWorkspace: {sub_perms.workspace if sub_perms else '(none)'}"
         + f"\nTask label: {description}"
     )

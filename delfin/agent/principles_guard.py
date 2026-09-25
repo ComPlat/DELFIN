@@ -5,10 +5,10 @@ every role prompt (prompt_loader.py, layer 0). This module pins its
 digest so tampering becomes visible: a file that is missing, an empty
 scaffold, or edited text fails :func:`check` with a clear reason.
 
-The digest is pinned in TWO independent places — the constant below and
-a copy the maintainer keeps at a protected location. ``check`` accepts
-an optional list of additional expected digests so callers can verify
-against both.
+The digest is pinned in independent places -- the constant below and a
+copy in protected code (api_client.PRINCIPLES_DIGEST) -- and the file
+must match EVERY copy: removing or rewriting the principles means
+finding and changing all of them, and a copy left behind stops the agent.
 """
 
 from __future__ import annotations
@@ -43,20 +43,9 @@ def _normalise(text: str) -> str:
 
 
 def _has_body(text: str) -> bool:
-    """True when the file holds text outside its heading and comments —
-    the same bar the prompt loader applies before injecting it."""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if stripped.startswith("<!--") and stripped.endswith("-->"):
-            continue
-        if stripped.startswith("<!--"):
-            continue  # comment body line
-        if stripped.endswith("-->"):
-            continue  # comment end line
-        return True
-    return False
+    """The prompt loader's own bar for "this addendum says something"."""
+    from .prompt_loader import _has_body as _loader_has_body
+    return _loader_has_body(text)
 
 
 def expected_digest() -> str:
@@ -71,8 +60,8 @@ def check(
     """Verify ``pack_dir``'s principles addendum against the pinned digest.
 
     ``pack_dir`` is the directory containing ``shared/`` (the prompt
-    pack). ``expected_digests`` optionally lists additional digests the
-    maintainer pinned elsewhere; the file may match any of them.
+    pack). ``expected_digests`` lists the copies pinned elsewhere; the
+    file must match the module constant AND every one of them.
     """
     path = Path(pack_dir) / _PRINCIPLES_REL
     if not path.is_file():
@@ -94,12 +83,37 @@ def check(
                     "scaffold comment — the body is gone"),
         )
     digest = hashlib.sha256(_normalise(text).encode("utf-8")).hexdigest()
-    allowed = {EXPECTED_DIGEST, *(expected_digests or [])}
-    if digest not in allowed:
+    pinned = [EXPECTED_DIGEST, *(expected_digests or [])]
+    stale = [d for d in pinned if d != digest]
+    if stale:
         return GuardResult(
             ok=False,
             reason=(f"principles_addendum.md digest mismatch: got "
-                    f"{digest}, expected one of {len(allowed)} pinned "
-                    f"digests — the text was changed or tampered with"),
+                    f"{digest}, {len(stale)} of {len(pinned)} pinned "
+                    f"digests differ — the text was changed or tampered "
+                    f"with, or a pinned copy was not moved with it"),
         )
     return GuardResult(ok=True, reason="principles addendum matches the pinned digest")
+
+
+class PrinciplesTampered(RuntimeError):
+    """The principles file does not match every pinned digest."""
+
+
+def _shipped_pack() -> Path:
+    return Path(__file__).resolve().parent / "pack"
+
+
+def enforce(pack_dir: Path | str | None = None) -> None:
+    """Raise :class:`PrinciplesTampered` unless the shipped principles
+    match the module constant AND the protected copy in api_client.
+
+    Called where every agent is born (``AgentEngine.__init__``), so no
+    entry point -- terminal, dashboard, scheduler, monitor, benchmark --
+    runs an agent without them.
+    """
+    from .api_client import PRINCIPLES_DIGEST
+    result = check(pack_dir or _shipped_pack(),
+                   expected_digests=[PRINCIPLES_DIGEST])
+    if not result.ok:
+        raise PrinciplesTampered(result.reason)
