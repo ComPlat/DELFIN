@@ -12760,7 +12760,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if want in [value for _label, value in options]:
                 submit_scan_way.value = want
         # The end of the walk only when one has been asked for.
-        set_end = wanted == '' and str(submit_scan_way.value) == 'to'
+        # A torsion's two arrows can take a value too -- turn this way and stop
+        # when the dihedral reaches it -- so the field is offered for a dihedral
+        # whichever way is chosen; elsewhere only "to a value" asks for one.
+        set_end = wanted == '' and (
+            str(submit_scan_way.value) == 'to' or kind == 'dihedral')
         submit_scan_to.layout.display = '' if set_end else 'none'
         submit_scan_to.disabled = not set_end
 
@@ -13047,6 +13051,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     'a direction and let the scan stop at the next minimum.')
                 return
             target = asked
+        elif kind == 'dihedral' and str(submit_scan_way.value) in ('in', 'out'):
+            # The arrow is the direction; a value, when one differs from where
+            # the torsion stands, is where to stop -- reached by turning that
+            # way, wrapping a whole turn if need be so "turn left to +90" goes
+            # the long way round rather than the short.  Left at the value the
+            # torsion already has, the arrow walks that way to the next minimum,
+            # exactly as it did before the field was offered for a torsion.
+            asked = float(submit_scan_to.value)
+            if abs(asked - here) > 1e-9:
+                target = float(asked)
+                turn = 1.0 if str(submit_scan_way.value) == 'out' else -1.0
+                for _ in range(2):
+                    if (target - here) * turn > 0:
+                        break
+                    target += 360.0 * turn
         # A verb points its own force, at the bond those two atoms would make
         # or at somewhere clear of it -- see :func:`_verb_target`.  It is not
         # where the walk is driven to; a push is a force, and the verb is what
@@ -19602,7 +19621,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         if change.get('name') != 'value':
             return
-        if str(submit_scan_way.value) == 'to' and not float(submit_scan_to.value):
+        # A torsion's arrows open the field on the value it stands at, the same
+        # as "to a value" does -- so leaving it there means "no end, walk to the
+        # next minimum" and any other number is where to stop turning that way.
+        _way = str(submit_scan_way.value)
+        _kind = _CONSTRAINT_KINDS.get(len(state.get('picked') or ()))
+        if (_way == 'to' or (_kind == 'dihedral' and _way in ('in', 'out'))) \
+                and not float(submit_scan_to.value):
             try:
                 submit_scan_to.value = float(submit_internal_value.value)
             except (TypeError, ValueError):

@@ -1998,7 +1998,12 @@ def test_the_scan_controls_say_what_they_are():
     assert 'submit_scan_stop_at' not in source, (
         'the checkbox that only revealed the field is a control of its own '
         'again')
-    assert "set_end = wanted == '' and str(submit_scan_way.value) == 'to'" in source
+    # The value field is offered for "to a value" and, for a torsion, for its
+    # two arrow directions too -- so a dihedral can be turned a chosen way to a
+    # chosen value.
+    assert "set_end = wanted == '' and (" in source
+    assert ("str(submit_scan_way.value) == 'to' or kind == 'dihedral')"
+            in source)
     assert "submit_scan_to.layout.display = '' if set_end else 'none'" in source
     # The direction is what is always used; a value only overrides it when one
     # was actually asked for.
