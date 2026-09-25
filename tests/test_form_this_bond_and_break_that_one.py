@@ -321,10 +321,11 @@ def test_the_two_verbs_are_offered_for_a_pair_and_not_for_an_angle():
     source = EDITOR_SOURCE
     assert "('form this bond', 'form')" in source
     assert "('break this bond', 'break')" in source
-    # The angle and torsion list, which has the two directions and the value
-    # and nothing else.
-    assert ("else [('narrower', 'in'), ('wider', 'out'),\n"
-            "                  ('to a value you give', 'to')]") in source
+    # The angle list: the two directions and the value, no verbs.  (A bond is
+    # between two atoms, so three of them have none to form or break.)
+    assert "[('narrower', 'in'), ('wider', 'out')," in source
+    # The torsion list: the two ways round as arrows, the value, no verbs.
+    assert "[('↺', 'in'), ('↻', 'out')," in source
 
 
 def test_an_instruction_that_is_already_carried_out_is_refused_at_arming():
