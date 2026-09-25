@@ -182,6 +182,15 @@ def create_tab(ctx):
     CALC_XYZ_MAX_READ_BYTES = 50 * 1024 * 1024          # 50 MB – skip full read for huge trajectories
     CALC_CUBE_MAX_READ_BYTES = 100 * 1024 * 1024         # 100 MB – skip full read for huge cube files
     CALC_IMAGE_MAX_READ_BYTES = 20 * 1024 * 1024         # 20 MB – skip inline base64 for huge images
+    # An image travels to the page as base64 inside the markup, which inflates
+    # it by a third and then has to be parsed as HTML: an 18 MB photograph took
+    # ten seconds before anything appeared, while a 4 MB text file took half a
+    # second and a sixty-page PDF the same. Above this size a downscaled
+    # preview goes first and the full image follows in the background, so
+    # moving between large files stays answerable.
+    CALC_IMAGE_PREVIEW_BYTES = 1_500_000
+    CALC_IMAGE_PREVIEW_PX = 1800
+    CALC_IMAGE_SUFFIXES = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff')
     CALC_LOG_XYZ_EXTRACT_MAX = 50 * 1024 * 1024          # 50 MB – skip XYZ extraction from huge logs
     #: How much of a drawing to show as text when there is no editor to
     #: open it in.  A .ket is JSON and unreadable either way; this is
@@ -864,12 +873,16 @@ def create_tab(ctx):
     # and this says so; over a calculations folder they were always shown and
     # still are, because a .delfin_last_run.json is something people look for.
     _dotfiles_hidden_at_start = bool(_OFFICE_DOC_FEEL or getattr(ctx, 'browser_hides_dotfiles', False))
+    # Only where they are in the way: a home directory is mostly dot folders,
+    # a calculations folder is not, and a button nobody presses is clutter.
     calc_dotfiles_btn = widgets.ToggleButton(
         value=not _dotfiles_hidden_at_start,
         description=('Hide .files' if not _dotfiles_hidden_at_start else 'Show .files'),
         tooltip='Show or hide entries whose name starts with a dot',
         layout=widgets.Layout(width='118px', min_width='118px', height='26px'),
     )
+
+    _dotfiles_children = [calc_dotfiles_btn] if _dotfiles_hidden_at_start else []
 
     calc_filter_sort_row = widgets.HBox(
         [calc_folder_search, calc_sort_dropdown],
@@ -12348,6 +12361,54 @@ def create_tab(ctx):
 
     # -- item open logic (shared by dblclick and single-click on files) ------
 
+    def _calc_show_image(data, mime, name, size_str, note=''):
+        """Put image bytes on screen, as small a detour through markup as the widget allows."""
+        b64 = base64.b64encode(data).decode('ascii')
+        label = f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b> ({size_str})'
+        if note:
+            label += f' <span style="color:#888;">&middot; {_html.escape(note)}</span>'
+        calc_file_info.value = label
+        calc_content_area.value = (
+            "<div style='height:100%; width:100%; border:1px solid #ddd; padding:6px;"
+            " background:#fafafa; box-sizing:border-box; display:flex;"
+            " align-items:center; justify-content:center; overflow:hidden;'>"
+            f"<img src='data:image/{mime};base64,{b64}' style='max-width:100%; max-height:100%;"
+            " width:auto; height:auto; object-fit:contain; display:block;' />"
+            "</div>"
+        )
+        calc_update_view()
+
+    def _calc_image_preview(path):
+        """A downscaled copy, or None when Pillow cannot make one.
+
+        Decoding and shrinking costs a fraction of what shipping the original
+        through the page costs, and the result is what fits on screen anyway.
+        """
+        try:
+            from PIL import Image
+            with Image.open(path) as img:
+                img.draft('RGB', (CALC_IMAGE_PREVIEW_PX, CALC_IMAGE_PREVIEW_PX))
+                img = img.convert('RGB') if img.mode in ('CMYK', 'P') else img
+                img.thumbnail((CALC_IMAGE_PREVIEW_PX, CALC_IMAGE_PREVIEW_PX))
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG', optimize=False, compress_level=1)
+                return buffer.getvalue()
+        except Exception:
+            return None
+
+    def _calc_image_full_later(path, mime, name, size_str, opened_as):
+        """Replace the preview with the original -- unless the user moved on."""
+        try:
+            data = path.read_bytes()
+        except Exception:
+            return
+        if state.get('open_label') != opened_as:
+            return                      # another file is on screen now
+        try:
+            _calc_show_image(data, mime, name, size_str)
+        except Exception:
+            pass
+
     def _calc_open_item(selected):
         """Open/display a single item given its label string."""
         if not selected or selected.startswith('('):
@@ -12685,7 +12746,7 @@ def create_tab(ctx):
             return
 
         # --- PNG image ---
-        if suffix == '.png':
+        if suffix in CALC_IMAGE_SUFFIXES:
             _calc_set_png_button_mode(main=False)
             if size > CALC_IMAGE_MAX_READ_BYTES:
                 calc_file_info.value = (
@@ -12694,22 +12755,21 @@ def create_tab(ctx):
                 )
                 calc_set_message(f'Image too large for inline display ({size_str}).')
                 return
+            mime = {'.jpg': 'jpeg', '.tif': 'tiff'}.get(suffix, suffix.lstrip('.'))
+            opened_as = state.get('open_label')
             try:
-                data = full_path.read_bytes()
-                b64 = base64.b64encode(data).decode('ascii')
-                calc_file_info.value = (
-                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
-                    f' ({size_str})'
-                )
-                calc_content_area.value = (
-                    "<div style='height:100%; width:100%; border:1px solid #ddd; padding:6px;"
-                    " background:#fafafa; box-sizing:border-box; display:flex;"
-                    " align-items:center; justify-content:center; overflow:hidden;'>"
-                    f"<img src='data:image/png;base64,{b64}' style='max-width:100%; max-height:100%;"
-                    " width:auto; height:auto; object-fit:contain; display:block;' />"
-                    "</div>"
-                )
-                calc_update_view()
+                if size > CALC_IMAGE_PREVIEW_BYTES:
+                    preview = _calc_image_preview(full_path)
+                    if preview is not None:
+                        _calc_show_image(preview, 'png', name, size_str,
+                                         note='preview, full image loading')
+                        threading.Thread(
+                            target=_calc_image_full_later,
+                            args=(full_path, mime, name, size_str, opened_as),
+                            daemon=True,
+                        ).start()
+                        return
+                _calc_show_image(full_path.read_bytes(), mime, name, size_str)
             except Exception as e:
                 calc_set_message(f'Error: {e}')
             return
@@ -14655,7 +14715,7 @@ def create_tab(ctx):
     )
     calc_nav_selection_row = widgets.HBox(
         [calc_explorer_new_btn, calc_explorer_rename_btn, calc_duplicate_btn,
-         calc_dotfiles_btn, *_archive_selection_children],
+         *_dotfiles_children, *_archive_selection_children],
         layout=widgets.Layout(
             width='100%', overflow_x='hidden',
             justify_content='flex-start', gap='6px',

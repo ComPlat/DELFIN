@@ -82,23 +82,38 @@ def test_picking_a_row_does_not_drop_the_user_at_the_far_end():
 
 # -- the dotfile toggle ----------------------------------------------------
 
-def test_dotfiles_can_be_hidden_and_shown_again(tmp_path):
+def test_the_calculations_browser_shows_everything_and_offers_no_toggle(tmp_path):
+    """A calculations folder is not mostly dot folders, so there is nothing to hide."""
     ctx = _ctx(tmp_path)
     (ctx.calc_dir / "a_run").mkdir()
     (ctx.calc_dir / ".delfin_last_run.json").write_text("{}", encoding="utf-8")
 
     _widget, refs = browser.create_tab(ctx)
+
+    assert any(".delfin_last_run.json" in o for o in _listing(refs))
+    row = refs["calc_nav_selection_row"] if "calc_nav_selection_row" in refs else None
+    if row is not None:
+        assert refs["calc_dotfiles_btn"] not in row.children
+
+
+def test_in_the_home_tab_the_toggle_hides_and_shows_again(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    (fake_home / ".cache").mkdir(parents=True)
+    (fake_home / "messwerte").mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    _widget, refs = tab_home.create_tab(_ctx(tmp_path))
     button = refs["calc_dotfiles_btn"]
 
-    assert button.value is True                                   # unchanged for calculations
-    assert any(".delfin_last_run.json" in o for o in _listing(refs))
-
-    button.value = False
-    assert not any(".delfin_last_run.json" in o for o in _listing(refs))
-    assert any("a_run" in o for o in _listing(refs))               # the rest is still there
+    assert button.value is False
+    assert not any(".cache" in o for o in _listing(refs))
 
     button.value = True
-    assert any(".delfin_last_run.json" in o for o in _listing(refs))
+    assert any(".cache" in o for o in _listing(refs))
+    assert any("messwerte" in o for o in _listing(refs))           # the rest is still there
+
+    button.value = False
+    assert not any(".cache" in o for o in _listing(refs))
 
 
 def test_the_home_tab_starts_without_the_dot_folders(tmp_path, monkeypatch):
