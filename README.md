@@ -15,9 +15,9 @@
 
 **DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
 
-**DELFIN is operated by an AI agent.** It configures and submits calculations, monitors them, interprets the outputs, and modifies DELFIN's own code where a workflow has to be extended.
+**DELFIN is operated by AI agents.** They configure and submit calculations, monitor them, interpret the outputs, and modify DELFIN's own code where a workflow has to be extended. Work that stands on its own is delegated to subagents running in parallel, each with its own tools and permissions.
 
-Hosted models (Claude, OpenAI, KIT Toolbox) and local open-source models (Ollama, vLLM, LM Studio) are supported alike, so the platform can be run entirely on-premises. Its shell is sandboxed, its permissions are explicit, and what it may do is described under [AI agent](#-ai-agent).
+Hosted models (Claude, OpenAI, KIT Toolbox) and local open-source models (Ollama, vLLM, LM Studio) are supported alike, so the platform can be run entirely on-premises. Their shell is sandboxed, their permissions are explicit, and what they may do is described under [AI agents](#-ai-agents).
 
 > 🧬 organic chemistry · 🧲 transition-metal complexes · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics
 
@@ -95,7 +95,7 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 5. [Workflows](#-workflows)
 6. [Structure generation from SMILES](#-structure-generation-from-smiles)
 7. [Configuration (CONTROL.txt)](#-configuration-controltxt)
-8. [AI agent](#-ai-agent)
+8. [AI agents](#-ai-agents)
 9. [CLI reference](#-cli-reference)
 10. [Architecture](#-architecture)
 11. [External programs](#-external-programs)
@@ -465,7 +465,7 @@ DELFIN is configured by `CONTROL.txt` in the working directory. `delfin --define
 
 ---
 
-## 🤖 AI agent
+## 🤖 AI agents
 
 DELFIN ships a conversational AI agent: it reads and edits code, runs sandboxed shell commands, drives the dashboard, researches methods, analyses results and delegates self-contained work to subagents. It runs in the **DELFIN Agent** dashboard tab and as the standalone terminal program `delfin-agent`. It is a single, direct agent — there is no fixed review pipeline; when work benefits from extra hands it spins up subagents on demand.
 
