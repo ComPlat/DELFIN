@@ -28,4 +28,5 @@ def create_tab(ctx):
     # Preserve the calculations root so items can be moved there.
     home_ctx.primary_calc_dir = ctx.calc_dir
     home_ctx.browser_scan_is_bounded = True
+    home_ctx.browser_hides_dotfiles = True
     return tab_calculations_browser.create_tab(home_ctx)

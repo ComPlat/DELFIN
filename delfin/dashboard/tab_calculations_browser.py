@@ -355,6 +355,14 @@ def create_tab(ctx):
     # line rather than a hunt through the file.
     _OFFICE_DOC_FEEL = _is_office_tab
 
+    # Viewing a document is the same job in every clone of this browser, so it
+    # behaves the same in all of them: a PDF scrolls through rather than
+    # turning one page at a time, the frame takes the height the pane has
+    # instead of a fixed one, a spreadsheet is a grid the tab's search reaches,
+    # and the cursor stays where it was. Only writing still differs -- the
+    # Backups folder belongs beside a document, not inside a calculation.
+    _DOC_VIEW_FEEL = True
+
     # Saving keeps a copy of the original. Beside every document that is a
     # file list nobody can read; in one folder it is a folder that can be
     # opened when something has to come back.
@@ -848,8 +856,21 @@ def create_tab(ctx):
         value='name',
         layout=widgets.Layout(width='90px', min_width='90px', height='26px', margin='0 0 0 4px'),
     )
+    # A dot folder is bookkeeping -- DELFIN's, or the system's. Over a home
+    # directory that is most of what is there, so the list starts without them
+    # and this says so; over a calculations folder they were always shown and
+    # still are, because a .delfin_last_run.json is something people look for.
+    _dotfiles_hidden_at_start = bool(_OFFICE_DOC_FEEL or getattr(ctx, 'browser_hides_dotfiles', False))
+    calc_dotfiles_btn = widgets.ToggleButton(
+        value=not _dotfiles_hidden_at_start,
+        description='.files',
+        tooltip='Show or hide entries whose name starts with a dot',
+        icon='eye-slash',
+        layout=widgets.Layout(width='84px', min_width='84px', height='26px', margin='0 0 0 4px'),
+    )
+
     calc_filter_sort_row = widgets.HBox(
-        [calc_folder_search, calc_sort_dropdown],
+        [calc_folder_search, calc_sort_dropdown, calc_dotfiles_btn],
         layout=widgets.Layout(
             width='100%', margin='0 0 8px 0',
             align_items='center', justify_content='flex-start',
@@ -8056,9 +8077,8 @@ def create_tab(ctx):
                     unread_set = update_calc_running_transitions(current_running)
                 except Exception:
                     unread_set = set()
-            if _OFFICE_DOC_FEEL:
-                # A dot folder is DELFIN's own bookkeeping, not the user's
-                # filing. It is still on disk and still reachable by path.
+            if not calc_dotfiles_btn.value:
+                # Still on disk and still reachable by path; only out of sight.
                 entries = [e for e in entries if not e.name.startswith('.')]
             for entry in entries:
                 if entry.is_dir():
@@ -8110,6 +8130,16 @@ def create_tab(ctx):
                         items.append(f'✏️ {entry.name}')
                     elif suffix in ['.doc', '.docx']:
                         items.append(f'📃 {entry.name}')
+                    elif suffix == '.pdf':
+                        items.append(f'📕 {entry.name}')
+                    elif suffix in ['.xlsx', '.xls', '.ods', '.csv', '.tsv']:
+                        items.append(f'📊 {entry.name}')
+                    elif suffix in ['.ppt', '.pptx']:
+                        items.append(f'📽 {entry.name}')
+                    elif suffix in ['.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z']:
+                        items.append(f'🗜 {entry.name}')
+                    elif suffix in ['.jpg', '.jpeg', '.gif', '.svg', '.bmp', '.webp', '.tif', '.tiff']:
+                        items.append(f'🖼 {entry.name}')
                     else:
                         items.append(f'📄 {entry.name}')
         except PermissionError:
@@ -11186,6 +11216,14 @@ def create_tab(ctx):
         with ctx.js_output:
             display(_JS(_js))
 
+    def calc_on_dotfiles_change(change):
+        calc_dotfiles_btn.icon = 'eye' if calc_dotfiles_btn.value else 'eye-slash'
+        saved_filter = calc_folder_search.value
+        calc_list_directory()
+        if saved_filter:
+            calc_folder_search.value = saved_filter
+            calc_filter_file_list()
+
     def calc_on_sort_change(change):
         saved_filter = calc_folder_search.value
         calc_list_directory()
@@ -11865,10 +11903,10 @@ def create_tab(ctx):
             lossy_note=lossy,
             scroll_top=scroll_top,
             cursor=cursor,
-            office=_OFFICE_DOC_FEEL,
+            office=_DOC_VIEW_FEEL,
         )
         # Plain-text fallback for the tab's search box and the Copy button.
-        state['search_kind'] = 'sheet' if _OFFICE_DOC_FEEL else 'text'
+        state['search_kind'] = 'sheet' if _DOC_VIEW_FEEL else 'text'
         state['file_content'] = _sheet.grid_to_tsv(sheet)
         state['file_is_preview'] = False
         state['file_preview_note'] = ''
@@ -12045,7 +12083,7 @@ def create_tab(ctx):
             note = f'{len(ops)} change{"" if len(ops) == 1 else "s"} saved'
             if backup is not None:
                 note += f' · backup: {backup.name}'
-            if not _OFFICE_DOC_FEEL:
+            if not _DOC_VIEW_FEEL:
                 _calc_render_sheet(path, sheet_name=sheet_name,
                                    scroll_top=scroll_top, status=note)
                 return
@@ -12069,7 +12107,7 @@ def create_tab(ctx):
             # user back where they were standing.
             state['sheet_pending'].pop(key, None)
             _calc_render_sheet(path, sheet_name=sheet_name, scroll_top=scroll_top,
-                               cursor=cursor if _OFFICE_DOC_FEEL else None,
+                               cursor=cursor if _DOC_VIEW_FEEL else None,
                                status='Changes discarded')
             return
 
@@ -12203,10 +12241,9 @@ def create_tab(ctx):
             # height and the one-page-at-a-time view it always had.
             panel = _pdf.PdfPanel(
                 run_js=_run_js,
-                continuous=_OFFICE_DOC_FEEL,
+                continuous=_DOC_VIEW_FEEL,
                 backup_dir_name=OFFICE_BACKUP_DIR if _OFFICE_DOC_FEEL else None,
-                height_px=(None if _OFFICE_DOC_FEEL
-                           else max(240, CALC_CONTENT_HEIGHT - 80)),
+                height_px=None if _DOC_VIEW_FEEL else max(240, CALC_CONTENT_HEIGHT - 80),
             )
             state['pdf_panel'] = panel
             calc_pdf_container.children = [panel.widget]
@@ -12837,7 +12874,7 @@ def create_tab(ctx):
             return
 
         # --- DOCX files ---
-        if suffix == '.docx' and _OFFICE_DOC_FEEL:
+        if suffix == '.docx' and _DOC_VIEW_FEEL:
             # Rendered from the document itself so every paragraph carries
             # the address an edit is written back to. mammoth below produces
             # nicer HTML but nothing in it says which paragraph a line came
@@ -13400,6 +13437,7 @@ def create_tab(ctx):
     calc_preselect_close.on_click(_calc_preselect_close_view)
     calc_preselect_new3d.on_click(_calc_preselect_new_3d_structure)
     calc_sort_dropdown.observe(calc_on_sort_change, names='value')
+    calc_dotfiles_btn.observe(calc_on_dotfiles_change, names='value')
     calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
     calc_xyz_loop_checkbox.observe(calc_on_xyz_loop_change, names='value')
     calc_xyz_fps_input.observe(calc_on_xyz_fps_change, names='value')
@@ -14810,7 +14848,7 @@ def create_tab(ctx):
         '.calc-left .widget-vbox { overflow:hidden !important; }'
         '.calc-left code { display:block !important; overflow:hidden !important;'
         ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
-        '.calc-splitter { width:8px; height:100%; cursor:col-resize;'
+        '.calc-splitter { width:8px; height:100%; cursor:col-resize; touch-action:none;'
         ' background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);'
         ' border-radius:4px; display:block;'
         ' z-index:10; pointer-events:auto !important; position:relative; }'
@@ -14855,7 +14893,7 @@ def create_tab(ctx):
                     calc_download_btn,
                     calc_report_btn,
                     calc_view_toggle,
-                    *([calc_fullscreen_btn] if _OFFICE_DOC_FEEL else []),
+                    *([calc_fullscreen_btn] if _DOC_VIEW_FEEL else []),
                 ],
                 layout=widgets.Layout(
                     gap='10px',
@@ -15026,17 +15064,26 @@ def create_tab(ctx):
                 left.style.minWidth = w + 'px';
                 left.style.maxWidth = w + 'px';
             }}
-            function onUp() {{
-                document.removeEventListener('mousemove', onMove);
-                document.removeEventListener('mouseup', onUp);
+            function onUp(e) {{
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                document.removeEventListener('pointercancel', onUp);
+                try {{ if (e && e.pointerId != null) splitter.releasePointerCapture(e.pointerId); }}
+                catch (err) {{ /* the pointer was already released */ }}
                 if (window["{calc_resize_mol_fn}"]) {{
                     setTimeout(window["{calc_resize_mol_fn}"], 50);
                 }}
             }}
-            splitter.addEventListener('mousedown', function(e) {{
+            /* Pointer events rather than mouse events: the same drag then works
+               with a finger and a pen, and capturing the pointer keeps the drag
+               alive when it leaves the 8 px strip -- which is most drags. */
+            splitter.addEventListener('pointerdown', function(e) {{
                 e.preventDefault();
-                document.addEventListener('mousemove', onMove);
-                document.addEventListener('mouseup', onUp);
+                try {{ splitter.setPointerCapture(e.pointerId); }}
+                catch (err) {{ /* older engines: the document listeners carry it */ }}
+                document.addEventListener('pointermove', onMove);
+                document.addEventListener('pointerup', onUp);
+                document.addEventListener('pointercancel', onUp);
             }});
         }}
 
@@ -15254,6 +15301,7 @@ def create_tab(ctx):
         # Navigation
         'calc_path_input': calc_path_input,
         'calc_sort_dropdown': calc_sort_dropdown,
+        'calc_dotfiles_btn': calc_dotfiles_btn,
         'calc_folder_search': calc_folder_search,
         'calc_search_input': calc_search_input,
         'calc_top_btn': calc_top_btn,
