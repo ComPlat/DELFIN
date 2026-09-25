@@ -138,3 +138,19 @@ class TestParser:
         # load block. A regression guard, green before and after.
         args = cli.build_parser().parse_args(["sessions", "--limit", "1"])
         assert cli.cmd_sessions(args) == 0
+
+    def test_plain_sessions_shows_load_columns_for_open_sessions(
+            self, fake_proc, capsys, monkeypatch):
+        # The default listing names what each open session on this host
+        # costs: procs, rss, cpu next to the open block.
+        import socket
+
+        records = [{"key": "selftest", "pid": os.getpid(),
+                    "host": socket.gethostname()}]
+        from delfin.agent import session_presence as _pres
+        monkeypatch.setattr(_pres, "open_sessions", lambda **kw: records)
+        args = cli.build_parser().parse_args(["sessions"])
+        assert cli.cmd_sessions(args) == 0
+        out = capsys.readouterr().out
+        assert "selftest" in out
+        assert "procs" in out and "rss" in out and "cpu" in out
