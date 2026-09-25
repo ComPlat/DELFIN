@@ -25,6 +25,7 @@ from . import inline_payload as _inline_payload
 from . import pricing
 from . import text_files as _text_files
 from . import edit_engine as _edit_engine
+from . import tool_args as _tool_args
 
 
 def _auto_install(package: str, pip_spec: str = "") -> None:
@@ -1433,6 +1434,82 @@ _LABEL_ONLY: frozenset[tuple[str, str]] = frozenset({
 _PLAN_MODE_BODY_REFUSERS: frozenset[str] = frozenset({
     "task_create", "task_update",
 })
+
+
+_SCHEMA_BY_TOOL: Optional[dict[str, dict]] = None
+
+
+def _stray_field_hint(name: str, arguments: dict) -> str:
+    """" Unknown field 'pth' -- did you mean 'path'?" for fields the schema
+    does not name, or "". Appended to a missing-field message: the
+    misspelling is usually WHY the field is missing."""
+    try:
+        _malformed_arguments(name, {})            # fills the schema table
+        schema = (_SCHEMA_BY_TOOL or {}).get(_bare_tool_name(name)) or {}
+        props = list((schema.get("properties") or {}))
+        aliases = {a for group in _ARG_ALIASES.values() for a in group}
+        hints = []
+        for key in arguments or {}:
+            if key in props or key in aliases:
+                continue
+            best = _tool_args._suggestion(key, props)
+            if best:
+                hints.append(f"unknown field '{key}' -- did you mean '{best}'?")
+        return (" " + " ".join(hints)) if hints else ""
+    except Exception:
+        return ""
+
+
+def _malformed_arguments(name: str, arguments: dict) -> Optional[str]:
+    """The schema's answer to a call it cannot accept, or None.
+
+    Runs after _missing_required_argument, which keeps its own policy
+    (label-only and empty-is-meaningful fields, aliases). This adds what
+    it never looked at: types and shapes (``edits`` sent as a string),
+    enum values, and the two safe repairs -- a JSON string holding the
+    object or list the schema wants, and a quoted integer -- which are
+    applied to ``arguments`` in place. Extra fields pass: models send
+    harmless ones, and refusing a working call over one would be a
+    regression. They are only named when they explain a missing field.
+    """
+    global _SCHEMA_BY_TOOL
+    try:
+        if not isinstance(arguments, dict):
+            return None
+        if _SCHEMA_BY_TOOL is None:
+            _SCHEMA_BY_TOOL = {
+                (tool.get("function") or {}).get("name"):
+                    (tool.get("function") or {}).get("parameters") or {}
+                for tool in _DOC_TOOLS_OPENAI}
+        bare = _bare_tool_name(name)
+        schema = _SCHEMA_BY_TOOL.get(bare)
+        if not schema:
+            return None
+        props = schema.get("properties") or {}
+        # Read the call the way the executor will: an alias stands for its
+        # field, and the checks _missing_required_argument waived stay
+        # waived.
+        probe = dict(arguments)
+        alias_of: dict[str, str] = {}
+        for field_name, aliases in _ARG_ALIASES.items():
+            if field_name in props and field_name not in probe:
+                for alias in aliases:
+                    if alias in probe:
+                        probe[field_name] = probe.pop(alias)
+                        alias_of[field_name] = alias
+                        break
+        required = [r for r in schema.get("required") or []
+                    if (bare, r) not in _LABEL_ONLY]
+        result = _tool_args.check({**schema, "required": required}, probe,
+                                  unknown="hint")
+        if not result.ok:
+            return (f"{result.error_text}. The call was not run -- re-send "
+                    f"{bare} with arguments of that shape.")
+        for key, value in result.args.items():
+            arguments[alias_of.get(key, key)] = value
+    except Exception:
+        return None
+    return None
 
 
 def _missing_required_argument(name: str, arguments: dict) -> Optional[str]:
@@ -11070,7 +11147,12 @@ class _DocToolExecutor:
             # wrong thing about the gate. The plan-mode refusal even says
             # the call was refused "before its arguments were looked at",
             # which running this first had quietly made false.
-            result = json.dumps({"error": _missing})
+            result = json.dumps(
+                {"error": _missing + _stray_field_hint(name, arguments)})
+        elif (_malformed := _malformed_arguments(name, arguments)):
+            # After every refusal that outranks it, before any dialog: a
+            # call the schema cannot accept is answered with its shape.
+            result = json.dumps({"error": _malformed})
         else:
             result = self._dispatch(name, arguments, permissions)
 

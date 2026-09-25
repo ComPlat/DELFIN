@@ -1,10 +1,9 @@
-"""What happens TODAY when a tool is called with bad arguments.
+"""How a tool call with bad arguments ends.
 
-Characterization, not specification: these pin the CURRENT behaviour so
-the integration of ``tool_args.check`` (which runs before the permission
-gate and refuses broken calls with a schema-derived message) has a
-"before" to be compared against. They are expected to change once the
-argument checker is wired in -- the migration note goes in that commit.
+Written (runde3-s6) as the "before" of wiring ``tool_args.check`` into
+the executor, and kept as its contract: the tolerances that stayed
+(the `file_path` alias, extra fields, the quoted integer) still pass;
+only the shape check changed (see the multi_edit case at the end).
 
 A real permissions object on a tmp workspace is used so the file tools
 actually run and their argument handling is what answers, not the
@@ -96,12 +95,10 @@ def test_multi_edit_without_edits_key_is_caught_by_the_guard(ws):
     assert "edits" in _error_text(out)
 
 
-def test_multi_edit_with_wrongly_typed_edits_is_not_schema_checked(ws):
-    # `edits` must be an array of objects; a string is not rejected by
-    # the required-key guard. Today the failure happens later, inside
-    # the executor, in terms that do not tell the model the expected
-    # shape.
+def test_multi_edit_with_wrongly_typed_edits_names_the_shape(ws):
+    # Was: the failure happened later, inside the executor, in terms that
+    # did not say the expected shape. Since tool_args is wired in, the
+    # schema answers first.
     out = _call(ws, "multi_edit", {"path": "a.txt", "edits": "not a list"})
     assert _is_error(out), out
-    err = _error_text(out)
-    assert "array" not in err.lower() or "object" not in err.lower(), err
+    assert "array" in _error_text(out).lower()
