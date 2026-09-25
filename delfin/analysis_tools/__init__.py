@@ -15,6 +15,7 @@ import importlib
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -44,6 +45,12 @@ def _probe_cli_version(command: list[str], *, timeout: int = 10) -> Optional[str
             capture_output=True,
             text=True,
             timeout=timeout,
+            # Some analysis CLIs litter their working directory on a mere
+            # --version (censo writes censo.log, c2anmr creates an anmr/
+            # folder -- seen after tests/test_equatorial_square_kappa4.py
+            # in SLURM 7199892). Probe them in a scratch directory so the
+            # litter never lands in the caller's checkout.
+            cwd=tempfile.gettempdir(),
         )
     except Exception:
         return None
