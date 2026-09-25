@@ -2106,7 +2106,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'is the one thing that cannot be read off the selection. Form or '
             'break says what is meant to have happened instead, and the walk '
             'stops when it has: arm one on each of two pairs to make one bond '
-            'while breaking another. Give a value when the end is the point.'
+            'while breaking another. Give a value when the end is the point. '
+            'For a torsion the two ways round are the arrows: ↺ turns it '
+            'left (anticlockwise along the middle bond), ↻ turns it right.'
         ),
         layout=widgets.Layout(width='178px', display='none'),
         disabled=True,
@@ -12685,13 +12687,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # rather than by refusing the press afterwards: a bond is between two
         # atoms, so there is no bond for three of them to make or break.
         kind = _CONSTRAINT_KINDS.get(picked)
-        options = (
-            [('closer together', 'in'), ('further apart', 'out'),
-             ('form this bond', 'form'), ('break this bond', 'break'),
-             ('to a value you give', 'to')]
-            if kind == 'distance'
-            else [('narrower', 'in'), ('wider', 'out'),
-                  ('to a value you give', 'to')])
+        if kind == 'distance':
+            options = [('closer together', 'in'), ('further apart', 'out'),
+                       ('form this bond', 'form'), ('break this bond', 'break'),
+                       ('to a value you give', 'to')]
+        elif kind == 'dihedral':
+            # A torsion is turned, not narrowed, and the one thing a turn needs
+            # is which way round -- so the two directions are shown as the two
+            # arrows rather than as "narrower/wider", which said nothing about
+            # rotation.  Positive dihedral is clockwise looking along the middle
+            # bond (IUPAC), so ``out`` (value increases) is clockwise/rechts rum
+            # and ``in`` (value decreases) is anticlockwise/links rum.
+            options = [('↺', 'in'), ('↻', 'out'),
+                       ('to a value you give', 'to')]
+        else:  # an angle is genuinely narrower or wider
+            options = [('narrower', 'in'), ('wider', 'out'),
+                       ('to a value you give', 'to')]
         if list(submit_scan_way.options) != [tuple(one) for one in options]:
             # Rewritten around whatever was chosen.  A dropdown handed a new
             # list drops its value even where the new list still has it, and
