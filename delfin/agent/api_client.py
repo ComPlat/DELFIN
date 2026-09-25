@@ -10534,6 +10534,35 @@ def _lang_snippet(line: str) -> str:
     return snippet
 
 
+#: GLM's own call markup. When the serving parser half-reads a call, the
+#: markup of a SECOND call lands inside the first call's arguments.
+_CALL_MARKUP_RE = re.compile(r"</?(?:arg_key|arg_value|tool_call)\s*>")
+
+
+def _leaked_call_markup(name: str, args: dict) -> str:
+    """A refusal when a shell command carries tool-call markup, else "".
+
+    Measured 2026-09-25 (kit.glm-5.3): ``bash`` was called with the command
+    ``grep_file<arg_key>pattern</arg_key><arg_value>…`` -- a grep_file call
+    the endpoint's parser folded into a bash call. As a shell command it
+    means nothing and would fail; routed through the gate it cost the
+    operator a dialog. It is answered here, before anyone is asked, with
+    what the model meant to do.
+    """
+    if name != "bash":
+        return ""
+    command = str((args or {}).get("command") or "")
+    # Only markup the shell would see: a grep FOR the tags is legitimate.
+    if not _CALL_MARKUP_RE.search(_blank_quoted(command)):
+        return ""
+    meant = re.match(r"\s*([A-Za-z_]\w*)\s*<", command)
+    tool = f"'{meant.group(1)}'" if meant else "another tool"
+    return (f"this bash command contains tool-call markup (<arg_key>/"
+            f"<arg_value>): a call to {tool} was folded into the command "
+            "text. Nothing was run. Call that tool directly with JSON "
+            "arguments, or write a plain shell command.")
+
+
 def _syntax_regression_note(path: Path, before: str, after: str) -> str:
     """A warning for the edit result when a Python file that parsed before
     the edit no longer does (the s6 report, 2026-09-21: an edit swallowed
@@ -14248,6 +14277,10 @@ class _DocToolExecutor:
         # decides anything, so a refusal that asked nothing (deny list,
         # auto-allow) can never carry a stale reason as the user's word.
         self._clear_refusal_reason(perms)
+
+        leaked = _leaked_call_markup(name, args)
+        if leaked:
+            return leaked
 
         if mode == "plan":
             return (
