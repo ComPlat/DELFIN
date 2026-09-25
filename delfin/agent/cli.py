@@ -2628,9 +2628,98 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if any(r.get("status") == "FAIL" for r in results) else 0
 
 
+def _load_limits() -> dict:
+    """The user's load alarm thresholds, from `agent.load_limits` settings.
+
+    ``~/.delfin/settings.json`` always, plus the trusted project files —
+    the same sources hooks read. Anything unreadable or malformed falls
+    back to session_load's defaults: thresholds are configuration, and
+    broken configuration must not break the reporting.
+    """
+    try:
+        from . import hooks as _hooks
+        # The raw settings dict is needed for agent.*, which load_hooks'
+        # merged HookConfig does not carry; read the user file directly.
+        # The trusted-project override is a refinement a settings file of
+        # this kind does not need yet.
+        raw = _hooks._read_json_safe(_hooks._user_settings_path()) or {}
+        limits = raw.get("agent", {}).get("load_limits")
+        if isinstance(limits, dict):
+            return dict(limits)
+    except Exception:
+        pass
+    from . import session_load as _sl_default
+    return dict(_sl_default.DEFAULT_LIMITS)
+
+
+def format_load_row(key: str, load: dict, alarms: list[str]) -> str:
+    """One watch line: session, procs, rss, cpu — alarms up front.
+
+    cpu is a difference between two measurements; before the second one
+    there is no number, and a dash says so instead of a made-up 0.0.
+    """
+    rss = float(load.get("rss_bytes") or 0)
+    for unit, factor in (("G", 1 << 30), ("M", 1 << 20), ("k", 1 << 10)):
+        if rss >= factor or unit == "k":
+            rss_txt = f"{rss / factor:.1f}{unit}"
+            break
+    cores = load.get("cpu_cores")
+    cores_txt = "-" if cores is None else f"{cores:.1f}"
+    line = (f"  {key[:16]:<16} procs {int(load.get('procs') or 0):>4}  "
+            f"rss {rss_txt:>6}  cpu {cores_txt:>4}")
+    for alarm in alarms:
+        line += f"  ! {alarm}"
+    return line
+
+
+def _print_session_load(watch_seconds: float) -> None:
+    """The --load view: one line per open session on THIS host, repeated.
+
+    Only this host's sessions have readable pids; others are listed
+    without numbers so the absence is explained rather than silent.
+    cpu needs two measurements a window apart, so the first pass shows
+    a dash and the second onward shows cores. Never raises: a monitor
+    that crashes on a dead session is worse than no monitor.
+    """
+    import socket as _socket
+    import time as _time
+
+    from . import session_load as _sl
+
+    host = _socket.gethostname()
+    limits = _load_limits()
+    previous: dict[str, dict] = {}   # key -> last load_of, for cpu cores
+    while True:
+        try:
+            from . import session_presence as _pres
+            records = _pres.open_sessions()
+        except Exception:
+            records = []
+        for rec in records:
+            pid = int(rec.get("pid") or 0)
+            key = str(rec.get("key") or "?")
+            if str(rec.get("host") or host) != host or pid <= 0:
+                print(f"  {key[:16]:<16} (on another host — not counted here)")
+                continue
+            load = _sl.load_of(pid, previous.get(key))
+            print(format_load_row(key, load, _sl.alarms(load, limits)))
+            previous[key] = load
+        if not watch_seconds:
+            return
+        _time.sleep(watch_seconds)
+
+
 def cmd_sessions(args: argparse.Namespace) -> int:
     """What ran here before, as a table that says how to come back."""
     from . import cli_resume as _cr
+
+    watch = getattr(args, "watch", None)
+    if getattr(args, "load", False) or watch:
+        try:
+            _print_session_load(float(watch) if watch else 0)
+        except Exception as exc:  # a broken /proc must not hide history
+            print(f"(load unavailable: {exc})")
+        return 0
 
     # What is open NOW comes first. A table of history read as "nothing
     # is running" while five sessions were, and the supervisor had to
@@ -3497,6 +3586,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sessions_p.add_argument("--limit", type=int, default=20,
                             help="How many to list (default 20)")
+    sessions_p.add_argument("--load", action="store_true",
+                            help="One line per open session on this host: "
+                                 "processes, RSS, CPU cores, alarms "
+                                 "(reporting only — nothing is signalled)")
+    sessions_p.add_argument("--watch", type=int, default=None, metavar="SECONDS",
+                            help="With --load: repeat every SECONDS "
+                                 "(Ctrl-C to stop)")
     sessions_p.set_defaults(func=cmd_sessions)
 
     # jobs — the cluster's jobs, read-only, without starting a session.
