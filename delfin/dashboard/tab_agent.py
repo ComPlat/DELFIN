@@ -1922,6 +1922,81 @@ def _assistant_turn_is_wordless(msg: dict) -> bool:
     return not str(msg.get("content") or "").strip()
 
 
+# The diagram renderer. Pinned to an exact version and to the bytes of that
+# version: an unpinned CDN script is a supply-chain surface, and the browser
+# refuses a script whose hash does not match rather than running it.
+_MERMAID_VERSION = "11.17.2"
+_MERMAID_URL = (
+    "https://cdn.jsdelivr.net/npm/mermaid@" + _MERMAID_VERSION
+    + "/dist/mermaid.min.js")
+_MERMAID_SRI = (
+    "sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2")
+_VENDORED_MERMAID_CACHE = None
+
+
+def vendored_mermaid_js() -> str:
+    """The bundled mermaid build, or "" when it is not installed.
+
+    Input: ``delfin/dashboard/static/mermaid.min.js``, if a site put one
+    there. Output: its source, to be inlined into the page.
+
+    Not shipped in the repository, and the reason is measured rather than
+    aesthetic: the build is 3.5 MB, against a repository whose largest
+    tracked file is 797 KB. Committing it would make the diagram renderer
+    four times the heaviest thing in the project, paid by every clone,
+    for a feature most turns never use.
+
+    So the default is the pinned CDN, fetched only when a diagram actually
+    appears, and a site with no outbound network drops the file here once
+    to get the same result offline. Neither route is required: without
+    both, the block stays the readable source it already was.
+
+    A site that vendors the file pays page weight instead of network --
+    the source is inlined at start-up, because there is no static route to
+    serve it from and Voila serves the notebook, not this package.
+    """
+    global _VENDORED_MERMAID_CACHE
+    if _VENDORED_MERMAID_CACHE is not None:
+        return _VENDORED_MERMAID_CACHE
+    try:
+        from importlib.resources import files
+        _VENDORED_MERMAID_CACHE = (
+            files("delfin.dashboard")
+            .joinpath("static/mermaid.min.js")
+            .read_text(encoding="utf-8"))
+    except Exception:
+        _VENDORED_MERMAID_CACHE = ""
+    return _VENDORED_MERMAID_CACHE
+
+
+def _mermaid_block_html(source: str) -> str:
+    """A fenced ``mermaid`` block, as the chat shows it.
+
+    Input: the diagram source the model wrote. Output: a container holding
+    that source twice -- once as text inside a ``<pre>``, which is what is
+    ON SCREEN until anything else happens, and once in a data attribute for
+    the renderer to read.
+
+    The readable text is the resting state, not an error path. A diagram
+    that cannot be drawn -- no library on the machine, no network, scripts
+    off -- then costs the reader nothing they did not already have: the
+    source of a flowchart says what the flowchart says, in order. Nothing
+    has to detect the failure, because nothing had to succeed first.
+
+    Both copies are HTML-escaped. The source comes from a model and is put
+    into a page; the renderer is additionally pinned to mermaid's strict
+    security level, so a label cannot carry markup either.
+    """
+    escaped = _html.escape(source)
+    return (
+        '<div class="delfin-mermaid" data-mmd="'
+        + escaped.replace('"', "&quot;")
+        + '">'
+        '<pre class="delfin-mermaid-src"><code>' + escaped + '</code></pre>'
+        '</div>'
+    )
+
+
 def _md_to_html(text: str) -> str:
     """Convert markdown subset to HTML for chat display."""
     # Every newline becomes a <br> further down, so leading ones survive as
@@ -1935,6 +2010,10 @@ def _md_to_html(text: str) -> str:
     def _stash_code_block(m):
         lang = m.group(1).strip().lower()
         code = m.group(2).strip()
+        if lang == "mermaid":
+            idx = len(code_blocks)
+            code_blocks.append(_mermaid_block_html(code))
+            return f"\x00CB{idx}\x00"
         highlighted = _syntax_highlight(code, lang)
         lang_label = f'<span class="code-lang">{_html.escape(lang)}</span>' if lang else ""
         # data-code stores raw text for copy button
@@ -19652,6 +19731,95 @@ def create_tab(ctx):
     except Exception:
         pass
 
+    # Drawing the diagrams. Three states by construction, not by error
+    # handling: the source is on screen from the start, the library is
+    # fetched only when a diagram exists, and a failure leaves what was
+    # already there. Marked done either way so a page with one broken
+    # diagram does not retry it on every DOM change.
+    _mermaid_init_js = """
+(function () {
+    if (window.__delfinMermaid) return;
+    window.__delfinMermaid = true;
+    var VENDORED = __DELFIN_MERMAID_VENDORED__;
+    var URL = "__DELFIN_MERMAID_URL__";
+    var SRI = "__DELFIN_MERMAID_SRI__";
+    var loading = null;
+
+    function load() {
+        if (loading) return loading;
+        loading = new Promise(function (resolve, reject) {
+            if (window.mermaid) { resolve(); return; }
+            var s = document.createElement('script');
+            if (VENDORED) {
+                s.textContent = VENDORED;
+                document.head.appendChild(s);
+                window.mermaid ? resolve() : reject();
+                return;
+            }
+            s.src = URL;
+            s.integrity = SRI;
+            s.crossOrigin = 'anonymous';
+            s.onload = function () { window.mermaid ? resolve() : reject(); };
+            s.onerror = reject;
+            document.head.appendChild(s);
+        }).then(function () {
+            window.mermaid.initialize({
+                startOnLoad: false,
+                /* The source is written by a model and lands in this page.
+                   strict sanitises rendered labels; htmlLabels off means a
+                   label is text and never markup in the first place. */
+                securityLevel: 'strict',
+                htmlLabels: false,
+                theme: 'neutral',
+                fontFamily: 'ui-sans-serif, system-ui, sans-serif'
+            });
+        });
+        return loading;
+    }
+
+    var seq = 0;
+    function draw(el) {
+        el.setAttribute('data-done', '1');
+        var src = el.getAttribute('data-mmd') || '';
+        if (!src.trim()) return;
+        load().then(function () {
+            return window.mermaid.render('delfin-mmd-' + (++seq), src);
+        }).then(function (out) {
+            var svg = (out && out.svg) ? out.svg : out;
+            if (!svg) return;
+            el.innerHTML = svg;
+            el.style.background = '#fff';
+            el.style.border = '1px solid #e5e7eb';
+            el.style.borderRadius = '6px';
+            el.style.padding = '8px';
+            el.style.margin = '6px 0';
+            el.style.overflowX = 'auto';
+        }).catch(function () {
+            /* The source stays on screen, which is where it already was. */
+        });
+    }
+
+    function sweep() {
+        var els = document.querySelectorAll('.delfin-mermaid:not([data-done])');
+        for (var i = 0; i < els.length; i++) draw(els[i]);
+    }
+
+    sweep();
+    /* Answers arrive after load, so the page has to keep looking. */
+    try {
+        new MutationObserver(function () { sweep(); })
+            .observe(document.body, { childList: true, subtree: true });
+    } catch (e) { /* no observer: the first sweep already ran */ }
+})();
+"""
+    import json as _json
+    _mermaid_init_js = (
+        _mermaid_init_js
+        .replace("__DELFIN_MERMAID_VENDORED__",
+                 _json.dumps(vendored_mermaid_js() or ""))
+        .replace("__DELFIN_MERMAID_URL__", _MERMAID_URL)
+        .replace("__DELFIN_MERMAID_SRI__", _MERMAID_SRI))
+    ctx.add_init_js(_mermaid_init_js)
     ctx.add_init_js(_enter_key_init_js)
 
     def _shutdown_tab(save: bool = True) -> None:

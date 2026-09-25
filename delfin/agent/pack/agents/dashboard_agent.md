@@ -608,3 +608,9 @@ state, spin contamination, non-converged SCF/geometry, non-physical
 energies. If `/check` reports ❌ or ⚠️, say so plainly and explain the
 chemistry — never present flagged numbers as final, and never suggest
 loosening convergence to make a flag disappear.
+
+## Diagrams
+A fenced block tagged `mermaid` is drawn as a diagram in the dashboard chat,
+and stays readable source anywhere else. Use one when the answer is a
+structure -- an architecture, a call path, a decision tree -- and prose when
+it is not.
