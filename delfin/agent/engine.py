@@ -393,7 +393,7 @@ class AgentEngine:
         provider: str = "claude",
         api_key: str = "",
         model: str = "",
-        mode: str = "quick",
+        mode: str = "solo",
         permission_mode: str = "",
         pack_dir: Path | None = None,
         mcp_config: str = "",
@@ -453,7 +453,10 @@ class AgentEngine:
         # across turns). Codex CLI spawns per turn and the chat-API backends
         # rebuild every request, so the loader re-injects there (its default).
         self.loader.stateful_backend = (backend == "cli" and provider == "claude")
-        self.mode = mode
+        # Migrate here, not only in _load_mode: until that runs, self.mode is
+        # whatever was passed in, and a retired name read from it (a status
+        # line, a bug report) names a mode nobody can select.
+        self.mode = _migrate_mode(mode)
         self._agent_workspace_dir = agent_workspace_dir
         self.route: list[str] = []
         self.mode_description: str = ""

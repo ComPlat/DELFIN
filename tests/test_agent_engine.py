@@ -1548,3 +1548,44 @@ def test_project_dir_pin_first_write_wins_and_resets():
     # no pin → no block
     e3 = AgentEngine.__new__(AgentEngine); e3._project_dir = ""
     assert e3._build_project_dir_block() == ""
+
+
+def test_a_retired_mode_never_reaches_the_engines_own_attribute():
+    """Until _load_mode runs, self.mode was whatever was passed in.
+
+    The constructor's own default was `quick`, a pipeline mode retired long
+    ago, and anything reading engine.mode before the first turn -- a status
+    line, a bug report -- named a mode the user cannot select.
+    """
+    import inspect
+
+    from delfin.agent.engine import AgentEngine, _migrate_mode
+
+    source = inspect.getsource(AgentEngine.__init__)
+    assert "self.mode = _migrate_mode(mode)" in source, (
+        "the constructor stores the mode it was given, unmigrated"
+    )
+
+    default = inspect.signature(AgentEngine.__init__).parameters["mode"].default
+    assert _migrate_mode(default) == default, (
+        f"the constructor default {default!r} is a mode that gets migrated away"
+    )
+    for retired in ("quick", "reviewed", "tdd", "cluster", "full", "pipeline"):
+        assert _migrate_mode(retired) == "solo", retired
+
+
+def test_the_router_never_recommends_a_mode_that_was_retired():
+    """The scoring still reasons in retired terms; the answer must not."""
+    from delfin.agent.engine import AgentEngine, _migrate_mode
+
+    live = {"dashboard", "solo", "office", "research"}
+    for message in ("release this and tag it",
+                    "run the whole thing on the cluster",
+                    "review this change carefully before merging",
+                    "refactor the parser",
+                    "what does occupier do?",
+                    "set BP86 in the submit tab"):
+        decision = AgentEngine.recommend_task_route(message, "dashboard", is_delfin_workspace=True)
+        mode = decision["mode"]
+        assert mode in live, f"{message!r} recommended {mode!r}"
+        assert _migrate_mode(mode) == mode
