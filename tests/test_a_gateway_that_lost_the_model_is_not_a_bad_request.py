@@ -36,3 +36,29 @@ def test_a_genuine_bad_request_still_fails_at_once():
                 "Error code: 400 - {'error': {'message': "
                 "'This model supports at most 8192 tokens'}}"):
         assert not _is_transient_api_error(_BadRequest(msg)), msg
+
+
+# Measured 2026-09-25 on kit.glm-5.3: four supervised sessions ended
+# their turns on these, each needing the operator to restart them.
+_MEASURED_2026_09_25 = (
+    "Error code: 400 - {'detail': \"litellm.APIConnectionError: "
+    "APIConnectionError: Hosted_vllmException - Response payload is not "
+    "completed: <TransferEncodingError: 400, message='Not enough data to "
+    "satisfy transfer length header.'>\"}",
+    "Error code: 400 - {'detail': 'No deployments available for selected "
+    "model, Try again in 5 seconds. Passed model=kit.glm-5.3'}",
+)
+
+
+def test_a_response_cut_off_by_the_gateway_is_transient():
+    for msg in _MEASURED_2026_09_25:
+        assert _is_transient_api_error(_BadRequest(msg)), msg
+
+
+def test_a_model_the_gateway_does_not_know_is_not_retried():
+    # Same day, same outage -- but "model not found" is also what a typo
+    # in the model name says, so it keeps failing at once.
+    assert not _is_transient_api_error(_BadRequest(
+        "Error code: 400 - {'detail': 'litellm.NotFoundError: NotFoundError: "
+        "Hosted_vllmException - {\"error\":\"Model \\'glm-5.3\\' not found."
+        "\"}'}"))
