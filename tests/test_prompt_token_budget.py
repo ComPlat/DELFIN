@@ -191,7 +191,13 @@ def test_composed_stable_head_within_budget(
         role_id=role_id, mode_id=mode_id, route=route,
         task_text="fix the failing test in foo.py",
         session_key="budget-1")
-    actual = report["stable_tokens"]
+    # The maintainer's principles are not a line anyone may trim to make
+    # room: they open every prompt by design. The budget keeps guarding
+    # everything else; the principles themselves are pinned in
+    # tests/test_the_principles_come_first.py.
+    principles = sum(row["tokens"] for row in report["sections"]
+                     if row["name"] == "principles_addendum")
+    actual = report["stable_tokens"] - principles
     assert actual <= max_stable_tokens, (
         f"{role_id}: cacheable head is {actual} tokens "
         f"(>{max_stable_tokens} budget). Trim before extending."
