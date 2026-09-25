@@ -27,6 +27,15 @@ _TCL_CALL_RE = re.compile(
 
 
 def _run_login_shell(command: str, *, timeout: int = 15) -> subprocess.CompletedProcess[str] | None:
+    # Depth guard: a login shell's module initialization can itself spawn
+    # `bash -lc` (seen 2026-09-26 in a gate run on the login node: ~75
+    # nested `bash -lc module -t avail` processes, each sourcing the
+    # module init again). The marker is inherited by every child, so the
+    # FIRST probe shell sets it and no nested one starts at all.
+    if os.environ.get("_DELFIN_LOGIN_SHELL_PROBE"):
+        return None
+    env = dict(os.environ)
+    env["_DELFIN_LOGIN_SHELL_PROBE"] = "1"
     try:
         return subprocess.run(
             ["bash", "-lc", command],
@@ -34,6 +43,7 @@ def _run_login_shell(command: str, *, timeout: int = 15) -> subprocess.Completed
             text=True,
             timeout=timeout,
             check=False,
+            env=env,
         )
     except Exception:
         return None
