@@ -1085,9 +1085,10 @@ delfin-manta "[Co](N)(N)(N)(N)(Cl)Cl"   # the builder alone, without the funnel
 Conformer search and global optimisation are triggered via CONTROL.txt:
 
 ```ini
-XTB_preOPT=yes           # xTB geometry optimisation
-global_optimizer=GOAT    # XTB-GOAT global optimisation
-global_optimizer=CREST   # ...or CREST conformer search
+# xTB geometry optimisation
+XTB_preOPT=yes
+# XTB-GOAT global optimisation, or CREST for conformer search
+global_optimizer=GOAT
 ```
 
 `XTB_OPT` / `XTB_GOAT` / `CREST` remain valid in older files.
