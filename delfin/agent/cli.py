@@ -2854,6 +2854,42 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
     p.add_argument("--cwd", default="", help="Run in this directory")
 
 
+def cmd_watchpost(args: argparse.Namespace) -> int:
+    """The read-only look-out over the user's own account."""
+    from delfin.watchpost import scan as wp_scan
+    from delfin.watchpost import scheduler_entry
+    home = Path(args.home) if args.home else Path.home()
+    report = Path(args.report) if args.report else \
+        home / ".delfin" / "watchpost"
+    if args.watchpost_action == "enable":
+        info = scheduler_entry.enable(
+            every_minutes=args.every_minutes or 30)
+        print(f"watchpost scheduled every {info['every_seconds'] // 60}m "
+              f"(entry {info['id']})")
+        return 0
+    if args.watchpost_action == "disable":
+        removed = scheduler_entry.disable()
+        print("watchpost schedule removed" if removed
+              else "no watchpost schedule was set")
+        return 0
+    if args.watchpost_action == "baseline":
+        findings = wp_scan.run_scan(home, report, mode="baseline")
+        print(f"baseline reset; {len(findings)} current findings recorded")
+    elif args.watchpost_action == "diff":
+        findings = wp_scan.run_scan(home, report, mode="diff")
+        print(f"{len(findings)} new finding(s) since baseline")
+    else:
+        findings = wp_scan.run_scan(home, report, mode="report")
+        print(f"{len(findings)} finding(s)")
+    for f in findings:
+        loc = f"{f.path}:{f.line}" if f.line else f.path
+        print(f"[{f.severity}] {f.check} {loc} -- {f.what}")
+    if args.json:
+        import json as _json
+        print(_json.dumps([f.as_dict() for f in findings], indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="delfin-agent",
@@ -3223,6 +3259,31 @@ def build_parser() -> argparse.ArgumentParser:
     srch = sess_sub.add_parser("search", help="Grep across session chats")
     srch.add_argument("query")
     sess.set_defaults(func=cmd_session)
+
+    # watchpost — read-only look-out over the user's own account
+    wp = sub.add_parser(
+        "watchpost",
+        help="Read-only intrusion-trace scan of your own account "
+             "(never changes anything)")
+    wp_sub = wp.add_subparsers(dest="watchpost_action", required=True)
+    wp_run = wp_sub.add_parser(
+        "run", help="Scan once and report findings")
+    wp_run.add_argument("--home", default="",
+                        help="Home directory to look at (default: yours)")
+    wp_run.add_argument("--report", default="",
+                        help="Report directory (default: ~/.delfin/watchpost)")
+    wp_run.add_argument("--json", action="store_true",
+                        help="Also print findings as JSON")
+    wp_sub.add_parser(
+        "diff", help="Report only what is new since the baseline")
+    wp_sub.add_parser(
+        "baseline", help="Reset the baseline (first run, or on purpose)")
+    wp_en = wp_sub.add_parser(
+        "enable", help="Schedule a recurring watchpost run")
+    wp_en.add_argument("--every", dest="every_minutes", type=int, default=30,
+                       metavar="30m", help="Interval in minutes (default 30)")
+    wp_sub.add_parser("disable", help="Remove the watchpost schedule")
+    wp.set_defaults(func=cmd_watchpost, home="", report="", json=False)
 
     # memory — tidy the typed-memory store
     mem = sub.add_parser(

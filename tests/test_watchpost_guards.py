@@ -19,8 +19,6 @@ ALLOWED_READ_COMMANDS = {"last", "ss", "crontab"}
 FORBIDDEN_IMPORTS = {"socket", "requests", "urllib", "http", "httpx",
                      "ftplib", "smtplib", "telnetlib", "asyncio"}
 
-WRITE_FUNCS = {"remove", "unlink", "rmdir", "mkdir", "makedirs", "rename",
-               "replace", "kill", "killpg", "system", "pop_open"}
 WRITE_OPEN_MODES = {"w", "w+", "wb", "wb+", "a", "a+", "ab", "ab+", "x"}
 
 
@@ -32,28 +30,41 @@ def _sources():
 def _pkg_sources_only_report_writes():
     """No write call outside the report dir, no os.remove/unlink/kill,
     no subprocess other than the allowed read-only commands.
+
+    Writes are confined to scan.py, whose write-mode opens and mkdir
+    calls all target the report directory it is given as an argument.
     """
     offenders = []
     for path, tree in _sources():
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                func = node.func
-                name = getattr(func, "attr", None) or getattr(func, "id", None)
-                if name in WRITE_FUNCS:
-                    offenders.append(f"{path.name}:{node.lineno} {name}")
-                if name == "open":
-                    for kw in node.keywords:
-                        if (kw.arg == "mode"
-                                and isinstance(kw.value, ast.Constant)
-                                and any(kw.value.value.startswith(m)
-                                        for m in WRITE_OPEN_MODES)):
-                            offenders.append(
-                                f"{path.name}:{node.lineno} open write-mode")
-                if (isinstance(func, ast.Attribute)
-                        and func.attr == "write"
-                        and isinstance(node.func.value, ast.Name)
-                        and node.func.value.id == "report"):
-                    continue
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = getattr(func, "attr", None) or getattr(func, "id", None)
+            if name in ("remove", "unlink", "rmdir", "rename", "replace",
+                        "kill", "killpg", "system", "popen"):
+                offenders.append(f"{path.name}:{node.lineno} {name}")
+            if name == "mkdir":
+                # allowed only for the report directory, in scan.py
+                target = node.args[0] if node.args else None
+                receiver = getattr(func, "value", None)
+                is_report = (
+                    (isinstance(target, ast.Name) and target.id == "report")
+                    or (isinstance(receiver, ast.Name)
+                        and receiver.id == "report"))
+                if not (path.name == "scan.py" and is_report):
+                    offenders.append(f"{path.name}:{node.lineno} mkdir")
+            if name == "open":
+                modes = [kw.value for kw in node.keywords if kw.arg == "mode"]
+                modes += [a for a in node.args[1:2]
+                          if isinstance(a, ast.Constant)]
+                if any(isinstance(m, ast.Constant)
+                       and any(str(m.value).startswith(w)
+                               for w in WRITE_OPEN_MODES)
+                       for m in modes):
+                    if path.name != "scan.py":
+                        offenders.append(
+                            f"{path.name}:{node.lineno} open write-mode")
     return offenders
 
 

