@@ -56,6 +56,32 @@ SSH_CONFIG_RISKY = (
 
 SUSPICIOUS_PORTS = (4444, 1337, 6667)
 
+# Reverse-shell markers, matched on the argv entries joined with
+# spaces (so flags that span several argv entries, like `nc -e`, are
+# still seen). `bash -i` alone is deliberately NOT a marker: without
+# the socket redirection it is any interactive shell; the redirect
+# carries /dev/tcp/ and trips dev-tcp.
+PROCESS_PATTERNS = (
+    ("dev-tcp", re.compile(r"/dev/tcp/")),
+    ("nc-exec", re.compile(r"\b(nc|ncat)\b[^\n]*\s(-e|--exec)\b")),
+    ("socat-exec", re.compile(r"\bsocat\b[^\n]*\b[eE][xX][eE][cC]:")),
+)
+
+# Mining markers: `xmrig` and `--donate-level` as whole argv entries
+# (so a file named report_xmrig.txt does not trip them); stratum+tcp
+# as a prefix so the pool URL counts.
+MINING_MARKERS = ("xmrig", "stratum+tcp", "--donate-level")
+
+# World-writable scratch paths a running program should not live in.
+TMP_EXE_PREFIXES = ("/tmp/", "/dev/shm/", "/var/tmp/")
+
+
+def _readlink(path: Path) -> str | None:
+    try:
+        return os.readlink(path)
+    except OSError:
+        return None
+
 
 def _read_text(path: Path) -> str | None:
     try:
@@ -91,6 +117,75 @@ def run_read_only_command(argv: list[str]) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return out.stdout if out.returncode == 0 else None
+
+
+def _proc_scan_uid() -> int:
+    """The UID whose processes the scanner owns (its own)."""
+    return os.getuid()
+
+
+def check_processes(proc_root: Path) -> list[Finding]:
+    """The own running processes, read-only over a /proc root.
+
+    Only /proc/<pid> of the scanning user's own UID is looked at:
+    cmdline and exe of each entry, nothing else. Processes of other
+    users, kernel threads (empty cmdline) and unreadable entries are
+    skipped silently. Never signals or touches a process.
+    """
+    uid = _proc_scan_uid()
+    out: list[Finding] = []
+    try:
+        entries = list(os.scandir(proc_root))
+    except OSError:
+        return out
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat(follow_symlinks=False).st_uid != uid:
+                continue
+        except OSError:
+            continue
+        cmdline = _read_text(proc_root / entry.name / "cmdline")
+        if not cmdline:
+            # kernel threads and unreadable entries: skip silently
+            continue
+        argv = cmdline.split("\0")
+        joined = " ".join(argv)
+        for label, pattern in PROCESS_PATTERNS:
+            if pattern.search(joined):
+                out.append(Finding(
+                    "processes", "alert", f"/proc/{entry.name}", None,
+                    f"{label} in command line",
+                    "this is reverse-shell behavior; a shell that "
+                    "dials out is not something you started on "
+                    "purpose"))
+        exe = _readlink(proc_root / entry.name / "exe")
+        if exe is not None:
+            base = exe[:-len(" (deleted)")] if exe.endswith(" (deleted)") \
+                else None
+            if base is not None:
+                out.append(Finding(
+                    "processes", "alert", f"/proc/{entry.name}", None,
+                    f"deleted-exe: {base}",
+                    "the running program's file has been removed; malware "
+                    "often deletes itself after starting"))
+            elif exe.startswith(TMP_EXE_PREFIXES):
+                out.append(Finding(
+                    "processes", "warn", f"/proc/{entry.name}", None,
+                    f"tmp-exe: {exe}",
+                    "programs run from world-writable scratch directories "
+                    "are usually not part of a normal workflow"))
+        for arg in argv:
+            for marker in MINING_MARKERS:
+                if arg == marker or (marker.endswith("+tcp")
+                                     and arg.startswith(marker)):
+                    out.append(Finding(
+                        "processes", "warn", f"/proc/{entry.name}", None,
+                        f"mining: {marker}",
+                        "a known cryptocurrency-mining marker in the "
+                        "process arguments"))
+    return out
 
 
 # --- 1. SSH ---------------------------------------------------------------
