@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -542,3 +543,34 @@ def test_find_notebook_ignores_unsafe_cwd_notebook(monkeypatch, tmp_path):
     monkeypatch.chdir(work)
     found = cli_voila._find_notebook()
     assert Path(found).resolve() != planted.resolve()
+
+
+def test_the_kernel_channel_is_not_throttled_into_silence():
+    """A dashboard sends several MB in one message on purpose.
+
+    Jupyter rate limits the kernel-to-browser channel at 1000 messages and
+    1 MB per three seconds, and past that it stops sending rather than
+    slowing down: a widget keeps its old value, the tab looks stuck, and the
+    only trace is "IOPub message rate exceeded" in the terminal. A MANTA build
+    reporting per frame, a photograph, a PDF page and a five-thousand-row grid
+    all cross it in normal use.
+
+    This is a browser-protection heuristic from the notebook era, not a
+    security boundary: the kernel is the user's own, and the limit guards
+    nothing but the page's own responsiveness. The window stays in place, so a
+    runaway is still bounded -- an order of magnitude further out.
+    """
+    import inspect
+
+    from delfin import cli_voila
+
+    source = inspect.getsource(cli_voila)
+    msg = re.search(r'iopub_msg_rate_limit=(\d+)', source)
+    data = re.search(r'iopub_data_rate_limit=(\d+)', source)
+    assert msg and data, 'the launcher no longer raises the IOPub limits'
+    assert int(msg.group(1)) >= 10000
+    assert int(data.group(1)) >= 100_000_000
+    assert 'ZMQChannelsWebsocketConnection' in source, (
+        'in jupyter_server 2.x the limits live on the websocket connection, '
+        'not on ServerApp -- setting them there does nothing'
+    )
