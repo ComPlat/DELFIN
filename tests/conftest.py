@@ -322,10 +322,23 @@ def _the_suite_does_not_write_into_the_checkout():
     new += sorted(
         str(_CHECKOUT_ROOT / p)
         for p in _unexpected_under_a_generated_root() - before_generated)
+    # The last test of the run has nothing after it, so no later setup ever
+    # sees what it left -- and the leak this was written for was exactly
+    # that: the last test in its file. One more comparison here closes the
+    # gap the per-start check cannot.
+    if _CHECKOUT_TOP_LAST is not None:
+        for name in _checkout_top() - _CHECKOUT_TOP_LAST:
+            _CHECKOUT_TOP_BLAME.setdefault(name, _CHECKOUT_TOP_LAST_NODE)
+
+    def _named(path) -> str:
+        import os
+        who = _CHECKOUT_TOP_BLAME.get(os.path.basename(str(path).rstrip("/")))
+        return f"{path} (after {who})" if who else str(path)
+
     assert not new, (
         f"{len(new)} path(s) appeared in the checkout during the run; "
         "a git ignore rule may make them invisible to `git status`: "
-        + ", ".join(str(p) for p in new[:20])
+        + ", ".join(_named(p) for p in new[:20])
     )
 
 
@@ -344,11 +357,61 @@ def _delfin_env() -> dict:
     return {k: v for k, v in os.environ.items() if k.startswith("DELFIN_")}
 
 
+# name -> the nodeid of the first test after which it appeared at the top
+# of the checkout. Attribution only; the session guard below still decides.
+_CHECKOUT_TOP_BLAME: dict[str, str] = {}
+
+# The checkout's top-level names as of the last test start, and whose start
+# that was. A name that is new at the next start belongs to the test in
+# between.
+_CHECKOUT_TOP_LAST: frozenset | None = None
+_CHECKOUT_TOP_LAST_NODE: str = "(before the first test)"
+
+
+def _checkout_top() -> frozenset:
+    """The direct children of the checkout root. Shallow on purpose.
+
+    Measured: the full walk the session guard uses costs 7.0 ms, which is
+    250 s over a suite this size once before and once after every test;
+    this listing costs 0.016 ms, or 0.6 s. So every test can afford this
+    one and none can afford that one.
+
+    The limit that buys: a path created DEEPER in the tree is not
+    attributed here. The session guard still reports it -- it walks
+    everything -- it just cannot say who. Most leaks land at the top,
+    because a child process writes them relative to its working
+    directory, and that is the case this names.
+    """
+    import os
+    try:
+        return frozenset(os.listdir(_CHECKOUT_ROOT))
+    except OSError:
+        return frozenset()
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item):
     import os
     _CWD_BEFORE_TEST[item.nodeid] = os.getcwd()
     _DELFIN_ENV_BEFORE_TEST[item.nodeid] = _delfin_env()
+    # ---- who put that there ------------------------------------------
+    # Compared HERE and blamed on the test that ran BEFORE this one, not
+    # in teardown. Measured, after the teardown version recorded nothing:
+    # setup runs for every test, and this file's teardown hook is skipped
+    # for some of them -- including the one that was leaking. A guard that
+    # depends on a hook it cannot show running is not a guard.
+    #
+    # Recorded, never failed: the session-wide check is what decides, on
+    # the whole tree. This only answers the question that check could not,
+    # which is WHICH test -- a leak reported with no name cost an
+    # afternoon of bisecting a suite to find a single argument.
+    global _CHECKOUT_TOP_LAST, _CHECKOUT_TOP_LAST_NODE
+    top = _checkout_top()
+    if _CHECKOUT_TOP_LAST is not None:
+        for name in top - _CHECKOUT_TOP_LAST:
+            _CHECKOUT_TOP_BLAME.setdefault(name, _CHECKOUT_TOP_LAST_NODE)
+    _CHECKOUT_TOP_LAST = top
+    _CHECKOUT_TOP_LAST_NODE = item.nodeid
 
 
 @pytest.hookimpl(trylast=True)

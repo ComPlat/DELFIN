@@ -1323,7 +1323,7 @@ def test_the_report_a_person_meant_is_the_one_that_is_found(tmp_path):
     assert ej.find_report('no such report', archive) is None
 
 
-def test_the_sentence_the_user_is_shown_leads_somewhere():
+def test_the_sentence_the_user_is_shown_leads_somewhere(tmp_path):
     """``/bugs`` names the viewer archive and how to replay one of its reports.
 
     It named ``delfin.dashboard.editor_journal.replay``, which is a function
@@ -1351,6 +1351,10 @@ def test_the_sentence_the_user_is_shown_leads_somewhere():
     done = subprocess.run(
         [sys.executable, '-m', 'delfin.dashboard.editor_journal', '--help'],
         capture_output=True, text=True, timeout=300,
-        env={**child_env(root), 'PYTHONPATH': str(root)})
+        # child_env makes its directories UNDER the path it is given, so
+        # the argument has to be this run's tmp tree. Passing `root` put
+        # child_home and child_scratch in the checkout itself, which the
+        # session's checkout guard then reported without naming a test.
+        env={**child_env(tmp_path), 'PYTHONPATH': str(root)})
     assert done.returncode == 0, done.stderr
     assert 'replay' in done.stdout.lower(), done.stdout
