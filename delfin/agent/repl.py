@@ -825,6 +825,17 @@ class TerminalAgent:
         # For the length-continuation: a length end WITH a tool call is
         # the tool loop's to carry on, not ours.
         self.__dict__["_turn_used_tools"] = bool(result.tool_calls)
+        # The endpoint continuation reads the finished turn's error
+        # (and its status) after the fact: the classification happens
+        # at the prompt, where waiting belongs, not inside the turn.
+        self.__dict__["_last_turn_result"] = result
+        if not result.error:
+            # A turn that answered says the model exists and was
+            # spelled right -- the fact a later "model not found"
+            # is judged on (outage, not typo). Carried per turn, not
+            # per session: a model switch invalidates it.
+            self.__dict__["_endpoint_model_answered"] = True
+            self.__dict__["_endpoint_pauses"] = 0
         return result
 
     def _pump(self, worker: threading.Thread) -> None:
@@ -2049,7 +2060,14 @@ class TerminalAgent:
                 # stands at the prompt half-way through the edit
                 # (operator point d, 2026-09-22). Continue it, at most
                 # twice; the third time the operator hears it.
+                # A turn that DIED on the endpoint, rather than ending
+                # AT it, has its own continuation -- one that waits out
+                # the outage first. An error turn never also ends at
+                # length, so the two continuations never stack.
                 continuation = self._continue_after_length(pending_prompt)
+                if not continuation:
+                    continuation = (
+                        self._continue_after_endpoint_failure())
                 while continuation:
                     self._show_user_input(continuation, queued=True)
                     self._checkpoint_session()
@@ -2065,6 +2083,9 @@ class TerminalAgent:
                         return 130
                     self._checkpoint_session()
                     continuation = self._continue_after_length(continuation)
+                    if not continuation:
+                        continuation = (
+                            self._continue_after_endpoint_failure())
                 pending = ""
         except rk.TerminalLeft as left:
             # Whatever the session was doing -- at the prompt, in a turn,
@@ -2447,6 +2468,156 @@ class TerminalAgent:
             "↻ the answer was cut at the token ceiling — continuing "
             f"({done + 1}/{self._MAX_LENGTH_CONTINUATIONS})"))
         return "continue"
+
+    # -- a turn that died on the endpoint ----------------------------
+    #
+    # The pause schedule: 60 s, 120 s, 300 s, then every 300 s. The
+    # whole pause -- waiting included -- is capped at 60 minutes: the
+    # outage of 2026-09-25 lasted 65, a cap at half an hour would have
+    # given up five minutes early, and a full hour of unattended
+    # self-retry is still bounded by the operator's own watch cycle.
+    _ENDPOINT_PAUSE_S = (60.0, 120.0, 300.0)
+    _ENDPOINT_PAUSE_CEIL_S = 300.0
+    _ENDPOINT_PAUSE_BUDGET_S = 3600.0
+
+    def _endpoint_time(self) -> float:
+        clock = getattr(self, "_endpoint_clock", None)
+        if clock is not None:
+            return float(clock.time())
+        import time as _time
+        return _time.monotonic()
+
+    def _endpoint_do_sleep(self, seconds: float) -> None:
+        sleeper = getattr(self, "_endpoint_sleep", None)
+        if sleeper is not None:
+            sleeper(seconds)
+        else:                                   # pragma: no cover
+            import time as _time
+            _time.sleep(seconds)
+
+    def _endpoint_read_key(self, timeout: float) -> str:
+        """One key chunk inside the pause wait, or "".
+
+        Factored out so a test can deliver a keypress without a
+        terminal. The real path holds the terminal in cbreak and reads
+        with a timeout -- a key a person presses during the wait must
+        cancel it, and the wait is long enough that polling for one
+        matters.
+        """
+        from . import repl_keys as rk
+        with rk.RawMode(self._stdin) as raw:
+            if not raw.active:
+                # No terminal to read (a pipe, a redirect): no key can
+                # arrive, and spinning on a clock that never advances
+                # buys nothing. The wait itself is the sleep.
+                return ""
+            deadline = self._endpoint_time() + timeout
+            while True:
+                left = deadline - self._endpoint_time()
+                if left <= 0:
+                    return ""
+                chunk = raw.read_ready(min(left, _PUMP_TICK_S))
+                if chunk:
+                    return chunk
+
+    def _endpoint_error_is_retryable(self, exc: Exception) -> bool:
+        """Transient -> retry. Model-not-found -> only after a prior
+        answer from the same model. Everything else -> never.
+
+        "Model 'X' not found" is ambiguous: the outage of 2026-09-25
+        wore exactly that message, and so does a typo'd model name.
+        The fact that separates them lives in THIS session: a model
+        that already answered here exists and was spelled right, so
+        its not-found is the outage; one that never answered here was
+        probably never spelled right anywhere.
+        """
+        from .api_client import (_is_transient_api_error,
+                                 _is_context_length_error)
+        if _is_context_length_error(exc):
+            return False                # deterministic: a 400 that
+                                        # fails again identically
+        if _is_transient_api_error(exc):
+            return True
+        if "not found" in str(exc).lower() and "model" in str(exc).lower():
+            return bool(getattr(self, "_endpoint_model_answered", False))
+        return False
+
+    def _continue_after_endpoint_failure(self) -> str:
+        """Whether a turn that died on an endpoint error continues.
+
+        The in-turn retry (api_client._is_transient_api_error, 3
+        attempts inside the stream) covers the short hiccup. An
+        outage longer than that still ends the turn -- and on
+        2026-09-25 the session then stood at its prompt until the
+        operator nudged it, 31 times in one day. This method waits
+        the outage out and sends the continuation itself: the same
+        "continue" the person at the keyboard would have typed, as a
+        NEW turn, with a prompt that says exactly what happened.
+
+        Any key during the wait cancels it -- no further turn, the
+        session stands at the prompt like today, and the person keeps
+        the wheel. After the 60-minute budget the same is true, and
+        the operator hears it over session_message, the channel that
+        reaches someone not watching six panes.
+        """
+        result = getattr(self, "_last_turn_result", None)
+        if result is None or not getattr(result, "error", ""):
+            # A turn that produced nothing (the worker died) counts as
+            # neither: without an error there is nothing to classify.
+            return ""
+        # Rebuild the exception the engine raised, for classification.
+        # The turn died before the turn's own accounting; run_turn put
+        # the engine's text in result.error and the [error] line on the
+        # screen already. The class name is not in the text, but the
+        # classification reads status_code and message, not the class.
+        text = str(result.error)
+        exc = type("_EndpointFailure", (Exception,), {})(text)
+        try:
+            status = getattr(result, "error_status", None)
+        except Exception:
+            status = None
+        if isinstance(status, int):
+            exc.status_code = status
+        if not self._endpoint_error_is_retryable(exc):
+            return ""
+        pause_started = getattr(self, "_endpoint_pause_started", None)
+        if not int(getattr(self, "_endpoint_pauses", 0) or 0):
+            # The first pause of this outage starts the budget clock;
+            # later calls (one per failed retry) inherit it, so the
+            # 60 minutes bound the OUTAGE, not each single wait.
+            pause_started = self._endpoint_time()
+            self.__dict__["_endpoint_pause_started"] = pause_started
+        while True:
+            done = int(getattr(self, "_endpoint_pauses", 0) or 0)
+            wait = (self._ENDPOINT_PAUSE_S[done]
+                    if done < len(self._ENDPOINT_PAUSE_S)
+                    else self._ENDPOINT_PAUSE_CEIL_S)
+            if (pause_started + self._ENDPOINT_PAUSE_BUDGET_S
+                    - self._endpoint_time()) < wait:
+                # The budget is spent. Stillstand wie heute, plus the
+                # note to the operator when one is reachable.
+                self.__dict__["_endpoint_pauses"] = 0
+                try:
+                    self.engine._notify_operator_of_stall(
+                        "the endpoint stayed unavailable for a full "
+                        "hour of self-retry; this session is standing "
+                        "at the prompt mid-answer")
+                except Exception:
+                    pass
+                return ""
+            self.__dict__["_endpoint_pauses"] = done + 1
+            self.transcript.chrome(self.transcript.theme.dim(
+                f"endpoint unavailable — retrying in {wait:.0f} s, "
+                "any key to stop"))
+            chunk = self._endpoint_read_key(wait)
+            if chunk:
+                # A key: the person takes over. No turn, no further
+                # retry, and the next outage starts from 60 s again.
+                self.__dict__["_endpoint_pauses"] = 0
+                return ""
+            self._endpoint_do_sleep(wait)
+            return ("The endpoint failed mid-turn; continue exactly "
+                    "where you were.")
 
     def _presence_key(self) -> str:
         """The address an operator reaches this session by.
