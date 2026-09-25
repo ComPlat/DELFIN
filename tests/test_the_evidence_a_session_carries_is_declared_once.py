@@ -215,6 +215,9 @@ _NOT_CARRIED = {
     "_truncated_tools_turn", "_turn_steers", "_stop_requested",
     "_steering_delivered",
     "_steering_refreshes",
+    #    Output tokens of the round still streaming, for the status line;
+    #    cleared when the round's billed count arrives.
+    "_round_output_live",
     #    Whether this SESSION has already been told that the first turn on
     #    a slow-starting model takes minutes. Not carried: a resumed
     #    session faces the endpoint's prefix cache cold again, so it earns
