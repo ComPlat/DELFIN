@@ -32,6 +32,7 @@ def collect(home: Path, git_repos: list[Path] | None = None) -> list[Finding]:
     findings += checks.check_credentials(home)
     findings += checks.check_git(git_repos or [], baseline_hooks=set())
     findings += checks.check_delfin_audit(home)
+    findings += checks.check_processes(Path("/proc"))
     return findings
 
 
