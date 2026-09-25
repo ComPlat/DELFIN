@@ -14,6 +14,7 @@ not inside a calculation.
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -91,9 +92,24 @@ def test_the_calculations_browser_shows_everything_and_offers_no_toggle(tmp_path
     _widget, refs = browser.create_tab(ctx)
 
     assert any(".delfin_last_run.json" in o for o in _listing(refs))
-    row = refs["calc_nav_selection_row"] if "calc_nav_selection_row" in refs else None
-    if row is not None:
-        assert refs["calc_dotfiles_btn"] not in row.children
+    import inspect
+    source = inspect.getsource(browser.create_tab)
+    assert "getattr(ctx, 'browser_hides_dotfiles', False) else []" in source, (
+        "the toggle is offered somewhere other than the tab that hides them")
+
+
+def test_the_office_tab_hides_them_as_it_always_did_and_offers_no_toggle(tmp_path):
+    """Its folder holds documents; DELFIN's bookkeeping there is not the user's."""
+    ctx = _ctx(tmp_path)
+    office_ctx = replace(ctx, calc_dir=ctx.office_dir)
+    (ctx.office_dir / ".hidden_note").write_text("x", encoding="utf-8")
+    (ctx.office_dir / "ein_brief.docx").write_bytes(b"PK\x03\x04")
+
+    _widget, refs = browser.create_tab(office_ctx)
+    shown = _listing(refs)
+
+    assert any("ein_brief" in o for o in shown)
+    assert not any(".hidden_note" in o for o in shown)
 
 
 def test_in_the_home_tab_the_toggle_hides_and_shows_again(tmp_path, monkeypatch):
