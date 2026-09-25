@@ -44,7 +44,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_the_manual_recipes import load_blocks, repo_root
+from tests.manual_blocks import load_blocks, repo_root
 
 # ---------------------------------------------------------------- bash
 
