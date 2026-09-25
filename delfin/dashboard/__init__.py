@@ -81,6 +81,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         tab_agent,
         tab_agent_activity,
         tab_archive_statistics,
+        tab_home,
         tab_office,
         tab_calculations_browser,
         tab_literature,
@@ -292,7 +293,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     except Exception:
         _hidden_at_start = set()
 
-    refs6, refs_off = {}, {}
+    refs6, refs_off, refs_home = {}, {}, {}
 
     def _clone_of_browser_now(build, refs):
         """Build one of the browser clones and fill in the refs Settings holds."""
@@ -313,6 +314,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     tab6 = _clone_of_browser('archive', tab_archive_statistics.create_tab, refs6)
     tab_off = _clone_of_browser('office', tab_office.create_tab, refs_off)
+    tab_hm = _clone_of_browser('home', tab_home.create_tab, refs_home)
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
     ctx.remote_archive_refs = refs7
     tab_lit, _ = tab_literature.create_tab(ctx)
@@ -439,6 +441,17 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             # Hidden in Settings means not built; showing it again builds it.
             'build': lambda: _clone_of_browser_now(tab_archive_statistics.create_tab, refs6),
             'reason': '',
+        },
+        {
+            'id': 'home',
+            'title': 'Home',
+            'widget': tab_hm,
+            'default_order': 81,
+            'default_visible': False,
+            'available': True,
+            'fixed': False,
+            'build': lambda: _clone_of_browser_now(tab_home.create_tab, refs_home),
+            'reason': 'Off by default: it browses the whole home directory.',
         },
         {
             'id': 'office',
