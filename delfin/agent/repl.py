@@ -832,8 +832,8 @@ class TerminalAgent:
         if not result.error:
             # A turn that answered says the model exists and was
             # spelled right -- the fact a later "model not found"
-            # is judged on (outage, not typo). Carried per turn, not
-            # per session: a model switch invalidates it.
+            # is judged on (outage, not typo). Kept for the session;
+            # the pause budget bounds what a wrong judgement costs.
             self.__dict__["_endpoint_model_answered"] = True
             self.__dict__["_endpoint_pauses"] = 0
         return result
@@ -2495,8 +2495,9 @@ class TerminalAgent:
             import time as _time
             _time.sleep(seconds)
 
-    def _endpoint_read_key(self, timeout: float) -> str:
-        """One key chunk inside the pause wait, or "".
+    def _endpoint_read_key(self, timeout: float) -> "str | None":
+        """One key chunk inside the pause wait, "" when the wait ran out,
+        or None when there is no terminal to wait on.
 
         Factored out so a test can deliver a keypress without a
         terminal. The real path holds the terminal in cbreak and reads
@@ -2509,8 +2510,9 @@ class TerminalAgent:
             if not raw.active:
                 # No terminal to read (a pipe, a redirect): no key can
                 # arrive, and spinning on a clock that never advances
-                # buys nothing. The wait itself is the sleep.
-                return ""
+                # buys nothing. None tells the caller to sleep instead;
+                # "" means the wait already ran its full length here.
+                return None
             deadline = self._endpoint_time() + timeout
             while True:
                 left = deadline - self._endpoint_time()
@@ -2609,13 +2611,22 @@ class TerminalAgent:
             self.transcript.chrome(self.transcript.theme.dim(
                 f"endpoint unavailable — retrying in {wait:.0f} s, "
                 "any key to stop"))
-            chunk = self._endpoint_read_key(wait)
+            try:
+                chunk = self._endpoint_read_key(wait)
+                if chunk is None:
+                    # No terminal: the key wait could not wait, so sleep.
+                    # On a terminal the key wait already took the whole
+                    # pause -- sleeping again doubled every pause.
+                    self._endpoint_do_sleep(wait)
+            except KeyboardInterrupt:
+                # Ctrl+C during the pause cancels the pause, like a key;
+                # it must not leave run() the way an unhandled one would.
+                chunk = "\x03"
             if chunk:
                 # A key: the person takes over. No turn, no further
                 # retry, and the next outage starts from 60 s again.
                 self.__dict__["_endpoint_pauses"] = 0
                 return ""
-            self._endpoint_do_sleep(wait)
             return ("The endpoint failed mid-turn; continue exactly "
                     "where you were.")
 
