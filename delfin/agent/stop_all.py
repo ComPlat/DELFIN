@@ -58,6 +58,21 @@ _COMMAND_MARKERS = (
 _DASHBOARD_ENV = ("DELFIN_LIFELINE_PID=", "DELFIN_VOILA_PORT=")
 _SERVER_MARKERS = ("jupyter-server", "jupyter_server", "voila", "delfin-voila")
 
+# The same exception, for the register. A protected process is found by the
+# kind it registered under, not by its command line, and the two paths have
+# to agree: the /proc path spares what serves pages, so the register path
+# must spare it too.
+#
+#   "dashboard server"    serves the pages. Ending it turns "reload the page
+#                         to start again" into a refused connection.
+#   "dashboard launcher"  the server is its child, started with PDEATHSIG,
+#                         so ending the launcher ends the server as surely
+#                         as signalling the server itself.
+#
+# Everything else on the register is an agent and ends: the kernels, the
+# daemons, the command-line agent.
+_SPARED_KINDS = frozenset({"dashboard server", "dashboard launcher"})
+
 # How long the processes that watch for the stop get to end themselves --
 # stopping what they started on the way -- before they are ended directly.
 _SETTLE_S = 6.0
@@ -235,6 +250,8 @@ def _own_agent_processes(before: float) -> list[int]:
         for rec in _pg.registered_here():
             pid = int(rec.get("pid") or 0)
             if pid in mine or pid in found or _pg.uid_of(pid) != uid:
+                continue
+            if str(rec.get("kind") or "").strip() in _SPARED_KINDS:
                 continue
             started = process_started_at(pid)
             if started is not None and started < before:
