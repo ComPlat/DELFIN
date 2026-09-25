@@ -160,3 +160,25 @@ def test_deterministic_not_model_authored(tmp_path):
         blocks.append(eng.messages[0]["content"])
     assert blocks[0] == blocks[1], (
         "the post-compaction context differs between identical runs")
+
+
+def test_output_that_merely_says_never_or_error_is_not_an_order():
+    """A test log line with "never" is not a standing instruction, and a
+    plain tool error is not a refusal to be left alone."""
+    from delfin.agent.working_state import build_working_state_block
+    block = build_working_state_block([
+        {"role": "user", "content":
+         "[Command results]\nbash: grep -n never README.md -> 3 matches\n"
+         'edit_file x.py -> {"error": "old_string not found"}'},
+    ])
+    assert "Standing instructions" not in block
+    assert "Recent denials" not in block
+
+
+def test_a_session_message_is_kept_as_an_instruction():
+    from delfin.agent.working_state import build_working_state_block
+    block = build_working_state_block([
+        {"role": "user", "content":
+         '[Message from the session "Operator"] use grep -e, not \\|'},
+    ])
+    assert "Standing instructions" in block and "grep -e" in block
