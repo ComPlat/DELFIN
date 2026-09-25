@@ -405,6 +405,7 @@ MANTA is DELFIN's force-field-free coordination-structure engine — *construct,
 
 The manifold then goes through a funnel that `CONTROL.txt` steers:
 
+<!-- recipe: not-runnable — prose diagram of the MANTA funnel, not a command -->
 ```
 build manifold → screen (one single point per frame and multiplicity)
                → optimise (xTB per survivor)
@@ -520,6 +521,7 @@ Your own presets can be added as markdown files in `~/.delfin/subagents/`. Subag
 
 Built-in commands cover the session (`/help`, `/status`, `/cost`, `/context`, `/compact`, `/export`, `/undo`), the setup (`/model`, `/mode`, `/permissions`, `/effort`, `/doctor`, `/mcp`, `/trust`, `/tools`, `/agents`, `/skills`), the history (`/session`, `/rewind`, `/tasks`, `/memories`, `/plans`), pending changes (`/pending`, `/approve`, `/reject`) and the workspace (`/git`, `/bash`, `/jobs`). The dashboard adds direct control of DELFIN:
 
+<!-- recipe: not-runnable — dashboard slash commands, not shell -->
 ```
 /control key <key> <value>   — change a single CONTROL key
 /orca set <param> <value>    — configure the ORCA Builder
@@ -624,6 +626,7 @@ Excited-state dynamics has no subcommand of its own: set `ESD_modul=yes` in `CON
 
 ### Package layout
 
+<!-- recipe: not-runnable — directory tree, not code -->
 ```
 delfin/
   cli.py                   # command-line entry point and subcommand dispatch
@@ -719,6 +722,7 @@ DELFIN coordinates all computational work through a global job-manager singleton
 
 ORCA failures are detected and repaired automatically, continuing from the last `.gbw` and geometry:
 
+<!-- recipe: not-runnable — prose diagram of the recovery loop, not a command -->
 ```
 ORCA fails → detect the error type → modify the input → continue from the last .gbw and xyz → retry
 ```
