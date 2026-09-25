@@ -2153,8 +2153,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'break says what is meant to have happened instead, and the walk '
             'stops when it has: arm one on each of two pairs to make one bond '
             'while breaking another. Give a value when the end is the point. '
-            'For a torsion the two ways round are the arrows: ↺ turns it '
-            'left (anticlockwise along the middle bond), ↻ turns it right.'
+            'For a torsion, left and right are seen looking along the central '
+            'bond, from the second atom you picked toward the third (the first '
+            'is the one that swings): ↺ left turns the dihedral down '
+            '(anticlockwise), ↻ right turns it up. "to a value" reaches the '
+            'value you give turning the chosen way, the long way round if the '
+            'short way is the other direction.'
         ),
         layout=widgets.Layout(width='178px', display='none'),
         disabled=True,
@@ -12739,13 +12743,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                        ('to a value you give', 'to')]
         elif kind == 'dihedral':
             # A torsion is turned, not narrowed, and the one thing a turn needs
-            # is which way round -- so the two directions are shown as the two
-            # arrows rather than as "narrower/wider", which said nothing about
-            # rotation.  Positive dihedral is clockwise looking along the middle
-            # bond (IUPAC), so ``out`` (value increases) is clockwise/rechts rum
-            # and ``in`` (value decreases) is anticlockwise/links rum.
-            options = [('↺', 'in'), ('↻', 'out'),
-                       ('to a value you give', 'to')]
+            # is which way round -- so the two directions are the two arrows,
+            # named left and right (seen looking along the central bond -- the
+            # tooltip says from where).  Each can walk to the next minimum, or
+            # "to a value" turn that way until the dihedral reaches a value you
+            # give, the long way round if the short way is the other direction.
+            # left decreases the dihedral (anticlockwise), right increases it.
+            options = [('↺ left', 'in'), ('↻ right', 'out'),
+                       ('↺ left, to a value', 'to_in'),
+                       ('↻ right, to a value', 'to_out')]
         else:  # an angle is genuinely narrower or wider
             options = [('narrower', 'in'), ('wider', 'out'),
                        ('to a value you give', 'to')]
@@ -12760,11 +12766,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if want in [value for _label, value in options]:
                 submit_scan_way.value = want
         # The end of the walk only when one has been asked for.
-        # A torsion's two arrows can take a value too -- turn this way and stop
-        # when the dihedral reaches it -- so the field is offered for a dihedral
-        # whichever way is chosen; elsewhere only "to a value" asks for one.
-        set_end = wanted == '' and (
-            str(submit_scan_way.value) == 'to' or kind == 'dihedral')
+        # The value field is offered only where an end is asked for: "to a
+        # value" for any coordinate, and a torsion's "left/right to a value".
+        # A plain left/right walks to the next minimum and has no field, so
+        # switching to it takes the field away again.
+        set_end = wanted == '' and str(submit_scan_way.value) in (
+            'to', 'to_in', 'to_out')
         submit_scan_to.layout.display = '' if set_end else 'none'
         submit_scan_to.disabled = not set_end
 
@@ -13037,13 +13044,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # distance to zero walks it into a collision -- which is what the
         # floor below then had to catch.
         target = _suggest_scan_target(kind, here, submit_scan_way.value)
-        if str(submit_scan_way.value) == 'to':
+        if str(submit_scan_way.value) in ('to', 'to_in', 'to_out'):
             asked = float(submit_scan_to.value)
-            # A value says which way the walk goes all by itself, so there is
-            # no direction left to fall back on when the value is the one the
-            # coordinate already has.  Said rather than guessed: the guess
-            # used to be inwards, and a scan that walks the opposite way from
-            # the one the number implied is worse than no scan.
+            # A value the coordinate already sits at is nothing to walk to.  For
+            # a plain "to" the value implies its own direction, so there is none
+            # to fall back on; for a torsion's "left/right to a value" the arrow
+            # is the direction, but "already there" is still nothing to do.
             if abs(asked - here) <= 1e-9:
                 _set_mol_status(
                     f'{here:.3g} is where that coordinate already is, so '
@@ -13051,17 +13057,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     'a direction and let the scan stop at the next minimum.')
                 return
             target = asked
-        elif kind == 'dihedral' and str(submit_scan_way.value) in ('in', 'out'):
-            # The arrow is the direction; a value, when one differs from where
-            # the torsion stands, is where to stop -- reached by turning that
-            # way, wrapping a whole turn if need be so "turn left to +90" goes
-            # the long way round rather than the short.  Left at the value the
-            # torsion already has, the arrow walks that way to the next minimum,
-            # exactly as it did before the field was offered for a torsion.
-            asked = float(submit_scan_to.value)
-            if abs(asked - here) > 1e-9:
-                target = float(asked)
-                turn = 1.0 if str(submit_scan_way.value) == 'out' else -1.0
+            if str(submit_scan_way.value) in ('to_in', 'to_out'):
+                # Reach it turning the chosen way, wrapping a whole turn so
+                # "left to +90" goes the long way round rather than the short
+                # way the number alone would take.
+                turn = 1.0 if str(submit_scan_way.value) == 'to_out' else -1.0
                 for _ in range(2):
                     if (target - here) * turn > 0:
                         break
@@ -19621,12 +19621,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         if change.get('name') != 'value':
             return
-        # A torsion's arrows open the field on the value it stands at, the same
-        # as "to a value" does -- so leaving it there means "no end, walk to the
-        # next minimum" and any other number is where to stop turning that way.
-        _way = str(submit_scan_way.value)
-        _kind = _CONSTRAINT_KINDS.get(len(state.get('picked') or ()))
-        if (_way == 'to' or (_kind == 'dihedral' and _way in ('in', 'out'))) \
+        # Every mode that ends at a value -- "to a value" and a torsion's
+        # "left/right to a value" -- opens the field on the value the coordinate
+        # stands at, so it starts on a number that means something.
+        if str(submit_scan_way.value) in ('to', 'to_in', 'to_out') \
                 and not float(submit_scan_to.value):
             try:
                 submit_scan_to.value = float(submit_internal_value.value)
