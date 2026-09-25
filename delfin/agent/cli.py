@@ -2873,13 +2873,34 @@ def cmd_watch(args: argparse.Namespace) -> int:
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
-    otherwise the terminal rendering."""
+    otherwise the terminal rendering.
+
+    `--since <time>` switches to the round report: ONE report over every
+    session with activity since that point (relative like `12h`/`3d`, or
+    a date `2026-09-18`), optionally filtered by `--name PREFIX`. The
+    hand tally this replaces covered tool calls/failures, dialogues,
+    denials, >5min calls, commits, tokens, ttft and endpoint errors.
+    """
     import dataclasses
     import json as _json
 
     from . import session_report as _sr
 
+    since = (getattr(args, "since", "") or "").strip()
     sid = (getattr(args, "session", "") or "").strip()
+    if since and not sid:
+        from . import round_report as _rpt
+        try:
+            since_s = _rpt.parse_since(since)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        data = _rpt.collect(
+            since_s=since_s,
+            name=(getattr(args, "name", "") or "").strip())
+        print(_rpt.render_text(data))
+        return 0
+
     if not sid:
         # No id: the most recently updated session, via the same source
         # `session ls` reads (sorted by updated_at, missing dir -> []).
@@ -3555,6 +3576,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.add_argument("--session", default="",
                         help="Session ID (default: the most recent session)")
+    report.add_argument(
+        "--since", default="",
+        help="Round report: one report over every session with activity "
+             "since this point (12h / 3d / 2026-09-18) instead of one")
+    report.add_argument(
+        "--name", default="",
+        help="With --since: only sessions whose id starts with this prefix")
     report.add_argument("--json", action="store_true",
                         help="Print the SessionReport as JSON instead of "
                              "the terminal rendering")
