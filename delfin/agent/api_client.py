@@ -20941,6 +20941,13 @@ class OpenAIClient(_BaseClient):
             # double counting.
             if _round_in:
                 yield StreamEvent(type="message_start", input_tokens=_round_in)
+            # The round's output, for DISPLAY while the turn goes on. The
+            # accounting stays on the final message_delta (_total_out); the
+            # engine keeps this apart from token_usage, so nothing is
+            # counted twice. Without it a long turn showed "0 out" for as
+            # long as it ran (night run 2026-09-25, B).
+            if _round_out:
+                yield StreamEvent(type="round_usage", output_tokens=_round_out)
 
             # Harmony tool-channel recovery: gpt-5.x via the OpenAI-compatible
             # endpoint sometimes leaks its tool calls ("to=<tool> {json}") into

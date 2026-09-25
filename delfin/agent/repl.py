@@ -1706,7 +1706,9 @@ class TerminalAgent:
             status = {}
         base_in, base_out, base_cost = self._turn_base
         tin = max(0, int(status.get("input_tokens", 0) or 0) - base_in)
-        tout = max(0, int(status.get("output_tokens", 0) or 0) - base_out)
+        tout = max(0, int(status.get("output_tokens_live",
+                                     status.get("output_tokens", 0)) or 0)
+                   - base_out)
         # Provider truth wins whenever it exists mid-turn (Anthropic
         # counts on message_delta). Only where it does not -- OpenAI-
         # compatible streams, whose usage arrives with the last chunk --

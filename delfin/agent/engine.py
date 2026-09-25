@@ -1128,6 +1128,10 @@ class AgentEngine:
             "role_total": len(self.route),
             "input_tokens": self.token_usage.get("input", 0),
             "output_tokens": self.token_usage.get("output", 0),
+            # What a running turn has produced so far, for the live status
+            # line; equals output_tokens once the turn has ended.
+            "output_tokens_live": (self.token_usage.get("output", 0)
+                                   + getattr(self, "_round_output_live", 0)),
             "cached_tokens": self.token_usage.get("cached", 0),
             "cost_usd": self.cost_usd,
             # Cumulative for the session, like cost_usd above, so a caller
@@ -3028,6 +3032,15 @@ class AgentEngine:
                     if event.text:
                         self.session_id = event.text
 
+                elif event.type == "round_usage":
+                    # Display only: the output of each finished round of a
+                    # turn still running. Billing stays on message_delta,
+                    # which clears this, so it is never counted twice.
+                    with self._lock:
+                        self._round_output_live = (
+                            getattr(self, "_round_output_live", 0)
+                            + int(event.output_tokens or 0))
+
                 elif event.type == "message_start":
                     # Input tokens tracked here (authoritative count
                     # including cache).  Do NOT also add in message_delta.
@@ -3091,6 +3104,7 @@ class AgentEngine:
                         # Only output tokens and cost from the final event.
                         # Input tokens already counted in message_start.
                         self.token_usage["output"] += event.output_tokens
+                        self._round_output_live = 0
                         self.cost_usd += event.cost_usd
                         # Accounting fallback for backends that never emit
                         # message_start: count the turn's input here so
