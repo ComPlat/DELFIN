@@ -20,7 +20,7 @@ For implementation and architecture, see the [README](../README.md).
 9. [Structure Generation & Sampling](#9-structure-generation--sampling)
 10. [Dashboard](#10-dashboard)
 11. [Settings & Runtime Configuration](#11-settings--runtime-configuration)
-12. [The AI Agent](#12-the-ai-agent)
+12. [The AI Agents](#12-the-ai-agents)
 13. [Error Recovery & Retry System](#13-error-recovery--retry-system)
 14. [Reporting & Export](#14-reporting--export)
 15. [Cluster & HPC Usage](#15-cluster--hpc-usage)
@@ -1216,9 +1216,13 @@ For the full Settings documentation, see [SETTINGS_AND_SETUP.md](SETTINGS_AND_SE
 
 ---
 
-## 12. The AI Agent
+## 12. The AI Agents
 
-A conversational agent that operates DELFIN and edits its code. It runs in the dashboard's **DELFIN Agent** tab and as the terminal program `delfin-agent`. Both surfaces share the same engine, modes and slash commands.
+Conversational agents that operate DELFIN and edit its code. One runs in the
+dashboard's **DELFIN Agent** tab or as the terminal program `delfin-agent`; both
+surfaces share the same engine, modes and slash commands. That one delegates work
+that stands on its own to **subagents**, which run in parallel with their own tools
+and permissions — so a session is usually several agents, not one.
 
 ### Starting it
 
