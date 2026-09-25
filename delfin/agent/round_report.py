@@ -65,9 +65,46 @@ def parse_since(spec: str) -> float:
     raise ValueError(f"cannot parse --since value: {spec!r}")
 
 
+# ------------------------------------------------------------------ audit
+
+def _audit_facts(audit_path: "Path | None") -> tuple[dict, dict]:
+    """(session -> label, session -> dialogs) from the audit log.
+
+    The label is the session's -n name where a dialog record carries it,
+    else the name of its workspace directory (every audit record names
+    the workspace). Dialogs are the ``event: dialog`` records the
+    confirmation broker writes for each question a person answered.
+    """
+    labels: dict[str, str] = {}
+    dialogs: dict[str, int] = {}
+    try:
+        import json as _json
+        from . import audit_log as _audit
+        path = Path(audit_path) if audit_path else _audit._default_log_path()
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    rec = _json.loads(line)
+                except ValueError:
+                    continue
+                sid = str(rec.get("session_id") or "")
+                if not sid:
+                    continue
+                if rec.get("event") == "dialog":
+                    dialogs[sid] = dialogs.get(sid, 0) + 1
+                    if rec.get("session_key"):
+                        labels[sid] = str(rec["session_key"])
+                if sid not in labels and rec.get("workspace"):
+                    labels[sid] = Path(str(rec["workspace"])).name
+    except Exception:
+        pass
+    return labels, dialogs
+
+
 # ------------------------------------------------------------------ sessions
 
-def _session_ids(trace_root: Path, name: str, since: float) -> list[tuple[str, float]]:
+def _session_ids(trace_root: Path, name: str, since: float,
+                 labels: "dict | None" = None) -> list[tuple[str, float]]:
     """(session, last activity ts) for sessions with activity >= since,
     newest first and filtered by name prefix. A session whose whole trace
     predates the cutoff is not part of the round."""
@@ -79,7 +116,8 @@ def _session_ids(trace_root: Path, name: str, since: float) -> list[tuple[str, f
         last = max(ts_list, default=0.0)
         if last < since:
             continue
-        if name and not sid.startswith(name):
+        label = (labels or {}).get(sid, "")
+        if name and not (sid.startswith(name) or label.startswith(name)):
             continue
         out.append((sid, last))
     out.sort(key=lambda kv: kv[1], reverse=True)
@@ -181,7 +219,7 @@ def _turn_stats(session_id: str, since: float) -> dict[str, Any]:
 # -------------------------------------------------------------------- public
 
 def collect(*, since_s: float, trace_root: "Path | str | None" = None,
-            name: str = "") -> dict:
+            name: str = "", audit_path: "Path | str | None" = None) -> dict:
     """Aggregate every session with activity since ``since_s`` (unix ts).
 
     Returns ``{"since_s": …, "sessions": [per-session dicts, newest
@@ -189,12 +227,18 @@ def collect(*, since_s: float, trace_root: "Path | str | None" = None,
     source cannot give is None.
     """
     root = Path(trace_root) if trace_root else tool_trace._DIR
+    labels, dialogs = _audit_facts(Path(audit_path) if audit_path else None)
     sessions: list[dict] = []
     try:
-        for sid, last in _session_ids(root, name, since_s):
+        for sid, last in _session_ids(root, name, since_s, labels):
             entries = tool_trace.read(sid, root=root)
-            row = {"session_id": sid, "last_activity": last}
+            row = {"session_id": sid, "label": labels.get(sid, ""),
+                   "last_activity": last}
             row.update(_trace_stats(entries))
+            # A person answering a permission dialog is the operator
+            # load the round is about; ask_user calls in the trace are
+            # only the questions the model put itself.
+            row["dialogues"] = row["dialogues"] + dialogs.get(sid, 0)
             row.update(_turn_stats(sid, since_s))
             sessions.append(row)
     except Exception:
@@ -225,7 +269,9 @@ def collect(*, since_s: float, trace_root: "Path | str | None" = None,
 
 
 def _n(v: Any, suffix: str = "") -> str:
-    return f"{v}{suffix}" if v is not None else "n/a"
+    if v is None:
+        return "n/a"
+    return f"{v:.1f}{suffix}" if isinstance(v, float) else f"{v}{suffix}"
 
 
 def render_text(data: dict) -> str:
@@ -242,7 +288,8 @@ def render_text(data: dict) -> str:
         lines.append("No sessions in the window.")
         return "\n".join(lines)
     for s in sessions:
-        lines.append(f"[{s['session_id']}]")
+        label = f" {s['label']}" if s.get("label") else ""
+        lines.append(f"[{s['session_id'][:12]}]{label}")
         lines.append(
             f"  tools: {_n(s.get('tool_calls'))} calls, "
             f"{_n(s.get('tool_calls_failed'))} failed "
