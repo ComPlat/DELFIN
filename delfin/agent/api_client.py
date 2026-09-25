@@ -8487,138 +8487,16 @@ def check_completion_claim(
 ) -> dict:
     """What the session can show for a task about to be marked completed.
 
-    Returns ``{"verdict", "kind", "detail", "note"}`` where verdict is
-
-    * ``verified``  — a check matched and the evidence supports it
-    * ``unmet``     — a check matched and the evidence contradicts it
-    * ``unchecked`` — nothing in this subject can be keyed on, or the
-      ledger that would decide it is not reachable
-
-    ``unchecked`` is a first-class answer: an honest unknown recorded as
-    such is what separates a checked completion from one nobody looked
-    at, and the store used to write every completion as if it were the
-    first.
-
-    Pure over its arguments — *changes* is the write ledger
-    (``[{path, ts, created}]``), *observed* the read ledger (``None``
-    when unreachable), *tests* the test-evidence ledger (``None`` when
-    unreachable), *window_start* the epoch the task went in_progress
-    (0 when unknown).
-
-    Deliberately quiet: every shape either has evidence to point at or
-    says ``unchecked``. A check that refuses honest work teaches the
-    model to phrase subjects so nothing can key on them, which is worse
-    than no check at all.
+    Delegates to :mod:`delfin.agent.task_evidence` (night run 2026-09-25,
+    J): the same contract -- ``{"verdict", "kind", "detail", "note"}``,
+    ``verified`` / ``unmet`` / ``unchecked``, pure over its arguments --
+    judged on the work rather than on words in the task text. The helpers
+    above this function are the previous implementation's, still used by
+    their own tests until they move to task_evidence.
     """
-    try:
-        subject_text = str(subject or "")
-        body = f"{subject_text}\n{description or ''}"
-        changed = [c for c in (changes or ()) if isinstance(c, dict)]
-        written = [str(c.get("path", "")) for c in changed if c.get("path")]
-        read_paths = None if observed is None else [
-            str(p) for p in (observed or ())]
-        wants_write = bool(_WRITE_VERB_RE.search(body))
-        reads_only = (not wants_write
-                      and bool(_READ_VERB_RE.search(subject_text)))
-
-        # 1. A path the subject names is the most specific claim there is.
-        for cand in _paths_in_text(body):
-            if any(_path_matches(cand, p) for p in written):
-                return _verdict("path_write", "verified", cand)
-            seen = (None if read_paths is None
-                    else any(_path_matches(cand, p) for p in read_paths))
-            if reads_only:
-                if seen:
-                    return _verdict("path_read", "verified", cand)
-                if seen is None:
-                    return _verdict("path_read", "unchecked", cand)
-                return _verdict(
-                    "path_untouched", "unmet", cand,
-                    f"names {cand} and this session neither read nor wrote "
-                    f"it.")
-            if wants_write:
-                return _verdict(
-                    "path_unwritten", "unmet", cand,
-                    f"names {cand} and no write of it is recorded"
-                    + (" (it was only read)" if seen else "") + ".")
-            if seen:
-                return _verdict("path_read", "verified", cand)
-            if seen is None:
-                return _verdict("path_read", "unchecked", cand)
-            return _verdict(
-                "path_untouched", "unmet", cand,
-                f"names {cand} and this session neither read nor wrote it.")
-
-        # 2. An artefact noun: match the extension against CREATED files.
-        #    Not for a task that only READS one. "Prüfe den Bericht auf
-        #    Fehler" names a report and promises to make none, and this
-        #    branch used to run before any read/write distinction and
-        #    report it unmet for having written no PDF.
-        word = "" if reads_only else _artifact_word(subject_text)
-        if word:
-            missing = _unmet_artifact(subject_text, written)
-            if missing:
-                return _verdict(
-                    "artifact", "unmet", missing,
-                    f"names a {missing} and no {missing} file was written "
-                    f"in this session.")
-            return _verdict("artifact", "verified", word)
-
-        # 3. A test / verification task needs a run that came back green.
-        if _TEST_TASK_RE.search(subject_text):
-            if tests is None:
-                return _verdict("tests", "unchecked", "no test ledger")
-            entries = [e for e in tests if isinstance(e, dict)]
-            in_window = [
-                e for e in entries
-                if float(e.get("ts", 0) or 0) >= float(window_start or 0)
-            ]
-            green = [
-                e for e in in_window
-                if int(e.get("failed", 0) or 0) == 0
-                and str(e.get("status", "")) not in ("failed", "error",
-                                                     "gave_up")
-            ]
-            if green:
-                return _verdict("tests", "verified",
-                                f"{len(green)} green run(s)")
-            if in_window:
-                worst = max(int(e.get("failed", 0) or 0) for e in in_window)
-                return _verdict(
-                    "tests_red", "unmet", f"{worst} failing",
-                    f"is a test task and the runs recorded since it started "
-                    f"were not green ({worst} failure(s) in the last one).")
-            if entries:
-                return _verdict(
-                    "tests_stale", "unmet", "before the task started",
-                    "is a test task and every recorded test run predates "
-                    "it — nothing was run since the work began.")
-            return _verdict(
-                "tests_none", "unmet", "no run recorded",
-                "is a test task and this session recorded no test run at "
-                "all.")
-
-        # 4. An edit / refactor task with no path named: the change
-        #    journal has to show a mutation. Preferring the in_progress
-        #    window, but a change earlier in the SESSION still counts --
-        #    a model that edits first and flips the status afterwards is
-        #    doing the work, not faking it.
-        if wants_write:
-            if any(c.get("ts", 0) >= float(window_start or 0)
-                   for c in changed):
-                return _verdict("journal_window", "verified",
-                                f"{len(changed)} change(s)")
-            if changed:
-                return _verdict("journal_session", "verified",
-                                "changed before this task started")
-            return _verdict(
-                "no_change", "unmet", "nothing written",
-                "promises a change and this session changed no file at "
-                "all.")
-
-        return _verdict("", "unchecked", "nothing checkable in the subject")
-    except Exception:
-        return _verdict("", "unchecked", "check failed")
+    from .task_evidence import check_completion_claim as _check
+    return _check(subject, description, changes=changes, observed=observed,
+                  tests=tests, window_start=window_start)
 
 
 _SBATCH_SUBMITTED_RE = re.compile(r"Submitted batch job\s+(\d+)")

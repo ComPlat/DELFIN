@@ -200,8 +200,13 @@ def test_the_counts_still_match_what_was_measured():
     # faster than A" is the commonest empirical question here and one run
     # of each answers it wrongly with near-certainty; its setup builds two
     # variants whose runtimes are drawn from the same distribution.
+    #
+    # other 48 -> 50: tasks_gate_forms.yaml (night run 2026-09-25, K) --
+    # two lookups that must be done through the reading tools, with the
+    # shell forms that make the gate ask ($( ), awk, xargs, sed -i) as
+    # forbidden signals.
     assert counts == {"office": 13, "behavior": 12, "generic_project": 15,
-                      "science": 11, "other": 48}, counts
+                      "science": 11, "other": 50}, counts
 
 
 # ---------------------------------------------------------------------------

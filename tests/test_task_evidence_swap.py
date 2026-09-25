@@ -39,11 +39,6 @@ def test_the_swap_site_is_the_only_call_of_the_check():
     assert calls == 1, "one call site to swap: " + SWAP_SITE
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="api_client still calls its own check; swap the call at "
-           + SWAP_SITE + " to delegate to task_evidence.",
-)
 class TestAfterTheSwap:
     """Each case: judged wrongly (or by luck) by the shipped check at
     the END-TO-END level -- the task subject/description the caller
