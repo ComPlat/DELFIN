@@ -712,6 +712,18 @@ def _strip_emphasis(text: str) -> str:
         return text or ""
 
 
+def _strip_any(traj: "Trajectory") -> str:
+    """The flattened trajectory with emphasis stripped from the PROSE part
+    only. Tool inputs are content, not formatting: a backtick in a bash
+    command is the forbidden form itself, and stripping it made every
+    backtick-bearing signal unmatchable on the ``any`` channel (found in
+    assignment K, 2026-09-25) — a signal that can never fire reads as
+    cover while measuring nothing."""
+    s = traj.as_string()
+    head = s[:len(traj.text)]
+    return _strip_emphasis(head) + s[len(traj.text):]
+
+
 _NEGATION_RE = re.compile(
     r"(?i)\b(?:not|nicht|never|niemals|kein|keine|falsch|wrong|"
     r"invalid|statt|avoid|vermeide|no such)\b|instead of")
@@ -789,10 +801,24 @@ def _signal_match(
     elif against == "tool_name":
         haystacks = [_tool_semantic_name(c.get("name", ""))
                      for c in traj.tool_calls]
-    else:
-        haystacks = [traj.as_string()]
-    if against != "tool_name":
+    else:                                                       # any
+        # Emphasis stripping is for PROSE: a model writing "I will
+        # **not** run this" must match a pattern for "will not run"
+        # (73752f5f). Tool inputs are content, not formatting — a
+        # backtick in a bash command IS the forbidden form, and
+        # stripping it there made every backtick signal unmatchable
+        # (found in assignment K, 2026-09-25). So only the answer-text
+        # part of the flattened trajectory is stripped; ACTION and TOOL
+        # lines are matched raw. The ``text`` and ``action`` channels
+        # carry prose (actions are re-extracted from the text by the
+        # runner, already unformatted) and keep the full stripping.
+        haystacks = [_strip_any(traj)]
+    # Prose channels keep the full stripping (73752f5f); the any
+    # channel strips its prose part only (see _strip_any).
+    if against in ("text", "action"):
         haystacks = [ascii_minus(_strip_emphasis(h)) for h in haystacks]
+    else:
+        haystacks = [ascii_minus(h) for h in haystacks]
     for h in haystacks:
         for m in rx.finditer(h or ""):
             if waive_negated and _match_is_negated(h or "", m.start(), m.end()):
@@ -821,11 +847,11 @@ def _signal_matches(
         haystacks = [_tool_semantic_name(c.get("name", ""))
                      for c in traj.tool_calls]
     else:                                                       # any
-        haystacks = [traj.as_string()]
-    # Emphasis is formatting, not content — match the words, not the
-    # markdown around them. The tool_name channel carries bare names.
-    if against != "tool_name":
+        haystacks = [_strip_any(traj)]
+    if against in ("text", "action"):
         haystacks = [ascii_minus(_strip_emphasis(h)) for h in haystacks]
+    else:
+        haystacks = [ascii_minus(h) for h in haystacks]
     if not waive_negated:
         return any(rx.search(h or "") for h in haystacks)
     for h in haystacks:
