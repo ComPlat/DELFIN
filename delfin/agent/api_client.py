@@ -10136,6 +10136,20 @@ def _elide_old_tool_results(
     target = int(char_budget * _ELIDE_TO_FRACTION)
     editable = tool_idxs[:-keep_recent] if keep_recent > 0 else tool_idxs
     editable = [i for i in editable if i >= protect_before]
+    # What each result WAS, so its placeholder can say it: tool_call_id ->
+    # (tool, arguments), from the assistant turns that made the calls.
+    calls: dict[str, tuple[str, dict]] = {}
+    for m in api_messages:
+        for tc in m.get("tool_calls") or []:
+            try:
+                fn = tc.get("function") or {}
+                args = fn.get("arguments") or "{}"
+                args = json.loads(args) if isinstance(args, str) else args
+                calls[str(tc.get("id"))] = (
+                    _bare_tool_name(str(fn.get("name") or "")),
+                    args if isinstance(args, dict) else {})
+            except Exception:
+                continue
     elided = 0
     for i in editable:
         if _tool_chars() <= target:
@@ -10149,9 +10163,14 @@ def _elide_old_tool_results(
         # look, on the one path that cannot give the content back. The
         # engine's own trims persist the original and hand out a retrieval
         # ref; this one does not, so it says so instead.
+        call = calls.get(str(api_messages[i].get("tool_call_id")))
+        was = ""
+        if call and call[0]:
+            from .tool_digest import digest as _digest
+            was = f" Was: {_digest(call[0], call[1], content)}."
         api_messages[i]["content"] = (
             f"{_ELIDED_PREFIX} — {len(content)} chars dropped to free "
-            f"context. This copy is gone; if the detail matters, run the "
+            f"context.{was} This copy is gone; if the detail matters, run the "
             f"tool again or search the transcript with history_search]"
         )
         elided += 1

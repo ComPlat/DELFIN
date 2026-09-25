@@ -6,9 +6,8 @@ _elide_old_tool_results replaces an old tool result, the replacement
 must carry the digest of that call (tool name + the facts from
 delfin.agent.tool_digest), not only the bare placeholder.
 
-Until the wiring exists, this is xfail(strict=True): it must FAIL on the
-current commit and will turn XPASS->failure the moment the wiring lands,
-so the integration cannot regress silently.
+Written as an xfail(strict=True) contract before the wiring existed; the
+marker went with the commit that wired it in.
 """
 
 from __future__ import annotations
@@ -49,9 +48,6 @@ def _api_messages_with_read(path: str, body: str) -> list[dict]:
     ]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "elision wiring not built yet: the placeholder must gain the "
-    "tool_digest digest of the elided call"))
 def test_elided_tool_result_carries_its_digest():
     path = "delfin/somewhere/deep.py"
     body = "\n".join(f"{i + 1}  line {i}" for i in range(400))

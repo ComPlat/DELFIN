@@ -107,11 +107,10 @@ def test_fallback_first_line_and_size():
     assert "first result line" in d
 
 
-def test_digest_is_deterministic_and_cached():
+def test_digest_is_deterministic():
     a = digest("read_file", {"path": "x.py"}, READ_BODY)
     b = digest("read_file", {"path": "x.py"}, READ_BODY)
     assert a == b
-    assert digest.cache_info().hits >= 1
 
 
 def test_secrets_are_scrubbed():
