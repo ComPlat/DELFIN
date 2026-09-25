@@ -129,6 +129,47 @@ def _unexpected_under_a_generated_root() -> frozenset:
         entry[3:] for entry in done.stdout.split("\0") if entry[3:])
 
 
+# Rescan gaps for the confirmation below, growing so a short neighbour
+# window is waited out cheaply and only a persistent change pays the
+# full ~2 s. Stopping at the first clean rescan keeps the common case
+# (a real, lasting finding) at the full cost and the transient case at
+# the gap that outlived the neighbour.
+_CONFIRM_GAPS_S = (0.05, 0.2, 0.5, 1.25)
+
+
+def _confirmed_under_a_generated_root() -> frozenset:
+    """What the scan still says once a neighbour has had time to pass.
+
+    A neighbouring suite process that holds a fixture workspace
+    mid-restore (the benchmark guard removes
+    tests/fixtures/office_workspace and copies a snapshot back) makes
+    tracked files vanish for exactly the moment our scan runs. Eleven
+    files in the parallel suite run of 2026-09-25 (SLURM job 7188718)
+    failed their teardown that way -- "N passed, 1 error", every error
+    a deletion booked as an appearance, the same files green when run
+    alone.
+
+    The confirmation does not decide what counts as a finding: a
+    deletion or a modification of a tracked file is real damage and
+    stays one. It only waits out the neighbour's window -- rescans
+    with growing gaps, stopping as soon as one comes back clean, so
+    the suite pays this only when a scan saw something. A change
+    still there after the last rescan is not a race and is reported
+    exactly as before.
+    """
+    first = _unexpected_under_a_generated_root()
+    if not first:
+        return first
+    import time
+    now = first
+    for gap in _CONFIRM_GAPS_S:
+        time.sleep(gap)
+        now = _unexpected_under_a_generated_root()
+        if not now:
+            return now
+    return now
+
+
 _LIFELINE_NAMES = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
 _LIFELINE_SAVED: dict = {}
 
@@ -319,9 +360,14 @@ def _the_suite_does_not_write_into_the_checkout():
     before_generated = _unexpected_under_a_generated_root()
     yield
     new = sorted(p for p in _checkout_entries() - before)
+    # Confirmed, not raw: a parallel pytest process restoring a fixture
+    # workspace can make tracked files vanish for the instant this scan
+    # runs, and a raw scan booked that as a leak (SLURM 7188718, eleven
+    # false "1 error" teardowns). What survives the confirmation window
+    # is not a race and is reported as before.
     new += sorted(
         str(_CHECKOUT_ROOT / p)
-        for p in _unexpected_under_a_generated_root() - before_generated)
+        for p in _confirmed_under_a_generated_root() - before_generated)
     # The last test of the run has nothing after it, so no later setup ever
     # sees what it left -- and the leak this was written for was exactly
     # that: the last test in its file. One more comparison here closes the
