@@ -30,11 +30,34 @@ class DocSearchEngine:
         keys: list[tuple[str, str]] = []
 
         for doc_id, doc in self._index.get("documents", {}).items():
+            doc_title = doc.get("title", "")
             for section_id, section in doc.get("sections", {}).items():
                 text = section.get("text", "")
                 title = section.get("title", "")
-                # Prepend title for boosted matching
-                corpus.append(f"{title}\n{text}")
+                # The DOCUMENT's title belongs in the corpus too. Without
+                # it a paper cannot be found by its own name: the only
+                # titles indexed were the per-section headings a PDF
+                # chunker invents, and a document's real title was never
+                # searchable text anywhere.
+                #
+                # Measured, four queries each quoting a document's title,
+                # as the RANK of that document in the results:
+                #
+                #     SMILES all around          >20 -> 16
+                #     Theoretical calculations     2 ->  1
+                #     Partial to Total            11 ->  4
+                #     ORCA Manual                  1 ->  1
+                #
+                # Every rank improved or held, and two crossed from
+                # outside the default max_results=10 to inside it. The
+                # first is still outside: a document ABOUT what DELFIN
+                # does competes with DELFIN's own manual on DELFIN's own
+                # vocabulary, and that is a corpus-weighting question this
+                # line does not answer. Not tuned further here -- four
+                # queries chosen by the author are an instrument, not a
+                # ground truth, and fitting a ranking to them would move
+                # the number without moving the retrieval.
+                corpus.append(f"{doc_title}\n{title}\n{text}")
                 keys.append((doc_id, section_id))
 
         if not corpus:
@@ -152,6 +175,10 @@ class DocSearchEngine:
                 "section_id": section_id,
                 "title": section.get("title", ""),
                 "doc_title": doc.get("title", ""),
+                # Travels with the hit, not only with the document: the
+                # model reads the result, and a citation it has to fetch
+                # separately is one it will not fetch.
+                "reference": doc.get("reference", ""),
                 "score": round(score, 4),
                 "snippet": snippet,
             })

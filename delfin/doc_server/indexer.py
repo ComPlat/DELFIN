@@ -10,10 +10,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import bibliography as _bibliography
+
 
 # ---------------------------------------------------------------------------
 # PDF extraction
 # ---------------------------------------------------------------------------
+
+def _pdf_metadata(path: Path) -> dict:
+    """The PDF's own metadata dictionary, or {}. Never raises.
+
+    Separate from the text extraction because the two fail apart: a
+    scanned PDF yields no text and still names itself, and a file with a
+    damaged trailer yields text and no metadata.
+    """
+    try:
+        from pypdf import PdfReader  # type: ignore
+        return dict((PdfReader(str(path)).metadata or {}))
+    except Exception:
+        return {}
+
 
 def _extract_pdf_text(
     path: Path, quiet: bool = False, report: dict[str, Any] | None = None,
@@ -304,9 +320,17 @@ def build_index(
             print(f"  indexing: {path.name} ({doc_type})", file=sys.stderr)
 
         report: dict[str, Any] = {}
+        bib: dict[str, str] = {}
         if doc_type == "pdf":
             pages = _extract_pdf_text(path, quiet=quiet, report=report)
             sections_list = _chunk_pdf_into_sections(pages)
+            # What the document says it is. A search result that cannot be
+            # traced to a source is an assertion; with this it is a
+            # citation the reader can check.
+            bib = _bibliography.describe(
+                _pdf_metadata(path),
+                (pages[0].get("text", "") if pages else ""),
+                spec["title"])
         elif doc_type == "markdown":
             sections_list = _extract_markdown_sections(path)
         else:
@@ -337,8 +361,14 @@ def build_index(
                   or "no text could be extracted from this file")
             continue
 
+        reference = _bibliography.reference(bib) if bib else ""
         documents[spec["doc_id"]] = {
-            "title": spec["title"],
+            # The document's own title when it states one. What stood here
+            # was the filename with its punctuation replaced, which is how
+            # a paper came to be called "1 s2.0 S0021979724009044 main".
+            "title": (bib.get("title") or spec["title"]),
+            "bibliography": bib,
+            "reference": reference,
             "source_path": str(path),
             "source_type": doc_type,
             "section_count": len(sections),
