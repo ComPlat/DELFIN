@@ -1988,9 +1988,12 @@ def test_the_scan_controls_say_what_they_are():
     # A three-atom angle is genuinely narrower or wider...
     assert "[('narrower', 'in'), ('wider', 'out')," in source
     # ...but a four-atom torsion is turned, so its two directions are the two
-    # arrows (left/anticlockwise and right/clockwise), not narrower/wider.
+    # arrows (left/anticlockwise and right/clockwise), not narrower/wider, each
+    # on its own (walk to the next minimum) and again "to a value".
     assert "elif kind == 'dihedral':" in source
-    assert "[('↺', 'in'), ('↻', 'out')," in source
+    assert "[('↺ left', 'in'), ('↻ right', 'out')," in source
+    assert "('↺ left, to a value', 'to_in')," in source
+    assert "('↻ right, to a value', 'to_out')]" in source
     assert "kind = _CONSTRAINT_KINDS.get(picked)" in source
     assert "description='steps'" in source
     assert "description='to'" in source
@@ -1998,18 +2001,18 @@ def test_the_scan_controls_say_what_they_are():
     assert 'submit_scan_stop_at' not in source, (
         'the checkbox that only revealed the field is a control of its own '
         'again')
-    # The value field is offered for "to a value" and, for a torsion, for its
-    # two arrow directions too -- so a dihedral can be turned a chosen way to a
-    # chosen value.
-    assert "set_end = wanted == '' and (" in source
-    assert ("str(submit_scan_way.value) == 'to' or kind == 'dihedral')"
-            in source)
+    # The value field is offered only where an end is asked for: "to a value"
+    # for any coordinate, and a torsion's "left/right to a value".  A plain
+    # left/right walks to the next minimum and has no field, so switching to it
+    # takes the field away again.
+    assert "set_end = wanted == '' and str(submit_scan_way.value) in (" in source
+    assert "'to', 'to_in', 'to_out')" in source
     assert "submit_scan_to.layout.display = '' if set_end else 'none'" in source
     # The direction is what is always used; a value only overrides it when one
     # was actually asked for.
     assert ('target = _suggest_scan_target(kind, here, submit_scan_way.value)'
             in source)
-    assert "if str(submit_scan_way.value) == 'to':" in source
+    assert "if str(submit_scan_way.value) in ('to', 'to_in', 'to_out'):" in source
     # Opened on the value the coordinate has, not on a zero to be guessed at.
     assert 'submit_scan_to.value = float(submit_internal_value.value)' in source
     assert 'submit_scan_way.observe(on_submit_scan_way' in source

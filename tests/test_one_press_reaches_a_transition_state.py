@@ -421,60 +421,66 @@ def test_where_a_scan_walks_is_one_question_and_what_is_picked_answers_it():
     assert _shown(part.submit_scan_to)
     assert part.submit_scan_to.value == pytest.approx(1.53)
 
-    # And the words follow what is picked -- three answers for a torsion, the
-    # two verbs gone with the bond they were about, and the two directions
-    # shown as the two arrows because a torsion is turned, not narrowed.
+    # And the words follow what is picked -- a torsion is turned, not narrowed,
+    # so its directions are the two arrows: each on its own (walk to the next
+    # minimum) and again "to a value", so a value can be reached turning either
+    # way.  The two verbs are gone with the bond they were about.
     state['picked'] = [0, 1, 2, 3]
     part._refresh_scan()
-    assert _values(part.submit_scan_way) == ['in', 'out', 'to']
-    assert part.submit_scan_way.value == 'to', 'the answer given was lost'
+    assert _values(part.submit_scan_way) == ['in', 'out', 'to_in', 'to_out']
     assert [label for label, _value in part.submit_scan_way.options][:2] == \
-        ['↺', '↻']
+        ['↺ left', '↻ right']
 
 
 def test_a_torsion_turns_the_chosen_way_to_the_value_it_is_given():
     """The two things a torsion scan needs -- which way round, and how far --
-    compose: pick an arrow and give a value, and it turns that way until the
-    dihedral reaches it, wrapping a whole turn so the arrow wins over the short
-    way.  Leave the value where the torsion already is and the arrow walks that
-    way to the next minimum, as it did before a value could be given here.
+    compose as four choices.  The plain arrows walk that way to the next minimum
+    and carry no value field; "left/right, to a value" bring the field and turn
+    that way until the dihedral reaches the value, wrapping a whole turn so the
+    arrow wins over the short way.  Switching back to a plain arrow takes the
+    field away again.
     """
     part, state = _an_editor()
     part.submit_ff_dd.value = _method(part, 'gfn2')
     state['picked'] = [2, 0, 1, 5]                 # an H-C-C-H torsion
     part.submit_internal_value.value = 60.0
     part._refresh_scan()
-    # The value field is offered for a torsion whichever arrow is chosen.
-    part.submit_scan_way.value = 'in'
-    part._refresh_scan()
-    assert _shown(part.submit_scan_to)
 
-    def _arm(way, value):
+    def _arm(way, value=None):
         state['scan_legs'] = []
         part.submit_scan_way.value = way
-        part.submit_scan_to.value = float(value)
+        part._refresh_scan()
+        shown = _shown(part.submit_scan_to)
+        if value is not None:
+            part.submit_scan_to.value = float(value)
         part.on_submit_scan()
         legs = state.get('scan_legs') or []
-        return legs[-1] if legs else None
+        return shown, (legs[-1] if legs else None)
 
-    # ↻ (out, clockwise/rechts rum) to 90: the short way, +30.
-    leg = _arm('out', 90.0)
+    # A plain arrow carries no value field and walks that way to the next minimum.
+    shown, leg = _arm('out')
+    assert not shown
+    assert leg['to'] > leg['from']                 # ↻ right, clockwise onward
+    shown, leg = _arm('in')
+    assert not shown
+    assert leg['to'] < leg['from']                 # ↺ left, anticlockwise onward
+
+    # ↻ right, to a value: the field appears; 90 from 60 is the short way, +30.
+    shown, leg = _arm('to_out', 90.0)
+    assert shown
     assert leg['from'] == pytest.approx(60.0)
     assert leg['to'] == pytest.approx(90.0)
 
-    # ↺ (in, anticlockwise/links rum) to 90: the same value the OTHER way round,
-    # a whole turn added so the walk decreases through it -- the point of the
-    # arrow is that it, not the short way, decides the direction.
-    leg = _arm('in', 90.0)
+    # ↺ left, to a value: the same value the OTHER way round, a whole turn added
+    # so the walk decreases through it -- the arrow, not the short way, decides.
+    shown, leg = _arm('to_in', 90.0)
+    assert shown
     assert leg['to'] == pytest.approx(-270.0)      # 90 reached turning left
     assert leg['to'] < leg['from']                 # genuinely the left way
 
-    # Value left where the torsion is: the arrow walks that way to the next
-    # minimum rather than refusing (which "to a value" does).
-    leg = _arm('out', 60.0)
-    assert leg['to'] > leg['from']                 # walks clockwise onward
-    leg = _arm('in', 60.0)
-    assert leg['to'] < leg['from']                 # walks anticlockwise onward
+    # Switching from "to a value" back to a plain arrow takes the field away.
+    shown, _leg = _arm('out')
+    assert not shown
 
 
 def test_a_walk_to_where_the_coordinate_already_is_is_refused_rather_than_guessed():
