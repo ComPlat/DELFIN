@@ -333,7 +333,18 @@ tasks:
       # kilowatt-hours. Worse, `Zeile 243` is what this task's own
       # expected signal asks for, so the two rules punished and rewarded
       # the same token. Now: a max claim with no 9.840 anywhere near it.
-      - pattern: '(?i)(höchste|maximal|größte)(?![^.]{0,60}9\.?840)[^.]{0,40}\b(2[0-9]{2}|1[0-9]{2})\b'
+      #
+      # 2026-09-25 (kit.glm-5.3): the nightly answer wrote "**Zeile 243:
+      # Zentrifuge 31, Monat 2026-02, mit 9.840 kWh**" — 62 characters
+      # between "höchste" and the 9.840, past the 60-char guard, and the
+      # row number 243 fired the forbidden signal on the CORRECT answer.
+      # Two changes, one guard each:
+      # - a number preceded by a row marker (Zeile|line|row) is exempt:
+      #   it names WHERE the maximum is, not how large it is;
+      # - the guard window grows 60 → 110 chars, reaching the 9.840 in
+      #   the long form. Wrong answers are unaffected: their 299 sits
+      #   directly after the max claim, inside both windows.
+      - pattern: '(?i)(höchste|maximal|größte)(?![^.]{0,110}9\.?840)[^.]{0,40}\b(?!(?:Zeile|line|row)\s)(2[0-9]{2}|1[0-9]{2})\b'
         against: text
     max_duration_s: 240
     max_cost_usd: 0.80
