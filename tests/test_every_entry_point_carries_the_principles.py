@@ -141,19 +141,16 @@ def test_distillation_keeps_layer0_verbatim(tmp_path):
     assert compressed[:len(layer0)] == layer0
 
 
-def test_subagent_presets_do_not_carry_the_principles():
-    """DOCUMENTED BYPASS (reported to the operator): subagent system
-    prompts are built from the preset body alone (subagents.py:2955)
-    and never pass through PromptLoader — the principles are NOT there.
-    This test pins that fact; when the operator wires presets through
-    the loader, it must be rewritten (and will then fail loudly if
-    the wiring regresses)."""
+def test_a_subagent_prompt_opens_with_the_principles():
+    """Was a documented bypass: subagent prompts are built from the preset
+    body alone, not through PromptLoader. run_subagent now puts the same
+    principles file, verbatim, in front of every preset."""
+    import inspect
     from delfin.agent import subagents
-    presets = subagents._BUILTIN_PRESETS
-    for name, preset in presets.items():
-        assert _MARKER not in preset.system_prompt, (
-            f"preset {name} unexpectedly carries the principles — "
-            "rewrite this documented bypass test")
+    text = subagents._principles_text()
+    assert _MARKER in text
+    src = inspect.getsource(subagents.run_subagent)
+    assert "_principles_text()\n        + preset.system_prompt" in src
 
 
 def test_the_internal_summariser_prompt_has_no_principles():

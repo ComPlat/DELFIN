@@ -4686,6 +4686,13 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
 # require explicit user confirmation — even in 'acceptEdits' or
 # 'bypassPermissions' modes. The agent must not silently rewrite its own
 # safety layer or the dashboard wiring that hosts the confirmation UI.
+#: Second, independent copy of the principles digest (the first is
+#: principles_guard.EXPECTED_DIGEST). The startup guard requires the file
+#: to match both; this file is protected, so an agent cannot move it.
+PRINCIPLES_DIGEST = (
+    "d1d488ddbc0317ce31ffe3c67425e4641f87b0181782b4b8939b574e11d8f25f"
+)
+
 _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/api_client.py",
     "delfin/agent/kit_confirm.py",

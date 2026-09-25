@@ -11,9 +11,9 @@ so the wiring cannot be forgotten or built differently:
 - raises SystemExit with the guard's reason when the check fails,
 - returns quietly when the shipped file is intact.
 
-Until the wiring lands, both tests XFAIL; strict mode turns the first
-green run into a failure that forces removing the markers in the same
-commit.
+Written as an xfail(strict) contract before the wiring; the markers went
+with the commit that wired it (cli.guard_principles_or_exit, and
+AgentEngine.__init__ for every other entry point).
 """
 
 from __future__ import annotations
@@ -37,7 +37,6 @@ def _guard():
     return guard
 
 
-@pytest.mark.xfail(strict=True, reason="startup guard not wired yet")
 def test_a_tampered_principles_file_stops_the_agent(monkeypatch):
     monkeypatch.setattr(principles_guard, "EXPECTED_DIGEST", "0" * 64)
     with pytest.raises(SystemExit) as excinfo:
@@ -46,6 +45,5 @@ def test_a_tampered_principles_file_stops_the_agent(monkeypatch):
     assert "digest mismatch" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="startup guard not wired yet")
 def test_an_intact_principles_file_starts_quietly():
     _guard()()  # must not raise on the shipped, intact pack
