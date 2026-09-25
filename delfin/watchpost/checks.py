@@ -61,11 +61,36 @@ SUSPICIOUS_PORTS = (4444, 1337, 6667)
 # still seen). `bash -i` alone is deliberately NOT a marker: without
 # the socket redirection it is any interactive shell; the redirect
 # carries /dev/tcp/ and trips dev-tcp.
-PROCESS_PATTERNS = (
-    ("dev-tcp", re.compile(r"/dev/tcp/")),
-    ("nc-exec", re.compile(r"\b(nc|ncat)\b[^\n]*\s(-e|--exec)\b")),
-    ("socat-exec", re.compile(r"\bsocat\b[^\n]*\b[eE][xX][eE][cC]:")),
-)
+# Reverse-shell shapes, judged on the PROGRAM and its own arguments. A
+# text search over the whole command line flagged any process that merely
+# carried these words -- the first live run alarmed on a DELFIN agent
+# whose task text described them (night run 2026-09-25).
+_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash"})
+_NETCATS = frozenset({"nc", "ncat", "netcat"})
+# A shell that dials out names host AND port: /dev/tcp/<host>/<port>. The
+# bare words are text -- a shell whose script merely mentions them (a
+# commit message, a grep) is no connection.
+_DEV_NET_TARGET = re.compile(r"/dev/(?:tcp|udp)/[A-Za-z0-9_.:-]+/\d+")
+
+
+def _reverse_shell_shapes(argv: list[str]) -> list[str]:
+    """Labels of the reverse-shell shapes this argv has, from its program."""
+    if not argv or not argv[0]:
+        return []
+    prog = os.path.basename(argv[0])
+    args = argv[1:]
+    found = []
+    if prog in _SHELLS and any(_DEV_NET_TARGET.search(a) for a in args):
+        found.append("dev-tcp")
+    if prog in _NETCATS and any(a in ("-e", "--exec", "-c", "--sh-exec")
+                                or (a.startswith("-e") and len(a) > 2)
+                                for a in args):
+        found.append("nc-exec")
+    if prog == "socat" and any(a.lower().startswith(("exec:", "system:"))
+                               or ",exec:" in a.lower() for a in args):
+        found.append("socat-exec")
+    return found
+
 
 # Mining markers: `xmrig` and `--donate-level` as whole argv entries
 # (so a file named report_xmrig.txt does not trip them); stratum+tcp
@@ -124,7 +149,7 @@ def _proc_scan_uid() -> int:
     return os.getuid()
 
 
-def check_processes(proc_root: Path) -> list[Finding]:
+def check_processes(proc_root: "Path | str") -> list[Finding]:
     """The own running processes, read-only over a /proc root.
 
     Only /proc/<pid> of the scanning user's own UID is looked at:
@@ -132,6 +157,7 @@ def check_processes(proc_root: Path) -> list[Finding]:
     users, kernel threads (empty cmdline) and unreadable entries are
     skipped silently. Never signals or touches a process.
     """
+    proc_root = Path(proc_root)
     uid = _proc_scan_uid()
     out: list[Finding] = []
     try:
@@ -150,16 +176,13 @@ def check_processes(proc_root: Path) -> list[Finding]:
         if not cmdline:
             # kernel threads and unreadable entries: skip silently
             continue
-        argv = cmdline.split("\0")
-        joined = " ".join(argv)
-        for label, pattern in PROCESS_PATTERNS:
-            if pattern.search(joined):
-                out.append(Finding(
-                    "processes", "alert", f"/proc/{entry.name}", None,
-                    f"{label} in command line",
-                    "this is reverse-shell behavior; a shell that "
-                    "dials out is not something you started on "
-                    "purpose"))
+        argv = [a for a in cmdline.split("\0") if a != ""]
+        for label in _reverse_shell_shapes(argv):
+            out.append(Finding(
+                "processes", "alert", f"/proc/{entry.name}", None,
+                f"{label} in command line",
+                "this is reverse-shell behavior; a shell that "
+                "dials out is not something you started on purpose"))
         exe = _readlink(proc_root / entry.name / "exe")
         if exe is not None:
             base = exe[:-len(" (deleted)")] if exe.endswith(" (deleted)") \
