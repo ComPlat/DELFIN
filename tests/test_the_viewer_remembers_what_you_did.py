@@ -47,6 +47,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import child_env
+
 from delfin.dashboard import climb as _c
 from delfin.dashboard import editor_journal as ej
 
@@ -1349,6 +1351,6 @@ def test_the_sentence_the_user_is_shown_leads_somewhere():
     done = subprocess.run(
         [sys.executable, '-m', 'delfin.dashboard.editor_journal', '--help'],
         capture_output=True, text=True, timeout=300,
-        env={**os.environ, 'PYTHONPATH': str(root)})
+        env={**child_env(root), 'PYTHONPATH': str(root)})
     assert done.returncode == 0, done.stderr
     assert 'replay' in done.stdout.lower(), done.stdout

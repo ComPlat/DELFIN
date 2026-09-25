@@ -15,6 +15,8 @@ import time
 
 import pytest
 
+from conftest import child_env
+
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"),
                                 reason="PR_SET_DUMPABLE is Linux")
 
@@ -56,9 +58,19 @@ def _scripts(tmp_path):
 
 
 def _env(tmp_path):
-    env = dict(os.environ)
-    env.pop("DELFIN_PROCESS_GUARD", None)
+    # child_env: the agent child is a DELFIN process; a private HOME
+    # keeps its ~/.delfin sinks out of the real home (measured
+    # 2026-09-22) and still leaves the probe the environment to read.
+    # HOME is tmp_path itself (child_env's child_home moved it one
+    # deeper): process_guard registers under HOME, and the emergency
+    # stop test reads tmp_path/.delfin/agent_processes. tmp_path is a
+    # pytest directory either way -- outside the real home.
+    # DELFIN_PROCESS_GUARD is popped as before: the suite autouse
+    # fixture sets it to "off" for pytest, and the child here must
+    # protect itself for the assertions to mean anything.
+    env = child_env(tmp_path)
     env["HOME"] = str(tmp_path)
+    env.pop("DELFIN_PROCESS_GUARD", None)
     env["DELFIN_TEST_SECRET"] = "in-the-environment"
     return env
 

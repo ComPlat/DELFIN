@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import child_env
+
 from delfin import slurm_submit
 
 
@@ -72,13 +74,14 @@ def test_a_script_that_names_its_partition_keeps_it(fake_sbatch, tmp_path):
     assert not [c for c in fake_sbatch["calls"] if "--test-only" in c]
 
 
-def test_the_module_does_not_import_the_dashboard():
+def test_the_module_does_not_import_the_dashboard(tmp_path):
     """Four seconds and ipywidgets, for a command-line submit."""
     import subprocess as real_subprocess
 
     code = ("import sys, delfin.slurm_submit; "
             "print('delfin.dashboard' in sys.modules, 'ipywidgets' in sys.modules)")
-    done = real_subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    done = real_subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60,
+                               env=child_env(tmp_path))
     assert done.stdout.strip() == "False False", done.stderr
 
 

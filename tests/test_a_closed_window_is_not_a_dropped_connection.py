@@ -26,6 +26,8 @@ import logging
 
 import pytest
 
+from conftest import child_env
+
 from delfin.dashboard import resume_server as R
 from delfin.dashboard import session as S
 from delfin.dashboard import turn_record as T
@@ -420,7 +422,7 @@ def test_the_real_server_requires_token_and_xsrf_for_a_close_notice(tmp_path):
         directory.chmod(0o700)
     log = tmp_path / "server.log"
     repo = Path(__file__).resolve().parents[1]
-    env = dict(os.environ)
+    env = child_env(tmp_path)
     env.update({
         "PYTHONPATH": str(repo),
         "XDG_RUNTIME_DIR": str(runtime),
