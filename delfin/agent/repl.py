@@ -2017,7 +2017,16 @@ class TerminalAgent:
                 while continuation:
                     self._show_user_input(continuation, queued=True)
                     self._checkpoint_session()
-                    self.turn(continuation)
+                    # A continued turn is a turn: the third Ctrl+C
+                    # raises KeyboardInterrupt out of turn() here the
+                    # same way it does in the first one above, and the
+                    # same hatch applies -- leave with 130 instead of
+                    # raising out of run() past every handler.
+                    try:
+                        self.turn(continuation)
+                    except KeyboardInterrupt:
+                        self.transcript.chrome("")
+                        return 130
                     self._checkpoint_session()
                     continuation = self._continue_after_length(continuation)
                 pending = ""
