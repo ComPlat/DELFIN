@@ -1602,20 +1602,23 @@ def _is_interpreter_invocation(cmd: str) -> bool:
     """
     try:
         text = cmd or ""
-        if _INTERPRETER_RE.search(text):
+        # Read as the shell reads it: a `|xargs` or `|python` inside a
+        # quoted grep pattern is a character, not a pipe (asked on
+        # 2026-09-25 for `grep -n "awk\|xargs" f`).
+        if _INTERPRETER_RE.search(_shell_visible(text)):
             return True
         # ...and again with the wrapper words peeled off each segment, so
         # `time python3 -c "…"` is the interpreter it is rather than an
         # auto-allowed `time`.
         for seg in _split_shell_segments(text):
             stripped = _strip_exec_wrappers(seg)
-            if stripped != seg and _INTERPRETER_RE.search(stripped):
+            if stripped != seg and _INTERPRETER_RE.search(
+                    _shell_visible(stripped)):
                 return True
         # A pipe into a shell or an interpreter: `... | bash`, `... | python3`.
-        # A `|` inside quotes is a character (`grep "a\|python"`).
         return bool(re.search(
             r"\|\s*(?:ba|z|k|da)?sh\b|\|\s*python[0-9.]*\b",
-            _blank_quoted(text)))
+            _shell_visible(text)))
     except Exception:
         return True
 
@@ -4823,6 +4826,21 @@ def _blank_quoted(cmd: str, quotes: str = "'\"") -> str:
             out[i] = " "
         i += 1
     return "".join(out)
+
+
+def _shell_visible(cmd: str) -> str:
+    """``cmd`` with quoted text blanked, for raw-text syntax checks.
+
+    Single-quoted text is always literal. Double-quoted text is blanked
+    only when nothing outside single quotes substitutes: between double
+    quotes `$( … )`, backticks and `<( … )` DO run, and a pipe inside one
+    (`"$(cat x | python3)"`) is a real pipe. In that case only the single
+    quotes are blanked -- the conservative reading.
+    """
+    single = _blank_quoted(cmd, "'")
+    if _RUNS_SOMETHING_RE.search(single) or re.search(r"[<>]\(", single):
+        return single
+    return _blank_quoted(cmd)
 
 
 _HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])(\w+)\2|(\w+))")

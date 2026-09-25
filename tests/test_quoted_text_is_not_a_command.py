@@ -91,3 +91,22 @@ def test_a_grep_for_the_markup_is_an_ordinary_grep(tmp_path):
         "bash", {"command": "grep -n '<arg_key>' notes.txt"},
         KitToolPermissions(workspace=tmp_path, mode="acceptEdits"))
     assert out is None
+
+
+@pytest.mark.parametrize("command", [
+    'grep -n "awk\\|xargs" README.md',
+    'grep -n "sed -i\\|awk\\|xargs\\|2>/dev/null" README.md | head -20',
+])
+def test_an_alternation_that_names_a_command_is_just_a_pattern(tmp_path, command):
+    # Measured 2026-09-25 (night run, K): `\|xargs` in a pattern read as a
+    # pipe into xargs.
+    assert not _asks(tmp_path, command)
+
+
+@pytest.mark.parametrize("command", [
+    'echo "$(cat README.md | python3)"',
+    'grep x "$(ls | xargs echo)"',
+    'cat README.md | xargs rm',
+])
+def test_a_pipe_inside_a_substitution_is_still_a_pipe(tmp_path, command):
+    assert _asks(tmp_path, command)
