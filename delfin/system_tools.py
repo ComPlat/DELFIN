@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import signal
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
@@ -37,16 +38,36 @@ def _run_login_shell(command: str, *, timeout: int = 15) -> subprocess.Completed
     env = dict(os.environ)
     env["_DELFIN_LOGIN_SHELL_PROBE"] = "1"
     try:
-        return subprocess.run(
+        # Own process group: on a timeout the whole group is killed, not
+        # only bash -- whatever the module init started must not outlive
+        # the probe as an orphan on the login node.
+        proc = subprocess.Popen(
             ["bash", "-lc", command],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            check=False,
             env=env,
+            start_new_session=True,
         )
     except Exception:
         return None
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except Exception:  # TimeoutExpired included
+        _kill_group(proc)
+        return None
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        proc.communicate(timeout=5)
+    except Exception:
+        pass
 
 
 def _normalize_module_line(line: str) -> str:
