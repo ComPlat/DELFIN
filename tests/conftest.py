@@ -134,7 +134,12 @@ def _unexpected_under_a_generated_root() -> frozenset:
 # full ~2 s. Stopping at the first clean rescan keeps the common case
 # (a real, lasting finding) at the full cost and the transient case at
 # the gap that outlived the neighbour.
-_CONFIRM_GAPS_S = (0.05, 0.2, 0.5, 1.25)
+#
+# Up to ~15 s: the first parallel run with the ~2 s window (SLURM 7199892,
+# 16 workers per tree on Lustre) still booked a neighbour's restore as a
+# leak in 20 files -- rmtree+copytree under that load outlives 2 s. A
+# real leak pays the full wait once, at the end of the test that made it.
+_CONFIRM_GAPS_S = (0.05, 0.2, 0.5, 1.25, 3.0, 5.0, 5.0)
 
 
 def _confirmed_under_a_generated_root() -> frozenset:
