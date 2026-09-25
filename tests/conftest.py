@@ -360,6 +360,19 @@ def _the_suite_does_not_write_into_the_checkout():
     is a new path, so nothing escapes there. Comparing contents instead
     would mean hashing the tree twice per run, and would false-fail on
     every file the package legitimately rewrites.
+
+    That limit is no longer hypothetical, and the instance says how to
+    read it. ``censo.log`` had sat in one developer's checkout since June,
+    matched ``.gitignore``'s ``*.log``, and was therefore invisible to
+    both this guard and ``git status`` on that machine -- for months,
+    while the same run reported it on a checkout that did not have it yet.
+    Two people looking at one leak saw different things, and the one who
+    had lived with it longest saw nothing.
+
+    So: a checkout that has run the suite before is a WEAKER instrument
+    than a fresh one. When this guard is silent and something still looks
+    wrong, clean the tree (``git clean -xdn`` first, to read before
+    deleting) rather than trusting the silence.
     """
     before = _checkout_entries()
     before_generated = _unexpected_under_a_generated_root()
