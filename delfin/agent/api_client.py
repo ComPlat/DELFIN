@@ -10082,7 +10082,44 @@ def _tool_context_char_budget(caps) -> int:
         ctx = 0
     if ctx <= 0:
         return floor
+    # The window the engine plans with, not the model's raw one: a
+    # capped session (agent.context_window_cap) budgeted its in-turn
+    # elision against the full 131k and ran into context_length_exceeded
+    # before any elision fired (LI, 2026-09-26).
+    try:
+        from .context_window import capped_window
+        ctx = capped_window(ctx)
+    except Exception:
+        pass
     return max(floor, int(ctx * 0.45 * 4))
+
+
+def _compact_between_rounds(api_messages: list, budget_chars: int,
+                            turn_rows_base: int, session_id: str) -> str:
+    """Compact older rounds of the running turn in place when the tool
+    output is still over budget after the elision; returns a one-line
+    notice when it did, "" otherwise. Never raises: a failed compaction
+    leaves the turn exactly as it was."""
+    try:
+        from . import in_turn_compaction as _itc
+        new, record = _itc.compact(
+            api_messages, budget_chars, turn_rows_base=turn_rows_base)
+    except Exception:
+        return ""
+    if not record:
+        return ""
+    api_messages[:] = new
+    try:
+        from .compaction_log import record_compaction
+        record_compaction(
+            session_id, kind="in_turn",
+            messages_compacted=int(record.get("rounds_compacted", 0) or 0),
+            note=str(record.get("note", "") or ""))
+    except Exception:
+        pass
+    n = int(record.get("rounds_compacted", 0) or 0)
+    return (f"\n🗜️ Context compacted within the turn: {n} older round(s) "
+            "summarised; the working state and your goals are kept.\n")
 
 
 def _elide_old_tool_results(
@@ -20978,6 +21015,20 @@ class OpenAIClient(_BaseClient):
             _elide_old_tool_results(
                 api_messages, char_budget=_tool_budget,
                 protect_before=int(getattr(self, "_turn_rows_base", 0) or 0))
+            # Compaction BETWEEN rounds. The engine compacts only at the
+            # start of a user turn, and an autonomous session is one turn
+            # of hundreds of rounds: it never compacted (2026-09-26, four
+            # long sessions, zero). When the elision alone cannot bring the
+            # turn under budget, older rounds are replaced by a
+            # deterministic summary (in_turn_compaction: no model call,
+            # tool_call/result pairs never torn, the user's goals and the
+            # turn prefix kept verbatim).
+            _in_turn_note = _compact_between_rounds(
+                api_messages, _tool_budget,
+                int(getattr(self, "_turn_rows_base", 0) or 0),
+                str(getattr(self, "session_id", "") or ""))
+            if _in_turn_note:
+                yield StreamEvent(type="notice", text=_in_turn_note)
             # Output backstop: stop cleanly if this turn's total generated
             # tokens crossed the (very high) per-turn ceiling. Text emitted so
             # far was already streamed to the caller, so nothing is lost.
