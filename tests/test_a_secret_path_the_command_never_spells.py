@@ -112,8 +112,6 @@ def linked(perms):
          .replace("$", "D").replace("*", "star").replace("|", "pipe")
          .replace(":", "-").replace("<", "lt").replace(";", "-")
          for _, c in FINDINGS])
-@pytest.mark.xfail(strict=True,
-                  reason="gate fix pending — red-team finding, see module docstring")
 def test_a_secret_reached_without_being_named(reason, cmd, linked):
     assert gate(linked, cmd) is not None, (reason, cmd)
 
