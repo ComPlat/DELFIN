@@ -73,18 +73,14 @@ def test_new_file_append_is_allowed_and_is_just_the_tail():
 # wired by the operator).
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="write_file does not accept mode=append yet; wiring lives in "
-           "api_client.py (operator's area). See .gate/SCHEMA-APPEND.md",
-)
 def test_write_file_append_goes_through_the_write_path(ws):
     ex = _DocToolExecutor()
     perms = _perms(ws)
     # The read baseline an append needs: same rule as an overwrite.
-    ex._execute_read_file({"path": "log.txt"}, perms)
-    out = ex._execute_write_file(
-        {"path": "log.txt", "content": "gamma\n", "mode": "append"}, perms)
+    ex.execute("read_file", {"path": "log.txt"}, perms)
+    out = ex.execute(
+        "write_file", {"path": "log.txt", "content": "gamma\n",
+                       "mode": "append"}, perms)
     assert "overwritten" not in out
     assert (ws / "log.txt").read_text(encoding="utf-8") \
         == "alpha\nbeta\ngamma\n"
@@ -100,3 +96,24 @@ def test_write_file_append_goes_through_the_write_path(ws):
     assert last["created"] is False
     assert last["pre_hash"] == cj.sha256_text("alpha\nbeta")
     assert last["post_hash"] == cj.sha256_text("alpha\nbeta\ngamma\n")
+
+
+def test_the_approval_preview_shows_the_file_after_the_append(ws):
+    """The dialog shows what the file becomes -- two kept lines and one
+    added -- not the tail as if it replaced the whole file."""
+    path = ws / "log.txt"
+    out = _DocToolExecutor()._build_change_preview(
+        "write_file", {"path": str(path), "content": "gamma\n",
+                       "mode": "append"}, path)
+    assert "+gamma" in out
+    assert "-alpha" not in out and "-beta" not in out
+
+
+def test_an_unknown_mode_is_refused(ws):
+    ex = _DocToolExecutor()
+    perms = _perms(ws)
+    ex.execute("read_file", {"path": "log.txt"}, perms)
+    out = ex.execute(
+        "write_file", {"path": "log.txt", "content": "x\n",
+                       "mode": "prepend"}, perms)
+    assert "unknown mode" in out
