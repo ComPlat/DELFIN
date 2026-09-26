@@ -21,6 +21,19 @@ additional dicts.  The suite does not encode exact isomer counts in
 every case — the regression contract is directional (count never
 shrinks, required labels always present) so the completeness work
 can keep improving without tripping the tests.
+
+The two most expensive entries do not live here any more (2026-09-26):
+a single Ir(ppy)2(acac) build measures 184.9 s on the reference node
+and a Fe/Sc cyclam build 702.1 s, and with the suite's 300 s per-test
+deadline and the per-file budget their tests were 10/10 red as pure
+timeouts.  They moved to their own files, one per build cost class:
+
+* ``test_user_smiles_ir_ppy_acac.py`` — the Ir entry, all four tests;
+* ``test_user_smiles_fesc_cyclam.py`` — the Fe/Sc entry, build-sharing
+  tests (floor + topology, with the tracked pucker xfail);
+* ``test_user_smiles_fesc_cyclam_determinism.py`` — ONLY the Fe/Sc
+  determinism test: two real builds, ~1404 s, alone in its file so it
+  fits the 1700 s per-file budget.
 """
 from __future__ import annotations
 
@@ -55,17 +68,6 @@ USER_SMILES = [
         ),
         min_isomers=5,
         required_label_fragments=[],
-        forbidden_label_fragments=[],
-    ),
-    dict(
-        name="Ir(ppy)2(acac) CN=6",
-        smiles=(
-            "CC1=CC(C)=[O+][Ir-3]2([N+]3=C4C=CC=C3)"
-            "(C5=CC=CC=C54)(O1)"
-            "[N+]6=CC=CC=C6C7=C2C=CC=C7"
-        ),
-        min_isomers=3,
-        required_label_fragments=["C-trans", "N-trans", "all-cis"],
         forbidden_label_fragments=[],
     ),
     dict(
@@ -127,20 +129,6 @@ USER_SMILES = [
         forbidden_label_fragments=[],
     ),
     dict(
-        name="Fe/Sc(OTf)4(OH)(mu-O) cyclam bimetal",
-        smiles=(
-            "O=S(O[Sc](OS(=O)(C(F)(F)F)=O)(OS(=O)(C(F)(F)F)=O)"
-            "(OS(=O)(C(F)(F)F)=O)(O)"
-            "O[Fe-3]123[N@@+]4(C)CCC[N@@+]1(CC[N@@+]2(CCC[N@+]3(C)CC4)C)C)"
-            "(C(F)(F)F)=O"
-        ),
-        # The user reports an earlier version produced more options.
-        # Keep an honest floor while completeness work is ongoing.
-        min_isomers=1,
-        required_label_fragments=[],
-        forbidden_label_fragments=[],
-    ),
-    dict(
         name="Cd MA2B2C2 octahedral (five OH isomers)",
         smiles=(
             "C[OH+][Cd-4]([Cl])([Cl])([OH+]C)"
@@ -172,10 +160,12 @@ def _run(smi: str):
 #
 # Four tests below ask four different questions of the same structures, and
 # each of them used to build those structures again from scratch. For the
-# Fe/Sc entry that is four times twelve minutes to answer four questions
+# Fe/Sc entry that used to be four times twelve minutes for four questions
 # about one answer. Determinism is the one property that genuinely needs a
 # second build, and it still takes one — so an entry now costs two builds
-# instead of five, and the nightly run shrinks with the gate.
+# instead of five, and the nightly run shrinks with the gate.  (The Fe/Sc
+# entry itself now lives in its own files; this cache serves the ten that
+# remain here.)
 _BUILD_CACHE: dict = {}
 
 
@@ -192,8 +182,8 @@ def _built(smi: str):
 # a single entry costs more than eleven minutes while three others cost about
 # a second each.
 #
-#   702.1  Fe/Sc(OTf)4(OH)(mu-O) cyclam bimetal
-#   184.9  Ir(ppy)2(acac) CN=6
+#   702.1  Fe/Sc(OTf)4(OH)(mu-O) cyclam bimetal   -> own file (see above)
+#   184.9  Ir(ppy)2(acac) CN=6                    -> own file (see above)
 #   157.9  Cd-histidine CN=7
 #    89.2  Cd MA2B2C2 octahedral (five OH isomers)
 #    44.2  Cd MA2B2C2 (triazolothiadiazine N4O2Cl2)
@@ -214,7 +204,6 @@ def _built(smi: str):
 _BUILD_SECONDS = {
     "Cd-histidine CN=7": 157.9,
     "Cd MA2B2C2 (triazolothiadiazine N4O2Cl2)": 44.2,
-    "Ir(ppy)2(acac) CN=6": 184.9,
     "Fe(CO)3(NHC)2 CN=5 — neutral C": 1.2,
     "Fe(CO)3(NHC)2 CN=5 — [C+]/[Fe-3] variant": 1.2,
     "Fe(CO)3(NHC)2 CN=5 — [C+]/[Fe-5] variant": 1.3,
@@ -222,7 +211,6 @@ _BUILD_SECONDS = {
     "Fe2 (mu-Cl)2 bimetallic": 31.0,
     "Fe(H2O)7 CN=7 homoleptic": 4.3,
     "Zr(H2O)8 CN=8 homoleptic": 7.6,
-    "Fe/Sc(OTf)4(OH)(mu-O) cyclam bimetal": 702.1,
     "Cd MA2B2C2 octahedral (five OH isomers)": 89.2,
 }
 
@@ -355,13 +343,6 @@ def test_topology_invariants_for_every_output(entry):
     res = _built(smi)
     for xyz, lbl in res:
         ok = _verify_topology_from_graph(xyz, mol)
-        if (not ok and entry["name"] == "Fe/Sc(OTf)4(OH)(mu-O) cyclam bimetal"
-                and "pucker" in str(lbl)):
-            # Known construction defect (2026-09-06, private register #353): the RING_PUCKER
-            # sibling of the 14-membered cyclam macrocycle breaks a bond that the graph
-            # gate catches.  Expected failure until the pucker path is fixed at the root;
-            # the check runs first, so a fixed build passes this test again on its own.
-            pytest.xfail(f"{entry['name']!r}: pucker sibling {lbl!r} fails the graph gate (tracked)")
         assert ok, (
             f"{entry['name']!r}: output isomer {lbl!r} fails graph gate"
         )
