@@ -3571,6 +3571,35 @@ _FAILURE_MARK_RE = re.compile(
 _OUTPUT_FILTER_PIPE_RE = re.compile(r"\|\s*(?:tail|head|grep|tee)\b")
 
 
+_SHADOWED_BY_WORKSPACE: dict = {}
+
+
+def _import_origin_note(arguments: Any, workspace: Any) -> str:
+    """A note when a bash command runs a Python script from a subdirectory
+    of the workspace and ``import`` would resolve to an installed copy of
+    the workspace's own package; "" otherwise. See import_origin.
+
+    The shadow probe (a short interpreter start) runs once per workspace
+    per process, and only for commands that run a script at all.
+    """
+    from . import import_origin
+    cmd = str(arguments.get("command") or "") if isinstance(arguments, dict) else ""
+    if not cmd or not workspace or "PYTHONPATH" in cmd:
+        return ""
+    if not import_origin._script_path(cmd):
+        return ""
+    ws = str(workspace)
+    cwd = str(arguments.get("cwd") or "") if isinstance(arguments, dict) else ""
+    if not cwd:
+        cwd = ws
+    elif not os.path.isabs(cwd):
+        cwd = os.path.join(ws, cwd)
+    if ws not in _SHADOWED_BY_WORKSPACE:
+        _SHADOWED_BY_WORKSPACE[ws] = import_origin.shadowed_packages(ws)
+    return import_origin.note_for_command(
+        cmd, cwd, ws, _shadow=_SHADOWED_BY_WORKSPACE[ws])
+
+
 def _pipe_exit_note(arguments: Any, raw_result: Any) -> str:
     """A note for a filtered pipe whose exit code hides a failure; "" if none.
 
@@ -21559,6 +21588,14 @@ class OpenAIClient(_BaseClient):
                             _pipe_note = _pipe_exit_note(fn_args, _raw_result)
                             if _pipe_note:
                                 self.push_run_note(_pipe_note)
+                        except Exception:
+                            pass
+                        try:
+                            _import_note = _import_origin_note(
+                                fn_args,
+                                getattr(self._permissions, "workspace", None))
+                            if _import_note:
+                                self.push_run_note(_import_note)
                         except Exception:
                             pass
                         try:
