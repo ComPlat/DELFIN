@@ -48,6 +48,7 @@ import re
 from pathlib import Path
 
 from .german import GERMAN_READ_VERB_SOURCE, GERMAN_WRITE_VERB_SOURCE
+from . import evidence_freshness as evidence
 
 __all__ = ["check_completion_claim"]
 
@@ -264,6 +265,7 @@ def check_completion_claim(
     observed=None,
     tests=None,
     window_start: float = 0.0,
+    current_fingerprint: dict | None = None,
 ) -> dict:
     """What the session can show for a task about to be marked completed.
 
@@ -347,7 +349,12 @@ def check_completion_claim(
                 return _verdict("artifact", "verified",
                                 _format_word(subject_text))
 
-        # 3. A test / verification task needs a green run in the window.
+        # 3. A test / verification task needs a green run in the window --
+        #    and that run must still describe the CURRENT tree state
+        #    (night run 2026-09-26, assignment Y: a green count was quoted
+        #    after the code beneath it had changed; the "2 passed" belonged
+        #    to an older tree). When a *current_fingerprint* is supplied,
+        #    a green run whose state fingerprint is stale does not verify.
         if _TEST_TASK_RE.search(subject_text):
             if tests is None:
                 return _verdict("tests", "unchecked", "no test ledger")
@@ -356,15 +363,39 @@ def check_completion_claim(
                 e for e in entries
                 if float(e.get("ts", 0) or 0) >= float(window_start or 0)
             ]
-            green = [
-                e for e in in_window
-                if int(e.get("failed", 0) or 0) == 0
-                and str(e.get("status", "")) not in ("failed", "error",
-                                                     "gave_up")
-            ]
-            if green:
+            if current_fingerprint is not None:
+                # Entries from ledgers that predate stamping carry no
+                # fingerprint; is_stale reports them stale, the safe
+                # direction for an unknown state.
+                fresh_green = [
+                    e for e in in_window
+                    if int(e.get("failed", 0) or 0) == 0
+                    and str(e.get("status", "")) not in ("failed", "error",
+                                                         "gave_up")
+                    and not evidence.is_stale(e, current_fingerprint)]
+            else:
+                fresh_green = [
+                    e for e in in_window
+                    if int(e.get("failed", 0) or 0) == 0
+                    and str(e.get("status", "")) not in ("failed", "error",
+                                                         "gave_up")]
+            if fresh_green:
                 return _verdict("tests", "verified",
-                                f"{len(green)} green run(s)")
+                                f"{len(fresh_green)} green run(s)")
+            if current_fingerprint is not None and in_window:
+                # Green runs exist but every in-window run is stale for
+                # the current state: the numbers belong to an older
+                # tree -- name that, do not report it as "N failing".
+                stale_in_window = [
+                    e for e in in_window
+                    if evidence.is_stale(e, current_fingerprint)]
+                if stale_in_window and len(stale_in_window) == len(in_window):
+                    why = evidence.note(evidence.is_stale(
+                        stale_in_window[-1], current_fingerprint))
+                    return _verdict(
+                        "tests_stale_state", "unmet", "state moved on",
+                        f"is a test task and every recorded run predates the "
+                        f"current tree state -- {why}")
             if in_window:
                 worst = max(int(e.get("failed", 0) or 0) for e in in_window)
                 return _verdict(
