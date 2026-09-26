@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from pathlib import Path, PurePosixPath
 
 # The cage-side mount point this module maps.
@@ -120,6 +121,82 @@ def location_candidates(uid: int | None = None) -> list[Path]:
 def resolve_location(uid: int | None = None) -> Path:
     """The first usable location from :func:`location_candidates`."""
     return location_candidates(uid=uid)[0]
+
+
+class PrePlacedError(RuntimeError):
+    """The session temp directory (or a path component of it) already
+    exists but is not OURS: wrong owner, wrong permissions, a symlink,
+    or a regular file. Raised by :func:`ensure_session_dir` -- the
+    pre-placed object is never adopted, and the caller must not fall
+    back to "just use it anyway"."""
+
+
+def _lstat_mode(p: Path) -> int | None:
+    """The lstat mode of ``p`` (does not follow symlinks), or None."""
+    try:
+        return os.lstat(p).st_mode
+    except OSError:
+        return None
+
+
+def ensure_session_dir(session_dir_path: Path) -> Path:
+    """Create -- or safely adopt -- one session's shared temp directory.
+
+    The pre-placement attack this refuses: another user creates the
+    directory (or a symlink at, or anywhere on the way to, that path)
+    before we do, and thereby reads what the cage writes or points it
+    outside. session_dir() always has the shape ``<base>/tmp/<safe>``,
+    so the rules split at OUR namespace boundary:
+
+    - EVERY component of the path is lstat'd and must be a plain
+      directory -- a symlink or a file anywhere in the path is refused,
+      never followed (the O_NOFOLLOW equivalent).
+    - The last two components -- the ``tmp`` collection directory and
+      the session directory itself, the parts DELFIN owns -- must, if
+      they already exist, be owned by the current user with mode
+      exactly 0700; anything looser is a pre-placed directory and is
+      refused, untouched. If missing they are created with
+      os.mkdir(..., 0o700) plus an explicit chmod (mkdir masks with the
+      umask, so the chmod pins the exact mode).
+    - Components above that boundary are provided by the environment
+      (``/run/user/<uid>``, a private cage ``/tmp``) and may legitimately
+      be 0755 or root-owned; only the no-symlink rule applies to them --
+      we cannot refuse a system directory, but we can refuse to walk
+      through anything that is not a real directory.
+
+    Idempotent: a directory this function created (or one already
+    meeting all the rules) passes unchanged on the second call.
+    """
+    p = Path(session_dir_path)
+    parts = p.parts
+    if not p.is_absolute():
+        raise PrePlacedError(
+            f"session temp dir must be absolute, got {p!s}")
+    strict_count = 2  # the 'tmp' collection dir + the session dir itself
+    cur = Path(parts[0])
+    for idx, part in enumerate(parts[1:], start=1):
+        cur = cur / part
+        mode = _lstat_mode(cur)
+        if mode is None:
+            os.mkdir(cur, 0o700)
+            os.chmod(cur, 0o700)  # umask-proof: pin the exact mode
+            continue
+        if not stat.S_ISDIR(mode):
+            raise PrePlacedError(
+                f"{cur!s} exists but is not a plain directory (symlink "
+                f"or file): refusing to use or create beneath it")
+        if idx > len(parts) - 1 - strict_count:
+            # our namespace: 'tmp' collection dir and session dir
+            st = os.lstat(cur)
+            if st.st_uid != os.getuid():
+                raise PrePlacedError(
+                    f"{cur!s} is owned by uid {st.st_uid}, not "
+                    f"{os.getuid()}: refusing to use a foreign directory")
+            if stat.S_IMODE(mode) != 0o700:
+                raise PrePlacedError(
+                    f"{cur!s} has mode {oct(stat.S_IMODE(mode))}, not "
+                    f"0700: refusing to adopt a pre-placed directory")
+    return p
 
 
 def session_dir(session_id: str, base: Path | None = None) -> Path:
