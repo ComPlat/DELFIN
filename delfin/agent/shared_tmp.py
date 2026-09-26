@@ -266,3 +266,131 @@ def bwrap_substitution(session_dir: Path) -> tuple[list[str], list[str]]:
     """
     return (["--tmpfs", CAGE_TMP],
             ["--bind", str(Path(session_dir)), CAGE_TMP])
+
+
+# Default per-session quota. The runtime tmpfs is large but shared by
+# everything the user runs; a runaway session must not claim it all.
+# 2 GiB is plenty for scratch files and bounded work.
+DEFAULT_QUOTA_BYTES = 2 * 1024 * 1024 * 1024
+
+# Sessions older than this are swept by sweep_stale even if they never
+# ended cleanly (crash, kill -9). /run/user/<uid> is wiped at logout
+# anyway; this covers the state-root fallback location and long-lived
+# login sessions. 7 days matches the runtime-dir lifetime guarantees.
+DEFAULT_MAX_AGE_S = 7 * 86400
+
+
+def _iter_files(session_dir: Path):
+    """Yield (path, stat) for every regular file INSIDE session_dir.
+
+    Symlinks are yielded as (path, None): they are neither measured
+    nor followed -- a symlink pointing out of the session dir must not
+    make us stat (read metadata of) or delete its target. Directories
+    are walked with os.walk(followlinks=False) and only regular files
+    count.
+    """
+    for root, dirs, files in os.walk(session_dir, followlinks=False):
+        # prune symlinked subdirectories so walk never descends out
+        dirs[:] = [d for d in dirs
+                   if not (Path(root) / d).is_symlink()]
+        for name in files:
+            p = Path(root) / name
+            try:
+                st = p.lstat()
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                yield p, st
+            else:
+                yield p, None
+
+
+def usage_bytes(session_dir: Path) -> int:
+    """Recursive size in bytes of ONE session directory. Regular files
+    only; symlinks count 0 and are never followed (their targets may
+    lie outside the session dir -- measuring them would read foreign
+    metadata, deleting them would destroy foreign data)."""
+    total = 0
+    for _p, st in _iter_files(Path(session_dir)):
+        if st is not None:
+            total += st.st_size
+    return total
+
+
+def enforce_quota(session_dir: Path,
+                  max_bytes: int = DEFAULT_QUOTA_BYTES):
+    """Bring one session dir under ``max_bytes`` by deleting its
+    OLDEST files first; stop the moment the quota is met. Returns a
+    report (dataclass-like namespace) with ``deleted`` (list of paths,
+    oldest first) and ``usage_bytes`` after enforcement. Never follows
+    symlinks, never touches anything outside ``session_dir``."""
+    from types import SimpleNamespace
+    d = Path(session_dir)
+    entries = [(p, st) for p, st in _iter_files(d) if st is not None]
+    total = sum(st.st_size for _p, st in entries)
+    deleted: list[Path] = []
+    if total <= max_bytes:
+        return SimpleNamespace(deleted=deleted, usage_bytes=total)
+    # oldest first: a crash-kill between two writes leaves the older,
+    # already-superseded scratch file behind -- that one goes first.
+    entries.sort(key=lambda ps: (ps[1].st_mtime, str(ps[0])))
+    for p, st in entries:
+        if total <= max_bytes:
+            break
+        try:
+            p.unlink()
+        except OSError:
+            continue
+        total -= st.st_size
+        deleted.append(p)
+    return SimpleNamespace(deleted=deleted, usage_bytes=total)
+
+
+def cleanup_session(session_dir: Path) -> None:
+    """Remove ONE session's temp directory at session end. The only
+    place shared_tmp deletes a directory. Missing dir is silent
+    (idempotent); errors are swallowed -- cleanup must never mask the
+    session's real result with a cleanup failure. Symlinks are
+    unlinked, not followed: shutil.rmtree is safe here because it
+    refuses to follow symlinks, but we guard the target itself."""
+    import shutil
+    d = Path(session_dir)
+    try:
+        if d.is_symlink() or not d.is_dir():
+            return  # nothing of ours there; never delete a foreign object
+        shutil.rmtree(d)
+    except OSError:
+        pass
+
+
+def sweep_stale(base: Path, max_age_s: int = DEFAULT_MAX_AGE_S,
+                now: float | None = None) -> list[Path]:
+    """Ageing: remove SESSION directories under ``<base>/tmp`` whose
+    mtime is older than ``max_age_s``. Walks ONLY the collection dir
+    (``<base>/tmp``) one level deep -- no traversal of foreign trees.
+    Returns the removed session dirs. A session dir that is a symlink
+    is skipped (not ours), not removed."""
+    import time as _time
+    base = Path(base)
+    coll = base / "tmp"
+    now = _time.time() if now is None else now
+    removed: list[Path] = []
+    try:
+        entries = list(os.scandir(coll))
+    except OSError:
+        return removed
+    for entry in entries:
+        if entry.is_symlink():
+            continue
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        try:
+            age = now - entry.stat(follow_symlinks=False).st_mtime
+        except OSError:
+            continue
+        if age > max_age_s:
+            d = Path(entry.path)
+            cleanup_session(d)
+            if not d.exists():
+                removed.append(d)
+    return removed
