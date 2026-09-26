@@ -117,3 +117,33 @@ def test_bwrap_pair_describes_the_substitution():
     old, new = shared_tmp.bwrap_substitution(session_dir="/x/y")
     assert old == ["--tmpfs", "/tmp"]
     assert new == ["--bind", "/x/y", "/tmp"]
+
+
+# ---------------------------------------------------------------------------
+# Integration through the public call path (xfail until the handler is
+# wired by the operator).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="read_file does not map /tmp to the session temp dir yet; "
+           "wiring lives in api_client.py (operator's area). See "
+           ".gate/TMP-SICHERHEIT.md",
+)
+def test_read_file_sees_the_cage_tmp(tmp_path, monkeypatch):
+    from delfin.agent.api_client import _DocToolExecutor, KitToolPermissions
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("DELFIN_STATE", str(state))
+    perms = KitToolPermissions(workspace=str(ws))
+    perms.mode = "acceptEdits"
+    perms.task_session_id = "shared-tmp-test"
+    sd = shared_tmp.session_dir("shared-tmp-test", base=state)
+    sd.mkdir(parents=True)
+    (sd / "probe.txt").write_text("from the cage\n", encoding="utf-8")
+    ex = _DocToolExecutor()
+    out = ex._execute_read_file({"path": "/tmp/probe.txt"}, perms)
+    assert "from the cage" in out
+    assert not out.startswith('{"error"')
