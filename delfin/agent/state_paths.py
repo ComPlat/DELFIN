@@ -623,6 +623,10 @@ USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.provider_profile", "_LOCAL_STATE_PATH",
      "provider_profile_state.json"),
     ("delfin.agent.job_fix", "_ATTEMPTS_PATH", "fix_attempts.json"),
+    # One JSONL record per compaction event: kind, tokens before/after,
+    # messages replaced, working-state section counts. A test recording a
+    # compaction would leave its fixture session in the real log.
+    ("delfin.agent.compaction_log", "_LOG_DIR", "compaction_log"),
     ("delfin.agent.session_store", "_SESSIONS_DIR", "agent_sessions"),
     ("delfin.agent.outcome_tracker", "_DEFAULT_PATH", "outcome_history.jsonl"),
     ("delfin.agent.agent_metrics", "_LOG_PATH", "agent_metrics.jsonl"),

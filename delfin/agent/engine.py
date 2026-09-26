@@ -5066,6 +5066,30 @@ class AgentEngine:
             + "\n".join(lines)
         )
 
+    def _log_compaction(self, state_block: str = "",
+                        compacted_texts: list | None = None) -> None:
+        """Persist one record of the last compaction event to the
+        session's compaction log (best-effort — a broken log must never
+        break compaction). Headings and counts only, never contents."""
+        try:
+            from .compaction_log import record_compaction
+            info = self.last_compaction_info or {}
+            record_compaction(
+                str(getattr(self, "session_id", "") or ""),
+                kind=str(info.get("kind", "") or "compaction"),
+                tokens_before=info.get("tokens_before"),
+                tokens_after=info.get("tokens_after"),
+                messages_compacted=int(info.get("messages_compacted", 0) or 0),
+                messages_trimmed=int(info.get("messages_trimmed", 0) or 0),
+                pinned_kept=int(info.get("pinned_kept", 0) or 0),
+                forced=bool(info.get("forced", False)),
+                note=str(info.get("note", "") or ""),
+                state_block=state_block,
+                compacted_texts=compacted_texts,
+            )
+        except Exception:
+            pass
+
     def _compact_history(self, *, force: bool = False) -> None:
         """Summarize older messages, keeping recent ones intact.
 
@@ -5104,6 +5128,7 @@ class AgentEngine:
                         "tokens_after": self._estimate_context_tokens(),
                         "archived_at": _time.time(),
                     }
+                    self._log_compaction()
         except Exception:
             pass
 
@@ -5156,6 +5181,7 @@ class AgentEngine:
                     "tokens_after": self._estimate_context_tokens(),
                     "archived_at": _time.time(),
                 }
+                self._log_compaction()
                 return
         except Exception:
             pass
@@ -5258,6 +5284,7 @@ class AgentEngine:
                     f"budget."
                 ),
             }
+            self._log_compaction()
             return
 
         n_compacted = len(compactable)
@@ -5339,6 +5366,15 @@ class AgentEngine:
                 "— less faithful than a summary. The full transcript is in "
                 "the archive."
             )
+        # One durable record of this compaction: kind, tokens before/after,
+        # messages replaced, and which sections the working-state block
+        # carried (headings + counts only).
+        self._log_compaction(
+            state_block=_state_block,
+            compacted_texts=[
+                str(m.get("content", "")) for m in compactable
+            ],
+        )
 
         # CLI backend: by default tear down the persistent process so the
         # next stream_message starts fresh and the compacted history
