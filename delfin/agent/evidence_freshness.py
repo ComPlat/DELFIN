@@ -93,10 +93,54 @@ def fingerprint(repo: str | Path) -> dict:
     repo = str(repo)
     commit = _git_out(repo, "rev-parse", "HEAD").strip()
     if not commit:
-        return {"commit": "", "dirty": None, "files": {}}
+        return {"commit": "", "dirty": None, "files": {}, "repo": repo}
     status = _git_out(repo, "status", "--porcelain")
     dirty, files = _dirty_state(repo, status)
-    return {"commit": commit, "dirty": dirty, "files": files}
+    return {"commit": commit, "dirty": dirty, "files": files, "repo": repo}
+
+
+def _stat_key(repo: str, path: str) -> str:
+    try:
+        st = (Path(repo) / path).stat()
+        return f"{st.st_mtime_ns}:{st.st_size}"
+    except OSError:
+        return "gone"
+
+
+def _changed_since(fp: dict, cur: dict) -> Optional[set]:
+    """Paths whose content may differ between the run's state *fp* and
+    the current state *cur*, or None when that cannot be told.
+
+    A commit alone changes nothing on disk: the usual flow is "tests
+    green, commit, mark done", and a file the run saw uncommitted and
+    that was then committed untouched keeps its mtime and size. So a
+    path counts as changed when it is dirty now with another key than
+    at the run, or when a commit since the run touched it and it is not
+    that same untouched file.
+    """
+    old_files = fp.get("files") or {}
+    new_files = cur.get("files") or {}
+    changed = {p for p in set(old_files) | set(new_files)
+               if old_files.get(p) != new_files.get(p)}
+    if fp.get("commit") == cur.get("commit"):
+        return changed
+    repo = str(cur.get("repo") or fp.get("repo") or "")
+    if not repo:
+        return None
+    names = _git_out(repo, "diff", "--name-only",
+                     str(fp.get("commit")), str(cur.get("commit")))
+    if not names and _git_out(repo, "rev-parse", "--verify", "--quiet",
+                              f"{fp.get('commit')}^{{commit}}") == "":
+        return None                   # the old commit is gone (rebase, gc)
+    committed = {n.strip() for n in names.splitlines() if n.strip()}
+    changed |= committed
+    # A file the run saw uncommitted and that was committed since without
+    # being touched again keeps its mtime and size: the same content.
+    for path in list(changed):
+        if path in old_files and path not in new_files \
+                and _stat_key(repo, path) == old_files[path]:
+            changed.discard(path)
+    return changed
 
 
 # ---------------------------------------------------------------------------
@@ -183,25 +227,19 @@ def is_stale(evidence: dict, current_fingerprint: dict) -> Optional[str]:
         if not isinstance(fp, dict) or not fp.get("commit"):
             return "no fingerprint"
         cur = current_fingerprint or {}
-        if fp.get("commit") != cur.get("commit"):
-            old = str(fp.get("commit", ""))[:7] or "?"
-            new = str(cur.get("commit", ""))[:7] or "?"
-            return (f"the commit moved ({old}..{new}) after the run at "
-                    f"{old} -- re-run {_command_of(evidence)}")
-        old_files = fp.get("files")
-        new_files = cur.get("files")
-        if not isinstance(old_files, dict) or not isinstance(new_files, dict):
-            # fingerprints from an older layout: fall back to the hash
-            if fp.get("dirty") != cur.get("dirty"):
-                return "uncommitted files changed since the run"
-            return None
+        changed = _changed_since(fp, cur)
+        ran_at = str(fp.get("commit", ""))[:7] or "?"
         target = _command_of(evidence)
-        for path in set(old_files) | set(new_files):
-            if old_files.get(path) != new_files.get(path):
-                if _related(target, path):
-                    ran_at = str(fp.get("commit", ""))[:7] or "?"
-                    return (f"{path} changed since the run at {ran_at} "
-                            f"-- re-run {target}")
+        if changed is None:
+            return (f"the tree moved from {ran_at} in a way that cannot be "
+                    f"traced -- re-run {target}")
+        # A run that names no test file (a whole-suite run) tests
+        # everything: any changed file makes it stale.
+        names_a_file = "test" in _stem(target) or "/test" in target
+        for path in sorted(changed):
+            if not names_a_file or _related(target, path):
+                return (f"{path} changed since the run at {ran_at} "
+                        f"-- re-run {target}")
         return None
     except Exception:
         return "no fingerprint"

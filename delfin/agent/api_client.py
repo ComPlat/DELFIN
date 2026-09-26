@@ -9692,6 +9692,40 @@ def _observe_read_files(
         return
 
 
+def _stamp_new_evidence(evidence: list, before: int, workspace: Any) -> None:
+    """Stamp the test runs just observed with the tree state they ran on
+    (evidence_freshness). Never raises; outside a git work tree nothing
+    is stamped, so nothing is later judged against a state it lacks."""
+    if not workspace or len(evidence) <= before:
+        return
+    try:
+        from . import evidence_freshness as _ef
+        fp = _ef.fingerprint(workspace)
+        if not fp.get("commit"):
+            return
+        for entry in evidence[before:]:
+            if isinstance(entry, dict):
+                entry["fingerprint"] = dict(fp)
+    except Exception:
+        pass
+
+
+def _current_fingerprint(tests: Any, workspace: Any) -> Optional[dict]:
+    """The work tree's state now, for the completion check -- only when
+    the ledger carries stamped runs to judge against it; None keeps the
+    check as it was (an unstamped ledger, no git, any failure)."""
+    try:
+        if not workspace or not any(
+                isinstance(e, dict) and e.get("fingerprint")
+                for e in (tests or ())):
+            return None
+        from . import evidence_freshness as _ef
+        fp = _ef.fingerprint(workspace)
+        return fp if fp.get("commit") else None
+    except Exception:
+        return None
+
+
 def _observe_test_evidence(
     evidence: list, red_files: set,
     fn_name: str, fn_args: Any, result: str,
@@ -18223,6 +18257,8 @@ class _DocToolExecutor:
             observed=observed,
             tests=tests,
             window_start=_task_ts_epoch(task.get("started_at")),
+            current_fingerprint=_current_fingerprint(
+                tests, getattr(perms, "workspace", None)),
         )
 
     def _execute_task_list(
@@ -21459,10 +21495,14 @@ class OpenAIClient(_BaseClient):
                                 self._last_structured_verdict = _sv
                         if not isinstance(getattr(self, "_created_test_files", None), set):
                             self._created_test_files = set()   # whole session
+                        _n_evidence = len(self._test_evidence)
                         _tamper_note = _observe_test_evidence(
                             self._test_evidence, self._red_test_files,
                             fn_name, fn_args, result,
                             created=self._created_test_files)
+                        _stamp_new_evidence(
+                            self._test_evidence, _n_evidence,
+                            getattr(self._permissions, "workspace", None))
                         if _tamper_note:
                             result = _tamper_note + "\n\n" + result
                         _observe_read_files(
