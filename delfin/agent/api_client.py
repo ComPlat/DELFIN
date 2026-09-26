@@ -5667,6 +5667,12 @@ class KitToolPermissions:
         # with anything else goes on being asked about.
         if _SHELL_ERROR_OPTIONS_RE.fullmatch(cmd):
             return True
+        # A reading program's name is not a reading command: several have
+        # an option that writes a file the write-target gate never sees,
+        # or runs a program nobody looked at (found 2026-09-26 by probing
+        # the full gate with the forms a session's classifier missed).
+        if _reader_writes_or_runs(cmd):
+            return False
         for pat in self.bash_auto_allow_patterns:
             if re.search(pat, cmd, re.IGNORECASE):
                 return True
@@ -5702,6 +5708,65 @@ class KitToolPermissions:
         if candidate is not None and self.find_root_for(candidate) is not None:
             return True
         return False
+
+
+def _sed_script_writes(cmd: str) -> bool:
+    """True when a sed script in *cmd* holds a command that writes a file
+    or runs one: ``w``/``W`` (write), ``e`` (execute), or the ``s///w``
+    and ``s///e`` flags. Regex bodies are blanked first, so a letter in a
+    pattern (``/wait/p``) is not read as a command."""
+    body = re.sub(r"^\s*sed\b", "", cmd, count=1)
+    body = re.sub(r"(?<![\w])s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1([a-zA-Z0-9]*)",
+                  lambda m: " s " + m.group(2), body)
+    body = re.sub(r"/(?:\\.|[^/])*/", " ", body)
+    body = re.sub(r"\\(.)(?:\\.|(?!\1).)*\1", " ", body)
+    # A flag set after s///, or a command letter standing alone.
+    if re.search(r"\bs [a-zA-Z0-9]*[we]", body):
+        return True
+    return bool(re.search(r"(?:^|[\s;'\"{}0-9$,!])[wWe](?:\s|$|['\"])", body))
+
+
+#: Options that make a reading program write a file or run a program.
+_READER_ESCAPES = (
+    (r"^\s*sort\b", re.compile(r"(?:^|\s)(?:-o\S*|--output\b|-\w*o\b)")),
+    (r"^\s*find\b", re.compile(
+        r"(?:^|\s)-(?:fprint0?|fprintf|fls|exec|execdir|ok|okdir|delete)\b")),
+    (r"^\s*tree\b", re.compile(r"(?:^|\s)(?:-o\b|--output\b)")),
+    (r"^\s*rg\b", re.compile(r"(?:^|\s)--pre(?:-glob)?\b")),
+    (r"^\s*git\b", re.compile(
+        r"(?:^|\s)(?:-c\s|-c\S|--config-env\b|--output\b|--ext-diff\b|"
+        r"--exec-path\b|--upload-pack\b|-O\S*|--open-files-in-pager\b)")),
+)
+
+
+def _reader_writes_or_runs(cmd: str) -> bool:
+    """True when a command whose program is on the reading list uses a
+    form that writes a file or runs a program: sort -o, uniq's output
+    file, sed w/W/e, find -fprint/-fls/-exec, tree -o, rg --pre, git -c /
+    --output / --ext-diff, awk system()/pipes/print-redirects, and env
+    with a program after it. Such a command goes to the confirm gate,
+    where every unevaluated write belongs."""
+    stripped = cmd.strip()
+    first = stripped.split(None, 1)[0] if stripped else ""
+    if first == "env":
+        rest = stripped.split()[1:]
+        # `env` alone prints; `env -u X` / `env A=b` followed by a word
+        # runs that word as a program.
+        return any(not (w.startswith("-") or "=" in w) for w in rest) or \
+            any(w in ("-S", "--split-string") for w in rest)
+    if first == "sed":
+        return _sed_script_writes(stripped)
+    if first == "uniq":
+        args = [w for w in stripped.split()[1:] if not w.startswith("-")]
+        return len(args) >= 2
+    if first in ("awk", "gawk", "mawk", "nawk"):
+        return bool(re.search(
+            r"\bsystem\s*\(|\|\s*getline|\bprint[f]?\b[^;}]*[>|]|"
+            r"\s-f\s|\s--file\b|\s-i\s|--include\b|\bfflush\b", stripped))
+    for prog_re, escape in _READER_ESCAPES:
+        if re.match(prog_re, stripped) and escape.search(stripped):
+            return True
+    return False
 
 
 #: A `set` that only turns on the shell's error handling: -e, -u, -x and
