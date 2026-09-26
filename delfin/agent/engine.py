@@ -367,30 +367,11 @@ def _granted_dir_note(resolved) -> str:
     )
 
 def _capped_context_window(window: int) -> int:
-    """The model's context window, capped by ``agent.context_window_cap``
-    or ``DELFIN_CONTEXT_WINDOW_CAP`` when either is set (tokens, > 0).
-
-    Compaction fires at a share of the window. On a 131k model a whole
-    supervised session never reached it (measured 2026-09-26: four long
-    sessions, zero compactions), so whether a session survives several
-    compactions could not be observed at all -- and a user on a small
-    local model gets no way to make DELFIN compact earlier. A cap only
-    ever lowers the window; it never claims more than the model has.
-    """
-    cap = 0
-    try:
-        import os
-        cap = int(os.environ.get("DELFIN_CONTEXT_WINDOW_CAP", "") or 0)
-    except ValueError:
-        cap = 0
-    if cap <= 0:
-        try:
-            from delfin import user_settings
-            ag = (user_settings.load_settings().get("agent", {}) or {})
-            cap = int(ag.get("context_window_cap", 0) or 0)
-        except Exception:
-            cap = 0
-    return min(window, cap) if cap > 0 else window
+    """Thin forwarder: the ONE source is delfin.agent.context_window
+    (moved there 2026-09-26 so the api_client's in-turn elision budget
+    reads the same cap). Kept for the existing callers and tests."""
+    from .context_window import capped_window
+    return capped_window(window)
 
 
 class AgentEngine:
