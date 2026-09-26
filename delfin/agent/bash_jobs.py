@@ -344,6 +344,11 @@ class BashJob:
             "cwd": self.cwd,
             "stdout_path": str(self.stdout_path),
             "stderr_path": str(self.stderr_path),
+            # The paths live on the host's scratch file system, outside the
+            # workspace: read_file on them asks the operator to open a
+            # directory every user shares, and was refused three times in
+            # one supervised run (2026-09-26). bash_output reads both.
+            "read_with": f"bash_output(job_id='{self.job_id}')",
         }
         if rc is not None and rc < 0:
             # A negative code is POSIX shorthand for "killed by signal
