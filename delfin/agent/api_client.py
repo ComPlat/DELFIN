@@ -10,6 +10,7 @@ import importlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -2500,7 +2501,12 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*pip\s+(?:--version|-V|show|list|freeze|check)\b",
     r"^\s*conda\s+(?:info|list|env\s+list|search)\b",
     r"^\s*(?:pytest|py\.test)\b",
-    r"^\s*(?:ruff|black|isort|flake8|pylint|mypy|pyright|pyflakes|bandit)\b",
+    # Linters read. Formatters and fixers rewrite files past the change
+    # journal (red team LA): only their checking forms are free.
+    r"^\s*(?:flake8|pylint|mypy|pyright|pyflakes|bandit)\b",
+    r"^\s*ruff\s+check\b(?![^|;&]*--(?:fix|unsafe-fixes)\b)",
+    r"^\s*(?:ruff\s+format|black|isort)\b[^|;&]*\s--(?:check|diff)\b",
+    r"^\s*(?:ruff|black|isort)\s+--version\b",
     r"^\s*(?:nox|tox)\s+--?l", r"^\s*tox\s+-e\b",
     r"^\s*make(?!\s+(?:clean|distclean|uninstall|purge))\b",
     # Creating a directory, and being able to take it back. `-p` was the
@@ -2523,10 +2529,11 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # covers and which is checked first. The old comment claimed the same
     # thing while the deny pattern matched only a bare `777`.
     r"^\s*chmod\s+(?:[ugoa+=-]+|[0-7]{3,4})\s+",
-    r"^\s*time\s+",
-    r"^\s*timeout\s+\d",
-    r"^\s*xargs\s+",
-    r"^\s*diff\b", r"^\s*patch\s+(?:-p\d|--dry-run)",
+    # time / timeout / nice / xargs are judged by the command they run
+    # (_WRAPPED_COMMAND_RE in _segment_auto_allowed), not waved through
+    # on their own name: `time scancel 123` and `xargs rm` ran with no
+    # question (red team LA, 2026-09-26).
+    r"^\s*diff\b", r"^\s*patch\b[^|;&]*--dry-run",
     # `cmp` beside `diff`, which has been here all along -- the same
     # question asked of two files, and one of the two spellings was
     # refused. `test` / `[` are pure predicates: every form of them reads
@@ -5667,6 +5674,39 @@ class KitToolPermissions:
                 return False
         return all(self._segment_auto_allowed(s) for s in segments)
 
+    def _changes_outside_the_workspace(self, cmd: str) -> bool:
+        """chmod of a path, or pytest --basetemp, that lands outside every
+        workspace root (red team LA: `chmod 000 /etc/hosts`, `chmod 600
+        ../../f`, `pytest --basetemp=/elsewhere`). A path that cannot be
+        parsed counts as outside -- it goes to the confirm gate."""
+        try:
+            words = shlex.split(cmd)
+        except ValueError:
+            return True
+        if not words:
+            return False
+        targets: list[str] = []
+        if words[0] == "chmod":
+            rest = [w for w in words[1:] if not w.startswith("-")]
+            targets = rest[1:]           # the first is the mode
+        elif words[0] in ("pytest", "py.test") or (
+                len(words) > 2 and words[1:3] == ["-m", "pytest"]):
+            for i, w in enumerate(words):
+                if w.startswith("--basetemp="):
+                    targets.append(w.split("=", 1)[1])
+                elif w == "--basetemp" and i + 1 < len(words):
+                    targets.append(words[i + 1])
+        for t in targets:
+            try:
+                p = Path(t).expanduser()
+                p = (p if p.is_absolute() else self.workspace / p).resolve(
+                    strict=False)
+            except Exception:
+                return True
+            if self.find_root_for(p) is None:
+                return True
+        return False
+
     def _segment_auto_allowed(self, cmd: str) -> bool:
         # Command substitution ($( … ), `…`) and process substitution
         # (<( … ) reads, >( … ) writes/executes) run a command no pattern
@@ -5694,6 +5734,12 @@ class KitToolPermissions:
         # with anything else goes on being asked about.
         if _SHELL_ERROR_OPTIONS_RE.fullmatch(cmd):
             return True
+        # A wrapper runs the command after it: judge that command.
+        _wrapped = _WRAPPED_COMMAND_RE.match(cmd)
+        if _wrapped:
+            return self._segment_auto_allowed(_wrapped.group("inner"))
+        if self._changes_outside_the_workspace(cmd):
+            return False
         # A reading program's name is not a reading command: several have
         # an option that writes a file the write-target gate never sees,
         # or runs a program nobody looked at (found 2026-09-26 by probing
@@ -5841,6 +5887,18 @@ _SAFE_LINE_LOOKUP_RE = re.compile(
     r"(?:\|\s*head\s+-(?:n\s*)?\d+\s*)?"
     r"\|\s*cut\s+-d\s*:?\s*:?\s*-f\s*1\s*"
     r"(?:\|\s*head\s+-(?:n\s*)?\d+\s*)?\)")
+
+
+#: A wrapper and the command it runs: `time CMD`, `timeout [-s SIG] N
+#: CMD`, `nice [-n N] CMD`, `xargs [OPTS] CMD`. The command is judged by
+#: the same rules as if it stood alone.
+_WRAPPED_COMMAND_RE = re.compile(
+    r"^\s*(?:time(?:\s+-p)?"
+    r"|timeout(?:\s+(?:-[sk]\s*\S+|--\S+))*\s+\d+(?:\.\d+)?[smhd]?"
+    r"|nice(?:\s+-n\s*-?\d+|\s+-\d+)?"
+    r"|xargs(?:\s+(?:-0|-r|-t|--null|--no-run-if-empty|--verbose"
+    r"|-[nPL]\s*\d+|-I\s*\S+|-d\s*\S+))*"
+    r")\s+(?P<inner>[^\s-].*)$", re.DOTALL)
 
 
 #: A `set` that only turns on the shell's error handling: -e, -u, -x and
