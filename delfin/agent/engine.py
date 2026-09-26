@@ -6444,6 +6444,45 @@ class AgentEngine:
         # One sub-dict, written and read as a unit, so a new ledger is
         # added in one place instead of four.
         out["evidence"] = self._export_evidence()
+        # The refusals the user gave THIS conversation. They live on the
+        # permission object, which a resume rebuilds from the launch
+        # arguments -- so without this block a continued session asked for
+        # the same denied file again (observed 26 Sep 2026). Grants are
+        # deliberately NOT here: the dialog says "for the rest of this
+        # session. Nothing is saved", and whether a resume is "the same
+        # session" is the user's call, not ours -- asking once too often is
+        # the safe side of that question.
+        out["refusals"] = self._export_refusals()
+        return out
+
+    def _export_refusals(self) -> dict:
+        """The denials on the permission object, as plain data.
+
+        Empty dict whenever there is no permission object (non-KIT
+        backend) or nothing was denied -- an export must not be the thing
+        that breaks on an engine built for a targeted test.
+        """
+        perms = getattr(self, "kit_permissions", None)
+        if perms is None:
+            return {}
+        out: dict = {}
+        try:
+            denied = getattr(perms, "denied_paths", None) or set()
+            out["denied_paths"] = sorted(str(p) for p in denied)
+        except Exception:
+            out["denied_paths"] = []
+        try:
+            actions = getattr(perms, "denied_actions", None) or {}
+            out["denied_actions"] = {str(k): str(v)
+                                     for k, v in dict(actions).items()}
+        except Exception:
+            out["denied_actions"] = {}
+        mem = getattr(perms, "refusal_memory", None)
+        if mem is not None:
+            try:
+                out["refusal_memory"] = mem.to_dict()
+            except Exception:
+                pass
         return out
 
     def _export_evidence(self) -> dict:
@@ -6641,13 +6680,22 @@ class AgentEngine:
         s_restored, s_missing, s_failed = self._load_declared_fields(
             data, section="state")
         ev = self._restore_evidence(data)
+        # The denials come back onto the permission object, not onto the
+        # engine: that is where every gate reads them. The object is
+        # rebuilt by the time a resume runs (cli builds the client first,
+        # then calls restore_state), so writing here is not a race; if
+        # there is no permission object the denials are reported missing,
+        # not silently dropped -- a backend with no gate would otherwise
+        # "restore" a refusal nothing enforces.
+        ref_restored = self._restore_refusals(data.get("refusals"))
         # The restored read-ledger has to reach the client before the first
         # turn's post-stream update, or it is discarded unread.
         self._seed_client_observed_files()
 
         report = AgentEngine.RestoreReport(
             schema_version=version,
-            restored=tuple(restored + s_restored + list(ev.restored)),
+            restored=tuple(restored + s_restored + list(ev.restored)
+                           + ref_restored),
             missing=tuple(missing + s_missing + list(ev.missing)),
             failed=tuple(drifted + s_failed + list(ev.failed)),
             migrations=migrations,
@@ -6672,6 +6720,54 @@ class AgentEngine:
             pass
         self.last_restore_report = report
         return report
+
+    def _restore_refusals(self, blob) -> list[str]:
+        """Write the exported denials back onto the permission object.
+
+        Returns the restored names for the report. Grants are never
+        restored -- that decision is the user's, one dialog at a time, and
+        is pinned by its own test.
+        """
+        perms = getattr(self, "kit_permissions", None)
+        if not isinstance(blob, dict):
+            return []
+        names: list[str] = []
+        paths = blob.get("denied_paths")
+        if isinstance(paths, list):
+            try:
+                perms.denied_paths.update(str(p) for p in paths if p)
+                names.append("denied_paths")
+            except Exception:
+                pass
+        actions = blob.get("denied_actions")
+        if isinstance(actions, dict):
+            try:
+                perms.denied_actions.update({str(k): str(v) for k, v in
+                                             actions.items()})
+                names.append("denied_actions")
+            except Exception:
+                pass
+        mem_blob = blob.get("refusal_memory")
+        if isinstance(mem_blob, dict):
+            try:
+                from .refusal_memory import RefusalMemory
+                if perms.refusal_memory is None:
+                    perms.refusal_memory = RefusalMemory()
+                restored_mem = RefusalMemory.from_dict(mem_blob)
+                # Merge instead of overwrite: the fresh object may already
+                # carry entries of its own (a denial in the first turn
+                # before the restore is rare, but possible).
+                for entry in restored_mem.to_dict().get("entries", []):
+                    from .refusal_memory import Refusal
+                    try:
+                        perms.refusal_memory.record(
+                            Refusal.from_dict(entry))
+                    except Exception:
+                        pass
+                names.append("refusal_memory")
+            except Exception:
+                pass
+        return names
 
     def available_modes(self) -> list[str]:
         """Return list of available mode IDs."""
