@@ -897,7 +897,7 @@ def test_orca_finds_mpirun_next_to_where_it_is_started_from(tmp_path,
     the PATH it is handed and nothing else -- so the test is about the
     environment, and not about this box's ORCA.
     """
-    mpi_dir = tmp_path / 'openmpi-4.1.8' / 'bin'
+    mpi_dir = tmp_path / 'software' / 'openmpi-4.1.8' / 'bin'
     mpi_dir.mkdir(parents=True)
     mpirun = mpi_dir / 'mpirun'
     mpirun.write_text('#!/bin/sh\necho mpirun ran\n', encoding='utf-8')
@@ -924,6 +924,10 @@ def test_orca_finds_mpirun_next_to_where_it_is_started_from(tmp_path,
     # can see has to come from the environment the search hands it.
     monkeypatch.setattr(saddle, 'find_orca', lambda: str(fake_orca))
     monkeypatch.setenv('PATH', str(tmp_path / 'nowhere-at-all'))
+    # ...and the openmpi it finds is the stand-in's, not this box's: HOME is
+    # where the search looks, so a real ~/software/openmpi-* cannot make the
+    # test pass on a machine that has one and fail in CI, which has none.
+    monkeypatch.setenv('HOME', str(tmp_path))
 
     small = ('4\nammonia\n'
              'N   0.0000   0.0000   0.00\n'

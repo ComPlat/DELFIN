@@ -481,32 +481,18 @@ def _child_path(binary: str, cores: Any) -> str:
     anywhere in it.
 
     With one process there is no mpirun call, and the PATH is left as it was
-    rather than made longer for nothing.  A mpirun that is already on the PATH
-    is used where it is; one that is not is looked for beside the software the
-    user installed, the way :func:`delfin.runtime_setup._find_openmpi_mpirun`
-    looks -- the same convention, written here rather than imported, because
-    the dashboard does not otherwise carry that module.
+    rather than made longer for nothing.  Which mpirun is DELFIN's own answer,
+    :func:`delfin.runtime_setup._find_openmpi_mpirun`: the openmpi beside the
+    software the user installed first (the one ORCA was built against), the
+    PATH second -- one search for the whole package, not a second copy here.
     """
-    room = dict(os.environ)
     ahead = [str(Path(binary).parent)]
     if _share(cores) > 1:
-        seen = shutil.which('mpirun')
-        if not seen:
-            home = Path.home()
-            for base in (home / 'software', home / 'apps', home / 'local'):
-                found = sorted(base.glob('openmpi-*/bin/mpirun'), reverse=True) \
-                    if base.is_dir() else []
-                for candidate in found:
-                    if candidate.is_file():
-                        seen = str(candidate)
-                        break
-                if seen:
-                    break
-        if seen:
-            ahead.append(str(Path(seen).parent))
-    room['PATH'] = os.pathsep.join(ahead) + os.pathsep \
-        + room.get('PATH', '')
-    return room['PATH']
+        from delfin.runtime_setup import _find_openmpi_mpirun
+        mpirun = _find_openmpi_mpirun()
+        if mpirun.is_file():
+            ahead.append(str(mpirun.parent))
+    return os.pathsep.join(ahead) + os.pathsep + os.environ.get('PATH', '')
 
 
 def _stop(running: subprocess.Popen) -> None:
