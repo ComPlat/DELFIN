@@ -385,6 +385,10 @@ def _run_command(
             expanded, shell=True, env=env,
             cwd=str(cwd) if cwd else None,
             timeout=max(0.1, cmd.timeout_s),
+            # Hooks fire on EVERY tool call: their budget is the tight
+            # "hook" profile, not the foreground one (phase 4, no process
+            # without a budget).
+            budget_profile="hook",
         )
         return proc.returncode, proc.stdout or "", proc.stderr or "", time.monotonic() - t0
     except subprocess.TimeoutExpired as exc:

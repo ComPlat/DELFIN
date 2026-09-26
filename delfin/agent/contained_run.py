@@ -87,6 +87,7 @@ def run(
     text: bool = True,
     should_stop: Optional[Callable[[], bool]] = None,
     budget: bool = False,
+    budget_profile: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Like ``subprocess.run(..., capture_output=True)``, contained.
 
@@ -117,10 +118,15 @@ def run(
     )
     pgid = proc.pid
     guard = None
-    if budget:
+    if budget or budget_profile is not None:
         try:
             from .process_budget import BudgetGuard
-            guard = BudgetGuard(proc.pid).start()
+            if budget_profile is not None:
+                # A named profile: the caller picked it, and it carries its
+                # own limits (hooks and tests are not foreground calls).
+                guard = BudgetGuard(proc.pid, profile=budget_profile).start()
+            else:
+                guard = BudgetGuard(proc.pid).start()
         except Exception:
             guard = None
     out: list[bytes] = []
