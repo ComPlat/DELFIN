@@ -1,4 +1,4 @@
-"""PROPOSAL (LJ phase 4): a refused bash command, recognised re-spelled.
+"""A refused bash command is recognised however it is quoted (LJ phase 4, landed).
 
 Not current behaviour -- every test here is xfail(strict) and red until
 the proposal is implemented in api_client (by the operator; this file
@@ -57,11 +57,6 @@ def _deny(name, args, preview):
     return False
 
 
-@pytest.mark.xfail(
-    reason="PROPOSAL LJ-4: bash refusal key keeps quote characters, so the "
-           "same command quoted differently asks again "
-           "(api_client.py:5441-5442)",
-    strict=True)
 def test_a_quoted_re_spelling_of_a_refused_command_stays_refused(tmp_path):
     ex = _executor()
     perms = _perms(tmp_path, mode="default", confirm_callback=_deny)
@@ -74,16 +69,14 @@ def test_a_quoted_re_spelling_of_a_refused_command_stays_refused(tmp_path):
     assert again is not None and "already refused" in again, again
 
 
-@pytest.mark.xfail(
-    reason="PROPOSAL LJ-4: same key construction as above, double-quoted "
-           "form",
-    strict=True)
 def test_a_double_quoted_re_spelling_stays_refused(tmp_path):
     ex = _executor()
     perms = _perms(tmp_path, mode="default", confirm_callback=_deny)
+    # A command that asks (a plain read like `sed -n` runs free and is
+    # never refused in the first place).
     ex._run_permission_gate(
-        "bash", {"command": "sed -n 1,50p notes.txt"}, perms)
+        "bash", {"command": "rm notes.txt old.txt"}, perms)
 
     again = ex._run_permission_gate(
-        "bash", {"command": 'sed -n "1,50p" "notes.txt"'}, perms)
+        "bash", {"command": 'rm "notes.txt" "old.txt"'}, perms)
     assert again is not None and "already refused" in again, again
