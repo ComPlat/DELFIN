@@ -26,7 +26,6 @@ def perms(tmp_path) -> KitToolPermissions:
     "python -m mypackage.cli --flag",
     "python3.11 -m app",
     "python -m pytest tests/ -v",        # existing whitelist still works
-    "python -m http.server",
     "python -m pip show numpy",          # read-only pip stays allowed
 ])
 def test_python_m_module_auto_allowed(perms, cmd):
@@ -34,6 +33,9 @@ def test_python_m_module_auto_allowed(perms, cmd):
 
 
 @pytest.mark.parametrize("cmd", [
+    # A listening server on a shared login node (red team LA, 2026-09-26);
+    # it was on the free list by name.
+    "python -m http.server",
     "python -m pip install requests",
     "python -m pip uninstall numpy",
     "python -m pip download scipy",
