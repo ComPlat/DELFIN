@@ -1347,8 +1347,9 @@ class _Registry:
         # needs (a foreground guard would die with the call).
         guard = None
         try:
-            guard = process_budget.BudgetGuard(proc.pid, poll_s=2.0,
-                                               profile="background")
+            guard = process_budget.BudgetGuard(
+                proc.pid, poll_s=2.0, profile="background",
+                session_id=session_id or "")
         except Exception:
             guard = None
 
