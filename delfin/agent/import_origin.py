@@ -15,6 +15,8 @@ Nothing in the output says so; the fix was in the worktree all along.
 This module is pure: it detects the shadow and words the note. The note
 is attached to bash results in api_client, next to ``_pipe_exit_note``.
 """
+import json
+import os
 import re
 import subprocess
 import sys
@@ -99,8 +101,8 @@ def shadowed_packages(workspace: str, extra_paths=None,
     if not names:
         return {}
     argv = [interpreter or sys.executable, "-I", "-c", _PROBE,
-            __import__("json").dumps([str(p) for p in (extra_paths or [])]),
-            __import__("json").dumps(names)]
+            json.dumps([str(p) for p in (extra_paths or [])]),
+            json.dumps(names)]
     try:
         done = subprocess.run(argv, capture_output=True, text=True,
                               timeout=20)
@@ -109,7 +111,7 @@ def shadowed_packages(workspace: str, extra_paths=None,
     if done.returncode != 0:
         return {}
     try:
-        found = __import__("json").loads(done.stdout.strip().splitlines()[-1])
+        found = json.loads(done.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
         return {}
     root = str(Path(workspace).resolve())
@@ -118,19 +120,12 @@ def shadowed_packages(workspace: str, extra_paths=None,
         origin = str(origin)
         try:
             inside = str(Path(origin).resolve()).startswith(
-                root + os_sep_str())
+                root + os.sep)
         except (OSError, ValueError):
             inside = False
         if not inside:
             shadow[name] = origin
     return shadow
-
-
-def os_sep_str() -> str:
-    """One os.sep, split out for the startswith check above (readability
-    and a single place to mock in tests on exotic filesystems)."""
-    import os
-    return os.sep
 
 
 def _script_path(cmd: str) -> str:
