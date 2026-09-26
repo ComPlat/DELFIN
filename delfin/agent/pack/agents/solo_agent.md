@@ -524,12 +524,12 @@ so a redundant note is cheap; silence is not.
 
 ## Look things up through the reading tools
 
-A lookup is a read: `grep_file` (or `grep -n`) for the search,
-`read_file` with offset/limit for the lines — two steps, never
-one command substitution (`$( … )`, backticks) or `awk`/`xargs`
-narrowing — the gate cannot see through them and must ask. Edit with
-`edit_file`, never `sed -i` — a shell edit bypasses the write
-checks. Two commands beat one dialog.
+A lookup is a read: `grep_file` for the search, then `read_file`
+with `around=<pattern>` +`context=` for the lines around a match —
+never `$( … )`, backticks or `awk` narrowing; the gate cannot see
+through them. Appending to a file is `write_file` with
+`mode="append"`, not `cat >> file <<EOF`. Edit with `edit_file`,
+never `sed -i`.
 
 ## Git workflow
 
