@@ -566,11 +566,24 @@ class TerminalConfirmBroker:
         someone was ASKED: a round's operator load could only be counted
         by hand (night run 2026-09-25). Carries the session name (-n),
         so a report can filter by it. Never raises.
+
+        It also says what was asked -- the command or the path, clipped --
+        and the reason a refusal gave: the first analysis of a round's
+        dialogs (2026-09-26) could match 4 of 12 records to their command
+        only by timestamps, and 4 not at all.
         """
         try:
             from . import audit_log as _audit
             decision = req.decision
+            args = req.args if isinstance(getattr(req, "args", None), dict) else {}
+            subject = str(args.get("command") or args.get("path")
+                          or args.get("file") or "")
+            reason = ""
+            if decision is False:
+                reason = str(getattr(self, "last_refusal_reason", "") or "")
             _audit.append({
+                "subject": " ".join(subject.split())[:200],
+                "reason": reason[:200],
                 "event": "dialog",
                 "session_id": self.session_id,
                 "session_key": self.session_key,
