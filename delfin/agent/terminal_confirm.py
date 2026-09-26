@@ -299,6 +299,26 @@ def _answer_from_outside(req: ConfirmRequest) -> "tuple[bool, str] | None":
         return None
 
 
+def _choice_from_outside(req: ConfirmRequest) -> "list[str] | None":
+    """The options somebody chose from outside for a CHOICE question, or
+    None. Only for ASK requests; only labels the question offered (the
+    checked reader in file_confirm enforces both). Never raises."""
+    published = getattr(req, "published", None)
+    if not published or req.kind != ASK:
+        return None
+    try:
+        from . import file_confirm as _fc
+        path = Path(published)
+        request_id = path.name[:-len(".request.json")]
+        offered = [o.get("label") for o in
+                   ((req.payload or {}).get("options") or [])
+                   if isinstance(o, dict)]
+        return _fc._read_choice(path.with_name(f"{request_id}.answer.json"),
+                                request_id, path.stat().st_mtime, offered)
+    except Exception:
+        return None
+
+
 def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
     """What may be offered for this request, and nothing more.
 
@@ -532,6 +552,11 @@ class TerminalConfirmBroker:
             if got or req.resolved:
                 got = True
                 break
+            chosen = _choice_from_outside(req)
+            if chosen is not None and self.resolve(req, {"answers": chosen}):
+                _note_outside_answer(req, self.session_key, True)
+                self._audit_dialog(req, by="outside")
+                return req.decision
             outside = _answer_from_outside(req)
             if outside is not None and self.resolve(req, outside[0]):
                 if outside[0] is False and outside[1]:
