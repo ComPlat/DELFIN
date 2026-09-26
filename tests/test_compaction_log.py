@@ -78,6 +78,20 @@ class TestEngineWritesTheLog:
         rec = compaction_log.read_compactions(SESSION)[0]
         assert rec["forced"] is True
 
+    def test_record_carries_the_loss_comparison(self, tmp_path, monkeypatch):
+        eng = _bare_engine(tmp_path, monkeypatch)
+        hist = _big_history()
+        # A machine turn whose facts the block may or may not carry —
+        # the record must NAME what is lost either way.
+        hist[0] = {"role": "user", "content":
+                   "[Command results]\ngate tests/test_zz.py -> 2 passed"}
+        eng.messages = hist
+        eng._compact_history()
+        rec = compaction_log.read_compactions(SESSION)[0]
+        assert "lost" in rec
+        assert set(rec["lost"]) == {
+            "denials", "tests", "files", "instructions"}
+
 
 class TestNoLogBeforeCompaction:
     def test_short_history_writes_nothing(self, tmp_path, monkeypatch):

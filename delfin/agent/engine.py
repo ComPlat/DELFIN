@@ -5067,7 +5067,8 @@ class AgentEngine:
         )
 
     def _log_compaction(self, state_block: str = "",
-                        compacted_texts: list | None = None) -> None:
+                        compacted_texts: list | None = None,
+                        summary_text: str = "") -> None:
         """Persist one record of the last compaction event to the
         session's compaction log (best-effort — a broken log must never
         break compaction). Headings and counts only, never contents."""
@@ -5086,6 +5087,7 @@ class AgentEngine:
                 note=str(info.get("note", "") or ""),
                 state_block=state_block,
                 compacted_texts=compacted_texts,
+                summary_text=summary_text,
             )
         except Exception:
             pass
@@ -5374,6 +5376,7 @@ class AgentEngine:
             compacted_texts=[
                 str(m.get("content", "")) for m in compactable
             ],
+            summary_text=summary,
         )
 
         # CLI backend: by default tear down the persistent process so the

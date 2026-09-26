@@ -47,6 +47,7 @@ def record_compaction(
     note: str = "",
     state_block: str = "",
     compacted_texts: list[str] | None = None,
+    summary_text: str = "",
 ) -> str | None:
     """Append one compaction event to the session's log; return the line.
 
@@ -71,6 +72,18 @@ def record_compaction(
         "state_block_sections": sections,
         "n_compacted_texts": len(compacted_texts or []),
     }
+    # Loss comparison: which facts from the replaced messages appear in
+    # neither the state block nor the summary. Bounded — names, counts.
+    try:
+        lost = compare_loss(
+            compacted_texts, state_block=state_block,
+            summary_text=summary_text)
+        record["lost"] = {
+            cat: {"total": v["total"], "lost": v["lost"][:10]}
+            for cat, v in lost.items()
+        }
+    except Exception:
+        pass
     line = json.dumps(record, ensure_ascii=False)
     if len(line) > _MAX_RECORD_CHARS:
         record["note"] = ""
@@ -101,6 +114,49 @@ def read_compactions(session_id: str) -> list[dict]:
         return out
     except Exception:
         return []
+
+
+def compare_loss(
+    compacted_texts: list[str] | None,
+    *,
+    state_block: str = "",
+    summary_text: str = "",
+) -> dict:
+    """Deterministically compare facts before/after one compaction.
+
+    For each category the working-state block extracts from machine
+    turns (denials, test outcomes, touched files, instructions), count
+    the facts in the REPLACED messages and name those that appear in
+    neither the surviving state block nor the summary. Count and name
+    only — never repair.
+    """
+    from . import working_state as _ws
+
+    texts = list(compacted_texts or [])
+    # The extractors read machine turns: synthetic user messages whose
+    # content starts with a machine prefix ([Command results] etc.). Wrap
+    # each replaced text as one so the same rules apply here as in the
+    # block builder.
+    wrapped = []
+    for t in texts:
+        t = t if isinstance(t, str) else str(t)
+        if not t.startswith(("[Command results]", "[Verify]", "[System]")):
+            t = f"[Command results]\n{t}"
+        wrapped.append({"role": "user", "content": t})
+
+    carried = f"{state_block or ''}\n{summary_text or ''}"
+
+    def _category(extract) -> dict:
+        facts = extract(wrapped)
+        lost = [f for f in facts if f not in carried]
+        return {"total": len(facts), "lost": lost}
+
+    return {
+        "denials": _category(_ws._denials),
+        "tests": _category(_ws._test_outcomes),
+        "files": _category(_ws._touched_names),
+        "instructions": _category(_ws._instructions),
+    }
 
 
 def _state_block_sections(block: str) -> dict[str, int]:
