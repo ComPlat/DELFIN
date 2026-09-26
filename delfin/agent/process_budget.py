@@ -24,6 +24,92 @@ class BudgetLimits:
     max_cpu_seconds: float = 1200.0
 
 
+# Named budget profiles. The foreground profile is wave 4 as shipped;
+# the others exist so the call sites that run unguarded today (long-lived
+# background jobs, per-tool-call hooks, the test runner) can adopt a
+# budget without inheriting numbers tuned for a foreground call.
+#
+# Rationale per profile, on the same shared-login-node premise as the
+# foreground numbers:
+#   * background: a long job legitimately fans out (a build, a pipeline,
+#     a batch of cluster submissions) and may accumulate CPU over hours.
+#     256 processes covers a make -j64 plus its shells; 32 GB matches a
+#     modest node's share; 36 000 CPU-s is ~10 single-core-hours — long
+#     enough for real work, short enough that a spin loop dies the same
+#     day.
+#   * hook: hooks run on EVERY tool call; a leak here multiplies. 16
+#     processes, 512 MB and 60 CPU-s bound a formatter/linter-style hook
+#     generously.
+#   * tests: pytest itself spawns a handful of processes, plus whatever
+#     the suite starts; 128/16 GB/7200 s covers a parallel suite but not
+#     a runaway one.
+PROFILE_LIMITS: dict[str, BudgetLimits] = {
+    "foreground": BudgetLimits(),
+    "background": BudgetLimits(max_processes=256, max_rss_mb=32_768.0,
+                               max_cpu_seconds=36_000.0),
+    "hook": BudgetLimits(max_processes=16, max_rss_mb=512.0,
+                         max_cpu_seconds=60.0),
+    "tests": BudgetLimits(max_processes=128, max_rss_mb=16_384.0,
+                          max_cpu_seconds=7_200.0),
+}
+
+try:  # imported lazily-safe: user_settings is a leaf module
+    from delfin import user_settings as user_settings
+except Exception:  # pragma: no cover - import guard, keeps module usable
+    user_settings = None  # type: ignore[assignment]
+
+
+def _raw_settings() -> dict | None:
+    if user_settings is None:
+        return None
+    try:
+        return ((user_settings.load_settings() or {}).get("agent") or {}
+                ).get("process_budget")
+    except Exception:
+        return None
+
+
+def _apply_overrides(limits: BudgetLimits, raw: dict) -> BudgetLimits:
+    def _num(key: str, current: float) -> float:
+        val = raw.get(key, current)
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            return current
+        return 100_000_000.0 if val <= 0 else val
+    return BudgetLimits(
+        max_processes=int(_num("max_processes", limits.max_processes)),
+        max_rss_mb=_num("max_rss_mb", limits.max_rss_mb),
+        max_cpu_seconds=_num("max_cpu_seconds", limits.max_cpu_seconds),
+    )
+
+
+def limits_for_profile(name: str) -> BudgetLimits:
+    """The limits of a named profile, with settings overrides applied.
+
+    ``agent.process_budget.profiles.<name>.*`` overrides one profile;
+    the wave-4 top-level ``agent.process_budget.*`` keys keep their
+    documented meaning — the foreground limits — and do not leak into
+    the other profiles.
+    """
+    if name not in PROFILE_LIMITS:
+        raise ValueError(
+            f"unknown process budget profile {name!r}; "
+            f"known: {sorted(PROFILE_LIMITS)}")
+    limits = PROFILE_LIMITS[name]
+    raw = _raw_settings()
+    if not isinstance(raw, dict):
+        return limits
+    if name == "foreground":
+        # The legacy top-level keys. Kept verbatim so existing settings
+        # files behave exactly as before this module knew profiles.
+        return _apply_overrides(limits, raw)
+    profiles = raw.get("profiles")
+    if isinstance(profiles, dict) and isinstance(profiles.get(name), dict):
+        limits = _apply_overrides(limits, profiles[name])
+    return limits
+
+
 @dataclass(frozen=True)
 class Breach:
     limit: str
@@ -271,9 +357,15 @@ class BudgetGuard:
 
     def __init__(self, root_pid: int, limits: BudgetLimits | None = None,
                  poll_s: float = 1.0, term_grace_s: float = 5.0,
-                 sample_fn=sample_descendants):
+                 sample_fn=sample_descendants, profile: str | None = None):
         self.root_pid = root_pid
-        self.limits = limits if limits is not None else _default_limits()
+        self.profile = profile
+        if limits is not None:
+            self.limits = limits
+        elif profile is not None:
+            self.limits = limits_for_profile(profile)
+        else:
+            self.limits = _default_limits()
         self.poll_s = poll_s
         self.term_grace_s = term_grace_s
         self._sample_fn = sample_fn
