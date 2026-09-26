@@ -6006,10 +6006,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "read_file",
             "description": (
-                "Read a text file. Path relative to the workspace or "
-                "absolute; use the ABSOLUTE path for anything outside the "
-                "primary workspace root. Secret-deny globs (.ssh/, .env, "
-                "*.key, *.pem, credentials) are always refused."
+                "Read a text file; ABSOLUTE path outside the workspace. "
+                "Secret-deny: .ssh/, .env, keys, credentials."
             ),
             "parameters": {
                 "type": "object",
@@ -6025,6 +6023,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "limit": {
                         "type": "integer",
                         "description": "Max lines, default 200.",
+                    },
+                    "around": {
+                        "type": "string",
+                        "description": "Regex; ±10 lines around its match.",
                     },
                 },
                 "required": ["path"],
@@ -11899,6 +11901,23 @@ class _DocToolExecutor:
         # the first line, not an error.
         offset = _as_int(arguments.get("offset"), 1)
         limit = _as_int(arguments.get("limit"), 200)
+        # around=: the lines around a pattern's match, the tool form of
+        # `sed -n "$(grep -n PAT f | cut -d: -f1),+40p" f` -- which the
+        # gate must ask about, because a substitution's output becomes
+        # code of the outer program (read_around).
+        _around = str(arguments.get("around", "") or "")
+        if _around:
+            from . import read_around as _ra
+            try:
+                _win = _ra.locate(
+                    _body, _around,
+                    context=_as_int(arguments.get("context"), 10),
+                    occurrence=_as_int(arguments.get("occurrence"), 1))
+            except _ra.PatternRejected as exc:
+                return json.dumps({"error": str(exc)})
+            if _win is None:
+                return json.dumps({"error": _ra.no_match_message(_around)})
+            offset, limit = _win.offset, _win.limit
         if offset < 1:
             offset = 1
         if limit <= 0:
