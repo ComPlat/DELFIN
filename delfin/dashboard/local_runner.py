@@ -13,6 +13,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from .mpi_env import OMPI_ENVIRONMENT, OMPI_ENVIRONMENT_REMOVED
+
 
 _ACTIVE_CHILD = None
 _ACTIVE_CHILD_LOCK = threading.RLock()
@@ -118,16 +120,14 @@ def _configure_environment() -> None:
         logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                             format='%(levelname)s: %(message)s', force=True)
 
-    os.environ['OMPI_MCA_pml'] = 'ob1'
-    os.environ['OMPI_MCA_btl'] = 'self,tcp,vader'
-    os.environ['OMPI_MCA_mpi_show_mca_params_file'] = '0'
-    os.environ['OMPI_MCA_mpi_yield_when_idle'] = '1'
-    os.environ['OMPI_MCA_coll_hcoll_enable'] = '0'
-    os.environ.pop('OMPI_MCA_btl_tcp_if_include', None)
-    os.environ.pop('OMPI_MCA_btl_tcp_if_exclude', None)
-    os.environ['OMPI_MCA_hwloc_base_binding_policy'] = 'none'
-    os.environ['OMPI_MCA_rmaps_base_mapping_policy'] = 'core'
-    os.environ['OMPI_MCA_rmaps_base_oversubscribe'] = 'true'
+    # The OpenMPI settings a one-task allocation needs, from the one list
+    # every parallel ORCA DELFIN starts is configured by.  A job runner sets
+    # rather than setdefaults: this process is the job, and its environment
+    # is DELFIN's to give the run.
+    for key, value in OMPI_ENVIRONMENT.items():
+        os.environ[key] = value
+    for key in OMPI_ENVIRONMENT_REMOVED:
+        os.environ.pop(key, None)
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
     os.environ['DELFIN_ORCA_PROGRESS'] = '0'
