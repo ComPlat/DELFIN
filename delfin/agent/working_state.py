@@ -44,6 +44,9 @@ _MAX_DENIALS = 4
 _MAX_DENIAL_CHARS = 200
 # Journal-backed file changes.
 _MAX_FILES = 12
+# Structured operator refusals (refusal_memory store), newest first.
+_MAX_REFUSALS = 4
+_MAX_REFUSAL_CHARS = 160
 # Last test outcome per test file, newest wins.
 _MAX_TESTS = 5
 _MAX_TEST_LINE_CHARS = 160
@@ -231,6 +234,26 @@ def _open_tasks(workspace: Path) -> list[str]:
         return []
 
 
+def _refusals(workspace: Path) -> list[str]:
+    """Structured operator refusals from the refusal_memory store, newest
+    first, one line each. The message-based ``_denials`` above catches
+    what the gate wrote this session; this store is what survives after
+    compaction, recorded by the dialog itself."""
+    try:
+        from .refusal_memory import RefusalMemory
+        mem = RefusalMemory.load(Path(workspace) / ".delfin" / "refusals.json")
+    except Exception:
+        return []
+    lines: list[str] = []
+    for r in reversed(mem.entries):
+        what = r.target + ("/" if r.is_dir else "")
+        line = f"{r.tool} {what} refused at {r.time or '?'}: {r.reason or '?'}"
+        lines.append(_clip(line, _MAX_REFUSAL_CHARS))
+        if len(lines) >= _MAX_REFUSALS:
+            break
+    return lines
+
+
 def _scrub(text: str) -> str:
     """Remove credential material via the house redactor. Never raises."""
     try:
@@ -259,17 +282,21 @@ def build_working_state_block(
     tests = _test_outcomes(msgs)
     denials = _denials(msgs)
     instr = _instructions(msgs)
+    refusals = _refusals(workspace) if workspace is not None else []
 
-    if not (tasks or files or names or tests or denials or instr):
+    if not (tasks or files or names or tests or denials or instr
+            or refusals):
         return ""
 
-    # Build by priority: tasks, instructions, denials, tests, names,
-    # files. When the ceiling is hit, the LOWEST-priority sections drop
-    # first; a hard cut with a marker guarantees the ceiling regardless.
+    # Build by priority: tasks, instructions, denials, refusals, tests,
+    # names, files. When the ceiling is hit, the LOWEST-priority
+    # sections drop first; a hard cut with a marker guarantees the
+    # ceiling regardless.
     pieces = [
         ("Open tasks (task tool):", tasks),
         ("Standing instructions:", instr),
         ("Recent denials (do not retry):", denials),
+        ("Operator refusals (do not ask again):", refusals),
         ("Last test outcomes:", tests),
         ("Recently worked on:", names),
         ("Files changed this session (change journal):", files),
