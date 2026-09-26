@@ -70,7 +70,11 @@ class TestLsPreview:
                                                   capsys, monkeypatch):
         _record(headless_room, "3004-kk",
                 command="echo " + "x" * 300)
-        # A fixed narrow terminal: the line must not exceed it.
+        # A fixed narrow terminal: the line must not exceed it. COLUMNS
+        # is unset on purpose -- _ls_width honours it FIRST, and a COLUMNS
+        # inherited from the test runner's shell would mask the
+        # get_terminal_size branch this case is about.
+        monkeypatch.delenv("COLUMNS", raising=False)
         monkeypatch.setattr("shutil.get_terminal_size",
                             lambda: os.terminal_size((60, 24)))
         rc, out = _ls(capsys)
@@ -86,6 +90,7 @@ class TestLsPreview:
                                                     capsys, monkeypatch):
         _record(headless_room, "3005-ll",
                 command="echo " + "y" * 300)
+        monkeypatch.delenv("COLUMNS", raising=False)
         monkeypatch.setattr("shutil.get_terminal_size",
                             lambda: (_f := None) or (_ for _ in ()).throw(
                                 OSError("no terminal")))
