@@ -117,10 +117,31 @@ def test_change_of_a_stranger_file_keeps_it_fresh(repo):
     assert is_stale(ev, fingerprint(repo)) is None
 
 
-def test_new_commit_makes_it_stale(repo):
+def test_a_commit_that_changes_the_tested_module_makes_it_stale(repo):
     ev = _run(repo)
+    _touch(repo, "pkg/module.py", "X = 9\n", mtime=300)
     _commit_all(repo, "second")
     assert is_stale(ev, fingerprint(repo)) is not None
+
+
+def test_committing_what_was_tested_keeps_the_run_fresh(repo):
+    # The usual flow -- change, test green, commit, mark done. The
+    # session's first version judged every commit stale, which would
+    # have turned exactly this into "unmet". The old decision was "any
+    # commit move invalidates"; content decides now.
+    _touch(repo, "pkg/module.py", "X = 5\n", mtime=50)
+    ev = _run(repo)
+    _commit_all(repo, "the tested change")
+    assert is_stale(ev, fingerprint(repo)) is None
+    _commit_all(repo, "an empty commit")
+    assert is_stale(ev, fingerprint(repo)) is None
+
+
+def test_a_commit_to_a_stranger_does_not_accuse(repo):
+    ev = _run(repo)
+    _touch(repo, "other/stranger.py", "Y = 3\n", mtime=300)
+    _commit_all(repo, "elsewhere")
+    assert is_stale(ev, fingerprint(repo)) is None
 
 
 def test_unchanged_state_is_fresh(repo):
@@ -166,6 +187,8 @@ def test_note_names_the_state_and_the_command(repo):
 
 def test_note_on_a_stale_commit_names_the_new_commit(repo):
     ev = _run(repo)
+    _touch(repo, "tests/test_module.py", "def test_x():\n    assert 1\n",
+           mtime=300)
     _commit_all(repo, "second")
     text = note(is_stale(ev, fingerprint(repo)))
     assert "re-run" in text
