@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    from delfin.agent import verify_recipe as _verify_recipe
+except ImportError:  # pragma: no cover - the module ships with the agent
+    _verify_recipe = None  # type: ignore[assignment]
+
 
 @dataclass(frozen=True)
 class PromptSection:
@@ -775,6 +780,23 @@ class PromptLoader:
                 "The user's instructions and remembered preferences win: if "
                 "they say to leave the line out or word it differently, do "
                 "that.")
+
+    def _load_verify_recipe_context(self) -> str:
+        """How to check work in THIS workspace, read from its own files.
+
+        Calls the read-only verify_recipe module against the workspace
+        root (not the DELFIN source tree) and renders it for the prompt.
+        Empty when the workspace attests no checks -- no guessing.
+        """
+        if _verify_recipe is None or self.workspace_root is None:
+            return ""
+        try:
+            recipe = _verify_recipe.discover(self.workspace_root)
+            return _verify_recipe.render(recipe)
+        except Exception:
+            # A malformed CI file or an unreadable pyproject must never
+            # cost the session its prompt; the recipe is advisory.
+            return ""
 
     def _build_session_env_block(self) -> str:
         """Build a CLI-style environment summary for the system prompt.
@@ -1940,6 +1962,15 @@ class PromptLoader:
                 add("episodes", self.LAYER_VOLATILE,
                     f"--- Past Sessions ---\n{episode_ctx}")
                 injected.append("episodes")
+
+            # How this workspace checks its work (tests/lint from its own
+            # CI or config), so the agent calls the right runner instead
+            # of guessing. Volatile: read from disk at build time, and it
+            # belongs to the workspace, not the prompt pack.
+            recipe_ctx = self._load_verify_recipe_context()
+            if recipe_ctx:
+                add("verify_recipe", self.LAYER_VOLATILE,
+                    f"--- How to verify work here ---\n{recipe_ctx}")
 
             # CLI-style environment block: cwd, branch, status, recent
             # commits. Kept near the bottom because the git status line
