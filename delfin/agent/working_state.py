@@ -234,18 +234,20 @@ def _open_tasks(workspace: Path) -> list[str]:
         return []
 
 
-def _refusals(workspace: Path) -> list[str]:
-    """Structured operator refusals from the refusal_memory store, newest
-    first, one line each. The message-based ``_denials`` above catches
-    what the gate wrote this session; this store is what survives after
-    compaction, recorded by the dialog itself."""
+def _refusals(entries) -> list[str]:
+    """The operator's refusals with their reasons, newest first, one line
+    each. The message-based ``_denials`` above catches what survived in
+    the compacted text; these come from the session's own refusal memory
+    (``refusal_memory``, held by the permissions object in memory, never
+    a file the agent could edit)."""
     try:
-        from .refusal_memory import RefusalMemory
-        mem = RefusalMemory.load(Path(workspace) / ".delfin" / "refusals.json")
+        from .refusal_memory import Refusal
+        refs = [Refusal.from_dict(e) for e in (entries or ())
+                if isinstance(e, dict)]
     except Exception:
         return []
     lines: list[str] = []
-    for r in reversed(mem.entries):
+    for r in reversed(refs):
         what = r.target + ("/" if r.is_dir else "")
         line = f"{r.tool} {what} refused at {r.time or '?'}: {r.reason or '?'}"
         lines.append(_clip(line, _MAX_REFUSAL_CHARS))
@@ -268,6 +270,7 @@ def build_working_state_block(
     *,
     session_id: str = "",
     workspace: Path | None = None,
+    refusals=None,
 ) -> str:
     """One bounded, redacted, deterministic working-state block.
 
@@ -282,7 +285,7 @@ def build_working_state_block(
     tests = _test_outcomes(msgs)
     denials = _denials(msgs)
     instr = _instructions(msgs)
-    refusals = _refusals(workspace) if workspace is not None else []
+    refusals = _refusals(refusals)
 
     if not (tasks or files or names or tests or denials or instr
             or refusals):

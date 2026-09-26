@@ -713,6 +713,14 @@ class AgentEngine:
 
     # -- KIT-Toolbox coding-agent permissions --------------------------------
 
+    def _refusal_entries(self) -> list:
+        """The session's refusals with reasons, for the working-state block."""
+        mem = getattr(self.kit_permissions, "refusal_memory", None)
+        try:
+            return mem.to_dict().get("entries", []) if mem is not None else []
+        except Exception:
+            return []
+
     @property
     def kit_permissions(self):
         """KitToolPermissions instance bound to the client (None if not KIT)."""
@@ -5249,6 +5257,7 @@ class AgentEngine:
                 compactable,
                 session_id=str(getattr(self, "session_id", "") or ""),
                 workspace=getattr(self, "repo_dir", None),
+                refusals=self._refusal_entries(),
             )
         except Exception:
             _state_block = ""
