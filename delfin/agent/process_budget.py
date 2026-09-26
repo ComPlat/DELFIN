@@ -336,6 +336,36 @@ def verdict(sample: dict, limits: BudgetLimits) -> Breach | None:
     return None
 
 
+def record_breach(breach: Breach, *, profile: str, session_id: str = "",
+                  log_path=None) -> None:
+    """Write one ``process_budget`` event to the audit log.
+
+    Session, profile, limit, value, ceiling — what the round report
+    needs to count breaches. Never raises: the audit log must not
+    break the guard that is mid-kill.
+    """
+    try:
+        from . import audit_log
+        audit_log.append(
+            audit_log.make_record(
+                tool="process_budget",
+                decision="block",
+                mode="process_budget",
+                reason=breach.message[:300],
+                session_id=session_id,
+                extra={
+                    "profile": profile,
+                    "limit": breach.limit,
+                    "value": breach.value,
+                    "ceiling": breach.ceiling,
+                },
+            ),
+            log_path=log_path,
+        )
+    except Exception:
+        pass
+
+
 # No rlimits on the child. RLIMIT_NPROC counts every process of the
 # whole USER on the machine, not this call's children, so on a shared
 # login node it either never fires or fails innocent fork() calls
@@ -357,9 +387,11 @@ class BudgetGuard:
 
     def __init__(self, root_pid: int, limits: BudgetLimits | None = None,
                  poll_s: float = 1.0, term_grace_s: float = 5.0,
-                 sample_fn=sample_descendants, profile: str | None = None):
+                 sample_fn=sample_descendants, profile: str | None = None,
+                 session_id: str = ""):
         self.root_pid = root_pid
         self.profile = profile
+        self.session_id = session_id
         if limits is not None:
             self.limits = limits
         elif profile is not None:
@@ -391,6 +423,12 @@ class BudgetGuard:
         breach = verdict(sample, self.limits)
         if breach is not None:
             self.breach = breach
+            # One audit event per breach, from the one place every
+            # profile's guard passes through.
+            record_breach(
+                breach,
+                profile=self.profile or "foreground",
+                session_id=self.session_id)
             self._kill_group()
         return breach
 
