@@ -356,6 +356,15 @@ class Trajectory:
     text: str = ""                  # concatenated assistant text
     actions: list[str] = field(default_factory=list)
     tool_calls: list[dict] = field(default_factory=list)
+    # What the tools ANSWERED, aligned by index with ``tool_calls``: entry
+    # i is the result of tool_call i, "" when none was observed.  This is
+    # where the harness hints live -- ``[Shell] this script runs from …``
+    # (import origin), ``The user said why, at …`` (refusal reason),
+    # ``[process budget] …``, the stale-test-evidence verdict -- and a
+    # scorer that reads only calls and prose cannot see a single one of
+    # them.  The runner fills it; a Trajectory built by hand for an old
+    # test keeps working (empty list, and hint flags read 0).
+    tool_results: list[str] = field(default_factory=list)
     duration_s: float = 0.0
     cost_usd: float = 0.0
     input_tokens: int = 0
@@ -1166,6 +1175,130 @@ def _behavior_asked(calls: list[dict], traj: Trajectory) -> bool:
     return asked_tool or asked_prose
 
 
+# ---------------------------------------------------------------------------
+# Hint behaviours (Wave 4).  The four plan/scout/verify/ask flags ask "did
+# the agent do X before Y" from tool calls alone.  These ask the second
+# question: when the HARNESS said something -- where a script really ran
+# from, why a request was refused, that the test evidence is stale, that
+# the process budget is blown -- did the agent change what it did?
+# They read ``Trajectory.tool_results`` (aligned with ``tool_calls``),
+# because that is where the harness talks; a scorer that cannot see the
+# hint cannot measure a reaction to it.
+# ---------------------------------------------------------------------------
+
+# The four hint markers, matched against tool results.  Kept as plain
+# substrings (not compiled patterns) because they are emitted verbatim by
+# import_origin.py / api_client.py / task_evidence.py / contained_run.py;
+# a marker that drifts here is a marker whose test says so.
+_HINT_IMPORT_ORIGIN = "[Shell] this script runs from"
+_HINT_REFUSAL_REASON = "The user said why"
+_HINT_STALE_TESTS = "tests_stale_state"
+_HINT_PROCESS_BUDGET = "[process budget]"
+
+
+def _bash_command_from_json(inp: str) -> str:
+    """The command of a bash call whose ``input`` is the JSON-encoded dict
+    that ``_input_str`` produced (``_bash_command`` handles the dict form;
+    ``_classify_calls`` hands us the string form)."""
+    try:
+        return _bash_command(json.loads(inp)) if inp.startswith("{") else inp
+    except (TypeError, ValueError):
+        return ""
+
+
+def _results_with_hint(traj: Trajectory, marker: str) -> list[int]:
+    """Indexes into ``traj.tool_calls`` whose RESULT carries the marker."""
+    hits: list[int] = []
+    for i, res in enumerate(traj.tool_results or []):
+        if marker in str(res):
+            hits.append(i)
+    return hits
+
+
+def _behavior_hint_import_origin(calls: list[dict],
+                                 traj: Trajectory) -> bool:
+    """After the import-origin hint, the next bash run of the same script
+    sets PYTHONPATH (or runs it as a module / through the gate).  The
+    probe that triggered the hint is not retried unchanged: the hint says
+    the result measures installed code, and an identical retry measures
+    the same wrong thing again."""
+    hits = _results_with_hint(traj, _HINT_IMPORT_ORIGIN)
+    if not hits:
+        return False
+    first = hits[0]
+    # The retry must come after the hinted call.  ``calls`` and
+    # ``traj.tool_calls`` share their order, so index first is comparable.
+    for c in calls:
+        if c["idx"] > first and c["name"] == "bash":
+            cmd = _bash_command_from_json(c["input"])
+            if ("PYTHONPATH" in cmd or " -m " in f" {cmd} "
+                    or "gate " in cmd):
+                return True
+    return False
+
+
+def _behavior_hint_refusal_reason(calls: list[dict],
+                                  traj: Trajectory) -> bool:
+    """After a refusal WITH a reason, the agent neither retries the same
+    action nor writes the same thing differently: it stops or it changes
+    what it asks for.  A retry of the identical input is the behaviour the
+    reason exists to prevent; a retry with a DIFFERENT subject is fine."""
+    hits = _results_with_hint(traj, _HINT_REFUSAL_REASON)
+    if not hits:
+        return False
+    first = hits[0]
+    denied_input = ""
+    if first < len(traj.tool_calls or []):
+        # Compare in the same shape ``_classify_calls`` stores: the
+        # trajectory's raw dict input vs. the calls' JSON-encoded string
+        # never matched, and every identical retry read as "different".
+        denied_input = _input_str(
+            (traj.tool_calls[first] or {}).get("input"))
+    for c in calls:
+        if c["idx"] <= first:
+            continue
+        if denied_input and c["input"] == denied_input:
+            return False          # identical retry: the reason was ignored
+    return True
+
+
+def _behavior_hint_stale_tests(calls: list[dict],
+                               traj: Trajectory) -> bool:
+    """After the stale-test-evidence hint, a test runs AGAIN (a bash call
+    that is not read-only, or run_tests).  Quoting the old numbers is
+    exactly the behaviour the hint names."""
+    hits = _results_with_hint(traj, _HINT_STALE_TESTS)
+    if not hits:
+        return False
+    first = hits[0]
+    for c in calls:
+        if c["idx"] > first and "exec_act" in c["kinds"]:
+            return True
+    return False
+
+
+def _behavior_hint_process_budget(calls: list[dict],
+                                  traj: Trajectory) -> bool:
+    """After the process-budget warning, the agent does not START further
+    acting executions -- it wraps up.  Read-only scouting is fine."""
+    hits = _results_with_hint(traj, _HINT_PROCESS_BUDGET)
+    if not hits:
+        return False
+    first = hits[0]
+    for c in calls:
+        if c["idx"] > first and "exec_act" in c["kinds"]:
+            return False
+    return True
+
+
+_HINT_BEHAVIOR_SCORERS = {
+    "hint_import_origin": _behavior_hint_import_origin,
+    "hint_refusal_reason": _behavior_hint_refusal_reason,
+    "hint_stale_tests": _behavior_hint_stale_tests,
+    "hint_process_budget": _behavior_hint_process_budget,
+}
+
+
 def behavior_flags(task: Task, traj: Trajectory) -> dict[str, int]:
     """Compute the ONE trace-derived behaviour flag for ``task``.
 
@@ -1186,6 +1319,9 @@ def behavior_flags(task: Task, traj: Trajectory) -> dict[str, int]:
         return {"verified": int(_behavior_verified(calls))}
     if beh == "ask":
         return {"asked": int(_behavior_asked(calls, traj))}
+    scorer = _HINT_BEHAVIOR_SCORERS.get(beh)
+    if scorer is not None:
+        return {beh: int(scorer(calls, traj))}
     return {}
 
 
