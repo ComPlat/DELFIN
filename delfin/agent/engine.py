@@ -5205,8 +5205,20 @@ class AgentEngine:
                     # compounding loss across repeated compactions on long
                     # sessions. Carry it forward near-whole instead (bounded,
                     # header stripped so we don't nest "[summary]" markers).
-                    if text.lstrip().startswith(self._SUMMARY_BLOCK_PREFIX):
-                        body = text.split("\n", 1)[1].strip() if "\n" in text else text.strip()
+                    # CONTAINED, not leading: the compaction composes the
+                    # working-state block AHEAD of the summary text, so
+                    # the message starts with "[Working state" and a
+                    # startswith check never fires -- the very erosion
+                    # this branch exists to prevent, resurrected by the
+                    # block's own header.
+                    if self._SUMMARY_BLOCK_PREFIX in text:
+                        # Strip everything up to and including the
+                        # summary header line, then the first newline
+                        # after it (the header itself).
+                        after = text.split(
+                            self._SUMMARY_BLOCK_PREFIX, 1)[1]
+                        body = after.split("\n", 1)[1].strip() \
+                            if "\n" in after else after.strip()
                         if len(body) > 3000:
                             body = body[:3000] + "\n... [older summary detail elided] ..."
                         if body:

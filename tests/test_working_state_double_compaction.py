@@ -200,6 +200,64 @@ def test_operator_instruction_survives(twice_compacted):
     assert "never edit api_client.py" in _context(twice_compacted)
 
 
+def test_carried_summary_is_not_truncated_in_the_extractive_path(tmp_path):
+    """A SECOND compaction on the extractive (CLI) path must carry the
+    first summary forward, not truncate it to 400 chars.
+
+    The compaction composes the working-state block AHEAD of the
+    summary text, so the summary message no longer STARTS with
+    "[Conversation summary" -- and the extractive path's carried-summary
+    branch (a startswith check written to keep a prior recap whole)
+    never fires.  The prior recap is then truncated like a one-line
+    goal, compounding loss across compactions -- exactly what the
+    comment on that branch says it exists to prevent.
+    """
+    eng = _bare_engine(tmp_path)
+    eng.backend = "cli"                     # extractive path, no LLM call
+    eng.client = None
+    # _bare_engine installs a mocked LLM summariser; for the extractive
+    # path it must be OFF (backend "cli" makes the real one return ""),
+    # otherwise the mock -- which does not implement the real method's
+    # carried-summary behaviour -- answers instead of the extractive
+    # branch this test is about.
+    eng._llm_summarize_old_messages = lambda old: ""  # type: ignore[method-assign]
+    eng.messages = _long_history()
+    # First compaction: extractive summary, long enough that a 400-char
+    # cut would visibly eat it.
+    eng._compact_history(force=True)
+    first = [m for m in eng.messages
+             if "[Conversation summary" in str(m.get("content", ""))]
+    assert first, "no summary block after the first compaction"
+    first_len = len(str(first[0]["content"]))
+    assert first_len > 400, (
+        f"control is meaningless: the first summary is only "
+        f"{first_len} chars")
+    # Second compaction over the same session shape.
+    for i in range(10):
+        eng.messages.append({"role": "user", "content":
+                             f"[Command results]\nround2 {i}: "
+                             + "work " * 30})
+        eng.messages.append({"role": "assistant", "content":
+                             f"round2 did {i}: " + "done " * 30})
+    eng._compact_history(force=True)
+    # The carried summary must still be (near-)whole: the extractive
+    # path keeps user goals "near-full"; a prior summary is the same
+    # kind of load-bearing recap and the branch exists for exactly it.
+    second = [m for m in eng.messages
+              if "[Conversation summary" in str(m.get("content", ""))]
+    assert second, "no summary block after the second compaction"
+    carried = str(second[0]["content"])
+    # Sharper than a length ratio: a marker planted past the 400-char
+    # cut must survive.  The first summary's body contains the goal
+    # (round-1 user text) -- find text that can only have arrived via
+    # the CARRIED summary body, not via the working-state block or the
+    # kept tail.
+    assert "extend the two behavior fixtures" in carried, (
+        "the carried summary body was truncated -- the goal sentence "
+        "from the first recap, deeper than 400 chars, is gone; the "
+        "startswith recognition never fired")
+
+
 def test_the_second_summary_names_the_first(tmp_path):
     """After TWO compactions the context must still carry A summary
     block -- the recap the next turn reads.  The compaction composes
