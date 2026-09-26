@@ -768,10 +768,12 @@ def _apply_occupier_overrides(
         try:
             from delfin.occupier_auto import record_auto_preference, infer_parity_from_m
             from delfin.occupier_sequences import infer_species_delta
-            entry_result = result[2] if isinstance(result, tuple) and len(result) > 2 else None
-            if entry_result is not None:
-                m_val = entry_result.get("m") if isinstance(entry_result, dict) else None
-                bs_val = entry_result.get("BS") if isinstance(entry_result, dict) else None
+            from delfin.copy_helpers import extract_preferred_spin
+            # The authoritative m/BS for the override is the winning entry
+            # in OCCUPIER.txt itself (retagged "<-- OVERRIDE"), not the
+            # rule-based sequence replay, which may renumber indices.
+            m_val, bs_val = extract_preferred_spin(folder_path)
+            if m_val is not None:
                 parity = infer_parity_from_m(m_val)
                 if parity is not None:
                     _delta = infer_species_delta(folder_path)
