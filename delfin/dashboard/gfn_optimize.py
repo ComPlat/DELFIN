@@ -511,7 +511,16 @@ _TERMINATORS = (
 #: bypasses it entirely and prints ``At line N of file ...`` followed by
 #: ``Fortran runtime error: ...``.  Only the second kind ends in a bare
 #: backtrace, and that is the kind whose reason kept getting lost.
+#:
+#: A shell naming a program it could not run is a reason of its own, and the
+#: earliest one to look for: the line has neither "error" nor any wording the
+#: complaint scan below catches, so without this marker the scan kept on
+#: going and settled on a WARNING from the top of the output -- measured on
+#: this box, a parallel ORCA that could not find its mpirun was reported to
+#: ten suite runs as "WARNING: Found dipole moment calculation with XTB
+#: calculation", and the word mpirun appeared nowhere in any of them.
 _REASON_MARKERS = (
+    'command not found',
     'fortran runtime error:',
     'program received signal',
 )
