@@ -16,6 +16,7 @@ inside the pristine guard.
 """
 
 import json
+import subprocess
 from pathlib import Path
 
 from delfin.agent import hooks as H
@@ -47,11 +48,30 @@ def test_the_shipped_hook_runs_nothing_that_matters():
 
 
 def test_the_definition_is_not_ignored_by_git():
-    """The whole reason the seed exists. If this path ever lands under a
-    `.delfin/` directory it becomes invisible to a clone again."""
-    assert ".delfin" not in _SEEDS.parts
-    for f in _SEEDS.rglob("*.json"):
-        assert ".delfin" not in f.relative_to(_REPO).parts
+    """The whole reason the seed exists. A seed that git ignores exists
+    only in the working copy that wrote it and is missing from every
+    clone, so the task would pass locally and measure nothing in CI.
+
+    The original form of this test asserted ".delfin" not in path.parts,
+    which is only a proxy for "git does not ignore it". That proxy breaks
+    in an agent worktree, where the whole checkout lives under
+    <repo>/.delfin/worktrees/ — the seed is perfectly tracked there and
+    ships with every clone of the branch. Asking git itself is the
+    property actually wanted, and works in both layouts."""
+    def _git(*args):
+        return subprocess.run(
+            ("git", *args), cwd=_REPO, capture_output=True, text=True,
+        )
+
+    for f in sorted(_SEEDS.rglob("*.json")):
+        rel = f.relative_to(_REPO)
+        # --no-index: a tracked file is never reported as ignored without
+        # it, but "would a fresh clone have this file" is exactly the
+        # ignore rules, not the index of this checkout.
+        ignored = _git("check-ignore", "-q", "--no-index", str(rel)).returncode == 0
+        assert not ignored, f"{rel} is git-ignored: a clone would not have it"
+        tracked = _git("ls-files", "--error-unmatch", str(rel)).returncode == 0
+        assert tracked, f"{rel} is not tracked by git: a clone would not have it"
 
 
 def test_the_seeded_workspace_offers_hooks_and_loads_none():
