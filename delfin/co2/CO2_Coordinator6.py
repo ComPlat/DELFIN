@@ -80,6 +80,8 @@ scan_steps=25
 # scan_dissoc=true: scan outward from r0 to dissoc_distance instead of inward to scan_end
 # dissoc_distance: target M–substrate distance for dissociation (default 6.0 A)
 # run_occupier_on_adduct=true: run the OCCUPIER input writer on the best MANTA structure before the scan
+# substrate_atom: element symbol of the substrate anchor atom (nearest to the metal), e.g. N for NH3, C for CO2
+# substrate_atom_index: explicit 0-based anchor index (overrides substrate_atom; use when ambiguous)
 ------------------------------------
 adduct_source=xyz
 manta_smiles=
@@ -87,6 +89,8 @@ adduct_xyz=
 scan_dissoc=false
 dissoc_distance=6.0
 run_occupier_on_adduct=false
+substrate_atom=
+substrate_atom_index=
 
 # Alignment (0-based indices)
 ------------------------------------
@@ -699,6 +703,60 @@ def detect_metal_index(atoms):
         if not c:
             return int(np.argmax([a.number for a in atoms]))
     return c[0] if len(c) == 1 else max(c, key=lambda i: atoms[i].number)
+
+def _resolve_substrate_anchor(atoms, metal_idx, substrate_symbol=None,
+                              substrate_index_raw=None, source=""):
+    """Resolve the substrate anchor atom for the dissociation scan.
+
+    Preference: explicit ``substrate_atom_index`` (backward compatible),
+    then ``substrate_atom=<element symbol>`` (nearest atom of that element
+    to the metal). Ambiguity is loud: if several atoms of the element sit
+    within 1 A of the closest one, all candidates are reported instead of
+    silently picking one. Raises ValueError when nothing usable is set.
+    """
+    raw = None if substrate_index_raw is None else str(substrate_index_raw).strip()
+    if raw:
+        try:
+            idx = int(raw)
+        except ValueError:
+            raise ValueError(
+                f"substrate_atom_index={raw!r} is not an integer. "
+                "Use a 0-based index or substrate_atom=<element symbol>."
+            )
+        if not (0 <= idx < len(atoms)) or idx == metal_idx:
+            raise ValueError(
+                f"substrate_atom_index={idx} is invalid for '{source}' "
+                f"({len(atoms)} atoms, metal at {metal_idx})."
+            )
+        return idx
+    if substrate_symbol:
+        sym = substrate_symbol.strip()
+        candidates = [i for i, a in enumerate(atoms)
+                      if a.symbol.capitalize() == sym.capitalize()
+                      and i != metal_idx]
+        if not candidates:
+            raise ValueError(
+                f"substrate_atom={sym}: no {sym} atom found in '{source}' "
+                f"(available: {sorted({a.symbol for a in atoms})})."
+            )
+        d = {i: float(np.linalg.norm(
+            atoms.positions[i] - atoms.positions[metal_idx])) for i in candidates}
+        best = min(d, key=d.get)
+        close = [i for i, dist in d.items() if dist <= d[best] + 1.0]
+        if len(close) > 1:
+            listing = ", ".join(f"{i} ({d[i]:.2f} A)" for i in sorted(close))
+            raise ValueError(
+                f"substrate_atom={sym} is ambiguous: several {sym} atoms are "
+                f"equally close to the metal ({listing}). "
+                f"Set substrate_atom_index explicitly to pick one."
+            )
+        return best
+    raise ValueError(
+        "scan_dissoc=true requires substrate_atom=<element symbol> or "
+        "substrate_atom_index (0-based index of the substrate atom "
+        "bonded to the metal, e.g. N for NH3 or the C of CO2)."
+    )
+
 
 def guess_neighbors(atoms, metal_index, scale=1.15):
     ZM = atoms[metal_index].number
@@ -1690,18 +1748,10 @@ def main():
         if metal_idx is None:
             raise ValueError(f"No metal atom found in adduct_xyz '{adduct_xyz}'.")
         substrate_idx_raw = args.get("substrate_atom_index")
-        if substrate_idx_raw is None or str(substrate_idx_raw).strip() == "":
-            raise ValueError(
-                "scan_dissoc=true requires substrate_atom_index "
-                "(0-based index of the substrate atom bonded to the metal, "
-                "e.g. the CO2 carbon in the adduct)."
-            )
-        co2_c_idx = int(str(substrate_idx_raw).strip())
-        if not (0 <= co2_c_idx < len(atoms_adduct)) or co2_c_idx == metal_idx:
-            raise ValueError(
-                f"substrate_atom_index={co2_c_idx} is invalid for "
-                f"'{adduct_xyz}' ({len(atoms_adduct)} atoms, metal at {metal_idx})."
-            )
+        substrate_symbol = _clean_str(args.get("substrate_atom"))
+        co2_c_idx = _resolve_substrate_anchor(
+            atoms_adduct, metal_idx, substrate_symbol, substrate_idx_raw,
+            source=adduct_xyz)
         qm_atom_count = len(atoms_adduct)
         co2_indices = [co2_c_idx]
         qmmm_range = (0, qm_atom_count - 1)

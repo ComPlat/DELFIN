@@ -153,6 +153,7 @@ _CO2_DEFAULTS = {
     "scan_dissoc": "false",
     "dissoc_distance": "6.0",
     "run_occupier_on_adduct": "false",
+    "substrate_atom": "",
     "substrate_atom_index": "",
 }
 
@@ -253,7 +254,7 @@ def _build_co2_control(
         ("# Inverse RSS (dissociation scan)", [
             "binding", "adduct_source", "manta_smiles", "adduct_xyz",
             "scan_dissoc", "dissoc_distance", "run_occupier_on_adduct",
-            "substrate_atom_index",
+            "substrate_atom", "substrate_atom_index",
         ]),
         ("# Alignment (0-based indices)", ["metal", "metal_index", "align_bond_index", "neighbors"]),
         ("# CO2 placement", [

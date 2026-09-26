@@ -390,3 +390,52 @@ def test_manta_adduct_geometry_raises_on_error(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="delfin-manta"):
         mod._manta_adduct_geometry("[Ni](C")
 
+
+# ---------------------------------------------------------------------------
+# Substrate anchor resolution (substrate_atom symbol vs. index)
+# ---------------------------------------------------------------------------
+
+def _anchor_atoms():
+    """Ni at origin, N at 2.0 A (the anchor), second N far away, H at 1.1 A."""
+    from ase import Atoms
+    return Atoms("NiNNH",
+                 positions=[[0, 0, 0], [0, 0, 2.0], [0, 0, 7.0], [0, 0, 1.1]])
+
+
+def test_resolve_anchor_by_symbol_takes_nearest_to_metal():
+    from delfin.co2 import CO2_Coordinator6 as mod
+    idx = mod._resolve_substrate_anchor(_anchor_atoms(), 0, "N", None)
+    assert idx == 1  # nearest N to the Ni at origin
+
+
+def test_resolve_anchor_explicit_index_overrides_symbol():
+    from delfin.co2 import CO2_Coordinator6 as mod
+    idx = mod._resolve_substrate_anchor(_anchor_atoms(), 0, "N", "2")
+    assert idx == 2
+
+
+def test_resolve_anchor_ambiguous_symbol_raises_with_candidates():
+    from delfin.co2 import CO2_Coordinator6 as mod
+    from ase import Atoms
+    atoms = Atoms("NiNN", positions=[[0, 0, 0], [0, 0, 2.0], [0, 0, 2.5]])
+    with pytest.raises(ValueError, match="ambiguous"):
+        mod._resolve_substrate_anchor(atoms, 0, "N", None)
+
+
+def test_resolve_anchor_unknown_symbol_raises():
+    from delfin.co2 import CO2_Coordinator6 as mod
+    with pytest.raises(ValueError, match="no .*Xe"):
+        mod._resolve_substrate_anchor(_anchor_atoms(), 0, "Xe", None)
+
+
+def test_resolve_anchor_neither_set_raises():
+    from delfin.co2 import CO2_Coordinator6 as mod
+    with pytest.raises(ValueError, match="substrate_atom"):
+        mod._resolve_substrate_anchor(_anchor_atoms(), 0, "", None)
+
+
+def test_resolve_anchor_out_of_range_index_raises():
+    from delfin.co2 import CO2_Coordinator6 as mod
+    with pytest.raises(ValueError, match="invalid"):
+        mod._resolve_substrate_anchor(_anchor_atoms(), 0, None, "9")
+
