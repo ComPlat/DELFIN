@@ -94,9 +94,18 @@ def test_a_host_with_nothing_still_runs_the_command(
 def test_it_can_be_disarmed(perms, tmp_path, monkeypatch):
     A.set_bash_isolation_override("off")
     argv = _argv(perms, tmp_path, monkeypatch, bwrap=True)
-    assert not any("bwrap" in str(part) for part in argv), (
+    # "off" releases the FILESYSTEM isolation (--ro-bind / /, read-only
+    # root). The process cage is a different layer and may still wrap the
+    # command — it holds in every filesystem mode, and its argv starts
+    # with `bwrap --dev-bind / /` (a WRITABLE /). The old assertion, "no
+    # 'bwrap' anywhere in argv", therefore failed on hosts where the cage
+    # works (the SLURM suite: 10 of 10 runs red) and passed inside the
+    # gate, whose own cage makes the cage probe fail. What "off" must
+    # actually let go of is the read-only filesystem wrap, not the cage.
+    assert "--ro-bind" not in argv, (
         "'off' is the escape hatch for a setup that needs unrestricted "
         "writes, and it has to actually let go")
+    assert argv[-3:] == ["/bin/bash", "-c", "echo hi"], argv
 
 
 def test_the_cli_offers_the_disarm():
