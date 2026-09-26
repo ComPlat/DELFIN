@@ -124,7 +124,7 @@ FREE = [
 
 
 #: Findings the gate has since closed -- they run as ordinary tests.
-FIXED: set = {c for _, c in FINDINGS if "http.server" in c}
+FIXED: set = {c for _, c in FINDINGS if not c.startswith("tox ")}
 
 
 def _cases(findings):

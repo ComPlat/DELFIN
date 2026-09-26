@@ -111,7 +111,7 @@ FREE = [
 
 
 #: Findings the gate has since closed -- they run as ordinary tests.
-FIXED: set = set()
+FIXED: set = {c for _, c in FINDINGS if not c.startswith("tox ")}
 
 
 def _cases(findings):
