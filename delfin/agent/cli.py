@@ -275,7 +275,8 @@ def _json_line(obj: dict) -> None:
 
 
 def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
-              emit: Any = None) -> dict[str, Any]:
+                emit: Any = None,
+                on_tool_result: Any = None) -> dict[str, Any]:
     """Stream a single turn and collect text + tool-calls + token-usage.
 
     AgentEngine's ``stream_response`` is callback-driven, not event-
@@ -289,16 +290,26 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     that want the turn as a stream rather than as one answer at the end.
     The return value is unchanged either way, so the summary a streaming
     caller prints last is the same object the JSON caller prints alone.
+
+    ``on_tool_result`` (optional) receives ``(name, output)`` per tool
+    result -- the harness hints (import origin, refusal reasons, …)
+    live there.  It is PASSED to the engine only when given: a stub
+    engine with a fixed ``stream_response`` signature (the scheduler
+    and benchmark test doubles) must keep working, and the return
+    contract stays exactly the five keys the JSON tests pin -- the
+    benchmark runner collects results through this callback instead
+    of a sixth key.
     """
     chunks: list[str] = []
     tool_calls: list[dict] = []
-    # Index-aligned with tool_calls: what each call ANSWERED.  The engine
-    # hands out a 2000-char head slice per result via on_tool_result --
-    # enough for every harness hint, cheap for the common huge output.
-    # A call with no observed result (stream ended, tool never ran) gets
-    # "", so index i of tool_results always belongs to tool_call i.
-    tool_results: list[str] = []
     error = ""
+
+    def _forward_tool_result(name: str, output: str) -> None:
+        if on_tool_result is not None:
+            try:
+                on_tool_result(name, str(output or ""))
+            except Exception:
+                pass
 
     def _on_token(text: str) -> None:
         if text:
@@ -312,32 +323,22 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         except (json.JSONDecodeError, TypeError):
             inp = {"raw": str(input_json)}
         tool_calls.append({"name": name, "input": inp})
-        tool_results.append("")            # placeholder, filled on result
         if emit is not None:
             emit({"type": "tool_use", "name": name, "input": inp})
-
-    def _on_tool_result(name: str, output: str) -> None:
-        # The engine reports results in call order; the placeholder this
-        # fills is the most recent unfilled call of this name.
-        for i in range(len(tool_calls) - 1, -1, -1):
-            if tool_calls[i].get("name") == name and not tool_results[i]:
-                tool_results[i] = str(output or "")
-                break
-        if emit is not None:
-            emit({"type": "tool_result", "name": name,
-                  "output": str(output or "")})
 
     in_before = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_before = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
 
+    kwargs: dict[str, Any] = dict(
+        user_message=prompt,
+        on_token=_on_token,
+        on_tool_use=_on_tool_use,
+        max_tokens=max_tokens,
+    )
+    if on_tool_result is not None:
+        kwargs["on_tool_result"] = _forward_tool_result
     try:
-        full_text = engine.stream_response(
-            user_message=prompt,
-            on_token=_on_token,
-            on_tool_use=_on_tool_use,
-            on_tool_result=_on_tool_result,
-            max_tokens=max_tokens,
-        ) or ""
+        full_text = engine.stream_response(**kwargs) or ""
     except Exception as exc:
         error = str(exc)
         full_text = ""
@@ -348,7 +349,6 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     return {
         "text": (full_text or "".join(chunks)).strip(),
         "tool_calls": tool_calls,
-        "tool_results": tool_results,
         "input_tokens": max(0, in_after - in_before),
         "output_tokens": max(0, out_after - out_before),
         "error": error,

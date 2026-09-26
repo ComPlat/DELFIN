@@ -266,29 +266,47 @@ class _FakeEngine:
 
 
 def test_run_once_carries_tool_results_from_the_engine(tmp_path):
+    """The public path: the benchmark runner asks _run_once for results
+    via the on_tool_result callback (the return contract stays five
+    keys), then threads them into trajectory_from_run."""
     from delfin.agent.cli import _run_once
-    raw = _run_once(_FakeEngine(), "probe it")
+    results: list[str] = []
+    raw = _run_once(_FakeEngine(), "probe it",
+                    on_tool_result=lambda n, o: results.append(o))
     assert raw["tool_calls"] == [
         {"name": "bash", "input": {"command": "python3 tools/probe.py"}}]
-    assert raw["tool_results"] == [
+    assert set(raw) == {"text", "tool_calls", "input_tokens",
+                        "output_tokens", "error"}, (
+        "_run_once's return contract is pinned by the JSON tests; a "
+        "sixth key breaks them")
+    assert results == [
         "[Shell] this script runs from tools/, so ..."], (
-        "_run_once dropped the engine's tool results; the hint never "
-        "reaches the scorer through the real path")
+        "_run_once never forwarded the engine's tool results; the hint "
+        "never reaches the scorer through the real path")
+    # And the full path into the Trajectory:
+    raw["tool_results"] = results
+    traj = trajectory_from_run(raw, duration_s=1.0)
+    assert traj.tool_results == [
+        "[Shell] this script runs from tools/, so ..."]
 
 
-def test_run_once_without_results_keeps_alignment():
+def test_run_once_without_a_collector_passes_no_kwarg():
+    """A stub engine with a FIXED stream_response signature must keep
+    working when no collector is given: the callback kwarg is passed
+    only on demand."""
     from delfin.agent.cli import _run_once
 
-    class _NoResultEngine(_FakeEngine):
-        def stream_response(self, **kw):
-            kw["on_tool_use"]("bash", '{"command": "ls"}')
-            kw["on_token"]("ok")
+    class _FixedSignatureEngine:
+        token_usage = {"input": 0, "output": 0}
+
+        def stream_response(self, user_message, on_token, on_tool_use,
+                            max_tokens):
+            on_tool_use("bash", '{"command": "ls"}')
+            on_token("ok")
             return "ok"
 
-    raw = _run_once(_NoResultEngine(), "ls")
-    # A call with no observed result keeps its empty placeholder: index i
-    # of tool_results always belongs to tool_call i.
-    assert raw["tool_calls"] and raw["tool_results"] == [""]
+    raw = _run_once(_FixedSignatureEngine(), "ls")
+    assert raw["text"] == "ok" and raw["tool_calls"]
 
 
 # ---------------------------------------------------------------------------

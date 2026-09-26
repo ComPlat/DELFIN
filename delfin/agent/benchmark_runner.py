@@ -884,8 +884,30 @@ def _run_task_once(
                     raise _SetupFailed(
                         f"engine init failed: task setup "
                         f"{task.setup!r} did not run: {setup_output[:300]}")
+            # Collect tool RESULTS alongside the calls: the Wave-4 hint
+            # scorers read them from the Trajectory.  Collected here via
+            # the callback _run_once offers (its return contract is
+            # pinned to five keys by the JSON tests); aligned by index
+            # with the calls -- a placeholder per observed call keeps
+            # the pairing even when a result never arrives.  A test
+            # double whose run_once takes no such kwarg keeps working:
+            # results stay empty, hint flags read 0, the run itself is
+            # unaffected.
+            _results: list[str] = []
+
+            def _collect_result(name: str, output: str) -> None:
+                _results.append(output)
+
             with _fixture_calc_dirs(_ws):
-                raw = run_once(engine, task.prompt, max_tokens=max_tokens)
+                try:
+                    raw = run_once(engine, task.prompt,
+                                   max_tokens=max_tokens,
+                                   on_tool_result=_collect_result)
+                except TypeError:
+                    raw = run_once(engine, task.prompt,
+                                   max_tokens=max_tokens)
+            raw["tool_results"] = _results[:len(raw.get("tool_calls")
+                                                or [])]
             # Inside the guard on purpose: it puts the workspace back on
             # the way out, so anything the task produced exists only
             # here. A check that ran afterwards would find the fixture.
