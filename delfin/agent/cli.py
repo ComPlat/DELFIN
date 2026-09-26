@@ -2205,6 +2205,23 @@ def cmd_approvals(args: argparse.Namespace) -> int:
 
     action = getattr(args, "approvals_action", "") or "ls"
 
+    if action == "answer":
+        # A choice question (ask_user_question) published by a terminal
+        # session. approve/deny is no answer to one: the operator had to
+        # deny and hide the pick in the refusal reason. The choice itself
+        # resolves against the question's own options; anything that is
+        # not a choice question is refused here, not guessed at.
+        from . import approval_answers as _ans
+        who = os.environ.get("USER", "")
+        try:
+            picks = _ans.answer(args.request_id, args.choice, by=who)
+        except _ans.ChoiceError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"answer: {args.request_id}")
+        print(f"choice: {', '.join(picks)}")
+        return 0
+
     if action in ("approve", "deny"):
         who = os.environ.get("USER", "")
         # A refusal may say what to do instead, and the model reads it in
@@ -3468,6 +3485,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--reason", default="",
         help="Tell the agent why, and what to do instead — it reads this "
              "in the same turn instead of guessing")
+    appr_ans = appr_sub.add_parser(
+        "answer", help="Answer a choice question (ask_user_question): "
+                       "pick by number or by option text")
+    appr_ans.add_argument("request_id")
+    appr_ans.add_argument(
+        "choice", help="The pick: an option's number (2) or its text, "
+                       "comma-separated when the question allows more")
     appr_watch = appr_sub.add_parser(
         "watch", help="One line per new request, as they arrive")
     appr_watch.add_argument("--seconds", type=float, default=0.0,
