@@ -85,6 +85,7 @@ from pathlib import Path
 from typing import Optional
 
 from delfin.agent import proc_identity
+from delfin.agent import process_budget
 
 
 _DEFAULT_BG_TIMEOUT_S = 24 * 3600    # 24 h hard cap
@@ -310,6 +311,10 @@ class BashJob:
     timeout_s: int
     finished_at: Optional[float] = None
     _watchdog: Optional[threading.Thread] = field(default=None, repr=False)
+    # Set when the process-budget guard ended this job: the breach that
+    # fired, as a plain dict (limit, profile, value, ceiling, message).
+    # Persisted in the registry so a reattached job still reports it.
+    budget_breach: Optional[dict] = field(default=None, repr=False)
 
     def poll(self) -> Optional[int]:
         rc = self.proc.poll()
@@ -362,6 +367,16 @@ class BashJob:
                 "finished (children still running) — the shell exited but "
                 "processes it started are still alive in its process group. "
                 "Do not treat this exit code as the work's result.")
+        if self.budget_breach is not None:
+            # The process budget ended this job: say so before any generic
+            # killed-by-signal note, because the reason is known exactly.
+            status["budget_breach"] = self.budget_breach
+            status["note"] = (
+                "ended by the process budget — "
+                + self.budget_breach.get("message", "a limit was exceeded")
+                + " Re-run with narrower work, fewer parallel children, or "
+                  "raise agent.process_budget.profiles.background.* in "
+                  "settings if the workload legitimately needs more.")
         return status
 
 
@@ -1144,6 +1159,8 @@ class ReattachedJob:
             status["note"] = (
                 "exit code unknown — the job outlived the process that "
                 "started it (recovered from the persistent registry)")
+        if self._record.get("budget_breach"):
+            status["budget_breach"] = self._record["budget_breach"]
         return status
 
 
@@ -1323,11 +1340,60 @@ class _Registry:
 
         # Watchdog: enforces timeout, closes log file handles when done, and
         # marks the exit in the persistent registry the moment it happens —
-        # the completion-event source for drain_finished_events().
-        def _watch():
+        # the completion-event source for drain_finished_events(). It also
+        # carries the process-budget guard: the watchdog lives exactly as
+        # long as the job — longer than the tool call that started it, and
+        # ending with the job — which is what a guard for a setsid child
+        # needs (a foreground guard would die with the call).
+        guard = None
+        try:
+            guard = process_budget.BudgetGuard(proc.pid, poll_s=2.0,
+                                               profile="background")
+        except Exception:
+            guard = None
+
+        def _record_breach(breach) -> None:
+            # Visible three ways: the in-memory job (bash_status), the
+            # persistent registry (a reattach after a restart), and the
+            # job's own stderr log (bash_output).
+            job.budget_breach = {
+                "limit": breach.limit,
+                "profile": "background",
+                "value": breach.value,
+                "ceiling": breach.ceiling,
+                "message": breach.message,
+            }
             try:
-                rc = proc.wait(timeout=timeout_s)
-                _ = rc
+                serr.write(f"[process budget] {breach.message}\n")
+                serr.flush()
+            except Exception:
+                pass
+            _update_job_record(ws, jid, budget_breach=job.budget_breach)
+
+        def _watch():
+            nonlocal guard
+            try:
+                rc = None
+                # Poll the budget guard alongside the wait: the guard ends
+                # the job's process group on a breach, and proc.wait()
+                # below returns as soon as the leader dies.
+                deadline = time.monotonic() + timeout_s
+                while rc is None:
+                    if guard is not None:
+                        try:
+                            breach = guard.poll_once()
+                            if breach is not None:
+                                _record_breach(breach)
+                                guard = None  # one breach, one record
+                        except Exception:
+                            guard = None
+                    try:
+                        rc = proc.wait(timeout=min(2.0, max(
+                            0.1, deadline - time.monotonic())))
+                    except subprocess.TimeoutExpired:
+                        if time.monotonic() >= deadline:
+                            raise
+                        continue
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -1337,6 +1403,13 @@ class _Registry:
                 except Exception:
                     pass
             finally:
+                # A breach may have fired without _record_breach having run
+                # (the kill blocks in its grace period before the record;
+                # the reader can observe the dead process in between).
+                # guard.breach is set before the kill, so this catches it.
+                if (job.budget_breach is None and guard is not None
+                        and getattr(guard, "breach", None) is not None):
+                    _record_breach(getattr(guard, "breach"))
                 # Reap (instant on the normal path; after a timeout-kill the
                 # child needs one more wait to yield its return code).
                 try:
@@ -1358,7 +1431,9 @@ class _Registry:
                 _update_job_record(ws, jid,
                                    exit_code=rc_final,
                                    finished_at=time.time(),
-                                   watched_slurm_jobs=watched)
+                                   watched_slurm_jobs=watched,
+                                   **({"budget_breach": job.budget_breach}
+                                      if job.budget_breach is not None else {}))
 
         t = threading.Thread(target=_watch, daemon=True, name=f"bashjob-{jid}")
         t.start()
