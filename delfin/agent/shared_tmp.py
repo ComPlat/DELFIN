@@ -60,6 +60,68 @@ def state_root() -> Path:
         return Path("/.delfin")
 
 
+def _is_safe_dir(p: Path) -> bool:
+    """A candidate location must be an existing directory reached
+    through real directories only: every component is lstat'd and must
+    be a plain directory, never a symlink or a file. A pre-placed
+    symlink anywhere on the way disqualifies the candidate."""
+    try:
+        cur = Path(p.anchor) if p.is_absolute() else Path(".")
+        for part in (p.parts[1:] if p.is_absolute() else p.parts):
+            cur = cur / part
+            if (cur.lstat().st_mode & 0o170000) != 0o040000:
+                return False  # symlink, file, or anything but a plain dir
+        return True
+    except OSError:
+        return False
+
+
+def location_candidates(uid: int | None = None) -> list[Path]:
+    """Where the shared temp tree may live, best first.
+
+    Chain (reasoning in .gate/ORT.md):
+    1. ``$DELFIN_TMP_ROOT`` -- explicit operator override, always wins.
+    2. ``$XDG_RUNTIME_DIR`` -- per-user tmpfs, wiped at logout, no HOME
+       quota (the operator's two objections to the HOME location).
+    3. ``/run/user/<uid>`` -- the same directory when XDG is not
+       exported (recomputed from the real uid when not given).
+    4. The state root (``$DELFIN_STATE`` / ``~/.delfin``) -- always
+       present, last resort.
+
+    A candidate counts only if it is a real directory (no symlinks, no
+    files) that already exists; the caller does not create these roots.
+    The host's ``/tmp`` and ``$TMPDIR`` are never candidates -- on this
+    cluster TMPDIR is a shared scratch filesystem, exactly what the
+    operator rejected.
+    """
+    candidates: list[Path] = []
+    env_root = os.environ.get("DELFIN_TMP_ROOT", "").strip()
+    if env_root:
+        # Explicit operator override wins unconditionally: it need not
+        # exist yet -- Phase 2 creates it with the pre-placement checks
+        # (owner, 0700, no symlinks). Everything below is only for the
+        # implicit chain.
+        return [Path(env_root)]
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if xdg:
+        p = Path(xdg)
+        if p not in candidates:
+            candidates.append(p)
+    real_uid = os.getuid() if uid is None else uid
+    run_user = Path(f"/run/user/{real_uid}")
+    if run_user not in candidates:
+        candidates.append(run_user)
+    sr = state_root()
+    if sr not in candidates:
+        candidates.append(sr)
+    return [c for c in candidates if _is_safe_dir(c)] or [sr]
+
+
+def resolve_location(uid: int | None = None) -> Path:
+    """The first usable location from :func:`location_candidates`."""
+    return location_candidates(uid=uid)[0]
+
+
 def session_dir(session_id: str, base: Path | None = None) -> Path:
     """This session's shared temp directory, under ``<base>/tmp/``.
 
@@ -69,8 +131,11 @@ def session_dir(session_id: str, base: Path | None = None) -> Path:
     session directories, never an escape out of ``<base>/tmp``.
     Deterministic for the same id -- the cage and the file tools must
     agree on the directory without communicating.
+
+    ``base`` defaults to :func:`resolve_location` -- the XDG runtime
+    dir first, the state root only as a fallback (see .gate/ORT.md).
     """
-    root = (Path(base) if base is not None else state_root()) / "tmp"
+    root = (Path(base) if base is not None else resolve_location()) / "tmp"
     safe = _SAFE_ID.sub("-", str(session_id)).strip("-.") or "session"
     return root / safe
 
