@@ -464,6 +464,51 @@ def _share(cores: Any) -> int:
     return max(1, min(want, os.cpu_count() or 1))
 
 
+def _child_path(binary: str, cores: Any) -> str:
+    """The PATH a parallel ORCA run is started with.
+
+    ORCA calls its own tools by name -- ``mpirun`` first among them -- and
+    resolves them through the PATH of the process that started it, so where
+    ORCA lives has to be on it.  That half was always here.  The other half
+    was not: a shared-openmpi ORCA with ``%pal nprocs`` above one shells out
+    to ``mpirun``, and the mpirun it was built against lives in an openmpi
+    directory of its own that is neither inside the ORCA tree nor reliably on
+    the PATH a dashboard kernel or a test process inherits.  Measured on this
+    box (2026-09-26): every OptTS and every band above one process died in
+    seconds with ``sh: line 1: mpirun: command not found``, and the status
+    line quoted a warning from the top of the output instead of that, which is
+    how a whole suite run could be red without the word mpirun appearing
+    anywhere in it.
+
+    With one process there is no mpirun call, and the PATH is left as it was
+    rather than made longer for nothing.  A mpirun that is already on the PATH
+    is used where it is; one that is not is looked for beside the software the
+    user installed, the way :func:`delfin.runtime_setup._find_openmpi_mpirun`
+    looks -- the same convention, written here rather than imported, because
+    the dashboard does not otherwise carry that module.
+    """
+    room = dict(os.environ)
+    ahead = [str(Path(binary).parent)]
+    if _share(cores) > 1:
+        seen = shutil.which('mpirun')
+        if not seen:
+            home = Path.home()
+            for base in (home / 'software', home / 'apps', home / 'local'):
+                found = sorted(base.glob('openmpi-*/bin/mpirun'), reverse=True) \
+                    if base.is_dir() else []
+                for candidate in found:
+                    if candidate.is_file():
+                        seen = str(candidate)
+                        break
+                if seen:
+                    break
+        if seen:
+            ahead.append(str(Path(seen).parent))
+    room['PATH'] = os.pathsep.join(ahead) + os.pathsep \
+        + room.get('PATH', '')
+    return room['PATH']
+
+
 def _stop(running: subprocess.Popen) -> None:
     """Ask ORCA to stop, and insist if it does not.
 
@@ -632,11 +677,11 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
             f'* xyzfile {int(charge)} {max(0, int(uhf)) + 1} in.xyz\n',
             encoding='utf-8')
         environment = dict(os.environ)
-        # ORCA calls its own tools by name, so where it lives has to be on the
-        # path for the run -- otherwise it finds its optimiser and not its
-        # xtb interface, and stops with a message about neither.
-        environment['PATH'] = (str(Path(binary).parent) + os.pathsep
-                               + environment.get('PATH', ''))
+        # ORCA calls its own tools by name -- mpirun included when the run is
+        # parallel -- so where it lives has to be on the path for the run, and
+        # so does the openmpi it was built against.  :func:`_child_path` says
+        # why, and what the search without it looked like.
+        environment['PATH'] = _child_path(binary, ranks)
         if own_program is not None:
             # Where ORCA is to send its energy-and-gradient requests, and how
             # many threads whatever answers them may take.  The count is said
@@ -1365,8 +1410,9 @@ def neb_to_saddle(reactant: str, product: str, method: str = 'gfn2', *,
             + f'* xyzfile {int(charge)} {max(0, int(uhf)) + 1} in.xyz\n',
             encoding='utf-8')
         environment = dict(os.environ)
-        environment['PATH'] = (str(Path(binary).parent) + os.pathsep
-                               + environment.get('PATH', ''))
+        # Where ORCA lives and where its mpirun lives, for the reason
+        # :func:`_child_path` writes down.
+        environment['PATH'] = _child_path(binary, ranks)
         if own_program is not None:
             environment['EXTOPTEXE'] = str(own_program)
             environment['DELFIN_GXTB_CORES'] = str(_share(cores))

@@ -876,3 +876,60 @@ def test_a_flat_climb_that_stops_short_names_the_minimum_it_found():
     # and the search says the coordinate may have no barrier to aim at.
     assert ('walked down to a minimum' in got['status']
             or 'What it reached is' in got['status'])
+
+
+def test_orca_finds_mpirun_next_to_where_it_is_started_from(tmp_path,
+                                                            monkeypatch):
+    """A parallel ORCA calls ``mpirun`` by name, so it has to be on the PATH
+    the child is given -- and nowhere else in the environment says so.
+
+    Measured on this box (2026-09-26): the ORCA this repository resolves to is
+    a shared-openmpi build, ``%pal nprocs 8`` makes it run
+    ``mpirun -np 8 orca_util_mpi``, and ``mpirun`` lives in
+    ``~/software/openmpi-4.1.8/bin`` -- a directory that is neither the ORCA
+    directory the search prepends nor the PATH a dashboard kernel or a test
+    process inherits.  Every OptTS above one process died in nine seconds with
+    ``sh: line 1: mpirun: command not found`` and a status line that quoted a
+    warning from the top of the output instead, which is how ten runs of the
+    suite could be red without the word mpirun appearing anywhere in them.
+
+    The stand-in here does what ORCA does -- it resolves ``mpirun`` through
+    the PATH it is handed and nothing else -- so the test is about the
+    environment, and not about this box's ORCA.
+    """
+    mpi_dir = tmp_path / 'openmpi-4.1.8' / 'bin'
+    mpi_dir.mkdir(parents=True)
+    mpirun = mpi_dir / 'mpirun'
+    mpirun.write_text('#!/bin/sh\necho mpirun ran\n', encoding='utf-8')
+    mpirun.chmod(0o755)
+    orca_dir = tmp_path / 'orca'
+    orca_dir.mkdir()
+    fake_orca = orca_dir / 'orca'
+    fake_orca.write_text(
+        '#!/bin/sh\n'
+        '# A parallel ORCA calls its tools through mpirun, by name, with the\n'
+        '# PATH it was started with.  Nothing else in the environment places\n'
+        '# mpirun, so a name that does not resolve is the run dying.\n'
+        'if command -v mpirun >/dev/null 2>&1; then\n'
+        '  echo "*** OPTIMIZATION RUN DONE ***"\n'
+        'else\n'
+        '  echo "sh: line 1: mpirun: command not found"\n'
+        '  echo "ORCA finished by error termination in orca_util"\n'
+        '  exit 1\n'
+        'fi\n',
+        encoding='utf-8')
+    fake_orca.chmod(0o755)
+
+    # The stand-in stands where ORCA stands, and nowhere on the PATH: what it
+    # can see has to come from the environment the search hands it.
+    monkeypatch.setattr(saddle, 'find_orca', lambda: str(fake_orca))
+    monkeypatch.setenv('PATH', str(tmp_path / 'nowhere-at-all'))
+
+    small = ('4\nammonia\n'
+             'N   0.0000   0.0000   0.00\n'
+             'H   0.9377   0.0000   0.00\n'
+             'H  -0.4688   0.8121   0.00\n'
+             'H  -0.4688  -0.8121   0.00\n')
+    got = saddle.optimise_to_saddle(small, 'gfn2', cores=4, timeout=30,
+                                    confirm=False)
+    assert got.get('ok'), got.get('status')
