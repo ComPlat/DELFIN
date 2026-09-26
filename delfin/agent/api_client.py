@@ -8349,6 +8349,7 @@ def check_completion_claim(
     observed=None,
     tests=None,
     window_start: float = 0.0,
+    current_fingerprint: Optional[dict] = None,
 ) -> dict:
     """What the session can show for a task about to be marked completed.
 
@@ -8361,7 +8362,8 @@ def check_completion_claim(
     """
     from .task_evidence import check_completion_claim as _check
     return _check(subject, description, changes=changes, observed=observed,
-                  tests=tests, window_start=window_start)
+                  tests=tests, window_start=window_start,
+                  current_fingerprint=current_fingerprint)
 
 
 _SBATCH_SUBMITTED_RE = re.compile(r"Submitted batch job\s+(\d+)")
