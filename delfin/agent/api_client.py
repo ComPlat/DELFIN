@@ -2704,6 +2704,26 @@ def _steer_label(text: str) -> str:
     return "💬 [you, mid-run]: "
 
 
+def _links_to_a_secret(perms: Any, rel: str) -> bool:
+    """Whether the workspace-relative token *rel* is, or passes through, a
+    symlink that ends at a secret -- a file on the deny list, or a
+    directory that holds one (a link to ~/.ssh itself). Never raises;
+    a token that is not an existing path is not a link."""
+    try:
+        base = Path(perms.workspace)
+        p = base / rel
+        if not (p.is_symlink() or os.path.lexists(p)):
+            return False
+        target = p.resolve()
+        if target == p.absolute():
+            return False
+        if _is_secret_path(perms, target):
+            return True
+        return target.is_dir() and _is_secret_path(perms, target / "x")
+    except Exception:
+        return False
+
+
 def _is_secret_path(perms: Any, path: Path) -> bool:
     """Whether ``path`` matches the secret deny list, tested the way
     ``_check_read_access`` tests it: relative to the readable root it lies
@@ -5596,6 +5616,13 @@ class KitToolPermissions:
     def matches_bash_auto_allow(self, cmd: str) -> bool:
         if self._interpreter_needs_confirm(cmd):
             return False
+        # The line-number lookup `$(grep -n PAT FILE | cut -d: -f1)` --
+        # the largest group of avoidable dialogs (2026-09-25/26 audits) --
+        # prints digits and nothing else, so its output cannot become code
+        # of the outer program the way an arbitrary substitution's can.
+        # Exactly that form is judged as the number it yields; any other
+        # substitution stays with the confirm gate.
+        cmd = _SAFE_LINE_LOOKUP_RE.sub("1", cmd)
         # A loop, before the split: `for f in *.out; do grep ERROR "$f";
         # done` breaks at its own semicolons into "for f in *.out", "do
         # grep ..." and "done", none of which is a command. Read whole,
@@ -5767,6 +5794,19 @@ def _reader_writes_or_runs(cmd: str) -> bool:
         if re.match(prog_re, stripped) and escape.search(stripped):
             return True
     return False
+
+
+#: `$(grep -n PATTERN FILE | cut -d: -f1)`, optionally with `| head -N`
+#: before or after the cut: its output is line numbers only. The pattern
+#: is a quoted string without substitutions or a plain word; FILE is a
+#: plain path. Anything else is not this form.
+_SAFE_LINE_LOOKUP_RE = re.compile(
+    r"\$\(\s*grep\s+-n(?:\s+-[A-Za-z]+)*\s+"
+    r"(?:'[^']*'|\"[^\"$`\\]*\"|[\w.:-]+)\s+"
+    r"[\w./][\w./-]*\s*"
+    r"(?:\|\s*head\s+-(?:n\s*)?\d+\s*)?"
+    r"\|\s*cut\s+-d\s*:?\s*:?\s*-f\s*1\s*"
+    r"(?:\|\s*head\s+-(?:n\s*)?\d+\s*)?\)")
 
 
 #: A `set` that only turns on the shell's error handling: -e, -u, -x and
@@ -13525,6 +13565,13 @@ class _DocToolExecutor:
                         continue
                 except Exception:
                     pass
+                return tok
+            # A token the scan saw as clean can still lead to a secret: a
+            # symlink in the workspace (`cat ssh-link`, `grep -rn KEY
+            # sshdir`) names nothing on the deny list, and cat or a
+            # recursive grep follows it (red team LA, 2026-09-26). Only
+            # tokens whose path really goes somewhere else are resolved.
+            if _links_to_a_secret(perms, rel):
                 return tok
         return None
 
