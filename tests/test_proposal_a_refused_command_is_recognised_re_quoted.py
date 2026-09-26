@@ -1,11 +1,7 @@
 """A refused bash command is recognised however it is quoted (LJ phase 4, landed).
 
-Not current behaviour -- every test here is xfail(strict) and red until
-the proposal is implemented in api_client (by the operator; this file
-changes no production code). When a test starts passing, strict mode
-fails the suite once, which is the cue to drop the marker and pin the
-behaviour -- the same discipline test_a_refusal_is_about_the_change_it_saw
-was born with.
+Landed: the operator implemented tier 1 in api_client
+(_denied_action_key), and these tests pin it.
 
 The gap (pinned as current behaviour in
 test_how_far_a_refusal_reaches.py::test_bash_refusal_locks_only_the_exact_command):
