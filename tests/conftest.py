@@ -46,6 +46,19 @@ _GENERATED_ROOTS = (
     # The benchmark workbooks, materialised from a reviewable spec before
     # every run -- see delfin/agent/benchmark_fixtures.py.
     "tests/fixtures/office_workspace",
+    # The other three fixture workspaces the benchmark guard
+    # (_PristineWorkspace) snapshots and restores PER ATTEMPT: tracked
+    # files can be away for the length of an attempt and back after it.
+    # The same race that produced the office entry (SLURM 7188718)
+    # booked tracked files here as "appeared" in runs 7199892, 7210626,
+    # 7214159 and 7225552 -- a parallel pytest process walked the tree
+    # inside a neighbour's mid-attempt window. Inside these roots git's
+    # ignore rules decide, as inside the two above; nothing in them is
+    # generated wholesale, so the rules here are simply "tracked is
+    # expected, everything else is a finding".
+    "tests/fixtures/behavior_workspace",
+    "tests/fixtures/user_project_workspace",
+    "tests/fixtures/science_workspace",
 )
 
 # Build noise: byte-code caches and tool caches created by running at all,
@@ -53,7 +66,16 @@ _GENERATED_ROOTS = (
 # separate working copies with their own runs going on in them.
 _CHECKOUT_NOISE = ("__pycache__", ".pytest_cache", ".git", ".mypy_cache",
                    ".ruff_cache", ".hypothesis",
-                   ".claude", ".venv", "node_modules")
+                   ".claude", ".venv", "node_modules",
+                   # The gate/coordination directory the operator and the
+                   # swarm workers write their controls, control runs and
+                   # SLURM log archives into -- WHILE tests are running
+                   # (reproduced by s13, 2026-09-26: new logs under
+                   # .gate/rot/logs/ arrived mid-run and the guard booked
+                   # them as a checkout leak). None of it is a suite
+                   # process's output, and the directory is gitignored
+                   # either way.
+                   ".gate")
 
 
 def _checkout_entries() -> frozenset:
@@ -173,6 +195,43 @@ def _confirmed_under_a_generated_root() -> frozenset:
         if not now:
             return now
     return now
+
+
+def _teardown_new_paths(before: frozenset,
+                        before_generated: frozenset) -> list:
+    """What the session teardown reports as new in the checkout.
+
+    Confirmed, not raw. The raw tree diff is re-walked with growing
+    gaps, exactly like the generated-root scan beside it, because the
+    raw version booked two kinds of parallel neighbour as a leak:
+
+    * a neighbour restoring a fixture workspace makes tracked files
+      vanish for the instant of this walk and return after it (SLURM
+      7188718, eleven false "1 error" teardowns -- the reason the
+      generated-root half grew its confirmation);
+    * a transient entry another process creates and removes in its
+      own finally (.delfin_leak_probe, SLURM 7214160: a probe
+      directory that lives between two statements of a neighbouring
+      test's teardown) exists for one walk and is gone for the next.
+
+    Both are waited out rather than trusted: a change that is still
+    there after the last rescan is not a race and is reported exactly
+    as the raw diff would have.
+    """
+    import time
+    new: set = set(_checkout_entries() - before)
+    for gap in _CONFIRM_GAPS_S:
+        time.sleep(gap)
+        # Anything the raw diff saw that a neighbour's window owned is
+        # gone by now; a change that is still here is not a race.
+        new = set(_checkout_entries() - before)
+        if not new:
+            break
+    confirmed = sorted(p for p in new)
+    confirmed += sorted(
+        str(_CHECKOUT_ROOT / p)
+        for p in _confirmed_under_a_generated_root() - before_generated)
+    return confirmed
 
 
 _LIFELINE_NAMES = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
@@ -377,15 +436,7 @@ def _the_suite_does_not_write_into_the_checkout():
     before = _checkout_entries()
     before_generated = _unexpected_under_a_generated_root()
     yield
-    new = sorted(p for p in _checkout_entries() - before)
-    # Confirmed, not raw: a parallel pytest process restoring a fixture
-    # workspace can make tracked files vanish for the instant this scan
-    # runs, and a raw scan booked that as a leak (SLURM 7188718, eleven
-    # false "1 error" teardowns). What survives the confirmation window
-    # is not a race and is reported as before.
-    new += sorted(
-        str(_CHECKOUT_ROOT / p)
-        for p in _confirmed_under_a_generated_root() - before_generated)
+    new = _teardown_new_paths(before, before_generated)
     # The last test of the run has nothing after it, so no later setup ever
     # sees what it left -- and the leak this was written for was exactly
     # that: the last test in its file. One more comparison here closes the
