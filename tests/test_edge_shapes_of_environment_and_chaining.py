@@ -24,6 +24,8 @@ Red-team run LA (s1), 2026-09-26. Findings are xfail(strict=True).
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from delfin.agent.api_client import KitToolPermissions, _doc_executor
@@ -107,14 +109,25 @@ FREE = [
 ]
 
 
-@pytest.mark.parametrize(
-    "reason,cmd", FINDINGS,
-    ids=[c.replace(" ", "_").replace("/", "-").replace(";", "-")
-         .replace("$", "D").replace("<", "lt").replace(">", "gt")
-         .replace("(", "p").replace(">", "gt")
-         for _, c in FINDINGS])
-@pytest.mark.xfail(strict=True,
-                  reason="gate fix pending — red-team finding, see module docstring")
+
+#: Findings the gate has since closed -- they run as ordinary tests.
+FIXED: set = set()
+
+
+def _cases(findings):
+    """One case per finding: a closed one is an ordinary test, an open one
+    stays xfail(strict=True) so it turns red the moment it is closed
+    without being moved into FIXED."""
+    out = []
+    for reason, cmd in findings:
+        marks = () if cmd in FIXED else pytest.mark.xfail(
+            strict=True, reason="gate fix pending -- red-team finding")
+        out.append(pytest.param(reason, cmd, marks=marks,
+                                id=re.sub(r"[^\w.-]+", "_", cmd)[:60]))
+    return out
+
+
+@pytest.mark.parametrize("reason,cmd", _cases(FINDINGS))
 def test_an_edge_shape_is_not_free(reason, cmd, perms):
     assert gate(perms, cmd) is not None, (reason, cmd)
 

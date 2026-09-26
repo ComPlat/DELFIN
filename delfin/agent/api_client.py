@@ -2487,7 +2487,7 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*python(?:3(?:\.\d+)?)?\s+--version\b",
     r"^\s*python(?:3(?:\.\d+)?)?\s+-m\s+(?:py_compile|pytest|unittest|doctest|timeit|venv|"
     r"pip\s+show|pip\s+list|pip\s+freeze|"
-    r"compileall|json\.tool|http\.server|delfin(?:\.\w+)*)\b",
+    r"compileall|json\.tool|delfin(?:\.\w+)*)\b",
     # Run a user's OWN module: `python -m <module> [args]` is exactly as safe
     # as `python <script>.py` (already auto-allowed below) — same arbitrary-code
     # capability, same deny-list + egress checks apply to the whole command. So
@@ -5766,6 +5766,36 @@ _READER_ESCAPES = (
 )
 
 
+#: A Python module that opens a listening socket: a server on a shared
+#: login node, reachable by others, with nobody asked (red team LA).
+#: Searched anywhere in the segment, so a wrapper (`timeout 60 ...`)
+#: does not hide it.
+_NETWORK_LISTENER_RE = re.compile(
+    r"\bpython(?:\d(?:\.\d+)?)?\s+(?:-\w+\s+)*-m\s+"
+    r"(?:http\.server|pydoc\s+(?:.*\s)?-[pb]\b|smtpd|aiosmtpd|"
+    r"xmlrpc\.server|jupyter|notebook|ipykernel)")
+
+
+def _git_reaches_elsewhere(cmd: str) -> bool:
+    """git fetch/pull from a URL or a path instead of a configured remote
+    (a network action nobody approved; pull also writes the tree past the
+    journal), and git init with a target directory (a repository outside
+    the workspace). The configured-remote forms stay free."""
+    words = cmd.split()[1:]
+    while words and words[0] in ("--no-pager", "--paginate"):
+        words = words[1:]
+    if not words:
+        return False
+    sub, rest = words[0], [w for w in words[1:] if not w.startswith("-")]
+    if sub in ("fetch", "pull"):
+        return any("://" in w or w.startswith(("/", "./", "../", "~"))
+                   or re.match(r"^[\w.-]+@[\w.-]+:", w) for w in rest)
+    if sub == "init":
+        return bool(rest) or any(w.startswith("--separate-git-dir")
+                                 for w in words[1:])
+    return False
+
+
 def _reader_writes_or_runs(cmd: str) -> bool:
     """True when a command whose program is on the reading list uses a
     form that writes a file or runs a program: sort -o, uniq's output
@@ -5774,6 +5804,8 @@ def _reader_writes_or_runs(cmd: str) -> bool:
     with a program after it. Such a command goes to the confirm gate,
     where every unevaluated write belongs."""
     stripped = cmd.strip()
+    if _NETWORK_LISTENER_RE.search(stripped):
+        return True
     first = stripped.split(None, 1)[0] if stripped else ""
     if first == "env":
         rest = stripped.split()[1:]
@@ -5783,6 +5815,8 @@ def _reader_writes_or_runs(cmd: str) -> bool:
             any(w in ("-S", "--split-string") for w in rest)
     if first == "sed":
         return _sed_script_writes(stripped)
+    if first == "git" and _git_reaches_elsewhere(stripped):
+        return True
     if first == "uniq":
         args = [w for w in stripped.split()[1:] if not w.startswith("-")]
         return len(args) >= 2
@@ -15141,8 +15175,23 @@ class _DocToolExecutor:
             new_s = args.get("new_string", "")
             if args.get("replace_all"):
                 new_text = old_text.replace(old_s, new_s)
-            else:
+            elif old_s and old_s in old_text:
                 new_text = old_text.replace(old_s, new_s, 1)
+            else:
+                # The executor falls back to a whitespace-tolerant match
+                # when old_string is not found verbatim, and applies it.
+                # The preview did not: the self-modification dialog showed
+                # "(no changes)" for an edit that then rewrote engine.py
+                # (2026-09-26) -- the person was asked to approve blind.
+                # The preview takes the same path the edit will take.
+                new_text = old_text
+                try:
+                    from . import editblock as _editblock
+                    fm = _editblock.fuzzy_replace(old_text, old_s, new_s)
+                    if fm is not None:
+                        new_text = fm.new_text
+                except Exception:
+                    pass
         elif name == "multi_edit":
             new_text = old_text
             for ed in args.get("edits", []) or []:
