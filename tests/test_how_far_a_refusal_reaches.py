@@ -238,3 +238,71 @@ def test_refused_tool_call_stays_refused_native_and_via_mcp(tmp_path):
     # Different signature: not ledger-blocked (may be refused for another
     # reason, but not as "already refused").
     assert not (other and "already refused" in other), other
+
+
+# ---------------------------------------------------------------------------
+# Intent: where the lock is deliberately wider or narrower, and why.
+# (full reasoning in .gate/absicht.md -- this section pins the decisions)
+# ---------------------------------------------------------------------------
+
+def test_intent_non_change_carrying_write_locks_the_whole_file(tmp_path):
+    """A write tool whose arguments carry no comparable change
+    (notebook_edit, edit_sheet, ...) locks the FILE, not a change: there
+    is no change to compare, so the refused artefact stays closed to
+    every non-change route (api_client.py:14288-14302). This breadth is
+    deliberate -- pinned here so a future narrowing of
+    _CHANGE_CARRYING_WRITE_TOOLS does not silently leave these tools
+    without any lock at all."""
+    ex = _executor()
+    target = tmp_path / "sheet.ods"
+    target.write_text("x", encoding="utf-8")
+    # The read baseline edit_sheet demands (its own executor checks it
+    # before the gate); normally read_document sets it.
+    perms = _perms(tmp_path, mode="default",
+                   confirm_callback=_deny_recording(asked := []))
+    perms.read_tracker[str(target.resolve())] = target.stat().st_mtime
+    # edit_sheet: a write tool with no change-carrying arguments. It is
+    # gated in its own executor (_execute_edit_sheet, api_client.py:12417),
+    # so this goes through execute(), the public route.
+    out = ex.execute("edit_sheet",
+                     {"path": "sheet.ods", "sheet": "s",
+                      "append_rows": [["a"]]}, perms)
+    assert out is not None and "denied" in str(out)
+    assert len(asked) == 1
+
+    # Same file, different arguments: still refused, no second dialog.
+    again = ex.execute("edit_sheet",
+                       {"path": "sheet.ods", "sheet": "s",
+                        "append_rows": [["b"]]}, perms)
+    assert "already refused a write" in str(again), again
+    assert len(asked) == 1
+
+    # But the change-carrying route is judged on its change (asked anew):
+    perms.confirm_callback = _approve_all
+    ok = ex._run_permission_gate(
+        "write_file", {"path": "sheet.ods", "content": "y"}, perms)
+    assert ok is None
+
+
+def test_intent_a_denied_bash_command_does_not_lock_its_targets(tmp_path):
+    """The wave-5 operator fear, checked the other way round: refusing a
+    bash command must NOT lock the files it named for later write tools.
+    The command is what was refused; locking its targets would recreate
+    the wave-5 lockout through the bash side (one refused `cp … &&
+    git checkout -- engine.py` would again make engine.py unwritable).
+    Pinned as deliberate: only the exact command stays refused."""
+    ex = _executor()
+    (tmp_path / "engine.py").write_text("line1\n", encoding="utf-8")
+    asked = []
+    perms = _perms(tmp_path, mode="default",
+                   confirm_callback=_deny_recording(asked))
+    cmd = "cp engine.py /tmp/x && git checkout abc123 -- engine.py"
+    refused = ex._run_permission_gate("bash", {"command": cmd}, perms)
+    assert refused is not None and "denied" in refused
+
+    # engine.py was NAMED by the refused command but never refused as a
+    # write target: a write tool is asked about it normally.
+    perms.confirm_callback = _approve_all
+    write = ex._run_permission_gate(
+        "write_file", {"path": "engine.py", "content": "fixed\n"}, perms)
+    assert write is None, write
