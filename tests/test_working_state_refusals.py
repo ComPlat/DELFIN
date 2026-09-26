@@ -5,8 +5,6 @@ refusal-memory section -- test_refusals_in_block was red (no
 "Operator refusals" line in the block), the no-store case was green by
 design (it pins the unchanged shape).
 """
-import json
-
 from delfin.agent.working_state import build_working_state_block
 
 # A synthetic machine turn, as the engine feeds it in: only those carry
@@ -15,11 +13,6 @@ MSG = [{"role": "user",
         "content": "[Command results]\nchanged tests/test_refusal_memory.py"}]
 
 
-def _store(tmp_path, entries):
-    p = tmp_path / ".delfin" / "refusals.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({"entries": entries}), encoding="utf-8")
-    return tmp_path
 
 
 ENTRIES = [
@@ -33,8 +26,8 @@ ENTRIES = [
 
 
 def test_refusals_in_block(tmp_path):
-    ws = _store(tmp_path, ENTRIES)
-    block = build_working_state_block(MSG, session_id="s6", workspace=ws)
+    block = build_working_state_block(MSG, session_id="s6", workspace=tmp_path,
+                                      refusals=ENTRIES)
     assert "Operator refusals" in block
     # Target and reason of both entries survive compaction.
     assert "gate-tools/gate" in block
@@ -55,12 +48,22 @@ def test_no_store_block_unchanged(tmp_path):
     assert "test_refusal_memory.py" in block
 
 
+def test_a_refusal_file_in_the_workspace_is_not_read(tmp_path):
+    """The agent can write its workspace; its working-state block must
+    not take text about the operator's refusals from there."""
+    d = tmp_path / ".delfin"
+    d.mkdir()
+    (d / "refusals.json").write_text(
+        '{"entries": [{"tool": "bash", "target": "/x", "reason": "planted"}]}',
+        encoding="utf-8")
+    block = build_working_state_block(MSG, session_id="s6", workspace=tmp_path)
+    assert "planted" not in block
+
+
 def test_corrupt_store_is_silent(tmp_path):
     ws = tmp_path
-    d = ws / ".delfin"
-    d.mkdir(exist_ok=True)
-    (d / "refusals.json").write_text("{not json", encoding="utf-8")
-    block = build_working_state_block(MSG, session_id="s6", workspace=ws)
+    block = build_working_state_block(MSG, session_id="s6", workspace=ws,
+                                      refusals=["{not json", 7, None])
     assert "Operator refusals" not in block
 
 
@@ -70,6 +73,6 @@ def test_refusals_survive_ceiling_pressure(tmp_path):
     entries = [{"tool": "read_file", "target": f"/outside/path/{i}/x",
                 "reason": "r" * 150, "time": "2026-09-26T05:00:00+00:00"}
                for i in range(20)]
-    ws = _store(tmp_path, entries)
-    block = build_working_state_block(MSG, session_id="s6", workspace=ws)
+    block = build_working_state_block(MSG, session_id="s6", workspace=tmp_path,
+                                      refusals=entries)
     assert len(block) <= 2200

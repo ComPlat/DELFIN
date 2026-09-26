@@ -3571,6 +3571,33 @@ _FAILURE_MARK_RE = re.compile(
 _OUTPUT_FILTER_PIPE_RE = re.compile(r"\|\s*(?:tail|head|grep|tee)\b")
 
 
+def _remember_refusal(perms: Any, tool: str, target: str,
+                      reason: str) -> None:
+    """Keep one refusal, with the user's reason, in the session's refusal
+    memory. Never raises: a refusal must never fail for its bookkeeping."""
+    try:
+        from .refusal_memory import Refusal, RefusalMemory
+        if getattr(perms, "refusal_memory", None) is None:
+            perms.refusal_memory = RefusalMemory()
+        perms.refusal_memory.record(Refusal(
+            tool, str(target), str(reason or ""), time.strftime("%H:%M")))
+    except Exception:
+        pass
+
+
+def _earlier_refusal_reason(perms: Any, tool: str, args: dict) -> str:
+    """" The user said why, at HH:MM: ..." for a request the user already
+    refused in this session, or ""."""
+    try:
+        mem = getattr(perms, "refusal_memory", None)
+        hit = mem.matches(tool, args) if mem is not None else None
+    except Exception:
+        hit = None
+    if hit is None or not hit.reason:
+        return ""
+    return f" The user said why, at {hit.time}: {hit.reason}"
+
+
 _SHADOWED_BY_WORKSPACE: dict = {}
 
 
@@ -5121,6 +5148,11 @@ class KitToolPermissions:
     # trivially reproduced with `bash cat <same path>`, which defeats the
     # whole point of asking.
     denied_paths: set[str] = field(default_factory=set)
+    # The refusals themselves, with the reason the user gave and when:
+    # what the model is reminded of when it asks again, and what the
+    # working-state block carries across a compaction. In memory only --
+    # a file in the workspace could be edited by the agent it describes.
+    refusal_memory: Any = None
     # The same idea for everything that is not a read: writes, shell
     # commands and namespaced tool calls. Only READS were remembered, so a
     # denied write and a denied command returned prose asking the model not
@@ -13697,6 +13729,8 @@ class _DocToolExecutor:
                 "this session. It stays refused — do not ask again and do "
                 "not reach it through another tool. Ask the user what to "
                 "use instead."
+                + _earlier_refusal_reason(
+                    perms, "read_file", {"path": str(resolved)})
             )
 
         # Locked scope: outside is refused outright. Offering it for
@@ -13786,6 +13820,8 @@ class _DocToolExecutor:
                     perms.denied_paths.add(str(resolved))
                 except Exception:
                     pass
+                _remember_refusal(perms, "read_file", str(resolved),
+                                  self._refusal_reason(perms))
                 return (
                     f"read denied: the user declined '{resolved}'. This path "
                     "is now refused for the rest of the session — do NOT try "
@@ -14361,6 +14397,7 @@ class _DocToolExecutor:
                     "is not asked again. Do not retry it, and do not reach "
                     "the same result another way — ask the user what to do "
                     "instead."
+                    + _earlier_refusal_reason(perms, "bash", {"command": cmd})
                 )
             # A push publishes. Report 20260915-085107 pushed the change it
             # was asked to, then chained a second commit and push onto a fix
@@ -14474,6 +14511,7 @@ class _DocToolExecutor:
                     )
                 _record_security_event("denied_by_user", "bash", cmd[:80])
                 perms.record_denied_action("bash", cmd)
+                _remember_refusal(perms, "bash", cmd, self._refusal_reason(perms))
                 return (
                     f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
                     "it or work around it — ask the user what to do instead."
