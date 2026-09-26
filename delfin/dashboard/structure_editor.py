@@ -5719,6 +5719,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # what it was counting is over.
             state.pop('topology_stuck', None)
             state['topology_refused'] = 0
+            # And the restart is a new gesture, so it starts where the grab
+            # did rather than where the tear ended.  thermal_was was left at
+            # the last step the wall ALLOWED, which on a tear is a stretched
+            # top (measured on the ethane this was found with, C-C 1.909 A
+            # under a grab that began at 1.52): every bond of the comeback
+            # answer was frozen at the lengths of that top, the relaxation
+            # could only satisfy them by breaking a C-H, and the wall then
+            # refused every answer of a hand that had come all the way back
+            # in -- the drag never restarted for good, which is what the
+            # standstill exists to undo.  _begin_gfn_follow resets the same
+            # key to the same geometry for the same reason; the smearing keys
+            # go with it because a cleared temperature is re-derived from the
+            # gap of the answer it was cleared on -- the stretched one.
+            state['thermal_was'] = state.get('gfn_topology_source')
+            state.pop('gfn_follow_etemp', None)
+            state.pop('gfn_follow_smeared_at', None)
+            state.pop('gfn_follow_gap', None)
             return False
         return True
 
