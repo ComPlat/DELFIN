@@ -15,7 +15,6 @@ import signal
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -108,46 +107,77 @@ def _is_zombie(fields: list[str]) -> bool:
     return len(fields) > 1 and fields[1] == "Z"
 
 
+def _children(pid: int) -> list[int] | None:
+    """Direct children of *pid* from /proc/<pid>/task/*/children, or None
+    when the kernel does not offer the file (CONFIG_PROC_CHILDREN off)."""
+    kids: list[int] = []
+    try:
+        tasks = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return []
+    for tid in tasks:
+        try:
+            with open(f"/proc/{pid}/task/{tid}/children", "rb") as fh:
+                kids.extend(int(x) for x in fh.read().split())
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            continue
+    return kids
+
+
+def _descendants_by_scan(root_pid: int) -> set[int]:
+    """Fallback: one pass over /proc/*/stat into a parent -> children map."""
+    children: dict[int, list[int]] = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return set()
+    for name in entries:
+        if not name.isdigit():
+            continue
+        fields = _stat_fields(int(name))
+        if fields is None or len(fields) < 3:
+            continue
+        try:
+            children.setdefault(int(fields[2]), []).append(int(name))
+        except ValueError:
+            continue
+    found: set[int] = set()
+    frontier = [root_pid]
+    while frontier:
+        for kid in children.get(frontier.pop(), ()):
+            if kid not in found and kid != root_pid:
+                found.add(kid)
+                frontier.append(kid)
+    return found
+
+
 def descendants_of(root_pid: int) -> set[int]:
     """All live descendants of *root_pid*, zombies excluded.
 
-    Enumerates /proc once and builds a ppid map (fields[4] of stat),
-    then walks it in memory. ``/proc/<pid>/task/*/children`` exists but
-    needs one syscall per thread of every process; the single scan of
-    ``/proc/*/stat`` covers the same ground and cannot miss a process
-    that changed parent while we were reading a children file.
+    Walks /proc/<pid>/task/*/children from the root, so the cost is the
+    size of the call's own tree, not of every process on a shared login
+    node (thousands, sampled every poll). Only where the kernel lacks the
+    children file does it fall back to one scan of /proc/*/stat.
     """
-    ppid: dict[int, int] = {}
-    proc_root = Path("/proc")
-    try:
-        entries = list(proc_root.iterdir())
-    except OSError:
-        return set()
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
-        fields = _stat_fields(int(entry.name))
-        if fields is None or _is_zombie(fields) or len(fields) < 5:
-            continue
-        try:
-            ppid[int(entry.name)] = int(fields[2])  # ppid is stat field 4
-        except (IndexError, ValueError):
-            continue
-    # A zombie root or one that already exited contributes nothing.
-    if ppid.get(root_pid) is None and root_pid not in ppid:
-        return set()
-    # Also drop the root itself from the map when we only want children.
     found: set[int] = set()
     frontier = [root_pid]
-    seen = {root_pid}
     while frontier:
-        current = frontier.pop()
-        for pid, parent in ppid.items():
-            if parent == current and pid not in seen:
-                seen.add(pid)
-                found.add(pid)
-                frontier.append(pid)
-    return found
+        kids = _children(frontier.pop())
+        if kids is None:
+            found = _descendants_by_scan(root_pid)
+            break
+        for kid in kids:
+            if kid not in found and kid != root_pid:
+                found.add(kid)
+                frontier.append(kid)
+    live = set()
+    for pid in found:
+        fields = _stat_fields(pid)
+        if fields is not None and not _is_zombie(fields):
+            live.add(pid)
+    return live
 
 
 def count_descendants(root_pid: int) -> int:
@@ -220,34 +250,14 @@ def verdict(sample: dict, limits: BudgetLimits) -> Breach | None:
     return None
 
 
-def child_rlimits(limits: BudgetLimits):
-    """A preexec_fn-style mapping of rlimits for the call's own child.
-
-    Second line of defence: where the kernel enforces a limit directly,
-    no polling race exists. RLIMIT_CPU bounds total CPU of the direct
-    child AND its descendants (the limit is inherited), SIGKILL/SIGXCPU
-    on excess; RLIMIT_AS bounds per-process virtual memory, which
-    approximates — conservatively, since virtual >= resident — the RSS
-    budget.
-
-    Deliberately NOT RLIMIT_NPROC: it counts every process of the whole
-    USER on the machine (the kernel check is against the user's total
-    process count in the user namespace, not the children of this call),
-    so on a shared login node with dozens of the user's sessions it
-    would either be set so high it never fires, or kill unrelated work
-    by failing innocent fork() calls elsewhere. The process count is
-    therefore watched by the census in this module, not by a rlimit.
-
-    Not applied here — sandbox.py (the caller) passes this into its
-    preexec_fn; this module must not import or touch the sandbox core.
-    """
-    import resource
-    return {
-        resource.RLIMIT_CPU: (int(limits.max_cpu_seconds),
-                              int(limits.max_cpu_seconds)),
-        resource.RLIMIT_AS: (int(limits.max_rss_mb * 1024 * 1024),
-                             int(limits.max_rss_mb * 1024 * 1024)),
-    }
+# No rlimits on the child. RLIMIT_NPROC counts every process of the
+# whole USER on the machine, not this call's children, so on a shared
+# login node it either never fires or fails innocent fork() calls
+# elsewhere. RLIMIT_AS limits virtual address space per process, and
+# tools that reserve large address ranges without touching them (MPI,
+# OpenMP runtimes, JVMs, glibc arenas per thread) break far below their
+# real memory use. RLIMIT_CPU is per process, not per call. The census
+# above measures what the budget means; it is the one line.
 
 
 class BudgetGuard:
@@ -260,7 +270,7 @@ class BudgetGuard:
     """
 
     def __init__(self, root_pid: int, limits: BudgetLimits | None = None,
-                 poll_s: float = 0.25, term_grace_s: float = 5.0,
+                 poll_s: float = 1.0, term_grace_s: float = 5.0,
                  sample_fn=sample_descendants):
         self.root_pid = root_pid
         self.limits = limits if limits is not None else _default_limits()
@@ -297,8 +307,9 @@ class BudgetGuard:
             pgid = os.getpgid(self.root_pid)
         except (ProcessLookupError, PermissionError, OSError):
             return
-        if pgid <= 1:
-            # Never signal a group we did not create (init's group).
+        if pgid <= 1 or pgid == os.getpgrp():
+            # Never init's group, and never our own: a call that somehow
+            # shares the agent's group must not take the agent with it.
             return
         try:
             os.killpg(pgid, signal.SIGTERM)

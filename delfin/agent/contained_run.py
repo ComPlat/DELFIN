@@ -86,6 +86,7 @@ def run(
     input: Optional[str] = None,
     text: bool = True,
     should_stop: Optional[Callable[[], bool]] = None,
+    budget: bool = False,
 ) -> subprocess.CompletedProcess:
     """Like ``subprocess.run(..., capture_output=True)``, contained.
 
@@ -100,6 +101,13 @@ def run(
     half-hour test run went on looking frozen until the run finished,
     because the worker was inside this wait and nothing in it ever
     looked (2026-09-17).
+
+    ``budget`` watches the command's process tree against
+    ``process_budget`` (processes, summed memory, summed CPU) and ends
+    the group on a breach, saying so at the end of stderr. A timeout
+    bounds a command that waits; this bounds one that multiplies -- a
+    single gate run once fanned out into ~75 nested login shells on a
+    shared login node (2026-09-25), and only an outside watcher saw it.
     """
     proc = subprocess.Popen(
         args, cwd=cwd, env=env, shell=shell,
@@ -108,6 +116,13 @@ def run(
         start_new_session=True,
     )
     pgid = proc.pid
+    guard = None
+    if budget:
+        try:
+            from .process_budget import BudgetGuard
+            guard = BudgetGuard(proc.pid).start()
+        except Exception:
+            guard = None
     out: list[bytes] = []
     err: list[bytes] = []
     readers = [threading.Thread(target=_reader, args=(proc.stdout, out), daemon=True),
@@ -178,6 +193,8 @@ def run(
             pass
         raise
     finally:
+        if guard is not None:
+            guard.stop()
         # Whatever the command left behind in its group ends with it.
         end_group(pgid, grace_s=_GRACE_S if timed_out else 0.3)
         if timed_out:
@@ -201,6 +218,9 @@ def run(
         return data.decode("utf-8", errors="replace") if text else data
 
     stdout, stderr = _join(out), _join(err)
+    breach = getattr(guard, "breach", None)
+    if breach is not None and text:
+        stderr = f"{stderr}\n[process budget] {breach.message}".lstrip("\n")
     if timed_out:
         raise subprocess.TimeoutExpired(args, timeout, output=stdout, stderr=stderr)
     code = proc.returncode
