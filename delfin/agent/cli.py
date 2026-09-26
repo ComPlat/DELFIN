@@ -2964,7 +2964,10 @@ def cmd_report(args: argparse.Namespace) -> int:
             return 2
         data = _rpt.collect(
             since_s=since_s,
-            name=(getattr(args, "name", "") or "").strip())
+            name=(getattr(args, "name", "") or "").strip(),
+            # The real compaction archive, so the per-session compaction
+            # count in the round report is this machine's own number.
+            archive_root=None)
         print(_rpt.render_text(data))
         return 0
 

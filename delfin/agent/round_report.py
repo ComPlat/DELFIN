@@ -29,6 +29,7 @@ from typing import Any
 
 from . import tool_trace, turn_metrics
 from .report_denials import _NOT_A_REFUSAL, _categorize
+from .session_store import _transcript_archive_path
 
 #: Calls at or above this duration count as "over five minutes".
 FIVE_MIN_MS = 5 * 60 * 1000
@@ -216,10 +217,42 @@ def _turn_stats(session_id: str, since: float) -> dict[str, Any]:
     }
 
 
+# ------------------------------------------------------------------ compactions
+
+def _compaction_counts(archive_root: "Path | str | None",
+                       session_ids: list[str]) -> dict[str, int]:
+    """session -> how often it was compacted (summary compactions).
+
+    Every summary compaction archives the pre-compaction transcript as
+    one line in <archive_root>/<sid>.jsonl (session_store.
+    archive_pre_compaction_transcript, engine.py's compaction path), so
+    the count is the line count -- session_store itself documents one
+    line per compaction event. The in-place trims (elided store) are
+    NOT compaction events and do not land there, so they are not
+    counted either. Zero when a session has no archive file: a session
+    that never compacted must read as measured-zero, not n/a.
+    """
+    out: dict[str, int] = {sid: 0 for sid in session_ids}
+    try:
+        base = Path(archive_root) if archive_root else _transcript_archive_path()
+    except Exception:
+        return out
+    for sid in session_ids:
+        try:
+            p = base / f"{sid}.jsonl"
+            if p.is_file():
+                with p.open("r", encoding="utf-8") as fh:
+                    out[sid] = sum(1 for line in fh if line.strip())
+        except OSError:
+            continue
+    return out
+
+
 # -------------------------------------------------------------------- public
 
 def collect(*, since_s: float, trace_root: "Path | str | None" = None,
-            name: str = "", audit_path: "Path | str | None" = None) -> dict:
+            name: str = "", audit_path: "Path | str | None" = None,
+            archive_root: "Path | str | None" = None) -> dict:
     """Aggregate every session with activity since ``since_s`` (unix ts).
 
     Returns ``{"since_s": …, "sessions": [per-session dicts, newest
@@ -230,6 +263,8 @@ def collect(*, since_s: float, trace_root: "Path | str | None" = None,
     labels, dialogs = _audit_facts(Path(audit_path) if audit_path else None)
     sessions: list[dict] = []
     try:
+        ids = [sid for sid, _ in _session_ids(root, name, since_s, labels)]
+        compactions = _compaction_counts(archive_root, ids)
         for sid, last in _session_ids(root, name, since_s, labels):
             entries = tool_trace.read(sid, root=root)
             row = {"session_id": sid, "label": labels.get(sid, ""),
@@ -240,13 +275,14 @@ def collect(*, since_s: float, trace_root: "Path | str | None" = None,
             # only the questions the model put itself.
             row["dialogues"] = row["dialogues"] + dialogs.get(sid, 0)
             row.update(_turn_stats(sid, since_s))
+            row["compactions"] = compactions.get(sid, 0)
             sessions.append(row)
     except Exception:
         sessions = sessions or []
 
     totals: dict[str, Any] = {"sessions": len(sessions)}
     for key in ("tool_calls", "tool_calls_failed", "dialogues", "denials",
-                "calls_over_5min", "commits", "endpoint_errors",
+                "calls_over_5min", "commits", "endpoint_errors", "compactions",
                 "input_tokens", "output_tokens"):
         vals = [s.get(key) for s in sessions if s.get(key) is not None]
         totals[key] = sum(vals) if vals else (0 if key in (
@@ -306,7 +342,8 @@ def render_text(data: dict) -> str:
         lines.append(
             f"  >5min calls: {s.get('calls_over_5min', 0)} "
             f"(sum {_n(s.get('sum_over_5min_min'))} min), "
-            f"commits: {s.get('commits', 0)}"
+            f"commits: {s.get('commits', 0)}, "
+            f"compactions: {s.get('compactions', 0)}"
         )
         lines.append(
             f"  tokens: in {_n(s.get('input_tokens'))} / "
@@ -331,7 +368,8 @@ def render_text(data: dict) -> str:
     lines.append(
         f"  dialogues: {t.get('dialogues')}, denials: {t.get('denials')}, "
         f">5min calls: {t.get('calls_over_5min')}, "
-        f"commits: {t.get('commits')}"
+        f"commits: {t.get('commits')}, "
+        f"compactions: {t.get('compactions')}"
     )
     lines.append(
         f"  tokens: in {_n(t.get('input_tokens'))} / "
