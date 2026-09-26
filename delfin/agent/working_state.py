@@ -34,6 +34,12 @@ _MACHINE_TURN_PREFIXES = (
     "[Message from the session",
     "[scheduled",
     "[watch]",
+    # A prior compaction's own working-state block arrives as a user
+    # message.  Without this prefix the SECOND compaction does not
+    # re-read it, and everything that only existed in the first block
+    # (denials, test verdicts, touched names) is silently dropped --
+    # the block is the carry-forward, so it must be an input too.
+    "[Working state",
 )
 
 # Operator/harness guidance is rare and load-bearing; keep a few, short.
@@ -97,19 +103,40 @@ def _instructions(messages: Iterable[dict]) -> list[str]:
     Only turns that ARE guidance ([System], a message from another
     session): a keyword match on arbitrary machine output ("never",
     "operator") turned a line of test output into a standing order.
+
+    A prior compaction's working-state block lists standing instructions
+    as ``[System] …`` lines; after the original message is compacted
+    away, those lines are the only copy, so they are re-read here (the
+    same carry-forward the other sections get via the machine-text
+    prefix).
     """
     found: list[str] = []
-    for msg in reversed(list(messages or [])):
-        if not isinstance(msg, dict) or msg.get("role") != "user":
+    msgs = [m for m in (messages or []) if isinstance(m, dict)]
+
+    def _add(text: str) -> None:
+        short = _clip(text, _MAX_INSTRUCTION_CHARS)
+        if short and short not in found:
+            found.append(short)
+
+    for msg in reversed(msgs):
+        if msg.get("role") != "user":
             continue
         text = _message_text(msg).strip()
         if not text.startswith(_INSTRUCTION_PREFIXES):
             continue
-        short = _clip(text, _MAX_INSTRUCTION_CHARS)
-        if short not in found:
-            found.append(short)
+        _add(text)
         if len(found) >= _MAX_INSTRUCTIONS:
-            break
+            return found
+    # Carry: instruction lines inside machine turns (chiefly a prior
+    # working-state block).  Line-level, prefix-anchored — a "never"
+    # inside grep output still does not qualify.
+    for text in _machine_texts(msgs):
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith(_INSTRUCTION_PREFIXES):
+                _add(line)
+                if len(found) >= _MAX_INSTRUCTIONS:
+                    return found
     return found
 
 
