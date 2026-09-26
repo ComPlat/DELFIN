@@ -937,3 +937,63 @@ def test_orca_finds_mpirun_next_to_where_it_is_started_from(tmp_path,
     got = saddle.optimise_to_saddle(small, 'gfn2', cores=4, timeout=30,
                                     confirm=False)
     assert got.get('ok'), got.get('status')
+
+
+def test_a_parallel_orca_gets_the_mpi_environment_deliverin_allocates(
+        tmp_path, monkeypatch):
+    """Inside a one-task allocation OpenMPI takes its slot count from the
+    resource manager, and one task is one slot.
+
+    Measured on this cluster (2026-09-26): a saddle search started in a
+    ``--ntasks=1 --cpus-per-task=16`` SLURM allocation asked for eight
+    processes, and OpenMPI answered "There are not enough slots available in
+    the system" and killed the run in seconds -- both the band and the OptTS,
+    every press, on a machine with sixteen cores standing idle.  DELFIN's own
+    job runners set the OMPI variables for exactly this
+    (:func:`delfin.dashboard.local_runner._configure_environment`, and the
+    submit template beside it); a dashboard saddle search builds its child
+    environment without any of them, so the one place the editor runs ORCA
+    was the one place the mapping was missing.
+
+    The stand-in here does what OpenMPI inside an allocation does -- it reads
+    the OMPI_MCA variables it was started with, and refuses without the ones
+    that tell it the slots are there to take -- so the test is about the
+    environment, and not about this cluster's OpenMPI.
+    """
+    orca_dir = tmp_path / 'orca'
+    orca_dir.mkdir()
+    fake_orca = orca_dir / 'orca'
+    fake_orca.write_text(
+        '#!/bin/sh\n'
+        '# OpenMPI inside a one-task allocation takes its slot count from\n'
+        '# the resource manager: one task, one slot.  The variables say\n'
+        '# otherwise -- without them the run dies of "not enough slots"\n'
+        '# on a machine with cores standing idle.\n'
+        'if [ "$OMPI_MCA_rmaps_base_oversubscribe" = "true" ] && \\\n'
+        '   [ -n "$OMPI_MCA_rmaps_base_mapping_policy" ]; then\n'
+        '  echo "*** OPTIMIZATION RUN DONE ***"\n'
+        'else\n'
+        '  echo "There are not enough slots available in the system to '\
+        'satisfy the 8 slots that were requested"\n'
+        '  echo "ORCA finished by error termination"\n'
+        '  exit 1\n'
+        'fi\n',
+        encoding='utf-8')
+    fake_orca.chmod(0o755)
+
+    monkeypatch.setattr(saddle, 'find_orca', lambda: str(fake_orca))
+    # The allocation the stand-in runs in: one task, no OMPI settings of its
+    # own, the way a bare SLURM allocation leaves the environment.
+    monkeypatch.setenv('PATH', str(tmp_path / 'nowhere-at-all'))
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.delenv('OMPI_MCA_rmaps_base_oversubscribe', raising=False)
+    monkeypatch.delenv('OMPI_MCA_rmaps_base_mapping_policy', raising=False)
+
+    small = ('4\nammonia\n'
+             'N   0.0000   0.0000   0.00\n'
+             'H   0.9377   0.0000   0.00\n'
+             'H  -0.4688   0.8121   0.00\n'
+             'H  -0.4688  -0.8121   0.00\n')
+    got = saddle.optimise_to_saddle(small, 'gfn2', cores=4, timeout=30,
+                                    confirm=False)
+    assert got.get('ok'), got.get('status')

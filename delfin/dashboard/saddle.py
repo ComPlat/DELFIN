@@ -464,8 +464,8 @@ def _share(cores: Any) -> int:
     return max(1, min(want, os.cpu_count() or 1))
 
 
-def _child_path(binary: str, cores: Any) -> str:
-    """The PATH a parallel ORCA run is started with.
+def _child_environment(binary: str, cores: Any) -> Dict[str, str]:
+    """The environment a parallel ORCA run is started with.
 
     ORCA calls its own tools by name -- ``mpirun`` first among them -- and
     resolves them through the PATH of the process that started it, so where
@@ -480,19 +480,35 @@ def _child_path(binary: str, cores: Any) -> str:
     how a whole suite run could be red without the word mpirun appearing
     anywhere in it.
 
-    With one process there is no mpirun call, and the PATH is left as it was
-    rather than made longer for nothing.  Which mpirun is DELFIN's own answer,
+    And the OpenMPI settings of
+    :data:`delfin.dashboard.mpi_env.OMPI_ENVIRONMENT`: inside a SLURM
+    allocation OpenMPI takes its slot count from the resource manager, one
+    task being one slot however many CPUs the task has, and without them a
+    run that asked for eight processes on sixteen idle cores was killed with
+    "There are not enough slots available in the system".  They are the same
+    list the job runners set, applied with ``setdefault``: a site's own MCA
+    tuning wins over ours.
+
+    With one process there is neither a mpirun call nor a slot question, and
+    the environment is left as it was rather than made longer for nothing.
+    Which mpirun is DELFIN's own answer,
     :func:`delfin.runtime_setup._find_openmpi_mpirun`: the openmpi beside the
-    software the user installed first (the one ORCA was built against), the
-    PATH second -- one search for the whole package, not a second copy here.
+    software the user installed first, the PATH second -- one search for the
+    whole package, not a second copy here.
     """
+    room = dict(os.environ)
     ahead = [str(Path(binary).parent)]
     if _share(cores) > 1:
         from delfin.runtime_setup import _find_openmpi_mpirun
         mpirun = _find_openmpi_mpirun()
         if mpirun.is_file():
             ahead.append(str(mpirun.parent))
-    return os.pathsep.join(ahead) + os.pathsep + os.environ.get('PATH', '')
+        from .mpi_env import OMPI_ENVIRONMENT
+        for key, value in OMPI_ENVIRONMENT.items():
+            room.setdefault(key, value)
+    room['PATH'] = os.pathsep.join(ahead) + os.pathsep \
+        + room.get('PATH', '')
+    return room
 
 
 def _stop(running: subprocess.Popen) -> None:
@@ -663,11 +679,10 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
             f'* xyzfile {int(charge)} {max(0, int(uhf)) + 1} in.xyz\n',
             encoding='utf-8')
         environment = dict(os.environ)
-        # ORCA calls its own tools by name -- mpirun included when the run is
-        # parallel -- so where it lives has to be on the path for the run, and
-        # so does the openmpi it was built against.  :func:`_child_path` says
-        # why, and what the search without it looked like.
-        environment['PATH'] = _child_path(binary, ranks)
+        # The environment ORCA is started in -- where it lives, where its
+        # mpirun lives, and the OpenMPI settings a one-task allocation
+        # needs -- for the reasons :func:`_child_environment` writes down.
+        environment.update(_child_environment(binary, ranks))
         if own_program is not None:
             # Where ORCA is to send its energy-and-gradient requests, and how
             # many threads whatever answers them may take.  The count is said
@@ -1396,9 +1411,9 @@ def neb_to_saddle(reactant: str, product: str, method: str = 'gfn2', *,
             + f'* xyzfile {int(charge)} {max(0, int(uhf)) + 1} in.xyz\n',
             encoding='utf-8')
         environment = dict(os.environ)
-        # Where ORCA lives and where its mpirun lives, for the reason
-        # :func:`_child_path` writes down.
-        environment['PATH'] = _child_path(binary, ranks)
+        # The environment ORCA runs in, for the reasons
+        # :func:`_child_environment` writes down.
+        environment.update(_child_environment(binary, ranks))
         if own_program is not None:
             environment['EXTOPTEXE'] = str(own_program)
             environment['DELFIN_GXTB_CORES'] = str(_share(cores))
