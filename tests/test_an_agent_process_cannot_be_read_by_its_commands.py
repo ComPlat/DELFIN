@@ -32,6 +32,25 @@ libc = ctypes.CDLL(None, use_errno=True)
 rc = libc.ptrace(16, pid, None, None)          # PTRACE_ATTACH
 attach = "ATTACHED" if rc == 0 else "denied"
 if rc == 0:
+    # PTRACE_ATTACH's stop is ASYNCHRONOUS: the SIGSTOP can still be in
+    # flight when ptrace() returns. Detaching immediately races that
+    # stop and can leave the target stopped forever with no tracer --
+    # the agent then hangs until the test's timeout kills it (60 s
+    # TimeoutExpired, rc -9; 9 of 10 SLURM runs and 8 of 8 local gate
+    # runs red). The tracee is NOT a child of this probe, so waitpid
+    # cannot observe the stop; /proc/<pid>/stat shows 't' (tracing
+    # stop) instead. Wait for it before PTRACE_DETACH.
+    import time
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        try:
+            with open(f"/proc/{pid}/stat") as fh:
+                state = fh.read().rsplit(")", 1)[1].split()[0]
+        except OSError:
+            break                            # target gone: nothing to wait for
+        if state in ("t", "T"):
+            break
+        time.sleep(0.01)
     libc.ptrace(17, pid, None, None)           # PTRACE_DETACH
 own = "own-ok" if open("/proc/self/environ", "rb").read() else "own-empty"
 print(env, attach, own)
