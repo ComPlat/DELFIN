@@ -5439,6 +5439,13 @@ class KitToolPermissions:
     def _denied_action_key(kind: str, target: str) -> str:
         text = str(target or "")
         if kind == "bash":
+            # Quote characters dropped, content kept -- the reading the
+            # secret scanner already uses (_bash_denied_path). A refusal
+            # recognises what it refused however it is quoted: `cp
+            # 'engine.py' '/tmp/x'` is the command the user said no to as
+            # `cp engine.py /tmp/x` (LJ, 2026-09-26). The error runs
+            # towards MORE recognised refusals, never fewer.
+            text = re.sub(r"['\"]", "", text)
             text = " ".join(text.split()).rstrip(";").strip()
         elif kind == "write":
             try:
