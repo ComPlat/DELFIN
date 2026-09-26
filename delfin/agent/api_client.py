@@ -16031,6 +16031,7 @@ class _DocToolExecutor:
                     env=env,
                     timeout=timeout,
                     should_stop=getattr(perms, "should_stop", None),
+                    budget=True,
                 )
         except subprocess.TimeoutExpired:
             # Say what to do instead. The default window is a minute or

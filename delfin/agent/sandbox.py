@@ -589,6 +589,7 @@ def run_agent_command(
             cwd=str(repo_dir),
             env=_scrubbed_bash_env(),
             timeout=cfg.timeout_s,
+            budget=True,
         )
         elapsed = time.monotonic() - t0
         _audit({
