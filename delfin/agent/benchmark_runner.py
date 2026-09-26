@@ -109,6 +109,12 @@ def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0,
         text=text,
         actions=extract_actions(text),
         tool_calls=list(raw.get("tool_calls") or []),
+        # What the tools answered, index-aligned with tool_calls.  The
+        # harness hints (import origin, refusal reason, stale evidence,
+        # process budget) live HERE, not in the calls -- see
+        # ``Trajectory.tool_results``.  An older run_once (or a stub)
+        # that returns no key keeps working: empty list, hint flags 0.
+        tool_results=[str(r) for r in (raw.get("tool_results") or [])],
         duration_s=float(duration_s),
         cost_usd=float(cost_usd),
         input_tokens=int(raw.get("input_tokens") or 0),
