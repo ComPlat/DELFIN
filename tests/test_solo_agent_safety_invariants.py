@@ -330,13 +330,22 @@ def test_bash_isolation_default_setting_is_auto():
     assert DEFAULT_SETTINGS["agent"]["bash_isolation"] == "auto"
 
 
-def test_auto_isolation_is_plain_in_interactive_mode(tmp_path):
-    # "auto" must NOT isolate interactive (ask-per-action) modes — HPC coding
-    # workflows stay on raw bash there.
-    from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
-    perms = KitToolPermissions(workspace=str(tmp_path), mode="default")
-    _assert_no_filesystem_isolation(
-        _bash_isolation_argv("echo hi", tmp_path, perms, mode="auto"))
+def test_auto_isolation_engages_in_interactive_mode_too(monkeypatch, tmp_path):
+    # "auto" isolates EVERY mode now, not only bypassPermissions — the
+    # change is deliberate (api_client.py, the "auto" branch): approval in
+    # an attended session is given on the command TEXT, and the text is
+    # not the act; an interpreter or symlink walks past any reading of it.
+    # The probe + presence are mocked so the test is deterministic — its
+    # predecessor read the real environment and passed on hosts without a
+    # functional bwrap while failing on SLURM nodes that have one.
+    import delfin.agent.api_client as A
+    A._BWRAP_FUNCTIONAL = None
+    monkeypatch.setattr(A, "_bwrap_functional", lambda: True)
+    monkeypatch.setattr(A.shutil, "which", lambda _x: "/usr/bin/bwrap")
+    perms = A.KitToolPermissions(workspace=str(tmp_path), mode="default")
+    argv = A._bash_isolation_argv("echo hi", tmp_path, perms, mode="auto")
+    assert argv[0] == "bwrap"
+    assert argv[-3:] == ["/bin/bash", "-c", "echo hi"]
 
 
 def test_auto_isolation_engages_in_bypass_mode(monkeypatch, tmp_path):
