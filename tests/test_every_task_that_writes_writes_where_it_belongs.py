@@ -205,7 +205,10 @@ def test_the_counts_still_match_what_was_measured():
     # two lookups that must be done through the reading tools, with the
     # shell forms that make the gate ask ($( ), awk, xargs, sed -i) as
     # forbidden signals.
-    assert counts == {"office": 13, "behavior": 12, "generic_project": 15,
+    # behavior 12 -> 16: tasks_auto_hints.yaml (wave 5, LD, 2026-09-26) --
+    # one behaviour task per harness hint (import origin, refusal reason,
+    # stale test evidence, process budget).
+    assert counts == {"office": 13, "behavior": 16, "generic_project": 15,
                       "science": 11, "other": 50}, counts
 
 
