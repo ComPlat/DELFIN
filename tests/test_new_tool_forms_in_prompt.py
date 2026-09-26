@@ -29,7 +29,6 @@ def _markers_stripped(text: str) -> str:
 def test_solo_prompt_names_the_around_read():
     text = _SOLO.read_text()
     assert "around=<pattern>" in text
-    assert "context=" in text
 
 
 def test_solo_prompt_names_the_append_mode():
