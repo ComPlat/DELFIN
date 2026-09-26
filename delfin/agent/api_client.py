@@ -6269,10 +6269,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "write_file",
             "description": (
                 "Create a file or fully overwrite an existing one; for an "
-                "existing file call read_file first. Path relative to the "
-                "workspace or absolute inside an allowed root — use the "
-                "ABSOLUTE path outside the primary workspace. Returns a diff;"
-                " use edit_file for partial changes."
+                "existing file call read_file first. Use the ABSOLUTE path "
+                "outside the primary workspace. Returns a diff; use "
+                "edit_file for partial changes."
             ),
             "parameters": {
                 "type": "object",
@@ -6284,6 +6283,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "content": {
                         "type": "string",
                     },
+                    "mode": {"type": "string", "enum": ["write", "append"]},
                 },
                 "required": ["path", "content"],
             },
@@ -15170,6 +15170,14 @@ class _DocToolExecutor:
             old_text = ""
         if name == "write_file":
             new_text = args.get("content", "") or ""
+            if str(args.get("mode", "") or "").strip().lower() == "append":
+                # The dialog shows what the file becomes, not the tail as
+                # if it replaced the whole file.
+                try:
+                    from . import append_write as _aw
+                    new_text = _aw.build_new_text(old_text or None, new_text)
+                except Exception:
+                    pass
         elif name == "edit_file":
             old_s = args.get("old_string", "")
             new_s = args.get("new_string", "")
@@ -15269,6 +15277,21 @@ class _DocToolExecutor:
             old_text = ""
             shape = None
 
+        _mode = str(arguments.get("mode", "write") or "write").strip().lower()
+        if _mode not in ("write", "append"):
+            return json.dumps({"error": f"unknown mode {_mode!r}: write or append"})
+        if _mode == "append":
+            # The piecewise form of a large file, without `cat >> f <<EOF`
+            # in bash (which asks every time, and which the change journal
+            # never sees). The whole new text goes down the same write
+            # path: one journal record, a full pre-image, undoable.
+            from . import append_write as _aw
+            try:
+                content = _aw.build_new_text(
+                    old_text if existed else None, str(content))
+            except _aw.AppendRejected as exc:
+                return json.dumps({"error": str(exc)})
+
         if getattr(perms, "mode", "") == "diff_approval":
             return self._stage_pending_change(
                 "write_file", resolved,
@@ -15294,7 +15317,8 @@ class _DocToolExecutor:
 
         disp = self._display_path(resolved, perms)
         diff = self._make_diff(old_text, content, disp)
-        action = "created" if not existed else "overwritten"
+        action = ("created" if not existed
+                  else "appended to" if _mode == "append" else "overwritten")
         test_hint = self._suggest_test_for_edit(resolved, perms)
         lang_hint = _language_hint_for_write(resolved, content)
         shape_note = ("\n\nNOTE: " + " ".join(write_notes)) if write_notes else ""
