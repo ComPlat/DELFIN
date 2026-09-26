@@ -227,7 +227,11 @@ def _best_angle(frames, when: str) -> float:
     return max(seen)
 
 
-@pytest.mark.xfail(strict=True, reason="D-AQIWAZ builds no metal-bonded pyridine ring, so no orientation can be judged -- Known construction defect, tracked in the private register (2026-09-06, #353); strict so a root fix is noticed")
+# The xfail(strict=True) that sat here (set 2026-09-06, #353) marked the
+# construction defect "D-AQIWAZ builds no metal-bonded pyridine ring". The
+# construction landings 3edc7152 (#24-#30) fixed that root cause, so the test
+# now passes and the strict marker fires exactly as designed. The marker is
+# removed; the assertions below are unchanged.
 def test_pyridine_orientation_snaps_to_edge_on():
     """5b-B rotates the D-AQIWAZ pyridine ring toward edge-on.
 
