@@ -22,6 +22,9 @@ from delfin import smiles_converter as sc
 # required to pass on 2025.
 _RDKIT_2026 = int(rdkit.__version__.split(".")[0]) >= 2026
 
+# One build, shared by every test that only reads it (see _isomers).
+_BUILD_CACHE: dict = {}
+
 
 def _metal_and_donors(
     xyz: str,
@@ -68,13 +71,28 @@ def _angles(metal: Tuple[float, float, float], donors) -> List[Tuple[str, str, f
 
 
 def _isomers(smiles: str, num_confs: int = 60, max_isomers: int = 20):
-    res, err = sc.smiles_to_xyz_isomers(
-        smiles,
-        num_confs=num_confs,
-        max_isomers=max_isomers,
-    )
-    assert err is None, f"conversion error: {err}"
-    return res
+    """Build once per (smiles, num_confs, max_isomers) and share the result.
+
+    The tests below ask several questions of the SAME structure; without
+    the cache each one rebuilt it from scratch.  That is what made this
+    file 824 s on a SLURM node and pushed test_ir_complex... past the
+    suite's 300 s per-test deadline: IR_COMPLEX (Ir(ppy)2(acac)) costs
+    ~316 s for ONE build (measured solo on a compute node, job 7225973),
+    and the file built it twice.  Convention borrowed from
+    test_user_smiles_suite._BUILD_CACHE; the determinism test below
+    deliberately does NOT use the cache (a cached second build would
+    make its comparison vacuous).
+    """
+    key = (smiles, num_confs, max_isomers)
+    if key not in _BUILD_CACHE:
+        res, err = sc.smiles_to_xyz_isomers(
+            smiles,
+            num_confs=num_confs,
+            max_isomers=max_isomers,
+        )
+        assert err is None, f"conversion error: {err}"
+        _BUILD_CACHE[key] = res
+    return _BUILD_CACHE[key]
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +145,20 @@ IR_COMPLEX = (
 )
 
 
+@pytest.mark.timeout(900)
 def test_ir_complex_no_unphysical_short_metal_donor_bonds():
+    """The physics assertion stays; the DEADLINE is what changed.
+
+    Measured solo on a compute node (job 7233185, num_confs=60):
+    284.5 s, 10 isomers, min donor distance 2.010 A; in the 7225973
+    solo run 316 s.  The cost does NOT come from conformer embedding —
+    num_confs 24/12 measured 276/270 s — so a reduction would weaken the
+    build for no time won.  The suite's default 300 s per-test deadline
+    cuts through the middle of the honest run-to-run spread, which made
+    this test fail on 10 of 10 SLURM runs as `pytest-timeout (>300s)`
+    while it passed solo.  900 s matches the suite's per-FILE budget;
+    the marker names the cost instead of hiding it.
+    """
     res = _isomers(IR_COMPLEX)
     assert res, "no Ir isomers produced"
     for xyz, lbl in res:
@@ -157,8 +188,19 @@ def test_ir_complex_octahedral_angles_within_tolerance():
 # ---------------------------------------------------------------------------
 
 def test_cd_isomer_set_is_deterministic_across_runs():
-    first = sorted(lbl for _x, lbl in _isomers(CD_MA2B2C2))
-    second = sorted(lbl for _x, lbl in _isomers(CD_MA2B2C2))
+    # Two REAL builds, not the cached one: with the shared build cache a
+    # second _isomers() call would return the identical object and the
+    # comparison would be vacuous.  The test's intent is that two
+    # independent conversions agree, so it goes to the public API directly.
+    first_res, first_err = sc.smiles_to_xyz_isomers(
+        CD_MA2B2C2, num_confs=60, max_isomers=20)
+    second_res, second_err = sc.smiles_to_xyz_isomers(
+        CD_MA2B2C2, num_confs=60, max_isomers=20)
+    assert first_err is None and second_err is None, (
+        f"conversion error: {first_err} / {second_err}"
+    )
+    first = sorted(lbl for _x, lbl in first_res)
+    second = sorted(lbl for _x, lbl in second_res)
     assert first == second, (
         f"non-deterministic isomer set: {first} vs {second}"
     )
