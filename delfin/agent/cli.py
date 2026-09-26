@@ -2293,28 +2293,58 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         return 0
 
     rows = _fc.pending()
-    # A question waiting in a terminal pane is answered there, not here.
-    # It is listed anyway: the pane cuts the preview to 24 lines and to
-    # its own width, and a supervisor who cannot read a question cannot
-    # give an answer to it. `show` prints these whole.
+    # A question a supervisor cannot read is one they cannot answer: `ls`
+    # showed id/tool/path and seconds, so every question needed a second
+    # `show`. One line per entry now says what it is about -- command,
+    # path, or the question of a choice request -- clipped to the pane
+    # width so a long command cannot push the rest off the screen.
     from . import terminal_confirm as _tc
+    from . import approval_answers as _ans
     at_terminals = _tc.pending_at_terminals()
     if not rows and not at_terminals:
         print("(nothing waiting)")
         return 0
+    width = _ls_width()
     for row in rows:
         waited = int(_time.time() - float(row.get("asked_at") or 0))
-        print(f"{row.get('id', ''):<24} {row.get('tool', ''):<12} "
-              f"{(row.get('path') or '-')[:40]:<40} {waited}s")
+        head = f"{row.get('id', ''):<24} {row.get('tool', ''):<12} "
+        tail = f" {waited}s"
+        subject = _ans.preview_line(
+            row, max(10, width - len(head) - len(tail)))
+        print((head + subject + tail)[:width])
     if at_terminals:
         print("\nWaiting at a terminal — answer here or in that session:")
         for row in at_terminals:
             waited = int(_time.time() - float(row.get("asked_at") or 0))
             mark = " PROTECTED" if row.get("protected") else ""
-            print(f"  {row.get('id', ''):<24} "
-                  f"{(row.get('session_key') or '?'):<14} "
-                  f"{row.get('tool', ''):<12} {waited}s{mark}")
+            head = (f"  {row.get('id', ''):<24} "
+                    f"{(row.get('session_key') or '?'):<14} "
+                    f"{row.get('tool', ''):<12} ")
+            tail = f" {waited}s{mark}"
+            subject = _ans.preview_line(
+                row, max(10, width - len(head) - len(tail)))
+            print((head + subject + tail)[:width])
     return 0
+
+
+def _ls_width() -> int:
+    """The pane width for `approvals ls`, 120 when there is none.
+
+    COLUMNS is respected first -- inside a pipe it carries the width of
+    the terminal the operator is actually looking at, which is the one
+    the clipping is for.
+    """
+    try:
+        cols = int(os.environ.get("COLUMNS", "") or 0)
+        if cols > 0:
+            return cols
+    except ValueError:
+        pass
+    try:
+        import shutil
+        return shutil.get_terminal_size().columns or 120
+    except Exception:
+        return 120
 
 
 def cmd_memory(args: argparse.Namespace) -> int:
