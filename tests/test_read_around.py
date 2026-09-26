@@ -98,11 +98,6 @@ def ws(tmp_path):
     return d
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="read_file does not accept around=/context= yet; wiring lives "
-           "in api_client.py (operator's area). See .gate/SCHEMA-READ-AROUND.md",
-)
 def test_read_file_around_returns_the_window(ws):
     ex = _DocToolExecutor()
     out = ex._execute_read_file(
@@ -112,3 +107,16 @@ def test_read_file_around_returns_the_window(ws):
     assert first.startswith("12  ")  # 1-based, grep-compatible
     assert "line 15" in out
     assert "line 18" in out and "line 11" not in out
+
+
+def test_read_file_around_with_no_match_says_so(ws):
+    out = _DocToolExecutor()._execute_read_file(
+        {"path": "sample.txt", "around": r"no such line"}, _perms(ws))
+    assert "not found" in out
+
+
+def test_the_read_file_schema_offers_around():
+    from delfin.agent.api_client import _DOC_TOOLS_OPENAI
+    spec = [t for t in _DOC_TOOLS_OPENAI if t["function"]["name"] == "read_file"][0]
+    assert {"around"} <= set(
+        spec["function"]["parameters"]["properties"])
