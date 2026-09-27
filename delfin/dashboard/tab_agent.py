@@ -19378,6 +19378,15 @@ def create_tab(ctx):
                     )
             except Exception:
                 pass
+            try:
+                # Shared session-end stage (Paket 5): index the ended
+                # session so session_search finds it. Own try/except;
+                # never breaks the session save or the other stages.
+                from delfin.agent.session_end import index_at_session_end
+                index_at_session_end(
+                    str(state.get("active_session_id") or ""))
+            except Exception:
+                pass
 
         _th.Thread(target=_run, daemon=True, name="auto-memory").start()
 

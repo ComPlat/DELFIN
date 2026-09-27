@@ -484,6 +484,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             session_id=str(sid or getattr(engine, "session_id", "") or ""))
     except Exception:
         pass
+    # Session-end stage (Paket 5): the ended session becomes searchable.
+    # Own try/except like the learning stage; never breaks the run.
+    try:
+        from .session_end import index_at_session_end
+        index_at_session_end(
+            str(sid or getattr(engine, "session_id", "") or ""))
+    except Exception:
+        pass
 
     # Learning signal: record the outcome so provider profiles learn from
     # CLI/headless usage too — previously only dashboard cycles fed the
@@ -1466,6 +1474,14 @@ def cmd_chat(args: argparse.Namespace) -> int:
             learn_at_session_end(
                 _display_messages(engine),
                 session_id=str(getattr(engine, "session_id", "") or ""))
+        except Exception:
+            pass
+        # Session-end stage (Paket 5): the ended session becomes
+        # searchable. Own try/except, same rule as the learning stage.
+        try:
+            from .session_end import index_at_session_end
+            index_at_session_end(
+                str(getattr(engine, "session_id", "") or ""))
         except Exception:
             pass
         try:
