@@ -284,3 +284,93 @@ def extract_evidence(messages):
                        "verify_recipe rendering in assistant text", now)
 
     return best
+
+
+# ---------------------------------------------------------------------------
+# learn_from_session (Phase 3): draft one skill, propose it once
+# ---------------------------------------------------------------------------
+
+_DRAFT_SYSTEM = """You draft DELFIN skills. A skill is a short, reusable
+playbook in Markdown with a YAML front-matter (name, description)
+followed by numbered steps. Rules:
+- English only; every string a DELFIN user could see is English.
+- Steps must be actionable and specific to the session's lesson.
+- Never include: approvals, sandbox or deny exceptions, secrets,
+  network bypasses, writes outside the workspace, or actions that were
+  previously denied.
+- Name: lowercase-hyphenated, at most 40 chars.
+Output ONLY the SKILL.md text, starting with the front-matter '---'."""
+
+_FM_NAME = re.compile(r"^name:\s*(\S[^\n]*)$", re.M)
+_MAX_DRAFT_CHARS = 4000
+
+
+def _is_skill_draft(text: str) -> bool:
+    """Does the draft look like a SKILL.md (frontmatter + name)?"""
+    t = (text or "").strip()
+    if not t.startswith("---") or len(t) > _MAX_DRAFT_CHARS:
+        return False
+    return bool(_FM_NAME.search(t))
+
+
+def _skill_name(text: str) -> str:
+    m = _FM_NAME.search(text or "")
+    name = (m.group(1).strip() if m else "")
+    name = name.strip("`\"' ")
+    return name or "learned-skill"
+
+
+def _default_propose(name, text, *, evidence, source, base_version=""):
+    """The real propose() once package 1 is merged; absent until then."""
+    from delfin.agent.skill_proposals import propose  # type: ignore
+    return propose(name, text, evidence=evidence, source=source,
+                   base_version=base_version)
+
+
+def learn_from_session(messages, *, settings=None, llm=None,
+                       _propose=None) -> object | None:
+    """At most ONE skill proposal from a finished session, or None.
+
+    Order of the gates (each one may end the learning silently):
+    qualification (qualifies) -> evidence (extract_evidence) -> ONE
+    cheap LLM call that drafts a SKILL.md from the transcript excerpt,
+    the reasons and the evidence -> propose() through skill_proposals.
+    A draft without frontmatter is rejected, not "repaired". Never
+    raises; any failure returns None. ``llm`` mirrors the
+    ``llm_fn(prompt, system, settings) -> str`` injection used by
+    memory_distill; without it one real cheap-tier client call runs.
+    """
+    try:
+        reasons = qualifies(messages)
+        if not reasons:
+            return None
+        evidence = extract_evidence(messages)
+        if evidence is None:
+            return None  # no proof, no proposal
+
+        from delfin.agent.memory_distill import _transcript_excerpt
+        excerpt = _transcript_excerpt(
+            [m for m in (messages or []) if isinstance(m, dict)])
+        ev_block = (f"kind: {evidence.kind}\nref: {evidence.ref}\n"
+                    f"detail: {getattr(evidence, 'detail', '')}")
+        prompt = (
+            "Session excerpt:\n" + (excerpt or "(empty)") +
+            "\n\nWhy this session earned a skill:\n- " +
+            "\n- ".join(reasons) +
+            "\n\nEvidence:\n" + ev_block +
+            "\n\nDraft ONE reusable skill from this session.")
+
+        if llm is not None:
+            draft = llm(prompt, _DRAFT_SYSTEM, settings)
+        else:
+            from delfin.agent.memory_distill import _default_llm
+            draft = _default_llm(prompt, _DRAFT_SYSTEM, settings)
+        if not _is_skill_draft(draft):
+            return None
+
+        propose_fn = _propose or _default_propose
+        return propose_fn(_skill_name(draft), draft.strip() + "\n",
+                          evidence=[evidence],
+                          source="skill_learning")
+    except Exception:
+        return None
