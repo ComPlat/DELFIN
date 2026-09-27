@@ -520,10 +520,31 @@ def test_the_drive_settle_lands_a_realistic_trans_not_a_strained_top():
 
     # The wheel turned it to trans...
     assert reached > 150.0, f'the settle did not reach trans: {reached:.0f}'
-    # ...the settle dropped the energy far below the strained snapshot...
-    assert (e_scroll - e_trans) * kcal > 30.0, (
-        f'the settle barely relaxed: scroll {e_scroll:.5f} -> trans '
-        f'{e_trans:.5f} ({(e_scroll - e_trans) * kcal:.1f} kcal/mol)')
+    # ...and what is left is the real conformer: relaxing again at the same
+    # pin barely improves on it.  The drop from the scroll snapshot is the
+    # wrong shape for this -- the forty notches are an xtb chain whose end
+    # point scatters (measured in four rounds in one process: the settle's
+    # drop ranged 16 to 111 kcal/mol), so a threshold on it reads the
+    # chain's head start as the settle's work and fails a working settle
+    # whenever the chain ended near the product.  Measuring against the
+    # constrained minimum instead fails a BROKEN one whenever it left
+    # anything strained: a settle that did nothing leaves the chain's last
+    # steered snapshot, which the re-optimisation improves by tens of
+    # kcal/mol (the strained top the docstring promises never survives).
+    again = gfn.optimize_with_gfn(
+        part.coords_widget.value, 'gfn2', optimise=True,
+        constraints=[{'kind': 'dihedral', 'atoms': [0, 1, 2, 3],
+                      'value': 180.0, 'mode': 'fix'}],
+        etemp=3000.0, max_steps=250, timeout=120)
+    assert again.get('ok'), again.get('status')
+    assert (e_trans - again['energy']) * kcal < 5.0, (
+        f'the settle left {((e_trans - again["energy"]) * kcal):+.1f} '
+        f'kcal/mol of strain that a re-optimisation at the same pin found')
+    # ...and the settle may not sit above the snapshot it was given either:
+    # it is a minimisation, so a climb is a fault whatever the chain did.
+    assert (e_scroll - e_trans) * kcal > -1.0, (
+        f'the settle climbed above the scroll snapshot: scroll '
+        f'{e_scroll:.5f} -> trans {e_trans:.5f}')
     # ...and what is left is the real conformer, at or below cis (trans-butene
     # is the more stable one), not a structure stuck above its barrier.
     assert (e_trans - e_cis) * kcal < 5.0, (
