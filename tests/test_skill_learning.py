@@ -103,3 +103,95 @@ class TestQualifies:
     def test_reasons_are_named_english_strings(self):
         for r in qualifies(DEEP_WORK):
             assert isinstance(r, str) and 4 < len(r) < 200, r
+
+
+# --- Phase 2: evidence extraction -------------------------------------
+
+from delfin.agent.skill_learning import extract_evidence  # noqa: E402
+
+GREEN_GATE = [
+    {"role": "user", "content": "Fix the tests."},
+    _bash("gate tests/test_x.py", exit_code=0,
+          out="7 passed in 2.4s"),
+]
+
+GREEN_TESTRUNNER = [
+    {"role": "user", "content": "Fix the tests."},
+    {"role": "tool", "content":
+     '<span class="tool-name">TestRunner</span>  <span class="tool-param">'
+     'tests/test_x.py</span><details><summary> &rarr; '
+     '{"summary": {"passed": 7, "failed": 0, "errors": 0, "tests": '
+     '["tests/test_x.py::test_a", "tests/test_x.py::test_b"]}}'
+     '</details>'},
+]
+
+SLURM_JOB = [
+    {"role": "user", "content": "Run the optimization."},
+    {"role": "tool", "content":
+     '<span class="tool-name">submit_calculation</span>  '
+     '<span class="tool-param">folder calc/xyz</span>'
+     '<details><summary> &rarr; '
+     '{"job_id": 7233185, "submitted": true}</details>'},
+]
+
+VERIFY_RECIPE_MSG = [
+    {"role": "user", "content": "Finish up."},
+    {"role": "assistant", "content":
+     "Verified via the recipe:\n"
+     "  gate tests/test_x.py tests/test_y.py -q  # 12 passed\n"
+     "  lint                                     # clean"},
+]
+
+PARTIAL_FAIL = [
+    {"role": "user", "content": "Fix the tests."},
+    _bash("gate tests/test_x.py", exit_code=1,
+          out="2 failed, 5 passed"),
+]
+
+NO_EVIDENCE = [
+    {"role": "user", "content": "Fix the tests."},
+    {"role": "assistant", "content": "I edited the file."},
+    _tool("Edit", "delfin/x.py old new"),
+]
+
+
+class TestExtractEvidence:
+    def test_green_gate_run_is_test_evidence(self):
+        ev = extract_evidence(GREEN_GATE)
+        assert ev is not None
+        assert ev.kind == "test"
+        assert "tests/test_x.py" in ev.ref
+        assert ev.verified_at
+
+    def test_green_testrunner_is_test_evidence(self):
+        ev = extract_evidence(GREEN_TESTRUNNER)
+        assert ev is not None
+        assert ev.kind == "test"
+        assert "tests/test_x.py" in ev.ref
+
+    def test_submitted_job_is_calc_evidence(self):
+        ev = extract_evidence(SLURM_JOB)
+        assert ev is not None
+        assert ev.kind in ("calc", "job")
+        assert "7233185" in ev.ref
+
+    def test_verify_recipe_in_assistant_text_is_recipe_evidence(self):
+        ev = extract_evidence(VERIFY_RECIPE_MSG)
+        assert ev is not None
+        assert ev.kind == "recipe"
+        assert "tests/test_x.py" in ev.ref
+
+    def test_partially_red_run_is_no_evidence(self):
+        assert extract_evidence(PARTIAL_FAIL) is None
+
+    def test_plain_work_without_proof_is_no_evidence(self):
+        assert extract_evidence(NO_EVIDENCE) is None
+
+    def test_empty_inputs(self):
+        assert extract_evidence([]) is None
+        assert extract_evidence(None) is None
+
+    def test_test_evidence_outranks_job_evidence(self):
+        msgs = GREEN_TESTRUNNER + SLURM_JOB
+        ev = extract_evidence(msgs)
+        assert ev is not None and ev.kind == "test"
