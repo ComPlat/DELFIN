@@ -55,9 +55,28 @@ def _refused(out) -> bool:
     "project_introspect", "publish_report", "undo_changes",
     "remember", "forget", "remember_permission",
     "push_notification", "remote_trigger", "orchestrate", "subagent",
+    "skill_propose_patch",
 ])
 def test_a_side_effecting_tool_is_refused(tmp_path, tool):
     assert _refused(_run(tmp_path, tool)), tool
+
+
+def test_a_skill_patch_in_plan_mode_leaves_no_proposal(tmp_path):
+    """skill_propose_patch writes a file (the proposal), so plan mode
+    must refuse it BEFORE anything lands in the proposals area."""
+    assert _refused(_run(tmp_path, "skill_propose_patch", {
+        "name": "tune", "old": "a", "new": "b", "reason": "r",
+        "evidence": [{"kind": "test", "ref": "x"}],
+    }))
+    # The proposals directory is Paket 1's; what matters here is that
+    # no proposal was created on the refused call's path.
+    ex = A._DocToolExecutor.__new__(A._DocToolExecutor)
+    out = json.loads(ex.execute("skill_propose_patch", {
+        "name": "tune", "old": "a", "new": "b", "reason": "r",
+        "evidence": [{"kind": "test", "ref": "x"}],
+    }, _plan(tmp_path)))
+    assert out.get("error", "").startswith("plan mode"), out
+    assert not out.get("status") == "ok"
 
 
 def test_a_namespaced_call_is_judged_by_its_tool_name(tmp_path):
