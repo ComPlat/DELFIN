@@ -113,21 +113,32 @@ def test_a_single_trial_does_not_settle_it(built):
 
     Timed loosely on purpose — this runs on a machine with other tenants
     and the assertion must not depend on how loaded it is.
+
+    The order alternates per pair: with a fixed order, whatever the first
+    run of a pair warms (file cache, interpreter start-up) favours the
+    second one every time, and on the CI runner 2026-09-27 "b" won all
+    eight pairs. Sixteen pairs make a pure-chance sweep 2 * 2**-16 (about
+    0.003 %) instead of 2 * 2**-8 (0.8 %); the loop still stops at the
+    first pair that shows both winners, so a normal run is two or three
+    pairs long.
     """
     winners = set()
-    for _ in range(8):
-        times = []
-        for name in ("bench_a.py", "bench_b.py"):
+    for i in range(16):
+        order = ("bench_a.py", "bench_b.py") if i % 2 == 0 \
+            else ("bench_b.py", "bench_a.py")
+        times = {}
+        for name in order:
             t0 = time.perf_counter()
             subprocess.run([sys.executable, str(built / name)],
                            capture_output=True, timeout=60, cwd=str(built))
-            times.append(time.perf_counter() - t0)
-        winners.add("a" if times[0] < times[1] else "b")
+            times[name] = time.perf_counter() - t0
+        winners.add("a" if times["bench_a.py"] < times["bench_b.py"]
+                    else "b")
         if len(winners) == 2:
             break
     assert winners == {"a", "b"}, (
-        "one variant won all eight pairs; the jitter no longer dominates "
-        "and a single run would be a fair answer")
+        "one variant won all sixteen pairs, in both orders; the jitter no "
+        "longer dominates and a single run would be a fair answer")
 
 
 def test_the_setup_refuses_to_overwrite(tmp_path):
