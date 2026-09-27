@@ -20671,7 +20671,8 @@ class OpenAIClient(_BaseClient):
             # advertises a playbook nor reads one.
             _skills = _session_skills(
                 self._permissions,
-                domain=self._session_domain(self._permissions))
+                domain=_DocToolExecutor._session_domain(
+                    self._permissions))
             if _skills:
                 _listing = _skill_listing(_skills)
                 advertised_tools = [
