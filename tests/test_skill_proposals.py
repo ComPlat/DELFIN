@@ -20,9 +20,19 @@ def home(tmp_path, monkeypatch):
     safe = types.ModuleType("delfin.agent.skill_safety")
     safe.check = lambda text: []
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", safe)
+    # ``from . import skill_safety`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "skill_safety",
+                        safe, raising=False)
     ev = types.ModuleType("delfin.agent.evidence")
     ev.verify_evidence = lambda e, **kw: (True, "verified")
     monkeypatch.setitem(sys.modules, "delfin.agent.evidence", ev)
+    # ``from . import evidence`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "evidence",
+                        ev, raising=False)
     return tmp_path
 
 
@@ -35,6 +45,11 @@ def _fake_safety(monkeypatch, findings):
     mod.check = check
     mod.calls = calls
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", mod)
+    # ``from . import skill_safety`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "skill_safety",
+                        mod, raising=False)
     return mod
 
 
@@ -73,6 +88,11 @@ def test_absent_safety_module_blocks_the_proposal(home, monkeypatch):
     # pass. Rejected by the coordinator (27 Sep): the default is "not
     # verified", never "verified by absence of a checker".
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", None)
+    # ``from . import skill_safety`` reads the package attribute first;
+    # once the real module was imported by another test it is there, so
+    # it has to go too -- then the import really fails, as when absent.
+    monkeypatch.delattr(__import__("delfin.agent").agent, "skill_safety",
+                        raising=False)
     p = sp.propose("plain", "body", evidence=[_ev()], source="test")
     assert p.status == "blocked"
     assert p.findings and "unavailable" in p.findings[0]

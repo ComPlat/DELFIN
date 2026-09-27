@@ -25,9 +25,19 @@ def home(tmp_path, monkeypatch):
     mod = types.ModuleType("delfin.agent.skill_safety")
     mod.check = lambda text: []
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", mod)
+    # ``from . import skill_safety`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "skill_safety",
+                        mod, raising=False)
     ev = types.ModuleType("delfin.agent.evidence")
     ev.verify_evidence = lambda e, **kw: (True, "verified")
     monkeypatch.setitem(sys.modules, "delfin.agent.evidence", ev)
+    # ``from . import evidence`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "evidence",
+                        ev, raising=False)
     return tmp_path
 
 

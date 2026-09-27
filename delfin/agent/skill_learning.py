@@ -191,7 +191,7 @@ def _evidence_class():
         from delfin.agent.skill_proposals import Evidence  # type: ignore
         return Evidence
     except Exception:
-        from dataclasses import dataclass, field
+        from dataclasses import dataclass
 
         @dataclass
         class Evidence:  # type: ignore[no-redef]

@@ -55,7 +55,7 @@ class TestReindexFinishedSession:
         assert session_end_index.reindex_finished_session("") is False
 
     def test_a_corrupt_index_file_does_not_raise(self, index_home):
-        from delfin.agent import session_end_index, session_index
+        from delfin.agent import session_end_index
 
         d = index_home / "agent_sessions"
         d.mkdir(parents=True)

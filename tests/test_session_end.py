@@ -178,7 +178,6 @@ class TestPublicSessionEndHooks:
         """The public CLI path (``delfin-agent -p``) runs the shared
         session-end hook after the answer — the integration the module
         tests cannot prove."""
-        import argparse
         from delfin.agent import cli as agent_cli
 
         monkeypatch.setattr(Path, "home",

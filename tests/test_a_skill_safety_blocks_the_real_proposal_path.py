@@ -1,52 +1,22 @@
 """Phase 5, real wiring: propose() must honour skill_safety.check.
 
-Paket 1 (nacht-s11, agent/s11-lw11, commits 6eb3d906..4744cba8)
-implements skill_proposals.propose/accept against the contract. This
-file runs the REAL store against the REAL checker (this branch's
-delfin/agent/skill_safety.py) by loading s11's module from its commit
-— read-only, nothing of Paket 1 lands on this branch from here.
-
-The public path a session actually calls is propose() then accept():
-an unsafe text must come back status="blocked" with the findings
-stored, accept() must refuse it, and a clean text must stay pending
-and be acceptable. A check that cannot even run blocks (fail closed,
-Paket 1's own rule — pinned here from the outside too).
+Runs the REAL proposal store (delfin.agent.skill_proposals, Paket 1)
+against the REAL checker (delfin.agent.skill_safety). The public path a
+session actually calls is propose() then accept(): an unsafe text must
+come back status="blocked" with the findings stored, accept() must
+refuse it, and a clean text must stay pending and be acceptable -- with
+evidence that passes the real evidence gate (Paket 8), not a stand-in.
 """
 from __future__ import annotations
-
-import subprocess
-import sys
 
 import pytest
 
 from delfin.agent import skill_safety
 
-_S11_BRANCH = "agent/s11-lw11"
-
-
-def _load_skill_proposals():
-    """Load delfin.agent.skill_proposals from the s11 commit, as package
-    module ``delfin.agent.skill_proposals`` so its relative imports
-    (``from . import skill_safety``) resolve against THIS branch."""
-    text = subprocess.run(
-        ["git", "show", f"{_S11_BRANCH}:delfin/agent/skill_proposals.py"],
-        capture_output=True, text=True, check=True).stdout
-    # Relative import needs a package context; register under the real
-    # package name so ``from . import skill_safety`` finds OUR module.
-    import delfin.agent  # noqa: F401
-    mod = type(sys)("delfin.agent.skill_proposals")
-    mod.__package__ = "delfin.agent"
-    mod.__file__ = f"<git show {_S11_BRANCH}:delfin/agent/skill_proposals.py>"
-    # dataclasses looks the module up in sys.modules by __module__ DURING
-    # exec, so it must be registered before, not after.
-    sys.modules["delfin.agent.skill_proposals"] = mod
-    exec(compile(text, mod.__file__, "exec"), mod.__dict__)
-    return mod
-
-
 @pytest.fixture(scope="module")
 def sp():
-    return _load_skill_proposals()
+    from delfin.agent import skill_proposals
+    return skill_proposals
 
 
 @pytest.fixture
@@ -105,7 +75,15 @@ def test_clean_text_is_pending_and_acceptable(sp, home):
                    evidence=_ev(sp), source="nacht-s13")
     assert p.status == "pending"
     assert p.findings == []
-    target = sp.accept("gate-workflow", by="operator")
+    # accept() re-verifies the evidence (Paket 8): the cited test file
+    # exists in the workspace and a green run of it is on record.
+    ws = home / "ws"
+    (ws / "tests").mkdir(parents=True)
+    (ws / "tests" / "test_x.py").write_text("def test_y():\n    pass\n")
+    runs = [{"command": "pytest -q tests/test_x.py", "exit_code": 0,
+             "status": "ok"}]
+    target = sp.accept("gate-workflow", by="operator", workspace=ws,
+                       runs=runs)
     assert target.exists()
 
 
