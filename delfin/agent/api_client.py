@@ -20389,6 +20389,19 @@ class OpenAIClient(_BaseClient):
         # the call gets the parameter's default — which reads as the
         # lowest effort on a reasoning model. Nobody chose that.
         self._turn_thinking_budget = int(thinking_budget or 0)
+        # Mid-session memory nudge (package 7): the one-per-user-turn cap
+        # is reset HERE, at the entry of the public turn method — not
+        # derived from any turn counter, which would be a guess about
+        # which attribute the client tracks. Every call of this method
+        # starts a user turn, so this is the reliable boundary.
+        try:
+            _nudge_state = getattr(self, "_memory_nudge_state", None)
+            if _nudge_state is None:
+                from .memory_nudge import NudgeState
+                _nudge_state = self._memory_nudge_state = NudgeState()
+            _nudge_state.nudged_this_turn = False
+        except Exception:
+            pass
         # Per TURN, not per round: the loop that has to be broken spans
         # rounds. Read from the profile once, here, so a model switch
         # mid-session takes effect on the next turn and not mid-loop.
@@ -22044,6 +22057,13 @@ class OpenAIClient(_BaseClient):
                 # gate auto-continue so it never fires without progress).
                 _did_tools_since_cont = True
 
+                # Memory nudge accounting (package 7): the work this round
+                # contributed — tool calls and produced result text. Fed to
+                # maybe_nudge below; the state accumulates across rounds
+                # and turns, so partial work is never lost.
+                _nudge_round_calls = len(tc_list)
+                _nudge_round_chars = sum(len(r) for r in _round_results)
+
                 # Mid-loop steering: if the user sent a message WHILE the loop
                 # was running, inject it now as a user turn so the model reacts
                 # to it on the very next round (no waiting for the turn to end).
@@ -22075,6 +22095,26 @@ class OpenAIClient(_BaseClient):
                     api_messages.append({"role": "user", "content": _run_note})
                     yield StreamEvent(
                         type="notice", text="\n\n" + _run_note + "\n")
+
+                # Mid-session memory nudge (package 7): after enough WORK
+                # (tool calls AND produced text) since the last nudge, ask
+                # once per user turn whether anything is worth keeping.
+                # Pure context text — no tool, no write; injected like the
+                # plan-mode redirect (api_messages only, no chat event, so
+                # the reader is not interrupted). The cap resets at the
+                # entry of this method (see above), never on a message
+                # counter.
+                try:
+                    from .memory_nudge import maybe_nudge as _maybe_nudge
+                    _nudge = _maybe_nudge(
+                        self._memory_nudge_state,
+                        tool_calls=_nudge_round_calls,
+                        chars=_nudge_round_chars)
+                    if _nudge:
+                        api_messages.append(
+                            {"role": "user", "content": _nudge})
+                except Exception:
+                    pass
 
                 # Steering blocks that changed since the turn started (open
                 # tasks, budget wind-down, a late answer). Injected here and
