@@ -187,11 +187,13 @@ _TEXT_RULES: tuple[tuple[str, re.Pattern, str], ...] = (
      "write outside the workspace: the text writes to a system or home "
      "location the sandbox refuses ({snippet!r})"),
     ("deletion",
-     re.compile(r"(?i)\b(?:rm|delete|shred|wipe)\b\s+(?:the\s+|this\s+|that\s+"
-                r"|any\s+|every\s+|all\s+)?[\w./-]+"
-                r"|\b(?:rm|delete|shred|wipe)\b\s+(?:the\s+|this\s+)?"
-                r"(?:intermediate|temp(?:orary)?|scratch|old|stale)"
-                r"|\brm\s+-"),
+     re.compile(r"(?i)\brm\s+-"
+                r"|\b(?:rm|delete|shred|wipe)\b\s+(?:the\s+|this\s+|that\s+"
+                r"|any\s+|every\s+|all\s+)?"
+                r"(?:intermediate|temp(?:orary)?|scratch|old|stale"
+                r"|files?|director(?:y|ies)|folders?|tree|builds?|results?"
+                r"|logs?|archives?)\b"
+                r"|\b(?:rm|shred|wipe)\b\s+[\w./-]*/[\w./-]*"),
      "deletion: the text removes files, which no skill may prescribe "
      "({snippet!r})"),
     ("scheduler-override",
