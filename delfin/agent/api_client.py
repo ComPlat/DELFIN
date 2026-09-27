@@ -4288,6 +4288,9 @@ _PLAN_READONLY_TOOLS: frozenset[str] = frozenset({
     "check_environment", "list_changes_made",
     # Reading this session
     "history_search", "history_get", "task_list", "task_get",
+    # Reading PAST sessions' archives: read-only like the doc indexes
+    # above (decided by the operator, 2026-09-27).
+    "session_search",
     "bash_status", "bash_output", "subagent_result", "cron_list",
     # Planning itself
     "task_create", "task_update", "task_adopt", "exit_plan_mode",
