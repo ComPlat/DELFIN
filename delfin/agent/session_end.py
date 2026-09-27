@@ -94,3 +94,19 @@ def learn_at_session_end(messages, *, session_id: str = "",
                                   _propose=_propose)
     except Exception:
         return None
+
+
+def index_at_session_end(session_id: str) -> bool:
+    """Session indexing (package 5): the ended session becomes searchable.
+
+    The same hook's second stage, in its own try/except like the skill
+    learning above: an indexing failure never breaks the session save
+    (or the other stages). Deliberately NOT gated on
+    agent.skill_learning.enabled — that setting governs proposals, not
+    the read-only search index.
+    """
+    try:
+        from delfin.agent.session_end_index import reindex_finished_session
+        return reindex_finished_session(session_id)
+    except Exception:
+        return False
