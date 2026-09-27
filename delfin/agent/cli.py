@@ -2189,6 +2189,88 @@ def cmd_credentials(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_skills(args: argparse.Namespace) -> int:
+    """Skill proposals: what is waiting, its full preview, the decision.
+
+    The other side of ``skill_proposals``: `show` prints text, evidence
+    and safety findings so the accept/reject decision is made with a
+    real preview, `accept` activates a pending proposal, `reject
+    --reason` turns it away (into ``rejected/``, never deleted).
+    """
+    from . import skill_proposals as sp
+
+    action = getattr(args, "skills_action", "") or "proposals"
+
+    if action == "proposals":
+        rows = sp.list_proposals()
+        if not rows:
+            print("no skill proposals waiting — a proposal is created at "
+                  "the end of a qualifying session and accepted by a "
+                  "person")
+            return 0
+        for p in rows:
+            print(f"{p.name:<24} [{p.status}] {len(p.evidence)} evidence")
+        print("\nshow one with: delfin-agent skills show <name>")
+        return 0
+
+    name = getattr(args, "name", "")
+    if action == "show":
+        p = sp.get_proposal(name)
+        if p is None:
+            print(f"ERROR: no proposal named {name!r}", file=sys.stderr)
+            return 2
+        print(f"proposal {p.name} — status: {p.status}")
+        print(f"source: {p.source}   created: {p.created}")
+        if p.base_version:
+            print(f"base version: {p.base_version}")
+        print()
+        print(p.text)
+        print()
+        print(f"evidence ({len(p.evidence)}):")
+        for ev in p.evidence:
+            line = f"  [{ev.kind}] {ev.ref}"
+            if ev.detail:
+                line += f" — {ev.detail}"
+            print(line)
+        if p.findings:
+            print("safety findings:")
+            for f in p.findings:
+                print(f"  ! {f}")
+        else:
+            print("safety findings: none")
+        return 0
+
+    who = os.environ.get("USER", "")
+
+    if action == "accept":
+        try:
+            target = sp.accept(name, by=who)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"accepted: {name} -> {target}")
+        print("the skill is live for new sessions now")
+        return 0
+
+    if action == "reject":
+        reason = (getattr(args, "reason", "") or "").strip()
+        if not reason:
+            print("ERROR: a rejection needs --reason: the next session "
+                  "reads why, instead of guessing the same thing again",
+                  file=sys.stderr)
+            return 2
+        try:
+            target = sp.reject(name, reason=reason, by=who)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"rejected: {name} -> {target}")
+        return 0
+
+    print(f"ERROR: unknown skills action {action!r}", file=sys.stderr)
+    return 2
+
+
 def cmd_approvals(args: argparse.Namespace) -> int:
     """The questions a headless session waits on, and the answers.
 
@@ -3530,6 +3612,30 @@ def build_parser() -> argparse.ArgumentParser:
     appr_watch.add_argument("--seconds", type=float, default=0.0,
                             help="Stop after N seconds (0: keep watching)")
     appr.set_defaults(func=cmd_approvals, approvals_action="ls")
+
+    # skills — the human side of skill proposals (accept/reject)
+    sk = sub.add_parser(
+        "skills",
+        help="Skill proposals: what sessions learned, waiting for a "
+             "person to accept or reject")
+    sk_sub = sk.add_subparsers(dest="skills_action", required=False)
+    sk_sub.add_parser("proposals",
+                      help="What is waiting (the default)")
+    sk_show = sk_sub.add_parser(
+        "show", help="Full preview of one proposal: text, evidence, "
+                     "safety findings")
+    sk_show.add_argument("name")
+    sk_ok = sk_sub.add_parser("accept", help="Make a pending proposal "
+                                             "a live skill")
+    sk_ok.add_argument("name")
+    sk_no = sk_sub.add_parser("reject", help="Turn a proposal away "
+                                             "(moved to rejected/, kept)")
+    sk_no.add_argument("name")
+    sk_no.add_argument(
+        "--reason", default="",
+        help="Why it is rejected — the next session reads this instead "
+             "of guessing the same thing again")
+    sk.set_defaults(func=cmd_skills, skills_action="proposals")
 
     # bug — triage / watch the user bug-report archive (maintainer tool)
     bug = sub.add_parser(

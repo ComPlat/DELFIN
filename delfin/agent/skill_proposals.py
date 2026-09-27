@@ -173,15 +173,22 @@ def propose(name: str, text: str, *, evidence, source: str,
 
 
 def list_proposals(status: str | None = None) -> list[Proposal]:
-    """All proposals on disk, optionally filtered by status."""
+    """All proposals on disk, optionally filtered by status.
+
+    Includes ``rejected/``: a rejection is a decision to be findable,
+    not a deletion. Accepted proposals are NOT listed -- they are live
+    skills now, and the live skills tree is their home.
+    """
     out = []
-    for d in _iter_proposal_dirs():
-        try:
-            p = _read_proposal(d)
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-        if status is None or p.status == status:
-            out.append(p)
+    roots = [_proposals_dir(), _proposals_dir() / "rejected"]
+    for base in roots:
+        for d in _iter_proposal_dirs(base):
+            try:
+                p = _read_proposal(d)
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if status is None or p.status == status:
+                out.append(p)
     return sorted(out, key=lambda p: (p.status, p.name))
 
 
