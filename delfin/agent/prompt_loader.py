@@ -224,6 +224,15 @@ def _memory_entry_chunk(title: str, rel: str, raw: str) -> str:
 _MEMORY_INDEX_BUDGET_SHARE = 0.35
 _MEMORY_INDEX_MIN_CHARS = 300
 
+# HARD ceiling for the whole injected memory block, preamble included
+# (package 7). Measured 2026-09-27: real stores inject 1014-1743 chars,
+# so the cap never touches everyday recall — it is the ceiling a
+# degenerate store (one huge body, an inflated MEMORY.md) hits instead
+# of spending thousands of characters. Lower it with
+# ``agent.memory_context_budget``; 0 or negative leaves only the
+# callers' own ``max_chars`` in force.
+MEMORY_CONTEXT_HARD_CAP = 3600
+
 _INDEX_POINTER_RE = re.compile(r"\[[^\]]+\]\(([^)]+\.md)\)")
 
 
@@ -554,6 +563,20 @@ class PromptLoader:
         """
         if self.skip_external_memory:
             return ""
+        # Package 7: the hard ceiling the whole block answers to. The
+        # callers' ``max_chars`` stays the working budget (index share,
+        # entry packing); this cap only clamps the final result, so the
+        # two compose rather than compete. 0/negative disables it and
+        # leaves exactly the behaviour the caller asked for.
+        try:
+            from delfin.user_settings import load_settings
+            _agent_cfg = (load_settings() or {}).get("agent") or {}
+            _cap = int(_agent_cfg.get("memory_context_budget",
+                                      MEMORY_CONTEXT_HARD_CAP))
+        except Exception:
+            _cap = MEMORY_CONTEXT_HARD_CAP
+        if _cap > 0:
+            max_chars = min(max_chars, _cap)
         try:
             home = Path.home()
         except Exception:
@@ -703,11 +726,31 @@ class PromptLoader:
         except Exception:
             pass
 
+        held_back = max(0, len(proj_entries) - len(proj_injected)) \
+            + max(0, len(glob_entries) - len(glob_injected))
         joined = "\n\n".join(chunks).strip()
+        # The notice is part of the block, so it is paid for out of the
+        # same budget as everything else. ``max_chars`` was already
+        # reduced by the preamble above, so the threshold here is the
+        # body budget alone — counting the preamble twice would cut the
+        # LAST body entry (the most task-relevant one) for a notice
+        # that is shorter than the preamble it double-counted.
+        notice = ""
         if len(joined) > max_chars:
-            joined = (joined[:max_chars]
-                      + f"\n\n... [truncated, {len(joined) - max_chars} "
-                        "chars omitted]")
+            # Hard cut, but never a silent one: the model and the user
+            # learn that the store outgrew the budget, and the sanctioned
+            # way to shrink it is named. Nothing is deleted — held-back
+            # entries stay in the store untouched.
+            notice = ("... [memory budget reached, {} chars and {} "
+                      "further memories not shown; a memory_tidy "
+                      "proposal is available (/tidy shows what, and "
+                      "changes nothing)]".format(
+                          max(0, len(joined) - max_chars),
+                          held_back if held_back else "some"))
+            room = max_chars - len(notice) - 2
+            joined = joined[:max(0, room)]
+        if notice:
+            joined = (joined + "\n\n" + notice) if joined else notice
         return f"{_MEMORY_BLOCK_PREAMBLE}\n\n{joined}"
 
     def _load_episode_recall_context(self, task_text: str = "",

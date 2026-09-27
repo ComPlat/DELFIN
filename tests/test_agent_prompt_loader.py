@@ -700,7 +700,12 @@ def test_external_memory_truncates_to_max_chars(agent_tree, tmp_path):
         memory_root=mem, max_chars=2_000,
     )
     assert len(out) <= 2_100  # cap + truncation marker
-    assert "truncated" in out
+    # The marker changed wording (package 7): the cut must be VISIBLE
+    # and name the tidy path, not the old bare "truncated". The intent
+    # — a capped block says it was capped — is unchanged and stricter
+    # now: it also demands the memory_tidy pointer.
+    assert "memory budget reached" in out
+    assert "memory_tidy" in out
 
 
 def test_external_memory_dedupes_repeated_links(agent_tree, tmp_path):
@@ -1053,7 +1058,11 @@ def test_recall_global_floor_survives_fat_project_store(
 
     assert "identity anchor phrase zeta" in out
     assert len(out) <= 3100                  # cap + truncation marker
-    assert "truncated" in out
+    # Rewritten per package 7: the overflow marker names the budget and
+    # the tidy proposal; the old assertion pinned the literal word
+    # "truncated" whose job the new marker does more precisely.
+    assert "memory budget reached" in out
+    assert "memory_tidy" in out
 
 
 def test_recall_without_global_store_unchanged(
