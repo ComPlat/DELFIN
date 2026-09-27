@@ -137,6 +137,58 @@ def test_accept_archives_the_previous_version_before_activating(home):
     assert not sp._proposals_dir().joinpath(p.name).exists()
 
 
+def test_second_patch_on_the_same_skill_keeps_every_record(home):
+    # Operator review of 2ea09a02: accepting a SECOND patch on the same
+    # skill crashed on os.replace(d, target / "_accepted_proposal")
+    # because that directory already existed from the first patch --
+    # AFTER the SKILL.md replace had already run, leaving a half state.
+    skills_root = sp._proposals_dir().parent
+    live = skills_root / "double-patched"
+    live.mkdir(parents=True)
+    (live / "SKILL.md").write_text("--- version: 1.1 ---\n# v1\n",
+                                   encoding="utf-8")
+    p2 = sp.propose("double-patched", "# v2\n", evidence=[_ev()],
+                    source="t", base_version="1.1")
+    sp.accept(p2.name, by="tester")
+    p3 = sp.propose("double-patched", "# v3\n", evidence=[_ev()],
+                    source="t", base_version="1.2")
+    target = sp.accept(p3.name, by="tester")
+    # v3 is live
+    assert "# v3" in (live / "SKILL.md").read_text(encoding="utf-8")
+    # both acceptance records survived, one per version, none overwritten
+    records = sorted(live.glob("_accepted_proposals/*/proposal.json"))
+    assert len(records) == 2, f"expected 2 records, got {records}"
+    # and both proposals are gone from _proposals
+    assert not sp._proposals_dir().joinpath(p2.name).exists()
+    assert not sp._proposals_dir().joinpath(p3.name).exists()
+
+
+def test_a_failure_in_the_record_step_leaves_the_live_skill_untouched(home):
+    # The second half of the operator finding: a step that fails must
+    # never have touched the live SKILL.md. We force the record step to
+    # fail by planting a colliding directory where the record would go.
+    skills_root = sp._proposals_dir().parent
+    live = skills_root / "clash-record"
+    live.mkdir(parents=True)
+    (live / "SKILL.md").write_text("--- version: 1.0 ---\n# v1\n",
+                                   encoding="utf-8")
+    before = (live / "SKILL.md").read_text(encoding="utf-8")
+    p = sp.propose("clash-record", "# v2\n", evidence=[_ev()],
+                   source="t", base_version="1.0")
+    # occupied record slot: the record step must notice and refuse,
+    # BEFORE the live text is replaced
+    clash = live / "_accepted_proposals" / "1.0"
+    clash.mkdir(parents=True)
+    (clash / "proposal.json").write_text("{}",
+                                         encoding="utf-8")
+    with pytest.raises(ValueError, match="record"):
+        sp.accept(p.name, by="tester")
+    after = (live / "SKILL.md").read_text(encoding="utf-8")
+    assert after == before, "a failed record step must not touch the skill"
+    # the proposal is still pending in _proposals
+    assert sp.get_proposal(p.name).status == "pending"
+
+
 def test_a_skill_patch_error_is_a_clean_refusal(home):
     p = sp.propose("clashy", "# v2\n", evidence=[_ev()], source="t",
                    base_version="1.0")
