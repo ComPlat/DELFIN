@@ -170,3 +170,117 @@ def qualifies(messages) -> list[str]:
             f"to reach the result")
 
     return reasons
+
+
+# ---------------------------------------------------------------------------
+# Evidence extraction (Phase 2)
+# ---------------------------------------------------------------------------
+
+# Ranking: a green test run is the strongest proof, then a verified
+# calculation/job, then a verify_recipe rendered in text.
+_KIND_RANK = {"test": 0, "calc": 1, "job": 2, "recipe": 3}
+
+_TEST_REF = re.compile(r"(tests/[A-Za-z0-9_./]+\.py(?:::[A-Za-z0-9_]+)?)")
+_JOB_ID = re.compile(r'"job_id":\s*"?(\d+)"?')
+
+
+def _evidence_class():
+    """The contract's Evidence type when package 1 is merged in, else a
+    local duck-typed stand-in with the same fields."""
+    try:
+        from delfin.agent.skill_proposals import Evidence  # type: ignore
+        return Evidence
+    except Exception:
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class Evidence:  # type: ignore[no-redef]
+            kind: str
+            ref: str
+            detail: str = ""
+            verified_at: str = ""
+
+        return Evidence
+
+
+def _all_text(msg: dict) -> str:
+    return _content(msg) + "\n" + _result_text(msg)
+
+
+def _green_test_result(text: str) -> bool:
+    """A pytest-style summary that is fully green."""
+    if re.search(r'"failed":\s*[1-9]', text) or re.search(
+            r'"errors":\s*[1-9]', text):
+        return False
+    if re.search(r'"passed":\s*[1-9]', text):
+        return True
+    # "7 passed in 2.4s", "12 passed" — but not "2 failed, 5 passed".
+    m = re.search(r"(\d+)\s+passed", text)
+    if m and int(m.group(1)) >= 1:
+        return not re.search(r"\d+\s+failed", text)
+    return False
+
+
+def _test_refs(text: str) -> list[str]:
+    return _TEST_REF.findall(text)
+
+
+def extract_evidence(messages):
+    """The strongest verifiable proof in this session, or None.
+
+    Kinds (contract): "test" — a green pytest/Gate run with test-IDs;
+    "calc"/"job" — a submitted/verified calculation or job; "recipe" —
+    a verify_recipe rendering in assistant text. No evidence means the
+    session NEVER becomes a skill proposal ("no proof, no proposal").
+    """
+    try:
+        msgs = [m for m in (messages or []) if isinstance(m, dict)]
+    except Exception:
+        return None
+    Evidence = _evidence_class()
+    best = None
+    best_rank = 99
+
+    def _offer(kind, ref, detail, at):
+        nonlocal best, best_rank
+        rank = _KIND_RANK.get(kind, 9)
+        if rank < best_rank:
+            best = Evidence(kind=kind, ref=ref, detail=detail,
+                            verified_at=at)
+            best_rank = rank
+
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat(
+        timespec="seconds")
+
+    for msg in msgs:
+        text = _all_text(msg)
+        name = (_tool_name(msg) or "").lower()
+
+        is_tool_msg = msg.get("role") == "tool" or bool(name)
+
+        if is_tool_msg and _green_test_result(text):
+            refs = _test_refs(text) or _test_refs(_content(msg))
+            if refs:
+                _offer("test", refs[0],
+                       f"green run covering {len(refs)} test id(s)", now)
+                continue
+
+        if is_tool_msg and (name in ("submit_calculation", "run_calculation",
+                                    "submit_application")
+                            or '"job_id"' in text):
+            m = _JOB_ID.search(text)
+            if m:
+                _offer("job", f"job:{m.group(1)}",
+                       "calculation/job submitted through the sanctioned "
+                       "tools", now)
+                continue
+
+        if msg.get("role") == "assistant" and "gate" in text \
+                and _green_test_result(text):
+            refs = _test_refs(text)
+            if refs:
+                _offer("recipe", refs[0],
+                       "verify_recipe rendering in assistant text", now)
+
+    return best
