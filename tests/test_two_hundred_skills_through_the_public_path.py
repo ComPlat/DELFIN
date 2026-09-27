@@ -101,10 +101,6 @@ def test_two_hundred_real_skills_leave_the_tool_description_capped(
     # No pack skills, no user-global skills: the catalogue IS the 200.
     from delfin.agent import skills as S
     monkeypatch.setattr(S, "_PACK_SKILLS_DIR", tmp_path / "no_pack")
-    perms = client._permissions
-    domain = A_mod._DocToolExecutor._session_domain(perms)
-    sess = A_mod._session_skills(perms, domain=domain)
-    print("SESSION:", len(sess), [s.name for s in sess[:3]])
     _drive(client)
     tools = captured.get("tools") or []
     skill_tool = next(
@@ -136,3 +132,26 @@ def test_a_skill_past_the_cap_still_loads_in_full(tmp_path, monkeypatch):
     data = json.loads(out)
     assert data.get("status") == "ok"
     assert "The FULL body of fake skill 199" in data.get("content", "")
+
+
+def test_a_failing_listing_is_logged_not_swallowed(tmp_path, monkeypatch,
+                                                   caplog):
+    """The block that pastes the listing may not take the turn down, but
+    a failure in it must be visible: a silent ``pass`` is how the
+    listing stayed broken on main without anyone noticing."""
+    ws = tmp_path / "projekt"
+    ws.mkdir()
+    _write_200(ws)
+    client, captured = _build_client(monkeypatch, ws)
+
+    def _boom(skills):
+        raise RuntimeError("listing broke")
+
+    monkeypatch.setattr(A_mod, "_skill_listing", _boom)
+    import logging
+    with caplog.at_level(logging.WARNING):
+        _drive(client)
+    assert captured.get("tools"), "the turn still runs"
+    assert any("skill listing not advertised" in r.getMessage()
+               and "listing broke" in r.getMessage()
+               for r in caplog.records)

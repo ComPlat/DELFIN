@@ -20877,8 +20877,14 @@ class OpenAIClient(_BaseClient):
                     }} if t.get("function", {}).get("name") == "skill" else t)
                     for t in advertised_tools
                 ]
-        except Exception:
-            pass
+        except Exception as exc:
+            # The turn goes on without the listing -- but not silently. A
+            # bare ``pass`` here hid an AttributeError for as long as the
+            # listing existed: the model had a skill tool and never saw a
+            # single skill name (fixed in a77fa686).
+            import logging
+            logging.getLogger(__name__).warning(
+                "skill listing not advertised: %r", exc)
 
         # No-native-tools gate (defence-in-depth behind the dashboard/CLI
         # preflight): a model with no native tool support would only choke on
