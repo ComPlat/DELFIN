@@ -82,6 +82,36 @@ def reject_proposal(name: str, *, reason: str, by: str):
     return _proposals_module().reject(name, reason=reason, by=by)
 
 
+def evidence_for(name: str) -> list[dict]:
+    """The evidence record of the named skill's proposal, as dicts.
+
+    Reads it FRESH from package 1's store at push time (nothing cached
+    across the accept) and normalises the contract's Evidence entries
+    (kind / ref / detail / verified_at, dataclass or dict) into the
+    dict shape the evidence gate takes — verbatim, never invented: a
+    skill with no proposal pushes an empty record, and the gate
+    refuses honestly rather than the caller fabricating one.
+    """
+    try:
+        p = _proposals_module().get_proposal(name)
+    except Exception:
+        return []
+    if p is None:
+        return []
+    out: list[dict] = []
+    for e in (p.evidence or []):
+        if isinstance(e, dict):
+            out.append(dict(e))
+        else:
+            out.append({
+                "kind": getattr(e, "kind", ""),
+                "ref": getattr(e, "ref", ""),
+                "detail": getattr(e, "detail", ""),
+                "verified_at": getattr(e, "verified_at", ""),
+            })
+    return out
+
+
 def build_buttons(name: str, *, on_change=None):
     """Real ipywidgets Accept / Reject buttons for one proposal.
 
