@@ -32,12 +32,13 @@ NUDGE_CHARS = 4000
 _CHARS_PER_TOKEN = 4
 
 _NUDGE_TEXT = (
-    "[system] A stretch of work has passed since anything was kept. "
-    "Is anything here worth keeping — a preference you confirmed, a "
-    "decision and its reason, a path or command that worked? If so, "
-    "save it now with the remember tool (or /memorize at the end). "
-    "The hard memory budget means the store stays curated, not "
-    "accumulated: what is not kept is distilled away at compaction.")
+    "[DELFIN note] An automatic system note, not the user speaking: a "
+    "stretch of work has passed since anything was kept. Is anything "
+    "here worth keeping — a preference you confirmed, a decision and "
+    "its reason, a path or command that worked? If so, save it now "
+    "with the remember tool (or /memorize at the end). The hard memory "
+    "budget means the store stays curated, not accumulated: what is "
+    "not kept is distilled away at compaction.")
 
 
 @dataclass

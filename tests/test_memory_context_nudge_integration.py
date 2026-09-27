@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 
-def _stub_client(script):
+def _stub_client(script, workspace_root=None):
     """An OpenAIClient whose backend follows ``script``.
 
     ``script`` is a list of rounds; each round is either a text answer
@@ -93,7 +93,15 @@ def _stub_client(script):
             class completions:
                 @staticmethod
                 def create(**kw):
-                    state["requests"].append(kw.get("messages"))
+                    msgs = kw.get("messages") or []
+                    state["requests"].append(msgs)
+                    # First request of a turn: system+user only (no
+                    # assistant yet) -> restart the script so every
+                    # turn plays the full tool-round sequence.
+                    if not any(isinstance(m, dict)
+                               and m.get("role") == "assistant"
+                               for m in msgs):
+                        state["round"] = 0
                     idx = min(state["round"], len(script) - 1)
                     evs = _events_for(idx)
                     state["round"] += 1
@@ -106,7 +114,12 @@ def _stub_client(script):
     c._base_url = "https://ki-toolbox.scc.kit.edu/api/v1"
     c._api_key = "x"
     c.effort = ""
-    c._permissions = None
+    # Real permissions over the temp workspace so read_file actually
+    # reads (with _permissions=None every tool round returns a 199-char
+    # error string and the work thresholds are never met).
+    c._permissions = (
+        ac.KitToolPermissions(workspace=workspace_root, mode="default")
+        if workspace_root is not None else None)
     c.on_model_switched = None
     c._steer_lock = threading.Lock()
     c._steer_msgs = []
@@ -130,9 +143,18 @@ import json  # noqa: E402  (used by _read_args)
 def workspace(tmp_path):
     (tmp_path / "pack" / "shared").mkdir(parents=True)
     (tmp_path / "pack" / "agents").mkdir()
-    big = tmp_path / "big.txt"
-    big.write_text("finding " * 600)
+    # One DISTINCT file per round: the loop's no-progress detector
+    # (identical round signatures) ends a turn that re-reads the same
+    # file over and over, before the nudge hook has enough rounds.
+    for i in range(24):
+        (tmp_path / "big{}.txt".format(i)).write_text(
+            "finding {} ".format(i) * 600)
+    big = tmp_path / "big0.txt"
     return tmp_path, big
+
+
+def _round_files(ws, n):
+    return [ws / "big{}.txt".format(i) for i in range(n)]
 
 
 def _run_turn(client, message="go"):
@@ -144,38 +166,106 @@ def _run_turn(client, message="go"):
     return out
 
 
-@pytest.mark.xfail(
-    reason="nudge hook in api_client is wired by the coordinator's "
-    "bundle commit (package 7 proposal); until then a long turn "
-    "cannot fire a nudge. Flips to XPASS once wired — then remove "
-    "this marker.", strict=False)
+def _count_new_nudges(requests):
+    """Nudges that APPEARED between two consecutive requests.
+
+    A nudge stays in api_messages for the rest of the turn, so every
+    later request carries it again — counting message occurrences
+    would count one nudge 20 times. What the hook actually does is
+    append it once; the visible event is a request containing a nudge
+    its predecessor did not.
+    """
+    new = 0
+    prev = set()
+    for req in requests:
+        cur = {
+            id(m) for m in (req or [])
+            if isinstance(m, dict) and m.get("role") == "user"
+            and "worth keeping" in str(m.get("content", ""))}
+        new += len(cur - prev)
+        prev |= cur
+    return new
+
+
 def test_long_turn_fires_exactly_one_nudge(workspace):
-    _, big = workspace
-    # 20 rounds of a read_file whose result is large (real executor,
-    # real result sizes), then a final answer.
-    script = [[("read_file", _read_args(big))] for _ in range(20)]
+    ws, big = workspace
+    # 20 rounds, each reading a DISTINCT file (real executor, real
+    # result sizes), then a final answer.
+    files = _round_files(ws, 20)
+    script = [[("read_file", _read_args(f))] for f in files]
     script.append("done")
-    client, state = _stub_client(script)
+    client, state = _stub_client(script, workspace_root=ws)
     # The wiring (coordinator's api_client commit) attaches the state;
     # for the integration path the client carries it after the hook.
     # Before the hook lands this attribute is absent -> the nudge
     # cannot fire -> this test is RED against the unwired tree.
     _run_turn(client)
-    nudges = [
-        m.get("content", "") for req in state["requests"]
-        for m in (req or [])
-        if isinstance(m, dict) and m.get("role") == "user"
-        and "worth keeping" in str(m.get("content", ""))
-    ]
-    assert len(nudges) == 1, (
+    assert _count_new_nudges(state["requests"]) == 1, (
         "a 20-round tool turn must fire exactly one keep-what-you-learned "
-        "nudge; got {}".format(len(nudges)))
+        "nudge; got {}".format(
+            _count_new_nudges(state["requests"])))
 
 
 def test_short_turn_fires_no_nudge(workspace):
-    _, big = workspace
+    ws, big = workspace
     script = [[("read_file", _read_args(big))], "done"]
-    client, state = _stub_client(script)
+    client, state = _stub_client(script, workspace_root=ws)
+    _run_turn(client)
+    nudges = [
+        m for req in state["requests"] for m in (req or [])
+        if isinstance(m, dict) and m.get("role") == "user"
+        and "worth keeping" in str(m.get("content", ""))]
+    assert nudges == []
+
+
+def test_two_consecutive_long_turns_one_nudge_each(workspace):
+    """The cap resets at the ENTRY of the public turn method, so a
+    second user turn with fresh work nudges again — once each, never
+    twice in one turn."""
+    ws, big = workspace
+    files = _round_files(ws, 20)
+    script = [[("read_file", _read_args(f))] for f in files]
+    script.append("done")
+    client, state = _stub_client(script, workspace_root=ws)
+    _run_turn(client)
+    _run_turn(client)
+    # Nudges appear in the requests of BOTH turns, exactly once each.
+    assert _count_new_nudges(state["requests"]) == 2, (
+        "two consecutive long turns must fire exactly one nudge each; "
+        "got {}".format(_count_new_nudges(state["requests"])))
+
+
+def test_the_nudge_says_it_is_an_automatic_note(workspace):
+    """The injected user-role text must not read as the human speaking."""
+    ws, big = workspace
+    files = _round_files(ws, 20)
+    script = [[("read_file", _read_args(f))] for f in files]
+    script.append("done")
+    client, state = _stub_client(script, workspace_root=ws)
+    _run_turn(client)
+    nudges = [
+        str(m.get("content", "")) for req in state["requests"]
+        for m in (req or [])
+        if isinstance(m, dict) and m.get("role") == "user"
+        and "worth keeping" in str(m.get("content", ""))]
+    assert nudges
+    for text in nudges:
+        assert text.startswith("[DELFIN note]"), (
+            "the nudge must announce itself as a system note, not the "
+            "user: {}".format(text[:80]))
+
+
+def test_setting_disables_the_nudge_on_the_turn_path(
+        workspace, monkeypatch):
+    ws, big = workspace
+    files = _round_files(ws, 20)
+    script = [[("read_file", _read_args(f))] for f in files]
+    script.append("done")
+    client, state = _stub_client(script, workspace_root=ws)
+    from delfin.agent import memory_nudge as mn
+    monkeypatch.setattr(
+        mn, "_enabled",
+        staticmethod(lambda settings=None: False))
     _run_turn(client)
     nudges = [
         m for req in state["requests"] for m in (req or [])
