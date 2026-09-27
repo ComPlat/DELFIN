@@ -71,6 +71,11 @@ def store(only_this_workspace, monkeypatch, tmp_path):
     mod = types.ModuleType("delfin.agent.skill_proposals")
     mod.propose = fake.propose
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_proposals", mod)
+    # ``from . import skill_proposals`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "skill_proposals",
+                        mod, raising=False)
     # Direct stand-in for _load_proposals-based default use.
     monkeypatch.setattr(skill_patch, "_load_proposals",
                         lambda: types.SimpleNamespace(propose=fake.propose))

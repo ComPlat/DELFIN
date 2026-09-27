@@ -66,16 +66,31 @@ def home(tmp_path, monkeypatch):
     safe = types.ModuleType("delfin.agent.skill_safety")
     safe.check = lambda text: []
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", safe)
+    # ``from . import skill_safety`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "skill_safety",
+                        safe, raising=False)
     # stand-ins for packages 4 and 8
     arch = _StandinArchive()
     patch_mod = types.ModuleType("delfin.agent.skill_patch")
     patch_mod.archive_previous_version = arch
     patch_mod.SkillPatchError = _SkillPatchError
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_patch", patch_mod)
+    # ``from . import skill_patch`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "skill_patch",
+                        patch_mod, raising=False)
     ver = _StandinVerify()
     ev_mod = types.ModuleType("delfin.agent.evidence")
     ev_mod.verify_evidence = ver
     monkeypatch.setitem(sys.modules, "delfin.agent.evidence", ev_mod)
+    # ``from . import evidence`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "evidence",
+                        ev_mod, raising=False)
     return types.SimpleNamespace(root=tmp_path, archive=arch, verify=ver)
 
 

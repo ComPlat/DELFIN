@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from delfin.agent import api_client as A
 from delfin.agent import session_store
