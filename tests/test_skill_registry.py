@@ -83,21 +83,50 @@ def _ok_run(calls):
     return run
 
 
+class _Ev:                                       # evidence stand-in (dict-like
+    def __init__(self, kind, ref):               # is covered in the gate tests)
+        self.kind, self.ref = kind, ref
+
+
+_EV_TEST = {"kind": "test", "ref": "tests/test_skill_registry.py"}
+
+
+def _stamped_green_run(ws: Path) -> list[dict]:
+    """A green ledger entry stamped with the tree state it ran on -- the
+    shape api_client's _stamp_new_evidence produces in real operation."""
+    from delfin.agent import evidence_freshness as ef
+    run = {"command": "tests/test_skill_registry.py", "exit_code": 0,
+           "status": "ok", "passed": 1, "failed": 0}
+    return [ef.stamp(run, ws)]
+
+
 def test_publish_requires_remote_config():
     ok, msg = sr.publish_skill("casscf-setup", host="", user="", remote_path="")
     assert ok is False and "no remote" in msg
 
 
 def test_publish_unknown_skill_fails():
+    # Evidence gate fires first (learning wave: nothing is even resolved
+    # without evidence that re-verifies), then the skill must exist.
+    ws = Path(__file__).resolve().parents[1]
     ok, msg = sr.publish_skill("does-not-exist", host="h", user="u",
-                               remote_path="/r")
+                               remote_path="/r", evidence=[_EV_TEST],
+                               workspace=ws, runs=_stamped_green_run(ws))
     assert ok is False and "not found" in msg
 
 
 def test_publish_runs_mkdir_then_rsync():
+    """Intent unchanged: the mkdir-then-rsync command pair is built via the
+    proven SSH builders. Since the evidence gate (learning wave) publish is
+    only reachable WITH a valid evidence record -- the gate is exercised
+    separately in tests/test_skill_registry_evidence_gate.py."""
     calls: list = []
+    ws = Path(__file__).resolve().parents[1]
     ok, msg = sr.publish_skill("casscf-setup", host="login", user="grp",
-                               remote_path="/archive", run_fn=_ok_run(calls))
+                               remote_path="/archive",
+                               evidence=[_EV_TEST], workspace=ws,
+                               runs=_stamped_green_run(ws),
+                               run_fn=_ok_run(calls))
     assert ok is True
     assert msg.endswith("AGENT_SKILLS/casscf-setup.md")
     assert len(calls) == 2                       # mkdir, then rsync
@@ -135,14 +164,28 @@ def test_install_conflict_never_overwrites(tmp_path):
 
 
 def test_pull_installs_downloaded_skills(tmp_path, monkeypatch):
-    # Fake transport: "download" = drop two files into the rsync target.
+    """Intent REWRITTEN along its purpose (learning wave): a downloaded
+    team skill must arrive SAFELY -- the old decision (2026-09) was
+    "install directly, never overwrite"; the wave's rule is stricter:
+    pulled skills are PROPOSALS (source "team"), never directly active.
+    Still asserts: nothing is written into the active skill dir."""
     def run(cmd):
         target = Path(cmd[-1])                    # local_target is last arg
         (target / "alpha.md").write_text("# Alpha")
         (target / "beta.md").write_text("# Beta")
         return 0, "", ""
+    proposed: list[str] = []
+
+    def fake_propose(name, text):
+        proposed.append(name)
+        return "proposed", name
+
+    monkeypatch.setattr(sr, "_propose_pulled_skill", fake_propose,
+                        raising=False)
     ok, results = sr.pull_skills(host="h", user="u", remote_path="/r",
                                  dest_dir=tmp_path, run_fn=run)
     assert ok is True
-    assert sorted(results) == [("alpha", "installed"), ("beta", "installed")]
-    assert (tmp_path / "alpha.md").is_file()
+    assert sorted(proposed) == ["alpha", "beta"]
+    assert sorted(r for r, _ in results) == ["alpha", "beta"]
+    assert all(s == "proposed" for _, s in results)
+    assert not (tmp_path / "alpha.md").is_file()   # active dir untouched
