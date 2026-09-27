@@ -12026,22 +12026,12 @@ def create_tab(ctx):
                     # refuses a publish without an evidence record.
                     # The accepted proposal's record was verified at
                     # accept() time; forward it, read FRESH from the
-                    # proposal store — never invented here. Older
-                    # skill_registry builds without the parameter
-                    # keep working: the keyword is added only when the
-                    # signature takes it.
+                    # proposal store -- never invented here.
                     from delfin.dashboard import (
                         skill_proposals_panel as _spp)
-                    import inspect as _inspect
-                    _takes_evidence = (
-                        "evidence" in
-                        _inspect.signature(_sr.publish_skill).parameters)
-                    _push_args = dict(_conn)
-                    if _takes_evidence:
-                        _push_args["evidence"] = _spp.evidence_for(_sub[1])
                     ok, msg = _sr.publish_skill(
                         _sub[1], workspace=ctx.repo_dir or None,
-                        **_push_args)
+                        evidence=_spp.evidence_for(_sub[1]), **_conn)
                     _append_system_message(
                         f"📤 Skill published → `{msg}`" if ok
                         else f"Push failed: {msg}")

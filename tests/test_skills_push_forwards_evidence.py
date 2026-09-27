@@ -55,6 +55,11 @@ def _install(monkeypatch, proposals):
 
     mod.get_proposal = get_proposal
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_proposals", mod)
+    # ``from . import skill_proposals`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "skill_proposals",
+                        mod, raising=False)
     import delfin.agent as _pkg
     monkeypatch.setattr(_pkg, "skill_proposals", mod, raising=False)
 

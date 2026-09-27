@@ -74,6 +74,17 @@ def _synthetic_tool_messages(session_id: str,
     return out
 
 
+def _session_test_runs(session_id: str) -> list[dict]:
+    """The saved session's test ledger (``evidence["tests"]``), or []."""
+    try:
+        from delfin.agent import session_store
+        data = session_store.load_session(session_id) if session_id else None
+        tests = ((data or {}).get("evidence") or {}).get("tests") or []
+        return [dict(t) for t in tests if isinstance(t, dict)]
+    except Exception:
+        return []
+
+
 def learn_at_session_end(messages, *, session_id: str = "",
                          settings: dict | None = None, llm=None,
                          _propose=None):
@@ -91,7 +102,8 @@ def learn_at_session_end(messages, *, session_id: str = "",
         msgs = [m for m in (messages or []) if isinstance(m, dict)]
         msgs = msgs + _synthetic_tool_messages(session_id)
         return learn_from_session(msgs, settings=settings, llm=llm,
-                                  _propose=_propose)
+                                  _propose=_propose,
+                                  runs=_session_test_runs(session_id))
     except Exception:
         return None
 

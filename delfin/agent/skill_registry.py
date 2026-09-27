@@ -91,6 +91,14 @@ def _gate_evidence(evidence, *, domain=None, workspace=None, runs=None,
     valid: list[str] = []
     invalid: list[str] = []
     valid_kinds: set[str] = set()
+    # A proposal's evidence carries the green runs it was observed on
+    # (the proposing session's ledger is gone by publish time); they are
+    # re-verified here like any other run, freshness included.
+    stored = [r for ev in entries
+              for r in ((ev.get("runs") if isinstance(ev, dict)
+                         else getattr(ev, "runs", None)) or [])
+              if isinstance(r, dict)]
+    runs = list(runs or []) + stored
     for ev in entries:
         ok, detail = verify_evidence(ev, workspace=workspace, runs=runs,
                                      list_jobs=list_jobs)

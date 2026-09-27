@@ -88,6 +88,11 @@ def _install_standin(monkeypatch, *, accept_calls=None, reject_calls=None,
     mod.accept = accept
     mod.reject = reject
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_proposals", mod)
+    # ``from . import skill_proposals`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "skill_proposals",
+                        mod, raising=False)
     # ``from delfin.agent import skill_proposals`` resolves the attribute
     # on the package first, so patch that too — not only sys.modules.
     import delfin.agent as _pkg
@@ -194,6 +199,11 @@ def test_a_read_failure_is_reported_not_blank(monkeypatch):
         raise OSError("proposals dir unreadable")
     mod.list_proposals = boom
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_proposals", mod)
+    # ``from . import skill_proposals`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "skill_proposals",
+                        mod, raising=False)
     html = P.format_panel_html()
     assert "could not be read" in html
     assert "proposals dir unreadable" in html

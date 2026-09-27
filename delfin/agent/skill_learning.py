@@ -199,6 +199,7 @@ def _evidence_class():
             ref: str
             detail: str = ""
             verified_at: str = ""
+            runs: list = None  # type: ignore[assignment]
 
         return Evidence
 
@@ -327,8 +328,27 @@ def _default_propose(name, text, *, evidence, source, base_version=""):
                    base_version=base_version)
 
 
+def _attach_runs(evidence, runs) -> None:
+    """Give test evidence the session's green runs that cover it.
+
+    ``runs`` is the session's own test ledger (``evidence["tests"]`` of
+    the saved session: command, exit code, tree fingerprint). Only the
+    entries that ran the cited file green are kept -- selected by the
+    evidence module's own rule, so propose and accept agree on what
+    covers what. Never raises.
+    """
+    try:
+        if getattr(evidence, "kind", "") != "test" or not runs:
+            return
+        from delfin.agent.evidence import _green_runs_for
+        node = str(evidence.ref).split("::")[0].replace("\\", "/").lstrip("./")
+        evidence.runs = [dict(r) for r in _green_runs_for(runs, node)]
+    except Exception:
+        pass
+
+
 def learn_from_session(messages, *, settings=None, llm=None,
-                       _propose=None) -> object | None:
+                       _propose=None, runs=None) -> object | None:
     """At most ONE skill proposal from a finished session, or None.
 
     Order of the gates (each one may end the learning silently):
@@ -368,6 +388,7 @@ def learn_from_session(messages, *, settings=None, llm=None,
         if not _is_skill_draft(draft):
             return None
 
+        _attach_runs(evidence, runs)
         propose_fn = _propose or _default_propose
         return propose_fn(_skill_name(draft), draft.strip() + "\n",
                           evidence=[evidence],

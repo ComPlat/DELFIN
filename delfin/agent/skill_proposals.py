@@ -49,6 +49,12 @@ class Evidence:
     ref: str   # test node id, calc folder, job id, ...
     detail: str = ""
     verified_at: str = ""
+    # The ledger entries (command, exit code, tree fingerprint) of the
+    # green runs this evidence was observed on. A proposal is accepted
+    # later, in another session, where the ledger of the proposing one
+    # is gone; carrying the runs lets accept() re-verify them -- and
+    # evidence_freshness still refuses them once the code has moved.
+    runs: list = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -303,7 +309,11 @@ def accept(name: str, *, by: str, workspace=None, runs=None,
     if proposal.status != _STATUS_PENDING:
         raise ValueError(f"proposal {name!r} is already {proposal.status}")
 
-    _verify_evidence_gate(proposal, workspace=workspace, runs=runs,
+    stored = [r for ev in proposal.evidence
+              for r in (getattr(ev, "runs", None) or [])
+              if isinstance(r, dict)]
+    _verify_evidence_gate(proposal, workspace=workspace,
+                          runs=list(runs or []) + stored,
                           list_jobs=list_jobs)
 
     skills_root = _proposals_dir().parent
