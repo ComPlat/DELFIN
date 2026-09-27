@@ -984,12 +984,26 @@ def _agents(ctx, _args: str) -> CommandResult:
 
 
 def _skills(ctx, args: str) -> CommandResult:
-    """Discovered skills, and one skill's body on request."""
+    """Discovered skills, and one skill's body on request.
+
+    ``/skills proposals`` (and ``/skills proposals <name>``) is the human
+    side of the proposal store: what is waiting, and the full preview —
+    text, evidence, safety findings — the accept/reject decision needs.
+    """
     try:
         from . import skills
     except Exception as exc:
         return CommandResult(output=f"skills unavailable ({exc})")
     name = args.strip()
+    if name == "proposals" or name.startswith("proposals "):
+        target = name[len("proposals"):].strip()
+        try:
+            from . import skill_proposals
+        except Exception as exc:
+            return CommandResult(output=f"proposals unavailable ({exc})")
+        if target:
+            return _show_proposal(skill_proposals, target)
+        return _list_proposals(skill_proposals)
     if name:
         try:
             skill = skills.get_skill(name, ctx.workspace)
@@ -1012,6 +1026,55 @@ def _skills(ctx, args: str) -> CommandResult:
     lines = [f"  /{s.name:<22} {(s.description or '')[:60]}" for s in found]
     lines.append("  /skills <name> shows the body")
     return CommandResult(output="\n".join(lines))
+
+
+def _list_proposals(skill_proposals) -> CommandResult:
+    try:
+        pending = skill_proposals.list_proposals()
+    except Exception as exc:
+        return CommandResult(output=f"could not list proposals ({exc})")
+    if not pending:
+        return CommandResult(output=(
+            "no skill proposals waiting — a proposal is created at the "
+            "end of a qualifying session and accepted by a person"))
+    lines = []
+    for p in pending:
+        marker = {"blocked": "[blocked]", "accepted": "[accepted]",
+                  "rejected": "[rejected]"}.get(p.status, "[pending]")
+        lines.append(f"  {p.name:<22} {marker} "
+                     f"({len(p.evidence)} evidence)")
+    lines.append("  /skills proposals <name> shows text, evidence and "
+                 "safety findings")
+    return CommandResult(output="\n".join(lines))
+
+
+def _show_proposal(skill_proposals, target: str) -> CommandResult:
+    try:
+        p = skill_proposals.get_proposal(target)
+    except Exception as exc:
+        return CommandResult(output=f"could not read proposal ({exc})")
+    if p is None:
+        return CommandResult(output=(
+            f"no proposal named {target!r} — /skills proposals lists them"))
+    parts = [f"proposal {p.name} — status: {p.status}",
+             f"source: {p.source}   created: {p.created}"]
+    if p.base_version:
+        parts.append(f"base version: {p.base_version}")
+    parts.append("")
+    parts.append(p.text)
+    parts.append("")
+    parts.append(f"evidence ({len(p.evidence)}):")
+    for ev in p.evidence:
+        line = f"  [{ev.kind}] {ev.ref}"
+        if ev.detail:
+            line += f" — {ev.detail}"
+        parts.append(line)
+    if p.findings:
+        parts.append("safety findings:")
+        parts.extend(f"  ! {f}" for f in p.findings)
+    else:
+        parts.append("safety findings: none")
+    return CommandResult(output="\n".join(parts))
 
 
 def _hooks(ctx, _args: str) -> CommandResult:
