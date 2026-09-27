@@ -221,3 +221,70 @@ class TestPublicSessionEndHooks:
         distill_at = src.index("distill_and_save(msgs, repo_root=")
         hook_at = src.index("learn_at_session_end(msgs, session_id=")
         assert 0 < distill_at < hook_at
+
+
+class TestEndToEndScenarios:
+    """The assignment's three scenarios, driven through the PUBLIC
+    path (learn_at_session_end with a stand-in LLM and a stand-in
+    propose), matching what the merged-in integration test will do
+    once skill_proposals is on this branch:
+
+      qualifying session + evidence  -> exactly one pending proposal
+      qualifying session, no proof   -> none
+      trivial session                -> none
+    """
+
+    def _run(self, monkeypatch, tmp_path, msgs, sid, trace_entries=()):
+        monkeypatch.setattr(tt, "_DIR", tmp_path / "traces")
+        for e in trace_entries:
+            tt.record(sid, **e)
+        stub = _StubPropose()
+        out = session_end.learn_at_session_end(
+            msgs, session_id=sid, llm=lambda *a: GOOD_SKILL,
+            _propose=stub)
+        return out, stub
+
+    def test_qualifying_with_evidence_one_pending_proposal(
+            self, monkeypatch, tmp_path):
+        cli_msgs = [
+            {"role": "user", "content": "Fix the failing test."},
+            {"role": "assistant", "content": "Fixed and verified."},
+        ]
+        trace = ([{"tool": "Bash", "tool_input": "grep x",
+                   "output": "match"}] * 5
+                 + [{"tool": "TestRunner", "tool_input": "tests/test_x.py",
+                     "output": '{"summary": {"passed": 4, "failed": 0}}'}])
+        out, stub = self._run(monkeypatch, tmp_path, cli_msgs,
+                              "e2e-qualifying", trace)
+        assert out is not None
+        assert len(stub.calls) == 1, "exactly one proposal"
+        # The proposal carries the evidence; the human-review "pending"
+        # status is skill_proposals' business (package 1) — what this
+        # end asserts is that exactly one proposal reached propose()
+        # WITH the green test run attached.
+        assert stub.calls[0]["evidence"][0].kind == "test"
+
+    def test_qualifying_without_evidence_no_proposal(
+            self, monkeypatch, tmp_path):
+        cli_msgs = [
+            {"role": "user", "content": "Fix the failing test."},
+            {"role": "assistant", "content": "Fixed, but no proof."},
+        ]
+        trace = [{"tool": "Bash", "tool_input": "grep x",
+                  "output": "match"}] * 6
+        out, stub = self._run(monkeypatch, tmp_path, cli_msgs,
+                              "e2e-no-evidence", trace)
+        assert out is None
+        assert stub.calls == []
+
+    def test_trivial_session_no_proposal(self, monkeypatch, tmp_path):
+        msgs = [
+            {"role": "user", "content": "What does X mean?"},
+            {"role": "assistant", "content": "X does Y."},
+        ]
+        trace = [{"tool": "Bash", "tool_input": "ls",
+                  "output": "a b"}]  # too shallow to qualify
+        out, stub = self._run(monkeypatch, tmp_path, msgs,
+                              "e2e-trivial", trace)
+        assert out is None
+        assert stub.calls == []
