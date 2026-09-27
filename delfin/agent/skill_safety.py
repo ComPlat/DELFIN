@@ -79,6 +79,118 @@ _INTERPRETER_INVOCATION_RE = re.compile(
     re.IGNORECASE)
 
 
+#: ---------------------------------------------------------------------------
+#: Phase 2 — text patterns that are not commands. Each entry: (rule name,
+#: pattern, finding template). Findings must name WHAT was seen and WHERE,
+#: in English; they are reported, never repaired.
+#: ---------------------------------------------------------------------------
+_TEXT_RULES: tuple[tuple[str, re.Pattern, str], ...] = (
+    ("approval-bypass",
+     re.compile(r"(?i)\b(?:always\s+approve|pre-?approve|auto-?approve"
+                r"|approve\s+(?:everything|anything|all\b|without)"
+                r"|remember\s+the\s+(?:choice|approval)"
+                r"|remember_permission\b|skip\s+the\s+(?:confirm|dialog|gate))"
+                r"|--dangerously[a-z-]*|—dangerously[a-z-]*"),
+     "approval bypass: the text tells the agent to approve or remember an "
+     "approval instead of asking ({snippet!r})"),
+    ("permission-mode-bypass",
+     re.compile(r"(?i)\b(?:bypassPermissions|acceptEdits"
+                r"|set\s+the\s+mode\s+to\s+(?:bypass|accept)"
+                r"|default_mode\s*=\s*['\"]bypass"
+                r"|switch\s+to\s+(?:the\s+)?bypass\s+mode)"),
+     "permission mode bypass: the text wants a permission mode that skips "
+     "the confirm dialog ({snippet!r})"),
+    ("sandbox-disable",
+     re.compile(r"(?i)\b(?:bwrap|sandbox|bubblewrap|isolation)\b"
+                r"[^.\n]{0,60}\b(?:off|disable[d]?|deactivate[d]?|remove"
+                r"|down|weaken)\b"
+                r"|\b(?:disable|turn\s+off|switch\s+off|deactivate|remove"
+                r"|weaken)\w*(?:\s+the)?\s+(?:bwrap\s+)?(?:sandbox"
+                r"|bubblewrap|isolation)\b"
+                r"|mcp_isolation\s*=\s*(?:False|None|0)"
+                r"|--ro-bind\s+/\s+/"),
+     "sandbox disable: the text switches off the containment that keeps "
+     "commands inside the workspace ({snippet!r})"),
+    ("deny-list-disable",
+     re.compile(r"(?i)\b(?:deny[- ]list|deny[_ ]patterns"
+                r"|path[_ ]deny[_ ]globs)\b"
+                r"[^.\n]{0,60}\b(?:off|disable[d]?|clear(?:ed)?|empt"
+                r"|remove[d]?|bypass)\b"
+                r"|\b(?:clear|empty|disable|bypass|weaken)\w*(?:\s+the)?"
+                r"\s+(?:bash\s+)?deny[- ]list\b"
+                r"|\bdeny[- ]list\b[^.\n]{0,60}\b(?:off|disable[d]?|clear"
+                r"|(?:is\s+)?empty)\b"),
+     "deny list disable: the text removes the hard refusals "
+     "({snippet!r})"),
+    ("security-self-modification",
+     re.compile(r"(?i)\b(?:edit|modify|change|patch|rewrite|relax|loosen"
+                r"|update|fix)\w*\s+(?:the\s+)?(?:file\s+)?"
+                r"(?:delfin/agent/)?(?:api_client\.py|terminal_confirm\.py"
+                r"|file_confirm\.py|mcp_isolation\.py"
+                r"|the\s+(?:gate|security\s+code|permission\s+code"
+                r"|confirm\s+(?:gate|dialog)))\b"),
+     "security self-modification: the text edits DELFIN's own security "
+     "code ({snippet!r})"),
+    ("network-detour",
+     re.compile(r"(?i)\b(?:web_fetch|curl|wget|fetch\s+(?:the\s+)?(?:data"
+                r"|reference[s]?|refs)\s+from|download(?:s|ed)?\s+from"
+                r"|https?://\S+|scp\s+\S+@|rsync\s+\S*@\S+:\S*|ssh\s+\S+@)"
+                r"|\bpipe(?:s|d)?\s+(?:it\s+)?(?:to\s+|into\s+)?(?:curl"
+                r"|wget)\b"),
+     "network detour: the text fetches from or sends to a network "
+     "location ({snippet!r})"),
+    ("write-outside-workspace",
+     re.compile(r"(?i)(?:store|write|save|log|put|copy|move|dump)\w*"
+                r"(?:\s+\w+){0,3}?\s+(?:in|into|to|under|at)\s+"
+                r"(?:/etc/|/usr/|/bin/|/var/|/root/|/boot/|/home/"
+                r"|\$HOME/|~/\.(?:ssh|config|bashrc|profile)"
+                r"|\.\./\.\.)"),
+     "write outside the workspace: the text writes to a system or home "
+     "location the sandbox refuses ({snippet!r})"),
+    ("deletion",
+     re.compile(r"(?i)\b(?:rm|delete|shred|wipe)\b\s+(?:the\s+|this\s+|that\s+"
+                r"|any\s+|every\s+|all\s+)?[\w./-]+"
+                r"|\b(?:rm|delete|shred|wipe)\b\s+(?:the\s+|this\s+)?"
+                r"(?:intermediate|temp(?:orary)?|scratch|old|stale)"
+                r"|\brm\s+-"),
+     "deletion: the text removes files, which no skill may prescribe "
+     "({snippet!r})"),
+    ("scheduler-override",
+     re.compile(r"(?i)\b(?:srun|sbatch|salloc)\b[^.\n]{0,120}"
+                r"(?:--time=|--mem=|--cpus-per-task=|--nodes=|-N\s|-t\s"
+                r"|--gres=|--partition=|-p\s)"),
+     "scheduler override: the text submits with a budget or partition "
+     "other than the CONTROL defaults ({snippet!r})"),
+)
+
+
+
+def _text_findings(text: str) -> list[str]:
+    """Findings from prose patterns (phase 2). Secret detection reuses
+    DELFIN's own redaction (:func:`delfin.agent.memory_store.
+    _without_secrets` → output_guard): if redacting the text CHANGES it,
+    the text carries something DELFIN classifies as a secret."""
+    findings: list[str] = []
+    for name, pattern, template in _TEXT_RULES:
+        m = pattern.search(text)
+        if m:
+            snippet = m.group(0).strip()[:80]
+            findings.append(template.format(name=name, snippet=snippet))
+
+    # Secrets — reuse the live redaction (memory_store._without_secrets
+    # wraps output_guard.scrub_secrets, the same scan that protects the
+    # memory store). Redacted != input means the text holds one.
+    try:
+        from .memory_store import _without_secrets
+        if _without_secrets(text) != text:
+            findings.append(
+                "secret in text: the draft carries a credential or token "
+                "that DELFIN's own redaction removes")
+    except Exception:
+        pass
+    return findings
+
+
 def _normalise_block(body: str) -> str:
     """Join wrapped lines into one command string, drop comments."""
     joined = _LINE_CONTINUATION_RE.sub(" ", body)
@@ -186,4 +298,6 @@ def check(text: str) -> list[str]:
                 f"{where}: command the gate would ask about (not "
                 f"auto-allowed), so a skill cannot apply it unattended: "
                 f"{cmd[:90]!r}")
+    for finding in _text_findings(text):
+        _report(finding)
     return findings
