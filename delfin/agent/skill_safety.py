@@ -33,7 +33,46 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-__all__ = ["check", "extract_commands"]
+__all__ = ["check", "extract_commands", "wire"]
+
+
+#: The session's refusal memory, if one is wired in. None (the default)
+#: means check() runs standalone — no refusal comparison, exactly what
+#: the skill_proposals contract allows when no session is attached.
+_REFUSAL_MEMORY: Any = None
+
+
+def wire(*, refusal_memory: Any = None) -> None:
+    """Attach (or detach) the session's RefusalMemory.
+
+    Called by the propose() path, which owns the session context; the
+    check(text) signature stays exactly as the contract fixes it.
+    """
+    global _REFUSAL_MEMORY
+    _REFUSAL_MEMORY = refusal_memory
+
+
+def _refusal_findings(commands: list[tuple[str, str]]) -> list[str]:
+    """Findings for commands that repeat an earlier refusal.
+
+    Reuses refusal_memory's own helpers — _extract_read_target for the
+    target of a command, _norm/_contains for the comparison, and
+    RefusalMemory.matches itself: a synthesized bash call per command
+    is judged by the SAME match logic the live confirm path uses.
+    """
+    mem = _REFUSAL_MEMORY
+    if mem is None:
+        return []
+    findings: list[str] = []
+    for where, cmd in commands:
+        hit = mem.matches("bash", {"command": cmd})
+        if hit is not None:
+            findings.append(
+                f"{where}: earlier refusal — the user already refused "
+                f"{hit.target!r} ({hit.reason or 'no reason recorded'}), "
+                f"and what the user refused never becomes a rule: "
+                f"{cmd[:90]!r}")
+    return findings
 
 
 #: The review classifier is built once and reused; a fresh empty temp
@@ -274,13 +313,14 @@ def check(text: str) -> list[str]:
     """
     findings: list[str] = []
     seen: set[str] = set()
+    commands = extract_commands(text)
 
     def _report(finding: str) -> None:
         if finding not in seen:
             seen.add(finding)
             findings.append(finding)
 
-    for where, cmd in extract_commands(text):
+    for where, cmd in commands:
         if _BASE64_INTO_INTERPRETER_RE.search(cmd):
             _report(
                 f"{where}: hidden payload — a base64 blob piped into an "
@@ -299,5 +339,7 @@ def check(text: str) -> list[str]:
                 f"auto-allowed), so a skill cannot apply it unattended: "
                 f"{cmd[:90]!r}")
     for finding in _text_findings(text):
+        _report(finding)
+    for finding in _refusal_findings(commands):
         _report(finding)
     return findings
