@@ -29,6 +29,10 @@ def _bash(cmd: str, exit_code: int = 0, out: str = "") -> dict:
             f'<details><summary> &rarr; {res}</details>'}
 
 
+def _content_msg(m: dict) -> str:
+    return m.get("content", "") if isinstance(m, dict) else ""
+
+
 TRIVIAL = [
     {"role": "user", "content": "What does X mean?"},
     {"role": "assistant", "content": "X does Y."},
@@ -195,3 +199,109 @@ class TestExtractEvidence:
         msgs = GREEN_TESTRUNNER + SLURM_JOB
         ev = extract_evidence(msgs)
         assert ev is not None and ev.kind == "test"
+
+
+# --- Phase 3: learn_from_session (draft + propose) ---------------------
+
+from delfin.agent.skill_learning import learn_from_session  # noqa: E402
+
+GOOD_SKILL_TEXT = """---
+name: fix-failing-gate-tests
+description: Drive a failing gate test red-green with a broken control
+---
+
+# Fix failing gate tests
+
+1. Reproduce the failure first.
+2. Write the control against a broken variant.
+"""
+
+
+class _StubPropose:
+    """Stand-in for delfin.agent.skill_proposals.propose (package 1)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, name, text, *, evidence, source, base_version=""):
+        self.calls.append(dict(name=name, text=text, evidence=evidence,
+                               source=source, base_version=base_version))
+        return ("proposal", name, len(evidence))
+
+
+class TestLearnFromSession:
+    def test_qualifying_session_with_evidence_yields_one_proposal(self):
+        stub = _StubPropose()
+        out = learn_from_session(
+            DEEP_WORK + GREEN_TESTRUNNER,
+            llm=lambda prompt, system, settings: GOOD_SKILL_TEXT,
+            _propose=stub)
+        assert out is not None
+        assert len(stub.calls) == 1
+        call = stub.calls[0]
+        assert call["evidence"], "evidence must be attached"
+        assert call["evidence"][0].kind == "test"
+        assert "fix-failing-gate-tests" == call["name"]
+        assert GOOD_SKILL_TEXT in (call["text"], call["text"] + "\n") \
+            or call["text"].startswith("---")
+
+    def test_session_without_evidence_never_proposes(self):
+        # A session that QUALIFIES (deep work) but carries NO evidence:
+        # DEEP_WORK's green TestRunner result is replaced by a plain
+        # non-test tool call, so the stretch still has 5 calls but no
+        # proof. No LLM call, no proposal.
+        deep_no_ev = [m for m in DEEP_WORK
+                      if "TestRunner" not in _content_msg(m)]
+        deep_no_ev.append(_bash("git status"))
+        assert qualifies(deep_no_ev), "fixture must qualify"
+        assert extract_evidence(deep_no_ev) is None, \
+            "fixture must carry no evidence"
+        stub = _StubPropose()
+        llm_calls = []
+
+        def llm(prompt, system, settings):
+            llm_calls.append(prompt)
+            return GOOD_SKILL_TEXT
+
+        out = learn_from_session(deep_no_ev, llm=llm, _propose=stub)
+        assert out is None
+        assert stub.calls == []
+        assert llm_calls == [], "no LLM call without evidence"
+
+    def test_trivial_session_never_proposes(self):
+        stub = _StubPropose()
+        out = learn_from_session(TRIVIAL + GREEN_TESTRUNNER,
+                                 llm=lambda *a: GOOD_SKILL_TEXT,
+                                 _propose=stub)
+        assert out is None
+        assert stub.calls == []
+
+    def test_llm_failure_returns_none_and_never_raises(self):
+        def boom(prompt, system, settings):
+            raise RuntimeError("endpoint down")
+
+        stub = _StubPropose()
+        out = learn_from_session(DEEP_WORK + GREEN_TESTRUNNER,
+                                 llm=boom, _propose=stub)
+        assert out is None
+        assert stub.calls == []
+
+    def test_draft_must_look_like_a_skill(self):
+        # An LLM answer that is not a SKILL.md (no frontmatter) is
+        # rejected, not proposed.
+        stub = _StubPropose()
+        out = learn_from_session(
+            DEEP_WORK + GREEN_TESTRUNNER,
+            llm=lambda prompt, system, settings: "just some prose, no skill",
+            _propose=stub)
+        assert out is None
+        assert stub.calls == []
+
+    def test_propose_failure_never_raises(self):
+        def bad_propose(*a, **k):
+            raise ValueError("no evidence")
+
+        out = learn_from_session(DEEP_WORK + GREEN_TESTRUNNER,
+                                 llm=lambda *a: GOOD_SKILL_TEXT,
+                                 _propose=bad_propose)
+        assert out is None
