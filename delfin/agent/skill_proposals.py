@@ -72,17 +72,22 @@ def _now() -> str:
 
 
 def _safety_findings(text: str) -> list[str]:
-    """Ask skill_safety (package 3); an absent module is not a veto.
+    """Ask skill_safety (package 3); a check that cannot run blocks.
 
-    The check is advisory at propose time in the sense that its findings
-    set status "blocked"; until package 3 lands, the module simply does
-    not exist and proposals stay pending.
+    An absent or crashing module is never a silent pass: the unchecked
+    proposal goes to status "blocked" with a finding the human can read.
+    Until package 3 lands, that is every proposal -- the correct default
+    is "not verified", not "verified by absence of a checker".
     """
     try:
         from . import skill_safety  # noqa: PLC0415
-    except ImportError:
-        return []
-    return [str(f) for f in skill_safety.check(text)]
+    except ImportError as exc:
+        return [f"safety check unavailable: {exc}"]
+    try:
+        return [str(f) for f in skill_safety.check(text)]
+    except Exception as exc:  # the check itself is the guard: it may not
+        # crash its caller, and it may not pass what it could not read.
+        return [f"safety check failed: {exc!r}"]
 
 
 def _prop_dir(name: str, *, root: Path | None = None) -> Path:
@@ -209,7 +214,10 @@ def accept(name: str, *, by: str) -> Path:
         raise ValueError(f"proposal {name!r} is already {proposal.status}")
 
     skills_root = _proposals_dir().parent
-    final_name = _free_name(name, extra=skills_root)
+    # Only the live skills tree counts here: the proposal's own folder in
+    # _proposals is being moved away, so counting it would rename every
+    # accepted proposal to "<name>-2" unconditionally.
+    final_name = _free_name(name, root=skills_root)
     target = skills_root / final_name
     _private_dir(skills_root)
     os.replace(d, target)

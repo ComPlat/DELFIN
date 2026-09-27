@@ -14,6 +14,13 @@ from delfin.agent import skill_proposals as sp
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # A clean safety stand-in: without it, the strict default (a check
+    # that cannot run blocks) would turn every proposal in this file
+    # into "blocked" before the test gets to its own point. Tests that
+    # care about the absent module overwrite this entry afterwards.
+    mod = types.ModuleType("delfin.agent.skill_safety")
+    mod.check = lambda text: []
+    monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", mod)
     return tmp_path
 
 
@@ -59,10 +66,14 @@ def test_safety_findings_block_a_proposal(home, monkeypatch):
         sp.accept("bad", by="tester")
 
 
-def test_absent_safety_module_leaves_proposal_pending(home, monkeypatch):
+def test_absent_safety_module_blocks_the_proposal(home, monkeypatch):
+    # The old Phase-1 decision pinned "absent module -> pending", a silent
+    # pass. Rejected by the coordinator (27 Sep): the default is "not
+    # verified", never "verified by absence of a checker".
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", None)
     p = sp.propose("plain", "body", evidence=[_ev()], source="test")
-    assert p.status == "pending"
+    assert p.status == "blocked"
+    assert p.findings and "unavailable" in p.findings[0]
 
 
 def test_name_conflict_gets_a_new_name_never_overwritten(home):
