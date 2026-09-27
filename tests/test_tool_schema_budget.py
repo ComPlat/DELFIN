@@ -174,7 +174,17 @@ _BASELINE_TOKENS = 11_422
 # four sessions on 2026-09-18, eighteen calls ran over five minutes and
 # cost 154 minutes between them. The flag hands the run to a job, and a
 # finished job now wakes the session by itself.
-_TOKEN_BUDGET = 9_460
+#
+# Raised 9_460 -> 9_804 (learning wave, 2026-09-27) by exactly what the two
+# new tools measure at: session_search 115 tokens, skill_propose_patch 239.
+# Both were trimmed first (74 tokens off, safety wording kept verbatim:
+# "active skill stays unchanged until a human accepts", "evidence
+# required", "never instructions"); what remains is mostly the parameter
+# contract of the patch tool. Without them the surface measures 9_450, so
+# the rest of the catalogue did not grow. Both are named in
+# _POST_COMPACTION_TOOLS, so the diet ratchet still sees only the
+# compacted surface.
+_TOKEN_BUDGET = 9_804
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -184,7 +194,7 @@ _POST_COMPACTION_TOOLS = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
     "fill_docx_template", "create_docx", "compare_tables", "sum_column",
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
-    "session_message",
+    "session_message", "session_search", "skill_propose_patch",
 })
 
 
