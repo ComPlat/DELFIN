@@ -7843,6 +7843,72 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "skill_propose_patch",
+            "description": (
+                "Propose an improved version of an existing skill as a "
+                "patch (old -> new). The ACTIVE skill is never changed: "
+                "the patch becomes a pending proposal of the next "
+                "version, which a human accepts. Reuses edit_file "
+                "semantics: old must match exactly once. Requires "
+                "evidence (a green test, documented run or verified "
+                "recipe) — no evidence, no proposal."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Skill name, no slash.",
+                    },
+                    "old": {
+                        "type": "string",
+                        "description": (
+                            "Exact text to replace — must match the "
+                            "skill exactly once."
+                        ),
+                    },
+                    "new": {
+                        "type": "string",
+                        "description": "Replacement text.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "Why this patch improves the skill."
+                        ),
+                    },
+                    "evidence": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {
+                                    "type": "string",
+                                    "enum": ["test", "calc", "job",
+                                             "recipe"],
+                                },
+                                "ref": {
+                                    "type": "string",
+                                    "description": (
+                                        "e.g. tests/test_x.py::test_y, "
+                                        "a calc folder, a job id"
+                                    ),
+                                },
+                                "detail": {"type": "string"},
+                            },
+                            "required": ["kind", "ref"],
+                        },
+                        "minItems": 1,
+                    },
+                },
+                "required": ["name", "old", "new", "reason",
+                             "evidence"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "exit_plan_mode",
             "description": (
                 "Submit the finished plan for approval. ONLY in 'plan' mode, "
@@ -11699,6 +11765,13 @@ class _DocToolExecutor:
         # and follows it. Read-only filesystem access, no gate needed.
         if name == "skill":
             return self._execute_skill(arguments, permissions)
+
+        # Skill patch: proposes the next skill version via the proposal
+        # store; the active skill stays untouched. No filesystem write
+        # outside the proposals area (Paket 1 owns that path policy).
+        if name == "skill_propose_patch":
+            return self._execute_skill_propose_patch(
+                arguments, permissions)
 
         # Sub-agent delegation: spawn an isolated tool-calling loop
         # via the runner the parent OpenAIClient attached.
@@ -18083,6 +18156,47 @@ class _DocToolExecutor:
             "description": sk.description,
             "source": str(sk.source),
             "content": body,
+        }, ensure_ascii=False)
+
+    def _execute_skill_propose_patch(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Propose the next version of a skill as a patch (Paket 4).
+
+        Delegates to ``skill_patch.propose_skill_patch``: the active
+        skill is never modified, only a proposal (in the store Paket 1
+        owns) is created. Writes a file, so plan mode rejects it like
+        every other writing tool.
+        """
+        if perms is None:
+            return json.dumps({"error": (
+                "skill_propose_patch requires permissions to be "
+                "configured")})
+        if effective_mode(perms) == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — skill_propose_patch rejected. "
+                "Present the plan first; propose the patch after "
+                "approval.")})
+        from .skill_patch import SkillPatchError, propose_skill_patch
+        try:
+            out = propose_skill_patch(
+                arguments.get("name") or "",
+                arguments.get("old") or "",
+                arguments.get("new") or "",
+                arguments.get("reason") or "",
+                arguments.get("evidence") or [],
+                workspace=getattr(perms, "workspace", None),
+            )
+        except SkillPatchError as exc:
+            return json.dumps({"error": str(exc)})
+        return json.dumps({
+            "status": "ok",
+            "proposed": out["name"],
+            "base_version": out["base_version"],
+            "new_version": out["new_version"],
+            "proposal_status": out["status"],
+            "note": ("Proposed as a new version — the active skill is "
+                     "unchanged until a human accepts the proposal."),
         }, ensure_ascii=False)
 
     # ------- Plan-mode roundtrip ------------------------------------------
