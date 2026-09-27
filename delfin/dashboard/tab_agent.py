@@ -19364,6 +19364,20 @@ def create_tab(ctx):
                     )
             except Exception:
                 pass
+            try:
+                # Shared session-end stage: skill learning. Same call
+                # the CLI chat uses (delfin.agent.session_end); failures
+                # never break the session save.
+                from delfin.agent.session_end import learn_at_session_end
+                sid = str(state.get("active_session_id") or "")
+                if learn_at_session_end(msgs, session_id=sid) is not None:
+                    _append_system_message(
+                        "🧩 Skill proposal drafted from the previous "
+                        "session (pending review — nothing is activated "
+                        "automatically)."
+                    )
+            except Exception:
+                pass
 
         _th.Thread(target=_run, daemon=True, name="auto-memory").start()
 
