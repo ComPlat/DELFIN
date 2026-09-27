@@ -25,6 +25,9 @@ def home(tmp_path, monkeypatch):
     mod = types.ModuleType("delfin.agent.skill_safety")
     mod.check = lambda text: []
     monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", mod)
+    ev = types.ModuleType("delfin.agent.evidence")
+    ev.verify_evidence = lambda e, **kw: (True, "verified")
+    monkeypatch.setitem(sys.modules, "delfin.agent.evidence", ev)
     return tmp_path
 
 

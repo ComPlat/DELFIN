@@ -14,13 +14,15 @@ from delfin.agent import skill_proposals as sp
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    # A clean safety stand-in: without it, the strict default (a check
-    # that cannot run blocks) would turn every proposal in this file
-    # into "blocked" before the test gets to its own point. Tests that
-    # care about the absent module overwrite this entry afterwards.
-    mod = types.ModuleType("delfin.agent.skill_safety")
-    mod.check = lambda text: []
-    monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", mod)
+    # Clean safety checker AND a verifying evidence stand-in: accept() is
+    # fail-closed on both, so tests that are about something else must
+    # supply clean ones. (Package 3 = skill_safety, package 8 = evidence.)
+    safe = types.ModuleType("delfin.agent.skill_safety")
+    safe.check = lambda text: []
+    monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", safe)
+    ev = types.ModuleType("delfin.agent.evidence")
+    ev.verify_evidence = lambda e, **kw: (True, "verified")
+    monkeypatch.setitem(sys.modules, "delfin.agent.evidence", ev)
     return tmp_path
 
 

@@ -202,12 +202,90 @@ def get_proposal(name: str) -> Proposal | None:
         return None
 
 
-def accept(name: str, *, by: str) -> Path:
+# Evidence kinds that carry the proposal's chemistry claim: an invalid
+# one of these is not outvoted by a valid optional entry (coordinator
+# rule, wave "Lernen"): a proposal whose calc/test evidence is invalid
+# is not acceptable, whatever else verifies.
+_MANDATORY_KINDS = frozenset({"calc", "test"})
+
+
+def _verify_evidence_gate(proposal: Proposal, *, workspace=None,
+                           runs=None, list_jobs=None) -> None:
+    """The acceptance gate on evidence (package 8, verify_evidence).
+
+    Rule: at least ONE entry must verify ok, AND no mandatory entry
+    (calc/test) may be invalid. A team-pulled proposal with placeholder
+    evidence fails the same gate -- the pull path does not verify
+    anything, so the pull alone must not activate a skill.
+
+    Import is optional and fail-closed in the same spirit as the safety
+    check: while package 8 is not merged, no evidence can be verified,
+    so nothing is verifiable and accept() refuses with a readable
+    reason instead of waving an unverifiable proposal through.
+    """
+    try:
+        from . import evidence as _evidence  # noqa: PLC0415
+    except ImportError as exc:
+        raise ValueError(
+            f"evidence verification unavailable: {exc}") from exc
+    results = []
+    for ev in proposal.evidence:
+        ok, detail = _evidence.verify_evidence(
+            ev, workspace=workspace, runs=runs, list_jobs=list_jobs)
+        results.append((ev, bool(ok), str(detail)))
+    if not any(ok for _, ok, _ in results):
+        reasons = "; ".join(f"[{ev.kind}] {ev.ref}: {detail}"
+                            for ev, _, detail in results) or "no evidence"
+        raise ValueError(
+            f"proposal {proposal.name!r} has no verifying evidence: "
+            f"{reasons}")
+    bad_mandatory = [f"[{ev.kind}] {ev.ref}: {detail}"
+                     for ev, ok, detail in results
+                     if not ok and ev.kind in _MANDATORY_KINDS]
+    if bad_mandatory:
+        raise ValueError(
+            f"proposal {proposal.name!r} has invalid mandatory evidence "
+            f"(calc/test): {'; '.join(bad_mandatory)}")
+
+
+def _archive_gate(proposal: Proposal, target: Path) -> None:
+    """Preserve the previously active version (package 4) before the move.
+
+    Only fires for patch proposals (base_version != ""). The current
+    live text is archived verbatim; a SkillPatchError (an archive for
+    that version already exists, or the version is empty) is a clean
+    refusal -- the human decides whether a different version number is
+    in order, and nothing is activated.
+    """
+    if not proposal.base_version:
+        return
+    try:
+        from . import skill_patch  # noqa: PLC0415
+    except ImportError as exc:
+        raise ValueError(
+            f"cannot archive version {proposal.base_version!r}: "
+            f"skill_patch unavailable: {exc}") from exc
+    live_skill = target / "SKILL.md"
+    try:
+        skill_patch.archive_previous_version(
+            live_skill, proposal.base_version)
+    except skill_patch.SkillPatchError as exc:
+        raise ValueError(
+            f"cannot accept patch for {proposal.name!r}: {exc}") from exc
+
+
+def accept(name: str, *, by: str, workspace=None, runs=None,
+           list_jobs=None) -> Path:
     """Move a pending proposal into the live skills directory.
 
     Only status "pending" is acceptable: "blocked" means the safety check
     found something and a human must read it, not wave it through here.
     A name already taken by a live skill gets a new name.
+
+    Before anything moves, the evidence gate runs (package 8): at least
+    one entry must verify, no calc/test entry may be invalid. For a
+    patch proposal (base_version set) the previously active version is
+    archived first (package 4); if that fails, nothing is activated.
     """
     d = _prop_dir(name)
     if not (d / "proposal.json").is_file():
@@ -220,14 +298,31 @@ def accept(name: str, *, by: str) -> Path:
     if proposal.status != _STATUS_PENDING:
         raise ValueError(f"proposal {name!r} is already {proposal.status}")
 
+    _verify_evidence_gate(proposal, workspace=workspace, runs=runs,
+                          list_jobs=list_jobs)
+
     skills_root = _proposals_dir().parent
-    # Only the live skills tree counts here: the proposal's own folder in
-    # _proposals is being moved away, so counting it would rename every
-    # accepted proposal to "<name>-2" unconditionally.
-    final_name = _free_name(name, root=skills_root)
-    target = skills_root / final_name
-    _private_dir(skills_root)
-    os.replace(d, target)
+    if proposal.base_version:
+        # A patch updates the LIVE skill of the same name: no fresh name,
+        # no second folder. The previous text is archived by the gate
+        # above; if it is not, nothing below runs.
+        final_name = name
+        target = skills_root / final_name
+        _private_dir(skills_root)
+        _archive_gate(proposal, target)
+        # The new version takes the live skill's place; the proposal
+        # folder (its proposal.json) moves in beside it as the record of
+        # what was accepted. Nothing is deleted.
+        os.replace(d / "SKILL.md", target / "SKILL.md")
+        os.replace(d, target / "_accepted_proposal")
+    else:
+        # Only the live skills tree counts here: the proposal's own
+        # folder in _proposals is being moved away, so counting it would
+        # rename every accepted proposal to "<name>-2" unconditionally.
+        final_name = _free_name(name, root=skills_root)
+        target = skills_root / final_name
+        _private_dir(skills_root)
+        os.replace(d, target)
     proposal.status = _STATUS_ACCEPTED
     proposal.name = final_name
     # keep the acceptance traceable inside the live skill folder

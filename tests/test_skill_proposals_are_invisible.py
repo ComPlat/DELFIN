@@ -19,6 +19,12 @@ from delfin.agent.skills import discover_skills
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    safe = types.ModuleType("delfin.agent.skill_safety")
+    safe.check = lambda text: []
+    monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", safe)
+    ev = types.ModuleType("delfin.agent.evidence")
+    ev.verify_evidence = lambda e, **kw: (True, "verified")
+    monkeypatch.setitem(sys.modules, "delfin.agent.evidence", ev)
     return tmp_path
 
 
