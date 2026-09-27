@@ -6842,6 +6842,21 @@ def create_tab(ctx):
         except Exception:
             security_panel_html.value = ""
 
+    # Skill proposals review panel (learning wave, package 6): a
+    # self-written skill is only a proposal until a human accepts it,
+    # and this panel is where that human looks — list, full preview,
+    # security findings. Pure logic in skill_proposals_panel.py.
+    skill_proposals_panel_html = widgets.HTML(
+        value="", layout=widgets.Layout(margin="2px 0 0 0"),
+    )
+
+    def _refresh_skill_proposals_panel():
+        try:
+            from delfin.dashboard import skill_proposals_panel as _spp
+            skill_proposals_panel_html.value = _spp.format_panel_html()
+        except Exception:
+            skill_proposals_panel_html.value = ""
+
     def _refresh_status_line():
         try:
             from delfin.agent.status_line import (
@@ -9395,6 +9410,7 @@ def create_tab(ctx):
         try:
             _refresh_tool_trace_panel()
             _refresh_security_panel()
+            _refresh_skill_proposals_panel()
         except Exception:
             pass
         engine = state["engine"]
@@ -16852,6 +16868,7 @@ def create_tab(ctx):
                     try:
                         _refresh_tool_trace_panel()
                         _refresh_security_panel()
+                        _refresh_skill_proposals_panel()
                     except Exception:
                         pass
                     # Truncate for display -- except a delegate's report: it
