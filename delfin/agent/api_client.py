@@ -4201,6 +4201,65 @@ def _session_skills(perms, *, domain: str = "") -> list:
     return _discover_skills(ws, domain=domain)
 
 
+# The `skill` tool's description carries the catalogue so the model knows
+# what exists. Kept next to _session_skills (its input) and measured by
+# tests/test_the_skill_listing_is_char_capped.py: the schema is re-sent
+# every request, so the listing is a per-request cost. Three caps, each
+# with its own failure it prevents:
+#   * per-skill description cut at DESC_CHARS -- a long description would
+#     dominate the listing;
+#   * the listing as a whole capped at LISTING_CHARS -- with a growing
+#     (learning) catalogue, 40 long entries alone cost over 4,000 chars,
+#     roughly a thousand tokens every turn;
+#   * growth beyond the cap ANNOUNCED, not silent: skills past the cap
+#     used to vanish in a bare ``[:40]``, and with 200 on disk the model
+#     did not even know there were more to ask for. The notice names the
+#     count and the remedy, and its promise is real: a miss lists the
+#     full catalogue (see _execute_skill's ``available`` answer).
+_SKILL_LISTING_DESC_CHARS = 70
+_SKILL_LISTING_CHARS = 2_000
+
+
+def _skill_listing(skills: list) -> str:
+    """The one-line catalogue pasted into the `skill` tool description.
+
+    Name plus a trimmed description per skill, under a total character
+    ceiling; entries past the ceiling are summarised in an overflow
+    notice rather than dropped silently. The full body is never here —
+    it loads only through the ``skill`` call itself.
+    """
+    parts: list[str] = []
+    used = 0
+    n = len(skills)
+    for i, s in enumerate(skills):
+        entry = s.name + (
+            f" — {s.description[:_SKILL_LISTING_DESC_CHARS]}"
+            if s.description else "")
+        cost = len(entry) + (1 if parts else 0)  # the "; " separator
+        # The notice this entry's addition would owe: every entry that
+        # remains AFTER it gets announced if the listing is cut here.
+        remaining_after = n - i - 1
+        notice = (
+            f"; {remaining_after} more — call the skill tool with a "
+            f"name; a miss lists the full catalogue"
+            if remaining_after else "")
+        if parts and used + cost + len(notice) > _SKILL_LISTING_CHARS:
+            # This entry does not fit. The remainder counts it: names
+            # listed + announced remainder == total, always.
+            remainder = n - len(parts)
+            cut = (f"; {remainder} more — call the skill tool with a "
+                   f"name; a miss lists the full catalogue")
+            # The notice must fit too. If it does not, un-list entries
+            # until it does — never drop a skill silently to make room.
+            while parts and len("; ".join(parts)) + len(cut) > \
+                    _SKILL_LISTING_CHARS:
+                parts.pop()
+            return "; ".join(parts) + cut
+        parts.append(entry)
+        used += cost
+    return "; ".join(parts)
+
+
 # Tools that leave the machine. The folder lock bounds where data may be
 # WRITTEN; it never bounded where data may go. A record can leave through a
 # fetched URL without any path crossing the boundary, so these need their own
@@ -20806,12 +20865,10 @@ class OpenAIClient(_BaseClient):
             # advertises a playbook nor reads one.
             _skills = _session_skills(
                 self._permissions,
-                domain=self._session_domain(self._permissions))
+                domain=_DocToolExecutor._session_domain(
+                    self._permissions))
             if _skills:
-                _listing = "; ".join(
-                    s.name + (f" — {s.description[:70]}" if s.description else "")
-                    for s in _skills[:40]
-                )
+                _listing = _skill_listing(_skills)
                 advertised_tools = [
                     ({**t, "function": {
                         **t["function"],
