@@ -166,8 +166,13 @@ def propose(name: str, text: str, *, evidence, source: str,
     skills_root = _proposals_dir().parent
     # a pending proposal must not shadow a skill that already exists, and
     # two proposals must not collide: both get a fresh name, nothing is
-    # overwritten.
-    proposal.name = _free_name(name, extra=skills_root)
+    # overwritten. A PATCH is the exception on the live-skill side: it
+    # refers to the skill it patches, so the live name is not a conflict
+    # for it (the _proposals folder must still be free).
+    if base_version:
+        proposal.name = _free_name(name)
+    else:
+        proposal.name = _free_name(name, extra=skills_root)
     _write_proposal(proposal, _prop_dir(proposal.name))
     return proposal
 
@@ -304,17 +309,29 @@ def accept(name: str, *, by: str, workspace=None, runs=None,
     skills_root = _proposals_dir().parent
     if proposal.base_version:
         # A patch updates the LIVE skill of the same name: no fresh name,
-        # no second folder. The previous text is archived by the gate
-        # above; if it is not, nothing below runs.
+        # no second folder. Every step that can fail runs BEFORE the
+        # SKILL.md replace, so a failure leaves the live skill untouched
+        # (operator review of 2ea09a02: a record collision used to
+        # crash AFTER the new text was already live).
         final_name = name
         target = skills_root / final_name
         _private_dir(skills_root)
         _archive_gate(proposal, target)
-        # The new version takes the live skill's place; the proposal
-        # folder (its proposal.json) moves in beside it as the record of
-        # what was accepted. Nothing is deleted.
+        # One acceptance record per replaced version, never overwritten:
+        # a second patch on the same skill gets its own record; the SAME
+        # base version twice is a real collision and must refuse here,
+        # BEFORE the live text is replaced.
+        records_dir = target / "_accepted_proposals" / proposal.base_version
+        if records_dir.exists():
+            raise ValueError(
+                f"cannot accept patch for {proposal.name!r}: an acceptance "
+                f"record for version {proposal.base_version!r} already "
+                "exists")
+        # the record destination must exist as a (still empty) directory
+        # before the move; os.replace cannot create parents
+        _private_dir(records_dir)
         os.replace(d / "SKILL.md", target / "SKILL.md")
-        os.replace(d, target / "_accepted_proposal")
+        os.replace(d, records_dir)
     else:
         # Only the live skills tree counts here: the proposal's own
         # folder in _proposals is being moved away, so counting it would
