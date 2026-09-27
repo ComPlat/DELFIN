@@ -475,6 +475,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         write_session_report(sid or getattr(engine, "session_id", ""))
     except Exception:
         pass
+    # Shared session-end stage: skill learning, same hook as the CLI
+    # chat and the dashboard. Best-effort; never breaks the run.
+    try:
+        from .session_end import learn_at_session_end
+        learn_at_session_end(
+            _display_messages(engine),
+            session_id=str(sid or getattr(engine, "session_id", "") or ""))
+    except Exception:
+        pass
 
     # Learning signal: record the outcome so provider profiles learn from
     # CLI/headless usage too — previously only dashboard cycles fed the
@@ -1446,6 +1455,17 @@ def cmd_chat(args: argparse.Namespace) -> int:
         try:
             from .session_report import write_session_report
             write_session_report(getattr(engine, "session_id", "") or "")
+        except Exception:
+            pass
+        # Shared session-end stage: skill learning (the same call the
+        # dashboard's session end uses). The CLI chat previously never
+        # distilled NOR learned; this is the single shared hook. Its own
+        # failure never breaks the exit.
+        try:
+            from .session_end import learn_at_session_end
+            learn_at_session_end(
+                _display_messages(engine),
+                session_id=str(getattr(engine, "session_id", "") or ""))
         except Exception:
             pass
         try:
