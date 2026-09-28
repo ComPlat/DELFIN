@@ -92,3 +92,38 @@ def test_the_pin_rewrites_only_unbracketed_metal_neighbours_with_hydrogens():
     for same in ("[Pt](Cl)(Cl)([NH3])[NH3]", "Cl[Co+3](Cl)([NH3])([NH3])([NH3])[NH3]",
                  "CCO", "c1ccccc1", "[Cl][Cd-3]([Cl])[N+]1=CC=CC=C1"):
         assert pin(same) == same
+
+
+def _formula_of_block(xyz: str) -> Counter:
+    from delfin.cli_manta import _atom_lines
+
+    return Counter(ln.split()[0] for ln in _atom_lines(xyz) if ln.strip())
+
+
+@pytest.mark.parametrize("button", ["quick", "convert", "convert_uff"])
+def test_convert_and_quick_carry_the_same_formula_as_manta(button):
+    """The single-structure converters behind Quick / Convert / Convert+UFF pin the
+    same hydrogens as MANTA: [Pt](Cl)(Cl)(N)N is PtCl2N2H4 in every frame."""
+    from delfin.dashboard import structure_editor as se
+
+    smiles = "[Pt](Cl)(Cl)(N)N"
+    want = _expected_formula(smiles)
+    result = se._run_smiles_build(
+        smiles, quick=(button == "quick"), apply_uff=(button == "convert_uff"))
+    assert not result.get("error"), result.get("error")
+    if button == "quick":
+        blocks = [result["xyz_string"]] + [p[0] for p in result.get("preview_items") or []]
+    else:
+        blocks = [xyz for xyz, _n, _label in result["isomers"]]
+    assert blocks and blocks[0]
+    wrong = [dict(_formula_of_block(b)) for b in blocks if _formula_of_block(b) != want]
+    assert not wrong, f"{button}: expected {dict(want)}, got {wrong[:5]}"
+
+
+def test_the_single_structure_converters_pin_too():
+    from delfin import smiles_converter as sc
+
+    xyz, err = sc.smiles_to_xyz_quick("[Pt](Cl)(Cl)(N)N")
+    assert err is None and _formula_of_block(xyz) == _expected_formula("[Pt](Cl)(Cl)(N)N")
+    xyz, err = sc.smiles_to_xyz("[Pt](Cl)(Cl)(N)N", apply_uff=False)
+    assert err is None and _formula_of_block(xyz) == _expected_formula("[Pt](Cl)(Cl)(N)N")

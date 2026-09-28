@@ -36449,6 +36449,7 @@ def smiles_to_xyz_quick_hapto_previews(
     hapto_approx: Optional[bool] = None,
 ) -> List[Tuple[str, str]]:
     """Return extra quick-convert preview structures for hapto-specific builders."""
+    smiles = _pin_metal_neighbour_hydrogens(smiles)   # same key as smiles_to_xyz_quick
     _ = _hapto_approx_enabled(hapto_approx)
     return list(_HAPTO_QUICK_PREVIEW_CACHE.get(smiles, []))
 
@@ -36465,6 +36466,9 @@ def smiles_to_xyz_quick(
     stk → RDKit → unsanitized → no-valence-check → OB in order and
     returns as soon as one succeeds.  Returns ``(xyz, error)``.
     """
+    # Unbracketed metal neighbours keep the H RDKit gives them (see
+    # _pin_metal_neighbour_hydrogens); identical string for every other SMILES.
+    smiles = _pin_metal_neighbour_hydrogens(smiles)
     if not RDKIT_AVAILABLE:
         return None, "RDKit not available"
 
@@ -36650,6 +36654,9 @@ def smiles_to_xyz(
         - xyz_content: XYZ format string if successful, None on error
         - error_message: Error description if failed, None on success
     """
+    # Unbracketed metal neighbours keep the H RDKit gives them (see
+    # _pin_metal_neighbour_hydrogens); identical string for every other SMILES.
+    smiles = _pin_metal_neighbour_hydrogens(smiles)
     if not RDKIT_AVAILABLE:
         error = "RDKit is not installed. Install with: pip install rdkit"
         logger.error(error)
