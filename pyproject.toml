@@ -126,8 +126,11 @@ ai-screening = [
     "deepchem",
 ]
 ai-complex = [
+    # SMILES constructors behind the ARCHITECTOR / MOLSIMPLIFY buttons and
+    # smiles_converter=ARCHITECTOR|MOLSIMPLIFY (delfin/common/external_builders.py).
     "molSimplify",
     "architector",
+    "numba",   # architector imports it without declaring it
 ]
 agent = [
     "anthropic>=0.40",
