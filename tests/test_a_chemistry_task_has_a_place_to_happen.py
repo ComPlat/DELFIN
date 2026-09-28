@@ -47,14 +47,6 @@ def test_chemistry_class_gets_a_workspace():
         "chemistry has no workspace_for mapping; run_setup is started "
         "with a cwd that does not exist")
     assert ws.is_dir(), f"{ws} is mapped but not packaged"
-
-
-def test_chemistry_class_gets_a_workspace():
-    ws = workspace_for(Path("."), task_class="chemistry")
-    assert ws is not None, (
-        "chemistry has no workspace_for mapping; run_setup is started "
-        "with a cwd that does not exist")
-    assert ws.is_dir(), f"{ws} is mapped but not packaged"
     # The setup script seeds chem/ inside the workspace, so the fixture
     # README is the thing that tells the model what is there.
     assert (ws / "README.md").exists() or any(ws.iterdir()), (
