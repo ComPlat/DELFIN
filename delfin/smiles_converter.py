@@ -32381,6 +32381,63 @@ def _smiles_arg(args, kwargs):
     return args[0] if args else None
 
 
+_SMILES_TOKEN_RE = re.compile(
+    r"(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|\*|\(|\)|\.|=|#|-|\+|\\|/|:|~|@|\?"
+    r"|>|<|\$|%[0-9]{2}|[0-9])")
+_SMILES_ATOM_TOKEN_RE = re.compile(r"^(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|\*)$")
+
+
+def _pin_metal_neighbour_hydrogens(smiles):
+    """Write the RDKit hydrogen count of every UNBRACKETED metal neighbour into the SMILES.
+
+    ``[Pt](Cl)(Cl)(N)N``: RDKit gives each N two implicit hydrogens (valence 3, one
+    bond to Pt).  Implicit hydrogens are not stored on the atom, they are recomputed
+    from its valence -- and preparation paths mark atoms bonded to a metal
+    ``NoImplicit`` (so a dative donor does not gain a spurious H) or cleave the M-L
+    bond, both of which change what "implicit" comes to.  The unbracketed N lost both
+    hydrogens on some paths and kept them on others, so one manifold held frames of 5
+    and of 9 atoms, and with a counter-ion (``.Cl``) of 7 and of 11.
+
+    The count is fixed where the user wrote it: each such atom token becomes the
+    bracket atom RDKit itself reads it as (``N`` -> ``[NH2]``), so from here on the
+    hydrogens are explicit and no downstream path can drop them.  Only unbracketed
+    atoms that border a metal AND carry at least one implicit H are rewritten; any
+    other SMILES (a bracket atom already states its H count) is returned as the
+    identical string.  Never raises; on any doubt the input is returned unchanged.
+    """
+    if not smiles or not isinstance(smiles, str) or not RDKIT_AVAILABLE:
+        return smiles
+    try:
+        tokens = _SMILES_TOKEN_RE.findall(smiles)
+        if "".join(tokens) != smiles:
+            return smiles
+        atom_pos = [i for i, t in enumerate(tokens) if _SMILES_ATOM_TOKEN_RE.match(t)]
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            mol = Chem.MolFromSmiles(smiles, sanitize=False)
+            if mol is None:
+                return smiles
+            mol.UpdatePropertyCache(strict=False)
+        if mol.GetNumAtoms() != len(atom_pos):
+            return smiles
+        changed = False
+        for atom in mol.GetAtoms():
+            pos = atom_pos[atom.GetIdx()]
+            tok = tokens[pos]
+            if tok.startswith("[") or tok == "*":
+                continue
+            if not any(n.GetSymbol() in _METAL_SET for n in atom.GetNeighbors()):
+                continue
+            n_h = int(atom.GetNumImplicitHs())
+            if n_h <= 0:
+                continue
+            tokens[pos] = f"[{tok}H{n_h if n_h > 1 else ''}]"
+            changed = True
+        return "".join(tokens) if changed else smiles
+    except Exception:
+        return smiles
+
+
 def _has_metalloid_donor(smiles) -> bool:
     """True iff the molecule has a heavy metalloid (Sb/As/Bi/Te/Se/Ge/Sn/Pb) atom
     bonded to a metal centre -- the only systems the dual-M-D-distance pass targets
@@ -32431,6 +32488,18 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     if outermost and "max_isomers" in kwargs and (
             kwargs["max_isomers"] is None or kwargs["max_isomers"] <= 0):
         kwargs["max_isomers"] = 100000
+    # Hydrogens of unbracketed metal neighbours are pinned in the SMILES itself, once,
+    # before any path parses it (see _pin_metal_neighbour_hydrogens).  A SMILES without
+    # such an atom -- every bracketed-SMILES input -- passes through as the identical
+    # string.
+    if outermost:
+        _smi_in = _smiles_arg(args, kwargs)
+        _smi_pinned = _pin_metal_neighbour_hydrogens(_smi_in)
+        if _smi_pinned != _smi_in:
+            if "smiles" in kwargs:
+                kwargs["smiles"] = _smi_pinned
+            else:
+                args = (_smi_pinned,) + tuple(args[1:])
     # Cross-process determinism bridge: the public ``deterministic=True`` contract
     # MUST imply bit-identity across processes, but the deep timeout / wall-budget /
     # sorted-enum guards consult the DELFIN_DETERMINISTIC *env* (so subprocess

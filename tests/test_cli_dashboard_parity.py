@@ -36,10 +36,9 @@ _ROOT = Path(__file__).resolve().parents[1]
 # shapes named in the parity requirement -- square planar with cis/trans, a
 # chelate, an octahedral complex -- plus a hapto complex (eta2 x4 Ir, from the
 # 6000 pool) and a dot SMILES, which MANTA builds as the whole string on both
-# sides (the dashboard used to split it into parts).  For that one MANTA currently
-# emits frames of two different atom counts in one manifold (7 and 11) -- a builder
-# defect on dot SMILES (the batch corpus has none), outside what this test is about.
-# The test pins PARITY, not quality.
+# sides (the dashboard used to split it into parts).  The formula of every frame
+# is pinned separately in test_every_frame_carries_the_whole_smiles.py; this test
+# pins PARITY.
 _SMILES = (
     "[Pt](Cl)(Cl)(N)N",
     "[Pt]1(Cl)(Cl)NCCN1",
