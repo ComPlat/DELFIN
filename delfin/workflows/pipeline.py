@@ -1484,7 +1484,9 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     # 0 means "the complete manifold".  It is not a truncation: the builder uses
     # max_isomers * cap_mult as its pre-UFF candidate budget, so a small number
     # shrinks the search rather than just shortening the answer.
-    max_isomers = _setting('MANTA_MAX_ISOMERS', 'GUPPY_MAX_ISOMERS', 100, int)
+    # An absent key is 0 too (it used to fall back to 100, a silent cap the CLI
+    # and the dashboard never had).
+    max_isomers = _setting('MANTA_MAX_ISOMERS', 'GUPPY_MAX_ISOMERS', 0, int)
     if max_isomers <= 0:
         max_isomers = 100000
     rmsd_cutoff = _setting('MANTA_RMSD_CUTOFF', 'GUPPY_RMSD_CUTOFF', 0.3, float)

@@ -2125,9 +2125,14 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("MANTA_ENV", _as_str, default="",
              help="Extra MANTA environment variables as KEY=VALUE pairs, semicolon separated. An escape hatch for builder options that have no CONTROL key yet."),
     # MANTA: the gates.  All never-worse -- asked to empty the list they return
-    # it unchanged -- so switching them on cannot cost a structure.
+    # it unchanged -- so switching them on cannot cost a structure.  They are the
+    # one deliberate difference from delfin-manta and the dashboard, which build
+    # without them (see manta_settings.apply_construction_env).
     FieldSpec("MANTA_CLEAN_GATE", _as_yes_no, default="yes",
-             help="Reject frames with atom clashes before they cost anything downstream."),
+             help="Reject frames with atom clashes before they cost anything downstream. "
+                  "The gates (CLEAN_GATE, TOPOLOGY_GATE, DEDUP) are on for a pipeline run "
+                  "only, because a torn frame costs a whole DFT chain; delfin-manta and the "
+                  "dashboard return the full manifold without them."),
     FieldSpec("MANTA_TOPOLOGY_GATE", _as_yes_no, default="yes",
              help="Reject frames whose bonding does not match the SMILES that was asked for."),
     FieldSpec("MANTA_DEDUP", _as_yes_no, default="yes",
