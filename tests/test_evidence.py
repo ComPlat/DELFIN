@@ -121,9 +121,8 @@ def test_job_evidence_unknown_state_rejects_fail_closed():
 # ---------------------------------------------------------------------------
 
 def test_test_evidence_non_git_marked_unconfirmed(tmp_path, monkeypatch):
-    """Red before the fix: outside git nothing is stamped, so nothing is
-    judged -- and a recorded green run was still accepted silently. The
-    green run must now come back marked unconfirmed, not believed."""
+    """Outside git nothing is stamped, so nothing can be judged -- the
+    green run must come back marked unconfirmed, not believed."""
     f = tmp_path / "tests" / "test_x.py"
     f.parent.mkdir()
     f.write_text("def test_y():\n    pass\n")
@@ -154,3 +153,27 @@ def test_evidence_object_with_attrs_supported(tmp_path):
              "status": "ok", "passed": 1, "failed": 0}]
     ok, _ = ev.verify_evidence(E(), workspace=tmp_path, runs=runs)
     assert ok is True
+
+
+# ---------------------------------------------------------------------------
+# integration: staleness reaches the verify_evidence verdict
+# ---------------------------------------------------------------------------
+
+def test_stale_green_run_rejected_at_verify_level(tmp_path, monkeypatch):
+    """A recorded green run whose tree changed since the run must be
+    REJECTED by verify_evidence itself, not only by is_stale. Uses a
+    fake git-shaped workspace: fingerprint says a commit exists, the
+    recorded run's stamp names a different (older) commit."""
+    f = tmp_path / "tests" / "test_x.py"
+    f.parent.mkdir()
+    f.write_text("def test_y():\n    pass\n")
+    runs = [{"command": "tests/test_x.py", "exit_code": 0,
+             "status": "ok", "passed": 1, "failed": 0,
+             "fingerprint": {"commit": "oldsha", "dirty": {}}}]
+    import delfin.agent.evidence_freshness as ef
+    monkeypatch.setattr(ef, "fingerprint", lambda ws: {
+        "commit": "newsha", "dirty": {}})
+    ok, detail = ev.verify_evidence(
+        {"kind": "test", "ref": "tests/test_x.py::test_y"},
+        workspace=tmp_path, runs=runs)
+    assert ok is False and "stale" in detail
