@@ -350,17 +350,64 @@ def _sanitize_query(query: str) -> str:
     return " ".join(terms)
 
 
+BACKFILL_BATCH = 10
+
+
+def backfill_missing(batch: int = BACKFILL_BATCH) -> int:
+    """Index sessions that exist on disk but are missing from the index.
+
+    Self-healing for a measured gap (2026-09-29): every session-end index
+    pass failed silently on the real machine (``index_session`` never
+    raises, by design), leaving 25 finished sessions unsearchable and the
+    index DB absent. This pass finds the gap the other way round: scan the
+    sessions directory, index what the ``sources`` table does not know,
+    bounded to ``batch`` sessions so a search never stalls on a machine
+    with thousands of files. Corrupt files are skipped by ``index_session``
+    itself (its never-raise contract). Returns how many sessions were
+    newly indexed.
+    """
+    try:
+        d = Path(session_store._SESSIONS_DIR)
+        if not d.is_dir():
+            return 0
+        con = _open_index()
+        try:
+            known = {row[0] for row in con.execute(
+                "SELECT DISTINCT session_id FROM sources").fetchall()}
+        finally:
+            con.close()
+        missing = [p.stem for p in d.glob("*.json")
+                   if p.stem not in known and p.stem != ""]
+        if not missing:
+            return 0
+        n = 0
+        for sid in missing[:max(1, int(batch))]:
+            if index_session(sid):
+                n += 1
+        return n
+    except Exception:
+        # Same contract as everything else here: the index is a
+        # convenience, its failure must never break the caller.
+        return 0
+
+
 def search(query: str, limit: int = DEFAULT_LIMIT) -> list[Hit]:
     """Search indexed sessions. Never raises; empty query -> no hits.
 
     Result count is capped (``limit`` at most ``MAX_LIMIT``), and every
     snippet is capped at ``MAX_SNIPPET`` characters -- a search must stay
     cheap no matter how large the transcripts were.
+
+    Self-healing: when nothing is indexed yet, one bounded backfill pass
+    runs first (see ``backfill_missing``) so a silently failed session-end
+    index cannot make sessions unfindable forever.
     """
     if not (query or "").strip():
         return []
     limit = max(1, min(int(limit or DEFAULT_LIMIT), MAX_LIMIT))
     try:
+        if backfill_missing() > 0:
+            pass  # healed below; the search itself is the retry
         return _search_locked(query, limit)
     except Exception:
         return []
