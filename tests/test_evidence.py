@@ -116,6 +116,28 @@ def test_job_evidence_unknown_state_rejects_fail_closed():
     assert ok is False
 
 
+# ---------------------------------------------------------------------------
+# non-git workspaces: a green run cannot be judged, only marked
+# ---------------------------------------------------------------------------
+
+def test_test_evidence_non_git_marked_unconfirmed(tmp_path, monkeypatch):
+    """Red before the fix: outside git nothing is stamped, so nothing is
+    judged -- and a recorded green run was still accepted silently. The
+    green run must now come back marked unconfirmed, not believed."""
+    f = tmp_path / "tests" / "test_x.py"
+    f.parent.mkdir()
+    f.write_text("def test_y():\n    pass\n")
+    runs = [{"command": "tests/test_x.py", "exit_code": 0,
+             "status": "ok", "passed": 1, "failed": 0}]
+    # make the workspace look non-git: fingerprint returns no commit
+    import delfin.agent.evidence_freshness as ef
+    monkeypatch.setattr(ef, "fingerprint", lambda ws: {"commit": ""})
+    ok, detail = ev.verify_evidence(
+        {"kind": "test", "ref": "tests/test_x.py::test_y"},
+        workspace=tmp_path, runs=runs)
+    assert ok is True and "unconfirmed" in detail
+
+
 def test_unknown_kind_fails():
     ok, detail = ev.verify_evidence({"kind": "gutfeeling", "ref": "x"})
     assert ok is False and "unknown evidence kind" in detail
