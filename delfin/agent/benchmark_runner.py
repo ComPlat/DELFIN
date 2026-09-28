@@ -401,6 +401,10 @@ _BEHAVIOR_WS_RELS: tuple[Path, ...] = (
     # the run -- caught by driving one task end to end and asking whether
     # the fixture came back.
     Path("tests") / "fixtures" / "science_workspace",
+    # Same contract as science: chemistry tasks are graded on what they
+    # build, and their setup refuses an existing chem/ tree. Without
+    # restore, repeat 2 collides with repeat 1's fixture.
+    Path("tests") / "fixtures" / "chemistry_workspace",
 )
 _BEHAVIOR_WS_REL = _BEHAVIOR_WS_RELS[0]
 

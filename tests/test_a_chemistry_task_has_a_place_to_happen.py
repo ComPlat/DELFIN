@@ -13,7 +13,40 @@ the runner hands the task a real, existing folder.
 
 from pathlib import Path
 
-from delfin.agent.benchmark_runner import workspace_for
+from delfin.agent.benchmark_runner import (
+    _BEHAVIOR_WS_RELS,
+    workspace_for,
+)
+
+
+def test_chemistry_workspace_is_restored_between_repeats():
+    """A repeat re-runs the setup, which refuses an existing chem/ tree.
+
+    The pristine-workspace guard restores its member dirs after every
+    attempt. A workspace that ``workspace_for`` hands out but the guard
+    does not know keeps attempt 1's chem/ tree, and attempt 2's setup
+    dies with "refusing to overwrite" -- every repeat but the first
+    measures the setup's refusal, not the model.
+    """
+    chem = workspace_for(Path("."), task_class="chemistry")
+    assert chem is not None
+    rel = chem.relative_to(Path(".").resolve()) if chem.is_absolute() else chem
+    guarded = {Path("tests") / "fixtures" / p for p in (
+        "behavior_workspace", "user_project_workspace",
+        "office_workspace", "science_workspace", "chemistry_workspace")}
+    assert Path(*rel.parts) in guarded, (
+        f"chemistry workspace {rel} is not guarded; repeats collide")
+    assert rel in _BEHAVIOR_WS_RELS, (
+        "chemistry workspace is missing from _BEHAVIOR_WS_RELS -- the "
+        "pristine-workspace guard will not restore it between repeats")
+
+
+def test_chemistry_class_gets_a_workspace():
+    ws = workspace_for(Path("."), task_class="chemistry")
+    assert ws is not None, (
+        "chemistry has no workspace_for mapping; run_setup is started "
+        "with a cwd that does not exist")
+    assert ws.is_dir(), f"{ws} is mapped but not packaged"
 
 
 def test_chemistry_class_gets_a_workspace():
