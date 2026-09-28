@@ -133,7 +133,7 @@ jobs:
 
       - name: MANTA parity, formula and isomer tests (slow cases included)
         run: >
-          pytest -q -m "slow or not slow" --timeout=900 --timeout-method=signal
+          python -m pytest -q -m "slow or not slow" --timeout=900 --timeout-method=signal
           tests/test_cli_dashboard_parity.py
           tests/test_every_frame_carries_the_whole_smiles.py
           tests/test_cli_manta.py
@@ -141,7 +141,7 @@ jobs:
 
       - name: MANTA and user-SMILES contracts (fast cases)
         run: >
-          pytest -q -m "not slow" --timeout=300 --timeout-method=signal
+          python -m pytest -q -m "not slow" --timeout=300 --timeout-method=signal
           tests/test_user_smiles_suite.py
           tests/test_user_smiles_fesc_cyclam.py
           tests/test_user_smiles_ir_ppy_acac.py
