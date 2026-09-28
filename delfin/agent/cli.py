@@ -2543,6 +2543,23 @@ def cmd_session(args: argparse.Namespace) -> int:
         if not hits:
             print(f"(no matches for {args.query!r})")
         return 0
+    if args.session_action == "export":
+        from . import session_export as _se
+        sid = args.session_id
+        if sid == "latest":
+            row = _ss.latest_session()
+            if not row:
+                print("ERROR: no saved sessions to export", file=sys.stderr)
+                return 1
+            sid = row["session_id"]
+        data = _ss.load_session(sid)
+        if data is None:
+            print(f"ERROR: session {sid!r} not found", file=sys.stderr)
+            return 1
+        out = args.notebook or f"{sid}.ipynb"
+        path = _se.export_session_to_file(data, out)
+        print(f"exported {sid} -> {path}")
+        return 0
     print(f"ERROR: unknown session action {args.session_action!r}",
           file=sys.stderr)
     return 2
@@ -3591,6 +3608,12 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--limit", type=int, default=20)
     srch = sess_sub.add_parser("search", help="Grep across session chats")
     srch.add_argument("query")
+    exp = sess_sub.add_parser(
+        "export", help="Export a session as a replayable notebook")
+    exp.add_argument("session_id",
+                     help="Session id, or 'latest' for the most recent")
+    exp.add_argument("--notebook", default="",
+                     help="Write the notebook here (default: <session_id>.ipynb)")
     sess.set_defaults(func=cmd_session)
 
     # watchpost — read-only look-out over the user's own account

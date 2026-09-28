@@ -5228,6 +5228,15 @@ def create_tab(ctx):
         tooltip="Export chat as Markdown file",
     )
 
+    # Export as notebook: the session's chemistry steps as a replayable
+    # Jupyter notebook (what/why Markdown + native DELFIN code cells).
+    nb_export_btn = widgets.Button(
+        description="Export as notebook",
+        button_style="",
+        layout=widgets.Layout(width="150px"),
+        tooltip="Export this session's chemistry steps as a Jupyter notebook",
+    )
+
     # Bug Report: bundle conversation + run config into the (configurable)
     # archive so maintainers can reproduce a bad turn. Optional one-line
     # note describes what went wrong. Archive path comes from
@@ -5331,7 +5340,7 @@ def create_tab(ctx):
     _controls_hbox = widgets.HBox(
         [mode_dropdown, provider_dropdown, model_dropdown,
          effort_dropdown, perm_dropdown, stop_btn,
-         export_btn, bug_group, model_refresh_btn],
+         export_btn, nb_export_btn, bug_group, model_refresh_btn],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
     controls_row = widgets.VBox([
@@ -15885,6 +15894,36 @@ def create_tab(ctx):
         """Export button handler."""
         _export_chat()
 
+    def _on_export_notebook(button):
+        """Export the session's chemistry steps as a Jupyter notebook.
+
+        Thin glue over ``session_export``: the active session (saved or
+        in-memory) becomes a notebook in the tab's exports directory.
+        Failures surface as a system message, never a dead tab.
+        """
+        try:
+            from delfin.agent import session_export, session_store as _ss
+            sid = str(state.get("active_session_id", "") or "").strip()
+            data = _ss.load_session(sid) if sid else None
+            if data is None:
+                # fall back to the in-memory conversation so an unsaved
+                # session still exports its chat (steps need the trace)
+                data = {
+                    "session_id": sid or "dashboard-session",
+                    "title": "Dashboard session",
+                    "workspace": str(getattr(ctx, "root_dir", "") or ""),
+                    "chat_messages": state.get("chat_messages", []),
+                }
+            export_dir = ctx.agent_dir / "exports"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = export_dir / f"session_{ts}.ipynb"
+            out = session_export.export_session_to_file(data, path)
+            _append_system_message(f"Notebook exported to: {out}")
+        except Exception as exc:
+            _append_system_message(f"Notebook export failed: {exc}")
+
     def _on_bug_report(button):
         """Bundle the current conversation + run config into the archive.
 
@@ -19541,6 +19580,7 @@ def create_tab(ctx):
     undo_btn.on_click(_on_undo)
     commit_btn.on_click(_on_commit)
     export_btn.on_click(_on_export)
+    nb_export_btn.on_click(_on_export_notebook)
     bug_report_btn.on_click(_on_bug_report)
     approve_btn.on_click(_on_approve)
     deny_btn.on_click(_on_deny)
