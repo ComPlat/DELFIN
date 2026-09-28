@@ -322,6 +322,15 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
             if emit is not None:
                 emit({"type": "text", "text": text})
 
+    def _on_notice(text: str) -> None:
+        # Harness speech ("waiting for the model … Ns", retry banners).
+        # Deliberately NOT appended to chunks — a notice is not the
+        # model's answer, and _run_once's return contract says "text"
+        # is the answer. Emitted with its own type so stream-json
+        # readers and the CLI renderer can tell the two apart.
+        if text and emit is not None:
+            emit({"type": "notice", "text": text})
+
     def _on_tool_use(name: str, input_json: str) -> None:
         try:
             inp = json.loads(input_json) if input_json else {}
@@ -337,6 +346,7 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     kwargs: dict[str, Any] = dict(
         user_message=prompt,
         on_token=_on_token,
+        on_notice=_on_notice,
         on_tool_use=_on_tool_use,
         max_tokens=max_tokens,
     )
