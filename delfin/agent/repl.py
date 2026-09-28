@@ -2770,7 +2770,11 @@ class TerminalAgent:
             if not job_wake.wake_enabled():
                 return ""
             seen = self.__dict__.setdefault("_wake_seen", set())
-            return job_wake.wake_prompt(job_wake.finished_shells(seen))
+            # Only this session's shells: the same scoping the dashboard
+            # tick applies to watched jobs and background agents.
+            return job_wake.wake_prompt(job_wake.finished_shells(
+                seen,
+                session_id=str(getattr(self.engine, "session_id", "") or "")))
         except Exception:
             return ""
 

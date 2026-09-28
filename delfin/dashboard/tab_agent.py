@@ -7415,7 +7415,10 @@ def create_tab(ctx):
             what produced six wake-ups reading "shell None [?]".
             """
             from delfin.agent.job_wake import finished_shells
-            return finished_shells(seen)
+            # Scoped like its two siblings in this tick. Without the
+            # session every open session was told about every session's
+            # shells.
+            return finished_shells(seen, session_id=_background_owner())
 
         def _job_wake_tick():
             import threading as _threading_wake
