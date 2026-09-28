@@ -23,6 +23,7 @@ provider.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -373,6 +374,10 @@ class Trajectory:
     # Gate denials observed during the run; ``None`` when the runner had
     # no way to look. Unobserved is not zero.
     denials: Optional[int] = None
+    # Harness interventions observed IN-STREAM (permission denials the
+    # engine reported via ``on_permission_denied``). The runner watches
+    # every turn, so 0 is honest here -- unlike ``denials`` above.
+    user_interventions: int = 0
     # What an acceptance script made of the artifacts, when the task
     # declared one. ``None`` means no script was declared OR the runner
     # could not reach one -- never "it failed", for the same reason
@@ -445,6 +450,11 @@ class BenchmarkResult:
     n_samples: int = 1
     quality_stdev: float = 0.0
     success_rate: float = 0.0           # fraction of N samples with success=True
+    # Wilson 95% interval on success_rate.  None until measured (a
+    # single run is its own point estimate with an N=1 interval, which
+    # is wide -- that width IS the honest report).
+    success_ci_low: Optional[float] = None
+    success_ci_high: Optional[float] = None
     per_run_quality: list[int] = field(default_factory=list)
     per_run_success: list[bool] = field(default_factory=list)
     # --- forensic fields for pattern-bug-vs-real-fail diagnosis ---
@@ -479,6 +489,11 @@ class BenchmarkResult:
     # runner could not reach the audit log -- and must never be reported
     # as zero, which is the same sentence as "nothing was refused".
     denials: Optional[int] = None
+    # Harness interventions OBSERVED in-stream: permission denials the
+    # engine reported through ``on_permission_denied`` while the turn
+    # ran. Distinct from ``denials`` (audit-log count, may be None):
+    # this one was watched start to finish, so its honest default is 0.
+    user_interventions: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1680,6 +1695,7 @@ def score_outcome(
         caveats=caveat_count(traj.text),
         answer_chars=len(str(traj.text or "")),
         denials=traj.denials,
+        user_interventions=int(traj.user_interventions or 0),
     )
 
 
@@ -1708,6 +1724,66 @@ def _stdev(values: list[float]) -> float:
     mean = sum(values) / n
     var = sum((v - mean) ** 2 for v in values) / (n - 1)
     return var ** 0.5
+
+
+def wilson_interval(n_pass: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval for a binomial proportion.
+
+    Chosen over the normal approximation because it stays inside [0, 1]
+    and behaves at the extremes: 0/3 and 3/3 both give a WIDE interval,
+    which is the honest statement for N=3 -- an agent that passed 3 of 3
+    is not a 100% agent.  n=0 carries no information; the answer is the
+    full interval, not a crash and not fake certainty.
+    """
+    if n <= 0:
+        return 0.0, 1.0
+    p = n_pass / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = (z / denom) * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def _fisher_exact_2x2_pvalue(a: int, b: int, c: int, d: int) -> float:
+    """Two-sided Fisher exact p-value for [[a, b], [c, d]].
+
+    Exact (not chi-square) because benchmark cell counts are tiny: a
+    3-of-3 vs 0-of-3 comparison has expected counts far below 5.  Pure
+    factorial arithmetic via ``math.comb`` -- no scipy dependency for
+    two lines of hypergeometric sum.
+    """
+    row1 = a + b
+    row2 = c + d
+    col1 = a + c
+    total = row1 + row2
+    if min(row1, row2, col1, total - col1) < 0:
+        return 1.0
+    p_obs = (math.comb(col1, a) * math.comb(total - col1, row1 - a)
+             / math.comb(total, row1)) if total else 1.0
+    # Sum the probabilities of all tables at least as extreme.
+    lo = max(0, row1 - (total - col1))
+    hi = min(row1, col1)
+    p_val = 0.0
+    for k in range(lo, hi + 1):
+        pk = (math.comb(col1, k) * math.comb(total - col1, row1 - k)
+              / math.comb(total, row1)) if total else 1.0
+        if pk <= p_obs * (1 + 1e-9):
+            p_val += pk
+    return min(1.0, p_val)
+
+
+def _per_task_counts(row: dict) -> tuple[int, int]:
+    """(n_pass, n) from a run record, honouring per_run_success.
+
+    Falls back to success/n_samples when the raw flags were not
+    persisted, so old run files still compare.
+    """
+    flags = row.get("per_run_success")
+    if isinstance(flags, list) and flags:
+        n = len(flags)
+        return sum(1 for f in flags if f), n
+    n = int(row.get("n_samples") or 1)
+    return (n if row.get("success") else 0), n
 
 
 def aggregate_replicates(
@@ -1887,6 +1963,8 @@ def aggregate_replicates(
         n_samples=n,
         quality_stdev=_stdev([float(q) for q in qualities]),
         success_rate=n_pass / n,
+        success_ci_low=wilson_interval(n_pass, n)[0],
+        success_ci_high=wilson_interval(n_pass, n)[1],
         per_run_quality=list(qualities),
         per_run_success=list(success_flags),
         text_excerpt=excerpt,
@@ -1896,6 +1974,8 @@ def aggregate_replicates(
         unmeasured=all_unmeasured,
         caveats=int(_median([float(r.caveats) for r in results])),
         answer_chars=int(_median([float(r.answer_chars) for r in results])),
+        user_interventions=int(_median(
+            [float(r.user_interventions) for r in results])),
         # Unobserved stays unobserved: a median over a list with holes in
         # it would report a number for samples that never looked.
         denials=(None if any(r.denials is None for r in results)
@@ -2021,6 +2101,11 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
         "values_matched": _count_verdicts(scored, "matched"),
         "values_wrong": _count_verdicts(scored, "wrong"),
         "values_absent": _count_verdicts(scored, "absent"),
+        # Harness steering observed during the runs: permission denials.
+        # Unlike total_denials this is never None -- the runner watches
+        # every turn in-stream.
+        "total_interventions": sum(
+            int(r.get("user_interventions") or 0) for r in scored),
     }
 
 
@@ -2114,7 +2199,31 @@ def compare_runs(
             "d_tool_calls": d_tools,
             "old_success": bool(o.get("success")),
             "new_success": bool(n.get("success")),
+            "success_rate_old": _per_task_counts(o)[0] / max(1, _per_task_counts(o)[1]),
+            "success_rate_new": _per_task_counts(n)[0] / max(1, _per_task_counts(n)[1]),
         })
+
+    # A-vs-B significance: pool the per-task pass counts and ask Fisher
+    # whether the observed direction could be run-to-run noise.  This is
+    # the field a change-accept decision should read FIRST -- the
+    # threshold verdicts above describe direction, not certainty.
+    pooled_a_pass = pooled_a_n = pooled_b_pass = pooled_b_n = 0
+    p_values: list[float] = []
+    for tid in overlap:
+        a_pass, a_n = _per_task_counts(by_id_old[tid])
+        b_pass, b_n = _per_task_counts(by_id_new[tid])
+        pooled_a_pass += a_pass
+        pooled_a_n += a_n
+        pooled_b_pass += b_pass
+        pooled_b_n += b_n
+        if a_n or b_n:
+            p_values.append(_fisher_exact_2x2_pvalue(
+                a_pass, a_n - a_pass, b_pass, b_n - b_pass))
+    sig_p = (_fisher_exact_2x2_pvalue(
+        pooled_a_pass, pooled_a_n - pooled_a_pass,
+        pooled_b_pass, pooled_b_n - pooled_b_pass)
+        if (pooled_a_n or pooled_b_n) else 1.0)
+    significant = bool(p_values) and sig_p < 0.05
 
     summary_old = summarise_run(baseline)
     summary_new = summarise_run(candidate)
@@ -2125,6 +2234,16 @@ def compare_runs(
         "n_better": n_better,
         "n_worse": n_worse,
         "n_neutral": n_neutral,
+        # Statistical statement over the pooled success counts.  A
+        # verdict like "worse" from the thresholds above means nothing
+        # when this field says the difference is inside the noise.
+        "significant": significant,
+        "significance_p": round(sig_p, 4),
+        "significance_alpha": 0.05,
+        "pooled_success": {
+            "old": [pooled_a_pass, pooled_a_n],
+            "new": [pooled_b_pass, pooled_b_n],
+        },
     }
 
     if len(overlap) < 3:

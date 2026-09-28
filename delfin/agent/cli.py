@@ -275,8 +275,9 @@ def _json_line(obj: dict) -> None:
 
 
 def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
-                emit: Any = None,
-                on_tool_result: Any = None) -> dict[str, Any]:
+                 emit: Any = None,
+                 on_tool_result: Any = None,
+                 on_permission_denied: Any = None) -> dict[str, Any]:
     """Stream a single turn and collect text + tool-calls + token-usage.
 
     AgentEngine's ``stream_response`` is callback-driven, not event-
@@ -299,6 +300,10 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     contract stays exactly the five keys the JSON tests pin -- the
     benchmark runner collects results through this callback instead
     of a sixth key.
+
+    ``on_permission_denied`` (optional) receives ``(tool_name)`` each
+    time the harness refused a call -- same forward-only pattern, so
+    the benchmark can count interventions without a sixth key.
     """
     chunks: list[str] = []
     tool_calls: list[dict] = []
@@ -337,6 +342,8 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     )
     if on_tool_result is not None:
         kwargs["on_tool_result"] = _forward_tool_result
+    if on_permission_denied is not None:
+        kwargs["on_permission_denied"] = on_permission_denied
     try:
         full_text = engine.stream_response(**kwargs) or ""
     except Exception as exc:
