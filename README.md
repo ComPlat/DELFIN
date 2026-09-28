@@ -112,7 +112,7 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 
 ### Requirements
 
-- **Python 3.10 or 3.11**
+- **Python 3.10, 3.11 or 3.12** (3.12 with numpy 2.2 is the [reference environment](#reference-environment-for-reproducible-manta-builds) of the MANTA construction; `install.sh` still sets up 3.10/3.11, because the ML and AI stacks it can add are not verified on 3.12)
 - **ORCA 6.1.1** in your `PATH` (`orca` and `orca_pltvib`) — [free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal)
 - **Optional:** `crest` and `xtb` (CREST/xTB workflows)
 - **Optional:** `censo`, `anmr`, `c2anmr`, `nmrplot` (ensemble NMR)
@@ -152,6 +152,18 @@ pip install -e ".[agent,docs,dev]"
 ```
 
 All Python dependencies (RDKit/Open Babel for SMILES workflows, ipywidgets/py3Dmol for dashboard visualisation, python-docx for reports) are installed automatically. This exposes the console command **`delfin`** and enables `python -m delfin`.
+
+#### Reference environment for reproducible MANTA builds
+
+`pyproject.toml` admits version ranges, so a plain `pip install` resolves whatever is newest inside them, and MANTA geometry comes out of RDKit, Open Babel and numpy. The published MANTA structures were built with **CPython 3.12.11, numpy 2.2.2, RDKit 2025.9.3, openbabel-wheel 3.1.1.22, SciPy 1.16.2, NetworkX 3.1 and stk 2026.1.4.0**; [`env/requirements-reference.txt`](env/requirements-reference.txt) lists every Python package of that interpreter at its exact version. To rebuild against it, use it as a constraints file:
+
+```bash
+python -m venv .venv          # with a Python 3.12 interpreter
+source .venv/bin/activate
+pip install -e ".[agent,docs,dev]" -c env/requirements-reference.txt
+```
+
+A byte-identical rebuild of published structures is only to be expected in this environment. CI installs it on every push (job *reference environment* in `.github/workflows/ci.yml`) and runs the MANTA tests in it, so the file keeps resolving and the construction keeps passing there.
 
 External QM binaries are not installed by `pip`. For the local binary-based setup of `xtb`, `crest`, `xtb4stda`, `stda`, `std2` and the `xtb4stda` runtime bundle, see `delfin/qm_tools/README.txt`.
 
