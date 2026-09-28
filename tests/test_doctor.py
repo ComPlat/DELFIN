@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -102,7 +104,8 @@ def test_run_doctor_normalises_bad_check_returns(monkeypatch):
 
 
 def test_missing_binary_warns_with_fix(monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    from delfin import qm_runtime
+    monkeypatch.setattr(qm_runtime, "find_tool_executable", lambda name: None)
     rows = doctor._check_binaries(_ctx())
     assert [r["check"] for r in rows] == ["binary: xtb", "binary: orca"]
     for r in rows:
@@ -113,10 +116,47 @@ def test_missing_binary_warns_with_fix(monkeypatch):
 
 
 def test_present_binary_passes(monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    from delfin import qm_runtime
+    monkeypatch.setattr(qm_runtime, "find_tool_executable",
+                        lambda name: f"/usr/bin/{name}")
     rows = doctor._check_binaries(_ctx())
     assert all(r["status"] == "PASS" for r in rows)
     assert "/usr/bin/xtb" in rows[0]["detail"]
+
+
+def _qm_tools_home(monkeypatch, tmp_path):
+    """HOME redirected into tmp_path; only ~/.delfin/qm_tools/bin exists."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    for var in ("DELFIN_QM_TOOLS_ROOT", "DELFIN_QM_ROOT", "DELFIN_QM_TOOLS_DIR",
+                "XTBHOME", "XTBPATH", "EBROOTXTB", "STD2HOME",
+                "ORCA_BINARY", "ORCA_PATH", "ORCA_BIN_DIR", "ORCA_HOME",
+                "EBROOTORCA"):
+        monkeypatch.delenv(var, raising=False)
+    bin_dir = tmp_path / ".delfin" / "qm_tools" / "bin"
+    bin_dir.mkdir(parents=True)
+    return bin_dir
+
+
+def _place_binary(bin_dir, name):
+    exe = bin_dir / name
+    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return exe
+
+
+def test_binaries_in_user_qm_tools_are_found(monkeypatch, tmp_path):
+    """xtb installed only under HOME/.delfin/qm_tools (not on PATH) must be
+    reported found — DELFIN runs it from there, so doctor must look there too,
+    through the same resolver (qm_runtime), not a bare PATH probe."""
+    bin_dir = _qm_tools_home(monkeypatch, tmp_path)
+    xtb = _place_binary(bin_dir, "xtb")
+    monkeypatch.setattr(shutil, "which", lambda name: None)  # nothing on PATH
+    rows = doctor._check_binaries(_ctx())
+    xtb_rows = [r for r in rows if r["check"] == "binary: xtb"]
+    assert len(xtb_rows) == 1
+    assert xtb_rows[0]["status"] == "PASS"
+    assert str(xtb) in xtb_rows[0]["detail"]
 
 
 def test_credentials_missing_key_never_leaks_value(monkeypatch):

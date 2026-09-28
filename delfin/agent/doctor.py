@@ -168,10 +168,24 @@ def _check_credentials(ctx: dict) -> list[dict]:
 
 
 def _check_binaries(ctx: dict) -> list[dict]:
-    """Chemistry binaries on PATH — reuses the tools install-policy table."""
+    """Chemistry binaries — found the way DELFIN itself finds them.
+
+    DELFIN does not require xtb/orca on PATH: it also resolves them from
+    the qm_tools directories (``~/.delfin/qm_tools/bin``), ``*_BINARY``
+    environment variables and known system locations
+    (``qm_runtime.resolve_tool``). A bare ``shutil.which`` here reported
+    every qm_tools install as "not found on PATH" while DELFIN happily
+    ran the same binary — so this check reuses the real resolver instead
+    of re-implementing a PATH-only subset of it.
+    """
     out: list[dict] = []
     for name in _CHEM_BINARIES:
-        found = shutil.which(name)
+        found = None
+        try:
+            from delfin import qm_runtime
+            found = qm_runtime.find_tool_executable(name)
+        except Exception:
+            found = shutil.which(name)
         if found:
             out.append(_row(f"binary: {name}", PASS, f"found at {found}"))
             continue
