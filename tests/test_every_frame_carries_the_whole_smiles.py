@@ -26,6 +26,7 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+from conftest import child_env
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,7 +49,9 @@ def _expected_formula(smiles: str) -> Counter:
 
 
 def _frames_from_cli(smiles: str, out: Path) -> list:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("DELFIN_")}
+    # child_env: the child resolves its ~/.delfin sinks outside the real home; no other DELFIN_ switch leaks in
+    env = {k: v for k, v in child_env(out.parent).items()
+           if not k.startswith("DELFIN_") or k == "DELFIN_SCRATCH_STATE"}
     env["PYTHONPATH"] = str(_ROOT) + (os.pathsep + env["PYTHONPATH"]
                                       if env.get("PYTHONPATH") else "")
     proc = subprocess.run(
