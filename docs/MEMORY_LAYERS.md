@@ -117,3 +117,50 @@ Two carriers with a deliberate split:
 - Automatic layers (shared state, facts recall, episodes priming,
   compaction) run every turn; on-demand layers (skills, `session_search`,
   `history_search`) run only when invoked — the agent must know to ask.
+
+## What decides whether a fact reaches a prompt
+
+The layer table above says *when* each layer is retrieved. Five fields on
+a fact decide *whether* a particular note is among what comes back, and a
+reader who does not know them will be surprised by a memory that was
+written and never seen again.
+
+| Field | Written | What it decides |
+|---|---|---|
+| `domain` | at save, from the text | Recall is filtered by it. A note saved out of an office turn is dropped from a code turn's index, and vice versa. |
+| `source` | at save (`user` / `agent`) | Age-based pruning. `feedback` and `user` TYPES are exempt from it — but only when the USER wrote them. A model-written note expires 90 days after it was last recalled, whatever its type and store. |
+| `learned_at` | at save, re-stamped when the body changes | `<branch>@<commit12>` — where the body was measured. Untouched by recall: recall says a note was useful, not that it was measured again. Absent on notes written before the field existed, and an absent stamp is never read as a defect. |
+| `use_count` / `updated_at` | bumped on recall | Which notes survive the per-type cap. Recall is what keeps a note alive; a note nobody pulls into a prompt is the one that goes. |
+| `stale_hits` | bumped when a recalled note cited dead code | Breaks the tie between two equally fresh notes. |
+
+## Which store a checkout reads
+
+`agent.memory_key` decides, and its default is `"path"`:
+
+- **`"path"`** — the store is keyed by the main worktree's directory, so
+  two clones of one project learn separately. Linked worktrees already
+  collapse onto their main worktree.
+- **`"repo"`** — keyed by the first commit of the history
+  (`-repo-<hash12>`), so every clone of one project shares one store. The
+  first commit is the one commit that never changes as work goes on, is
+  identical in every clone, and survives the remote moving.
+
+Switching migrates nothing: the notes under the other key stay on disk
+and are read again on switching back. Every failure — no git, no commit,
+a timeout — answers the path, because splitting a store costs recall
+while merging two projects puts one project's notes into another's
+prompt.
+
+## Nothing is deleted by tidying
+
+`memory_tidy` proposes; `apply` carries the proposal out and moves a
+retired file to `<store>/retired/`. It never unlinks. Memories the user
+wrote are never retired at all — disuse is not a reason to drop something
+somebody chose to say.
+
+It also REPORTS, without acting, the notes whose `learned_at` names work
+that is not in the default branch on a branch since deleted. That list is
+shown and never applied: a branch merged with `--squash` and then deleted
+leaves its commit unreachable, so work that did land reads identically to
+work that did not, and which of the two a project uses is not knowable
+from the repository.
