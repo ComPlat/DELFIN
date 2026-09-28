@@ -601,6 +601,8 @@ defaults; `KEY=?` in a CONTROL file prints a key's own explanation.
 
 **Gates** (each drops frames that are wrong, never frames that are merely unusual)
 
+The gates are the one deliberate difference between a CONTROL run and `delfin-manta` / the dashboard MANTA button: a pipeline optimises the frames it gets, and a torn frame at the head of the ordering costs a whole DFT chain, so CONTROL switches these on; the command line and the dashboard build the same champion without them and return the full manifold. With all three set to `no` a CONTROL run builds exactly what `delfin-manta` builds.
+
 | Key | Default | Description |
 |-----|---------|-------------|
 | `MANTA_CLEAN_GATE` | `yes` | Drop collapsed bonds, inter-ligand clashes, decoordinated metals |

@@ -202,3 +202,54 @@ def _write_one_side(argv) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_write_one_side(sys.argv))
+
+
+# --- the one deliberate exception: the CONTROL pipeline's gates ---------------
+
+#: Construction switches a CONTROL run adds on top of delfin-manta (user decision
+#: 2026-09-28: a torn frame costs a DFT chain; CLI and dashboard return the full
+#: manifold).  COORD_INTEGRITY / CONF_COMPLETE = 0 restate the builder default.
+_PIPELINE_ONLY = {
+    "DELFIN_FFFREE_CLEAN_GATE": "1",
+    "DELFIN_FFFREE_TOPOLOGY_GATE": "1",
+    "DELFIN_FFFREE_PERMUTE_DEDUP": "1",
+    "DELFIN_FFFREE_COORD_INTEGRITY": "0",
+    "DELFIN_FFFREE_CONF_COMPLETE": "0",
+}
+#: Resource settings, not construction: how many UFF workers and how long.
+_RESOURCE_KEYS = {"DELFIN_MAX_PROCESS_WORKERS", "DELFIN_UI_ISOLATE_TIMEOUT"}
+
+
+def _pipeline_env(config, monkeypatch):
+    from delfin.common import manta_settings
+
+    for key in list(os.environ):
+        if key.startswith("DELFIN_"):
+            monkeypatch.delenv(key, raising=False)
+    target = {}
+    manta_settings.apply_construction_env(config, target)
+    return {k: v for k, v in target.items() if k not in _RESOURCE_KEYS}
+
+
+@pytest.mark.parametrize("construction", ["champion", "builder", "default"])
+def test_the_pipeline_differs_from_the_cli_by_the_gates_and_nothing_else(
+        construction, monkeypatch):
+    from delfin import cli_manta
+
+    pipeline = _pipeline_env({"MANTA_CONSTRUCTION": construction}, monkeypatch)
+    cli = cli_manta.construction_env(construction, environ={})
+
+    added = {k: v for k, v in pipeline.items() if cli.get(k) != v}
+    assert added == _PIPELINE_ONLY
+    assert set(cli) <= set(pipeline), sorted(set(cli) - set(pipeline))
+
+
+def test_with_the_gates_off_the_pipeline_builds_what_the_cli_builds(monkeypatch):
+    from delfin import cli_manta
+
+    pipeline = _pipeline_env({"MANTA_CLEAN_GATE": "no", "MANTA_TOPOLOGY_GATE": "no",
+                              "MANTA_DEDUP": "no"}, monkeypatch)
+    cli = cli_manta.construction_env("champion", environ={})
+    extra = {k: v for k, v in pipeline.items() if cli.get(k) != v}
+    # what is left are "0" switches, i.e. the builder's own defaults
+    assert set(extra) == set(_PIPELINE_ONLY) and set(extra.values()) == {"0"}
