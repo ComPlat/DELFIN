@@ -374,6 +374,10 @@ class Trajectory:
     # Gate denials observed during the run; ``None`` when the runner had
     # no way to look. Unobserved is not zero.
     denials: Optional[int] = None
+    # Harness interventions observed IN-STREAM (permission denials the
+    # engine reported via ``on_permission_denied``). The runner watches
+    # every turn, so 0 is honest here -- unlike ``denials`` above.
+    user_interventions: int = 0
     # What an acceptance script made of the artifacts, when the task
     # declared one. ``None`` means no script was declared OR the runner
     # could not reach one -- never "it failed", for the same reason
@@ -485,6 +489,11 @@ class BenchmarkResult:
     # runner could not reach the audit log -- and must never be reported
     # as zero, which is the same sentence as "nothing was refused".
     denials: Optional[int] = None
+    # Harness interventions OBSERVED in-stream: permission denials the
+    # engine reported through ``on_permission_denied`` while the turn
+    # ran. Distinct from ``denials`` (audit-log count, may be None):
+    # this one was watched start to finish, so its honest default is 0.
+    user_interventions: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1686,6 +1695,7 @@ def score_outcome(
         caveats=caveat_count(traj.text),
         answer_chars=len(str(traj.text or "")),
         denials=traj.denials,
+        user_interventions=int(traj.user_interventions or 0),
     )
 
 
@@ -1964,6 +1974,8 @@ def aggregate_replicates(
         unmeasured=all_unmeasured,
         caveats=int(_median([float(r.caveats) for r in results])),
         answer_chars=int(_median([float(r.answer_chars) for r in results])),
+        user_interventions=int(_median(
+            [float(r.user_interventions) for r in results])),
         # Unobserved stays unobserved: a median over a list with holes in
         # it would report a number for samples that never looked.
         denials=(None if any(r.denials is None for r in results)
@@ -2089,6 +2101,11 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
         "values_matched": _count_verdicts(scored, "matched"),
         "values_wrong": _count_verdicts(scored, "wrong"),
         "values_absent": _count_verdicts(scored, "absent"),
+        # Harness steering observed during the runs: permission denials.
+        # Unlike total_denials this is never None -- the runner watches
+        # every turn in-stream.
+        "total_interventions": sum(
+            int(r.get("user_interventions") or 0) for r in scored),
     }
 
 
