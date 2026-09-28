@@ -344,7 +344,12 @@ def test_a_family_installer_cannot_move_what_delfin_itself_is_pinned_to(monkeypa
 
     for _command, env in calls:
         constraints = pathlib.Path(env["PIP_CONSTRAINT"]).read_text(encoding="utf-8")
-        assert any(line.startswith("numpy") and "<2" in line for line in constraints.splitlines()), constraints
+        # DELFIN's own numpy ceiling travels with it, whatever it currently
+        # is (<2 until 2026-09, then the highest minor measured). Checking
+        # for one literal ceiling would tie this test to a version decision
+        # instead of to the mechanism it guards.
+        numpy_lines = [line for line in constraints.splitlines() if line.startswith("numpy")]
+        assert numpy_lines and all("<" in line for line in numpy_lines), constraints
         assert "extra ==" not in constraints
 
 
