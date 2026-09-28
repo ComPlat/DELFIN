@@ -20,7 +20,26 @@ INSTALLER = REPO / "delfin" / "installers" / "install_delfin.sh"
 def _dry_run(tmp_path, *args, extra_path=None, extra_env=None):
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
-    path = [str(pathlib.Path(sys.executable).parent), "/usr/bin", "/bin"]
+
+    # The installer looks for an existing OpenMPI with `command -v mpirun`,
+    # so a host that HAS one is answered by its own -- and none of these
+    # tests is about the host's MPI. Both OpenMPI tests failed on any
+    # machine with one installed (measured: "[delfin-install] OpenMPI
+    # /usr", then no build planned) while passing in CI, which is a test
+    # that reports the machine rather than the installer.
+    #
+    # Shadowed rather than skipped: a stub whose version does not match
+    # what the installer wants makes the search fall through to the
+    # build, which is the path these tests are about, on every machine.
+    # The tests that supply their own OpenMPI put it ahead of this.
+    no_mpi = tmp_path / "no-system-mpi"
+    no_mpi.mkdir(exist_ok=True)
+    (no_mpi / "mpirun").write_text(
+        '#!/bin/sh\necho "mpirun (Open MPI) 1.0.0"\n')
+    (no_mpi / "mpirun").chmod(0o755)
+
+    path = [str(pathlib.Path(sys.executable).parent), str(no_mpi),
+            "/usr/bin", "/bin"]
     if extra_path is not None:
         path.insert(0, str(extra_path))
     done = subprocess.run(
