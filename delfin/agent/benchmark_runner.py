@@ -121,6 +121,7 @@ def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0,
         output_tokens=int(raw.get("output_tokens") or 0),
         error=str(raw.get("error") or ""),
         checkout_root=str(checkout_root or ""),
+        user_interventions=int(raw.get("user_interventions") or 0),
     )
 
 
@@ -898,16 +899,30 @@ def _run_task_once(
             def _collect_result(name: str, output: str) -> None:
                 _results.append(output)
 
+            # Interventions: each permission denial is the harness
+            # steering the run; counted in-stream, forwarded only when
+            # the run_once accepts it (old test doubles keep working
+            # and read 0 -- see the user_interventions docstring).
+            _denied: list[str] = []
+
+            def _collect_denial(name: str) -> None:
+                _denied.append(name)
+
             with _fixture_calc_dirs(_ws):
                 try:
                     raw = run_once(engine, task.prompt,
                                    max_tokens=max_tokens,
-                                   on_tool_result=_collect_result)
+                                   on_tool_result=_collect_result,
+                                   on_permission_denied=_collect_denial)
                 except TypeError:
+                    # Old test doubles / run_once signatures take only
+                    # max_tokens; no callbacks means results and
+                    # interventions read 0 -- the docstrings say so.
                     raw = run_once(engine, task.prompt,
                                    max_tokens=max_tokens)
             raw["tool_results"] = _results[:len(raw.get("tool_calls")
-                                                or [])]
+                                                 or [])]
+            raw["user_interventions"] = len(_denied)
             # Inside the guard on purpose: it puts the workspace back on
             # the way out, so anything the task produced exists only
             # here. A check that ran afterwards would find the fixture.
