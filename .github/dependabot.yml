@@ -68,3 +68,9 @@ updates:
       # calculations — not something to accept from a bot.
       - dependency-name: "numpy"
       - dependency-name: "mendeleev"
+
+    # env/reference-environment.txt is deliberately NOT named requirements*.txt:
+    # it records the exact environment the published MANTA constructions were
+    # built in (byte-reproducibility), not a dependency specification. Moving
+    # any version in it would silently detach it from the data it describes;
+    # updating it means rebuilding and re-verifying, a decision for a person.
