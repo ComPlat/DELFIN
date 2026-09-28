@@ -214,6 +214,15 @@ def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Option
         # and want data with the things real data has -- a duplicate
         # geometry, a run that did not converge.
         rel = "science_workspace"
+    elif cls == "chemistry":
+        # Chemistry tasks are seeded by their setup script
+        # (chem_start_geometries.py writes chem/<molecule>/start.xyz),
+        # but the folder has to exist BEFORE that script runs:
+        # run_setup launches it with cwd=workspace, and Popen fails on
+        # a non-existent cwd with a bare FileNotFoundError -- observed on
+        # the first SLURM trial, where every sample read "setup script
+        # could not run: [Errno 2]" while the script itself was fine.
+        rel = "chemistry_workspace"
     if rel is None:
         return None
     candidate = Path(root) / "tests" / "fixtures" / rel
