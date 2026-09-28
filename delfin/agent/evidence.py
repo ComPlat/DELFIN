@@ -103,7 +103,9 @@ def _verify_test(evidence: Any, ref: str,
     greens = _green_runs_for(runs or [], node)
     # Staleness: reuse evidence_freshness over the stamped entries. Only a
     # git work tree can judge staleness; outside git nothing is stamped
-    # (same rule as api_client's _stamp_new_evidence), so nothing is judged.
+    # (same rule as api_client's _stamp_new_evidence). A green run there
+    # cannot be judged -- it is reported as UNCONFIRMED, not believed.
+    unconfirmed = False
     try:
         from . import evidence_freshness as _ef
         if workspace:
@@ -114,8 +116,14 @@ def _verify_test(evidence: Any, ref: str,
                     if reason:
                         return False, (f"test evidence for {node} is stale: "
                                        f"{reason}")
+            else:                               # non-git: cannot judge
+                unconfirmed = True
     except Exception:
         pass                                     # never raise on checking
+    if unconfirmed:
+        return True, (f"green run of {node} recorded (unconfirmed: "
+                      f"workspace is not a git tree, staleness cannot "
+                      f"be judged)")
     return True, f"green run of {node} recorded"
 
 
@@ -158,7 +166,25 @@ def _verify_job(ref: str,
     wanted = str(ref).strip()
     for j in jobs:
         if str(getattr(j, "job_id", "")) == wanted:
-            return True, f"job {wanted} known to DELFIN's job listing"
+            # Being listed is not evidence: the job's live state must say
+            # it is actually running (or waiting to run). Fail closed on
+            # anything else -- FAILED/COMPLETED/CANCELLED history and
+            # unknown/empty states are unconfirmed, not evidence.
+            state = str(getattr(j, "state", "") or getattr(j, "status", "")
+                        or "").strip().upper()
+            if state in ("RUNNING", "PENDING", "CONFIGURING", "REQUEUE",
+                         "REQUEUED", "RESIZING", "SUSPENDED", "COMPLETING"):
+                return True, f"job {wanted} is live (state={state or 'n/a'})"
+            if not state:
+                return False, ("job evidence: job "
+                               f"{wanted} has no state to confirm it ran")
+            if str(getattr(j, "status", "") or "").strip().lower() in (
+                    "failed", "error", "timeout", "cancelled"):
+                return False, (f"job evidence: job {wanted} is not running "
+                               f"(state={state}, status="
+                               f"{getattr(j, 'status', '')})")
+            return False, (f"job evidence: job {wanted} is not running "
+                           f"(state={state})")
     return False, f"job evidence: job '{wanted}' not found in the job listing"
 
 
