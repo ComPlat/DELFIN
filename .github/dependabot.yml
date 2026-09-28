@@ -59,11 +59,18 @@ updates:
       # on purpose. A range-widening is not classified as a major update, so
       # the rule above does not stop it; these have to be named.
       #
-      # numpy <2: the scientific stack around it (rdkit, ase, stk, the MLP
-      # extras) is not ready, and DELFIN's results run through it.
+      # numpy <2.3: the highest minor anything has been measured on (2.2.2 is
+      # the reference build environment, 1.26 the other end CI holds), and
+      # DELFIN's results run through it. Until 2026-09 this read <2.
       # mendeleev <1.0: element data feeding basis-set and radius selection.
       #
       # Raising either is a deliberate migration, verified against real
       # calculations — not something to accept from a bot.
       - dependency-name: "numpy"
       - dependency-name: "mendeleev"
+
+    # env/reference-environment.txt is deliberately NOT named requirements*.txt:
+    # it records the exact environment the published MANTA constructions were
+    # built in (byte-reproducibility), not a dependency specification. Moving
+    # any version in it would silently detach it from the data it describes;
+    # updating it means rebuilding and re-verifying, a decision for a person.
