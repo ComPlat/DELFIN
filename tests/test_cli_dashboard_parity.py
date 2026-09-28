@@ -1,0 +1,121 @@
+"""The command line and the dashboard build the same MANTA manifold.
+
+A landing that reaches only one of the two entry points is a landing the other
+half of the users never gets, and nothing complains: both still emit a valid
+manifold, just not the same one.  This test builds a handful of small systems
+through ``delfin-manta`` (its real ``main``) and through the dashboard's MANTA
+button (``structure_editor._run_smiles_build`` with the settings row at its
+widget defaults, which is exactly what the button worker calls) -- each in a
+fresh interpreter with a clean environment -- and asserts that the emitted
+frames are byte-identical: same count, same order, same labels, same
+coordinate lines.
+
+The two interpreters get DIFFERENT ``PYTHONHASHSEED`` values on purpose.  The
+dashboard's isolation subprocess pins ``PYTHONHASHSEED=0`` while a shell
+running ``delfin-manta`` has whatever the user has (random by default), so a
+build that depends on set / dict iteration order would differ between the two
+entry points; the differing seeds make that visible here.
+
+Run directly as ``python tests/test_cli_dashboard_parity.py {cli|dashboard}
+SMILES OUT.json`` to produce one side (that is how the test calls it).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+# Small and fast (seconds each at quality extreme), and covering the three
+# shapes named in the parity requirement: square planar with cis/trans, a
+# chelate, an octahedral complex.
+_SMILES = (
+    "[Pt](Cl)(Cl)(N)N",
+    "[Pt]1(Cl)(Cl)NCCN1",
+    "Cl[Co+3](Cl)([NH3])([NH3])([NH3])[NH3]",
+)
+
+
+def _side_cli(smiles: str, work: Path) -> dict:
+    from delfin import cli_manta
+
+    out = work / "cli_out"
+    code = cli_manta.main([smiles, "-o", str(out), "-q"])
+    manifest = json.loads((out / "manifest.json").read_text())
+    frames = []
+    for item in manifest["isomers"]:
+        text = (out / item["file"]).read_text()
+        frames.append([item["label"], cli_manta._atom_lines(text)])
+    return {"exit": code, "frames": frames}
+
+
+def _side_dashboard(smiles: str, work: Path) -> dict:
+    from delfin import cli_manta
+    from delfin.dashboard import structure_editor as se
+
+    result = se._run_smiles_build(smiles, **se._manta_button_kwargs())
+    if result.get("error"):
+        return {"exit": 1, "frames": [], "error": result["error"]}
+    frames = [[label, cli_manta._atom_lines(xyz)] for xyz, _n, label in result["isomers"]]
+    return {"exit": 0, "frames": frames}
+
+
+def _clean_env(hashseed: str) -> dict:
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("DELFIN_") and k != "PYTHONHASHSEED"}
+    env["PYTHONHASHSEED"] = hashseed
+    env["PYTHONPATH"] = str(_ROOT) + (os.pathsep + env["PYTHONPATH"]
+                                      if env.get("PYTHONPATH") else "")
+    return env
+
+
+def _run_side(side: str, smiles: str, tmp: Path, hashseed: str) -> dict:
+    work = tmp / side
+    work.mkdir(parents=True, exist_ok=True)
+    out = work / "result.json"
+    proc = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), side, smiles, str(out)],
+        cwd=str(work), env=_clean_env(hashseed), capture_output=True, text=True,
+        timeout=900)
+    assert proc.returncode == 0, (side, proc.stdout[-2000:], proc.stderr[-4000:])
+    data = json.loads(out.read_text())
+    assert Path(data["delfin_file"]).resolve().is_relative_to(_ROOT), data["delfin_file"]
+    return data
+
+
+@pytest.mark.parametrize("smiles", _SMILES)
+def test_cli_and_dashboard_emit_the_same_manifold(smiles, tmp_path):
+    cli = _run_side("cli", smiles, tmp_path, hashseed="12345")
+    dash = _run_side("dashboard", smiles, tmp_path, hashseed="777")
+
+    assert cli["exit"] == 0, cli
+    assert dash["exit"] == 0, dash
+    assert cli["frames"], "CLI emitted nothing"
+
+    cli_labels = [f[0] for f in cli["frames"]]
+    dash_labels = [f[0] for f in dash["frames"]]
+    assert dash_labels == cli_labels, (
+        f"labels/order differ for {smiles}:\n  cli       {cli_labels}\n"
+        f"  dashboard {dash_labels}")
+    for i, (a, b) in enumerate(zip(cli["frames"], dash["frames"])):
+        assert a[1] == b[1], f"frame {i} ({a[0]}) coordinates differ for {smiles}"
+
+
+def _write_one_side(argv) -> int:
+    side, smiles, out = argv[1], argv[2], Path(argv[3])
+    import delfin
+    runner = _side_cli if side == "cli" else _side_dashboard
+    data = runner(smiles, out.parent)
+    data["delfin_file"] = delfin.__file__
+    out.write_text(json.dumps(data))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_write_one_side(sys.argv))
