@@ -46,9 +46,59 @@ def _xtb() -> str:
 
 
 def _run(cmd: list[str], cwd: Path) -> str:
+    """Run a command locally, or through sbatch --wait on a compute node.
+
+    The bench runner must stay on the login node (the model endpoint is
+    only reachable there), but cluster policy wants the compute on
+    compute nodes. With DELFIN_CHEM_SLURM=1 the xtb call is wrapped in
+    a batch script and submitted with `sbatch --wait`; the combined
+    stdout/stderr of the job is returned in place of the local output.
+    """
+    import os
+    if os.environ.get("DELFIN_CHEM_SLURM") == "1":
+        return _run_via_slurm(cmd, cwd)
     p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
                        timeout=600)
     return (p.stdout or "") + (p.stderr or "")
+
+
+def _run_via_slurm(cmd: list[str], cwd: Path) -> str:
+    """One xtb call as a short dev_cpu_il job; blocks until it ends."""
+    sh = "\n".join([
+        "#!/bin/bash",
+        "#SBATCH --job-name=m2-chem-accept",
+        "#SBATCH --partition=dev_cpu_il",
+        "#SBATCH --time=00:20:00",
+        "#SBATCH --ntasks=1",
+        "#SBATCH --cpus-per-task=4",
+        "#SBATCH --output=%x-%j.log",
+        "#SBATCH --error=%x-%j.log",
+        "set -euo pipefail",
+        "cd \"$SLURM_SUBMIT_DIR\"",
+        " ".join(f"'{a}'" if " " in a else a for a in cmd),
+    ])
+    import os
+    import uuid
+    tag = uuid.uuid4().hex[:8]
+    script = cwd / f"chemaccept_{tag}.sh"
+    script.write_text(sh, encoding="utf-8")
+    p = subprocess.run(["sbatch", "--wait", str(script.name)],
+                       cwd=str(cwd), capture_output=True, text=True,
+                       timeout=1200)
+    out = (p.stdout or "") + (p.stderr or "")
+    # sbatch --wait exits non-zero if the job failed; the log carries
+    # the reason either way. Collect every log the job wrote.
+    for log in sorted(cwd.glob("*-*.log")):
+        try:
+            out += "\n" + log.read_text(encoding="utf-8",
+                                        errors="replace")
+        except OSError:
+            pass
+    try:
+        script.unlink()
+    except OSError:
+        pass
+    return out
 
 
 def main(argv: list[str]) -> int:
