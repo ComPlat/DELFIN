@@ -138,7 +138,7 @@ def test_both_conversion_paths_build_the_parts_apart():
     from delfin.dashboard import tab_submit
 
     source = SUBMIT_SOURCE
-    worker = source.split("def _start_smiles_conversion")[1].split("\n    def ")[0]
+    worker = source.split("def _run_smiles_build")[1].split("\nclass Editor")[0]
     assert "_separate.has_separate_systems(cleaned_data)" in worker
     assert "_separate.combine_isomers(per_part)" in worker, (
         "both paths build the parts apart and then set them side by side"
@@ -146,7 +146,7 @@ def test_both_conversion_paths_build_the_parts_apart():
     assert worker.count("_separate.combine_isomers(per_part)") == 2, (
         "the quick path and the manifold path, one each"
     )
-    assert "if not error and isomers and not separate:" in worker, (
+    assert "if not error and isomers and not separate and not manta:" in worker, (
         "a hapticity preview made from the whole string would describe a "
         "molecule that is not any of the frames"
     )
@@ -181,7 +181,7 @@ def test_each_part_gets_the_hapticity_previews_of_its_own_ligands(editor=None):
     from delfin.dashboard import tab_submit
 
     source = SUBMIT_SOURCE
-    worker = source.split("def _start_smiles_conversion")[1].split("\n    def ")[0]
+    worker = source.split("def _run_smiles_build")[1].split("\nclass Editor")[0]
 
     quick = worker.split("if quick and separate:")[1].split("elif quick:")[0]
     assert "smiles_to_xyz_quick_with_previews(part)" in quick, (

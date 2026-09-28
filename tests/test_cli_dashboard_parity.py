@@ -10,7 +10,7 @@ fresh interpreter with a clean environment -- and asserts that the emitted
 frames are byte-identical: same count, same order, same labels, same
 coordinate lines.
 
-The two interpreters get DIFFERENT ``PYTHONHASHSEED`` values on purpose.  The
+The two sides get DIFFERENT ``PYTHONHASHSEED`` values on purpose.  The
 dashboard's isolation subprocess pins ``PYTHONHASHSEED=0`` while a shell
 running ``delfin-manta`` has whatever the user has (random by default), so a
 build that depends on set / dict iteration order would differ between the two
@@ -69,7 +69,8 @@ def _side_dashboard(smiles: str, work: Path) -> dict:
 def _clean_env(hashseed: str) -> dict:
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("DELFIN_") and k != "PYTHONHASHSEED"}
-    env["PYTHONHASHSEED"] = hashseed
+    if hashseed is not None:
+        env["PYTHONHASHSEED"] = hashseed
     env["PYTHONPATH"] = str(_ROOT) + (os.pathsep + env["PYTHONPATH"]
                                       if env.get("PYTHONPATH") else "")
     return env
@@ -92,7 +93,8 @@ def _run_side(side: str, smiles: str, tmp: Path, hashseed: str) -> dict:
 @pytest.mark.parametrize("smiles", _SMILES)
 def test_cli_and_dashboard_emit_the_same_manifold(smiles, tmp_path):
     cli = _run_side("cli", smiles, tmp_path, hashseed="12345")
-    dash = _run_side("dashboard", smiles, tmp_path, hashseed="777")
+    # As in a Voila kernel: no seed in the parent, the isolation child pins 0.
+    dash = _run_side("dashboard", smiles, tmp_path, hashseed=None)
 
     assert cli["exit"] == 0, cli
     assert dash["exit"] == 0, dash
@@ -105,6 +107,30 @@ def test_cli_and_dashboard_emit_the_same_manifold(smiles, tmp_path):
         f"  dashboard {dash_labels}")
     for i, (a, b) in enumerate(zip(cli["frames"], dash["frames"])):
         assert a[1] == b[1], f"frame {i} ({a[0]}) coordinates differ for {smiles}"
+
+
+@pytest.mark.parametrize("config", ["champion", "builder", "default"])
+@pytest.mark.parametrize("rank", [False, True])
+def test_the_dashboard_env_is_the_cli_env(config, rank, monkeypatch):
+    """Same switches for the same settings, including an environment override."""
+    from delfin import cli_manta
+    from delfin.dashboard import structure_editor as se
+
+    monkeypatch.setenv("DELFIN_MIRROR_ENUM", "0")      # a user override of an extra setting
+    cli = cli_manta.construction_env(config, rank=rank, method="gfn2", charge=3)
+    dash = se._manta_best_env(3, construction=config, method="gfn2", rank=rank)
+    assert dash == cli
+    if config == "champion":
+        assert dash["DELFIN_MIRROR_ENUM"] == "0"
+        assert all(dash["DELFIN_FFFREE_" + f] == "1" for f in cli_manta._CHAMPION_FLAGS)
+
+
+def test_cli_rank_charge_comes_from_the_smiles():
+    """--rank without --charge ranks at the SMILES formal charge, as the dashboard does."""
+    from delfin import cli_manta
+
+    assert cli_manta._charge_for_opt("Cl[Co+3](Cl)([NH3])([NH3])([NH3])[NH3]", None) == 3
+    assert cli_manta._charge_for_opt("Cl[Co+3](Cl)([NH3])([NH3])([NH3])[NH3]", 1) == 1
 
 
 def _write_one_side(argv) -> int:

@@ -790,8 +790,7 @@ def atom_charge_texts(charges, decimals=CHARGE_DECIMALS):
     return said
 
 
-from delfin.cli_manta import _CHAMPION_FLAGS as _MANTA_CHAMPION_FLAGS
-from delfin.cli_manta import _CHAMPION_EXTRA_ENV as _MANTA_CHAMPION_EXTRA_ENV
+from delfin.cli_manta import construction_env as _manta_construction_env
 _MANTA_OPT_TOPN = 10
 _MANTA_OPT_WORKERS = 4
 _MANTA_GIF_DATA_URI_CACHE = None
@@ -870,24 +869,10 @@ def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
     """Env for the chosen construction config + GFN2 energy ranking, GFN2 charge
     from the SMILES. construction: 'champion' (full SHIP-31 rich + KAPPA4 reach,
     DEFAULT/maximum richness) | 'builder' (lean core + reach) | 'default' (legacy)."""
-    env = {"DELFIN_GFNFF_CHARGE": str(int(charge))}
-    if rank:
-        env["DELFIN_FFFREE_GFNFF_RANK"] = "1"
-        env["DELFIN_CONF_RANK_METHOD"] = method
-    if construction != "default":
-        env["DELFIN_FFFREE_BUILDER"] = "1"
-        env["DELFIN_FRAME_RANK_FIX"] = "1"
-        env["DELFIN_CHIRAL_ENUM"] = "1"        # Λ/Δ enantiomer enumeration (>=2 chelate pairs)
-        if construction == "champion":
-            for _f in _MANTA_CHAMPION_FLAGS:   # de-bloated set (KAPPA4 included; CONF_ENERGY_RANK dropped)
-                env["DELFIN_FFFREE_" + _f] = "1"
-            for _k, _v in _MANTA_CHAMPION_EXTRA_ENV.items():   # non-FFFREE champion settings (mirror enumeration)
-                env.setdefault(_k, _v)
-        else:  # builder = lean core + reach
-            env["DELFIN_FFFREE_KAPPA4"] = "1"
-            env["DELFIN_FFFREE_SIGMA_ENSEMBLE"] = "1"
-            env["DELFIN_FFFREE_CONF_ENERGY_RANK"] = "1"
-    return env
+    # ONE definition shared with delfin-manta (cli_manta.construction_env): champion
+    # flags, extra env, master switches, rank + charge.  A hand-kept copy here is how
+    # landing 5 once reached the CLI only.
+    return _manta_construction_env(construction, rank=rank, method=method, charge=charge)
 
 
 # Power-user knobs (construction / seeds / confs-per-isomer / rank-method /
@@ -1042,6 +1027,7 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
     # MANTA "best version": derive the GFN2 charge from the SMILES, then
     # apply the SHIP-31 champion construction + GFN2-rank env for this
     # build only (snapshot + restore so the global env isn't polluted).
+    manta = construction is not None   # the MANTA button; Convert/Quick pass None
     _chg = 0
     if rank or construction:
         try:
@@ -1139,8 +1125,9 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
                     # Its own hapticity previews, from its own SMILES:
                     # the ways this ligand can sit on this metal, which
                     # is a question about this part and no other.
-                    made = append_hapto_previews_to_isomers(
-                        made, part, include_quick=apply_uff)
+                    if not manta:
+                        made = append_hapto_previews_to_isomers(
+                            made, part, include_quick=apply_uff)
                     per_part.append(made)
                 isomers = ([] if error
                            else _separate.combine_isomers(per_part))
@@ -1150,7 +1137,11 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
             # For a split input each part has had its own already,
             # from its own SMILES.  Handed the whole string here they
             # would describe a molecule that is none of the frames.
-            if not error and isomers and not separate:
+            # Not for MANTA: the quick embedding and the hapto previews come from
+            # the single-structure converter, not from the MANTA construction, and
+            # appending them made the dashboard manifold longer than what
+            # delfin-manta emits for the same SMILES (a trailing "quick" frame).
+            if not error and isomers and not separate and not manta:
                 isomers = append_hapto_previews_to_isomers(
                     isomers,
                     cleaned_data,

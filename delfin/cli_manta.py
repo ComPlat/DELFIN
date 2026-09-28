@@ -388,19 +388,48 @@ _CHAMPION_EXTRA_ENV = {
 }
 
 
-def _apply_construction_env(config: str) -> None:
-    """Set the DELFIN_FFFREE_* construction env for the chosen config (before import)."""
+def construction_env(config: str, *, rank: bool = False, method: str = "gfn2",
+                     charge=None, environ=None) -> dict:
+    """The environment a MANTA build needs, as a dict -- the ONE definition.
+
+    Every entry point that builds a MANTA manifold (this CLI, the dashboard's MANTA
+    button, CONTROL via ``manta_settings.apply_construction_env``) takes its switches
+    from here, so a landing cannot reach one of them and not the other.
+
+    * ``config``: 'champion' | 'builder' | 'default' (no construction switches).
+    * ``rank``/``method``: the in-library GFN energy ranking (``--rank``).
+    * ``charge``: the complex charge for that ranking (``DELFIN_GFNFF_CHARGE``); the
+      caller derives it from the SMILES when the user gave none.
+    * ``environ``: where overrides are read from (default ``os.environ``).  The
+      ``DELFIN_FFFREE_*`` set and the master switches are always forced to 1; the
+      non-FFFREE champion settings in ``_CHAMPION_EXTRA_ENV`` keep a value that is
+      already present there, so they stay overridable from the environment -- in
+      the CLI and in the dashboard alike (the dashboard used to force them).
+    """
+    environ = os.environ if environ is None else environ
+    env: dict = {}
+    if charge is not None:
+        env["DELFIN_GFNFF_CHARGE"] = str(int(charge))
+    if rank:
+        env["DELFIN_FFFREE_GFNFF_RANK"] = "1"
+        env["DELFIN_CONF_RANK_METHOD"] = method
     if config == "default":
-        return
-    os.environ["DELFIN_FFFREE_BUILDER"] = "1"
-    os.environ["DELFIN_FRAME_RANK_FIX"] = "1"
-    os.environ["DELFIN_CHIRAL_ENUM"] = "1"   # Lambda/Delta enantiomer enumeration (>=2 chelate pairs)
+        return env
+    env["DELFIN_FFFREE_BUILDER"] = "1"
+    env["DELFIN_FRAME_RANK_FIX"] = "1"
+    env["DELFIN_CHIRAL_ENUM"] = "1"   # Lambda/Delta enantiomer enumeration (>=2 chelate pairs)
     flags = _CHAMPION_FLAGS if config == "champion" else _BUILDER_FLAGS
     for f in flags:
-        os.environ["DELFIN_FFFREE_" + f] = "1"
+        env["DELFIN_FFFREE_" + f] = "1"
     if config == "champion":
         for _k, _v in _CHAMPION_EXTRA_ENV.items():
-            os.environ.setdefault(_k, _v)      # overridable through the environment
+            env[_k] = environ.get(_k, _v)      # overridable through the environment
+    return env
+
+
+def _apply_construction_env(config: str) -> None:
+    """Set the DELFIN_FFFREE_* construction env for the chosen config (before import)."""
+    os.environ.update(construction_env(config))
 
 
 def _safe_name(label: str, idx: int) -> str:
@@ -534,12 +563,13 @@ def main(argv=None) -> int:
     args = _build_parser().parse_args(argv)
 
     # Construction config + ranking are env-gated; set ALL switches BEFORE import.
-    _apply_construction_env(args.construction)
-    if args.rank:
-        os.environ["DELFIN_FFFREE_GFNFF_RANK"] = "1"
-        os.environ["DELFIN_CONF_RANK_METHOD"] = args.method
-    if args.charge is not None:
-        os.environ["DELFIN_GFNFF_CHARGE"] = str(int(args.charge))
+    # The ranking charge is the SMILES formal charge unless --charge overrides it, the
+    # same derivation as the dashboard; --rank without --charge used to rank every
+    # cation and anion at charge 0.
+    _rank_charge = (_charge_for_opt(args.smiles, args.charge)
+                    if (args.rank or args.charge is not None) else None)
+    os.environ.update(construction_env(args.construction, rank=bool(args.rank),
+                                       method=args.method, charge=_rank_charge))
 
     from delfin.smiles_converter import smiles_to_xyz_isomers
 
