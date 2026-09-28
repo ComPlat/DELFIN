@@ -19852,6 +19852,25 @@ _STREAM_RETRY_MAX = 3
 _ZERO_BYTE_CUT_S = 300.0
 
 
+def _request_timeout_s() -> float:
+    """The per-request deadline, one source of truth for both the SDK
+    client's own timeout and the first-byte watch below. Read per round so
+    a test (or an operator) can compress it via the environment without
+    rebuilding the client."""
+    try:
+        _v = float(os.environ.get("DELFIN_REQUEST_TIMEOUT_S", "") or 0)
+    except (TypeError, ValueError):
+        _v = 0.0
+    return _v if _v > 0 else 600.0
+
+
+# The waiting indicator's cadence: never faster than this, and never
+# slower than a tenth of the deadline, so a compressed test deadline still
+# produces at least one "waiting" line before it fires.
+_WAIT_TICK_MIN_S = 0.2
+_WAIT_TICK_MAX_S = 10.0
+
+
 def _retry_notice(exc_name: str, elapsed_s: float, had_partial: bool,
                   attempt: int, max_attempts: int, delay_s: float) -> str:
     """What the user reads when a round is retried.
@@ -20222,12 +20241,7 @@ class OpenAIClient(_BaseClient):
         # abandoned on a bounded schedule instead of hanging on the SDK's
         # implicit default. Generous — legitimate streams emit chunks far more
         # often; override via DELFIN_REQUEST_TIMEOUT_S.
-        try:
-            _req_timeout = float(os.environ.get(
-                "DELFIN_REQUEST_TIMEOUT_S", "") or 0)
-        except (TypeError, ValueError):
-            _req_timeout = 0.0
-        kwargs["timeout"] = _req_timeout if _req_timeout > 0 else 600.0
+        kwargs["timeout"] = _request_timeout_s()
         # The SDK retries a failed request twice on its own, silently. On
         # a queued endpoint that is three 600 s waits before the stream
         # loop sees an error and can say so: a first turn measured 1806 s
@@ -21384,8 +21398,54 @@ class OpenAIClient(_BaseClient):
 
             finish_reason = None
             _round_t0 = time.monotonic()
+            # Deadline + tick cadence for THIS round (env-compressible via
+            # DELFIN_REQUEST_TIMEOUT_S so tests can shrink the wait).
+            _deadline_s = _request_timeout_s()
+            _tick_s = min(_WAIT_TICK_MAX_S,
+                          max(_WAIT_TICK_MIN_S, _deadline_s / 10.0))
+            import queue as _queue_mod
+            import threading as _threading_mod
+            _cq: "_queue_mod.Queue" = _queue_mod.Queue(maxsize=1)
+            _stream_box: list = []
+
+            def _spawn_create() -> None:
+                try:
+                    _stream_box.append(
+                        self.client.chat.completions.create(**kwargs))
+                except BaseException as _exc:  # re-raised on the main thread
+                    _stream_box.append(_exc)
+                _cq.put(True)
+
+            _ct = _threading_mod.Thread(target=_spawn_create, daemon=True)
+            _ct.start()
             try:
-                stream = self.client.chat.completions.create(**kwargs)
+                # Watch the first byte instead of parking in it: emit a
+                # visible "waiting for the model … Ns" indicator while the
+                # endpoint has not answered, and abandon the round on the
+                # deadline (the same DELFIN_REQUEST_TIMEOUT_S the SDK client
+                # carries) instead of hanging silently. Field report
+                # 2026-09-27: half the turns stalled in httpcore's
+                # _receive_response_headers with no output, once 700 s.
+                _waited = 0.0
+                while True:
+                    try:
+                        _cq.get(timeout=_tick_s)
+                    except _queue_mod.Empty:
+                        _waited += _tick_s
+                        yield StreamEvent(type="waiting", text=(
+                            f"waiting for the model … {_waited:.0f}s"))
+                        if _waited >= _deadline_s:
+                            # Not a hiccup: the endpoint never started.
+                            # Raise as transient so the except-handler below
+                            # retries with the notice the user reads.
+                            raise TimeoutError(
+                                f"no byte from the endpoint in {_waited:.0f}s")
+                        continue
+                    _got = _stream_box[0] if _stream_box else None
+                    if isinstance(_got, BaseException):
+                        raise _got
+                    stream = _got
+                    break
                 try:
                     for chunk in stream:
                         if chunk.usage:
