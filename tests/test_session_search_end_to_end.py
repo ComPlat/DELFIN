@@ -46,11 +46,19 @@ def test_end_to_end_over_the_public_route(real_home, tmp_path):
         ],
         token_usage={"input": 10, "output": 5}, cost_usd=0.01)
 
-    # Not indexed yet -> not findable.
-    assert not session_index.search(_UNIQUE_TERM)
+    # Not indexed yet -> findable anyway: search() runs one bounded
+    # backfill pass first (self-healing, work/j2-memory-layers 2026-09),
+    # so a silently failed session-end index can no longer hide sessions.
+    # The session-end step below stays the fast, explicit path.
+    assert session_index.search(_UNIQUE_TERM)
 
-    # 2. Session ends: the session-end step runs.
-    assert session_end_index.reindex_finished_session("e2e-sess") is True
+    # 2. Session ends: the session-end step runs. With the backfill in
+    # step 1 it has nothing left to do (False = nothing changed), and
+    # with a fresh index it indexes (True) -- both are correct; the
+    # contract that matters is that it never raises and the session
+    # stays findable afterwards.
+    session_end_index.reindex_finished_session("e2e-sess")
+    assert session_index.search(_UNIQUE_TERM)
 
     # 3. The model's tool finds it, over the real executor path.
     ex = A._DocToolExecutor.__new__(A._DocToolExecutor)

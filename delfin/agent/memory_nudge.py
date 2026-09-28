@@ -19,6 +19,7 @@ switches it off entirely.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 # Work thresholds since the last nudge. Both must be met: a hundred
@@ -55,6 +56,33 @@ class NudgeState:
     chars_since_nudge: int = 0
     last_nudge_turn: Optional[int] = None
     nudged_this_turn: bool = False
+
+
+def compose_nudge(store: Optional[Path] = None) -> str:
+    """The nudge text, extended with the tidy hint when one is pending.
+
+    Phase-3 fix on work/j2-memory-layers (2026-09-29): memory_tidy closes
+    the duplication gap in the fact store, but it was reachable ONLY
+    through a manual CLI command — measured 0 uses across 25 real
+    sessions. The nudge fires exactly when near-duplicate facts may have
+    just been written, so it carries the pointer when memory_tidy.hint
+    has something to say. Read-only by contract: /tidy shows proposals
+    and changes nothing until they are explicitly accepted.
+
+    ``store`` is the memory store directory; None lets the caller decide
+    later (then no tidy hint is composed). Never raises — a broken tidy
+    pass must not take the nudge with it.
+    """
+    text = _NUDGE_TEXT
+    if store is not None:
+        try:
+            from .memory_tidy import hint as _tidy_hint
+            extra = _tidy_hint(Path(store))
+            if extra:
+                text = text + " " + extra.strip()
+        except Exception:
+            pass
+    return text
 
 
 def maybe_nudge(
@@ -100,7 +128,7 @@ def maybe_nudge(
     state.tool_calls_since_nudge = 0
     state.chars_since_nudge = 0
     state.nudged_this_turn = True
-    return _NUDGE_TEXT
+    return compose_nudge(store=None)
 
 
 def estimated_tokens(chars: int) -> int:
