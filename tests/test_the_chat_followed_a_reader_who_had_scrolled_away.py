@@ -71,7 +71,11 @@ def test_the_poll_does_not_scroll_unconditionally():
         "scrollTop, so a reader who scrolled up is pulled back")
 
     body = _poll_body()
-    guard = body.find("S.follow")
+    # The record is per session now, so the flag is read off whichever one
+    # the visible chat belongs to. What has to stay true is the ORDER: the
+    # flag is consulted before anything is scrolled.
+    guard = min((i for i in (body.find("st.follow"), body.find("S.follow"))
+                 if i != -1), default=-1)
     assert guard != -1, (
         "the poll does not consult the follow flag at all")
     write = body.find("setTop(")
@@ -125,9 +129,14 @@ def test_the_tolerance_is_named_and_real():
 
 def test_a_scroll_the_script_caused_is_told_apart_from_the_readers():
     js = _chat_scroll_js()
-    assert "S.auto" in js, (
+    assert ("st.auto" in js or "S.auto" in js), (
         "nothing marks the script's own scrollTop writes, so each of them "
         "looks like the reader scrolling away")
+    # And the mark belongs to the session whose element was written, not to
+    # the page: two sessions scrolling at once would otherwise cancel each
+    # other's flag and each read the other's write as the reader moving.
+    assert "stateFor(" in js, (
+        "the script's own-scroll mark is not scoped to a session")
 
 
 # --- what the script actually does ----------------------------------------
