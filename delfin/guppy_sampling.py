@@ -444,6 +444,17 @@ def _screen_start_geometries(
     return ordered
 
 
+def _manta_build_timeout():
+    """The build budget in seconds from DELFIN_UI_ISOLATE_TIMEOUT (set from
+    MANTA_TIME_BUDGET), or None -- unset, 0 or negative -- for no limit."""
+    raw = os.environ.get("DELFIN_UI_ISOLATE_TIMEOUT", "").strip()
+    try:
+        seconds = int(float(raw)) if raw else 0
+    except ValueError:
+        seconds = 0
+    return seconds if seconds > 0 else None
+
+
 def _collect_start_geometries(
     smiles: str,
     *,
@@ -468,8 +479,9 @@ def _collect_start_geometries(
             f"allowed: {_ALLOWED_START_STRATEGIES}"
         )
 
-    target_confs = max(100, runs * 10)
-    iso_cap = int(max_isomers) if max_isomers and int(max_isomers) > 0 else 100
+    # 0 (or less) means the complete manifold, as documented for MANTA_MAX_ISOMERS
+    # and as delfin-manta does -- not a silent cap of 100.
+    iso_cap = int(max_isomers) if max_isomers and int(max_isomers) > 0 else 100000
     starts: List[StartGeometry] = []
     next_idx = 1
 
@@ -494,13 +506,23 @@ def _collect_start_geometries(
         # 60 -- and the convergence study says 20 misses the GFN2 global minimum
         # by ~2.5 kcal/mol on multi-isomer systems.  The pipeline was asking for
         # a weaker search than the command line does and never said so.
+        # num_confs is NOT set here any more: it used to be max(100, runs*10), so
+        # the pipeline built a different manifold than delfin-manta for the same
+        # SMILES.  MANTA_NUM_CONFS still sets it (builder_options), as --num-confs.
         iso_kwargs: Dict[str, Any] = {
-            'num_confs': target_confs,
             'max_isomers': iso_cap,
             'collapse_label_variants': False,
         }
         iso_kwargs.update(builder_options or {})
-        iso_results, iso_error = smiles_to_xyz_isomers(smiles, **iso_kwargs)
+        # The same isolated runner as delfin-manta and the dashboard (fixed
+        # PYTHONHASHSEED, shared hapto retry).  The construction env is already in
+        # os.environ (cli.py applied it) and reaches the child from there;
+        # MANTA_TIME_BUDGET (DELFIN_UI_ISOLATE_TIMEOUT) is the only wall clock.
+        from delfin.common.manta_build import build_isomers_isolated
+        iso_results, iso_error = build_isomers_isolated(
+            smiles, iso_kwargs, timeout=_manta_build_timeout())
+        if iso_error:
+            logger.warning("MANTA build returned an error: %s", iso_error)
         if iso_results and not iso_error:
             for idx, (xyz_text, label) in enumerate(iso_results, start=1):
                 coords_lines = [ln.rstrip() for ln in xyz_text.splitlines() if ln.strip()]

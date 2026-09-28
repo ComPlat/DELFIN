@@ -33,12 +33,19 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[1]
 
 # Small and fast (seconds each at quality extreme), and covering the three
-# shapes named in the parity requirement: square planar with cis/trans, a
-# chelate, an octahedral complex.
+# shapes named in the parity requirement -- square planar with cis/trans, a
+# chelate, an octahedral complex -- plus a hapto complex (eta2 x4 Ir, from the
+# 6000 pool) and a dot SMILES, which MANTA builds as the whole string on both
+# sides (the dashboard used to split it into parts).  For that one MANTA currently
+# emits frames of two different atom counts in one manifold (7 and 11) -- a builder
+# defect on dot SMILES (the batch corpus has none), outside what this test is about.
+# The test pins PARITY, not quality.
 _SMILES = (
     "[Pt](Cl)(Cl)(N)N",
     "[Pt]1(Cl)(Cl)NCCN1",
     "Cl[Co+3](Cl)([NH3])([NH3])([NH3])[NH3]",
+    "[Cl][Sn]([Cl])([Cl])[Ir]123456([C]7=[C]1CC[C]2=[C]3CC7)[C]1=[C]4CC[C]5=[C]6CC1",
+    "[Pt](Cl)(Cl)(N)N.Cl",
 )
 
 
@@ -59,7 +66,11 @@ def _side_dashboard(smiles: str, work: Path) -> dict:
     from delfin import cli_manta
     from delfin.dashboard import structure_editor as se
 
+    before = {k: v for k, v in os.environ.items() if k.startswith("DELFIN_")}
     result = se._run_smiles_build(smiles, **se._manta_button_kwargs())
+    after = {k: v for k, v in os.environ.items() if k.startswith("DELFIN_")}
+    # The construction env goes to the build subprocess only, never into the kernel.
+    assert before == after, sorted(set(after.items()) ^ set(before.items()))
     if result.get("error"):
         return {"exit": 1, "frames": [], "error": result["error"]}
     frames = [[label, cli_manta._atom_lines(xyz)] for xyz, _n, label in result["isomers"]]
@@ -131,6 +142,53 @@ def test_cli_rank_charge_comes_from_the_smiles():
 
     assert cli_manta._charge_for_opt("Cl[Co+3](Cl)([NH3])([NH3])([NH3])[NH3]", None) == 3
     assert cli_manta._charge_for_opt("Cl[Co+3](Cl)([NH3])([NH3])([NH3])[NH3]", 1) == 1
+
+
+def test_the_hapto_retry_respects_an_explicit_fail_fast():
+    """One rule for every entry point: retry a fail-fast answer with the
+    approximation, unless hapto was forced or DELFIN_HAPTO_APPROX=0 says so."""
+    from delfin.common.manta_build import hapto_retry_wanted
+
+    err = "Hapto (eta) coordination detected (1 group(s), max eta~5)."
+    assert hapto_retry_wanted(err, None, {}) is True
+    assert hapto_retry_wanted(err, None, {"DELFIN_HAPTO_APPROX": "0"}) is False
+    assert hapto_retry_wanted(err, None, {"DELFIN_HAPTO_APPROX": "off"}) is False
+    assert hapto_retry_wanted(err, False, {}) is False
+    assert hapto_retry_wanted("something else", None, {}) is False
+
+
+def test_every_build_subprocess_gets_the_same_hash_seed(monkeypatch):
+    """Forced, not defaulted: a shell or kernel seed must not reach the build."""
+    from delfin.common import manta_build
+
+    seen = {}
+
+    class _Proc:
+        returncode = 0
+        args = ()
+
+        def __init__(self, *a, env=None, **k):
+            seen.update(env)
+
+        def communicate(self, input=None, timeout=None):
+            return "__DELFIN_RESULT__" + json.dumps({"r": [], "e": None}), ""
+
+    monkeypatch.setenv("PYTHONHASHSEED", "4242")
+    monkeypatch.setattr(manta_build.subprocess, "Popen", _Proc)
+    manta_build.run_isomers_isolated("C", {}, env={"DELFIN_X": "1"})
+    assert seen["PYTHONHASHSEED"] == manta_build.HASH_SEED == "0"
+    assert seen["DELFIN_X"] == "1"
+    assert "DELFIN_X" not in os.environ
+
+
+def test_the_pipeline_zero_means_the_complete_manifold():
+    """MANTA_MAX_ISOMERS=0 (and an absent key) is the complete manifold, as in the
+    CLI and the dashboard -- not a silent cap of 100."""
+    source = (_ROOT / "delfin" / "guppy_sampling.py").read_text()
+    assert "else 100000" in source and "> 0 else 100\n" not in source
+    assert "'num_confs': target_confs" not in source
+    pipeline = (_ROOT / "delfin" / "workflows" / "pipeline.py").read_text()
+    assert "_setting('MANTA_MAX_ISOMERS', 'GUPPY_MAX_ISOMERS', 0, int)" in pipeline
 
 
 def _write_one_side(argv) -> int:

@@ -791,8 +791,7 @@ def atom_charge_texts(charges, decimals=CHARGE_DECIMALS):
 
 
 from delfin.cli_manta import construction_env as _manta_construction_env
-_MANTA_OPT_TOPN = 10
-_MANTA_OPT_WORKERS = 4
+from delfin.common.manta_build import OPT_TOPN as _MANTA_OPT_TOPN, OPT_WORKERS as _MANTA_OPT_WORKERS
 _MANTA_GIF_DATA_URI_CACHE = None
 
 def _manta_gif_data_uri():
@@ -914,105 +913,11 @@ def _manta_button_kwargs(*, rank_sel='No', quality='extreme', seeds=60, max_iso=
         **_MANTA_DASH_DEFAULTS,
     )
 
-def _manta_rank_only(isomers, charge, method="gfn2", spin="auto"):
-    """RANK the manifold by xtb SINGLE-POINT energy: reorder best (lowest-energy) first WITHOUT
-    changing any geometry.  Each item is ``(xyz_string, num_atoms, label)``; the emitted structures
-    stay byte-identical to construction — only their ORDER changes.  spin='auto' -> parity-correct
-    uhf per structure (even electrons=singlet, odd=doublet); a fixed multiplicity sets uhf=mult-1.
-    Best-effort: any structure whose energy eval fails sinks to the end keeping its geometry.
-    Returns the list unchanged if xtb is unavailable or there is nothing to reorder."""
-    if not isomers or len(isomers) < 2:
-        return isomers
-    try:
-        from delfin.manta import _gfnff_rank as _gff
-    except Exception:
-        return isomers
-    if not _gff.available():
-        return isomers
-    import concurrent.futures as _cf
+# The opt-in post-processing is shared with delfin-manta (--rank / --opt), so a
+# Rank or Opt pressed here means what the same flag means on the command line.
+from delfin.common.manta_build import rank_by_single_point as _manta_rank_only  # noqa: E402
+from delfin.common.manta_build import optimise_top as _manta_opt_top  # noqa: E402
 
-    def _uhf_for(xyz):
-        if str(spin) != "auto":
-            return max(0, int(spin) - 1)
-        try:
-            return _gff._n_electrons(xyz, int(charge)) % 2   # parity-correct ground-state multiplicity
-        except Exception:
-            return 0
-
-    def _energy_one(item):
-        xyz = item[0]
-        try:
-            return _gff.gfnff_energy(xyz, charge=int(charge), uhf=_uhf_for(xyz), method=method)
-        except Exception:
-            return None
-    _max_workers = max(1, min(len(isomers), (os.cpu_count() or 4)))
-    try:
-        with _cf.ThreadPoolExecutor(max_workers=_max_workers) as ex:
-            energies = list(ex.map(_energy_one, isomers))
-    except Exception:
-        return isomers
-    # Ascending by energy; failed evals (None) sink to the end preserving their relative order.
-    order = sorted(range(len(isomers)),
-                   key=lambda i: (energies[i] is None, energies[i] if energies[i] is not None else 0.0, i))
-    return [isomers[i] for i in order]
-
-def _manta_opt_top(isomers, charge, topn=None, method="gfn2", spin="auto"):
-    """Geometry-optimize the top-N ranked isomers in parallel (laptop-bounded),
-    replace their geometry + label, re-sort the optimized head by opt energy. The
-    opt ``method`` FOLLOWS the Rank selection (gfn2/gfnff/gfn1/gfn0) so one switch
-    controls both. Each item is ``(xyz_string, num_atoms, label)``. Best-effort:
-    any structure whose optimization fails keeps its unrelaxed geometry.
-    ``topn`` (user-settable): None -> _MANTA_OPT_TOPN; 0 -> ALL structures (optimise
-    the complete ranked manifold, slowest/best); N>0 -> top-N; N<0 -> none."""
-    if not isomers:
-        return isomers
-    if topn is None:
-        _n = _MANTA_OPT_TOPN
-    elif int(topn) == 0:
-        _n = len(isomers)                  # 0 = ALL (optimise everything)
-    elif int(topn) < 0:
-        return isomers                     # negative = none
-    else:
-        _n = int(topn)
-    import concurrent.futures as _cf
-    try:
-        from delfin.manta import _gfnff_rank as _gff
-    except Exception:
-        return isomers
-    if not _gff.available():
-        return isomers
-    head = list(isomers[:_n])
-    tail = list(isomers[_n:])
-
-    def _opt_one(item):
-        xyz, _na, label = item
-        try:
-            if str(spin) == "auto":
-                # auto-spin: scan multiplicity -> GFN2 ground state (parity-correct)
-                r = _gff.gfnff_optimize_autospin(xyz, charge=int(charge), method=method)
-            else:
-                # fixed multiplicity chosen by the user: uhf = multiplicity - 1
-                _uhf = max(0, int(spin) - 1)
-                r = _gff.gfnff_optimize(xyz, charge=int(charge), uhf=_uhf, method=method)
-        except Exception:
-            r = None
-        if r and r[0]:
-            opt_xyz, e = r
-            na = len([ln for ln in opt_xyz.splitlines() if ln.strip()])
-            _m = method.upper()
-            tag = (" [%s-opt %.1f kcal]" % (_m, e)) if e is not None else " [%s-opt]" % _m
-            return ((opt_xyz, na, (label or "isomer") + tag), e)
-        return (item, None)
-
-    workers = max(1, min(_MANTA_OPT_WORKERS, len(head)))
-    try:
-        with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
-            opted = list(ex.map(_opt_one, head))
-    except Exception:
-        return isomers
-    # optimized structures first, sorted by GFN2-opt energy (failed/None last)
-    opted.sort(key=lambda t: (t[1] is None, t[1] if t[1] is not None else 0.0))
-    return [it for (it, _e) in opted] + tail
 
 def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mode=None,
                       seeds_override=None, max_isomers=None, opt_topn=None,
@@ -1026,7 +931,7 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
     """
     # MANTA "best version": derive the GFN2 charge from the SMILES, then
     # apply the SHIP-31 champion construction + GFN2-rank env for this
-    # build only (snapshot + restore so the global env isn't polluted).
+    # build only.  The env is handed to the build subprocess, never set here.
     manta = construction is not None   # the MANTA button; Convert/Quick pass None
     _chg = 0
     if rank or construction:
@@ -1041,10 +946,10 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
     # convert/build-complex buttons pass construction=None -> unchanged behaviour.
     _best_env = (_manta_best_env(_chg, construction=construction, method=method,
                                  rank=rank) if construction else {})
-    _saved_env = {k: os.environ.get(k) for k in _best_env}
-    os.environ.update(_best_env)
     try:
-        separate = _separate.has_separate_systems(cleaned_data)
+        # MANTA builds the whole string, dots included, exactly as delfin-manta
+        # and the development loop do; only Quick and Convert build the parts apart.
+        separate = _separate.has_separate_systems(cleaned_data) and not manta
         if quick and separate:
             # A dot in a SMILES means two molecules that are not bonded
             # to each other, and a converter handed both at once puts
@@ -1108,6 +1013,10 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
                 _iso_kwargs["max_isomers"] = int(max_isomers)
             if num_confs:
                 _iso_kwargs["num_confs"] = int(num_confs)
+            # MANTA: the construction env goes to the build subprocess only, never
+            # into this kernel (a concurrent build elsewhere in it would see it).
+            if _best_env:
+                _iso_kwargs["env"] = dict(_best_env)
             if separate:
                 # Every part gets its own manifold, and the part with
                 # the most arrangements drives the navigation -- a
@@ -1160,12 +1069,6 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
             result = {'error': error, 'isomers': isomers}
     except Exception as exc:
         result = {'error': str(exc)}
-    finally:
-        for _k, _v in _saved_env.items():
-            if _v is None:
-                os.environ.pop(_k, None)
-            else:
-                os.environ[_k] = _v
     return result
 
 
