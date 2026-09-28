@@ -14898,13 +14898,20 @@ class _DocToolExecutor:
                 # ordinary refusal below, which already names the way in.
                 if mode == "bypassPermissions" or not _asked:
                     _record_security_event("push_unrequested", "bash", cmd[:80])
+                    # The decision above is unchanged. This only adds the
+                    # command for the person who IS entitled to run it:
+                    # two sessions once spent eleven and thirteen attempts
+                    # looking for a way a refusal could be theirs, and a
+                    # refusal that names no route is what provokes that.
+                    from .handover import for_user as _handover
                     return (
                         "blocked: `git push` publishes to a shared remote, and "
                         "the user has not asked for a push since their last "
                         "message (a push they asked for is spent once it went "
                         "through). Ask them first: say what would be pushed, "
                         "to which branch, and whether its tests are green. Do "
-                        "not reach the remote another way.")
+                        "not reach the remote another way."
+                        + _handover(cmd, kind="push_unrequested"))
                 preview = (f"$ {cmd}\n(the user has not asked for a push "
                            "since their last message)")
                 try:
