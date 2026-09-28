@@ -2036,7 +2036,21 @@ def write_run(
         path = d / f"{rid}.jsonl"
         try:
             d.mkdir(parents=True, exist_ok=True)
+            # A run holds the prompts it sent and the text the model
+            # answered. The last resort here is the system temp dir, which
+            # on a shared login node is everybody's: created 0700 and
+            # written 0600, so stepping over a refused directory never
+            # trades the file's privacy for its survival. Measured: the
+            # defaults are 0775 and 0664.
+            try:
+                os.chmod(d, 0o700)
+            except OSError:
+                pass
             with path.open("w", encoding="utf-8") as f:
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
                 for row in rows:
                     f.write(row + "\n")
         except OSError as exc:
