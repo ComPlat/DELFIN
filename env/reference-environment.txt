@@ -10,7 +10,7 @@
 # Use it as a constraints file, not as a requirements file:
 #
 #   python3.12 -m venv .venv && . .venv/bin/activate
-#   pip install -e ".[agent,docs,dev]" -c env/requirements-reference.txt
+#   pip install -e ".[agent,docs,dev]" -c env/reference-environment.txt
 #
 # pyproject.toml alone admits a range (numpy 1.26-2.2, rdkit 2023.3-2026.x,
 # ...). A plain `pip install` on 3.12 resolves newer versions than these

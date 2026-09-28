@@ -155,12 +155,12 @@ All Python dependencies (RDKit/Open Babel for SMILES workflows, ipywidgets/py3Dm
 
 #### Reference environment for reproducible MANTA builds
 
-`pyproject.toml` admits version ranges, so a plain `pip install` resolves whatever is newest inside them, and MANTA geometry comes out of RDKit, Open Babel and numpy. The published MANTA structures were built with **CPython 3.12.11, numpy 2.2.2, RDKit 2025.9.3, openbabel-wheel 3.1.1.22, SciPy 1.16.2, NetworkX 3.1 and stk 2026.1.4.0**; [`env/requirements-reference.txt`](env/requirements-reference.txt) lists every Python package of that interpreter at its exact version. To rebuild against it, use it as a constraints file:
+`pyproject.toml` admits version ranges, so a plain `pip install` resolves whatever is newest inside them, and MANTA geometry comes out of RDKit, Open Babel and numpy. The published MANTA structures were built with **CPython 3.12.11, numpy 2.2.2, RDKit 2025.9.3, openbabel-wheel 3.1.1.22, SciPy 1.16.2, NetworkX 3.1 and stk 2026.1.4.0**; [`env/reference-environment.txt`](env/reference-environment.txt) lists every Python package of that interpreter at its exact version. To rebuild against it, use it as a constraints file:
 
 ```bash
 python -m venv .venv          # with a Python 3.12 interpreter
 source .venv/bin/activate
-pip install -e ".[agent,docs,dev]" -c env/requirements-reference.txt
+pip install -e ".[agent,docs,dev]" -c env/reference-environment.txt
 ```
 
 A byte-identical rebuild of published structures is only to be expected in this environment. CI installs it on every push (job *reference environment* in `.github/workflows/ci.yml`) and runs the MANTA tests in it, so the file keeps resolving and the construction keeps passing there.
