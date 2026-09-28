@@ -7407,18 +7407,20 @@ def create_tab(ctx):
         # so "watch the CI and tell me" meant nothing until somebody typed.
         # Only while no turn runs and the input box is empty: a draft is the
         # user's, and a running turn is handed the result between rounds.
-        def _finished_shells(seen: set) -> list:
+        def _finished_shells(seen: set, session_id: str = "") -> list:
             """Background shells that finished since the last look.
 
             Delegates: the terminal's idle prompt reports the same
             events, and a second implementation of this pair is exactly
             what produced six wake-ups reading "shell None [?]".
+
+            The session comes in as an argument rather than being read
+            from the enclosing scope: this function is lifted out of the
+            tab and run on its own by its test, so a free name here is a
+            NameError there and nowhere else.
             """
             from delfin.agent.job_wake import finished_shells
-            # Scoped like its two siblings in this tick. Without the
-            # session every open session was told about every session's
-            # shells.
-            return finished_shells(seen, session_id=_background_owner())
+            return finished_shells(seen, session_id=session_id)
 
         def _job_wake_tick():
             import threading as _threading_wake
@@ -7448,8 +7450,12 @@ def create_tab(ctx):
                     # agent had to think of asking bash_status, and a run
                     # started before a quiet night was simply never
                     # looked at again (2026-09-18).
+                    # Scoped like its two siblings above. Without the
+                    # session every open session was told about every
+                    # session's shells.
                     _done.extend(_finished_shells(
-                        state.setdefault("_woken_shells", set())))
+                        state.setdefault("_woken_shells", set()),
+                        _background_owner()))
                     _prompt = _job_wake_prompt(_done)
                     if _prompt:
                         _send_on_its_own(_prompt)

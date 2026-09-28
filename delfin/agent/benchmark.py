@@ -27,6 +27,8 @@ import math
 import os
 import re
 import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -2002,15 +2004,53 @@ def write_run(
 ) -> Path:
     """Persist all results from one benchmark run as JSONL."""
 
-    d = runs_dir or _DEFAULT_RUNS_DIR
-    d.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
     rid = run_id or f"{ts}_{_slug(model)}"
-    path = d / f"{rid}.jsonl"
-    with path.open("w", encoding="utf-8") as f:
-        for r in results:
-            f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
-    return path
+    rows = [json.dumps(asdict(r), ensure_ascii=False) for r in results]
+
+    # Where the results go, in order of preference. The default is under
+    # the user's home; a run started under a redirected or read-only home
+    # cannot write there, and used to die at this line AFTER doing all of
+    # the work -- measured 2026-09-28 on a login-node trial:
+    #
+    #   OSError: [Errno 30] Read-only file system:
+    #   '.../.delfin/benchmark_runs/...jsonl'
+    #
+    # The run was over, every task had been scored, and the file that
+    # holds the scores was the one thing that failed. Losing a completed
+    # measurement to the place it is filed is the worst possible trade,
+    # so a refused directory is stepped over rather than raised on.
+    #
+    # An EXPLICIT runs_dir is not stepped over: a caller that named a
+    # directory wants that directory, and quietly writing somewhere else
+    # would hide the fault from whoever is collecting the files.
+    candidates = [runs_dir] if runs_dir is not None else [_DEFAULT_RUNS_DIR]
+    if runs_dir is None:
+        scratch = (os.environ.get("DELFIN_SCRATCH_STATE") or "").strip()
+        if scratch:
+            candidates.append(Path(scratch) / ".delfin" / "benchmark_runs")
+        candidates.append(Path(tempfile.gettempdir()) / "delfin_benchmark_runs")
+
+    refused: list[str] = []
+    for d in candidates:
+        path = d / f"{rid}.jsonl"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as f:
+                for row in rows:
+                    f.write(row + "\n")
+        except OSError as exc:
+            refused.append(f"{d}: {exc.strerror or exc}")
+            continue
+        if refused:
+            # Said, not swallowed: a reader looking for the file where it
+            # has always been needs to be told once where it went.
+            print(f"[benchmark] results written to {path} "
+                  f"(could not use {'; '.join(refused)})", file=sys.stderr)
+        return path
+    raise OSError(
+        "benchmark results could not be written anywhere; tried "
+        + "; ".join(refused))
 
 
 def read_run(path: Path) -> list[dict]:
