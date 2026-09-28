@@ -98,6 +98,20 @@ def test_when_nothing_is_writable_the_reasons_are_named(tmp_path,
         "the failure does not say which places refused it")
 
 
+def test_the_step_never_trades_privacy_for_survival(tmp_path, monkeypatch):
+    """The last resort is the system temp dir, which on a shared login
+    node is everybody's. A run holds the prompts it sent and the text the
+    model answered; the defaults there are 0775 and 0664."""
+    monkeypatch.setattr(B, "_DEFAULT_RUNS_DIR",
+                        _readonly(tmp_path) / "benchmark_runs")
+    landing = tmp_path / "elsewhere"
+    monkeypatch.setattr(B.tempfile, "gettempdir", lambda: str(landing))
+    out = B.write_run(_results(), model="m")
+    assert oct(out.stat().st_mode)[-3:] == "600", "the run is world-readable"
+    assert oct(out.parent.stat().st_mode)[-3:] == "700", (
+        "the directory it landed in is listable by everyone")
+
+
 def test_the_rows_are_written_once_not_per_attempt(tmp_path, monkeypatch):
     """The results are serialised before the first attempt: a generator
     consumed by a failed write would leave the retry with nothing."""
