@@ -100,10 +100,19 @@ def test_publish_with_valid_evidence_builds_commands():
 
 def test_publish_chemistry_with_only_job_evidence_refused():
     calls: list = []
-    # a job listing that DOES know the job: still refused -- chemistry
-    # demands a calc-or-test evidence entry, a job alone cannot attest it
+    # A job listing that knows the job AND can confirm it ran: still
+    # refused, because chemistry demands a calc-or-test evidence entry and
+    # a job alone cannot attest it.
+    #
+    # The stub carries a live state now. Job evidence stopped accepting
+    # mere presence in a listing (work/j1-grounding): without a state this
+    # case is refused one rule earlier, for "no state to confirm it ran",
+    # and never reaches the chemistry rule it exists to test. Weakening
+    # the assertion would have hidden that; strengthening the stub keeps
+    # the test testing its own subject.
     class _Job:
         job_id = "12345"
+        state = "RUNNING"
 
     ok, msg = sr.publish_skill("casscf-setup", host="h", user="u",
                                remote_path="/r",
