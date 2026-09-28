@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import re
 import shutil
@@ -114,6 +115,51 @@ class PipelineContext:
 # ---------------------------------------------------------------------------
 # OCCUPIER helpers
 # ---------------------------------------------------------------------------
+
+#: Sidecar file inside each ``*_OCCUPIER`` folder carrying the SHA-256 of
+#: the CONTROL.txt the results were produced against.
+_CONTROL_FINGERPRINT_FILE = ".control_fingerprint"
+
+
+def _stamp_occupier_control(control_path: Optional[Path], occ_dir: Path) -> None:
+    """Record which CONTROL.txt the OCCUPIER results in *occ_dir* were
+    produced against, so a later reuse can compare it freshly."""
+    if control_path is None:
+        return
+    try:
+        digest = hashlib.sha256(Path(control_path).read_bytes()).hexdigest()
+        (Path(occ_dir) / _CONTROL_FINGERPRINT_FILE).write_text(
+            digest + "\n", encoding="utf-8")
+    except OSError:
+        # Stamping must never break the workflow itself; an unstamped
+        # result simply will not be reused (see _occupier_results_fresh).
+        logger.warning("Could not stamp control fingerprint in %s", occ_dir)
+
+
+def _occupier_results_fresh(control_path: Optional[Path], occ_dir: Path) -> bool:
+    """Grounding check for reusing existing OCCUPIER results.
+
+    True only when the OCCUPIER.txt in *occ_dir* exists AND the control
+    file it was stamped with is byte-identical to the CURRENT control
+    file. Missing stamp (legacy results), a corrupted stamp, or any
+    control change since the results were produced is unconfirmed
+    state: fail closed, force a rerun.
+    """
+    occ_dir = Path(occ_dir)
+    if control_path is None or not Path(control_path).is_file():
+        return False
+    if not (occ_dir / "OCCUPIER.txt").is_file():
+        return False
+    stamp_file = occ_dir / _CONTROL_FINGERPRINT_FILE
+    if not stamp_file.is_file():
+        return False
+    try:
+        stamped = stamp_file.read_text(encoding="utf-8").strip()
+        current = hashlib.sha256(
+            Path(control_path).read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return False
+    return bool(stamped) and stamped == current
 
 
 # DEPRECATED FUNCTIONS REMOVED:
@@ -290,7 +336,15 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
         initial_rerun = False
         need_occ_workflows = False
 
-        if initial_requested or not initial_report.exists():
+        if initial_requested or not _occupier_results_fresh(
+                ctx.control_file_path, initial_folder):
+            if not initial_requested and initial_report.exists():
+                logger.warning(
+                    "Existing OCCUPIER results in %s are unconfirmed against "
+                    "the current CONTROL.txt (changed since they were "
+                    "produced, or produced without a stamp); rerunning.",
+                    initial_folder,
+                )
             print("\nOCCUPIER for the initial system:\n")
             initial_rerun = True
             need_occ_workflows = True
@@ -310,13 +364,17 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             # Check if we need to run ox/red workflows
             if not need_occ_workflows:
                 for step in _extract_steps(config.get("oxidation_steps", "")):
-                    if not (Path(f"ox_step_{step}_OCCUPIER") / "OCCUPIER.txt").exists():
+                    if not _occupier_results_fresh(
+                            ctx.control_file_path,
+                            Path(f"ox_step_{step}_OCCUPIER")):
                         need_occ_workflows = True
                         break
 
             if not need_occ_workflows:
                 for step in _extract_steps(config.get("reduction_steps", "")):
-                    if not (Path(f"red_step_{step}_OCCUPIER") / "OCCUPIER.txt").exists():
+                    if not _occupier_results_fresh(
+                            ctx.control_file_path,
+                            Path(f"red_step_{step}_OCCUPIER")):
                         need_occ_workflows = True
                         break
 
@@ -355,6 +413,19 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
 
                 # Mark that we used combined execution
                 config['_used_combined_occupier'] = True
+
+                # Stamp the freshly produced results so the NEXT run can
+                # judge their freshness against its own control file.
+                _stamp_occupier_control(ctx.control_file_path,
+                                        Path("initial_OCCUPIER"))
+                for step in _extract_steps(config.get("oxidation_steps", "")):
+                    _stamp_occupier_control(
+                        ctx.control_file_path,
+                        Path(f"ox_step_{step}_OCCUPIER"))
+                for step in _extract_steps(config.get("reduction_steps", "")):
+                    _stamp_occupier_control(
+                        ctx.control_file_path,
+                        Path(f"red_step_{step}_OCCUPIER"))
             else:
                 logger.info("Reusing existing OCCUPIER oxidation/reduction workflows")
 
