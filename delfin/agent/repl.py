@@ -2772,9 +2772,14 @@ class TerminalAgent:
             seen = self.__dict__.setdefault("_wake_seen", set())
             # Only this session's shells: the same scoping the dashboard
             # tick applies to watched jobs and background agents.
+            # getattr on SELF as well: a caller without an engine attribute
+            # at all would raise here, and the except below would turn the
+            # whole wake-up into an empty line -- silently, which is how a
+            # notification path fails worst.
+            _eng = getattr(self, "engine", None)
             return job_wake.wake_prompt(job_wake.finished_shells(
                 seen,
-                session_id=str(getattr(self.engine, "session_id", "") or "")))
+                session_id=str(getattr(_eng, "session_id", "") or "")))
         except Exception:
             return ""
 

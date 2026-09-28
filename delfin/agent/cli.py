@@ -346,10 +346,28 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     kwargs: dict[str, Any] = dict(
         user_message=prompt,
         on_token=_on_token,
-        on_notice=_on_notice,
         on_tool_use=_on_tool_use,
         max_tokens=max_tokens,
     )
+    # on_notice only when the engine takes it. Two branches of one wave
+    # disagreed here: one made the waiting line reach this caller, the
+    # other pinned a test that _run_once must keep working against an
+    # engine with a FIXED signature -- a test double, or a backend out of
+    # this tree. Both are right, and the engine itself already resolves
+    # exactly this for `no_tools` the same way.
+    #
+    # Losing the waiting line on an older engine costs a progress
+    # message; passing it costs a TypeError and the whole turn.
+    try:
+        import inspect as _inspect
+        _sig = _inspect.signature(engine.stream_response)
+        _takes = ("on_notice" in _sig.parameters or any(
+            prm.kind is _inspect.Parameter.VAR_KEYWORD
+            for prm in _sig.parameters.values()))
+    except (TypeError, ValueError):
+        _takes = True
+    if _takes:
+        kwargs["on_notice"] = _on_notice
     if on_tool_result is not None:
         kwargs["on_tool_result"] = _forward_tool_result
     if on_permission_denied is not None:
