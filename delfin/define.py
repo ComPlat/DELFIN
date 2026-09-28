@@ -22,7 +22,7 @@ number_explicit_solv_molecules=2
 ------------------------------------------------------
 SMILES conversion:
 ----------
-smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR]
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]
 ------------------------------------------------------
 Global geometry optimisation:
 ----------
@@ -281,7 +281,7 @@ thermodynamics_mode=[auto|reaction]
 thermodynamics_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
 n_explicit_solvent=6
 logK_exp=
-thdy_smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR]
+thdy_smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]
 thdy_preopt=[none|xtb|crest|goat]
 """
 # -------------------------------------------------------------------------------------------------------

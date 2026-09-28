@@ -710,6 +710,7 @@ def _convert_smiles_and_write(
     from delfin.smiles_converter import (
         smiles_to_xyz,
         smiles_to_xyz_architector,
+        smiles_to_xyz_molsimplify,
         smiles_to_xyz_quick,
     )
 
@@ -720,6 +721,8 @@ def _convert_smiles_and_write(
         xyz_content, error = smiles_to_xyz_quick(smiles)
     elif converter == "ARCHITECTOR":
         xyz_content, error = smiles_to_xyz_architector(smiles)
+    elif converter == "MOLSIMPLIFY":
+        xyz_content, error = smiles_to_xyz_molsimplify(smiles)
     elif converter in ("MANTA", "GUPPY"):
         run_config = dict(config or {})
         _run_guppy_for_smiles(smiles, start_path, run_config)

@@ -53,7 +53,7 @@ jobs:
   test:
     name: tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -75,9 +75,13 @@ jobs:
           cache: pip
 
       - name: Install package + test deps
+        # numpy<2 holds this leg on the old end of the range pyproject
+        # admits (1.26). The other end, numpy 2.2 on Python 3.12, is the
+        # reference-environment job below; without the pin both would test
+        # numpy 2 and nothing would notice a break of the 1.x line.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[agent,docs,dev]"
+          pip install -e ".[agent,docs,dev]" "numpy<2"
 
       - name: Run fast test suite (excludes heavy + order-dependent tests)
         # A per-TEST deadline, for the reason pytest-timeout is declared in
@@ -92,6 +96,60 @@ jobs:
         # failure within five minutes. --timeout-method=signal so a test
         # blocked in C code (a lock, a socket) is interrupted too.
         run: pytest -q -m "not slow" --timeout=300 --timeout-method=signal
+
+  reference-env:
+    name: reference environment (py3.12, numpy 2.2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # The environment the published MANTA structures are built in: CPython
+    # 3.12.11 with numpy 2.2.2, rdkit 2025.9.3, openbabel-wheel 3.1.1.22,
+    # scipy 1.16.2 -- every version fixed by env/reference-environment.txt,
+    # installed here as constraints. It answers two questions the py3.11 leg
+    # cannot: does the reference file still resolve, and does the
+    # construction still hold in the environment the paper data comes from.
+    #
+    # Not a second leg of `test`. The fast suite takes about 24.6 minutes on
+    # 3.11 against a 25-minute limit, and a leg on 3.12 would sit on the same
+    # edge. So this job runs the part the reference environment is about: the
+    # MANTA CLI/dashboard parity, formula (every frame carries the whole
+    # SMILES) and isomer-identity tests including their slow cases, and the
+    # fast MANTA and user-SMILES contracts. Measured 2026-09-28 on a
+    # workstation: about five minutes of tests, all passing.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12.11"
+          cache: pip
+
+      - name: Install package in the reference environment
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[agent,docs,dev]" -c env/reference-environment.txt
+          python -c "import numpy, rdkit, scipy, openbabel; print('numpy', numpy.__version__, '| rdkit', rdkit.__version__, '| scipy', scipy.__version__)"
+
+      - name: MANTA parity, formula and isomer tests (slow cases included)
+        run: >
+          python -m pytest -q -m "slow or not slow" --timeout=900 --timeout-method=signal
+          tests/test_cli_dashboard_parity.py
+          tests/test_every_frame_carries_the_whole_smiles.py
+          tests/test_cli_manta.py
+          tests/test_an_isomer_is_the_molecule_that_was_asked_for.py
+
+      - name: MANTA and user-SMILES contracts (fast cases)
+        run: >
+          python -m pytest -q -m "not slow" --timeout=300 --timeout-method=signal
+          tests/test_user_smiles_suite.py
+          tests/test_user_smiles_fesc_cyclam.py
+          tests/test_user_smiles_ir_ppy_acac.py
+          tests/test_a_manta_setting_reaches_the_builder.py
+          tests/test_the_manta_funnel_does_what_control_says.py
+          tests/test_prescribed_isomer_enumerator.py
+          tests/test_ci_parity.py
+          tests/test_backend_parity.py
 
   lint:
     name: lint (ruff)
