@@ -10,6 +10,8 @@ Event shapes are the ones ``delfin/agent/cli.py::_run_once`` already
 emits for ``--output-format stream-json`` (cli.py:288,297):
 
 * ``{"type": "text", "text": str}``
+* ``{"type": "notice", "text": str}`` — harness speech ("waiting for
+  the model … Ns", retry banners); shown, never counted as the answer.
 * ``{"type": "tool_use", "name": str, "input": dict, "elapsed_s": float?}``
 
 plus two this module adds for its own renderer:
@@ -169,6 +171,12 @@ class StreamRenderer:
                     name, event.get("input"),
                     {"is_tty": self._is_tty,
                      "elapsed_s": elapsed})
+            elif kind == "notice":
+                # Harness speech ("waiting for the model … Ns", retry
+                # banners) — shown, never mistaken for answer text.
+                text = str(event.get("text", ""))
+                if text.strip():
+                    yield text
             elif kind == "tick":
                 tick += 1
                 if self._is_tty and started:
