@@ -33,7 +33,7 @@ For implementation and architecture, see the [README](../README.md).
 
 ### Requirements
 
-- **Python 3.10 or 3.11**
+- **Python 3.10, 3.11 or 3.12** (for byte-reproducible MANTA builds see *Reference environment* in the README and `env/requirements-reference.txt`)
 - **ORCA 6.1.1** in your `PATH` — [free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal)
 - **Optional:** `xtb`, `crest` (for xTB/CREST workflows)
 - **Optional:** `xtb4stda`, `stda`, `std2` (for xTB-based screening)
