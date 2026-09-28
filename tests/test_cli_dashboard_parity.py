@@ -100,6 +100,7 @@ def _run_side(side: str, smiles: str, tmp: Path, hashseed: str) -> dict:
     return data
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("smiles", _SMILES)
 def test_cli_and_dashboard_emit_the_same_manifold(smiles, tmp_path):
     cli = _run_side("cli", smiles, tmp_path, hashseed="12345")

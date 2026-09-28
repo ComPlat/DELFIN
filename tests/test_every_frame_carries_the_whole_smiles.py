@@ -64,6 +64,7 @@ def _frames_from_cli(smiles: str, out: Path) -> list:
     return frames
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("smiles", _CASES)
 def test_every_frame_has_the_formula_of_the_smiles(smiles, tmp_path):
     want = _expected_formula(smiles)
@@ -100,6 +101,7 @@ def _formula_of_block(xyz: str) -> Counter:
     return Counter(ln.split()[0] for ln in _atom_lines(xyz) if ln.strip())
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("button", ["quick", "convert", "convert_uff"])
 def test_convert_and_quick_carry_the_same_formula_as_manta(button):
     """The single-structure converters behind Quick / Convert / Convert+UFF pin the
