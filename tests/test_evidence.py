@@ -57,6 +57,65 @@ def test_test_evidence_no_run_record_fails(tmp_path):
     assert ok is False and "no green run" in detail
 
 
+# ---------------------------------------------------------------------------
+# job-kind evidence
+# ---------------------------------------------------------------------------
+
+class _Job:
+    """Stand-in shaped like the job objects DELFIN's list_jobs returns."""
+    def __init__(self, job_id, state="RUNNING", status="ok"):
+        self.job_id = job_id
+        self.state = state
+        self.status = status
+
+
+def test_job_evidence_running_ok():
+    ok, detail = ev.verify_evidence(
+        {"kind": "job", "ref": "12345"},
+        list_jobs=lambda: [_Job("12345", state="RUNNING")])
+    assert ok is True, detail
+
+
+def test_job_evidence_failed_state_fails():
+    """A job id merely being listed is not evidence: a FAILED job must
+    be rejected, not believed. Red before the freshness fix."""
+    ok, detail = ev.verify_evidence(
+        {"kind": "job", "ref": "12345"},
+        list_jobs=lambda: [_Job("12345", state="FAILED")])
+    assert ok is False and "state" in detail
+
+
+def test_job_evidence_completed_state_fails():
+    """A COMPLETED job is history, not a live run: must be rejected."""
+    ok, detail = ev.verify_evidence(
+        {"kind": "job", "ref": "12345"},
+        list_jobs=lambda: [_Job("12345", state="COMPLETED")])
+    assert ok is False and "state" in detail
+
+
+def test_job_evidence_cancelled_state_fails():
+    ok, detail = ev.verify_evidence(
+        {"kind": "job", "ref": "12345"},
+        list_jobs=lambda: [_Job("12345", state="CANCELLED")])
+    assert ok is False and "state" in detail
+
+
+def test_job_evidence_status_failed_fails():
+    """If only a `status` field is populated, a failed one rejects too."""
+    ok, detail = ev.verify_evidence(
+        {"kind": "job", "ref": "12345"},
+        list_jobs=lambda: [_Job("12345", state="", status="failed")])
+    assert ok is False and "state" in detail
+
+
+def test_job_evidence_unknown_state_rejects_fail_closed():
+    """An unknown/empty state is unconfirmed, not accepted."""
+    ok, detail = ev.verify_evidence(
+        {"kind": "job", "ref": "12345"},
+        list_jobs=lambda: [_Job("12345", state="WEIRD")])
+    assert ok is False
+
+
 def test_unknown_kind_fails():
     ok, detail = ev.verify_evidence({"kind": "gutfeeling", "ref": "x"})
     assert ok is False and "unknown evidence kind" in detail

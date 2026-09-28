@@ -158,7 +158,25 @@ def _verify_job(ref: str,
     wanted = str(ref).strip()
     for j in jobs:
         if str(getattr(j, "job_id", "")) == wanted:
-            return True, f"job {wanted} known to DELFIN's job listing"
+            # Being listed is not evidence: the job's live state must say
+            # it is actually running (or waiting to run). Fail closed on
+            # anything else -- FAILED/COMPLETED/CANCELLED history and
+            # unknown/empty states are unconfirmed, not evidence.
+            state = str(getattr(j, "state", "") or getattr(j, "status", "")
+                        or "").strip().upper()
+            if state in ("RUNNING", "PENDING", "CONFIGURING", "REQUEUE",
+                         "REQUEUED", "RESIZING", "SUSPENDED", "COMPLETING"):
+                return True, f"job {wanted} is live (state={state or 'n/a'})"
+            if not state:
+                return False, ("job evidence: job "
+                               f"{wanted} has no state to confirm it ran")
+            if str(getattr(j, "status", "") or "").strip().lower() in (
+                    "failed", "error", "timeout", "cancelled"):
+                return False, (f"job evidence: job {wanted} is not running "
+                               f"(state={state}, status="
+                               f"{getattr(j, 'status', '')})")
+            return False, (f"job evidence: job {wanted} is not running "
+                           f"(state={state})")
     return False, f"job evidence: job '{wanted}' not found in the job listing"
 
 
