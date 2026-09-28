@@ -790,10 +790,8 @@ def atom_charge_texts(charges, decimals=CHARGE_DECIMALS):
     return said
 
 
-from delfin.cli_manta import _CHAMPION_FLAGS as _MANTA_CHAMPION_FLAGS
-from delfin.cli_manta import _CHAMPION_EXTRA_ENV as _MANTA_CHAMPION_EXTRA_ENV
-_MANTA_OPT_TOPN = 10
-_MANTA_OPT_WORKERS = 4
+from delfin.cli_manta import construction_env as _manta_construction_env
+from delfin.common.manta_build import OPT_TOPN as _MANTA_OPT_TOPN, OPT_WORKERS as _MANTA_OPT_WORKERS
 _MANTA_GIF_DATA_URI_CACHE = None
 
 def _manta_gif_data_uri():
@@ -870,124 +868,209 @@ def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
     """Env for the chosen construction config + GFN2 energy ranking, GFN2 charge
     from the SMILES. construction: 'champion' (full SHIP-31 rich + KAPPA4 reach,
     DEFAULT/maximum richness) | 'builder' (lean core + reach) | 'default' (legacy)."""
-    env = {"DELFIN_GFNFF_CHARGE": str(int(charge))}
-    if rank:
-        env["DELFIN_FFFREE_GFNFF_RANK"] = "1"
-        env["DELFIN_CONF_RANK_METHOD"] = method
-    if construction != "default":
-        env["DELFIN_FFFREE_BUILDER"] = "1"
-        env["DELFIN_FRAME_RANK_FIX"] = "1"
-        env["DELFIN_CHIRAL_ENUM"] = "1"        # Λ/Δ enantiomer enumeration (>=2 chelate pairs)
-        if construction == "champion":
-            for _f in _MANTA_CHAMPION_FLAGS:   # de-bloated set (KAPPA4 included; CONF_ENERGY_RANK dropped)
-                env["DELFIN_FFFREE_" + _f] = "1"
-            for _k, _v in _MANTA_CHAMPION_EXTRA_ENV.items():   # non-FFFREE champion settings (mirror enumeration)
-                env.setdefault(_k, _v)
-        else:  # builder = lean core + reach
-            env["DELFIN_FFFREE_KAPPA4"] = "1"
-            env["DELFIN_FFFREE_SIGMA_ENSEMBLE"] = "1"
-            env["DELFIN_FFFREE_CONF_ENERGY_RANK"] = "1"
-    return env
+    # ONE definition shared with delfin-manta (cli_manta.construction_env): champion
+    # flags, extra env, master switches, rank + charge.  A hand-kept copy here is how
+    # landing 5 once reached the CLI only.
+    return _manta_construction_env(construction, rank=rank, method=method, charge=charge)
 
-def _manta_rank_only(isomers, charge, method="gfn2", spin="auto"):
-    """RANK the manifold by xtb SINGLE-POINT energy: reorder best (lowest-energy) first WITHOUT
-    changing any geometry.  Each item is ``(xyz_string, num_atoms, label)``; the emitted structures
-    stay byte-identical to construction — only their ORDER changes.  spin='auto' -> parity-correct
-    uhf per structure (even electrons=singlet, odd=doublet); a fixed multiplicity sets uhf=mult-1.
-    Best-effort: any structure whose energy eval fails sinks to the end keeping its geometry.
-    Returns the list unchanged if xtb is unavailable or there is nothing to reorder."""
-    if not isomers or len(isomers) < 2:
-        return isomers
-    try:
-        from delfin.manta import _gfnff_rank as _gff
-    except Exception:
-        return isomers
-    if not _gff.available():
-        return isomers
-    import concurrent.futures as _cf
 
-    def _uhf_for(xyz):
-        if str(spin) != "auto":
-            return max(0, int(spin) - 1)
+# Power-user knobs (construction / seeds / confs-per-isomer / rank-method /
+# merge-variants) are CLI-only on purpose: each has one sensible value for the
+# dashboard (construction is ALWAYS champion = best; the rest are redundant with
+# Quality), so exposing them only confuses users.  Pinned here.
+_MANTA_DASH_DEFAULTS = dict(construction="champion", num_confs=None, collapse=False)
+# Quality preset -> conformer-seed count.  Selecting a preset auto-fills the
+# Seeds field (transparent: extreme = 60), but the field stays editable so a
+# user can dial a custom seed count on top of the preset's cap/templates.
+_MANTA_PROFILE_SEEDS = {'fast': 12, 'normal': 20, 'max': 40, 'extreme': 60}
+# Opt dropdown -> top-N int: No = -1 (off, keep construction geometry); All = 0; Top-N = N.
+_MANTA_OPT_MAP = {'No': -1, 'Top 5': 5, 'Top 10': 10, 'Top 20': 20, 'All': 0}
+
+
+def _manta_button_kwargs(*, rank_sel='No', quality='extreme', seeds=60, max_iso=0,
+                         opt_sel='No', spin='auto', det='On'):
+    """MANTA settings row -> keyword arguments of the build (widget-free).
+
+    The defaults are the widget defaults, so ``_manta_button_kwargs()`` is exactly
+    what a user gets by pressing MANTA without touching the settings row.
+    """
+    return dict(
+        apply_uff=True, quick=False,
+        rank=(rank_sel != 'No'),
+        method=(rank_sel if rank_sel != 'No' else 'gfn2'),
+        quality_mode=(quality or None),
+        # seeds field = preset value (transparent) unless the user edited it ->
+        # custom seed count on top of the preset's cap/templates.
+        seeds_override=(int(seeds) or None),
+        # 0 -> COMPLETE manifold (never cut off); else user cap
+        max_isomers=(int(max_iso) or 100000),
+        opt_topn=_MANTA_OPT_MAP.get(opt_sel, -1),
+        spin=str(spin),     # 'auto' (scan) or fixed multiplicity (1/2/3/...)
+        # Determinism toggle (default On) -> byte-identical, IDENTICAL to the CLI
+        # and the development loop (ship = validate).  Off = non-deterministic embed.
+        deterministic=(det == 'On'),
+        # construction always champion + power-user knobs CLI-only -> pinned here
+        **_MANTA_DASH_DEFAULTS,
+    )
+
+# The opt-in post-processing is shared with delfin-manta (--rank / --opt), so a
+# Rank or Opt pressed here means what the same flag means on the command line.
+from delfin.common.manta_build import rank_by_single_point as _manta_rank_only  # noqa: E402
+from delfin.common.manta_build import optimise_top as _manta_opt_top  # noqa: E402
+
+
+def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mode=None,
+                      seeds_override=None, max_isomers=None, opt_topn=None,
+                      construction=None, method="gfn2", num_confs=None, collapse=None,
+                      spin="auto", deterministic=True):
+    """The whole SMILES build behind the Convert / Quick / MANTA buttons, without any widget.
+
+    Module level so it runs headless: the button worker calls it, and so does the
+    CLI/dashboard parity test (tests/test_cli_dashboard_parity.py).  Returns the result
+    dict that ``_apply_smiles_conversion_result`` consumes.
+    """
+    # MANTA "best version": derive the GFN2 charge from the SMILES, then
+    # apply the SHIP-31 champion construction + GFN2-rank env for this
+    # build only.  The env is handed to the build subprocess, never set here.
+    manta = construction is not None   # the MANTA button; Convert/Quick pass None
+    _chg = 0
+    if rank or construction:
         try:
-            return _gff._n_electrons(xyz, int(charge)) % 2   # parity-correct ground-state multiplicity
+            from rdkit import Chem as _Chem
+            _m = _Chem.MolFromSmiles(cleaned_data, sanitize=False)
+            if _m is not None:
+                _chg = _Chem.GetFormalCharge(_m)
         except Exception:
-            return 0
-
-    def _energy_one(item):
-        xyz = item[0]
-        try:
-            return _gff.gfnff_energy(xyz, charge=int(charge), uhf=_uhf_for(xyz), method=method)
-        except Exception:
-            return None
-    _max_workers = max(1, min(len(isomers), (os.cpu_count() or 4)))
+            _chg = 0
+    # construction env applies ONLY for MANTA (construction set); the plain
+    # convert/build-complex buttons pass construction=None -> unchanged behaviour.
+    _best_env = (_manta_best_env(_chg, construction=construction, method=method,
+                                 rank=rank) if construction else {})
     try:
-        with _cf.ThreadPoolExecutor(max_workers=_max_workers) as ex:
-            energies = list(ex.map(_energy_one, isomers))
-    except Exception:
-        return isomers
-    # Ascending by energy; failed evals (None) sink to the end preserving their relative order.
-    order = sorted(range(len(isomers)),
-                   key=lambda i: (energies[i] is None, energies[i] if energies[i] is not None else 0.0, i))
-    return [isomers[i] for i in order]
-
-def _manta_opt_top(isomers, charge, topn=None, method="gfn2", spin="auto"):
-    """Geometry-optimize the top-N ranked isomers in parallel (laptop-bounded),
-    replace their geometry + label, re-sort the optimized head by opt energy. The
-    opt ``method`` FOLLOWS the Rank selection (gfn2/gfnff/gfn1/gfn0) so one switch
-    controls both. Each item is ``(xyz_string, num_atoms, label)``. Best-effort:
-    any structure whose optimization fails keeps its unrelaxed geometry.
-    ``topn`` (user-settable): None -> _MANTA_OPT_TOPN; 0 -> ALL structures (optimise
-    the complete ranked manifold, slowest/best); N>0 -> top-N; N<0 -> none."""
-    if not isomers:
-        return isomers
-    if topn is None:
-        _n = _MANTA_OPT_TOPN
-    elif int(topn) == 0:
-        _n = len(isomers)                  # 0 = ALL (optimise everything)
-    elif int(topn) < 0:
-        return isomers                     # negative = none
-    else:
-        _n = int(topn)
-    import concurrent.futures as _cf
-    try:
-        from delfin.manta import _gfnff_rank as _gff
-    except Exception:
-        return isomers
-    if not _gff.available():
-        return isomers
-    head = list(isomers[:_n])
-    tail = list(isomers[_n:])
-
-    def _opt_one(item):
-        xyz, _na, label = item
-        try:
-            if str(spin) == "auto":
-                # auto-spin: scan multiplicity -> GFN2 ground state (parity-correct)
-                r = _gff.gfnff_optimize_autospin(xyz, charge=int(charge), method=method)
+        # MANTA builds the whole string, dots included, exactly as delfin-manta
+        # and the development loop do; only Quick and Convert build the parts apart.
+        separate = _separate.has_separate_systems(cleaned_data) and not manta
+        if quick and separate:
+            # A dot in a SMILES means two molecules that are not bonded
+            # to each other, and a converter handed both at once puts
+            # them in one another: measured on a
+            # hexaphenylbenzene.benzene, the benzene came out inside
+            # the other molecule, 0.877 A at the closest.  Built apart
+            # and set side by side they come out 5.1 A apart, which is
+            # a picture somebody can work in.
+            #
+            # The hapticity previews are made per part and travel with
+            # it.  They are the alternative ways a ligand can sit on
+            # its metal, so they belong to the part that has the metal;
+            # made from the whole string they would describe a molecule
+            # that is none of the frames.
+            per_part, error = [], None
+            for position, part in enumerate(
+                    _separate.split_smiles(cleaned_data), start=1):
+                made, count, _m, previews, error = (
+                    smiles_to_xyz_quick_with_previews(part))
+                if error or not made:
+                    error = (f'part {position} could not be built: '
+                             f'{error or "nothing came back"}')
+                    break
+                per_part.append([(made, count, 'quick')]
+                                + list(previews or []))
+            frames = ([] if error
+                      else _separate.combine_isomers(per_part))
+            result = {
+                'error': error,
+                'xyz_string': frames[0][0] if frames else None,
+                'num_atoms': frames[0][1] if frames else 0,
+                'preview_items': frames[1:],
+                'separate_parts': len(per_part),
+            }
+        elif quick:
+            xyz_string, num_atoms, _method, preview_items, error = (
+                smiles_to_xyz_quick_with_previews(cleaned_data)
+            )
+            result = {
+                'error': error,
+                'xyz_string': xyz_string,
+                'num_atoms': num_atoms,
+                'preview_items': preview_items,
+            }
+        else:
+            # Interactive metal-complex conversion should prioritize
+            # isomer diversity over strict reproducibility.
+            _iso_kwargs = dict(
+                apply_uff=apply_uff,
+                collapse_label_variants=(bool(collapse) if collapse is not None else False),
+                include_binding_mode_isomers=True,
+                deterministic=deterministic,
+            )
+            # user-exposed completeness/speed switches (MANTA settings row);
+            # None -> library default. max_isomers None/0 -> COMPLETE (no cut).
+            if quality_mode:
+                _iso_kwargs["quality_mode"] = quality_mode
+            if seeds_override:
+                _iso_kwargs["seeds_override"] = int(seeds_override)
+            if max_isomers:
+                _iso_kwargs["max_isomers"] = int(max_isomers)
+            if num_confs:
+                _iso_kwargs["num_confs"] = int(num_confs)
+            # MANTA: the construction env goes to the build subprocess only, never
+            # into this kernel (a concurrent build elsewhere in it would see it).
+            if _best_env:
+                _iso_kwargs["env"] = dict(_best_env)
+            if separate:
+                # Every part gets its own manifold, and the part with
+                # the most arrangements drives the navigation -- a
+                # counter-ion with one form does not multiply the
+                # complex's twelve into twelve of itself.
+                per_part, error = [], None
+                for position, part in enumerate(
+                        _separate.split_smiles(cleaned_data), start=1):
+                    made, error = smiles_to_xyz_isomers(
+                        part, **_iso_kwargs)
+                    if error or not made:
+                        error = (f'part {position} could not be built: '
+                                 f'{error or "nothing came back"}')
+                        break
+                    # Its own hapticity previews, from its own SMILES:
+                    # the ways this ligand can sit on this metal, which
+                    # is a question about this part and no other.
+                    if not manta:
+                        made = append_hapto_previews_to_isomers(
+                            made, part, include_quick=apply_uff)
+                    per_part.append(made)
+                isomers = ([] if error
+                           else _separate.combine_isomers(per_part))
             else:
-                # fixed multiplicity chosen by the user: uhf = multiplicity - 1
-                _uhf = max(0, int(spin) - 1)
-                r = _gff.gfnff_optimize(xyz, charge=int(charge), uhf=_uhf, method=method)
-        except Exception:
-            r = None
-        if r and r[0]:
-            opt_xyz, e = r
-            na = len([ln for ln in opt_xyz.splitlines() if ln.strip()])
-            _m = method.upper()
-            tag = (" [%s-opt %.1f kcal]" % (_m, e)) if e is not None else " [%s-opt]" % _m
-            return ((opt_xyz, na, (label or "isomer") + tag), e)
-        return (item, None)
+                isomers, error = smiles_to_xyz_isomers(
+                    cleaned_data, **_iso_kwargs)
+            # For a split input each part has had its own already,
+            # from its own SMILES.  Handed the whole string here they
+            # would describe a molecule that is none of the frames.
+            # Not for MANTA: the quick embedding and the hapto previews come from
+            # the single-structure converter, not from the MANTA construction, and
+            # appending them made the dashboard manifold longer than what
+            # delfin-manta emits for the same SMILES (a trailing "quick" frame).
+            if not error and isomers and not separate and not manta:
+                isomers = append_hapto_previews_to_isomers(
+                    isomers,
+                    cleaned_data,
+                    include_quick=apply_uff,
+                )
+            if rank and not error and isomers:
+                # RANK (opt-in): reorder best-first by xtb SINGLE-POINT energy.
+                # Geometry UNCHANGED — the emitted structures stay byte-identical to
+                # construction, only their order changes.
+                isomers = _manta_rank_only(isomers, _chg, method=method, spin=spin)
+            if (opt_topn is not None and int(opt_topn) >= 0
+                    and not error and isomers):
+                # OPT (opt-in, independent of Rank): xtb geometry-optimise the top-N
+                # (0 = the whole manifold) for best-possible final geometry.
+                isomers = _manta_opt_top(isomers, _chg, topn=opt_topn, method=method, spin=spin)
+            result = {'error': error, 'isomers': isomers}
+    except Exception as exc:
+        result = {'error': str(exc)}
+    return result
 
-    workers = max(1, min(_MANTA_OPT_WORKERS, len(head)))
-    try:
-        with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
-            opted = list(ex.map(_opt_one, head))
-    except Exception:
-        return isomers
-    # optimized structures first, sorted by GFN2-opt energy (failed/None last)
-    opted.sort(key=lambda t: (t[1] is None, t[1] if t[1] is not None else 0.0))
-    return [it for (it, _e) in opted] + tail
 
 class Editor:
     """One structure editor: what to place, and what the tab still calls.
@@ -21044,16 +21127,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     manta_button.style.font_weight = 'bold'
 
     # --- MANTA settings (the 5 keys a user actually needs; MANTA button sits BELOW) ---
-    # Power-user knobs (construction / seeds / confs-per-isomer / rank-method /
-    # merge-variants) are CLI-only on purpose: each has one sensible value for the
-    # dashboard (construction is ALWAYS champion = best; the rest are redundant with
-    # Quality), so exposing them only confuses users.  Pinned here.
-    _MANTA_DASH_DEFAULTS = dict(construction="champion", num_confs=None,
-                               collapse=False)
-    # Quality preset -> conformer-seed count.  Selecting a preset auto-fills the
-    # Seeds field (transparent: extreme = 60), but the field stays editable so a
-    # user can dial a custom seed count on top of the preset's cap/templates.
-    _MANTA_PROFILE_SEEDS = {'fast': 12, 'normal': 20, 'max': 40, 'extreme': 60}
+    # Power-user knobs are CLI-only and pinned in _MANTA_DASH_DEFAULTS (module level).
     manta_quality = widgets.Dropdown(
         options=['fast', 'normal', 'max', 'extreme'], value='extreme',
         description='Quality:', style={'description_width': 'initial'},
@@ -21905,143 +21979,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 _set_mol_status('Converting SMILES (no UFF)...', spinner=True)
 
         def _worker():
-            import os
-            # MANTA "best version": derive the GFN2 charge from the SMILES, then
-            # apply the SHIP-31 champion construction + GFN2-rank env for this
-            # build only (snapshot + restore so the global env isn't polluted).
-            _chg = 0
-            if rank or construction:
-                try:
-                    from rdkit import Chem as _Chem
-                    _m = _Chem.MolFromSmiles(cleaned_data, sanitize=False)
-                    if _m is not None:
-                        _chg = _Chem.GetFormalCharge(_m)
-                except Exception:
-                    _chg = 0
-            # construction env applies ONLY for MANTA (construction set); the plain
-            # convert/build-complex buttons pass construction=None -> unchanged behaviour.
-            _best_env = (_manta_best_env(_chg, construction=construction, method=method,
-                                         rank=rank) if construction else {})
-            _saved_env = {k: os.environ.get(k) for k in _best_env}
-            os.environ.update(_best_env)
-            try:
-                separate = _separate.has_separate_systems(cleaned_data)
-                if quick and separate:
-                    # A dot in a SMILES means two molecules that are not bonded
-                    # to each other, and a converter handed both at once puts
-                    # them in one another: measured on a
-                    # hexaphenylbenzene.benzene, the benzene came out inside
-                    # the other molecule, 0.877 A at the closest.  Built apart
-                    # and set side by side they come out 5.1 A apart, which is
-                    # a picture somebody can work in.
-                    #
-                    # The hapticity previews are made per part and travel with
-                    # it.  They are the alternative ways a ligand can sit on
-                    # its metal, so they belong to the part that has the metal;
-                    # made from the whole string they would describe a molecule
-                    # that is none of the frames.
-                    per_part, error = [], None
-                    for position, part in enumerate(
-                            _separate.split_smiles(cleaned_data), start=1):
-                        made, count, _m, previews, error = (
-                            smiles_to_xyz_quick_with_previews(part))
-                        if error or not made:
-                            error = (f'part {position} could not be built: '
-                                     f'{error or "nothing came back"}')
-                            break
-                        per_part.append([(made, count, 'quick')]
-                                        + list(previews or []))
-                    frames = ([] if error
-                              else _separate.combine_isomers(per_part))
-                    result = {
-                        'error': error,
-                        'xyz_string': frames[0][0] if frames else None,
-                        'num_atoms': frames[0][1] if frames else 0,
-                        'preview_items': frames[1:],
-                        'separate_parts': len(per_part),
-                    }
-                elif quick:
-                    xyz_string, num_atoms, _method, preview_items, error = (
-                        smiles_to_xyz_quick_with_previews(cleaned_data)
-                    )
-                    result = {
-                        'error': error,
-                        'xyz_string': xyz_string,
-                        'num_atoms': num_atoms,
-                        'preview_items': preview_items,
-                    }
-                else:
-                    # Interactive metal-complex conversion should prioritize
-                    # isomer diversity over strict reproducibility.
-                    _iso_kwargs = dict(
-                        apply_uff=apply_uff,
-                        collapse_label_variants=(bool(collapse) if collapse is not None else False),
-                        include_binding_mode_isomers=True,
-                        deterministic=deterministic,
-                    )
-                    # user-exposed completeness/speed switches (MANTA settings row);
-                    # None -> library default. max_isomers None/0 -> COMPLETE (no cut).
-                    if quality_mode:
-                        _iso_kwargs["quality_mode"] = quality_mode
-                    if seeds_override:
-                        _iso_kwargs["seeds_override"] = int(seeds_override)
-                    if max_isomers:
-                        _iso_kwargs["max_isomers"] = int(max_isomers)
-                    if num_confs:
-                        _iso_kwargs["num_confs"] = int(num_confs)
-                    if separate:
-                        # Every part gets its own manifold, and the part with
-                        # the most arrangements drives the navigation -- a
-                        # counter-ion with one form does not multiply the
-                        # complex's twelve into twelve of itself.
-                        per_part, error = [], None
-                        for position, part in enumerate(
-                                _separate.split_smiles(cleaned_data), start=1):
-                            made, error = smiles_to_xyz_isomers(
-                                part, **_iso_kwargs)
-                            if error or not made:
-                                error = (f'part {position} could not be built: '
-                                         f'{error or "nothing came back"}')
-                                break
-                            # Its own hapticity previews, from its own SMILES:
-                            # the ways this ligand can sit on this metal, which
-                            # is a question about this part and no other.
-                            made = append_hapto_previews_to_isomers(
-                                made, part, include_quick=apply_uff)
-                            per_part.append(made)
-                        isomers = ([] if error
-                                   else _separate.combine_isomers(per_part))
-                    else:
-                        isomers, error = smiles_to_xyz_isomers(
-                            cleaned_data, **_iso_kwargs)
-                    # For a split input each part has had its own already,
-                    # from its own SMILES.  Handed the whole string here they
-                    # would describe a molecule that is none of the frames.
-                    if not error and isomers and not separate:
-                        isomers = append_hapto_previews_to_isomers(
-                            isomers,
-                            cleaned_data,
-                            include_quick=apply_uff,
-                        )
-                    if rank and not error and isomers:
-                        # RANK (opt-in): reorder best-first by xtb SINGLE-POINT energy.
-                        # Geometry UNCHANGED — the emitted structures stay byte-identical to
-                        # construction, only their order changes.
-                        isomers = _manta_rank_only(isomers, _chg, method=method, spin=spin)
-                    if (opt_topn is not None and int(opt_topn) >= 0
-                            and not error and isomers):
-                        # OPT (opt-in, independent of Rank): xtb geometry-optimise the top-N
-                        # (0 = the whole manifold) for best-possible final geometry.
-                        isomers = _manta_opt_top(isomers, _chg, topn=opt_topn, method=method, spin=spin)
-                    result = {'error': error, 'isomers': isomers}
-            except Exception as exc:
-                result = {'error': str(exc)}
-            finally:
-                for _k, _v in _saved_env.items():
-                    if _v is None:
-                        os.environ.pop(_k, None)
-                    else:
-                        os.environ[_k] = _v
+            result = _run_smiles_build(
+                cleaned_data, quick=quick, apply_uff=apply_uff, rank=rank,
+                quality_mode=quality_mode, seeds_override=seeds_override,
+                max_isomers=max_isomers, opt_topn=opt_topn, construction=construction,
+                method=method, num_confs=num_confs, collapse=collapse, spin=spin,
+                deterministic=deterministic)
 
             schedule_ui_update(
                 _apply_smiles_conversion_result,
@@ -22066,27 +22009,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # MANTA: full coordination-isomer manifold (with UFF cleanup) + GFN2
         # energy ranking, shown in the viewer with the existing isomer nav.
         # Read the exposed settings row (Quality/Seeds/Max-iso/Rank/Opt-top).
-        _rank_sel = manta_rank.value
-        # Opt dropdown -> top-N int: No = -1 (off, keep construction geometry); All = 0; Top-N = N.
-        _opt_map = {'No': -1, 'Top 5': 5, 'Top 10': 10, 'Top 20': 20, 'All': 0}
-        _start_smiles_conversion(
-            apply_uff=True, quick=False,
-            rank=(_rank_sel != 'No'),
-            method=(_rank_sel if _rank_sel != 'No' else 'gfn2'),
-            quality_mode=(manta_quality.value or None),
-            # seeds field = preset value (transparent) unless the user edited it ->
-            # custom seed count on top of the preset's cap/templates.
-            seeds_override=(int(manta_seeds.value) or None),
-            # 0 -> COMPLETE manifold (never cut off); else user cap
-            max_isomers=(int(manta_max_iso.value) or 100000),
-            opt_topn=_opt_map.get(manta_opt.value, -1),
-            spin=str(manta_spin.value),     # 'auto' (scan) or fixed multiplicity (1/2/3/...)
-            # Determinism toggle (default On) -> byte-identical, IDENTICAL to the CLI
-            # and the development loop (ship = validate).  Off = non-deterministic embed.
-            deterministic=(manta_det.value == 'On'),
-            # construction always champion + power-user knobs CLI-only -> pinned here
-            **_MANTA_DASH_DEFAULTS,
-        )
+        _start_smiles_conversion(**_manta_button_kwargs(
+            rank_sel=manta_rank.value, quality=manta_quality.value,
+            seeds=manta_seeds.value, max_iso=manta_max_iso.value,
+            opt_sel=manta_opt.value, spin=manta_spin.value, det=manta_det.value))
 
     def handle_convert_smiles_uff(button):
         _convert_smiles(apply_uff=True)

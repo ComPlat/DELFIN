@@ -266,6 +266,16 @@ def apply_construction_env(config: Mapping[str, Any],
     #: perfectly, because it has no overlap to penalise.  Each gate is
     #: never-worse by construction: asked to empty the list, it returns the
     #: list unchanged.
+    #:
+    #: DELIBERATE EXCEPTION to "every entry point builds the same manifold" (user
+    #: decision 2026-09-28).  delfin-manta and the dashboard MANTA button build
+    #: ``cli_manta.construction_env()`` alone and hand the user the FULL manifold;
+    #: a CONTROL run is the one consumer that optimises what it gets, where a torn
+    #: frame costs a DFT chain, so it adds exactly these switches on top.  With the
+    #: three MANTA_CLEAN_GATE / MANTA_TOPOLOGY_GATE / MANTA_DEDUP keys set to no the
+    #: construction env is the CLI's (COORD_INTEGRITY / CONF_COMPLETE = 0 are the
+    #: builder defaults).  tests/test_cli_dashboard_parity.py pins that this is the
+    #: only difference.
     gates = (
         ('MANTA_CLEAN_GATE', 'DELFIN_FFFREE_CLEAN_GATE', True),
         ('MANTA_TOPOLOGY_GATE', 'DELFIN_FFFREE_TOPOLOGY_GATE', True),
