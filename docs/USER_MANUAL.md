@@ -243,6 +243,7 @@ A SMILES goes through the converter named by `smiles_converter`:
 | `NORMAL` | Multi-seed embedding with force-field refinement. One structure. The fallback when nothing is set. |
 | `MANTA` | Builds the coordination manifold of a metal complex, ranks it, and picks a winner. See *Structure generation*. |
 | `ARCHITECTOR` | The external Architector builder, for metal complexes. |
+| `MOLSIMPLIFY` | The external molSimplify builder, for metal complexes. |
 
 Then, if enabled and in this order: `XTB_preOPT` (a quick xTB optimisation), `global_optimizer=GOAT|CREST` (a conformer search), `XTB_SOLVATOR` (explicit solvent shells). Each writes its result back over `start.txt`, so the next step starts from the last one.
 
@@ -343,7 +344,7 @@ Within OCCUPIER this is split once more: keys that only the stage frequency jobs
 | Key | Default | Description |
 |-----|---------|-------------|
 | `xTB_method` | `XTB2` | xTB method for pre-optimisation |
-| `smiles_converter` | (required for a SMILES run) | `QUICK`, `NORMAL`, `MANTA` or `ARCHITECTOR` (own section). `GUPPY` is still read as a spelling of `MANTA` |
+| `smiles_converter` | (required for a SMILES run) | `QUICK`, `NORMAL`, `MANTA`, `ARCHITECTOR` or `MOLSIMPLIFY` (own section). `GUPPY` is still read as a spelling of `MANTA` |
 | `XTB_preOPT` | `no` | Run xTB geometry optimisation before DFT |
 | `global_optimizer` | (empty) | Global optimisation: `GOAT`, `CREST`, or none |
 | `multiplicity_global_opt` | (empty) | Override multiplicity for pre-optimisation |
@@ -454,7 +455,7 @@ alone computes nothing. List the states and transitions you want. ESD also requi
 | `thermodynamics_reaction` | the template's own pattern | Reaction SMILES: `a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...` |
 | `n_explicit_solvent` | `6` | Number of explicit solvent molecules |
 | `logK_exp` | (empty) | Experimental log K for comparison |
-| `thdy_smiles_converter` | `NORMAL` | Converter: `QUICK`, `NORMAL`, `MANTA` or `ARCHITECTOR` |
+| `thdy_smiles_converter` | `NORMAL` | Converter: `QUICK`, `NORMAL`, `MANTA`, `ARCHITECTOR` or `MOLSIMPLIFY` |
 | `thdy_preopt` | `xtb` | Pre-optimisation: `none`, `xtb`, `crest` or `goat` |
 
 ### Electrical Properties
@@ -1011,7 +1012,7 @@ Can also be run standalone: `delfin --imag`.
 One CONTROL key decides, and a run that builds from a SMILES must set it:
 
 ```ini
-smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR]
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]
 ```
 
 | Value | What it does |
@@ -1019,7 +1020,10 @@ smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR]
 | `QUICK` | One embedding. Fast, one structure. |
 | `NORMAL` | Multi-seed embedding with force-field refinement. One structure. The fallback when nothing decides otherwise. |
 | `MANTA` | Builds the coordination manifold of a metal complex and ranks it down to one geometry — see below. |
-| `ARCHITECTOR` | The external Architector builder; needs a metal-containing SMILES. |
+| `ARCHITECTOR` | The external Architector builder; needs a metal-containing SMILES. Its lowest-energy structure is used. |
+| `MOLSIMPLIFY` | The external molSimplify builder; needs a metal-containing SMILES. Its first geometry (square planar for CN 4, octahedral for CN 6) is used. |
+
+Both external builders are optional (`pip install 'delfin-complat[ai-complex]'`) and share one build with the dashboard buttons (`delfin/common/external_builders.py`): the SMILES is split into metal and ligands, the coordination number and oxidation state are read from it, and the tool runs in its own process. When the tool lives in another Python environment, point `DELFIN_ARCHITECTOR_PYTHON` / `DELFIN_MOLSIMPLIFY_PYTHON` to that interpreter. A missing tool is an error; nothing falls back to another builder. Mononuclear complexes only.
 
 `GUPPY` is still read as a spelling of `MANTA`, as is the older bare `GUPPY=yes`.
 
@@ -1062,11 +1066,13 @@ If MANTA's refinement already produced a GOAT-optimised winner, the separate
 | `CONVERT SMILES + UFF` | The same search with force-field refinement | Refined geometries |
 | `MANTA` | The coordination manifold, ranked by GFN2 energy, with isomer navigation in the viewer | Metal complexes |
 | `BUILD COMPLEX` | Stepwise assembly with ORCA's `%DOCKER` | Metal complexes (submitted as a job) |
-| `ARCHITECTOR` | Architector 3D generation | Metal complexes (instant preview) |
+| `ARCHITECTOR` | Every isomer Architector builds, lowest energy first, with isomer navigation | Metal complexes |
+| `MOLSIMPLIFY` | One molSimplify structure per geometry of the coordination number | Metal complexes |
 | `SUBMIT GUPPY` | MANTA's sampling funnel as a submitted job | Robust start structures |
 
-The first four live in the structure editor, which the Submit, Recalc and ORCA
-Builder tabs all embed; the last three belong to the Submit tab.
+`CONVERT SMILES` through `MANTA`, `ARCHITECTOR` and `MOLSIMPLIFY` live in the structure
+editor, which the Submit and ORCA Builder tabs both embed (in the ORCA Builder every
+frame becomes a named block); `BUILD COMPLEX` and `SUBMIT GUPPY` belong to the Submit tab.
 
 ### delfin-build (ORCA/XTB DOCKER)
 

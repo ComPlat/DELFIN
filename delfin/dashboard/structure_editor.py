@@ -1072,6 +1072,24 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
     return result
 
 
+def _run_external_build(cleaned_data, tool):
+    """The build behind the ARCHITECTOR / MOLSIMPLIFY buttons, without any widget.
+
+    One definition per tool lives in :mod:`delfin.common.external_builders`,
+    shared with ``smiles_converter=ARCHITECTOR|MOLSIMPLIFY`` in CONTROL.  Every
+    frame the tool returns comes back as an isomer, in the result shape
+    ``_apply_smiles_conversion_result`` consumes -- so the frames land where
+    MANTA's do: the isomer stepper in Submit Job, the named blocks in the ORCA
+    Builder.  A missing tool is an error, never another builder.
+    """
+    from delfin.common.external_builders import build_frames
+    try:
+        frames, error = build_frames(tool, cleaned_data)
+    except Exception as exc:                          # noqa: BLE001
+        frames, error = [], f'{type(exc).__name__}: {exc}'
+    return {'error': error, 'isomers': [] if error else frames}
+
+
 class Editor:
     """One structure editor: what to place, and what the tab still calls.
 
@@ -1086,7 +1104,8 @@ class Editor:
     def exported(self):
         """The widgets a tab hands out, under the names they have here."""
         keep = ('mol_output', 'mol_status', 'mol_status_fs', 'manta_button',
-                'manta_settings_row', 'convert_smiles_button',
+                'manta_settings_row', 'architector_button', 'molsimplify_button',
+                'convert_smiles_button',
                 'convert_smiles_quick_button', 'convert_smiles_uff_button',
                 'isomer_nav_row', 'isomer_label', 'isomer_prev_btn',
                 'isomer_next_btn', 'xyz_copy_btn', 'xyz_copy_status',
@@ -21126,6 +21145,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     manta_button.style.button_color = '#1FA9C0'
     manta_button.style.font_weight = 'bold'
 
+    # The two external metal-complex constructors, beside MANTA.  Same input
+    # (the SMILES in the box), same destination (every frame the tool returns,
+    # through the same result path as MANTA's manifold).
+    architector_button = widgets.Button(
+        description='ARCHITECTOR', button_style='warning',
+        layout=widgets.Layout(width='150px'),
+        tooltip='Architector: build the metal-complex SMILES with Architector '
+                '(every isomer it finds, lowest energy first). Needs the optional '
+                'architector package (pip install "delfin-complat[ai-complex]") or '
+                'DELFIN_ARCHITECTOR_PYTHON pointing to a Python that has it.',
+    )
+    molsimplify_button = widgets.Button(
+        description='MOLSIMPLIFY', button_style='warning',
+        layout=widgets.Layout(width='150px'),
+        tooltip='molSimplify: build the metal-complex SMILES with molSimplify '
+                '(one structure per geometry of the coordination number). Needs the '
+                'optional molSimplify package or DELFIN_MOLSIMPLIFY_PYTHON.',
+    )
+
     # --- MANTA settings (the 5 keys a user actually needs; MANTA button sits BELOW) ---
     # Power-user knobs are CLI-only and pinned in _MANTA_DASH_DEFAULTS (module level).
     manta_quality = widgets.Dropdown(
@@ -21225,6 +21263,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 convert_smiles_button,
                 convert_smiles_quick_button,
                 convert_smiles_uff_button,
+                architector_button,
+                molsimplify_button,
                 isomer_prev_btn,
                 isomer_next_btn,
             ],
@@ -22017,6 +22057,45 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def handle_convert_smiles_uff(button):
         _convert_smiles(apply_uff=True)
 
+    def _start_external_build(tool):
+        """ARCHITECTOR / MOLSIMPLIFY: the SMILES in the box, built by that tool.
+
+        The input is read the way the convert buttons read it, and the result
+        goes through the same ``_apply_smiles_conversion_result`` as MANTA's
+        manifold, so every frame lands where the other constructors put theirs.
+        """
+        from delfin.common.external_builders import TOOLS as _EXT_TOOLS
+        display_name = _EXT_TOOLS[tool]['display']
+        typed = (read_input() or '').strip()
+        cleaned_data, input_type = clean_input_data(typed) if typed else ('', '')
+        if not typed or input_type != 'smiles':
+            _replace_mol_output_text(
+                f'Please enter a metal-complex SMILES in the input box for {display_name}.')
+            return
+        state['smiles_task_id'] += 1
+        task_id = state['smiles_task_id']
+        _set_smiles_conversion_busy(True)
+        _clear_mol_output()
+        _set_mol_status(f'Building with {display_name}...', spinner=True)
+
+        def _external_build_in_background():
+            result = _run_external_build(cleaned_data, tool)
+            schedule_ui_update(
+                _apply_smiles_conversion_result,
+                task_id,
+                quick=False,
+                cleaned_data=cleaned_data,
+                result=result,
+            )
+
+        _start_background(_external_build_in_background, f'The {display_name} build')
+
+    def handle_architector(button):
+        _start_external_build('architector')
+
+    def handle_molsimplify(button):
+        _start_external_build('molsimplify')
+
 
     def _clean_xyz_block(raw_xyz):
         text = (raw_xyz or '').strip()
@@ -22038,6 +22117,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     convert_smiles_uff_button.on_click(handle_convert_smiles_uff)
 
     manta_button.on_click(handle_manta)
+    architector_button.on_click(handle_architector)
+    molsimplify_button.on_click(handle_molsimplify)
 
     isomer_prev_btn.on_click(handle_isomer_prev)
     isomer_next_btn.on_click(handle_isomer_next)

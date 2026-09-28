@@ -399,7 +399,7 @@ The DOCX and JSON reports are written at the end of every main run; a failure th
 Which builder runs is decided by one CONTROL key, and a SMILES run must set it:
 
 ```ini
-smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR]
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]
 ```
 
 | Value | What it does | Best for |
