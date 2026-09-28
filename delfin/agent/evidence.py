@@ -103,7 +103,9 @@ def _verify_test(evidence: Any, ref: str,
     greens = _green_runs_for(runs or [], node)
     # Staleness: reuse evidence_freshness over the stamped entries. Only a
     # git work tree can judge staleness; outside git nothing is stamped
-    # (same rule as api_client's _stamp_new_evidence), so nothing is judged.
+    # (same rule as api_client's _stamp_new_evidence). A green run there
+    # cannot be judged -- it is reported as UNCONFIRMED, not believed.
+    unconfirmed = False
     try:
         from . import evidence_freshness as _ef
         if workspace:
@@ -114,8 +116,14 @@ def _verify_test(evidence: Any, ref: str,
                     if reason:
                         return False, (f"test evidence for {node} is stale: "
                                        f"{reason}")
+            else:                               # non-git: cannot judge
+                unconfirmed = True
     except Exception:
         pass                                     # never raise on checking
+    if unconfirmed:
+        return True, (f"green run of {node} recorded (unconfirmed: "
+                      f"workspace is not a git tree, staleness cannot "
+                      f"be judged)")
     return True, f"green run of {node} recorded"
 
 
