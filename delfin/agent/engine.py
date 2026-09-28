@@ -2843,6 +2843,21 @@ class AgentEngine:
                     if on_token:
                         on_token(event.text)
 
+                elif event.type == "waiting" and event.text:
+                    # The harness saying the endpoint has not answered yet
+                    # ("waiting for the model … Ns"). Shown to the user and
+                    # fed to nothing else: it is not the model producing,
+                    # so it never lands in `chunks` and never stamps
+                    # _turn_ttft. Unlike a notice it does NOT fall back to
+                    # on_token: a waiting line in the answer text is the
+                    # old "retry banner scored as the answer" bug back
+                    # for every caller that passes no on_notice.
+                    if on_notice:
+                        try:
+                            on_notice(event.text)
+                        except Exception:
+                            pass
+
                 elif event.type == "notice" and event.text:
                     # The harness talking about itself: a retry banner, a
                     # stop, a cost ceiling. Shown to the user and to
