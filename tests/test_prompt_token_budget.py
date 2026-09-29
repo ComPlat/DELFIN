@@ -27,6 +27,18 @@ def _estimate_tokens(text: str) -> int:
 # blocks that re-listed what a tool schema already declares. No behavioral
 # contract was dropped — extending one is fine, but pay for it by trimming
 # elsewhere rather than by raising the number.
+#: The single source for a role prompt's file budget. Read by
+#: tests/test_new_tool_forms_in_prompt.py as well: that file pinned the
+#: same number in its own literal, and raising this one on 2026-09-29
+#: left the copy behind and turned main's gate red. A budget that is
+#: written down twice is a budget that drifts.
+FILE_BUDGETS = {
+    "dashboard_agent.md": 7206,
+    "solo_agent.md": 10830,
+    "office_agent.md": 1688,
+}
+
+
 @pytest.mark.parametrize(
     "filename, max_tokens",
     [
@@ -43,7 +55,7 @@ def _estimate_tokens(text: str) -> int:
         # other two had a token free. The section names the fence tag
         # instead of writing one: a fence marker inline opens a block that
         # never closes, and the loader test caught exactly that.
-        ("dashboard_agent.md", 7206),
+        ("dashboard_agent.md", FILE_BUDGETS["dashboard_agent.md"]),
         # 14200 -> 10600: dropped the worked-example dialogs and the
         # "how these compound" walk-through, folded the three separate
         # workspace-location statements into one, compressed the sandbox
@@ -110,7 +122,7 @@ def _estimate_tokens(text: str) -> int:
         # ORCA/xTB/SLURM job in a test -- the same principle from the other
         # direction -- rather than as a new section, which would have cost a
         # header and a restatement of the context.
-        ("solo_agent.md", 10830),
+        ("solo_agent.md", FILE_BUDGETS["solo_agent.md"]),
         # Written lean from the start: the shared addenda carry the general
         # contracts, so this prompt only states what is specific to working
         # on someone's real records. Raised as the mode's surface grew —
@@ -154,7 +166,7 @@ def _estimate_tokens(text: str) -> int:
         # the coverage attached. The old rule is what it was echoing, so
         # removing that rule was necessary and not sufficient: the model
         # also has to know the tool covers the thing it was worried about.
-        ("office_agent.md", 1688),
+        ("office_agent.md", FILE_BUDGETS["office_agent.md"]),
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):
