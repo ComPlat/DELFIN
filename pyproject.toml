@@ -36,7 +36,7 @@ dependencies = [
     # numpy 2 is admitted because it is what the construction runs on: the
     # MANTA build environment behind the published data is Python 3.12.11
     # with numpy 2.2.2, rdkit 2025.9.3, openbabel-wheel 3.1.1.22 and scipy
-    # 1.16.2 (env/reference-environment.txt lists every version). The old
+    # 1.16.2 (env/reference-environment.lock lists every version). The old
     # ceiling <2 dates from 2026-01-15, when the stack around numpy was not
     # ready for 2.x; kept today, it would rule out the very environment the
     # published numbers come from.
