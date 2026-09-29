@@ -323,13 +323,23 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
                 emit({"type": "text", "text": text})
 
     def _on_notice(text: str) -> None:
-        # Harness speech ("waiting for the model … Ns", retry banners).
+        # Harness speech (retry banners, a stop, a cost ceiling).
         # Deliberately NOT appended to chunks — a notice is not the
         # model's answer, and _run_once's return contract says "text"
         # is the answer. Emitted with its own type so stream-json
         # readers and the CLI renderer can tell the two apart.
         if text and emit is not None:
             emit({"type": "notice", "text": text})
+
+    def _on_wait(text: str) -> None:
+        # The first-byte tick. Its own event type, because it differs
+        # from a notice in what the reader must DO with it: each tick
+        # replaces the previous one, where a notice is a line of the
+        # record. A stream-json consumer can now overwrite its status
+        # field instead of appending sixty entries that differ only in
+        # the number of seconds.
+        if text and emit is not None:
+            emit({"type": "wait", "text": text})
 
     def _on_tool_use(name: str, input_json: str) -> None:
         try:
@@ -368,6 +378,20 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         _takes = True
     if _takes:
         kwargs["on_notice"] = _on_notice
+    # Same probe, same reason: on_wait is newer than on_notice, so an
+    # engine double or an out-of-tree backend may accept one and not the
+    # other. Without it the ticks fall back to on_notice and the caller
+    # keeps exactly the behaviour it had -- visible, just not in place.
+    try:
+        import inspect as _inspect2
+        _sig2 = _inspect2.signature(engine.stream_response)
+        _takes_wait = ("on_wait" in _sig2.parameters or any(
+            prm.kind is _inspect2.Parameter.VAR_KEYWORD
+            for prm in _sig2.parameters.values()))
+    except (TypeError, ValueError):
+        _takes_wait = True
+    if _takes_wait:
+        kwargs["on_wait"] = _on_wait
     if on_tool_result is not None:
         kwargs["on_tool_result"] = _forward_tool_result
     if on_permission_denied is not None:
@@ -494,9 +518,26 @@ def cmd_run(args: argparse.Namespace) -> int:
     if _human_stream:
         from .cli_stream import StreamRenderer
 
+        # One row for the wait tick. The renderer returns it as a
+        # carriage return plus an erase and no newline, so the next tick
+        # lands on the same row; printed with the default end="\n" every
+        # tick would stand and a stalled round would scroll sixty copies
+        # of one sentence past the user. The state lives here and not in
+        # the renderer because the renderer is called per event and
+        # therefore cannot remember what it printed last.
+        _on_wait_row = [False]
+
         def _render_event(event: dict) -> None:
+            is_wait = event.get("type") == "wait"
+            if _on_wait_row[0] and not is_wait:
+                # Leaving the wait row: erase it so the answer does not
+                # start halfway along "waiting for the model … 240s".
+                print("\r\x1b[K", end="", flush=True)
+                _on_wait_row[0] = False
             for line in StreamRenderer([event], is_tty=True):
-                print(line, flush=True)
+                print(line, end="" if is_wait else "\n", flush=True)
+                if is_wait:
+                    _on_wait_row[0] = True
 
         _emit = {"emit": _render_event}
     else:

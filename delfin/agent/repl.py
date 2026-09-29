@@ -121,6 +121,12 @@ class Transcript:
         # its final newline.
         self._out_open = False
         self._break_pending = False
+        # A transient line (the wait tick) is on screen and the next
+        # write must erase it first. `_transient_said` is the pipe case:
+        # with no cursor to move, the tick is said once and then dropped
+        # rather than repeated for every tick of the round.
+        self._transient_open = False
+        self._transient_said = False
 
     @property
     def width(self) -> int:
@@ -151,12 +157,65 @@ class Transcript:
         """
         if not delta:
             return
+        self._clear_transient()
         rendered = self._markdown.feed(delta)
         self.out.write(rendered)
         self._flush(self.out)
         self._track_screen_answer(rendered)
         self._out_open = not delta.endswith("\n")
         self._break_pending = self._out_open
+
+    def _err_is_tty(self) -> bool:
+        try:
+            return bool(self.err.isatty())
+        except Exception:
+            return False
+
+    def _clear_transient(self) -> None:
+        """Erase the wait tick before anything else is written.
+
+        Left standing, the next chrome line or answer byte would start
+        halfway along "waiting for the model ... 240s"."""
+        if self._transient_open:
+            self.err.write("\r\x1b[K")
+            self._flush(self.err)
+            self._transient_open = False
+
+    def transient(self, line: str) -> None:
+        """A progress line that the next one replaces.
+
+        The wait tick: the endpoint has not sent a byte yet, and the
+        producer repeats the line every tenth of the request deadline
+        (capped at ten seconds), so a round stalling to the default 600 s
+        deadline produces sixty of them. As chrome that was sixty rows of
+        one sentence; here it is one row, rewritten.
+
+        Written to stderr like all chrome, for the same reason: a
+        redirected stdout must capture the model's bytes and nothing
+        else. With stderr redirected too there is no cursor to move, so
+        the tick is said once as ordinary chrome and the rest are
+        dropped -- a log needs to record that the endpoint went quiet,
+        not to record it sixty times.
+        """
+        if not line:
+            return
+        if not self._err_is_tty():
+            if not self._transient_said:
+                self._transient_said = True
+                self.chrome(line)
+            return
+        if self._break_pending:
+            self.err.write("\n")
+            self._break_pending = False
+            if self._shared_terminal:
+                self._screen_answer_open = False
+                self._screen_answer_column = 0
+        self.err.write("\r\x1b[K" + line)
+        self._flush(self.err)
+        self._transient_open = True
+        if self._shared_terminal:
+            self._screen_answer_open = False
+            self._screen_answer_column = 0
 
     def chrome(self, line: str) -> None:
         """Everything that is not the answer, on stderr, on its own line.
@@ -171,6 +230,7 @@ class Transcript:
         """
         if not line:
             return
+        self._clear_transient()
         if self._break_pending:
             self.err.write("\n")
             self._break_pending = False
@@ -188,6 +248,7 @@ class Transcript:
 
     def finish(self) -> None:
         """Close the answer stream, so a redirected stdout ends in a newline."""
+        self._clear_transient()
         tail = self._markdown.flush()
         if tail:
             # Held-back bytes and any style still open. Without this a
@@ -286,6 +347,10 @@ class Transcript:
             self.answer(item.text)
         elif kind == "notice":
             self.chrome(rr.notice_line(item.text, theme=self.theme))
+        elif kind == "wait":
+            # Progress, not a line of the record: the tick replaces the
+            # one before it instead of adding a row.
+            self.transient(rr.notice_line(item.text, theme=self.theme))
         elif kind == "thinking":
             if self.show_thinking:
                 self.chrome(rr.thinking_line(
@@ -377,6 +442,12 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         if text:
             _emit(RenderItem("notice", text=text))
 
+    def _on_wait(text: str) -> None:
+        # The first-byte tick, on its own kind so the renderer can
+        # rewrite one row rather than append one per tick.
+        if text:
+            _emit(RenderItem("wait", text=text))
+
     def _on_thinking(text: str) -> None:
         if text:
             _emit(RenderItem("thinking", text=text))
@@ -440,6 +511,7 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
             memory_context=memory_context,
             on_token=_on_token,
             on_notice=_on_notice,
+            on_wait=_on_wait,
             on_thinking=_on_thinking,
             on_tool_use=_on_tool_use,
             on_tool_result=_on_tool_result,
