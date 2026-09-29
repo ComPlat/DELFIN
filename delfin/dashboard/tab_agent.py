@@ -4808,13 +4808,24 @@ def create_tab(ctx):
         options=[("Dashboard", "dashboard"), ("Code", "solo"),
                  ("Office", "office")],
         value="dashboard",
-        # It selects the folder the session works in, and that is the only
-        # question it answers. Labelled "Mode" it silently answered a second
-        # one -- what the agent may reach -- which belongs to Perms next to
-        # it, and left the user to guess where one ended and the other began.
-        description="Workspace:",
-        layout=widgets.Layout(width="215px"),
-        style={"description_width": "78px"},
+        # "Mode:", and not "Workspace:" as it read between 478eb33e and
+        # this change. The argument for the rename was that the control
+        # selects the folder the session works in. It does not: the values
+        # are dashboard / solo / office, and each one selects a role
+        # prompt and a tool surface, from which a folder follows. The
+        # descriptions beside it say so in their own first words --
+        # "Cheapest mode", "Code -- direct, terminal-style coding agent",
+        # "Office -- administrative work".
+        #
+        # The name was also already taken. `Workspace:` labels the actual
+        # working directory in five other places a user sees (delfin/cli.py
+        # twice, workspace_trust.py, session_export.py, subagents.py), and
+        # `agent_workspace/` with its `/workspace ls|read|clean` commands is
+        # a third thing again. One word for three concepts, and the one it
+        # was taken from is the one the user reads next to it.
+        description="Mode:",
+        layout=widgets.Layout(width="200px"),
+        style={"description_width": "45px"},
     )
     mode_desc_html = widgets.HTML(
         value=(
