@@ -190,3 +190,70 @@ def test_a_redirected_transcript_says_it_once():
     assert written.count(_TICKS[0].text) == 1
     assert _TICKS[1].text not in written and _TICKS[2].text not in written
     assert "\x1b[K" not in written, "no cursor control into a file"
+
+
+# --- the dashboard transcript --------------------------------------------
+
+def test_the_live_line_keeps_its_place_while_others_are_appended():
+    """The wait line is addressed by key, not by position.
+
+    Six other paths append to the same list while a turn runs, so "the
+    last message" is the live line only until one of them fires. With
+    positional addressing the second tick would rewrite a tool line.
+    """
+    from delfin.dashboard.tab_agent import _live_message_slot
+
+    msgs = [{"role": "user", "content": "los"}]
+    live: dict = {}
+
+    assert _live_message_slot(msgs, live, "model_wait") is None
+    msgs.append({"role": "system", "content": "waiting … 10s",
+                 "_live_key": "model_wait"})
+    live["model_wait"] = len(msgs) - 1
+
+    msgs.append({"role": "tool", "content": "read_file(...)"})
+    assert _live_message_slot(msgs, live, "model_wait") == 1, (
+        "the line must still be found after something else was appended")
+
+    msgs[1]["content"] = "waiting … 20s"
+    assert [m["content"] for m in msgs] == [
+        "los", "waiting … 20s", "read_file(...)"], (
+        "only the wait line changed, and it did not move")
+
+
+def test_a_stale_index_never_rewrites_somebody_elses_message():
+    """A trimmed history, a restored session or a cleared chat leaves the
+    stored index pointing at another line. Rewriting it would edit a
+    message the user has already read."""
+    from delfin.dashboard.tab_agent import _live_message_slot
+
+    live = {"model_wait": 3}
+    assert _live_message_slot([{"role": "user"}], live, "model_wait") is None
+    other = [{}, {}, {}, {"role": "assistant", "content": "the answer"}]
+    assert _live_message_slot(other, live, "model_wait") is None
+    for bad in (None, -1, "3", 3.0):
+        assert _live_message_slot(other, {"model_wait": bad},
+                                  "model_wait") is None
+
+
+def test_the_tick_is_one_line_however_long_the_wait():
+    """Sixty ticks, one entry. The count is what the transcript filled
+    up with before: the producer emits one per tenth of the request
+    deadline, capped at ten seconds, and the deadline defaults to 600 s.
+    """
+    from delfin.dashboard.tab_agent import _live_message_slot
+
+    msgs: list = []
+    live: dict = {}
+    for n in range(10, 610, 10):
+        text = f"waiting for the model … {n}s"
+        index = _live_message_slot(msgs, live, "model_wait")
+        if index is None:
+            msgs.append({"role": "system", "content": text,
+                         "_live_key": "model_wait"})
+            live["model_wait"] = len(msgs) - 1
+        else:
+            msgs[index]["content"] = text
+
+    assert len(msgs) == 1, f"{len(msgs)} lines for one wait"
+    assert msgs[0]["content"] == "waiting for the model … 600s"
