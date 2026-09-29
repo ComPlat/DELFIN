@@ -1,4 +1,4 @@
-"""Session-relative task numbering (bug 20260619-172400, ka_xn0397).
+"""Session-relative task numbering (bug 20260619-172400).
 
 The global task `id` keeps climbing across sessions in a long-lived workspace
 ("bin bei task 90"). `list(with_seq=True)` adds a small 1-based, session-local
