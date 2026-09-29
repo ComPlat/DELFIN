@@ -1,9 +1,8 @@
 """The pipeline modes were retired in one place and left standing in four.
 
 quick / reviewed / tdd / cluster / full were dropped from the dashboard
-deliberately — the picker is labelled ``Workspace:`` now and answers one
-question, which folder the session works in. The code says so in as many
-words.
+deliberately — the picker offers three modes, dashboard / solo / office,
+and the code says so in as many words.
 
 The retirement stopped there. Months later the five were still:
 
