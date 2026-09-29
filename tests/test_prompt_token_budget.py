@@ -94,7 +94,23 @@ def _estimate_tokens(text: str) -> int:
         # budget below: the CACHEABLE HEAD is what costs money on every
         # request, and it still fits with 11 tokens to spare. This file
         # budget guards the markdown, not the bill.
-        ("solo_agent.md", 10735),
+        #
+        # 10735 -> 10830, ninety-five tokens, for the rule that a test binds
+        # to DELFIN and not to a machine. Measured the day it was written:
+        # 20 test files carried 22 machine-conditional skips, and the files
+        # gated on xtb collect 639 tests of which 121 do not run when xtb is
+        # absent from PATH. A skip is silent in both directions -- the test
+        # runs on the author's host, runs nowhere in CI, and CI stays green,
+        # so the case is never exercised and nobody is told. The ratchet in
+        # test_a_test_is_bound_to_delfin_not_to_a_machine.py fails a NEW such
+        # file; this rule is the other half, because a guard that only
+        # rejects teaches the shape by refusal, and the prompt can state the
+        # two alternatives (supply the binary, or record its output) that the
+        # guard cannot. Placed beside the existing line forbidding a real
+        # ORCA/xTB/SLURM job in a test -- the same principle from the other
+        # direction -- rather than as a new section, which would have cost a
+        # header and a restatement of the context.
+        ("solo_agent.md", 10830),
         # Written lean from the start: the shared addenda carry the general
         # contracts, so this prompt only states what is specific to working
         # on someone's real records. Raised as the mode's surface grew —
@@ -172,7 +188,13 @@ def test_role_prompt_within_token_budget(filename, max_tokens):
 @pytest.mark.parametrize(
     "role_id, mode_id, route, max_stable_tokens",
     [
-        ("solo_agent", "solo", ["solo_agent"], 11400),
+        # 11400 -> 11484 for the machine-independence rule (see the file
+        # budget above). Eighty-four tokens, of which thirteen came from the
+        # head's remaining slack; the rule sits in the stable head and not
+        # behind a lazy-module trigger on purpose, because a quality rule
+        # that loads only when a keyword appears is absent exactly when the
+        # model writes a test without naming one.
+        ("solo_agent", "solo", ["solo_agent"], 11484),
         ("dashboard_agent", "dashboard", ["dashboard_agent"], 10400),
     ],
 )

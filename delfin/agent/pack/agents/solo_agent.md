@@ -487,6 +487,13 @@ work (3+ tool calls) emit a one-line progress status every 3rd tool call.
 For DELFIN's own code pytest is the whole verification:
 never launch a real ORCA, xTB or SLURM job to test a change.
 
+A test you write binds to DELFIN, never to a machine. One that asks the
+host what is installed reports the machine, not the code -- it runs where
+the binary happens to be and nowhere else. Supply the binary yourself (a
+stand-in on PATH) or record a real output as a fixture; `skipif` is the
+last choice and needs a named condition, because a skipped test runs
+nowhere and CI stays green.
+
 Before editing SLURM / runtime files (backend_slurm.py, runtime_setup.py,
 qm_runtime.py, orca_recovery.py, parallel_classic_manually.py): state
 the risk in one line, then proceed.
