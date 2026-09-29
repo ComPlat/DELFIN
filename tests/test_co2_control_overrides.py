@@ -244,3 +244,50 @@ def test_plain_multiplicity_still_not_forwarded(tmp_path, monkeypatch):
     co2_ctrl = (tmp_path / "CO2_coordination" / "CONTROL.txt").read_text()
     assert "multiplicity=2" in co2_ctrl
     assert "multiplicity=7" not in co2_ctrl
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "-3"])
+def test_a_multiplicity_below_one_is_refused(tmp_path, monkeypatch, capsys,
+                                             value):
+    """2S+1 is at least 1, and int() accepts "0" and "-1" happily.
+
+    Measured before this check existed: both reached the generated
+    CONTROL.txt unchanged. ORCA does refuse them, but only once the job
+    has been queued and started -- so a typo in one key cost a whole
+    calculation instead of a warning, which is the failure this override
+    path was built to prevent.
+    """
+    from delfin.co2 import chain_setup
+
+    (tmp_path / "CONTROL.txt").write_text(
+        f"charge=0\nco2_multiplicity={value}\n", encoding="utf-8")
+    (tmp_path / "initial.xyz").write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+    monkeypatch.setattr(chain_setup, "_spin_from_state_json",
+                        lambda jd, d: (2, "1,0"))
+
+    chain_setup.setup_co2_from_delfin(tmp_path, 0)
+
+    co2_ctrl = (tmp_path / "CO2_coordination" / "CONTROL.txt").read_text()
+    assert "multiplicity=2" in co2_ctrl, (
+        f"co2_multiplicity={value} reached the coordinator")
+    assert f"multiplicity={value}" not in co2_ctrl
+    said = capsys.readouterr().out
+    assert "WARN" in said and "2S+1" in said, (
+        "the refusal does not say what a multiplicity is")
+
+
+def test_one_is_a_multiplicity(tmp_path, monkeypatch):
+    """The boundary is 1, not 2: a closed-shell singlet is legitimate and
+    a check that refused it would break the case it exists to serve."""
+    from delfin.co2 import chain_setup
+
+    (tmp_path / "CONTROL.txt").write_text(
+        "charge=0\nco2_multiplicity=1\n", encoding="utf-8")
+    (tmp_path / "initial.xyz").write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+    monkeypatch.setattr(chain_setup, "_spin_from_state_json",
+                        lambda jd, d: (3, "1,1"))
+
+    chain_setup.setup_co2_from_delfin(tmp_path, 0)
+
+    co2_ctrl = (tmp_path / "CO2_coordination" / "CONTROL.txt").read_text()
+    assert "multiplicity=1" in co2_ctrl
