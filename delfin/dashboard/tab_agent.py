@@ -3060,6 +3060,162 @@ def _render_molecule_to_png_b64(
         return None
 
 
+#: What may be embedded in one chat card. A trajectory of a few thousand
+#: frames is a file to open in the Calculations tab, not a bubble in a
+#: conversation: the payload travels inside the page's HTML, and the
+#: browser keeps every copy the transcript holds.
+#: One counter per page build, so two cards never share a stage id.
+_MOL3D_COUNTER = [0]
+
+_MOL3D_MAX_BYTES = 4_000_000
+_MOL3D_MAX_FRAMES = 500
+
+
+def _xyz_frame_count(text: str) -> int:
+    """How many frames an XYZ holds. 0 when it is not an XYZ at all.
+
+    Input: the file's text. Output: the number of complete frames.
+
+    An XYZ frame is a count line, a comment line and that many atom
+    lines, repeated. Counted by walking the blocks rather than by
+    dividing the line total: a trajectory whose last frame was cut off
+    by a killed job would otherwise report a fractional count, and the
+    viewer would be handed a frame that does not exist.
+    """
+    lines = text.splitlines()
+    index = frames = 0
+    while index < len(lines):
+        head = lines[index].strip()
+        if not head:
+            index += 1
+            continue
+        try:
+            n_atoms = int(head.split()[0])
+        except (ValueError, IndexError):
+            return 0
+        if n_atoms <= 0 or index + 1 + n_atoms >= len(lines) + 1:
+            break
+        if index + 2 + n_atoms > len(lines):
+            break                      # truncated last frame: not counted
+        index += 2 + n_atoms
+        frames += 1
+    return frames
+
+
+def _mol3d_card_html(path, name_html: str) -> str | None:
+    """An interactive 3D card for a structure, trajectory or orbital.
+
+    Input: a path and its escaped display name. Output: HTML for the
+    chat, or None when the file gets no viewer (see _mol3d_payload) or
+    the user has turned the viewer off in the settings.
+
+    Three decisions are worth stating.
+
+    The data travels in a ``data-`` attribute, not in a ``<script>``
+    block. The chat is written into a widget's HTML, which the browser
+    parses with innerHTML: a script element inserted that way is never
+    executed, and inside one the parser does not decode entities either,
+    so an escaped payload would arrive corrupted. An attribute is
+    decoded, so the coordinates come back exactly as written.
+
+    The viewer is started by an ``img`` whose onerror fires the moment
+    the browser fails to load its empty source -- the same mechanism the
+    chat already uses to restore its scroll position, and the only one
+    available to markup inserted as innerHTML. The element removes
+    itself afterwards.
+
+    The text line stays under the viewer rather than being replaced by
+    it. 3Dmol may be missing (no vendored build, an older page), the
+    element may never become visible, and a card that then shows an
+    empty grey box says less than "24 atoms, C12H10O2" did before.
+    """
+    from delfin.dashboard.molecule_viewer import get_viewer_profile
+
+    try:
+        if not get_viewer_profile().get("enabled", True):
+            return None            # the user turned viewers off
+    except Exception:
+        pass                       # settings unreadable: draw it anyway
+
+    payload = _mol3d_payload(path)
+    if payload is None:
+        return None
+
+    _MOL3D_COUNTER[0] += 1
+    view_id = f"delfin_chat_mol3d_{_MOL3D_COUNTER[0]}"
+    label = _html.escape(payload["label"])
+    kind = ("trajectory" if payload["frames"] > 1
+            else "orbital" if payload["fmt"] == "cube" else "structure")
+    return (
+        f'<div class="delfin-artifact delfin-chat-mol3d" '
+        f'data-mol3d-fmt="{payload["fmt"]}" '
+        f'data-mol3d-frames="{payload["frames"]}" '
+        f'data-mol3d="{_html.escape(payload["text"], quote=True)}" '
+        f'style="margin:6px 0;padding:6px;border:1px solid #e5e7eb;'
+        f'border-radius:6px;background:#fff;">'
+        f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+        f'\u269b\ufe0f <code>{name_html}</code> '
+        f'<span style="color:#9ca3af;">({kind})</span></div>'
+        f'<div id="{view_id}" class="delfin-mol3d-stage" '
+        f'style="width:100%;height:260px;position:relative;'
+        f'border-radius:4px;overflow:hidden;"></div>'
+        f'<div style="font-size:12px;color:#1f2937;font-family:monospace;'
+        f'padding:4px 0 0 0;">{label}</div>'
+        f'<img src="" onerror="'
+        f'if(window.__delfinMol3D)window.__delfinMol3D(this);this.remove();'
+        f'" style="display:none" alt=""/></div>'
+    )
+
+
+def _mol3d_payload(path) -> dict | None:
+    """What a 3D card would show for this file, or None for no card.
+
+    Input: a path. Output: ``{"fmt", "text", "frames", "label"}`` where
+    *fmt* is what 3Dmol is told the data is ("xyz", "cube", "pdb") and
+    *frames* > 1 means a trajectory to animate.
+
+    Pure, and separate from the HTML, because the decisions worth
+    testing are here: which formats get a viewer, when a file is too
+    large to travel inside the transcript, and whether a trajectory is
+    complete. Returns None rather than raising for an unreadable file --
+    the caller falls back to the text card, which says what the
+    molecule is even when nothing can be drawn.
+    """
+    from pathlib import Path
+
+    p = Path(path)
+    suffix = p.suffix.lower()
+    fmt = {".xyz": "xyz", ".trj": "xyz", ".traj": "xyz",
+           ".cube": "cube", ".pdb": "pdb"}.get(suffix)
+    if fmt is None:
+        return None
+    try:
+        if not p.is_file() or p.stat().st_size > _MOL3D_MAX_BYTES:
+            return None
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if not text.strip():
+        return None
+
+    frames = 1
+    label = ""
+    if fmt == "xyz":
+        frames = _xyz_frame_count(text)
+        if frames < 1:
+            return None            # not an XYZ after all: no viewer
+        if frames > _MOL3D_MAX_FRAMES:
+            return None
+        summary = _render_xyz_summary(p)
+        if summary:
+            n_atoms, formula = summary
+            label = (f"{n_atoms} atoms · {formula}" if frames == 1
+                     else f"{n_atoms} atoms · {frames} frames · {formula}")
+    elif fmt == "cube":
+        label = "volumetric data · two isosurfaces at ±0.02"
+    return {"fmt": fmt, "text": text, "frames": frames, "label": label}
+
+
 def _render_xyz_summary(path) -> tuple[int, str] | None:
     """Parse an XYZ file and return ``(atom_count, summary_string)``.
 
@@ -3197,7 +3353,11 @@ def _is_file_creating(tool_name: str) -> bool:
 # workspace would be a way to read one.
 _ANSWER_FILE_SUFFIXES = tuple(sorted(set(
     (".png", ".jpg", ".jpeg", ".gif", ".svg", ".csv", ".tsv", ".json",
-     ".smi", ".mol", ".sdf", ".xyz") + _ARTIFACT_KEEPABLE)))
+     ".smi", ".mol", ".sdf", ".xyz",
+     # Read by the interactive card: a trajectory to step through and a
+     # cube to see the orbital of. Without them here the agent could
+     # produce one and the chat would not offer it at all.
+     ".trj", ".traj", ".cube", ".pdb") + _ARTIFACT_KEEPABLE)))
 
 _ANSWER_FILE_RE = re.compile(
     r"(?<![\w/])((?:[\w.-]+/)*[\w.-]+(?:"
@@ -3616,6 +3776,16 @@ def _render_artifact_body(path) -> str | None:
             f'style="display:block;border-radius:4px;" '
             f'alt="{name_html}"/></div>'
         )
+
+    # ---- Structures, trajectories and orbitals: the interactive card ----
+    # Tried first, and only for the formats 3Dmol reads. It returns None
+    # when the viewer is switched off, the file is too big to travel in
+    # the transcript, or the data is not what the suffix claims -- and
+    # then the text card below still says what the molecule is.
+    if suffix in (".xyz", ".trj", ".traj", ".cube", ".pdb"):
+        card = _mol3d_card_html(p, name_html)
+        if card is not None:
+            return card
 
     # ---- XYZ coordinates: formula summary + first atoms -----------------
     if suffix == ".xyz":
@@ -6263,6 +6433,88 @@ def create_tab(ctx):
 // key handler only. Nested inside it, they were skipped whenever the
 // page bundle had already set the flag -- which on a resumed page is
 // always, and on a fresh one depends on which output rendered first.
+
+    // --- The 3D card in the chat: structure, trajectory, orbital ---
+    // Started from the card's own img.onerror, because the chat is
+    // written with innerHTML and a script element inserted that way is
+    // never executed. 3Dmol itself is the vendored build installed at
+    // start-up (dashboard/__init__), so nothing is fetched here and the
+    // viewer works on a node with no outbound network.
+    (function() {
+        if (window.__delfinMol3DInstalled) return;
+        window.__delfinMol3DInstalled = true;
+
+        function build(card, stage) {
+            var data = card.getAttribute('data-mol3d') || '';
+            var fmt = card.getAttribute('data-mol3d-fmt') || 'xyz';
+            var frames = parseInt(card.getAttribute('data-mol3d-frames') || '1', 10);
+            if (!data) return true;
+            var viewer = $3Dmol.createViewer(stage, {backgroundColor: 'white'});
+            if (fmt === 'cube') {
+                viewer.addModel(data, 'cube');
+                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                // The same two isosurfaces the Calculations tab draws, so
+                // an orbital looks the same wherever it is opened.
+                viewer.addVolumetricData(data, 'cube',
+                    {isoval: 0.02, color: '#0026ff', opacity: 0.85});
+                viewer.addVolumetricData(data, 'cube',
+                    {isoval: -0.02, color: '#b00010', opacity: 0.85});
+            } else if (frames > 1) {
+                viewer.addModelsAsFrames(data, fmt);
+                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                // Looped, because a trajectory that plays once and stops
+                // on the last frame reads as a still picture to anybody
+                // who looked away while it ran.
+                viewer.animate({loop: 'forward', reps: 0, interval: 120});
+            } else {
+                viewer.addModel(data, fmt);
+                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+            }
+            viewer.zoomTo();
+            viewer.render();
+            // The data is on screen now; drop the copy in the attribute so
+            // a long transcript does not hold every trajectory twice.
+            card.removeAttribute('data-mol3d');
+            card.__delfinViewer = viewer;
+            return true;
+        }
+
+        window.__delfinMol3D = function(el) {
+            var card = el.closest ? el.closest('.delfin-chat-mol3d') : null;
+            if (!card || card.__delfinMol3DDone) return;
+            var stage = card.querySelector('.delfin-mol3d-stage');
+            if (!stage) return;
+            var tries = 0;
+            function attempt() {
+                // Gone: the chat was rebuilt under us and this card no
+                // longer exists. Stop, rather than poll for an element
+                // that is never coming back.
+                if (!card.isConnected) return;
+                // Not on screen yet -- another session's tab, or a card
+                // still being laid out. A viewer built into a zero-sized
+                // element renders nothing and cannot be resized later.
+                var ready = (typeof $3Dmol !== 'undefined')
+                    && stage.offsetParent !== null && stage.clientWidth > 0;
+                if (!ready) {
+                    tries += 1;
+                    // ~30 s in total: a page that never gets there keeps
+                    // the text line under the stage, which still says
+                    // what the molecule is.
+                    if (tries < 200) setTimeout(attempt, tries < 20 ? 50 : 200);
+                    return;
+                }
+                card.__delfinMol3DDone = true;
+                try {
+                    build(card, stage);
+                } catch (e) {
+                    // A malformed cube or a truncated frame must not take
+                    // the chat with it. The text line stays.
+                    stage.style.display = 'none';
+                }
+            }
+            attempt();
+        };
+    })();
 
     // --- Chat scroll: follow the newest output only from the end ---
     // The chat used to be pulled to the bottom on every refresh, which took
