@@ -2468,6 +2468,29 @@ def _looks_like_plan_response(text: str) -> bool:
     return len(steps) >= 3
 
 
+def _live_message_slot(messages: list, live: dict, key: str):
+    """Where a self-rewriting chat line lives, or None to open a new one.
+
+    Input: the chat message list, the key->index map held in tab state,
+    and the key. Output: an index into *messages* whose entry carries
+    that key, or None.
+
+    Addressed by key and not by position because six other paths append
+    to the same list while a turn runs, so "the last message" is the
+    live line only until any of them fires. The stored index is checked
+    against the entry actually there: a trimmed history, a restored
+    session or a cleared chat all leave an index pointing at somebody
+    else's line, and rewriting that would edit a message the user
+    already read.
+    """
+    index = live.get(key)
+    if not isinstance(index, int) or index < 0 or index >= len(messages):
+        return None
+    if messages[index].get("_live_key") != key:
+        return None
+    return index
+
+
 def _wait_chip_html(text: str) -> str:
     """Compact amber header chip shown while the agent waits on the user."""
     if not text:
@@ -8444,6 +8467,49 @@ def create_tab(ctx):
 
     def _append_system_message(text):
         _append_chat_message("system", text)
+
+    def _live_system_message(text: str, key: str) -> None:
+        """One chat line that keeps its place and rewrites its own text.
+
+        For a message that is repeated with a changed number -- the
+        first-byte wait tick is the only one today. Appending each
+        repeat put sixty copies of one sentence in the transcript; moving
+        it out of the transcript entirely lost the fact that the turn
+        waited. It stays a chat line and the line is rewritten, so the
+        seconds count up in place.
+
+        The line is addressed by `key`, held in state, and not by
+        position: messages are appended by six other paths while a turn
+        runs, and the newest entry is only the wait line until any of
+        them fires. Cleared by _settle_live_message, after which the next
+        tick opens a new line rather than resurrecting one the user has
+        already scrolled past.
+        """
+        live = state.setdefault("_live_messages", {})
+        msgs = state["chat_messages"]
+        index = _live_message_slot(msgs, live, key)
+        if index is None:
+            _append_chat_message("system", text, _live_key=key)
+            live[key] = len(msgs) - 1
+            return
+        msgs[index]["content"] = text
+        # Unconditional: the debounce in _append_chat_message exists to
+        # batch a burst of tool lines, and these arrive seconds apart.
+        _refresh_chat_html()
+        state["_last_html_refresh"] = time.monotonic()
+
+    def _settle_live_message(key: str, text: str = "") -> None:
+        """Close a live line: rewrite it one last time, then release the
+        key so a later repeat starts its own line. An empty *text* leaves
+        the last wording standing."""
+        live = state.get("_live_messages") or {}
+        msgs = state["chat_messages"]
+        index = _live_message_slot(msgs, live, key)
+        live.pop(key, None)
+        if index is not None and text:
+            msgs[index]["content"] = text
+            _refresh_chat_html()
+            state["_last_html_refresh"] = time.monotonic()
 
     def _append_tool_message(html_content: str):
         """Append a tool-call message with terminal-style formatting.
@@ -16457,6 +16523,12 @@ def create_tab(ctx):
         state["_stream_saw_output"] = False
         state["_request_saw_output"] = False
         state["_tool_inflight"] = {}
+        # Release any live line the previous turn left open (a turn that
+        # ended on an error never reaches _mark_output). Without this the
+        # next turn's first tick would rewrite a line far up the
+        # transcript, because the index and its key both still match.
+        state["_live_messages"] = {}
+        state.pop("_wait_started", None)
         state.pop("_watchdog_stopped", None)
         _arm_stale_watcher()
         # Checkpoint BEFORE the turn runs. Auto-save used to happen only
@@ -16484,6 +16556,16 @@ def create_tab(ctx):
             first time also stamp it, so the turn can say how long the
             first token took."""
             now = time.monotonic()
+            # The endpoint has spoken, so the wait line stops counting and
+            # says what it was. Settled here rather than in _on_token alone
+            # because a turn can open with thinking or a tool call, and a
+            # line still reading "waiting for the model" under a tool
+            # result is a worse lie than the flood it replaced.
+            _started = state.pop("_wait_started", None)
+            if _started is not None:
+                _settle_live_message(
+                    "model_wait",
+                    f"The endpoint took {now - _started:.0f}s to answer.")
             state["_last_stream_activity"] = now
             state["_request_saw_output"] = True
             if not state.get("_stream_saw_output"):
@@ -16577,8 +16659,16 @@ def create_tab(ctx):
                     the elapsed seconds and starts before the
                     watchdog's threshold.
                     """
-                    state["_last_stream_activity"] = time.monotonic()
+                    _now = time.monotonic()
+                    state["_last_stream_activity"] = _now
                     if text and text.strip():
+                        state.setdefault("_wait_started", _now)
+                        # In the transcript, as one line that rewrites
+                        # itself: the seconds count up and the sentence
+                        # stays put. Also in the activity spinner, which
+                        # is where the eye is while nothing streams --
+                        # the same text, not a second message.
+                        _live_system_message(text.strip(), "model_wait")
                         _set_working(True, text.strip(), mode="stale")
 
                 def _on_token(text):
