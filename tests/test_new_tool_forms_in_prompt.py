@@ -7,9 +7,9 @@ nothing about append — so the patterns Welle 4 counted (sed -n
 After the edit the three new forms (around=, mode="append") must be
 present BOTH in the source markdown and in the prompt the loader
 actually builds for a solo session, and the token budget of the
-source file must still hold (that one is also pinned in
-tests/test_prompt_token_budget.py; this file re-checks it because the
-section edit sits exactly on that budget's edge).
+source file must still hold. That budget is IMPORTED from
+tests/test_prompt_token_budget.py rather than repeated here; this file
+re-checks it because the section edit sits on the budget's edge.
 """
 
 from __future__ import annotations
@@ -61,9 +61,18 @@ def test_built_prompt_carries_the_new_forms(monkeypatch):
 
 
 def test_solo_budget_still_holds():
-    # 10735 is solo_agent.md's pinned budget in
-    # tests/test_prompt_token_budget.py; the section rewrite was sized
-    # to be budget-neutral, and this guard keeps a future re-edit of
-    # this exact section honest.
+    """The section rewrite was sized to be budget-neutral, and this
+    guard keeps a future re-edit of this exact section honest.
+
+    The number is IMPORTED, not repeated. It was written here as a
+    literal 10735 alongside a comment naming the file it was copied
+    from; raising the budget there on 2026-09-29 left this copy behind
+    and the gate went red on a file the change never touched. Two
+    copies of one answer drift, and the comment saying where the other
+    one lives does not stop it -- it only says who to blame.
+    """
+    from test_prompt_token_budget import FILE_BUDGETS
+
+    budget = FILE_BUDGETS["solo_agent.md"]
     tokens = (len(_markers_stripped(_SOLO.read_text())) + 3) // 4
-    assert tokens <= 10735, f"{tokens} tokens (>10735). Trim first."
+    assert tokens <= budget, f"{tokens} tokens (>{budget}). Trim first."
