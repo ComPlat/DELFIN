@@ -118,7 +118,7 @@ FREE = [
     "ruff check .",
     "chmod 755 script.sh",
     "time ls",
-    "squeue -u ka_ew7404",
+    "squeue -u someuser",
 ]
 
 

@@ -1,6 +1,6 @@
 """Per-turn tool-round budget is settings-driven (agent.max_tool_rounds).
 
-Bug report 20260619-172400 (ka_xn0397): "nach 50 turns stoppt der agent
+Bug report 20260619-172400: "nach 50 turns stoppt der agent
 automatisch" — long multi-file tasks hit the old hard-coded 50-round cap
 mid-work, forcing manual 'continue' nudges. The cap is now a setting with a
 high default (500); the cost circuit-breaker + consecutive-fail abort remain

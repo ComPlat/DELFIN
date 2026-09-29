@@ -1,7 +1,7 @@
 """The model dropdown must only offer models that work for the current auth.
 
 OpenAI via the Codex CLI on a ChatGPT-account login (no OPENAI_API_KEY) cannot
-use the API-only '*-codex' models — they 400 (bug 2026-06-25, ka_xn0397/Jerome:
+use the API-only '*-codex' models — they 400 (bug 2026-06-25, field report:
 gpt-5.3-codex → "not supported when using Codex with a ChatGPT account"). When
 an API key IS present (API mode), all models are offered.
 """

@@ -60,9 +60,9 @@ FINDINGS = [
     # init with an absolute path creates a repository anywhere; `git
     # init` is not a program _bash_write_targets knows.
     ("repository created outside the workspace",
-     "git init /pfs/data6/home/ka/ka_ibcs/ka_ew7404/elsewhere"),
+     "git init /pfs/data6/home/xy/xy_group/xy_user/elsewhere"),
     ("repository created outside the workspace",
-     "git init --separate-git-dir=/pfs/data6/home/ka/ka_ibcs/ka_ew7404/x ."),
+     "git init --separate-git-dir=/pfs/data6/home/xy/xy_group/xy_user/x ."),
 ]
 
 # The gate holds these — the config-injection escapes, the identity
@@ -77,7 +77,7 @@ HELD = [
     "git push origin main",
     "git checkout -- notes.txt",
     "git worktree add ../other",
-    "git -C /pfs/data6/home/ka/ka_ibcs/ka_ew7404/elsewhere fetch",
+    "git -C /pfs/data6/home/xy/xy_group/xy_user/elsewhere fetch",
 ]
 
 FREE = [
@@ -93,7 +93,7 @@ FREE = [
     # Documented decision (api_client.py:2451-2456): the -C form is free
     # for READ-ONLY subcommands on another repository; fetch/pull/switch
     # there keep requiring the bare (non-matching) form — see HELD.
-    "git -C /pfs/data6/home/ka/ka_ibcs/ka_ew7404/elsewhere log",
+    "git -C /pfs/data6/home/xy/xy_group/xy_user/elsewhere log",
 ]
 
 

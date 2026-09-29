@@ -1,7 +1,7 @@
 """Three fixes from one morning's bug reports, and one shape between them:
 a rule that lived only in prose while the mechanism allowed its opposite.
 
-Reports 20260828-131034 and -131603 (user ka_gf0106, dashboard_agent):
+Reports 20260828-131034 and -131603 (dashboard_agent):
 
     14 calls,  7 failed  -> all seven web_search
     79 calls, 31 failed  -> 31 of 32 web_search
