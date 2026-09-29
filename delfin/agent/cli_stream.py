@@ -10,8 +10,13 @@ Event shapes are the ones ``delfin/agent/cli.py::_run_once`` already
 emits for ``--output-format stream-json`` (cli.py:288,297):
 
 * ``{"type": "text", "text": str}``
-* ``{"type": "notice", "text": str}`` — harness speech ("waiting for
-  the model … Ns", retry banners); shown, never counted as the answer.
+* ``{"type": "notice", "text": str}`` — harness speech (retry banners,
+  a stop, a cost ceiling); shown, never counted as the answer.
+* ``{"type": "wait", "text": str}`` — the "waiting for the model … Ns"
+  tick while the endpoint has not answered. Progress, not history: each
+  one replaces the one before it, so on a tty it is rendered as a
+  rewrite of the current row (no trailing newline, so the CALLER must
+  print it with ``end=""``), and in a pipe only the first is written.
 * ``{"type": "tool_use", "name": str, "input": dict, "elapsed_s": float?}``
 
 plus two this module adds for its own renderer:
@@ -146,6 +151,7 @@ class StreamRenderer:
     def __iter__(self) -> Iterator[str]:
         started: dict[str, float] = {}
         tick = 0
+        waited = False   # a pipe gets the first wait tick only
         for event in self._events:
             kind = event.get("type")
             if kind == "text":
@@ -172,10 +178,41 @@ class StreamRenderer:
                     {"is_tty": self._is_tty,
                      "elapsed_s": elapsed})
             elif kind == "notice":
-                # Harness speech ("waiting for the model … Ns", retry
-                # banners) — shown, never mistaken for answer text.
+                # Harness speech (retry banners, a stop, a cost ceiling)
+                # — shown, never mistaken for answer text. Each one is a
+                # separate event in the transcript; see "wait" below for
+                # the one that is not.
                 text = str(event.get("text", ""))
                 if text.strip():
+                    yield text
+            elif kind == "wait":
+                # The first-byte tick, "waiting for the model … Ns". It
+                # is progress and not history: every tick replaces the
+                # one before it, so it must occupy ONE row however long
+                # the endpoint takes. The producer emits one per tenth of
+                # the request deadline capped at ten seconds, so the
+                # default 600 s deadline is sixty ticks, and appending
+                # them filled the screen with one sentence.
+                #
+                # On a tty: return to column one and erase to the end of
+                # the line, and end without a newline, so the next tick
+                # overwrites this one. The caller prints what it is
+                # given; a trailing newline here would leave every tick
+                # standing.
+                #
+                # In a pipe there is no cursor to move, so the first tick
+                # is written (a log has to say the endpoint went quiet)
+                # and the rest are dropped. Dropping the later ones loses
+                # the elapsed figure; keeping them is the flood this
+                # change exists to remove, and the round's real duration
+                # is in the turn footer either way.
+                text = str(event.get("text", ""))
+                if not text.strip():
+                    continue
+                if self._is_tty:
+                    yield f"\r\x1b[K{text}"
+                elif not waited:
+                    waited = True
                     yield text
             elif kind == "tick":
                 tick += 1

@@ -25,6 +25,7 @@ cadence, so shortening the display interval shortens the timeout.
 
 from __future__ import annotations
 
+import io
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -133,3 +134,59 @@ def test_a_notice_is_still_appended_on_both(eng):
               {"type": "notice", "text": "retrying 2/3 in 4s"}]
     assert len(list(StreamRenderer(events, is_tty=False))) == 2
     assert len(list(StreamRenderer(events, is_tty=True))) == 2
+
+
+# --- the interactive transcript ------------------------------------------
+
+class _Tty(io.StringIO):
+    """A stream that claims to be a terminal, so the escape path runs."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def _transcript(err):
+    from delfin.agent.repl import Transcript
+    return Transcript(out=io.StringIO(), err=err, width=80, color="never")
+
+
+def test_the_transcript_rewrites_one_row_for_the_ticks():
+    err = _Tty()
+    tr = _transcript(err)
+    for tick in _TICKS:
+        tr.transient(tick.text)
+
+    written = err.getvalue()
+    assert written.count("\n") == 0, (
+        "a newline per tick is the flood; the row is rewritten instead")
+    assert written.count("\r\x1b[K") == 3, "each tick returns and erases"
+    for tick in _TICKS:
+        assert tick.text in written
+
+
+def test_the_tick_is_erased_before_the_answer_and_before_chrome():
+    """A tick left standing puts the answer halfway along it."""
+    for follow in ("chrome", "answer"):
+        err = _Tty()
+        tr = _transcript(err)
+        tr.transient(_TICKS[0].text)
+        before = err.getvalue()
+        if follow == "chrome":
+            tr.chrome("a tool ran")
+        else:
+            tr.answer("the answer")
+        assert err.getvalue()[len(before):].startswith("\r\x1b[K"), (
+            f"the tick must be erased before {follow}")
+
+
+def test_a_redirected_transcript_says_it_once():
+    """stderr in a file has no cursor: one line, not one per tick."""
+    err = io.StringIO()          # isatty() is False
+    tr = _transcript(err)
+    for tick in _TICKS:
+        tr.transient(tick.text)
+
+    written = err.getvalue()
+    assert written.count(_TICKS[0].text) == 1
+    assert _TICKS[1].text not in written and _TICKS[2].text not in written
+    assert "\x1b[K" not in written, "no cursor control into a file"

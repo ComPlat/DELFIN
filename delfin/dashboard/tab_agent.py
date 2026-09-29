@@ -16553,6 +16553,34 @@ def create_tab(ctx):
                             answer_shown[0] = True
                         _append_system_message(text.strip())
 
+                def _on_wait(text):
+                    """The first-byte tick: the endpoint has not answered.
+
+                    Shown in the activity spinner, which is ONE label
+                    rewritten in place, and not in the chat. It used to
+                    arrive through _on_notice, which appends a system
+                    message per call; the producer emits a tick every
+                    tenth of the request deadline capped at ten seconds,
+                    so a round stalling to the default 600 s deadline put
+                    sixty copies of one sentence into the transcript.
+
+                    `stale` rather than `streaming`: nothing is
+                    streaming, and the red variant is what the stall
+                    watchdog already uses for this exact condition.
+
+                    _last_stream_activity is stamped, as _on_notice
+                    stamped it, so the watchdog stays quiet while the
+                    ticks are arriving. That is deliberate and unchanged:
+                    two mechanisms announcing one silence is how the
+                    transcript filled up in the first place, and this
+                    label is the more precise of the two -- it carries
+                    the elapsed seconds and starts before the
+                    watchdog's threshold.
+                    """
+                    state["_last_stream_activity"] = time.monotonic()
+                    if text and text.strip():
+                        _set_working(True, text.strip(), mode="stale")
+
                 def _on_token(text):
                     nonlocal last_update
                     _mark_output()
@@ -17463,6 +17491,7 @@ def create_tab(ctx):
                         on_permission_denied=_on_permission_denied,
                         on_thinking=_on_thinking,
                         on_notice=_on_notice,
+                        on_wait=_on_wait,
                         thinking_budget=_budget,
                         memory_context=_memory,
                         images=_vision_images,

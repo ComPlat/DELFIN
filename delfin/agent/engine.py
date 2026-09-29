@@ -2352,6 +2352,7 @@ class AgentEngine:
         images: list[str] | None = None,
         on_notice: Callable[[str], None] | None = None,
         on_tool_result_meta: Callable[[str, dict], None] | None = None,
+        on_wait: Callable[[str], None] | None = None,
     ) -> str:
         """Send a user message and stream the response.
 
@@ -2380,6 +2381,14 @@ class AgentEngine:
             empty-turn notices, the cost ceiling, a blocking hook. When
             omitted these go to ``on_token``, which is what every caller
             saw before this parameter existed.
+        on_wait : callable, optional
+            Called with the "waiting for the model … Ns" tick while the
+            endpoint has not sent its first byte. Separate from
+            ``on_notice`` because the tick REPLACES the one before it: a
+            caller with a surface it can overwrite (a status line, a
+            spinner label, a terminal row) shows one line, where a caller
+            appending to a transcript showed one per tick. Omitted, the
+            ticks fall back to ``on_notice`` unchanged.
         on_tool_result_meta : callable, optional
             Called with (tool_name, meta) after each tool result, where
             *meta* carries ``chars``, ``truncated``, ``notes``, ``ok`` and
@@ -2852,9 +2861,21 @@ class AgentEngine:
                     # on_token: a waiting line in the answer text is the
                     # old "retry banner scored as the answer" bug back
                     # for every caller that passes no on_notice.
-                    if on_notice:
+                    #
+                    # The tick is PROGRESS, not history: each one replaces
+                    # the one before it, and a caller with a surface that
+                    # can be overwritten takes them on `on_wait` and shows
+                    # a single line. `on_notice` is the fallback, not the
+                    # default -- a caller without such a surface must
+                    # still see that something is happening, and before
+                    # on_wait existed that was the only route. The
+                    # producer emits one tick per tenth of the request
+                    # deadline, capped at ten seconds, so a stall to the
+                    # default 600 s deadline is sixty of them.
+                    _wait_sink = on_wait or on_notice
+                    if _wait_sink:
                         try:
-                            on_notice(event.text)
+                            _wait_sink(event.text)
                         except Exception:
                             pass
 
@@ -3590,6 +3611,7 @@ class AgentEngine:
                     max_tokens=max_tokens,
                     on_notice=on_notice,
                     on_tool_result_meta=on_tool_result_meta,
+                    on_wait=on_wait,
                 )
             except Exception:
                 pass
@@ -4160,6 +4182,7 @@ class AgentEngine:
         max_tokens: int = 0,
         on_notice: Callable[[str], None] | None = None,
         on_tool_result_meta: Callable[[str, dict], None] | None = None,
+        on_wait: Callable[[str], None] | None = None,
     ) -> str:
         """Enforce evidence grounding on a finished answer (all modes).
 
@@ -4286,6 +4309,7 @@ class AgentEngine:
                 max_tokens=max_tokens,
                 on_notice=on_notice,
                 on_tool_result_meta=on_tool_result_meta,
+                on_wait=on_wait,
             )
         except Exception:
             correction = ""
