@@ -26,6 +26,12 @@ updates:
 
   - package-ecosystem: pip
     directory: "/"
+    # env/ holds the record of the exact environment the published MANTA
+    # constructions were built in (env/reference-environment.lock). It is not a
+    # dependency specification; Dependabot detected it by content even after a
+    # rename (#39, #40, #42), so the directory is excluded outright.
+    exclude-paths:
+      - "env/**"
     schedule:
       interval: weekly
     # Every dependency in pyproject.toml carries a deliberate upper bound, and
@@ -69,7 +75,7 @@ updates:
       - dependency-name: "numpy"
       - dependency-name: "mendeleev"
 
-    # env/reference-environment.txt is deliberately NOT named requirements*.txt:
+    # env/reference-environment.lock is deliberately NOT named requirements*.txt:
     # it records the exact environment the published MANTA constructions were
     # built in (byte-reproducibility), not a dependency specification. Moving
     # any version in it would silently detach it from the data it describes;

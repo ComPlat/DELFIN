@@ -103,7 +103,7 @@ jobs:
     timeout-minutes: 25
     # The environment the published MANTA structures are built in: CPython
     # 3.12.11 with numpy 2.2.2, rdkit 2025.9.3, openbabel-wheel 3.1.1.22,
-    # scipy 1.16.2 -- every version fixed by env/reference-environment.txt,
+    # scipy 1.16.2 -- every version fixed by env/reference-environment.lock,
     # installed here as constraints. It answers two questions the py3.11 leg
     # cannot: does the reference file still resolve, and does the
     # construction still hold in the environment the paper data comes from.
@@ -128,7 +128,7 @@ jobs:
       - name: Install package in the reference environment
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[agent,docs,dev]" -c env/reference-environment.txt
+          pip install -e ".[agent,docs,dev]" -c env/reference-environment.lock
           python -c "import numpy, rdkit, scipy, openbabel; print('numpy', numpy.__version__, '| rdkit', rdkit.__version__, '| scipy', scipy.__version__)"
 
       - name: MANTA parity, formula and isomer tests (slow cases included)
