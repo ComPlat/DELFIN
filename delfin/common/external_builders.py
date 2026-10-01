@@ -348,23 +348,39 @@ def _ob_parses(smi: str) -> bool:
     return bool(conv.ReadString(m, smi)) and m.NumAtoms() > 0
 
 
+def _architector_sites(lig: dict) -> int:
+    """Core sites Architector gives one ligand: 3 for a 'sandwich' (every donor in one aromatic
+    ring, more than two donors -- Architector's own test), else one per donor.  Architector fills
+    coreCN minus its site count with water, so coreCN is counted the same way."""
+    from architector import io_obabel
+
+    c = lig["coordList"]
+    if len(c) > 2:
+        obmol = io_obabel.get_obmol_smiles(lig["smiles"])  # keep alive: rings point into it
+        for ring in obmol.GetSSSR():
+            if all(ring.IsInRing(x + 1) for x in c) and ring.IsAromatic():
+                return 3
+    return len(c)
+
+
 def architector_input(spec: dict, params=None) -> dict:
     from architector import io_ptable
     from architector.io_core import Geometries
 
     if spec["metal"] not in io_ptable.all_metals:
         raise BuildError(f"Architector does not support the metal {spec['metal']}")
-    if spec["cn"] not in Geometries().cn_geo_dict:
-        raise BuildError(f"Architector has no geometry for coordination number {spec['cn']}")
     ligs = []
     for l in spec["ligands"]:
         if not _ob_parses(l["smiles"]):
             raise BuildError(f"OpenBabel cannot read ligand {l['smiles']}")
         ligs.append({"smiles": l["smiles"], "coordList": list(l["coordList"])})
+    core_cn = sum(_architector_sites(l) for l in ligs)
+    if core_cn not in Geometries().cn_geo_dict:
+        raise BuildError(f"Architector has no geometry for coordination number {core_cn}")
     p = {"metal_ox": int(spec["metal_ox"]),
          "metal_spin": default_unpaired(spec["metal"], int(spec["metal_ox"]))}
     p.update(params or {})
-    return {"core": {"metal": spec["metal"], "coreCN": int(spec["cn"])},
+    return {"core": {"metal": spec["metal"], "coreCN": int(core_cn)},
             "ligands": ligs, "parameters": p}
 
 

@@ -8,7 +8,8 @@ reports conversion statistics for a pool:
 
 Architector: {'core': {'metal', 'coreCN'}, 'ligands': [{'smiles', 'coordList'(0-based)}],
               'parameters': {'metal_ox', ...}}; metal_spin = Architector's own default rule
-              (computed here, see bench_default_spin).
+              (computed here, see bench_default_spin); coreCN = Architector's own site count
+              (a 'sandwich' ring ligand = 3 sites, see bench_arch_sites).
 molSimplify: one input per molSimplify geometry of that CN (its coordinations.dict), ligands as
              SMILES strings + '-smicat' (1-based), '-ff uff -ffoption BA' (its standard
              recipe), '-spinmultiplicity' = Architector's default spin rule (same electronic
@@ -99,6 +100,21 @@ def bench_ob_parses(smi):
     return bool(conv.ReadString(m, smi)) and m.NumAtoms() > 0
 
 
+def bench_arch_sites(lig):
+    """Core sites Architector gives one ligand: 3 for a 'sandwich' (every donor in one aromatic
+    ring, more than two donors -- Architector's own test, io_process_input), else one per donor.
+    Architector reserves 3 fac sites for a sandwich and fills coreCN minus its site count with
+    water, so coreCN must be counted the same way (an eta6 arene counted as 6 gave 3 waters)."""
+    from architector import io_obabel
+    c = lig["coordList"]
+    if len(c) > 2:
+        obmol = io_obabel.get_obmol_smiles(lig["smiles"])  # keep alive: rings point into it
+        for ring in obmol.GetSSSR():
+            if all(ring.IsInRing(x + 1) for x in c) and ring.IsAromatic():
+                return 3
+    return len(c)
+
+
 def bench_to_architector(rec, params=None):
     """-> (input_dict, None) or (None, failure_category)."""
     bad = bench_common_check(rec)
@@ -108,20 +124,21 @@ def bench_to_architector(rec, params=None):
     from architector.io_core import Geometries
     if rec["metal"] not in io_ptable.all_metals:
         return None, "arch_metal_unsupported"
-    if rec["cn"] not in Geometries().cn_geo_dict:
-        return None, "arch_cn_unsupported"
     ligs = []
     for l in rec["ligands"]:
         if not bench_ob_parses(l["smiles"]):
             return None, "ob_smiles_unparseable"
         ligs.append({"smiles": l["smiles"], "coordList": list(l["coordList"])})
+    core_cn = sum(bench_arch_sites(l) for l in ligs)
+    if core_cn not in Geometries().cn_geo_dict:
+        return None, "arch_cn_unsupported"
     try:
         spin = bench_default_spin(rec["metal"], int(rec["metal_ox"]))
     except Exception:
         return None, "spin_default_failed"
     p = {"metal_ox": int(rec["metal_ox"]), "metal_spin": spin}
     p.update(params or {})
-    return {"core": {"metal": rec["metal"], "coreCN": int(rec["cn"])},
+    return {"core": {"metal": rec["metal"], "coreCN": int(core_cn)},
             "ligands": ligs, "parameters": p}, None
 
 
