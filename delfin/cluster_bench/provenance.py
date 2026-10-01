@@ -55,16 +55,53 @@ def _git(*args) -> str | None:
     return done.stdout if done.returncode == 0 else None
 
 
+def cbatch_code_sha256() -> str:
+    """sha256 over path and content of every delfin/**/*.py -- the code that builds, whether or
+    not git is available on the node."""
+    h = hashlib.sha256()
+    root = REPO_ROOT / "delfin"
+    for p in sorted(root.rglob("*.py")):
+        if "__pycache__" in p.parts:
+            continue
+        h.update(str(p.relative_to(root)).encode() + b"\0")
+        h.update(hashlib.sha256(p.read_bytes()).digest())
+    return h.hexdigest()
+
+
+def _head_commit_from_files() -> str | None:
+    """HEAD without the git binary (compute nodes may not have it)."""
+    try:
+        git = REPO_ROOT / ".git"
+        if git.is_file():                       # worktree: "gitdir: <path>"
+            git = Path(git.read_text().split(":", 1)[1].strip())
+        head = (git / "HEAD").read_text().strip()
+        if not head.startswith("ref:"):
+            return head
+        ref = head.split(":", 1)[1].strip()
+        for base in (git, Path((git / "commondir").read_text().strip()) if (git / "commondir").exists()
+                     else git):
+            base = base if base.is_absolute() else (git / base).resolve()
+            if (base / ref).exists():
+                return (base / ref).read_text().strip()
+            packed = base / "packed-refs"
+            if packed.exists():
+                for ln in packed.read_text().splitlines():
+                    if ln.endswith(" " + ref):
+                        return ln.split()[0]
+    except (OSError, IndexError):
+        pass
+    return None
+
+
 def cbatch_code_state() -> dict:
-    """Commit of the DELFIN checkout plus a hash of any uncommitted change under delfin/."""
-    commit = (_git("rev-parse", "HEAD") or "").strip() or None
-    diff = _git("diff", "HEAD", "--", "delfin") if commit else None
-    untracked = _git("ls-files", "--others", "--exclude-standard", "--", "delfin") if commit else None
-    dirty = bool((diff or "").strip() or (untracked or "").strip())
-    state = {"repo": str(REPO_ROOT), "commit": commit, "dirty": dirty}
-    if dirty:
-        state["diff_sha256"] = hashlib.sha256(((diff or "") + (untracked or "")).encode()).hexdigest()
-    return state
+    """Commit of the DELFIN checkout, whether delfin/ has uncommitted changes, and the content
+    hash of delfin/**/*.py (the value a chunk must agree on)."""
+    commit = (_git("rev-parse", "HEAD") or "").strip() or _head_commit_from_files()
+    diff = _git("diff", "HEAD", "--", "delfin")
+    untracked = _git("ls-files", "--others", "--exclude-standard", "--", "delfin")
+    dirty = None if diff is None else bool(diff.strip() or (untracked or "").strip())
+    return {"repo": str(REPO_ROOT), "commit": commit, "dirty": dirty,
+            "code_sha256": cbatch_code_sha256()}
 
 
 def cbatch_probe_env(python: str) -> dict:
@@ -122,9 +159,16 @@ def cbatch_provenance(tool: str, tool_python: str, mode: str) -> dict:
 
 
 def cbatch_provenance_mismatch(want: dict, have: dict) -> list:
-    """Keys whose values differ; the interpreter path is compared like everything else."""
+    """Keys whose values differ.  For the code: the content hash, and the commit where both
+    sides know it (git may be missing on a compute node)."""
     out = []
     for key in sorted(set(want) | set(have)):
-        if want.get(key) != have.get(key):
+        a, b = want.get(key), have.get(key)
+        if key == "code" and isinstance(a, dict) and isinstance(b, dict):
+            same = a.get("code_sha256") == b.get("code_sha256") and (
+                a.get("commit") is None or b.get("commit") is None or a.get("commit") == b.get("commit"))
+            if not same:
+                out.append(key)
+        elif a != b:
             out.append(key)
     return out

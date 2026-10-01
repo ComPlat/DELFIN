@@ -61,6 +61,9 @@ _SKIP_IMPORT = {
     "delfin.build_up_complex",
     "delfin.build_up_complex2",
     "delfin.guppy_sampling",
+    # Standalone workers run by the interpreter of another tool (Architector, epic-MACE);
+    # they set thread variables and sys.path on import, as a process of their own should
+    "delfin.cluster_bench.tool_workers",
 }
 
 
