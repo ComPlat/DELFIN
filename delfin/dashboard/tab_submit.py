@@ -35,6 +35,7 @@ from . import solvents as _solvents
 from . import structure_editor as _structure_editor
 from . import ketcher as _ketcher
 from . import separate_systems as _separate
+from .construction_batch import create_construction_batch_panel
 from .molecule_viewer import (
     apply_molecule_view_style, structure_viewer_fullscreen_bootstrap_js,
     structure_viewer_fullscreen_css, structure_viewer_fullscreen_kind_js,
@@ -139,6 +140,8 @@ def create_tab(ctx):
     )
 
     smiles_batch_output = widgets.Output()
+    # Many SMILES with one builder: delfin cluster behind four buttons (construction_batch.py).
+    construction_batch_panel = create_construction_batch_panel(ctx, smiles_batch_widget)
 
     smiles_prev_button = widgets.Button(
         description='\u25c0', button_style='info',
@@ -2066,6 +2069,7 @@ def create_tab(ctx):
             layout=widgets.Layout(gap='2px', align_items='center', flex_wrap='wrap'),
         ),
         smiles_batch_output,
+        construction_batch_panel,
         spacer_large,
         widgets.HTML('<b>CONTROL.txt:</b>'), control_widget, spacer,
         widgets.HBox([validate_button, submit_button]),
@@ -2290,6 +2294,7 @@ def create_tab(ctx):
         'submit_button': submit_button,
         'job_name_widget': job_name_widget,
         'smiles_batch_widget': smiles_batch_widget,
+        'construction_batch_panel': construction_batch_panel,
         'job_type_widget': job_type_widget,
         'custom_time_widget': custom_time_widget,
         'handle_submit': handle_submit,

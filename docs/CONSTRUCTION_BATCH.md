@@ -108,7 +108,33 @@ file system the compute nodes see (a workspace, not `$HOME` if that is small);
 for k in $(seq 0 $((N_SHARDS - 1))); do $PY -m delfin cluster run-shard runs/mace_list --shard $k; done
 ```
 
-## 4. Per-system limit, resume, determinism
+## 4. From the dashboard
+
+Submit Job tab, panel **Construction batch (MANTA / ARCHITECTOR / MOLSIMPLIFY / MACE)** under the
+Batch SMILES field:
+
+| Field | `delfin cluster` argument |
+|---|---|
+| Builder, Mode | `prepare --tool`, `--mode` |
+| Run name | run directory `<calculation folder>/construction_batch/<run name>` (`--run-dir`) |
+| List file | `--input`; empty: the Batch SMILES field, `name;SMILES[;...]` lines cut to `name;SMILES` and saved as `<run name>.input.txt` beside the run directory |
+| Selection, Specs | `--select`, `--specs` |
+| Tool python | `--tool-python`; empty: found automatically (shown as the placeholder) |
+| Shard size (0 = default), Limit/system s, Speed factor, Repeat N | `--shard-size`, `--timeout`, `--speed-factor`, `--repeat` |
+| Throttle %N, Job wall time | `slurm --throttle`, `--time` |
+
+**Prepare** runs `prepare` and shows systems, shards and an upper bound of the time per shard.
+**Submit** runs `slurm --submit` for the main set (and the repeat set) on a Slurm backend, with
+the partitions DELFIN uses for every job and the site's `DELFIN_MODULES` loaded on the node; on
+the local backend it builds the shards one after the other in the background. **Status** and
+**Collect** run `status -v` and `collect` (plus `repeat-stats` when there is a repeat set).
+
+Each button runs the very same code as the command line and prints the command it ran, so a run
+from the dashboard can be repeated without it, and the same settings give the same run directory
+either way (`tests/test_a_construction_batch_from_the_dashboard_is_the_cli_run.py` checks this
+file by file; only the creation time in `manifest.json` differs).
+
+## 5. Per-system limit, resume, determinism
 
 **Limit per system** = ceil(`--timeout` x speed factor), in exact decimal arithmetic. It is not the
 job's wall time. A system at the limit is killed together with its whole process group and recorded
@@ -145,7 +171,7 @@ $PY -m delfin cluster repeat-stats runs/mace_list     # identical / different / 
 MANTA and epic-MACE reproduce byte for byte in the same environment (epic-MACE exposes no random
 seed, so this is measured, not guaranteed); Architector and molSimplify can differ from run to run.
 
-## 5. Output
+## 6. Output
 
 ```
 RUN/manifest.json                      settings, provenance, shard table (sha256)
@@ -190,7 +216,7 @@ epic-MACE the ligands are written with mapped donors and put on the central atom
 Ligand SMILES spelling can depend on the RDKit version; to reuse the exact specs of an earlier run,
 pass its `specs_*.jsonl` (concatenated) with `--specs`.
 
-## 6. Licences
+## 7. Licences
 
 epic-MACE is GPL-3.0, Architector is BSD-3-Clause, molSimplify is GPL-3.0. DELFIN neither bundles
 nor imports them: they are installed separately by the user and run as external programs in their
