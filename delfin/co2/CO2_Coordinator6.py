@@ -733,12 +733,23 @@ def _co2_axis_center_indices(atoms):
     syms = atoms.get_chemical_symbols()
     c = [i for i, s in enumerate(syms) if s == "C"]
     o = [i for i, s in enumerate(syms) if s == "O"]
-    if len(c) != 1 or len(o) != 2:
-        raise ValueError("CO2 muss 1 C und 2 O enthalten.")
-    axis = atoms.positions[o[0]] - atoms.positions[o[1]]
-    axis /= np.linalg.norm(axis)
-    center = atoms.positions[c[0]]
-    return axis, center, c[0]
+    if len(c) == 1 and len(o) == 2:
+        axis = atoms.positions[o[0]] - atoms.positions[o[1]]
+        n = np.linalg.norm(axis)
+        axis = axis / n if n > 1e-9 else np.array([0.0, 0.0, 1.0])
+        center = atoms.positions[c[0]]
+        return axis, center, c[0]
+    # General substrate fallback (e.g. CO, N2, NH3)
+    pos = atoms.positions
+    center = pos.mean(axis=0) if len(pos) > 0 else np.zeros(3)
+    if len(pos) >= 2:
+        diff = pos[1] - pos[0]
+        n = np.linalg.norm(diff)
+        axis = diff / n if n > 1e-9 else np.array([0.0, 0.0, 1.0])
+    else:
+        axis = np.array([0.0, 0.0, 1.0])
+    c_idx = c[0] if c else 0
+    return axis, center, c_idx
 
 def _fibonacci_sphere(n_samples):
     """

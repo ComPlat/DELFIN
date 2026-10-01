@@ -83,6 +83,28 @@ class TestRunAdductFlow:
         with pytest.raises(ValueError, match="substrate_atom"):
             adduct_flow.run_adduct_flow(str(d), workdir=str(d))
 
+    def test_general_substrate_co_end_on_flow(self, tmp_path):
+        d = tmp_path / "CO_coordination"
+        d.mkdir()
+        # CO molecule: C and O
+        co_xyz = d / "co.xyz"
+        co_xyz.write_text("2\nCO\nC 0 0 0\nO 0 0 1.13\n")
+        # Bare metal complex
+        comp_xyz = d / "complex.xyz"
+        comp_xyz.write_text("1\nFe\nFe 0 0 0\n")
+        # Placed geometry
+        _write_adduct_xyz(d / "complex_aligned_with_CO.xyz", m_c_dist=1.9)
+        write_default_files(str(d / "CONTROL.txt"), str(co_xyz))
+        text = (d / "CONTROL.txt").read_text()
+        text += (
+            "\nadduct_flow=true\nadduct_start_xyz=complex_aligned_with_CO.xyz\n"
+            "substrate_atom=C\ncoord_max_dist=3.0\nrun_xtb=false\nmode=atom-on:C\n"
+        )
+        (d / "CONTROL.txt").write_text(text)
+        result = adduct_flow.run_adduct_flow(str(d), workdir=str(d))
+        assert result["status"] == "coordinated"
+        assert result["metal_substrate_distance_A"] == pytest.approx(1.9, abs=0.01)
+
     def test_substrate_atom_symbol_resolves_anchor(self, tmp_path):
         d = tmp_path / "CO2_coordination_sym"
         d.mkdir()
