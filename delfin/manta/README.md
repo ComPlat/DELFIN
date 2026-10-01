@@ -19,7 +19,7 @@
 
 | Stage | How |
 |-------|-----|
-| **Coordination isomers** | Burnside–Pólya enumeration over the donor set on ideal polyhedra — provably complete (verified against 24/24 textbook cases: *fac/mer*, Λ/Δ, *cis/trans*, …) |
+| **Coordination isomers** | Burnside–Pólya enumeration over the donor set on ideal polyhedra. The orbit counts are cross-checked against exhaustive deduplication for every supported polyhedron (`tests/test_burnside_enumerator.py`), and the named cases — *cis/trans*, Δ/Λ, homoleptic and maximally asymmetric CN6 — are pinned in `tests/test_prescribed_isomer_enumerator.py` |
 | **Geometry** | Donors placed on ideal polyhedron vertices (Pyykkö covalent radii) + VSEPR; metallacycle backbones embedded by distance geometry — **no force field at the metal** |
 | **Conformers** | Hindered-rotation / ring-pucker enumeration per isomer, RMSD-deduplicated |
 | **Ranking** | Optional GFN2-xTB (or GFN-FF) energy ranking of the emitted ensemble (via the `xtb` CLI) |
@@ -28,7 +28,8 @@ Every result is **deterministic** — same SMILES in, byte-identical manifold ou
 
 ## Usage
 
-The user-facing entry point lives in the DELFIN facade (a dedicated `delfin-manta` CLI is on the roadmap):
+MANTA has its own command, `delfin-manta`, and is reachable from a DELFIN run
+with `smiles_converter=MANTA` in CONTROL.txt. From Python:
 
 ```python
 from delfin.smiles_converter import smiles_to_xyz_isomers

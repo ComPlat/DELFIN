@@ -32,12 +32,17 @@ _ALL_ISOMERS = 100_000
 #
 # 2026-07-04 DE-BLOAT: the old ~29-flag champion stack (dense conformer generators + geometry
 # correctors + chelate cap-raisers) was NET-NEGATIVE. Measured on ~450 region-balanced Batch.txt
-# systems via the canonical whole-manifold eye: the full old stack scored 13.7% topology-correct
-# vs 33.6% for zero-flags legacy, WORSE in every donor class (P/S 4x, NO/O 3x, ...). Removing the
-# 20 proven-negative flags -> 2.1x, never-worse in every class, while KEEPING the edge-class
+# systems via the canonical whole-manifold eye: the full old stack scored 13.7% topology-correct,
+# against 33.6% for zero-flags legacy and 28.6% for the de-bloated set that replaced it -- so the
+# old stack was WORSE than no flags at all, in every donor class (P/S 4x, NO/O 3x, ...). Removing
+# the 20 proven-negative flags is the 13.7 -> 28.6 step, i.e. the 2.1x below; never-worse in every
+# class, while KEEPING the edge-class
 # builders (hapto/carbonyl/NHC/metalloid/kappa4/arom) so under-sampled edge chemistry cannot
 # regress, plus main's own never-worse CAGE_MD_GUARD + CN4_BOTH additions. Removed flags stay in
-# git history + remain individually env-gated (DELFIN_FFFREE_<flag>). Spot-verified: KITNEJ/QIDGEP/
+# git history + remain individually env-gated (DELFIN_FFFREE_<flag>). The measurement is commit
+# f8141ce3 on a private CCDC-derived pool and cannot be reproduced from this repository; the
+# percentages are recorded for the decision they justify, not as a published benchmark.
+# Spot-verified: KITNEJ/QIDGEP/
 # VULMOE (50-junk topo-wrong manifolds under the old stack) now build the crystal topology.
 _CHAMPION_FLAGS = (
     "DET_CLASSIFY",       # DETERMINISM: classify conformers without sharing one RDKit mol across
@@ -383,19 +388,48 @@ _CHAMPION_EXTRA_ENV = {
 }
 
 
-def _apply_construction_env(config: str) -> None:
-    """Set the DELFIN_FFFREE_* construction env for the chosen config (before import)."""
+def construction_env(config: str, *, rank: bool = False, method: str = "gfn2",
+                     charge=None, environ=None) -> dict:
+    """The environment a MANTA build needs, as a dict -- the ONE definition.
+
+    Every entry point that builds a MANTA manifold (this CLI, the dashboard's MANTA
+    button, CONTROL via ``manta_settings.apply_construction_env``) takes its switches
+    from here, so a landing cannot reach one of them and not the other.
+
+    * ``config``: 'champion' | 'builder' | 'default' (no construction switches).
+    * ``rank``/``method``: the in-library GFN energy ranking (``--rank``).
+    * ``charge``: the complex charge for that ranking (``DELFIN_GFNFF_CHARGE``); the
+      caller derives it from the SMILES when the user gave none.
+    * ``environ``: where overrides are read from (default ``os.environ``).  The
+      ``DELFIN_FFFREE_*`` set and the master switches are always forced to 1; the
+      non-FFFREE champion settings in ``_CHAMPION_EXTRA_ENV`` keep a value that is
+      already present there, so they stay overridable from the environment -- in
+      the CLI and in the dashboard alike (the dashboard used to force them).
+    """
+    environ = os.environ if environ is None else environ
+    env: dict = {}
+    if charge is not None:
+        env["DELFIN_GFNFF_CHARGE"] = str(int(charge))
+    if rank:
+        env["DELFIN_FFFREE_GFNFF_RANK"] = "1"
+        env["DELFIN_CONF_RANK_METHOD"] = method
     if config == "default":
-        return
-    os.environ["DELFIN_FFFREE_BUILDER"] = "1"
-    os.environ["DELFIN_FRAME_RANK_FIX"] = "1"
-    os.environ["DELFIN_CHIRAL_ENUM"] = "1"   # Lambda/Delta enantiomer enumeration (>=2 chelate pairs)
+        return env
+    env["DELFIN_FFFREE_BUILDER"] = "1"
+    env["DELFIN_FRAME_RANK_FIX"] = "1"
+    env["DELFIN_CHIRAL_ENUM"] = "1"   # Lambda/Delta enantiomer enumeration (>=2 chelate pairs)
     flags = _CHAMPION_FLAGS if config == "champion" else _BUILDER_FLAGS
     for f in flags:
-        os.environ["DELFIN_FFFREE_" + f] = "1"
+        env["DELFIN_FFFREE_" + f] = "1"
     if config == "champion":
         for _k, _v in _CHAMPION_EXTRA_ENV.items():
-            os.environ.setdefault(_k, _v)      # overridable through the environment
+            env[_k] = environ.get(_k, _v)      # overridable through the environment
+    return env
+
+
+def _apply_construction_env(config: str) -> None:
+    """Set the DELFIN_FFFREE_* construction env for the chosen config (before import)."""
+    os.environ.update(construction_env(config))
 
 
 def _safe_name(label: str, idx: int) -> str:
@@ -433,13 +467,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--out", default=Path("manta_out"), type=Path,
                    help="output directory (default: ./manta_out)")
     p.add_argument("--rank", action="store_true",
-                   help="energy-rank the ensemble with xtb (default: off / byte-identical)")
+                   help="energy-rank the manifold with xtb (default: off / byte-identical). "
+                        "Same as the dashboard's Rank: the builder's own GFN conformer ranking "
+                        "is switched on AND the emitted frames are reordered best-first by xtb "
+                        "single-point energy (geometry unchanged).")
     p.add_argument("--method", choices=["gfn2", "gfnff", "gfn1", "gfn0"], default="gfn2",
                    help="ranking/opt Hamiltonian when --rank/--opt is set (default: gfn2)")
     p.add_argument("--opt", type=int, default=None, metavar="N",
                    help="POST-PROCESSING (opt-in): xtb geometry-optimise the top-N emitted "
-                        "structures (0 = the whole manifold). Default: off — the manifold is "
+                        "structures (0 = the whole manifold), as the dashboard's Opt: the "
+                        "optimised head is re-sorted by its optimised energy and its labels get "
+                        "an '[METHOD-opt E kcal]' tag. Default: off — the manifold is "
                         "emitted with its construction geometry, unchanged. Independent of --rank.")
+    p.add_argument("--spin", default="auto",
+                   help="spin multiplicity for --rank/--opt: auto (default; parity-correct "
+                        "ground state) or a fixed multiplicity 1, 2, 3, ... (as the dashboard's "
+                        "Spin)")
     p.add_argument("--max-isomers", type=int, default=None, dest="max_isomers",
                    help="optionally cap the number of isomers (default: ALL — "
                         "the complete enumerated set)")
@@ -478,38 +521,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _geometry_opt_topn(isomers, topn, method, charge):
-    """POST-PROCESSING (opt-in, --opt): xtb geometry-optimise the top-N emitted structures
-    (0 = all).  ``isomers`` = ``[(xyz, label), ...]``; returns the same shape with optimised
-    geometries substituted for the head.  Best-effort: any structure whose optimisation fails
-    keeps its construction geometry.  The manifold is UNCHANGED when --opt is omitted."""
-    if not isomers or topn is None or int(topn) < 0:
-        return isomers
-    try:
-        from delfin.manta import _gfnff_rank as _gff
-    except Exception:
-        return isomers
-    if not _gff.available():
-        print("delfin-manta: --opt requested but xtb was not found on PATH; "
-              "keeping construction geometry.", file=sys.stderr)
-        return isomers
-    import concurrent.futures as _cf
-    n = len(isomers) if int(topn) == 0 else min(int(topn), len(isomers))
-    head, tail = list(isomers[:n]), list(isomers[n:])
-
-    def _opt_one(item):
-        xyz, label = item
-        try:
-            r = _gff.gfnff_optimize_autospin(xyz, charge=int(charge), method=method)
-            new_xyz = r[0] if isinstance(r, tuple) else r
-            return (new_xyz or xyz, label)
-        except Exception:
-            return (xyz, label)
-    with _cf.ThreadPoolExecutor(max_workers=max(1, min(n, (os.cpu_count() or 4)))) as ex:
-        head = list(ex.map(_opt_one, head))
-    return head + tail
-
-
 def _charge_for_opt(smiles, cli_charge):
     """Charge for --opt: the explicit --charge if given, else RDKit formal charge of the SMILES
     (same derivation the Submit tab uses), else 0."""
@@ -528,15 +539,17 @@ def _charge_for_opt(smiles, cli_charge):
 def main(argv=None) -> int:
     args = _build_parser().parse_args(argv)
 
-    # Construction config + ranking are env-gated; set ALL switches BEFORE import.
-    _apply_construction_env(args.construction)
-    if args.rank:
-        os.environ["DELFIN_FFFREE_GFNFF_RANK"] = "1"
-        os.environ["DELFIN_CONF_RANK_METHOD"] = args.method
-    if args.charge is not None:
-        os.environ["DELFIN_GFNFF_CHARGE"] = str(int(args.charge))
+    # The build runs through the SAME runner as the dashboard's MANTA button
+    # (delfin.common.manta_build): a fresh subprocess that gets this build's
+    # construction env and PYTHONHASHSEED=0, and nothing else from this process
+    # is changed.  The ranking charge is the SMILES formal charge unless --charge
+    # overrides it, the same derivation as the dashboard.
+    from delfin.common import manta_build
 
-    from delfin.smiles_converter import smiles_to_xyz_isomers
+    _charge = _charge_for_opt(args.smiles, args.charge)
+    _rank_charge = _charge if (args.rank or args.charge is not None) else None
+    env = construction_env(args.construction, rank=bool(args.rank),
+                           method=args.method, charge=_rank_charge)
 
     cap = args.max_isomers if args.max_isomers is not None else _ALL_ISOMERS
     kwargs = {
@@ -555,11 +568,9 @@ def main(argv=None) -> int:
     if args.hapto_approx != "auto":
         kwargs["hapto_approx"] = (args.hapto_approx == "on")
 
-    result = smiles_to_xyz_isomers(args.smiles, **kwargs)
-    if isinstance(result, tuple) and len(result) == 2:
-        isomers, error = result
-    else:
-        isomers, error = result, None
+    # No time cap on the command line (the dashboard has a UI budget, this has none).
+    isomers, error = manta_build.build_isomers_isolated(
+        args.smiles, kwargs, timeout=None, env=env)
 
     if error:
         print(f"delfin-manta: error: {error}", file=sys.stderr)
@@ -568,10 +579,20 @@ def main(argv=None) -> int:
         print("delfin-manta: error: no structures generated", file=sys.stderr)
         return 1
 
-    # POST-PROCESSING (opt-in): geometry-optimise the top-N.  Omitted -> pure manifold, unchanged.
+    # POST-PROCESSING (opt-in), the same two functions as the dashboard's Rank / Opt.
+    # Omitted -> the pure manifold, unchanged.
+    triples = [(xyz, len(_atom_lines(xyz)), label) for xyz, label in isomers]
+    if args.rank:
+        triples = manta_build.rank_by_single_point(
+            triples, _charge, method=args.method, spin=args.spin)
     if args.opt is not None and args.opt >= 0:
-        _chg = _charge_for_opt(args.smiles, args.charge)
-        isomers = _geometry_opt_topn(isomers, args.opt, args.method, _chg)
+        from delfin.manta import _gfnff_rank as _gff
+        if not _gff.available():
+            print("delfin-manta: --opt requested but xtb was not found on PATH; "
+                  "keeping construction geometry.", file=sys.stderr)
+        triples = manta_build.optimise_top(
+            triples, _charge, topn=args.opt, method=args.method, spin=args.spin)
+    isomers = [(xyz, label) for xyz, _n, label in triples]
 
     out: Path = args.out
     out.mkdir(parents=True, exist_ok=True)

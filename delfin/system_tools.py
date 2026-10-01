@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import signal
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
@@ -27,16 +28,46 @@ _TCL_CALL_RE = re.compile(
 
 
 def _run_login_shell(command: str, *, timeout: int = 15) -> subprocess.CompletedProcess[str] | None:
+    # Depth guard: a login shell's module initialization can itself spawn
+    # `bash -lc` (seen 2026-09-26 in a gate run on the login node: ~75
+    # nested `bash -lc module -t avail` processes, each sourcing the
+    # module init again). The marker is inherited by every child, so the
+    # FIRST probe shell sets it and no nested one starts at all.
+    if os.environ.get("_DELFIN_LOGIN_SHELL_PROBE"):
+        return None
+    env = dict(os.environ)
+    env["_DELFIN_LOGIN_SHELL_PROBE"] = "1"
     try:
-        return subprocess.run(
+        # Own process group: on a timeout the whole group is killed, not
+        # only bash -- whatever the module init started must not outlive
+        # the probe as an orphan on the login node.
+        proc = subprocess.Popen(
             ["bash", "-lc", command],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            check=False,
+            env=env,
+            start_new_session=True,
         )
     except Exception:
         return None
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except Exception:  # TimeoutExpired included
+        _kill_group(proc)
+        return None
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        proc.communicate(timeout=5)
+    except Exception:
+        pass
 
 
 def _normalize_module_line(line: str) -> str:

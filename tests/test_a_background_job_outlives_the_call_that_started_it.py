@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import child_env
+
 from delfin.agent import api_client as A
 from delfin.agent import bash_jobs as BJ
 from delfin.agent import mcp_client as M
@@ -152,7 +154,7 @@ def test_the_job_still_ends_with_its_process(tmp_path):
         os._exit(0)
     """)
     subprocess.run([sys.executable, "-c", script], timeout=60, check=True,
-                   env={**os.environ, "PYTHONPATH": os.getcwd()})
+                   env={**child_env(tmp_path), "PYTHONPATH": os.getcwd()})
     pid = int(pidfile.read_text())
     end = time.monotonic() + 5
     while time.monotonic() < end and _alive(pid):

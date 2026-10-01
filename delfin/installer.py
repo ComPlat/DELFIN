@@ -49,6 +49,10 @@ class Tool:
     arguments instead and has none. ``modules`` are the imports that prove a
     Python package is there. ``licensed`` tools are never part of a profile or
     an automatic install: they are installed when somebody names them.
+    ``own_env`` names the :mod:`delfin.common.external_builders` tool whose
+    interpreter the package lives in, for a tool that cannot live in DELFIN's
+    own environment (epic-MACE needs Python 3.7): its installer builds that
+    environment, and ``modules`` are looked for there, not here.
     """
 
     name: str
@@ -59,6 +63,7 @@ class Tool:
     aliases: Tuple[str, ...] = ()
     licensed: bool = False
     size: str = ""
+    own_env: str = ""
 
 
 _TORCH = "it brings PyTorch with it, which is a large download"
@@ -115,6 +120,9 @@ TOOLS: Tuple[Tool, ...] = (
     Tool("admetlab", "ai", "ADMETlab", switch="INSTALL_ADMETLAB", modules=("admetlab3",)),
     Tool("molsimplify", "ai", "molSimplify", switch="INSTALL_MOLSIMPLIFY", modules=("molSimplify",)),
     Tool("architector", "ai", "architector", switch="INSTALL_ARCHITECTOR", modules=("architector",)),
+    # Python 3.7 + RDKit 2020.09 in an environment of its own (micromamba).
+    Tool("epic_mace", "ai", "epic-MACE", switch="INSTALL_EPIC_MACE", modules=("mace",),
+         aliases=("epic-mace",), own_env="mace"),
     Tool("plotly", "ai", "plotly", switch="INSTALL_PLOTLY", modules=("plotly",)),
     # The structure editor, fetched into DELFIN's published directory.
     Tool("ketcher", "ketcher", "Ketcher"),
@@ -203,7 +211,7 @@ def packages() -> Dict[str, Dict[str, str]]:
     """Python modules that can be installed on demand, and what installs each."""
     out: Dict[str, Dict[str, str]] = {}
     for tool in TOOLS:
-        if tool.group not in ("analysis", "mlp", "ai") or tool.licensed:
+        if tool.group not in ("analysis", "mlp", "ai") or tool.licensed or tool.own_env:
             continue
         for module in tool.modules:
             if module in out:
@@ -404,6 +412,26 @@ def _module_present(module: str) -> bool:
         return False
 
 
+def _own_python(tool: Tool) -> Optional[str]:
+    """The interpreter of a tool with an environment of its own, if there is one."""
+    from delfin.common import external_builders
+
+    python = external_builders.tool_python(tool.own_env)
+    if python == sys.executable or not os.access(python, os.X_OK):
+        return None
+    return python
+
+
+def _own_env_has(tool: Tool, python: str) -> bool:
+    """Whether *tool*'s package sits in the site-packages beside *python*."""
+    prefix = Path(python).resolve().parent.parent
+    for module in tool.modules:
+        for site in prefix.glob("lib/python*/site-packages"):
+            if (site / module / "__init__.py").is_file() or (site / f"{module}.py").is_file():
+                return True
+    return False
+
+
 def _probe_name(tool: Tool) -> str:
     """The name qm_health checks a program under."""
     return "gnrs" if tool.name == "genarris" else tool.name
@@ -415,6 +443,9 @@ def present(tool: Tool) -> bool:
         from delfin.dashboard import ketcher
 
         return bool(ketcher.stored_version())
+    if tool.own_env:
+        python = _own_python(tool)
+        return bool(python) and _own_env_has(tool, python)
     if tool.modules:
         return any(_module_present(module) for module in tool.modules)
     import sysconfig
@@ -445,11 +476,17 @@ def update(requested: Optional[Iterable[str]] = None, *,
     return install(wanted, on_line=on_line, timeout=timeout, update=True)
 
 
-def _imports(module: str, timeout: float = 300.0) -> Tuple[bool, str]:
+def _imports(module: str, timeout: float = 300.0, python: Optional[str] = None) -> Tuple[bool, str]:
     """Whether *module* imports in a fresh interpreter -- found, not guessed."""
+    env = None
+    if python:
+        # Another environment, maybe another Python version: none of this
+        # interpreter's paths may decide what imports there.
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["PYTHONNOUSERSITE"] = "1"
     try:
-        done = subprocess.run([sys.executable, "-c", f"import {module}"],
-                              capture_output=True, text=True, timeout=timeout)
+        done = subprocess.run([python or sys.executable, "-c", f"import {module}"],
+                              capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return False, f"importing it did not finish in {timeout:.0f} s"
     said = (done.stderr or "").strip().splitlines()
@@ -474,6 +511,15 @@ def _repair_one(tool: Tool, named: bool, *, on_line, timeout) -> Optional[Dict[s
         if present(tool):
             return _checked(tool, True, "checked", f"{tool.label} is installed")
         return reinstall("not installed") if named else None
+
+    if tool.own_env:
+        python = _own_python(tool)
+        if not python or not _own_env_has(tool, python):
+            return reinstall("not installed") if named else None
+        ok, why = _imports(tool.modules[0], python=python)
+        if ok:
+            return _checked(tool, True, "checked", f"{tool.label} imports in {python}")
+        return reinstall(f"{tool.modules[0]} does not import in {python}" + (f" ({why})" if why else ""))
 
     if tool.modules:
         found = [module for module in tool.modules if _module_present(module)]

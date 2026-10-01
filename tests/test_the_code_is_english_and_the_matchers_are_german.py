@@ -143,7 +143,10 @@ def test_a_tool_message_stays_english(call):
 
 # The modules that are allowed to hold German, and what they hold it for.
 _MATCHER_MODULES = ("german", "office", "verify_guard", "api_client",
-                    "subagents", "memory_store", "prompt_loader")
+                    "subagents", "memory_store", "prompt_loader",
+                    # the completion check's German verbs and nouns moved
+                    # here from api_client (2026-09-25)
+                    "task_evidence")
 
 _UMLAUT = re.compile(r"[äöüßÄÖÜ]")
 
@@ -177,7 +180,9 @@ def _matcher_hits(name: str) -> int:
 # no-superstring rule in the prompt-module test. Deleting dead weight is
 # not the same as dropping coverage, which is why the number is written
 # down with its reason rather than just tracked.)
-_CENSUS_FLOOR = 234   # 236 -> 234 on 2026-09-11: two German NOTES (not matchers) went English
+_CENSUS_FLOOR = 240   # 236 -> 234 on 2026-09-11: two German NOTES (not matchers) went English
+                      # 234 -> 240 on 2026-09-25: the completion check moved from
+                      # api_client (-9) to task_evidence (+15)
 
 
 def test_the_german_matchers_are_not_quietly_dropped():

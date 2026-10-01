@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import re
 import shutil
@@ -114,6 +115,51 @@ class PipelineContext:
 # ---------------------------------------------------------------------------
 # OCCUPIER helpers
 # ---------------------------------------------------------------------------
+
+#: Sidecar file inside each ``*_OCCUPIER`` folder carrying the SHA-256 of
+#: the CONTROL.txt the results were produced against.
+_CONTROL_FINGERPRINT_FILE = ".control_fingerprint"
+
+
+def _stamp_occupier_control(control_path: Optional[Path], occ_dir: Path) -> None:
+    """Record which CONTROL.txt the OCCUPIER results in *occ_dir* were
+    produced against, so a later reuse can compare it freshly."""
+    if control_path is None:
+        return
+    try:
+        digest = hashlib.sha256(Path(control_path).read_bytes()).hexdigest()
+        (Path(occ_dir) / _CONTROL_FINGERPRINT_FILE).write_text(
+            digest + "\n", encoding="utf-8")
+    except OSError:
+        # Stamping must never break the workflow itself; an unstamped
+        # result simply will not be reused (see _occupier_results_fresh).
+        logger.warning("Could not stamp control fingerprint in %s", occ_dir)
+
+
+def _occupier_results_fresh(control_path: Optional[Path], occ_dir: Path) -> bool:
+    """Grounding check for reusing existing OCCUPIER results.
+
+    True only when the OCCUPIER.txt in *occ_dir* exists AND the control
+    file it was stamped with is byte-identical to the CURRENT control
+    file. Missing stamp (legacy results), a corrupted stamp, or any
+    control change since the results were produced is unconfirmed
+    state: fail closed, force a rerun.
+    """
+    occ_dir = Path(occ_dir)
+    if control_path is None or not Path(control_path).is_file():
+        return False
+    if not (occ_dir / "OCCUPIER.txt").is_file():
+        return False
+    stamp_file = occ_dir / _CONTROL_FINGERPRINT_FILE
+    if not stamp_file.is_file():
+        return False
+    try:
+        stamped = stamp_file.read_text(encoding="utf-8").strip()
+        current = hashlib.sha256(
+            Path(control_path).read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return False
+    return bool(stamped) and stamped == current
 
 
 # DEPRECATED FUNCTIONS REMOVED:
@@ -290,7 +336,15 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
         initial_rerun = False
         need_occ_workflows = False
 
-        if initial_requested or not initial_report.exists():
+        if initial_requested or not _occupier_results_fresh(
+                ctx.control_file_path, initial_folder):
+            if not initial_requested and initial_report.exists():
+                logger.warning(
+                    "Existing OCCUPIER results in %s are unconfirmed against "
+                    "the current CONTROL.txt (changed since they were "
+                    "produced, or produced without a stamp); rerunning.",
+                    initial_folder,
+                )
             print("\nOCCUPIER for the initial system:\n")
             initial_rerun = True
             need_occ_workflows = True
@@ -310,13 +364,17 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             # Check if we need to run ox/red workflows
             if not need_occ_workflows:
                 for step in _extract_steps(config.get("oxidation_steps", "")):
-                    if not (Path(f"ox_step_{step}_OCCUPIER") / "OCCUPIER.txt").exists():
+                    if not _occupier_results_fresh(
+                            ctx.control_file_path,
+                            Path(f"ox_step_{step}_OCCUPIER")):
                         need_occ_workflows = True
                         break
 
             if not need_occ_workflows:
                 for step in _extract_steps(config.get("reduction_steps", "")):
-                    if not (Path(f"red_step_{step}_OCCUPIER") / "OCCUPIER.txt").exists():
+                    if not _occupier_results_fresh(
+                            ctx.control_file_path,
+                            Path(f"red_step_{step}_OCCUPIER")):
                         need_occ_workflows = True
                         break
 
@@ -355,6 +413,19 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
 
                 # Mark that we used combined execution
                 config['_used_combined_occupier'] = True
+
+                # Stamp the freshly produced results so the NEXT run can
+                # judge their freshness against its own control file.
+                _stamp_occupier_control(ctx.control_file_path,
+                                        Path("initial_OCCUPIER"))
+                for step in _extract_steps(config.get("oxidation_steps", "")):
+                    _stamp_occupier_control(
+                        ctx.control_file_path,
+                        Path(f"ox_step_{step}_OCCUPIER"))
+                for step in _extract_steps(config.get("reduction_steps", "")):
+                    _stamp_occupier_control(
+                        ctx.control_file_path,
+                        Path(f"red_step_{step}_OCCUPIER"))
             else:
                 logger.info("Reusing existing OCCUPIER oxidation/reduction workflows")
 
@@ -778,9 +849,15 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
     engine = str(config.get('hyperpol_xTB_engine', 'std2')).strip().lower()
     use_bfw = str(config.get('hyperpol_xTB_bfw', 'no')).strip().lower() == 'yes'
     import math
-    raw_wl = str(config.get('hyperpol_xTB_wavelengths', '')).strip()
-    if raw_wl and raw_wl.lower() not in ('', 'none', 'static'):
-        wavelengths = [float(w.strip()) for w in raw_wl.split(',') if w.strip()]
+    # A CONTROL value holding a comma is already a list when it arrives here
+    # (_parse_control_file splits it), so the documented two-wavelength form
+    # "1064,532" used to be stringified to "['1064', '532']" and die in float().
+    raw_wl = config.get('hyperpol_xTB_wavelengths', '')
+    parts = ([str(w) for w in raw_wl] if isinstance(raw_wl, (list, tuple))
+             else str(raw_wl).split(','))
+    parts = [w.strip() for w in parts if str(w).strip()]
+    if parts and ' '.join(parts).lower() not in ('none', 'static'):
+        wavelengths = [float(w) for w in parts]
     else:
         wavelengths = [math.inf]  # static only
     energy_window = float(config.get('hyperpol_xTB_energy_window', 15.0))
@@ -1478,7 +1555,9 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     # 0 means "the complete manifold".  It is not a truncation: the builder uses
     # max_isomers * cap_mult as its pre-UFF candidate budget, so a small number
     # shrinks the search rather than just shortening the answer.
-    max_isomers = _setting('MANTA_MAX_ISOMERS', 'GUPPY_MAX_ISOMERS', 100, int)
+    # An absent key is 0 too (it used to fall back to 100, a silent cap the CLI
+    # and the dashboard never had).
+    max_isomers = _setting('MANTA_MAX_ISOMERS', 'GUPPY_MAX_ISOMERS', 0, int)
     if max_isomers <= 0:
         max_isomers = 100000
     rmsd_cutoff = _setting('MANTA_RMSD_CUTOFF', 'GUPPY_RMSD_CUTOFF', 0.3, float)
@@ -1593,7 +1672,7 @@ def _resolve_smiles_converter(config: Dict[str, Any]) -> str:
     if raw_value == 'GUPPY':
         # The old spelling of the same builder; see config._apply_guppy_legacy.
         return 'MANTA'
-    if raw_value in {'QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR'}:
+    if raw_value in {'QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'}:
         return raw_value
     if str(config.get('GUPPY', 'no')).strip().lower() == 'yes':
         return 'GUPPY'
@@ -1620,6 +1699,8 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
         is_smiles_string,
         smiles_to_xyz,
         smiles_to_xyz_architector,
+        smiles_to_xyz_mace,
+        smiles_to_xyz_molsimplify,
         smiles_to_xyz_quick,
     )
 
@@ -1680,18 +1761,23 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
                 except Exception as exc:  # noqa: BLE001
                     logger.error("Could not write QUICK-converted coordinates to '%s': %s", start_path, exc)
                     raise ValueError(f"Could not write QUICK-converted coordinates: {exc}") from exc
-            elif converter == 'ARCHITECTOR':
-                xyz_content, error = smiles_to_xyz_architector(smiles_line)
+            elif converter in ('ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'):
+                # The shared external build (delfin.common.external_builders),
+                # the same one as the dashboard's buttons; its first frame.
+                build = {'ARCHITECTOR': smiles_to_xyz_architector,
+                         'MOLSIMPLIFY': smiles_to_xyz_molsimplify,
+                         'MACE': smiles_to_xyz_mace}[converter]
+                xyz_content, error = build(smiles_line)
 
                 if error:
-                    logger.error("ARCHITECTOR SMILES conversion failed: %s", error)
-                    raise ValueError(f"ARCHITECTOR SMILES conversion failed: {error}")
+                    logger.error("%s SMILES conversion failed: %s", converter, error)
+                    raise ValueError(f"{converter} SMILES conversion failed: {error}")
 
                 try:
                     _write_smiles_xyz_to_start(start_path, xyz_content)
                 except Exception as exc:  # noqa: BLE001
-                    logger.error("Could not write ARCHITECTOR coordinates to '%s': %s", start_path, exc)
-                    raise ValueError(f"Could not write ARCHITECTOR coordinates: {exc}") from exc
+                    logger.error("Could not write %s coordinates to '%s': %s", converter, start_path, exc)
+                    raise ValueError(f"Could not write {converter} coordinates: {exc}") from exc
             else:
                 # NORMAL: use the robust DELFIN converter first, then fall back
                 # to the quick single-conformer path if the full conversion fails.

@@ -1,0 +1,385 @@
+"""Skill proposals: a self-written skill is only a PROPOSAL.
+
+The Hermes lesson (arXiv 2608.12851): an agent that activates its own
+skills turns unsafe successes into permanent rules. So a proposal lives
+in ``~/.delfin/skills/_proposals`` where ``discover_skills`` never looks
+(skills.py only loads direct ``<name>/SKILL.md`` children of the skill
+dirs), it is blocked when the safety check finds anything, and only a
+human ``accept`` moves it into ``~/.delfin/skills/<name>/``.
+
+Never overwritten, never deleted: a name conflict gets a new name, a
+rejection moves the folder to ``rejected/``.
+"""
+from __future__ import annotations
+
+import dataclasses
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .memory_store import _atomic_write, _private_dir, _set_file_perms
+
+def _proposals_dir() -> Path:
+    # Resolved per call, not at import time: tests (and any redirected
+    # HOME) must be able to move the store after this module is loaded.
+    return Path.home() / ".delfin" / "skills" / "_proposals"
+
+
+def __getattr__(name):
+    # PEP 562: ``PROPOSALS_DIR`` reads the CURRENT home, like every
+    # other path in memory_store. A module-level constant would pin the
+    # first HOME it ever saw.
+    if name == "PROPOSALS_DIR":
+        return _proposals_dir()
+    raise AttributeError(name)
+
+
+_STATUS_PENDING = "pending"
+_STATUS_BLOCKED = "blocked"
+_STATUS_ACCEPTED = "accepted"
+_STATUS_REJECTED = "rejected"
+
+
+@dataclasses.dataclass
+class Evidence:
+    """The proof a proposal rests on. No evidence, no proposal."""
+
+    kind: str  # "test" | "calc" | "job" | "recipe"
+    ref: str   # test node id, calc folder, job id, ...
+    detail: str = ""
+    verified_at: str = ""
+    # The ledger entries (command, exit code, tree fingerprint) of the
+    # green runs this evidence was observed on. A proposal is accepted
+    # later, in another session, where the ledger of the proposing one
+    # is gone; carrying the runs lets accept() re-verify them -- and
+    # evidence_freshness still refuses them once the code has moved.
+    runs: list = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass
+class Proposal:
+    name: str
+    text: str
+    evidence: list[Evidence]
+    source: str
+    status: str  # pending | blocked | accepted | rejected
+    findings: list[str]
+    created: str
+    base_version: str = ""
+
+
+# --------------------------------------------------------------------------
+# helpers
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _safety_findings(text: str) -> list[str]:
+    """Ask skill_safety (package 3); a check that cannot run blocks.
+
+    An absent or crashing module is never a silent pass: the unchecked
+    proposal goes to status "blocked" with a finding the human can read.
+    Until package 3 lands, that is every proposal -- the correct default
+    is "not verified", not "verified by absence of a checker".
+    """
+    try:
+        from . import skill_safety  # noqa: PLC0415
+    except ImportError as exc:
+        return [f"safety check unavailable: {exc}"]
+    try:
+        return [str(f) for f in skill_safety.check(text)]
+    except Exception as exc:  # the check itself is the guard: it may not
+        # crash its caller, and it may not pass what it could not read.
+        return [f"safety check failed: {exc!r}"]
+
+
+def _prop_dir(name: str, *, root: Path | None = None) -> Path:
+    return (root or _proposals_dir()) / name
+
+
+def _free_name(name: str, root: Path | None = None,
+               extra: Path | None = None) -> str:
+    """A name whose folder is free; conflicts get ``-2``, ``-3``, ..."""
+    base = root or _proposals_dir()
+    taken = lambda n: _prop_dir(n, root=base).exists() or (
+        extra is not None and (extra / n).exists())
+    if not taken(name):
+        return name
+    i = 2
+    while taken(f"{name}-{i}"):
+        i += 1
+    return f"{name}-{i}"
+
+
+def _write_proposal(proposal: Proposal, dirpath: Path) -> None:
+    """Persist a proposal as ``SKILL.md`` + ``proposal.json`` (0600)."""
+    _private_dir(dirpath)
+    _atomic_write(dirpath / "SKILL.md", proposal.text)
+    data = dataclasses.asdict(proposal)
+    _atomic_write(dirpath / "proposal.json", json.dumps(data, ensure_ascii=False))
+    _set_file_perms(dirpath / "proposal.json")
+
+
+def _read_proposal(dirpath: Path) -> Proposal:
+    data = json.loads((dirpath / "proposal.json").read_text(encoding="utf-8"))
+    data["evidence"] = [Evidence(**e) for e in data.get("evidence", [])]
+    return Proposal(**data)
+
+
+def _iter_proposal_dirs(root: Path | None = None) -> list[Path]:
+    base = root or _proposals_dir()
+    if not base.is_dir():
+        return []
+    out = []
+    for child in sorted(base.iterdir()):
+        if child.is_dir() and (child / "proposal.json").is_file():
+            out.append(child)
+    return out
+
+
+# --------------------------------------------------------------------------
+# public API
+
+
+def propose(name: str, text: str, *, evidence, source: str,
+            base_version: str = "") -> Proposal:
+    """Record a new skill proposal. Invisible until accepted by a human.
+
+    Raises ValueError without evidence. A name conflict gets a new name
+    (never an overwrite). Safety findings move the proposal to status
+    "blocked" and are stored for the human to read.
+    """
+    evs = [e if isinstance(e, Evidence) else Evidence(**e) for e in (evidence or [])]
+    if not evs:
+        raise ValueError("a skill proposal needs evidence: no evidence, no rule")
+    name = (name or "").strip()
+    if not name or "/" in name or name.startswith("."):
+        raise ValueError(f"invalid proposal name: {name!r}")
+    findings = _safety_findings(text)
+    proposal = Proposal(
+        name=name,
+        text=text,
+        evidence=evs,
+        source=source,
+        status=_STATUS_BLOCKED if findings else _STATUS_PENDING,
+        findings=findings,
+        created=_now(),
+        base_version=base_version,
+    )
+    skills_root = _proposals_dir().parent
+    # a pending proposal must not shadow a skill that already exists, and
+    # two proposals must not collide: both get a fresh name, nothing is
+    # overwritten. A PATCH is the exception on the live-skill side: it
+    # refers to the skill it patches, so the live name is not a conflict
+    # for it (the _proposals folder must still be free).
+    if base_version:
+        proposal.name = _free_name(name)
+    else:
+        proposal.name = _free_name(name, extra=skills_root)
+    _write_proposal(proposal, _prop_dir(proposal.name))
+    return proposal
+
+
+def list_proposals(status: str | None = None) -> list[Proposal]:
+    """All proposals on disk, optionally filtered by status.
+
+    Includes ``rejected/``: a rejection is a decision to be findable,
+    not a deletion. Accepted proposals are NOT listed -- they are live
+    skills now, and the live skills tree is their home.
+    """
+    out = []
+    roots = [_proposals_dir(), _proposals_dir() / "rejected"]
+    for base in roots:
+        for d in _iter_proposal_dirs(base):
+            try:
+                p = _read_proposal(d)
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if status is None or p.status == status:
+                out.append(p)
+    return sorted(out, key=lambda p: (p.status, p.name))
+
+
+def get_proposal(name: str) -> Proposal | None:
+    d = _prop_dir(name)
+    if not (d / "proposal.json").is_file():
+        return None
+    try:
+        return _read_proposal(d)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+# Evidence kinds that carry the proposal's chemistry claim: an invalid
+# one of these is not outvoted by a valid optional entry (coordinator
+# rule, wave "Lernen"): a proposal whose calc/test evidence is invalid
+# is not acceptable, whatever else verifies.
+_MANDATORY_KINDS = frozenset({"calc", "test"})
+
+
+def _verify_evidence_gate(proposal: Proposal, *, workspace=None,
+                           runs=None, list_jobs=None) -> None:
+    """The acceptance gate on evidence (package 8, verify_evidence).
+
+    Rule: at least ONE entry must verify ok, AND no mandatory entry
+    (calc/test) may be invalid. A team-pulled proposal with placeholder
+    evidence fails the same gate -- the pull path does not verify
+    anything, so the pull alone must not activate a skill.
+
+    Import is optional and fail-closed in the same spirit as the safety
+    check: while package 8 is not merged, no evidence can be verified,
+    so nothing is verifiable and accept() refuses with a readable
+    reason instead of waving an unverifiable proposal through.
+    """
+    try:
+        from . import evidence as _evidence  # noqa: PLC0415
+    except ImportError as exc:
+        raise ValueError(
+            f"evidence verification unavailable: {exc}") from exc
+    results = []
+    for ev in proposal.evidence:
+        ok, detail = _evidence.verify_evidence(
+            ev, workspace=workspace, runs=runs, list_jobs=list_jobs)
+        results.append((ev, bool(ok), str(detail)))
+    if not any(ok for _, ok, _ in results):
+        reasons = "; ".join(f"[{ev.kind}] {ev.ref}: {detail}"
+                            for ev, _, detail in results) or "no evidence"
+        raise ValueError(
+            f"proposal {proposal.name!r} has no verifying evidence: "
+            f"{reasons}")
+    bad_mandatory = [f"[{ev.kind}] {ev.ref}: {detail}"
+                     for ev, ok, detail in results
+                     if not ok and ev.kind in _MANDATORY_KINDS]
+    if bad_mandatory:
+        raise ValueError(
+            f"proposal {proposal.name!r} has invalid mandatory evidence "
+            f"(calc/test): {'; '.join(bad_mandatory)}")
+
+
+def _archive_gate(proposal: Proposal, target: Path) -> None:
+    """Preserve the previously active version (package 4) before the move.
+
+    Only fires for patch proposals (base_version != ""). The current
+    live text is archived verbatim; a SkillPatchError (an archive for
+    that version already exists, or the version is empty) is a clean
+    refusal -- the human decides whether a different version number is
+    in order, and nothing is activated.
+    """
+    if not proposal.base_version:
+        return
+    try:
+        from . import skill_patch  # noqa: PLC0415
+    except ImportError as exc:
+        raise ValueError(
+            f"cannot archive version {proposal.base_version!r}: "
+            f"skill_patch unavailable: {exc}") from exc
+    live_skill = target / "SKILL.md"
+    try:
+        skill_patch.archive_previous_version(
+            live_skill, proposal.base_version)
+    except skill_patch.SkillPatchError as exc:
+        raise ValueError(
+            f"cannot accept patch for {proposal.name!r}: {exc}") from exc
+
+
+def accept(name: str, *, by: str, workspace=None, runs=None,
+           list_jobs=None) -> Path:
+    """Move a pending proposal into the live skills directory.
+
+    Only status "pending" is acceptable: "blocked" means the safety check
+    found something and a human must read it, not wave it through here.
+    A name already taken by a live skill gets a new name.
+
+    Before anything moves, the evidence gate runs (package 8): at least
+    one entry must verify, no calc/test entry may be invalid. For a
+    patch proposal (base_version set) the previously active version is
+    archived first (package 4); if that fails, nothing is activated.
+    """
+    d = _prop_dir(name)
+    if not (d / "proposal.json").is_file():
+        raise ValueError(f"no proposal named {name!r}")
+    proposal = _read_proposal(d)
+    if proposal.status == _STATUS_BLOCKED:
+        raise ValueError(
+            f"proposal {name!r} is blocked by the safety check; "
+            "review its findings before accepting")
+    if proposal.status != _STATUS_PENDING:
+        raise ValueError(f"proposal {name!r} is already {proposal.status}")
+
+    stored = [r for ev in proposal.evidence
+              for r in (getattr(ev, "runs", None) or [])
+              if isinstance(r, dict)]
+    _verify_evidence_gate(proposal, workspace=workspace,
+                          runs=list(runs or []) + stored,
+                          list_jobs=list_jobs)
+
+    skills_root = _proposals_dir().parent
+    if proposal.base_version:
+        # A patch updates the LIVE skill of the same name: no fresh name,
+        # no second folder. Every step that can fail runs BEFORE the
+        # SKILL.md replace, so a failure leaves the live skill untouched
+        # (operator review of 2ea09a02: a record collision used to
+        # crash AFTER the new text was already live).
+        final_name = name
+        target = skills_root / final_name
+        _private_dir(skills_root)
+        _archive_gate(proposal, target)
+        # One acceptance record per replaced version, never overwritten:
+        # a second patch on the same skill gets its own record; the SAME
+        # base version twice is a real collision and must refuse here,
+        # BEFORE the live text is replaced.
+        records_dir = target / "_accepted_proposals" / proposal.base_version
+        if records_dir.exists():
+            raise ValueError(
+                f"cannot accept patch for {proposal.name!r}: an acceptance "
+                f"record for version {proposal.base_version!r} already "
+                "exists")
+        # the record destination must exist as a (still empty) directory
+        # before the move; os.replace cannot create parents
+        _private_dir(records_dir)
+        os.replace(d / "SKILL.md", target / "SKILL.md")
+        os.replace(d, records_dir)
+    else:
+        # Only the live skills tree counts here: the proposal's own
+        # folder in _proposals is being moved away, so counting it would
+        # rename every accepted proposal to "<name>-2" unconditionally.
+        final_name = _free_name(name, root=skills_root)
+        target = skills_root / final_name
+        _private_dir(skills_root)
+        os.replace(d, target)
+    proposal.status = _STATUS_ACCEPTED
+    proposal.name = final_name
+    # keep the acceptance traceable inside the live skill folder
+    _atomic_write(target / "proposal.json",
+                  json.dumps(dataclasses.asdict(proposal), ensure_ascii=False))
+    _set_file_perms(target / "proposal.json")
+    return target / "SKILL.md" if (target / "SKILL.md").exists() else target
+
+
+def reject(name: str, *, reason: str, by: str) -> Path:
+    """Move a proposal to ``rejected/`` with the reason. Nothing is deleted."""
+    if not reason or not reason.strip():
+        raise ValueError("a rejection needs a reason")
+    d = _prop_dir(name)
+    if not (d / "proposal.json").is_file():
+        raise ValueError(f"no proposal named {name!r}")
+    proposal = _read_proposal(d)
+    if proposal.status == _STATUS_ACCEPTED:
+        raise ValueError(f"proposal {name!r} is already accepted; "
+                         "rejecting a live skill is not this call")
+    rejected_root = _proposals_dir() / "rejected"
+    _private_dir(rejected_root)
+    final = _free_name(name, root=rejected_root)
+    target = rejected_root / final
+    proposal.status = _STATUS_REJECTED
+    proposal.findings = list(proposal.findings)
+    os.replace(d, target)
+    _write_proposal(proposal, target)
+    (target / "REJECTED.txt").write_text(
+        f"reason: {reason.strip()}\nby: {by}\n", encoding="utf-8")
+    _set_file_perms(target / "REJECTED.txt")
+    return target
+

@@ -132,8 +132,22 @@ def test_no_code_path_suggests_an_unreachable_mode():
 
 
 def test_the_picker_says_what_it_selects():
-    """The control answers one question -- which folder the session works
-    in. It used to be labelled for a concept that no longer exists."""
+    """The control selects a MODE -- a role prompt and the tool surface
+    that comes with it. Its values are dashboard / solo / office and its
+    own descriptions open with "Cheapest mode", "Code -- ... coding
+    agent", "Office -- administrative work".
+
+    It was labelled "Workspace:" for a time, on the argument that it
+    picks the folder the session works in. A folder follows from the
+    mode; it is not what is being chosen. And the word was taken:
+    `Workspace:` names the real working directory in five other places
+    the user sees, and `agent_workspace/` with its /workspace commands is
+    a third thing, so the label read as one of those two.
+    """
     src = _TAB.read_text(encoding="utf-8")
     i = src.index("mode_dropdown = widgets.Dropdown(")
-    assert 'description="Workspace:"' in src[i:i + 2500]
+    window = src[i:i + 2500]
+    assert 'description="Mode:"' in window
+    assert 'description="Workspace:"' not in window, (
+        "the picker selects a mode; Workspace names the session's "
+        "directory in five other places and would read as one of them")

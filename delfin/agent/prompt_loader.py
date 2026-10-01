@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    from delfin.agent import verify_recipe as _verify_recipe
+except ImportError:  # pragma: no cover - the module ships with the agent
+    _verify_recipe = None  # type: ignore[assignment]
+
 
 @dataclass(frozen=True)
 class PromptSection:
@@ -219,6 +224,15 @@ def _memory_entry_chunk(title: str, rel: str, raw: str) -> str:
 _MEMORY_INDEX_BUDGET_SHARE = 0.35
 _MEMORY_INDEX_MIN_CHARS = 300
 
+# HARD ceiling for the whole injected memory block, preamble included
+# (package 7). Measured 2026-09-27: real stores inject 1014-1743 chars,
+# so the cap never touches everyday recall — it is the ceiling a
+# degenerate store (one huge body, an inflated MEMORY.md) hits instead
+# of spending thousands of characters. Lower it with
+# ``agent.memory_context_budget``; 0 or negative leaves only the
+# callers' own ``max_chars`` in force.
+MEMORY_CONTEXT_HARD_CAP = 3600
+
 _INDEX_POINTER_RE = re.compile(r"\[[^\]]+\]\(([^)]+\.md)\)")
 
 
@@ -268,6 +282,14 @@ def _fit_memory_index(
             f"... and {hidden} more memories, not listed here — ask about a "
             "subject to have its memory recalled")
     return "\n".join(kept)
+
+
+def _has_body(markdown: str) -> bool:
+    """Whether a shared addendum says anything beyond its heading and its
+    HTML comments -- an unwritten scaffold is not injected."""
+    text = re.sub(r"<!--.*?-->", "", markdown or "", flags=re.DOTALL)
+    return any(line.strip() and not line.lstrip().startswith("#")
+               for line in text.splitlines())
 
 
 class PromptLoader:
@@ -541,6 +563,20 @@ class PromptLoader:
         """
         if self.skip_external_memory:
             return ""
+        # Package 7: the hard ceiling the whole block answers to. The
+        # callers' ``max_chars`` stays the working budget (index share,
+        # entry packing); this cap only clamps the final result, so the
+        # two compose rather than compete. 0/negative disables it and
+        # leaves exactly the behaviour the caller asked for.
+        try:
+            from delfin.user_settings import load_settings
+            _agent_cfg = (load_settings() or {}).get("agent") or {}
+            _cap = int(_agent_cfg.get("memory_context_budget",
+                                      MEMORY_CONTEXT_HARD_CAP))
+        except Exception:
+            _cap = MEMORY_CONTEXT_HARD_CAP
+        if _cap > 0:
+            max_chars = min(max_chars, _cap)
         try:
             home = Path.home()
         except Exception:
@@ -690,11 +726,31 @@ class PromptLoader:
         except Exception:
             pass
 
+        held_back = max(0, len(proj_entries) - len(proj_injected)) \
+            + max(0, len(glob_entries) - len(glob_injected))
         joined = "\n\n".join(chunks).strip()
+        # The notice is part of the block, so it is paid for out of the
+        # same budget as everything else. ``max_chars`` was already
+        # reduced by the preamble above, so the threshold here is the
+        # body budget alone — counting the preamble twice would cut the
+        # LAST body entry (the most task-relevant one) for a notice
+        # that is shorter than the preamble it double-counted.
+        notice = ""
         if len(joined) > max_chars:
-            joined = (joined[:max_chars]
-                      + f"\n\n... [truncated, {len(joined) - max_chars} "
-                        "chars omitted]")
+            # Hard cut, but never a silent one: the model and the user
+            # learn that the store outgrew the budget, and the sanctioned
+            # way to shrink it is named. Nothing is deleted — held-back
+            # entries stay in the store untouched.
+            notice = ("... [memory budget reached, {} chars and {} "
+                      "further memories not shown; a memory_tidy "
+                      "proposal is available (/tidy shows what, and "
+                      "changes nothing)]".format(
+                          max(0, len(joined) - max_chars),
+                          held_back if held_back else "some"))
+            room = max_chars - len(notice) - 2
+            joined = joined[:max(0, room)]
+        if notice:
+            joined = (joined + "\n\n" + notice) if joined else notice
         return f"{_MEMORY_BLOCK_PREAMBLE}\n\n{joined}"
 
     def _load_episode_recall_context(self, task_text: str = "",
@@ -767,6 +823,23 @@ class PromptLoader:
                 "The user's instructions and remembered preferences win: if "
                 "they say to leave the line out or word it differently, do "
                 "that.")
+
+    def _load_verify_recipe_context(self) -> str:
+        """How to check work in THIS workspace, read from its own files.
+
+        Calls the read-only verify_recipe module against the workspace
+        root (not the DELFIN source tree) and renders it for the prompt.
+        Empty when the workspace attests no checks -- no guessing.
+        """
+        if _verify_recipe is None or self.workspace_root is None:
+            return ""
+        try:
+            recipe = _verify_recipe.discover(self.workspace_root)
+            return _verify_recipe.render(recipe)
+        except Exception:
+            # A malformed CI file or an unreadable pyproject must never
+            # cost the session its prompt; the recipe is advisory.
+            return ""
 
     def _build_session_env_block(self) -> str:
         """Build a CLI-style environment summary for the system prompt.
@@ -1769,6 +1842,9 @@ class PromptLoader:
         #  * refusal: destructive / out-of-scope requests are refused
         #    explicitly and never routed around via another mode or tool.
         for _name, _rel in (
+            # First: the maintainer's principles, above every other rule.
+            # Loaded in every role; no setting turns it off.
+            ("principles_addendum", "principles_addendum.md"),
             ("honesty_addendum", "honesty_addendum.md"),
             ("memory_addendum", "memory_addendum.md"),
             ("git_workflow_addendum", "git_workflow_addendum.md"),
@@ -1779,6 +1855,8 @@ class PromptLoader:
             _text = _shared(_rel)
             if _name == "honesty_addendum":
                 _text = self._pin_language_rule(_text, session_language)
+            if _name == "principles_addendum" and not _has_body(_text):
+                continue
             if _text:
                 add(_name, self.LAYER_STABLE, _text)
                 injected.append(_name)
@@ -1927,6 +2005,15 @@ class PromptLoader:
                 add("episodes", self.LAYER_VOLATILE,
                     f"--- Past Sessions ---\n{episode_ctx}")
                 injected.append("episodes")
+
+            # How this workspace checks its work (tests/lint from its own
+            # CI or config), so the agent calls the right runner instead
+            # of guessing. Volatile: read from disk at build time, and it
+            # belongs to the workspace, not the prompt pack.
+            recipe_ctx = self._load_verify_recipe_context()
+            if recipe_ctx:
+                add("verify_recipe", self.LAYER_VOLATILE,
+                    f"--- How to verify work here ---\n{recipe_ctx}")
 
             # CLI-style environment block: cwd, branch, status, recent
             # commits. Kept near the bottom because the git status line
@@ -2190,6 +2277,19 @@ class PromptLoader:
         if chemistry_reminder and role_id in (
             "solo_agent", "research_agent", "builder_agent", "dashboard_agent",
         ):
+            if role_id == "dashboard_agent":
+                # The protocol is for method QUESTIONS. "stell den orca
+                # functional auf b3lyp ein" is a dashboard action: the
+                # keywords made it a chemistry task, the reminder said
+                # "search_docs BEFORE answering", and the benchmark run of
+                # 2026-09-25 searched twice and set nothing -- against the
+                # dashboard's own rule 1.
+                chemistry_reminder = (
+                    "Applies to method and parameter QUESTIONS. A request "
+                    "to set, open or switch something in the dashboard is "
+                    "answered with its ACTION line first (rule 1: dashboard "
+                    "action first); no search is needed for that.\n"
+                    + chemistry_reminder)
             add("chemistry_protocol", self.LAYER_VOLATILE,
                 f"--- Chemistry Protocol ---\n{chemistry_reminder}")
 

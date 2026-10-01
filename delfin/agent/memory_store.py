@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 import unicodedata
@@ -161,7 +162,7 @@ def _atomic_write(path: Path, text: str) -> None:
 # rewrites unchanged via the ``extras`` mapping.
 _KNOWN_FRONT_FIELDS = frozenset({
     "name", "description", "created_at", "updated_at", "use_count",
-    "superseded", "type", "domain", "source",
+    "superseded", "type", "domain", "source", "learned_at",
 })
 
 
@@ -177,6 +178,52 @@ SOURCE_AGENT = "agent"
 # bumps updated_at, so this is disuse, not age: a memory the agent keeps
 # pulling into prompts survives indefinitely.
 _AGENT_MEMORY_MAX_AGE_DAYS = 90
+
+
+def _head_ref(root: Path | str) -> str:
+    """Where a memory is being written: ``<branch>@<commit12>``, or "".
+
+    Input: a path inside a repository. Output: the branch name and the
+    abbreviated commit of HEAD, joined by "@". A detached HEAD has no
+    branch name and reads as ``detached@<commit12>``.
+
+    Semantics: provenance of the BODY, not of the file. It is stamped when
+    a body is written and re-stamped when a body is replaced, so it always
+    names the state of the tree the current text was measured against. It
+    is not touched by recall -- recall says a memory was useful, not that
+    it was learned again.
+
+    Why both halves. The commit alone answers whether the work reached the
+    default branch, which is the question that decides whether a memory
+    describes something that exists. The branch alone answers nothing
+    after it is deleted. Together they separate "learned on work that
+    landed" from "learned on work that was abandoned".
+
+    Every failure -- no git, no commit, a timeout, an unreadable
+    repository -- answers "", and no line is written. A memory without
+    provenance is treated as one that landed, which is the existing
+    behaviour for every file written before this field.
+
+    Cost: two git calls per newly written body, none on recall.
+    """
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short=12", "HEAD"],
+            capture_output=True, text=True, timeout=5)
+        if head.returncode != 0:
+            return ""
+        commit = (head.stdout or "").strip()
+        if not commit:
+            return ""
+        name = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5)
+        branch = (name.stdout or "").strip() if name.returncode == 0 else ""
+        if not branch or branch == "HEAD":
+            branch = "detached"
+        return f"{branch}@{commit}"
+    except Exception:
+        return ""
 
 
 def _normalise_source(value: object) -> str:
@@ -203,6 +250,7 @@ def _compose_frontmatter(
     superseded: str = "",
     domain: str = "",
     source: str = "",
+    learned_at: str = "",
     extras: dict[str, str] | None = None,
 ) -> str:
     """Serialise a typed memory file (frontmatter + body)."""
@@ -218,6 +266,8 @@ def _compose_frontmatter(
         lines.append(f"domain: {domain}")
     if source:
         lines.append(f"source: {_normalise_source(source)}")
+    if learned_at:
+        lines.append(f"learned_at: {learned_at}")
     if superseded:
         lines.append(f"superseded: {superseded}")
     for key, value in (extras or {}).items():
@@ -235,7 +285,7 @@ def _read(path: Path) -> dict[str, Any]:
 
 
 def _write(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _private_dir(path.parent)
     data["updated_at"] = time.time()
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     try:
@@ -601,7 +651,7 @@ def register_office_workspace(path: Path | str) -> None:
         _office_ws_cache = known
         try:
             f = _office_ws_file()
-            f.parent.mkdir(parents=True, exist_ok=True)
+            _private_dir(f.parent)
             _atomic_write(f, json.dumps(sorted(known), ensure_ascii=False))
         except OSError:
             pass
@@ -833,8 +883,177 @@ def _slugify(text: str, max_len: int = 60) -> str:
     return _german.slugify(text, max_len=max_len, fallback="memory")
 
 
+#: Answered once per path. _project_slug is called on every memory read
+#: and write, and the answer cannot change while a process runs.
+_repo_root_cache: dict = {}
+
+
+def _memory_key_mode() -> str:
+    """Which identity names the project store: "path" or "repo".
+
+    "path" (the default) keys on the main worktree's directory, so two
+    clones of one repository learn separately. "repo" keys on the first
+    commit of the history, so every clone shares one store.
+
+    The default stays narrow on purpose: a key that is too narrow costs
+    recall, one that is too wide puts one project's notes into another's
+    prompt. Anything unrecognised reads as the default rather than as an
+    error -- a typo in a setting must not silently point the agent at an
+    empty store.
+    """
+    try:
+        from delfin.user_settings import load_settings
+        value = ((load_settings() or {}).get("agent") or {}).get("memory_key")
+    except Exception:
+        return "path"
+    return "repo" if str(value or "").strip().lower() == "repo" else "path"
+
+
+def _first_commit(root: Path) -> str:
+    """The first commit of *root*'s history, or "".
+
+    Chosen over the origin URL because it survives a remote being renamed
+    or moved, exists in a repository with no remote at all, and is the
+    same in every clone of one history. A repository with several root
+    commits takes the first in rev-list order, which is stable for a
+    given history.
+
+    The limit, measured rather than argued: a commit object is its tree,
+    author, message and timestamp, so two repositories created with all
+    four identical -- a scaffolding script running twice inside one
+    second -- share a first commit and then share a store. Not defended
+    against, because every defence costs the property this exists for:
+    mixing the path back in separates a clone from its original, mixing
+    in the creation time separates a repository from its own backup.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "rev-list", "--max-parents=0", "HEAD"],
+            capture_output=True, text=True, timeout=5)
+        if out.returncode != 0:
+            return ""
+        first = (out.stdout or "").strip().splitlines()
+        return first[0].strip() if first else ""
+    except Exception:
+        return ""
+
+
+def _repository_root(path: Path) -> Path:
+    """The main worktree of *path*'s repository, or *path* resolved.
+
+    A linked worktree is the same repository, and ``--git-common-dir``
+    names the main one from inside either. Measured before this existed:
+    538 of 542 stores were keyed to directories that no longer exist --
+    session worktrees, scratch trees, probe directories -- holding 358 of
+    the 371 notes ever written.
+
+    Every failure answers the plain path. A wrong answer that SPLITS a
+    store costs recall; a wrong answer that MERGES two projects puts one
+    project's notes into another's prompt.
+    """
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        return Path(path)
+    cached = _repo_root_cache.get(str(resolved))
+    if cached is not None:
+        return cached
+    answer = resolved
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(resolved), "rev-parse",
+             "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5)
+        common = (out.stdout or "").strip()
+        if out.returncode == 0 and common:
+            root = Path(common).parent
+            if root.is_dir():
+                answer = root.resolve()
+    except Exception:
+        answer = resolved
+    _repo_root_cache[str(resolved)] = answer
+    return answer
+
+
 def _project_slug(repo_root: Path) -> str:
-    return "-" + str(Path(repo_root).resolve()).replace("/", "-").lstrip("-")
+    root = _repository_root(Path(repo_root))
+    if _memory_key_mode() == "repo":
+        first = _first_commit(root)
+        if first:
+            # The hash alone. A first draft put the directory name in
+            # front for legibility, which is exactly what differs between
+            # a clone and its original -- the slug has to be the same in
+            # both or the setting does nothing. Legibility is paid for
+            # elsewhere: the store prints its path when asked.
+            return f"-repo-{first[:12]}"
+    return "-" + str(root).replace("/", "-").lstrip("-")
+
+
+def _private_dir(path: Path) -> Path:
+    """Create *path*, owner-only, and repair the levels above it.
+
+    Input: a directory. Output: the same path, created. Every level from
+    ``~/.delfin`` down to *path* ends at mode 0o700 -- newly created ones
+    because they are created with it, already existing ones because they
+    are chmod-ed to it.
+
+    Both halves are needed, measured rather than assumed:
+
+        mkdir(parents=True, mode=0o700)   parents get the umask, not 0o700
+        mkdir(mode=0o700, exist_ok=True)  an EXISTING directory keeps its mode
+
+    So a fix that only passes ``mode=`` protects nothing on any
+    installation that has run before, which is all of them. This is the
+    idiom credentials.py, where.py, pending_changes.py and turn_record.py
+    already use; the memory store was the one place that did not.
+
+    What it protects. The files are 0600 already, so this is about the
+    listing: note names, plan names and the store slug, which under the
+    default ``path`` memory key is the full checkout path. A directory
+    another account cannot traverse cannot be listed either, whatever the
+    modes inside it -- measured: with a 0o600 parent even the owner gets
+    PermissionError on a file in a 0o777 child.
+
+    Why it stops at ``~/.delfin``: a path outside it belongs to the user
+    or to a test, and tightening a directory this tool does not own is
+    not this tool's decision. Such a path is created and left alone.
+
+    Never raises. A store that cannot be tightened is still a store; the
+    caller's write fails on its own terms if the directory is unusable.
+    """
+    path = Path(path)
+    root = Path.home() / ".delfin"
+    try:
+        inside = path == root or root in path.parents
+    except Exception:
+        inside = False
+    if not inside:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return path
+    # Root first, then downward: a level is only reachable once its parent
+    # is, so repairing top-down leaves no window where a deeper level is
+    # already private but its parent still announces it.
+    levels = [root, *[p for p in reversed(path.parents) if root in p.parents],
+              path] if path != root else [root]
+    for level in levels:
+        try:
+            # parents=True matters for the root alone, whose own parent --
+            # the home directory -- may not exist yet. Without it the root
+            # creation fails, every level below it fails too, and this
+            # returns a path that was never made. Ancestors ABOVE ~/.delfin
+            # are created with the umask on purpose: they are not ours to
+            # tighten.
+            level.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError:
+            continue
+        try:
+            os.chmod(level, 0o700)
+        except OSError:
+            pass
+    return path
 
 
 def _migrate_legacy_dir(old: Path, new: Path) -> None:
@@ -843,7 +1062,7 @@ def _migrate_legacy_dir(old: Path, new: Path) -> None:
     Best-effort; never raises."""
     try:
         if old.is_dir() and not new.exists():
-            new.parent.mkdir(parents=True, exist_ok=True)
+            _private_dir(new.parent)
             old.rename(new)
     except Exception:
         pass
@@ -1017,7 +1236,7 @@ def save_plan(
     slug = _slugify(display_title)
 
     plans_dir = _delfin_plans_dir(Path(repo_root))
-    plans_dir.mkdir(parents=True, exist_ok=True)
+    _private_dir(plans_dir)
 
     fname = f"{slug}.md"
     fpath = plans_dir / fname
@@ -1125,7 +1344,7 @@ def _save_typed_memory_unlocked(
     slug = _slugify(display_title)
 
     memory_dir = _memory_dir_for_scope(repo_root, scope)
-    memory_dir.mkdir(parents=True, exist_ok=True)
+    _private_dir(memory_dir)
     index_header = (
         _GLOBAL_INDEX_HEADER if scope == "user" else _PROJECT_INDEX_HEADER
     )
@@ -1222,6 +1441,12 @@ def _save_typed_memory_unlocked(
             # write over the user, so this can promote an agent file to the
             # user's when the user restates it, never the reverse.
             source=source,
+            # Provenance of the BODY. A merge that replaces the text has
+            # learned something new and is stamped where that happened; a
+            # merge that only bumps use_count keeps the original stamp,
+            # because nothing was measured again.
+            learned_at=(_head_ref(repo_root) if old_body != body
+                        else old_meta.get("learned_at", "")),
             extras=extras,
         )
         _atomic_write(fpath, front)
@@ -1253,6 +1478,7 @@ def _save_typed_memory_unlocked(
         name=slug, description=description, created_at=now,
         updated_at=now, use_count=1, memory_type=memory_type, body=body,
         domain=resolved_domain, source=source,
+        learned_at=_head_ref(repo_root),
         extras={"anchors": anchors_json} if anchors_json else None,
     )
     _atomic_write(fpath, front)
@@ -1591,6 +1817,9 @@ def record_memory_recall(
             # without carrying it forward here a single recall would erase
             # the provenance and hand the memory back its exemption.
             source=meta.get("source", ""),
+            # Same trap, same reason. Recall is not learning: it must not
+            # re-stamp, and it must not drop the stamp either.
+            learned_at=meta.get("learned_at", ""),
             extras=meta,
         )
         try:
@@ -1664,6 +1893,7 @@ def record_stale_hits(
             superseded=" ".join(meta.get("superseded", "").split())[:160],
             domain=memory_text_domain(text),
             source=meta.get("source", ""),
+            learned_at=meta.get("learned_at", ""),
             extras=extras,
         )
         try:

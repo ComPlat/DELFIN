@@ -280,6 +280,10 @@ def run_tests(
             timeout=max(5, timeout_s),
             env=env,
             should_stop=should_stop,
+            # A suite fans out through pytest and its own subprocesses:
+            # the wider "tests" profile bounds that without foreground
+            # numbers (phase 4, no process without a budget).
+            budget_profile="tests",
         )
         if proc.returncode == _contained.STOPPED_RETURNCODE:
             shutil.rmtree(tmpdir, ignore_errors=True)

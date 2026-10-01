@@ -44,6 +44,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import child_env
+
 _REPO = Path(__file__).resolve().parents[1]
 
 #: Short enough that a test can wait it out, long enough that a slow
@@ -140,7 +142,11 @@ def _alive(pid) -> bool:
 def _launch(records, log, *, stay_up: bool):
     """Start a real dashboard server with its own state directory."""
     port = _free_port()
-    env = dict(os.environ)
+    # The server is a DELFIN child: without its own HOME it would
+    # resolve its ~/.delfin sinks against the real home (measured
+    # 2026-09-22). ``records`` sits in this run's pytest tmp tree, so a
+    # scratch beside it is this run's too.
+    env = child_env(records.parent)
     env.update({
         "PYTHONPATH": str(_REPO),
         "JUPYTER_TOKEN": _TOKEN,

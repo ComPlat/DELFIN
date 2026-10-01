@@ -195,8 +195,9 @@ def apply_construction_env(config: Mapping[str, Any],
 
     The 34 flags behind ``champion`` are applied as a set and are not exposed
     one by one: the file that defines them records that an earlier 29-flag
-    stack scored 13.7 % topology-correct against 33.6 % for no flags at all, so
-    a hand-picked subset is a way to make the builder worse.  ``MANTA_ENV`` is
+    stack scored 13.7 % topology-correct against 33.6 % for no flags at all and
+    28.6 % for the set that replaced it, so a hand-picked subset is a way to
+    make the builder worse.  (Measured on a private pool; see cli_manta.)  ``MANTA_ENV`` is
     the escape hatch for the one flag somebody genuinely needs.
     """
     target = os.environ if environ is None else environ
@@ -265,6 +266,16 @@ def apply_construction_env(config: Mapping[str, Any],
     #: perfectly, because it has no overlap to penalise.  Each gate is
     #: never-worse by construction: asked to empty the list, it returns the
     #: list unchanged.
+    #:
+    #: DELIBERATE EXCEPTION to "every entry point builds the same manifold" (user
+    #: decision 2026-09-28).  delfin-manta and the dashboard MANTA button build
+    #: ``cli_manta.construction_env()`` alone and hand the user the FULL manifold;
+    #: a CONTROL run is the one consumer that optimises what it gets, where a torn
+    #: frame costs a DFT chain, so it adds exactly these switches on top.  With the
+    #: three MANTA_CLEAN_GATE / MANTA_TOPOLOGY_GATE / MANTA_DEDUP keys set to no the
+    #: construction env is the CLI's (COORD_INTEGRITY / CONF_COMPLETE = 0 are the
+    #: builder defaults).  tests/test_cli_dashboard_parity.py pins that this is the
+    #: only difference.
     gates = (
         ('MANTA_CLEAN_GATE', 'DELFIN_FFFREE_CLEAN_GATE', True),
         ('MANTA_TOPOLOGY_GATE', 'DELFIN_FFFREE_TOPOLOGY_GATE', True),
@@ -299,8 +310,9 @@ def apply_construction_env(config: Mapping[str, Any],
 
 
 #: Frame count above which "optimise everything" stops being the cheap option
-#: and a single-point screen is run first.  Measured over 5810 systems built at
-#: champion/extreme with ``max_isomers=0``, the manifold size per system is
+#: and a single-point screen is run first.  Measured over the 5810 evaluable
+#: systems of a private 6000-system CCDC-derived pool, built at champion/extreme
+#: with ``max_isomers=0`` (the pool cannot be published); the manifold size is
 #:
 #:     mean 26.1 - p10 3 - p25 4 - p50 14 - p75 33 - p90 64 - p95 90
 #:     p99 190 - max 399

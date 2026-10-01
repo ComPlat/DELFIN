@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import child_env
+
 from delfin.agent.report_junk import collect, format_text, main
 
 
@@ -133,11 +135,11 @@ def test_main_cli(capsys, fake_workspace):
     assert "Size per top-level entry" in out
 
 
-def test_module_runnable_via_python_m(fake_workspace):
+def test_module_runnable_via_python_m(fake_workspace, tmp_path):
     import subprocess, sys
     repo_root = os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))
-    env = dict(os.environ, PYTHONPATH=repo_root)
+    env = {**child_env(tmp_path), "PYTHONPATH": repo_root}
     proc = subprocess.run(
         [sys.executable, "-m", "delfin.agent.report_junk", str(fake_workspace)],
         capture_output=True, text=True, cwd=repo_root, env=env,

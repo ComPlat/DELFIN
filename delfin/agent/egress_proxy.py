@@ -181,15 +181,19 @@ class EgressProxy:
                 f"Content-Length: {len(body)}\r\n"
                 + ('Proxy-Authenticate: Basic realm="delfin"\r\n' if code == 407 else "")
                 + "Connection: close\r\n\r\n").encode()
-        try:
-            conn.sendall(head + body)
-        except OSError:
-            pass
+        # The refusal is recorded BEFORE the answer goes out. Recorded after
+        # it, a client could read its 403 and look at the record before the
+        # serving thread had written it (SLURM 7210626: proxy.refused == []
+        # beside a correct 403) -- a security record trailing the event.
         if code == 403 and self._on_refusal is not None:
             try:
                 self._on_refusal(reason)
             except Exception:
                 pass
+        try:
+            conn.sendall(head + body)
+        except OSError:
+            pass
 
     def _authorised(self, headers: dict) -> bool:
         value = headers.get("proxy-authorization", "")

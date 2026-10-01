@@ -121,6 +121,12 @@ class Transcript:
         # its final newline.
         self._out_open = False
         self._break_pending = False
+        # A transient line (the wait tick) is on screen and the next
+        # write must erase it first. `_transient_said` is the pipe case:
+        # with no cursor to move, the tick is said once and then dropped
+        # rather than repeated for every tick of the round.
+        self._transient_open = False
+        self._transient_said = False
 
     @property
     def width(self) -> int:
@@ -151,12 +157,65 @@ class Transcript:
         """
         if not delta:
             return
+        self._clear_transient()
         rendered = self._markdown.feed(delta)
         self.out.write(rendered)
         self._flush(self.out)
         self._track_screen_answer(rendered)
         self._out_open = not delta.endswith("\n")
         self._break_pending = self._out_open
+
+    def _err_is_tty(self) -> bool:
+        try:
+            return bool(self.err.isatty())
+        except Exception:
+            return False
+
+    def _clear_transient(self) -> None:
+        """Erase the wait tick before anything else is written.
+
+        Left standing, the next chrome line or answer byte would start
+        halfway along "waiting for the model ... 240s"."""
+        if self._transient_open:
+            self.err.write("\r\x1b[K")
+            self._flush(self.err)
+            self._transient_open = False
+
+    def transient(self, line: str) -> None:
+        """A progress line that the next one replaces.
+
+        The wait tick: the endpoint has not sent a byte yet, and the
+        producer repeats the line every tenth of the request deadline
+        (capped at ten seconds), so a round stalling to the default 600 s
+        deadline produces sixty of them. As chrome that was sixty rows of
+        one sentence; here it is one row, rewritten.
+
+        Written to stderr like all chrome, for the same reason: a
+        redirected stdout must capture the model's bytes and nothing
+        else. With stderr redirected too there is no cursor to move, so
+        the tick is said once as ordinary chrome and the rest are
+        dropped -- a log needs to record that the endpoint went quiet,
+        not to record it sixty times.
+        """
+        if not line:
+            return
+        if not self._err_is_tty():
+            if not self._transient_said:
+                self._transient_said = True
+                self.chrome(line)
+            return
+        if self._break_pending:
+            self.err.write("\n")
+            self._break_pending = False
+            if self._shared_terminal:
+                self._screen_answer_open = False
+                self._screen_answer_column = 0
+        self.err.write("\r\x1b[K" + line)
+        self._flush(self.err)
+        self._transient_open = True
+        if self._shared_terminal:
+            self._screen_answer_open = False
+            self._screen_answer_column = 0
 
     def chrome(self, line: str) -> None:
         """Everything that is not the answer, on stderr, on its own line.
@@ -171,6 +230,7 @@ class Transcript:
         """
         if not line:
             return
+        self._clear_transient()
         if self._break_pending:
             self.err.write("\n")
             self._break_pending = False
@@ -188,6 +248,7 @@ class Transcript:
 
     def finish(self) -> None:
         """Close the answer stream, so a redirected stdout ends in a newline."""
+        self._clear_transient()
         tail = self._markdown.flush()
         if tail:
             # Held-back bytes and any style still open. Without this a
@@ -286,6 +347,10 @@ class Transcript:
             self.answer(item.text)
         elif kind == "notice":
             self.chrome(rr.notice_line(item.text, theme=self.theme))
+        elif kind == "wait":
+            # Progress, not a line of the record: the tick replaces the
+            # one before it instead of adding a row.
+            self.transient(rr.notice_line(item.text, theme=self.theme))
         elif kind == "thinking":
             if self.show_thinking:
                 self.chrome(rr.thinking_line(
@@ -377,6 +442,12 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         if text:
             _emit(RenderItem("notice", text=text))
 
+    def _on_wait(text: str) -> None:
+        # The first-byte tick, on its own kind so the renderer can
+        # rewrite one row rather than append one per tick.
+        if text:
+            _emit(RenderItem("wait", text=text))
+
     def _on_thinking(text: str) -> None:
         if text:
             _emit(RenderItem("thinking", text=text))
@@ -440,6 +511,7 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
             memory_context=memory_context,
             on_token=_on_token,
             on_notice=_on_notice,
+            on_wait=_on_wait,
             on_thinking=_on_thinking,
             on_tool_use=_on_tool_use,
             on_tool_result=_on_tool_result,
@@ -651,6 +723,14 @@ class TerminalAgent:
         self._turn_base = (0, 0, 0.0)
         self._spin = 0
         self._last_paint = 0.0
+        # Characters this turn streamed to the pump as text or thinking
+        # (rendered content). The provider's output-token count is
+        # cumulative but only lands on the FINAL message_delta on
+        # OpenAI-compatible endpoints (usage arrives with the last
+        # chunk, include_usage), so mid-turn the status line would
+        # otherwise show a false ↓0 while tokens are visibly streaming.
+        # This char count is the honest basis for a MARKED estimate.
+        self._streamed_chars = 0
         # Typed during a turn: queued, never injected. A queued message
         # cannot be lost and cannot land in a context nobody could see.
         self.queued: list[str] = []
@@ -767,6 +847,9 @@ class TerminalAgent:
         self._interrupts = 0
         self._turn_t0 = _time.monotonic()
         self._last_paint = 0.0
+        # New turn, new streamed-char count: the estimate must not
+        # carry the previous turn's characters into this one.
+        self._streamed_chars = 0
         # The engine's counters are cumulative for the SESSION, so the live
         # line differences against this baseline. Without it the first turn
         # looks right and every later one reports the whole conversation.
@@ -814,6 +897,17 @@ class TerminalAgent:
         # For the length-continuation: a length end WITH a tool call is
         # the tool loop's to carry on, not ours.
         self.__dict__["_turn_used_tools"] = bool(result.tool_calls)
+        # The endpoint continuation reads the finished turn's error
+        # (and its status) after the fact: the classification happens
+        # at the prompt, where waiting belongs, not inside the turn.
+        self.__dict__["_last_turn_result"] = result
+        if not result.error:
+            # A turn that answered says the model exists and was
+            # spelled right -- the fact a later "model not found"
+            # is judged on (outage, not typo). Kept for the session;
+            # the pause budget bounds what a wrong judgement costs.
+            self.__dict__["_endpoint_model_answered"] = True
+            self.__dict__["_endpoint_pauses"] = 0
         return result
 
     def _pump(self, worker: threading.Thread) -> None:
@@ -881,9 +975,22 @@ class TerminalAgent:
                 if item.kind == "done":
                     self._clear_bottom()
                     return
+                self._count_streamed(item)
                 self._render_around_bottom(item)
 
     # -- keys during a turn ----------------------------------------------
+    def _count_streamed(self, item: "RenderItem") -> None:
+        """Feed one rendered item into the streamed-char estimate.
+
+        Called from the pump for every item the worker streamed: the
+        text and thinking the model produced this turn. Tool results
+        are NOT model output and are deliberately not counted --
+        counting them would present a tool's output as the model's
+        tokens.
+        """
+        if item.kind in ("text", "thinking") and item.text:
+            self._streamed_chars += len(item.text)
+
     def _on_key(self, event, decoder) -> None:
         from . import repl_keys as rk
 
@@ -1671,7 +1778,21 @@ class TerminalAgent:
             status = {}
         base_in, base_out, base_cost = self._turn_base
         tin = max(0, int(status.get("input_tokens", 0) or 0) - base_in)
-        tout = max(0, int(status.get("output_tokens", 0) or 0) - base_out)
+        tout = max(0, int(status.get("output_tokens_live",
+                                     status.get("output_tokens", 0)) or 0)
+                   - base_out)
+        # Provider truth wins whenever it exists mid-turn (Anthropic
+        # counts on message_delta). Only where it does not -- OpenAI-
+        # compatible streams, whose usage arrives with the last chunk --
+        # fall back to a MARKED estimate from the streamed characters,
+        # or to an ellipsis before the first token. A bare ↓0 during a
+        # streaming turn is a false exact number, not a missing value.
+        if tout > 0:
+            out_bits = f"↓{tout}"
+        elif self._streamed_chars > 0:
+            out_bits = f"↓~{max(1, self._streamed_chars // 4)}"
+        else:
+            out_bits = "↓…"
         cost = max(0.0, float(status.get("cost_usd", 0.0) or 0.0) - base_cost)
         model = str(getattr(getattr(self.engine, "client", None), "model", "")
                     or "?")
@@ -1680,7 +1801,7 @@ class TerminalAgent:
         bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
         if mode:
             bits.append(mode)
-        bits.append(f"↑{tin} ↓{tout}")
+        bits.append(f"↑{tin} {out_bits}")
         if cost > 0:
             bits.append(f"${cost:.4f}")
         bits.append("esc to interrupt")
@@ -2013,13 +2134,32 @@ class TerminalAgent:
                 # stands at the prompt half-way through the edit
                 # (operator point d, 2026-09-22). Continue it, at most
                 # twice; the third time the operator hears it.
+                # A turn that DIED on the endpoint, rather than ending
+                # AT it, has its own continuation -- one that waits out
+                # the outage first. An error turn never also ends at
+                # length, so the two continuations never stack.
                 continuation = self._continue_after_length(pending_prompt)
+                if not continuation:
+                    continuation = (
+                        self._continue_after_endpoint_failure())
                 while continuation:
                     self._show_user_input(continuation, queued=True)
                     self._checkpoint_session()
-                    self.turn(continuation)
+                    # A continued turn is a turn: the third Ctrl+C
+                    # raises KeyboardInterrupt out of turn() here the
+                    # same way it does in the first one above, and the
+                    # same hatch applies -- leave with 130 instead of
+                    # raising out of run() past every handler.
+                    try:
+                        self.turn(continuation)
+                    except KeyboardInterrupt:
+                        self.transcript.chrome("")
+                        return 130
                     self._checkpoint_session()
                     continuation = self._continue_after_length(continuation)
+                    if not continuation:
+                        continuation = (
+                            self._continue_after_endpoint_failure())
                 pending = ""
         except rk.TerminalLeft as left:
             # Whatever the session was doing -- at the prompt, in a turn,
@@ -2403,6 +2543,167 @@ class TerminalAgent:
             f"({done + 1}/{self._MAX_LENGTH_CONTINUATIONS})"))
         return "continue"
 
+    # -- a turn that died on the endpoint ----------------------------
+    #
+    # The pause schedule: 60 s, 120 s, 300 s, then every 300 s. The
+    # whole pause -- waiting included -- is capped at 60 minutes: the
+    # outage of 2026-09-25 lasted 65, a cap at half an hour would have
+    # given up five minutes early, and a full hour of unattended
+    # self-retry is still bounded by the operator's own watch cycle.
+    _ENDPOINT_PAUSE_S = (60.0, 120.0, 300.0)
+    _ENDPOINT_PAUSE_CEIL_S = 300.0
+    _ENDPOINT_PAUSE_BUDGET_S = 3600.0
+
+    def _endpoint_time(self) -> float:
+        clock = getattr(self, "_endpoint_clock", None)
+        if clock is not None:
+            return float(clock.time())
+        import time as _time
+        return _time.monotonic()
+
+    def _endpoint_do_sleep(self, seconds: float) -> None:
+        sleeper = getattr(self, "_endpoint_sleep", None)
+        if sleeper is not None:
+            sleeper(seconds)
+        else:                                   # pragma: no cover
+            import time as _time
+            _time.sleep(seconds)
+
+    def _endpoint_read_key(self, timeout: float) -> "str | None":
+        """One key chunk inside the pause wait, "" when the wait ran out,
+        or None when there is no terminal to wait on.
+
+        Factored out so a test can deliver a keypress without a
+        terminal. The real path holds the terminal in cbreak and reads
+        with a timeout -- a key a person presses during the wait must
+        cancel it, and the wait is long enough that polling for one
+        matters.
+        """
+        from . import repl_keys as rk
+        with rk.RawMode(self._stdin) as raw:
+            if not raw.active:
+                # No terminal to read (a pipe, a redirect): no key can
+                # arrive, and spinning on a clock that never advances
+                # buys nothing. None tells the caller to sleep instead;
+                # "" means the wait already ran its full length here.
+                return None
+            deadline = self._endpoint_time() + timeout
+            while True:
+                left = deadline - self._endpoint_time()
+                if left <= 0:
+                    return ""
+                chunk = raw.read_ready(min(left, _PUMP_TICK_S))
+                if chunk:
+                    return chunk
+
+    def _endpoint_error_is_retryable(self, exc: Exception) -> bool:
+        """Transient -> retry. Model-not-found -> only after a prior
+        answer from the same model. Everything else -> never.
+
+        "Model 'X' not found" is ambiguous: the outage of 2026-09-25
+        wore exactly that message, and so does a typo'd model name.
+        The fact that separates them lives in THIS session: a model
+        that already answered here exists and was spelled right, so
+        its not-found is the outage; one that never answered here was
+        probably never spelled right anywhere.
+        """
+        from .api_client import (_is_transient_api_error,
+                                 _is_context_length_error)
+        if _is_context_length_error(exc):
+            return False                # deterministic: a 400 that
+                                        # fails again identically
+        if _is_transient_api_error(exc):
+            return True
+        if "not found" in str(exc).lower() and "model" in str(exc).lower():
+            return bool(getattr(self, "_endpoint_model_answered", False))
+        return False
+
+    def _continue_after_endpoint_failure(self) -> str:
+        """Whether a turn that died on an endpoint error continues.
+
+        The in-turn retry (api_client._is_transient_api_error, 3
+        attempts inside the stream) covers the short hiccup. An
+        outage longer than that still ends the turn -- and on
+        2026-09-25 the session then stood at its prompt until the
+        operator nudged it, 31 times in one day. This method waits
+        the outage out and sends the continuation itself: the same
+        "continue" the person at the keyboard would have typed, as a
+        NEW turn, with a prompt that says exactly what happened.
+
+        Any key during the wait cancels it -- no further turn, the
+        session stands at the prompt like today, and the person keeps
+        the wheel. After the 60-minute budget the same is true, and
+        the operator hears it over session_message, the channel that
+        reaches someone not watching six panes.
+        """
+        result = getattr(self, "_last_turn_result", None)
+        if result is None or not getattr(result, "error", ""):
+            # A turn that produced nothing (the worker died) counts as
+            # neither: without an error there is nothing to classify.
+            return ""
+        # Rebuild the exception the engine raised, for classification.
+        # The turn died before the turn's own accounting; run_turn put
+        # the engine's text in result.error and the [error] line on the
+        # screen already. The class name is not in the text, but the
+        # classification reads status_code and message, not the class.
+        text = str(result.error)
+        exc = type("_EndpointFailure", (Exception,), {})(text)
+        try:
+            status = getattr(result, "error_status", None)
+        except Exception:
+            status = None
+        if isinstance(status, int):
+            exc.status_code = status
+        if not self._endpoint_error_is_retryable(exc):
+            return ""
+        pause_started = getattr(self, "_endpoint_pause_started", None)
+        if not int(getattr(self, "_endpoint_pauses", 0) or 0):
+            # The first pause of this outage starts the budget clock;
+            # later calls (one per failed retry) inherit it, so the
+            # 60 minutes bound the OUTAGE, not each single wait.
+            pause_started = self._endpoint_time()
+            self.__dict__["_endpoint_pause_started"] = pause_started
+        while True:
+            done = int(getattr(self, "_endpoint_pauses", 0) or 0)
+            wait = (self._ENDPOINT_PAUSE_S[done]
+                    if done < len(self._ENDPOINT_PAUSE_S)
+                    else self._ENDPOINT_PAUSE_CEIL_S)
+            if (pause_started + self._ENDPOINT_PAUSE_BUDGET_S
+                    - self._endpoint_time()) < wait:
+                # The budget is spent. Stillstand wie heute, plus the
+                # note to the operator when one is reachable.
+                self.__dict__["_endpoint_pauses"] = 0
+                try:
+                    self.engine._notify_operator_of_stall(
+                        "the endpoint stayed unavailable for a full "
+                        "hour of self-retry; this session is standing "
+                        "at the prompt mid-answer")
+                except Exception:
+                    pass
+                return ""
+            self.__dict__["_endpoint_pauses"] = done + 1
+            self.transcript.chrome(self.transcript.theme.dim(
+                f"endpoint unavailable — retrying in {wait:.0f} s, "
+                "any key to stop"))
+            try:
+                chunk = self._endpoint_read_key(wait)
+                if chunk is None:
+                    # No terminal: the key wait could not wait, so sleep.
+                    # On a terminal the key wait already took the whole
+                    # pause -- sleeping again doubled every pause.
+                    self._endpoint_do_sleep(wait)
+            except KeyboardInterrupt:
+                # Ctrl+C during the pause cancels the pause, like a key;
+                # it must not leave run() the way an unhandled one would.
+                chunk = "\x03"
+            if chunk:
+                # A key: the person takes over. No turn, no further
+                # retry, and the next outage starts from 60 s again.
+                self.__dict__["_endpoint_pauses"] = 0
+                return ""
+            return ("The endpoint failed mid-turn; continue exactly "
+                    "where you were.")
+
     def _presence_key(self) -> str:
         """The address an operator reaches this session by.
 
@@ -2541,7 +2842,16 @@ class TerminalAgent:
             if not job_wake.wake_enabled():
                 return ""
             seen = self.__dict__.setdefault("_wake_seen", set())
-            return job_wake.wake_prompt(job_wake.finished_shells(seen))
+            # Only this session's shells: the same scoping the dashboard
+            # tick applies to watched jobs and background agents.
+            # getattr on SELF as well: a caller without an engine attribute
+            # at all would raise here, and the except below would turn the
+            # whole wake-up into an empty line -- silently, which is how a
+            # notification path fails worst.
+            _eng = getattr(self, "engine", None)
+            return job_wake.wake_prompt(job_wake.finished_shells(
+                seen,
+                session_id=str(getattr(_eng, "session_id", "") or "")))
         except Exception:
             return ""
 

@@ -1876,6 +1876,8 @@ def _as_ap_method(value: Any) -> int | None:
 #: accepted because a CONTROL file written before the rename is still a valid
 #: CONTROL file, and the run it describes has not changed.
 _SMILES_CONVERTER_PLACEHOLDERS = (
+    "[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]",
+    "[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]",
     "[QUICK|NORMAL|MANTA|ARCHITECTOR]",
     "[QUICK|NORMAL|GUPPY|ARCHITECTOR]",
 )
@@ -1886,7 +1888,7 @@ _SMILES_CONVERTER_PLACEHOLDERS = (
 #: ranking on top.  The rename says what it was already doing.
 _SMILES_CONVERTER_ALIASES = {"GUPPY": "MANTA"}
 
-_SMILES_CONVERTER_MODES = ("QUICK", "NORMAL", "MANTA", "ARCHITECTOR")
+_SMILES_CONVERTER_MODES = ("QUICK", "NORMAL", "MANTA", "ARCHITECTOR", "MOLSIMPLIFY", "MACE")
 
 
 def _as_manta_quality(value: Any) -> str:
@@ -2074,7 +2076,7 @@ def _as_smiles_converter(value: Any) -> str:
 
     normalized = _SMILES_CONVERTER_ALIASES.get(text.upper(), text.upper())
     if normalized not in _SMILES_CONVERTER_MODES:
-        raise ValueError("must be QUICK, NORMAL, MANTA, or ARCHITECTOR")
+        raise ValueError("must be QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, or MACE")
     return normalized
 
 
@@ -2125,9 +2127,14 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("MANTA_ENV", _as_str, default="",
              help="Extra MANTA environment variables as KEY=VALUE pairs, semicolon separated. An escape hatch for builder options that have no CONTROL key yet."),
     # MANTA: the gates.  All never-worse -- asked to empty the list they return
-    # it unchanged -- so switching them on cannot cost a structure.
+    # it unchanged -- so switching them on cannot cost a structure.  They are the
+    # one deliberate difference from delfin-manta and the dashboard, which build
+    # without them (see manta_settings.apply_construction_env).
     FieldSpec("MANTA_CLEAN_GATE", _as_yes_no, default="yes",
-             help="Reject frames with atom clashes before they cost anything downstream."),
+             help="Reject frames with atom clashes before they cost anything downstream. "
+                  "The gates (CLEAN_GATE, TOPOLOGY_GATE, DEDUP) are on for a pipeline run "
+                  "only, because a torn frame costs a whole DFT chain; delfin-manta and the "
+                  "dashboard return the full manifold without them."),
     FieldSpec("MANTA_TOPOLOGY_GATE", _as_yes_no, default="yes",
              help="Reject frames whose bonding does not match the SMILES that was asked for."),
     FieldSpec("MANTA_DEDUP", _as_yes_no, default="yes",
@@ -2528,7 +2535,7 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
                     for text in _SMILES_CONVERTER_PLACEHOLDERS)
         ):
             errors.append(
-                "thermodynamics=yes requires thdy_smiles_converter to be set to QUICK, NORMAL, MANTA, or ARCHITECTOR."
+                "thermodynamics=yes requires thdy_smiles_converter to be set to QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, or MACE."
             )
         if (
             "thdy_preopt" not in config

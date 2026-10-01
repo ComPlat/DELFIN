@@ -269,6 +269,39 @@ def run_bench_entry(entry: ScheduleEntry, cfg: dict | None = None) -> dict:
     return {"session_id": "", "text": text, "tool_calls": 0}
 
 
+# ---------------------------------------------------------------------------
+# Watchpost entries -- a deterministic scan, never a model turn
+# ---------------------------------------------------------------------------
+
+# Created only by `delfin-agent watchpost enable`. Executed by calling the
+# scan directly: a read-only look-out must not become a model turn that
+# interprets "scan the account" in its own way, and it costs no tokens.
+WATCHPOST_ENTRY_PREFIX = "[watchpost]"
+
+
+def run_watchpost_entry(entry: ScheduleEntry) -> dict:
+    """One watchpost diff scan; new alerts become an attention event.
+
+    Reports only: nothing is changed, stopped or removed.
+    """
+    from delfin.watchpost.scan import run_scan
+    home = Path.home()
+    findings = run_scan(home, home / ".delfin" / "watchpost", mode="diff")
+    alerts = [f for f in findings if getattr(f, "severity", "") == "alert"]
+    text = (f"watchpost: {len(findings)} new finding(s), "
+            f"{len(alerts)} alert(s)")
+    if alerts:
+        try:
+            from .attention import emit_attention
+            emit_attention(
+                "watchpost_alert", title="watchpost: new alert",
+                detail="; ".join(f"{a.check}: {a.what}" for a in alerts)[:400],
+                workspace=str(entry.workspace or home))
+        except Exception:
+            pass
+    return {"session_id": "", "text": text, "tool_calls": 0}
+
+
 def make_fire_callback(
     *,
     settings: dict | None = None,
@@ -289,7 +322,9 @@ def make_fire_callback(
             f"({entry.kind}) in {ws}")
         bench_cfg = parse_bench_entry(entry.prompt)
         try:
-            if bench_cfg is not None:
+            if str(entry.prompt or "").startswith(WATCHPOST_ENTRY_PREFIX):
+                result = run_watchpost_entry(entry)
+            elif bench_cfg is not None:
                 result = run_bench_entry(entry, bench_cfg)
             else:
                 result = run_entry(

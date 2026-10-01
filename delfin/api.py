@@ -1672,8 +1672,19 @@ def extract_optimization_trajectory(folder: str) -> OptTrajectoryResult:
     Opt run) and the convergence-criteria block to populate gradient
     + step columns where present. ``converged`` follows ORCA's
     ``OPTIMIZATION RUN DONE`` / ``HAS CONVERGED`` markers.
+
+    Only the job the output is named after is read. A compound output
+    holds another calculation whose energies belong to its own
+    ``%base``, and counting those in inflates the trajectory: measured
+    on an archived ``T1.out`` -- a triplet optimisation followed by a
+    closed-shell TD-DFT check job -- this reported 10 cycles for 9 and
+    a final energy 1.18 eV above the triplet's, because the last
+    ``FINAL SINGLE POINT ENERGY`` in the file was the check job's
+    ground state. See :func:`delfin.energies.own_job_text`.
     """
     import re as _re
+
+    from delfin.energies import own_job_text
     target, text, err = _read_largest_out(folder)
     if err is not None:
         return OptTrajectoryResult(
@@ -1682,6 +1693,7 @@ def extract_optimization_trajectory(folder: str) -> OptTrajectoryResult:
             cycles=[], n_cycles=0, converged=None,
             final_energy_eh=None, error=err,
         )
+    text = own_job_text(text, target.name)
     energies = [float(m.group(1)) for m in _re.finditer(
         r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)", text,
     )]

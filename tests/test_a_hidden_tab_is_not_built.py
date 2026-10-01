@@ -97,7 +97,12 @@ def test_settings_keeps_a_live_handle(source):
     """Settings is handed the refs dicts by value at startup. If a tab is built
     later, its refs have to appear in those same dicts, or applying a new
     Archive folder silently does nothing."""
-    assert 'refs6, refs_off = {}, {}' in source
+    # every clone's refs dict is created empty here and filled in later
+    created = re.search(r'\n    (refs6[^\n=]*) = ([^\n]+)\n', source)
+    assert created, 'the refs dicts are no longer created in one place'
+    names = [n.strip() for n in created.group(1).split(',')]
+    assert 'refs_home' in names, 'the Home clone has no refs dict of its own'
+    assert created.group(2).strip() == ', '.join('{}' for _ in names), created.group(2)
     assert 'refs.update(made or {})' in source
     handed = re.search(r'tab_settings\.create_tab\((.*?)\)', source, re.S).group(1)
     assert 'archive_refs=refs6' in handed and 'office_refs=refs_off' in handed
