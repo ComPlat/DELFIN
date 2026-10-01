@@ -371,7 +371,7 @@ def _prepare_geometry_via_pipeline(
 
     1. ``normalize_input_file`` reads ``input.txt`` (SMILES or XYZ block)
        and produces ``start.txt`` with the configured smiles_converter
-       (QUICK / ARCHITECTOR / GUPPY).
+       (QUICK / NORMAL / MANTA / ARCHITECTOR / MOLSIMPLIFY / MACE).
     2. If ``pre_opt`` is on, build ``initial.inp`` via
        :func:`delfin.xyz_io.read_and_modify_file_1` — the same builder
        the classic pipeline uses for ``initial.inp`` — then run ORCA and

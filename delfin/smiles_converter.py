@@ -40283,6 +40283,19 @@ def smiles_to_xyz_molsimplify(smiles: str) -> Tuple[Optional[str], Optional[str]
     return build_first_xyz('molsimplify', smiles)
 
 
+def smiles_to_xyz_mace(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Convert a metal-complex SMILES to XYZ using epic-MACE (first frame).
+
+    Same shared build as the dashboard's MACE button, with the same settings
+    (``external_builders.MACE_DEFAULTS``); epic-MACE runs in its own Python 3.7
+    environment (``DELFIN_MACE_PYTHON``, or the one the installer built).  The
+    first frame is the lowest-energy conformer of the first geometry that fits
+    the number of donor sites (octahedral for 6, square planar for 4).
+    """
+    from delfin.common.external_builders import build_first_xyz
+    return build_first_xyz('mace', smiles)
+
+
 # ---------------------------------------------------------------------------
 # SELF-TEST for DELFIN_FFFREE_HAPTO_SEAT_RIGID
 #   PYTHONPATH=/home/localuser/DELFIN_dev python -m delfin.smiles_converter
