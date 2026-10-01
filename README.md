@@ -415,6 +415,8 @@ epic-MACE (Chernyshov & Pidko, *J. Chem. Theory Comput.* 2024, 20, 2313; [EPiCs-
 
 In the Submit tab the same choice appears as the converter dropdown, next to `BUILD COMPLEX` (stepwise assembly using ORCA's `%DOCKER`, submitted as a job) and the `CONVERT SMILES`, `QUICK CONVERT SMILES` and `CONVERT SMILES + UFF` buttons of the structure editor.
 
+For many SMILES at once -- a list of `ID;SMILES` lines, up to hundreds of thousands -- `delfin cluster` builds with MANTA, Architector, molSimplify or epic-MACE as a sharded, resumable Slurm array (or shard by shard on a workstation) and merges the result into one multi-frame xyz archive, with code and environment recorded for reproduction: see [docs/CONSTRUCTION_BATCH.md](docs/CONSTRUCTION_BATCH.md).
+
 ### MANTA
 
 MANTA is DELFIN's force-field-free coordination-structure engine — *construct, don't search*. From a transition-metal SMILES it enumerates the coordination isomers by Burnside–Pólya counting over the donor set and the coordination polyhedron, seats each isomer on an ideal polyhedron with metal–donor distances from covalent radii, and expands each into conformers. **No force field touches the metal**: UFF and MMFF have no transition-metal parameters, which is what systematically distorts M–D lengths and L–M–L angles in conventional builders.

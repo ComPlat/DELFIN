@@ -1082,6 +1082,8 @@ If MANTA's refinement already produced a GOAT-optimised winner, the separate
 editor, which the Submit and ORCA Builder tabs both embed (in the ORCA Builder every
 frame becomes a named block); `BUILD COMPLEX` and `SUBMIT GUPPY` belong to the Submit tab.
 
+Batch construction of many SMILES with any of these builders (`delfin cluster`, Slurm array or workstation, resumable, one archive): [CONSTRUCTION_BATCH.md](CONSTRUCTION_BATCH.md).
+
 ### delfin-build (ORCA/XTB DOCKER)
 
 Stepwise metal-complex assembly using ORCA's XTB DOCKER workflow. Ligands are docked one-at-a-time onto the metal centre.
