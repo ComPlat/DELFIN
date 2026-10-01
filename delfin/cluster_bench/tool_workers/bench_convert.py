@@ -52,7 +52,6 @@ def bench_ms_collides(s):
 
 def bench_smiles_variants(smi, coord):
     """Equivalent spellings of a ligand SMILES with the donor positions re-mapped."""
-    from rdkit import Chem
     m = Chem.MolFromSmiles(smi)
     if m is None:
         return
