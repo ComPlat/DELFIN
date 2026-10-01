@@ -94,8 +94,12 @@ def cbatch_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main(argv=None) -> int:
-    a = cbatch_parser().parse_args(argv)
+def cbatch_dispatch(a, emit=None) -> int:
+    """Run one parsed ``delfin cluster`` command; every line of output goes through ``emit``.
+    The dashboard calls this with the same arguments, so both build identical run directories."""
+    if emit is None:
+        def emit(m):
+            print(m, flush=True)
     if a.cmd == "prepare":
         from delfin.cluster_bench.prepare import cbatch_prepare
 
@@ -104,7 +108,7 @@ def main(argv=None) -> int:
                              tool_python=a.tool_python, timeout_base=a.timeout,
                              speed_factor=a.speed_factor, workers=a.workers, threads=a.threads,
                              repeat=a.repeat, spec_workers=a.spec_workers, label=a.label)
-        print(json.dumps({"run_dir": a.run_dir, "tool": man["tool"], "label": man["label"],
+        emit(json.dumps({"run_dir": a.run_dir, "tool": man["tool"], "label": man["label"],
                           "n_systems": man["n_systems"],
                           "sets": {k: v["n_shards"] for k, v in man["sets"].items()},
                           "timeout_s": man["settings"]["timeout_s"],
@@ -119,8 +123,8 @@ def main(argv=None) -> int:
             throttle=a.throttle, time_limit=a.time_limit, cpus=a.cpus, mem=a.mem,
             workers=a.workers, speed_factor=a.speed_factor, partition=a.partition,
             account=a.account, python=a.python, setup=a.setup)
-        print(f"script: {path}")
-        print(out if out is not None else "submit with:  " + " ".join(cmd))
+        emit(f"script: {path}")
+        emit(out if out is not None else "submit with:  " + " ".join(cmd))
         return 0
     if a.cmd == "run-shard":
         from delfin.cluster_bench.runner import cbatch_run_shard
@@ -128,18 +132,18 @@ def main(argv=None) -> int:
         return cbatch_run_shard(a.run_dir, a.shard, set_name=a.set_name, run_name=a.run_name,
                                 workers=a.workers, speed_factor=a.speed_factor,
                                 allow_env_change=a.allow_env_change,
-                                log=lambda m: print(m, flush=True))
+                                log=emit)
     if a.cmd == "status":
         from delfin.cluster_bench.report import cbatch_format_status, cbatch_status
 
         st = cbatch_status(a.run_dir, a.set_name, a.run_name)
-        print(json.dumps(st, indent=1) if a.json else cbatch_format_status(st, a.verbose))
+        emit(json.dumps(st, indent=1) if a.json else cbatch_format_status(st, a.verbose))
         return 0
     if a.cmd == "collect":
         from delfin.cluster_bench.report import cbatch_collect
 
         s = cbatch_collect(a.run_dir, a.set_name, a.run_name, dest=a.dest, label=a.label)
-        print(json.dumps({k: s[k] for k in ("label", "n_systems_merged", "n_systems_in_set",
+        emit(json.dumps({k: s[k] for k in ("label", "n_systems_merged", "n_systems_in_set",
                                             "n_expressible", "by_class", "coverage_of_expressible",
                                             "n_xyz", "chunks_merged", "resubmit_array",
                                             "timeout", "n_problems")}, indent=1))
@@ -148,9 +152,13 @@ def main(argv=None) -> int:
         from delfin.cluster_bench.report import cbatch_repeat_stats
 
         r = cbatch_repeat_stats(a.run_dir, a.run_a, a.run_b)
-        print(json.dumps({k: v for k, v in r.items() if k not in ("ids", "different_detail")}, indent=1))
+        emit(json.dumps({k: v for k, v in r.items() if k not in ("ids", "different_detail")}, indent=1))
         return 0
     return 2
+
+
+def main(argv=None) -> int:
+    return cbatch_dispatch(cbatch_parser().parse_args(argv))
 
 
 if __name__ == "__main__":

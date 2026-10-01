@@ -52,6 +52,8 @@ SPEC_BAIL = (("could not be parsed", "unparseable"), ("contains no metal", "no_m
 def cbatch_parse_list(path) -> list:
     """``ID;SMILES`` (or ``ID|SMILES``) lines -> [(id, smiles)].  Any bad line aborts."""
     rows, errors, seen = [], [], set()
+    if not Path(path).is_file():
+        raise SystemExit(f"{path}: no such file")
     text = Path(path).read_text(encoding="utf-8")
     for i, ln in enumerate(text.split("\n"), 1):
         ln = ln.rstrip("\r")
