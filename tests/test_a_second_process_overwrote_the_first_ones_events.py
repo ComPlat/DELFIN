@@ -30,6 +30,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from conftest import child_env
+
 from delfin.agent import attention, bash_jobs
 
 
@@ -78,7 +80,8 @@ def _run_concurrently(body: str, home: Path) -> None:
     code = _CHILD.format(root=root, body=body)
     children = [
         subprocess.Popen([sys.executable, "-c", code, str(home),
-                          f"p{k}", str(WRITES)])
+                          f"p{k}", str(WRITES)],
+                         env=child_env(home))
         for k in range(PROCS)
     ]
     for child in children:
@@ -127,7 +130,8 @@ def test_the_lock_is_exclusive_across_processes(monkeypatch, tmp_path):
         "with cross_process_lock(Path(sys.argv[1])):\n"
         "    print('held', flush=True); time.sleep(30)\n"
         % str(Path(__file__).resolve().parent.parent),
-        str(guarded)], stdout=subprocess.PIPE, text=True)
+        str(guarded)], stdout=subprocess.PIPE, text=True,
+        env=child_env(tmp_path))
     try:
         assert holder.stdout.readline().strip() == "held"
         import time

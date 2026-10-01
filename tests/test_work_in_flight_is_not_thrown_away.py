@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import child_env
+
 from delfin.dashboard import resume_server as R
 from delfin.dashboard import session as S
 from delfin.dashboard import turn_record as T
@@ -310,7 +312,7 @@ def test_the_server_reads_what_another_process_wrote(turns):
     repo = str(Path(__file__).resolve().parents[1])
     kernel = subprocess.Popen(
         [sys.executable, "-c", code, str(turns), "from-a-kernel", repo],
-        stdout=subprocess.PIPE, text=True)
+        stdout=subprocess.PIPE, text=True, env=child_env(turns.parent))
     try:
         assert kernel.stdout.readline().strip()
         assert "from-a-kernel" in T.running_kernel_ids()

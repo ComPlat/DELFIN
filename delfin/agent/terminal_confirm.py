@@ -299,6 +299,26 @@ def _answer_from_outside(req: ConfirmRequest) -> "tuple[bool, str] | None":
         return None
 
 
+def _choice_from_outside(req: ConfirmRequest) -> "list[str] | None":
+    """The options somebody chose from outside for a CHOICE question, or
+    None. Only for ASK requests; only labels the question offered (the
+    checked reader in file_confirm enforces both). Never raises."""
+    published = getattr(req, "published", None)
+    if not published or req.kind != ASK:
+        return None
+    try:
+        from . import file_confirm as _fc
+        path = Path(published)
+        request_id = path.name[:-len(".request.json")]
+        offered = [o.get("label") for o in
+                   ((req.payload or {}).get("options") or [])
+                   if isinstance(o, dict)]
+        return _fc._read_choice(path.with_name(f"{request_id}.answer.json"),
+                                request_id, path.stat().st_mtime, offered)
+    except Exception:
+        return None
+
+
 def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
     """What may be offered for this request, and nothing more.
 
@@ -532,11 +552,17 @@ class TerminalConfirmBroker:
             if got or req.resolved:
                 got = True
                 break
+            chosen = _choice_from_outside(req)
+            if chosen is not None and self.resolve(req, {"answers": chosen}):
+                _note_outside_answer(req, self.session_key, True)
+                self._audit_dialog(req, by="outside")
+                return req.decision
             outside = _answer_from_outside(req)
             if outside is not None and self.resolve(req, outside[0]):
                 if outside[0] is False and outside[1]:
                     self.last_refusal_reason = outside[1]
                 _note_outside_answer(req, self.session_key, outside[0])
+                self._audit_dialog(req, by="outside")
                 return req.decision
             if deadline is not None and _time.monotonic() >= deadline:
                 break
@@ -555,7 +581,45 @@ class TerminalConfirmBroker:
                 req.published = None
             else:
                 self.last_timed_out = False
+        self._audit_dialog(req, by="expired" if req.expired else "terminal")
         return req.decision
+
+    def _audit_dialog(self, req: ConfirmRequest, *, by: str) -> None:
+        """One audit record per dialog a person had to answer.
+
+        The audit log recorded what ran and what was refused, never that
+        someone was ASKED: a round's operator load could only be counted
+        by hand (night run 2026-09-25). Carries the session name (-n),
+        so a report can filter by it. Never raises.
+
+        It also says what was asked -- the command or the path, clipped --
+        and the reason a refusal gave: the first analysis of a round's
+        dialogs (2026-09-26) could match 4 of 12 records to their command
+        only by timestamps, and 4 not at all.
+        """
+        try:
+            from . import audit_log as _audit
+            decision = req.decision
+            args = req.args if isinstance(getattr(req, "args", None), dict) else {}
+            subject = str(args.get("command") or args.get("path")
+                          or args.get("file") or "")
+            reason = ""
+            if decision is False:
+                reason = str(getattr(self, "last_refusal_reason", "") or "")
+            _audit.append({
+                "subject": " ".join(subject.split())[:200],
+                "reason": reason[:200],
+                "event": "dialog",
+                "session_id": self.session_id,
+                "session_key": self.session_key,
+                "tool": str(getattr(req, "tool", "") or ""),
+                "answer": ("expired" if req.expired else
+                           "approved" if decision is True else
+                           "denied" if decision is False else "answered"),
+                "by": by,
+            })
+        except Exception:
+            pass
 
     @staticmethod
     def _refusal_for(req: ConfirmRequest) -> Any:

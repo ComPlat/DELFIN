@@ -165,6 +165,10 @@ _CO2_DEFAULTS = {
 # priority and avoids ambiguity for keys that also mean something in
 # the main DELFIN pipeline.
 #
+# "multiplicity" itself stays out — it is set dynamically per species;
+# an explicit "co2_multiplicity" override is handled in
+# setup_co2_from_delfin AFTER spin detection.
+#
 # The base list is every CO2 default key PLUS the level-of-theory
 # fields the main CONTROL.txt already owns. Charge / multiplicity /
 # broken_sym stay out because they are set dynamically per species.
@@ -317,6 +321,33 @@ def setup_co2_from_delfin(job_dir: str | Path, species_delta: int) -> Path:
             f"Could not determine multiplicity for species delta={species_delta} "
             f"({species_name}) in {job_dir}"
         )
+
+    # Explicit override from the main CONTROL.txt wins over the detected
+    # spin. Prefixed key only (co2_multiplicity=...): a plain "multiplicity"
+    # in the main CONTROL.txt describes the base species and must NOT leak
+    # into every redox species' CO2 coordinator CONTROL.
+    override_mult = delfin_ctrl.get("co2_multiplicity", "").strip()
+    if override_mult:
+        try:
+            wanted = int(override_mult)
+        except ValueError:
+            print(f"[CO2 chain] WARN: co2_multiplicity={override_mult!r} is not an "
+                  f"int — ignoring override, keeping detected multiplicity {mult}")
+        else:
+            # A spin multiplicity is 2S+1, so it is at least 1. int()
+            # accepts "0" and "-1" happily, and either reached the
+            # generated CONTROL.txt unchanged -- measured before this
+            # check existed. ORCA does refuse them, but only once the job
+            # has been queued and started, so a typo cost a calculation
+            # instead of a warning. Refused here, where the answer is
+            # immediate and the detected spin is still right.
+            if wanted < 1:
+                print(f"[CO2 chain] WARN: co2_multiplicity={override_mult!r} is not "
+                      f"a multiplicity (2S+1 is at least 1) — ignoring override, "
+                      f"keeping detected multiplicity {mult}")
+            else:
+                mult = wanted
+                source = "CONTROL.txt (co2_multiplicity override)"
 
     bs = bs or ""
     broken_sym = f"%scf BrokenSym {bs} end" if bs else ""

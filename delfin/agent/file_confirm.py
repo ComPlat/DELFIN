@@ -231,18 +231,14 @@ def answer(request_id: str, decision: bool, *, room: Optional[Path] = None,
 
 # -- the careful parts ------------------------------------------------------
 
-def _read_answer(path: Path, request_id: str,
-                 asked_at: float) -> Optional[tuple[bool, str]]:
-    """The decision in *path*, with its refusal reason, or None.
+def _checked_record(path: Path, request_id: str,
+                    asked_at: float) -> Optional[dict]:
+    """The answer record in *path* if it passes every check, else None.
 
     Every reason to doubt the file returns None: doubt is not approval,
-    and it is not refusal either -- the question simply stays open.
-
-    The reason rides along under the SAME checks as the decision, not a
-    laxer set of its own: it is operator text the model will read, so a
-    file that fails any check here (wrong owner, group-writable, older
-    than the question, another id) must not deliver text either. There is
-    deliberately no second reader.
+    and it is not refusal either -- the question simply stays open. The
+    one place both readers below take their record from, so an answer
+    of any kind rides under the same checks.
     """
     try:
         info = path.lstat()
@@ -259,6 +255,21 @@ def _read_answer(path: Path, request_id: str,
     record = _read_json(path)
     if not record or str(record.get("id") or "") != str(request_id):
         return None                      # an answer to something else
+    return record
+
+
+def _read_answer(path: Path, request_id: str,
+                 asked_at: float) -> Optional[tuple[bool, str]]:
+    """The decision in *path*, with its refusal reason, or None.
+
+    The reason rides along under the SAME checks as the decision, not a
+    laxer set of its own: it is operator text the model will read, so a
+    file that fails any check (wrong owner, group-writable, older than
+    the question, another id) must not deliver text either.
+    """
+    record = _checked_record(path, request_id, asked_at)
+    if record is None:
+        return None
     decision = record.get("decision")
     if decision == APPROVE:
         return (True, "")
@@ -268,6 +279,24 @@ def _read_answer(path: Path, request_id: str,
         reason = _sanitize_reason(record.get("reason"))
         return (False, reason)
     return None                          # unrecognised is not an answer
+
+
+def _read_choice(path: Path, request_id: str, asked_at: float,
+                 offered: list) -> Optional[list[str]]:
+    """The options an operator chose from outside for a CHOICE question
+    (`delfin-agent approvals answer`), or None.
+
+    Same checks as every other answer (_checked_record). Only labels the
+    question itself offered are passed on -- the model reads them as the
+    user's answer, so an answer file cannot put new text in its mouth.
+    """
+    record = _checked_record(path, request_id, asked_at)
+    if record is None or record.get("decision") != "choose":
+        return None
+    labels = {str(o) for o in (offered or [])}
+    picked = [str(a) for a in (record.get("answers") or [])
+              if isinstance(a, str) and str(a) in labels]
+    return picked or None
 
 
 def _own_dir(room: Path) -> Path:

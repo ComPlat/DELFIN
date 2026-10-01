@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -168,10 +170,24 @@ def _check_credentials(ctx: dict) -> list[dict]:
 
 
 def _check_binaries(ctx: dict) -> list[dict]:
-    """Chemistry binaries on PATH — reuses the tools install-policy table."""
+    """Chemistry binaries — found the way DELFIN itself finds them.
+
+    DELFIN does not require xtb/orca on PATH: it also resolves them from
+    the qm_tools directories (``~/.delfin/qm_tools/bin``), ``*_BINARY``
+    environment variables and known system locations
+    (``qm_runtime.resolve_tool``). A bare ``shutil.which`` here reported
+    every qm_tools install as "not found on PATH" while DELFIN happily
+    ran the same binary — so this check reuses the real resolver instead
+    of re-implementing a PATH-only subset of it.
+    """
     out: list[dict] = []
     for name in _CHEM_BINARIES:
-        found = shutil.which(name)
+        found = None
+        try:
+            from delfin import qm_runtime
+            found = qm_runtime.find_tool_executable(name)
+        except Exception:
+            found = shutil.which(name)
         if found:
             out.append(_row(f"binary: {name}", PASS, f"found at {found}"))
             continue
@@ -304,6 +320,74 @@ def _check_scheduler(ctx: dict) -> list[dict]:
     return [_row(
         "scheduler daemon", PASS, "not running (no scheduled entries)",
     )]
+
+
+def _check_push(ctx: dict) -> list[dict]:
+    """Can this host reach the git remote at all.
+
+    Read-only: ``git ls-remote`` asks the remote what refs it has and
+    publishes nothing. It is the same question a push answers the hard
+    way, and answering it here costs one call instead of thirteen --
+    measured 2026-09-28, when two sessions spent eleven and thirteen
+    attempts varying transports and proxies against a host that could
+    not reach github at all. Nothing told them the first message was
+    final, so they kept rephrasing it.
+
+    This does not push and does not make pushing easier. It says, before
+    the work, whether the last step will be the user's.
+    """
+    from .push_diagnosis import diagnose
+
+    try:
+        done = subprocess.run(
+            ["git", "ls-remote", "--exit-code", "origin", "HEAD"],
+            capture_output=True, text=True, timeout=25,
+            cwd=str(ctx.get("workspace") or "."))
+    except FileNotFoundError:
+        return [_row("git remote", WARN, "git is not installed")]
+    except subprocess.TimeoutExpired:
+        return [_row(
+            "git remote", WARN,
+            "the remote did not answer within 25 s",
+            "push from a node with outbound access, or ask the user")]
+    except OSError as exc:
+        return [_row("git remote", WARN, f"could not be asked: {exc}")]
+
+    rows: list[dict] = []
+    # A credential helper inherited from somebody else's session can never
+    # work and is worth naming even when the remote answers: the socket in
+    # it belongs to another uid, so every push through it fails with
+    # "Missing or invalid credentials" and an EACCES nobody reads as
+    # "wrong owner". Reported, not rewritten -- this is the user's git
+    # configuration.
+    try:
+        helper = subprocess.run(
+            ["git", "config", "--get", "credential.helper"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(ctx.get("workspace") or ".")).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        helper = ""
+    if helper:
+        sock = re.search(r"(/run/user/(\d+)/\S*\.sock)", helper)
+        if sock and os.getuid() != int(sock.group(2)):
+            rows.append(_row(
+                "git credential helper", WARN,
+                f"points at another account's socket (uid {sock.group(2)}, "
+                f"this is {os.getuid()})",
+                "git config --unset credential.helper in this checkout, "
+                "or let the user push from their own session"))
+
+    if done.returncode == 0:
+        return rows + [_row("git remote", PASS, "reachable, and it answers")]
+
+    text = (done.stderr or "") + "\n" + (done.stdout or "")
+    found = diagnose(text)
+    if found is None:
+        return rows + [_row(
+            "git remote", WARN,
+            "unreachable: " + " ".join(text.split())[:120],
+            "read the message; a push from here will fail the same way")]
+    return rows + [_row("git remote", WARN, found.cause, found.remedy)]
 
 
 def _check_attention(ctx: dict) -> list[dict]:
@@ -604,6 +688,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("python deps", "_check_python_deps"),
     ("mcp servers", "_check_mcp"),
     ("scheduler daemon", "_check_scheduler"),
+    ("git remote", "_check_push"),
     ("attention inbox", "_check_attention"),
     ("attention transports", "_check_attention_transports"),
     ("benchmark truth", "_check_benchmark"),

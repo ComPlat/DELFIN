@@ -15,6 +15,8 @@ import time
 
 import pytest
 
+from conftest import child_env
+
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"),
                                 reason="PR_SET_DUMPABLE is Linux")
 
@@ -30,6 +32,25 @@ libc = ctypes.CDLL(None, use_errno=True)
 rc = libc.ptrace(16, pid, None, None)          # PTRACE_ATTACH
 attach = "ATTACHED" if rc == 0 else "denied"
 if rc == 0:
+    # PTRACE_ATTACH's stop is ASYNCHRONOUS: the SIGSTOP can still be in
+    # flight when ptrace() returns. Detaching immediately races that
+    # stop and can leave the target stopped forever with no tracer --
+    # the agent then hangs until the test's timeout kills it (60 s
+    # TimeoutExpired, rc -9; 9 of 10 SLURM runs and 8 of 8 local gate
+    # runs red). The tracee is NOT a child of this probe, so waitpid
+    # cannot observe the stop; /proc/<pid>/stat shows 't' (tracing
+    # stop) instead. Wait for it before PTRACE_DETACH.
+    import time
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        try:
+            with open(f"/proc/{pid}/stat") as fh:
+                state = fh.read().rsplit(")", 1)[1].split()[0]
+        except OSError:
+            break                            # target gone: nothing to wait for
+        if state in ("t", "T"):
+            break
+        time.sleep(0.01)
     libc.ptrace(17, pid, None, None)           # PTRACE_DETACH
 own = "own-ok" if open("/proc/self/environ", "rb").read() else "own-empty"
 print(env, attach, own)
@@ -56,9 +77,19 @@ def _scripts(tmp_path):
 
 
 def _env(tmp_path):
-    env = dict(os.environ)
-    env.pop("DELFIN_PROCESS_GUARD", None)
+    # child_env: the agent child is a DELFIN process; a private HOME
+    # keeps its ~/.delfin sinks out of the real home (measured
+    # 2026-09-22) and still leaves the probe the environment to read.
+    # HOME is tmp_path itself (child_env's child_home moved it one
+    # deeper): process_guard registers under HOME, and the emergency
+    # stop test reads tmp_path/.delfin/agent_processes. tmp_path is a
+    # pytest directory either way -- outside the real home.
+    # DELFIN_PROCESS_GUARD is popped as before: the suite autouse
+    # fixture sets it to "off" for pytest, and the child here must
+    # protect itself for the assertions to mean anything.
+    env = child_env(tmp_path)
     env["HOME"] = str(tmp_path)
+    env.pop("DELFIN_PROCESS_GUARD", None)
     env["DELFIN_TEST_SECRET"] = "in-the-environment"
     return env
 

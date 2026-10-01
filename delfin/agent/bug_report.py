@@ -461,7 +461,7 @@ def _render_markdown(
     lines += ["## Context", "", "| Field | Value |", "|---|---|"]
     # Human report shows the USER-FACING mode name ("Code"), not the internal id
     # ("solo") — the raw value stays in report.json for maintainer tooling.
-    _mode_display = {"solo": "Code", "dashboard": "Dashboard"}
+    _mode_display = {"solo": "Code", "dashboard": "Dashboard", "office": "Office", "research": "Research"}
     for key in ("created_at", "user", "host", "mode", "provider", "model",
                 "effort", "perms", "backend", "role", "session_id",
                 "workspace", "input_tokens", "output_tokens", "cost_usd",

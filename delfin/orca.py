@@ -1691,7 +1691,7 @@ def run_orca_with_intelligent_recovery(
 
     Configuration options (in CONTROL.txt):
         enable_auto_recovery: Enable intelligent error recovery (yes/no, default: yes)
-        max_recovery_attempts: Maximum recovery attempts per error type (default: 2)
+        max_recovery_attempts: Maximum recovery attempts per error type (default: 3)
     """
     config = config or {}
 

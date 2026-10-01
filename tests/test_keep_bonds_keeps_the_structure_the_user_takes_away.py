@@ -187,3 +187,72 @@ def test_the_wall_lets_go_when_the_hand_does_and_says_that_it_held():
 
     spoke = sum(1 for one in said if 'bonding' in one)
     assert spoke, f'the wall held a step and never said so: {said[-1]!r}'
+
+
+@_needs_xtb
+def test_the_comeback_freezes_bonds_at_the_grab_not_at_the_stretched_top():
+    """A drag the wall gave up on starts again as a new gesture.
+
+    The lets-go standstill restarts the drag when the hand comes back in --
+    and a restart is a new gesture, so what its answers are measured and
+    frozen against has to be the geometry the grab began on.  ``thermal_was``
+    was left at the last step the wall *allowed*, which on a tear is a
+    stretched top (measured C-C 1.909 A on this ethane): every bond of the
+    comeback answer was then frozen at the lengths of that top, and the
+    relaxation could only satisfy them by breaking C1-H3 -- so the wall
+    refused every answer of a hand that had come all the way back in, and
+    the drag never restarted for good.  Measured through ``bonds_to_freeze``,
+    whose input is the geometry the freeze is taken on: the comeback froze
+    on a top 0.39 A from the grab where the wish was 0.1 A from it.
+
+    The give-up state is arranged directly -- the same keys, with the same
+    values, the real leave-behind has -- because whether a driven chain
+    reaches three refusals is itself load-dependent; what is under test is
+    what the comeback does once it is there.
+    """
+    helper = pytest.importorskip('test_the_budget_prices_a_relaxed_path')
+
+    start = gfn.optimize_with_gfn(_ETHANE, 'gfn2', max_steps=400, timeout=300)
+    assert start.get('ok'), start.get('status')
+    begin = start['xyz']
+    methyl = {1, 5, 6, 7}
+    # What the last ALLOWED step of a tearing drag looks like: the kept
+    # bonding, on a geometry the grab did not begin on.
+    top = helper._shifted(begin, methyl, 1.2)
+
+    froze = []
+    real = gfn.bonds_to_freeze
+
+    def _watching(xyz_text):
+        froze.append(gfn.largest_shift(begin, xyz_text) or 0.0)
+        return real(xyz_text)
+
+    part = helper._a_part(begin)
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.value = 'move'          # the rigid hand, which tears
+    part.submit_topology_btn.value = True
+    part._begin_gfn_follow()
+    # The leave-behind of a wall that has given up: three refusals, the
+    # standstill's own yardstick, and the stretched top the last allowed
+    # answer stood on.
+    part.state['topology_refused'] = 3
+    part.state['topology_stuck'] = 0.4
+    part.state['thermal_was'] = top
+
+    gfn.bonds_to_freeze = _watching
+    try:
+        part.submit_manip_sync.value = helper._drag_message(
+            helper._shifted(begin, methyl, 0.1),
+            'DELFIN drag-follow held=1,5,6,7')
+        helper._quiet(part.state, seconds=300)
+    finally:
+        gfn.bonds_to_freeze = real
+
+    assert froze, 'no answer ran after the hand came back in'
+    # The freeze is taken on the grab geometry -- where this gesture began,
+    # C-C 1.52 A -- and not on the stretched top the last allowed step stood
+    # on: a wish 0.1 A from the grab cannot be a freeze 1.2 A from it.
+    assert max(froze) < 0.2, (
+        f'the comeback froze its bonds on a geometry {max(froze):.3f} A from '
+        f'the grab, so the wall is still holding the tear: {froze}')

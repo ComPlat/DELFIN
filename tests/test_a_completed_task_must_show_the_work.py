@@ -42,9 +42,11 @@ import pytest
 from delfin.agent.api_client import (
     KitToolPermissions,
     _doc_executor,
+    check_completion_claim,       # delegates to task_evidence
+)
+from delfin.agent.task_evidence import (
     _paths_in_text,
-    _unmet_artifact,
-    check_completion_claim,
+    _unmet_format,
 )
 
 
@@ -54,8 +56,8 @@ from delfin.agent.api_client import (
 
 def test_an_extension_inside_another_filename_is_not_that_file():
     """"".pdf" in "notes.pdf.bak"" is true and neither is a PDF."""
-    assert _unmet_artifact("Create the PDF report", ["notes.pdf.bak"]) == "pdf"
-    assert _unmet_artifact("Create the PDF report", ["out/report.pdf"]) == ""
+    assert _unmet_format("Create the PDF report", ["notes.pdf.bak"]) == "pdf"
+    assert _unmet_format("Create the PDF report", ["out/report.pdf"]) == ""
 
 
 def test_a_pdf_that_was_only_read_does_not_satisfy_a_pdf_task():

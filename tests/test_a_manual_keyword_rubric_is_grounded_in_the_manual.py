@@ -182,15 +182,26 @@ def _emphasis_anchored(pattern: str) -> list[str]:
 def test_no_rubric_pattern_waits_for_emphasis_that_is_stripped_first():
     from delfin.agent.benchmark import load_tasks
 
+    # The old form of this check (until 2026-09-26) flagged every
+    # required backtick on every channel: _strip_emphasis ate them from
+    # ALL haystacks, so a backtick pattern was dead everywhere. The
+    # scorer now strips prose only; on the `any` channel the TOOL lines
+    # keep their backticks, so a backtick-requiring pattern there is
+    # alive (the gate-forms suite carries one). On the prose channels
+    # (text, action) the stripping is unchanged and a required backtick
+    # or ** still measures nothing.
     dead = []
     for task in load_tasks():
         pairs = (("expected", task.expected_signals),
                  ("forbidden", task.forbidden_signals))
         for kind, signals in pairs:
             for i, sig in enumerate(signals):
-                if (sig.against or "any") == "tool_name":
+                against = sig.against or "any"
+                if against == "tool_name":
                     continue
                 for literal in _emphasis_anchored(sig.pattern or ""):
+                    if against == "any" and literal == "`":
+                        continue  # alive in the TOOL part of the haystack
                     dead.append(f"{task.id}.{kind}[{i}] requires {literal!r}")
     assert not dead, (
         "these patterns can never match — the emphasis is removed before "

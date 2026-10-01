@@ -49,8 +49,36 @@ def stop_file(tmp_path, monkeypatch):
     monkeypatch.setattr(S, "_PATH", path)
     monkeypatch.setattr(sched_mod, "_DEFAULT_PATH",
                         tmp_path / "home" / ".delfin" / "cron.json")
+    # The register too, and for the same reason the stop file is redirected:
+    # `request` reads it to find the processes /proc cannot show, so a suite
+    # run while a dashboard is open would end that dashboard's kernels and
+    # daemons. Redirecting only the stop file kept half of this file's
+    # opening promise.
+    from delfin.agent import process_guard as _pg
+    reg = tmp_path / "home" / ".delfin" / "agent_processes"
+    reg.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(_pg, "_DIR", reg)
+    assert _pg._DIR != pathlib.Path.home() / ".delfin" / "agent_processes"
     assert S._PATH != _REAL_STOP and _REAL_STOP.parent not in path.parents
     return path
+
+
+def _register(proc, kind: str) -> None:
+    """Put *proc* on the (redirected) process_guard register as *kind*.
+
+    The real dashboard server and launcher cannot be found through /proc's
+    environment -- they are non-dumpable -- so the register is the only way
+    the stop sees them, and the only way a test can stand in for them.
+    """
+    import json
+
+    from delfin.agent import process_guard as _pg
+    _pg._DIR.mkdir(parents=True, exist_ok=True)
+    (_pg._DIR / f"{_pg._host()}-{proc.pid}.json").write_text(json.dumps({
+        "pid": proc.pid, "ticks": L._start_ticks(proc.pid),
+        "host": _pg._host(), "uid": os.getuid(), "kind": kind,
+        "registered_at": time.time(), "lifeline_pid": "",
+        "lifeline_ticks": "", "voila_port": "", "jpy_parent_pid": ""}))
 
 
 def _child_env(**extra) -> dict:
@@ -350,3 +378,72 @@ def test_a_daemon_running_here_is_running(capsys):
     code = cli._print_stop_all_check(_report(
         daemon_pid_files={"job_monitor": {"pid": 4242, "alive_here": True}}))
     assert code == 1
+
+
+# -- the register must spare what the command line already spares ----------
+#
+# The /proc path spares a server by its command line. The register path was
+# added for processes /proc cannot show, and it had no such exception, so
+# the one process that is ALWAYS on the register -- the dashboard server,
+# which protects itself in server_guard -- was ended by every stop. The
+# button says "reload the page to start again"; the reload met a refused
+# connection. The existing coverage above exercises the /proc path only,
+# which is why a server spared there still died here.
+
+@pytest.mark.parametrize("kind", sorted(S._SPARED_KINDS))
+def test_a_registered_serving_process_keeps_serving(stop_file, kind):
+    serving = _sleeper()
+    _register(serving, kind)
+    try:
+        summary = S.request("test", settle_s=0.2, grace_s=5)
+        assert serving.pid not in summary["found_here"], kind
+        time.sleep(0.6)
+        assert serving.poll() is None, f"{kind} was ended by the stop"
+    finally:
+        serving.kill()
+        serving.wait()
+
+
+@pytest.mark.parametrize("kind", ["dashboard kernel", "daemon",
+                                  "terminal agent"])
+def test_a_registered_agent_process_still_ends(stop_file, kind):
+    """The exception must not become a hole: everything that runs an agent
+    still ends, and that is the whole point of the button."""
+    agent = _sleeper()
+    _register(agent, kind)
+    try:
+        summary = S.request("test", settle_s=0.2, grace_s=5)
+        assert agent.pid in summary["found_here"], kind
+        assert agent.wait(timeout=10) is not None
+    finally:
+        agent.kill()
+        agent.wait()
+
+
+def test_an_unknown_kind_ends_rather_than_survives(stop_file):
+    """A kind nobody listed is an agent until someone says otherwise: the
+    costly error is an agent that outlives the emergency stop."""
+    other = _sleeper()
+    _register(other, "something new")
+    try:
+        summary = S.request("test", settle_s=0.2, grace_s=5)
+        assert other.pid in summary["found_here"]
+        assert other.wait(timeout=10) is not None
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_the_launcher_is_spared_because_the_server_dies_with_it():
+    """Not a preference: cli_voila starts the server with PDEATHSIG, so
+    ending the launcher ends the server as surely as signalling it."""
+    src = (_REPO / "delfin" / "cli_voila.py").read_text(encoding="utf-8")
+    assert "parent_death_signal" in src
+    assert "dashboard launcher" in S._SPARED_KINDS
+
+
+def test_both_paths_spare_the_same_thing():
+    """A server found by its command line and a server found on the
+    register are one process; the two paths disagreeing is the defect."""
+    assert "dashboard server" in S._SPARED_KINDS
+    assert any("voila" in m for m in S._SERVER_MARKERS)

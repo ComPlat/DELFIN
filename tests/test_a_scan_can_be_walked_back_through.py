@@ -97,9 +97,11 @@ def _run_the_scan(refs, steps=10):
     refs['submit_scan_how'].value = 'hold'
     refs['submit_pick_sync'].value = '0,1,2,3'
     refs['submit_internal_value'].value = 180.0
-    # An end rather than a direction, which is the third answer in the box
-    # that used to be direction-only with a checkbox beside it.
-    refs['submit_scan_way'].value = 'to'
+    # A torsion is turned a chosen way to an end: from 180 down to 60 is the
+    # left/anticlockwise way ("↺ left, to a value"), which walks straight there.
+    # A dihedral's value never implies its own direction, so the direction is
+    # part of the answer rather than a separate box.
+    refs['submit_scan_way'].value = 'to_in'
     refs['submit_scan_to'].value = 60.0
     refs['submit_scan_steps'].value = steps
     refs['submit_scan_whole'].value = True

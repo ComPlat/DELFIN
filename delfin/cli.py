@@ -760,6 +760,35 @@ def _apply_occupier_overrides(
         except Exception:
             override_map[folder_name] = preferred_index
 
+        # Fix: also record the override in .delfin_occ_auto_state.json.
+        # Without this, the state file keeps the pre-override winner and
+        # downstream consumers (e.g. the CO2 coordinator chain via
+        # _spin_from_state_json) read the stale multiplicity, silently
+        # ignoring the manual override.
+        try:
+            from delfin.occupier_auto import record_auto_preference, infer_parity_from_m
+            from delfin.occupier_sequences import infer_species_delta
+            from delfin.copy_helpers import extract_preferred_spin
+            # The authoritative m/BS for the override is the winning entry
+            # in OCCUPIER.txt itself (retagged "<-- OVERRIDE"), not the
+            # rule-based sequence replay, which may renumber indices.
+            m_val, bs_val = extract_preferred_spin(folder_path)
+            if m_val is not None:
+                parity = infer_parity_from_m(m_val)
+                if parity is not None:
+                    _delta = infer_species_delta(folder_path)
+                    record_auto_preference(
+                        parity, int(preferred_index), _delta,
+                        m_value=m_val, bs_value=bs_val,
+                        root=workspace_root,
+                    )
+                    logger.info(
+                        "[recalc] Recorded override in auto-state: delta=%s index=%s m=%s BS=%s (%s)",
+                        _delta, preferred_index, m_val, bs_val, folder_name,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not update auto-state for %s: %s", folder_name, exc)
+
         # Wipe all top-level classic artefacts for this stage so the pipeline
         # rebuilds `{base}.inp` with OPT+FREQ keywords and reruns ORCA on the
         # new geometry/multiplicity/BS. The OCCUPIER folder only stores OPT
@@ -1550,6 +1579,10 @@ def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
     arg_list = list(argv if argv is not None else sys.argv[1:])
+    if arg_list and arg_list[0] == "cluster":
+        from delfin.cluster_bench.cli import main as _cluster_main
+
+        return _cluster_main(arg_list[1:])
     if arg_list and arg_list[0] == "doctor":
         return _run_doctor_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "qm_check":

@@ -32381,6 +32381,63 @@ def _smiles_arg(args, kwargs):
     return args[0] if args else None
 
 
+_SMILES_TOKEN_RE = re.compile(
+    r"(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|\*|\(|\)|\.|=|#|-|\+|\\|/|:|~|@|\?"
+    r"|>|<|\$|%[0-9]{2}|[0-9])")
+_SMILES_ATOM_TOKEN_RE = re.compile(r"^(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|\*)$")
+
+
+def _pin_metal_neighbour_hydrogens(smiles):
+    """Write the RDKit hydrogen count of every UNBRACKETED metal neighbour into the SMILES.
+
+    ``[Pt](Cl)(Cl)(N)N``: RDKit gives each N two implicit hydrogens (valence 3, one
+    bond to Pt).  Implicit hydrogens are not stored on the atom, they are recomputed
+    from its valence -- and preparation paths mark atoms bonded to a metal
+    ``NoImplicit`` (so a dative donor does not gain a spurious H) or cleave the M-L
+    bond, both of which change what "implicit" comes to.  The unbracketed N lost both
+    hydrogens on some paths and kept them on others, so one manifold held frames of 5
+    and of 9 atoms, and with a counter-ion (``.Cl``) of 7 and of 11.
+
+    The count is fixed where the user wrote it: each such atom token becomes the
+    bracket atom RDKit itself reads it as (``N`` -> ``[NH2]``), so from here on the
+    hydrogens are explicit and no downstream path can drop them.  Only unbracketed
+    atoms that border a metal AND carry at least one implicit H are rewritten; any
+    other SMILES (a bracket atom already states its H count) is returned as the
+    identical string.  Never raises; on any doubt the input is returned unchanged.
+    """
+    if not smiles or not isinstance(smiles, str) or not RDKIT_AVAILABLE:
+        return smiles
+    try:
+        tokens = _SMILES_TOKEN_RE.findall(smiles)
+        if "".join(tokens) != smiles:
+            return smiles
+        atom_pos = [i for i, t in enumerate(tokens) if _SMILES_ATOM_TOKEN_RE.match(t)]
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            mol = Chem.MolFromSmiles(smiles, sanitize=False)
+            if mol is None:
+                return smiles
+            mol.UpdatePropertyCache(strict=False)
+        if mol.GetNumAtoms() != len(atom_pos):
+            return smiles
+        changed = False
+        for atom in mol.GetAtoms():
+            pos = atom_pos[atom.GetIdx()]
+            tok = tokens[pos]
+            if tok.startswith("[") or tok == "*":
+                continue
+            if not any(n.GetSymbol() in _METAL_SET for n in atom.GetNeighbors()):
+                continue
+            n_h = int(atom.GetNumImplicitHs())
+            if n_h <= 0:
+                continue
+            tokens[pos] = f"[{tok}H{n_h if n_h > 1 else ''}]"
+            changed = True
+        return "".join(tokens) if changed else smiles
+    except Exception:
+        return smiles
+
+
 def _has_metalloid_donor(smiles) -> bool:
     """True iff the molecule has a heavy metalloid (Sb/As/Bi/Te/Se/Ge/Sn/Pb) atom
     bonded to a metal centre -- the only systems the dual-M-D-distance pass targets
@@ -32431,6 +32488,18 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     if outermost and "max_isomers" in kwargs and (
             kwargs["max_isomers"] is None or kwargs["max_isomers"] <= 0):
         kwargs["max_isomers"] = 100000
+    # Hydrogens of unbracketed metal neighbours are pinned in the SMILES itself, once,
+    # before any path parses it (see _pin_metal_neighbour_hydrogens).  A SMILES without
+    # such an atom -- every bracketed-SMILES input -- passes through as the identical
+    # string.
+    if outermost:
+        _smi_in = _smiles_arg(args, kwargs)
+        _smi_pinned = _pin_metal_neighbour_hydrogens(_smi_in)
+        if _smi_pinned != _smi_in:
+            if "smiles" in kwargs:
+                kwargs["smiles"] = _smi_pinned
+            else:
+                args = (_smi_pinned,) + tuple(args[1:])
     # Cross-process determinism bridge: the public ``deterministic=True`` contract
     # MUST imply bit-identity across processes, but the deep timeout / wall-budget /
     # sorted-enum guards consult the DELFIN_DETERMINISTIC *env* (so subprocess
@@ -36380,6 +36449,7 @@ def smiles_to_xyz_quick_hapto_previews(
     hapto_approx: Optional[bool] = None,
 ) -> List[Tuple[str, str]]:
     """Return extra quick-convert preview structures for hapto-specific builders."""
+    smiles = _pin_metal_neighbour_hydrogens(smiles)   # same key as smiles_to_xyz_quick
     _ = _hapto_approx_enabled(hapto_approx)
     return list(_HAPTO_QUICK_PREVIEW_CACHE.get(smiles, []))
 
@@ -36396,6 +36466,9 @@ def smiles_to_xyz_quick(
     stk → RDKit → unsanitized → no-valence-check → OB in order and
     returns as soon as one succeeds.  Returns ``(xyz, error)``.
     """
+    # Unbracketed metal neighbours keep the H RDKit gives them (see
+    # _pin_metal_neighbour_hydrogens); identical string for every other SMILES.
+    smiles = _pin_metal_neighbour_hydrogens(smiles)
     if not RDKIT_AVAILABLE:
         return None, "RDKit not available"
 
@@ -36581,6 +36654,9 @@ def smiles_to_xyz(
         - xyz_content: XYZ format string if successful, None on error
         - error_message: Error description if failed, None on success
     """
+    # Unbracketed metal neighbours keep the H RDKit gives them (see
+    # _pin_metal_neighbour_hydrogens); identical string for every other SMILES.
+    smiles = _pin_metal_neighbour_hydrogens(smiles)
     if not RDKIT_AVAILABLE:
         error = "RDKit is not installed. Install with: pip install rdkit"
         logger.error(error)
@@ -40185,228 +40261,39 @@ def convert_input_if_smiles(input_path: Path) -> Tuple[bool, Optional[str]]:
         return False, f"Could not write converted coordinates: {e}"
 
 
-def _smiles_to_architector_input(smiles: str) -> Optional[dict]:
-    """Decompose a metal-complex SMILES into an Architector input dict."""
-    if not RDKIT_AVAILABLE:
-        return None
-
-    mol = Chem.MolFromSmiles(smiles, sanitize=False)
-    if mol is None:
-        return None
-
-    metal_indices = []
-    for atom in mol.GetAtoms():
-        if atom.GetSymbol() in _METALS:
-            metal_indices.append(atom.GetIdx())
-    if not metal_indices:
-        return None
-
-    metal_idx = metal_indices[0]
-    metal_atom = mol.GetAtomWithIdx(metal_idx)
-    metal_symbol = metal_atom.GetSymbol()
-    metal_charge = metal_atom.GetFormalCharge()
-
-    coord_atom_to_metal = {}
-    bonds_to_remove = []
-    for bond in mol.GetBonds():
-        a = bond.GetBeginAtomIdx()
-        b = bond.GetEndAtomIdx()
-        if a in metal_indices:
-            coord_atom_to_metal[b] = a
-            bonds_to_remove.append((a, b))
-        elif b in metal_indices:
-            coord_atom_to_metal[a] = b
-            bonds_to_remove.append((a, b))
-
-    edit_mol = Chem.RWMol(mol)
-    orig_props = {}
-    for atom in mol.GetAtoms():
-        idx = atom.GetIdx()
-        orig_props[idx] = {
-            'formal_charge': atom.GetFormalCharge(),
-            'explicit_h': atom.GetNumExplicitHs(),
-            'no_implicit': atom.GetNoImplicit(),
-            'rad_e': atom.GetNumRadicalElectrons(),
-        }
-
-    for a, b in bonds_to_remove:
-        edit_mol.RemoveBond(a, b)
-
-    metal_set = set(metal_indices)
-    idx_map = {}
-    removed = 0
-    for old_idx in range(mol.GetNumAtoms()):
-        if old_idx in metal_set:
-            removed += 1
-        else:
-            idx_map[old_idx] = old_idx - removed
-
-    for mi in sorted(metal_indices, reverse=True):
-        edit_mol.RemoveAtom(mi)
-
-    mol_no_metal = edit_mol.GetMol()
-
-    for old_idx, props in orig_props.items():
-        if old_idx in metal_set:
-            continue
-        new_idx = idx_map.get(old_idx)
-        if new_idx is None:
-            continue
-        try:
-            atom = mol_no_metal.GetAtomWithIdx(new_idx)
-            atom.SetNumRadicalElectrons(props['rad_e'])
-            if old_idx in coord_atom_to_metal:
-                typical_valence = {
-                    'C': 4, 'N': 3, 'O': 2, 'S': 2, 'Se': 2,
-                    'P': 3, 'As': 3, 'Si': 4, 'B': 3, 'Te': 2,
-                    'F': 1, 'Cl': 1, 'Br': 1, 'I': 1,
-                }
-                sym = atom.GetSymbol()
-                typ_val = typical_valence.get(sym, 2)
-                bo_sum = 0.0
-                for bond in mol.GetBonds():
-                    ba, bb = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-                    if old_idx in (ba, bb):
-                        neighbor = bb if ba == old_idx else ba
-                        if neighbor not in metal_set:
-                            bo_sum += bond.GetBondTypeAsDouble()
-                saturated = (bo_sum + props['explicit_h']) >= typ_val
-
-                if props['formal_charge'] != 0:
-                    atom.SetFormalCharge(props['formal_charge'])
-                    atom.SetNumExplicitHs(0)
-                    atom.SetNoImplicit(True)
-                elif saturated:
-                    atom.SetFormalCharge(0)
-                else:
-                    atom.SetFormalCharge(-1)
-                    atom.SetNumExplicitHs(0)
-                    atom.SetNoImplicit(True)
-            else:
-                atom.SetNumExplicitHs(props['explicit_h'])
-                atom.SetNoImplicit(props['no_implicit'])
-        except Exception:
-            pass
-
-    try:
-        mol_no_metal.UpdatePropertyCache(strict=False)
-    except Exception:
-        pass
-
-    frag_atom_lists = Chem.GetMolFrags(mol_no_metal, asMols=False)
-    frag_mols = Chem.GetMolFrags(mol_no_metal, asMols=True, sanitizeFrags=False)
-    new_to_old = {v: k for k, v in idx_map.items()}
-
-    ligands = []
-    for frag_atoms, frag_mol in zip(frag_atom_lists, frag_mols):
-        coord_positions = []
-        for pos_in_frag, new_idx in enumerate(frag_atoms):
-            old_idx = new_to_old.get(new_idx)
-            if old_idx is not None and old_idx in coord_atom_to_metal:
-                coord_positions.append(pos_in_frag)
-
-        for atom in frag_mol.GetAtoms():
-            atom.SetAtomMapNum(atom.GetIdx() + 1)
-
-        mapped_smiles = Chem.MolToSmiles(frag_mol, canonical=True)
-        mapped_mol = Chem.MolFromSmiles(mapped_smiles, sanitize=False)
-        if mapped_mol is None:
-            continue
-
-        frag_to_canon = {}
-        for atom in mapped_mol.GetAtoms():
-            orig_frag_idx = atom.GetAtomMapNum() - 1
-            frag_to_canon[orig_frag_idx] = atom.GetIdx()
-
-        canon_coord = []
-        for pos in coord_positions:
-            mapped_idx = frag_to_canon.get(pos)
-            if mapped_idx is not None:
-                canon_coord.append(mapped_idx)
-
-        if not canon_coord:
-            continue
-
-        for atom in mapped_mol.GetAtoms():
-            atom.SetAtomMapNum(0)
-        canon_smiles = Chem.MolToSmiles(mapped_mol, canonical=False)
-        ligands.append({'smiles': canon_smiles, 'coordList': sorted(canon_coord)})
-
-    if not ligands:
-        return None
-
-    total_charge = metal_charge
-    for atom in mol.GetAtoms():
-        if atom.GetIdx() not in metal_set:
-            total_charge += atom.GetFormalCharge()
-
-    return {
-        'core': {'metal': metal_symbol},
-        'ligands': ligands,
-        'parameters': {'full_charge': total_charge},
-    }
-
-
 def smiles_to_xyz_architector(smiles: str) -> Tuple[Optional[str], Optional[str]]:
-    """Convert a metal-complex SMILES to XYZ using Architector."""
-    if not contains_metal(smiles):
-        return None, 'Architector requires a metal-containing SMILES string'
+    """Convert a metal-complex SMILES to XYZ using Architector (lowest-energy frame).
 
-    try:
-        import importlib.util
-        if importlib.util.find_spec('architector') is None:
-            return None, 'architector is not installed'
+    The build is the one the dashboard's ARCHITECTOR button runs
+    (:mod:`delfin.common.external_builders`): coordination number and oxidation
+    state are read from the SMILES, and a missing Architector is an error.
+    """
+    from delfin.common.external_builders import build_first_xyz
+    return build_first_xyz('architector', smiles)
 
-        from architector.complex_construction import build_complex_driver
-        from architector.io_process_input import inparse
-        from architector import io_ptable
-    except Exception as exc:
-        return None, f'Could not import architector: {exc}'
 
-    try:
-        input_dict = _smiles_to_architector_input(smiles)
-        if input_dict is None:
-            return None, 'Could not decompose SMILES into metal + ligands for Architector'
+def smiles_to_xyz_molsimplify(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Convert a metal-complex SMILES to XYZ using molSimplify (first geometry).
 
-        input_dict = inparse(input_dict)
-        results = build_complex_driver(input_dict)
+    Same shared build as the dashboard's MOLSIMPLIFY button; the first frame is
+    the first geometry molSimplify lists for the coordination number (square
+    planar for CN 4, octahedral for CN 6).
+    """
+    from delfin.common.external_builders import build_first_xyz
+    return build_first_xyz('molsimplify', smiles)
 
-        real_keys = [k for k in results if '_init_only' not in k]
-        ligands = input_dict.get('ligands', [])
-        max_dent = max((len(l.get('coordList', [])) for l in ligands), default=0)
-        if not real_keys and max_dent >= 2:
-            for larger in (True, False):
-                scaled = io_ptable.map_metal_radii(
-                    inparse(input_dict), larger=larger,
-                )
-                extra = build_complex_driver(scaled)
-                suffix = '_larger_scaled' if larger else '_smaller_scaled'
-                for key, value in extra.items():
-                    results[key + suffix] = value
-                if any('_init_only' not in key for key in extra):
-                    break
 
-        ranked = []
-        for key, mol in results.items():
-            if '_init_only' in key:
-                continue
-            atoms = mol.get('ase_atoms')
-            if atoms is None:
-                continue
-            energy = mol.get('energy', None)
-            ranked.append((float(energy) if energy is not None else float('inf'), atoms, key))
+def smiles_to_xyz_mace(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Convert a metal-complex SMILES to XYZ using epic-MACE (first frame).
 
-        if not ranked:
-            return None, 'Architector returned no valid 3D structures'
-
-        ranked.sort(key=lambda item: item[0])
-        atoms = ranked[0][1]
-        xyz_lines = []
-        for atom, pos in zip(atoms.get_chemical_symbols(), atoms.get_positions()):
-            xyz_lines.append(f'{atom}  {pos[0]:.6f}  {pos[1]:.6f}  {pos[2]:.6f}')
-        return '\n'.join(xyz_lines), None
-    except Exception as exc:
-        return None, f'Architector conversion failed: {exc}'
+    Same shared build as the dashboard's MACE button, with the same settings
+    (``external_builders.MACE_DEFAULTS``); epic-MACE runs in its own Python 3.7
+    environment (``DELFIN_MACE_PYTHON``, or the one the installer built).  The
+    first frame is the lowest-energy conformer of the first geometry that fits
+    the number of donor sites (octahedral for 6, square planar for 4).
+    """
+    from delfin.common.external_builders import build_first_xyz
+    return build_first_xyz('mace', smiles)
 
 
 # ---------------------------------------------------------------------------

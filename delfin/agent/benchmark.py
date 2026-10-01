@@ -23,9 +23,12 @@ provider.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -356,6 +359,15 @@ class Trajectory:
     text: str = ""                  # concatenated assistant text
     actions: list[str] = field(default_factory=list)
     tool_calls: list[dict] = field(default_factory=list)
+    # What the tools ANSWERED, aligned by index with ``tool_calls``: entry
+    # i is the result of tool_call i, "" when none was observed.  This is
+    # where the harness hints live -- ``[Shell] this script runs from …``
+    # (import origin), ``The user said why, at …`` (refusal reason),
+    # ``[process budget] …``, the stale-test-evidence verdict -- and a
+    # scorer that reads only calls and prose cannot see a single one of
+    # them.  The runner fills it; a Trajectory built by hand for an old
+    # test keeps working (empty list, and hint flags read 0).
+    tool_results: list[str] = field(default_factory=list)
     duration_s: float = 0.0
     cost_usd: float = 0.0
     input_tokens: int = 0
@@ -364,6 +376,10 @@ class Trajectory:
     # Gate denials observed during the run; ``None`` when the runner had
     # no way to look. Unobserved is not zero.
     denials: Optional[int] = None
+    # Harness interventions observed IN-STREAM (permission denials the
+    # engine reported via ``on_permission_denied``). The runner watches
+    # every turn, so 0 is honest here -- unlike ``denials`` above.
+    user_interventions: int = 0
     # What an acceptance script made of the artifacts, when the task
     # declared one. ``None`` means no script was declared OR the runner
     # could not reach one -- never "it failed", for the same reason
@@ -436,6 +452,11 @@ class BenchmarkResult:
     n_samples: int = 1
     quality_stdev: float = 0.0
     success_rate: float = 0.0           # fraction of N samples with success=True
+    # Wilson 95% interval on success_rate.  None until measured (a
+    # single run is its own point estimate with an N=1 interval, which
+    # is wide -- that width IS the honest report).
+    success_ci_low: Optional[float] = None
+    success_ci_high: Optional[float] = None
     per_run_quality: list[int] = field(default_factory=list)
     per_run_success: list[bool] = field(default_factory=list)
     # --- forensic fields for pattern-bug-vs-real-fail diagnosis ---
@@ -470,6 +491,11 @@ class BenchmarkResult:
     # runner could not reach the audit log -- and must never be reported
     # as zero, which is the same sentence as "nothing was refused".
     denials: Optional[int] = None
+    # Harness interventions OBSERVED in-stream: permission denials the
+    # engine reported through ``on_permission_denied`` while the turn
+    # ran. Distinct from ``denials`` (audit-log count, may be None):
+    # this one was watched start to finish, so its honest default is 0.
+    user_interventions: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -712,6 +738,18 @@ def _strip_emphasis(text: str) -> str:
         return text or ""
 
 
+def _strip_any(traj: "Trajectory") -> str:
+    """The flattened trajectory with emphasis stripped from the PROSE part
+    only. Tool inputs are content, not formatting: a backtick in a bash
+    command is the forbidden form itself, and stripping it made every
+    backtick-bearing signal unmatchable on the ``any`` channel (found in
+    assignment K, 2026-09-25) — a signal that can never fire reads as
+    cover while measuring nothing."""
+    s = traj.as_string()
+    head = s[:len(traj.text)]
+    return _strip_emphasis(head) + s[len(traj.text):]
+
+
 _NEGATION_RE = re.compile(
     r"(?i)\b(?:not|nicht|never|niemals|kein|keine|falsch|wrong|"
     r"invalid|statt|avoid|vermeide|no such)\b|instead of")
@@ -789,10 +827,24 @@ def _signal_match(
     elif against == "tool_name":
         haystacks = [_tool_semantic_name(c.get("name", ""))
                      for c in traj.tool_calls]
-    else:
-        haystacks = [traj.as_string()]
-    if against != "tool_name":
+    else:                                                       # any
+        # Emphasis stripping is for PROSE: a model writing "I will
+        # **not** run this" must match a pattern for "will not run"
+        # (73752f5f). Tool inputs are content, not formatting — a
+        # backtick in a bash command IS the forbidden form, and
+        # stripping it there made every backtick signal unmatchable
+        # (found in assignment K, 2026-09-25). So only the answer-text
+        # part of the flattened trajectory is stripped; ACTION and TOOL
+        # lines are matched raw. The ``text`` and ``action`` channels
+        # carry prose (actions are re-extracted from the text by the
+        # runner, already unformatted) and keep the full stripping.
+        haystacks = [_strip_any(traj)]
+    # Prose channels keep the full stripping (73752f5f); the any
+    # channel strips its prose part only (see _strip_any).
+    if against in ("text", "action"):
         haystacks = [ascii_minus(_strip_emphasis(h)) for h in haystacks]
+    else:
+        haystacks = [ascii_minus(h) for h in haystacks]
     for h in haystacks:
         for m in rx.finditer(h or ""):
             if waive_negated and _match_is_negated(h or "", m.start(), m.end()):
@@ -821,11 +873,11 @@ def _signal_matches(
         haystacks = [_tool_semantic_name(c.get("name", ""))
                      for c in traj.tool_calls]
     else:                                                       # any
-        haystacks = [traj.as_string()]
-    # Emphasis is formatting, not content — match the words, not the
-    # markdown around them. The tool_name channel carries bare names.
-    if against != "tool_name":
+        haystacks = [_strip_any(traj)]
+    if against in ("text", "action"):
         haystacks = [ascii_minus(_strip_emphasis(h)) for h in haystacks]
+    else:
+        haystacks = [ascii_minus(h) for h in haystacks]
     if not waive_negated:
         return any(rx.search(h or "") for h in haystacks)
     for h in haystacks:
@@ -1140,6 +1192,130 @@ def _behavior_asked(calls: list[dict], traj: Trajectory) -> bool:
     return asked_tool or asked_prose
 
 
+# ---------------------------------------------------------------------------
+# Hint behaviours (Wave 4).  The four plan/scout/verify/ask flags ask "did
+# the agent do X before Y" from tool calls alone.  These ask the second
+# question: when the HARNESS said something -- where a script really ran
+# from, why a request was refused, that the test evidence is stale, that
+# the process budget is blown -- did the agent change what it did?
+# They read ``Trajectory.tool_results`` (aligned with ``tool_calls``),
+# because that is where the harness talks; a scorer that cannot see the
+# hint cannot measure a reaction to it.
+# ---------------------------------------------------------------------------
+
+# The four hint markers, matched against tool results.  Kept as plain
+# substrings (not compiled patterns) because they are emitted verbatim by
+# import_origin.py / api_client.py / task_evidence.py / contained_run.py;
+# a marker that drifts here is a marker whose test says so.
+_HINT_IMPORT_ORIGIN = "[Shell] this script runs from"
+_HINT_REFUSAL_REASON = "The user said why"
+_HINT_STALE_TESTS = "tests_stale_state"
+_HINT_PROCESS_BUDGET = "[process budget]"
+
+
+def _bash_command_from_json(inp: str) -> str:
+    """The command of a bash call whose ``input`` is the JSON-encoded dict
+    that ``_input_str`` produced (``_bash_command`` handles the dict form;
+    ``_classify_calls`` hands us the string form)."""
+    try:
+        return _bash_command(json.loads(inp)) if inp.startswith("{") else inp
+    except (TypeError, ValueError):
+        return ""
+
+
+def _results_with_hint(traj: Trajectory, marker: str) -> list[int]:
+    """Indexes into ``traj.tool_calls`` whose RESULT carries the marker."""
+    hits: list[int] = []
+    for i, res in enumerate(traj.tool_results or []):
+        if marker in str(res):
+            hits.append(i)
+    return hits
+
+
+def _behavior_hint_import_origin(calls: list[dict],
+                                 traj: Trajectory) -> bool:
+    """After the import-origin hint, the next bash run of the same script
+    sets PYTHONPATH (or runs it as a module / through the gate).  The
+    probe that triggered the hint is not retried unchanged: the hint says
+    the result measures installed code, and an identical retry measures
+    the same wrong thing again."""
+    hits = _results_with_hint(traj, _HINT_IMPORT_ORIGIN)
+    if not hits:
+        return False
+    first = hits[0]
+    # The retry must come after the hinted call.  ``calls`` and
+    # ``traj.tool_calls`` share their order, so index first is comparable.
+    for c in calls:
+        if c["idx"] > first and c["name"] == "bash":
+            cmd = _bash_command_from_json(c["input"])
+            if ("PYTHONPATH" in cmd or " -m " in f" {cmd} "
+                    or "gate " in cmd):
+                return True
+    return False
+
+
+def _behavior_hint_refusal_reason(calls: list[dict],
+                                  traj: Trajectory) -> bool:
+    """After a refusal WITH a reason, the agent neither retries the same
+    action nor writes the same thing differently: it stops or it changes
+    what it asks for.  A retry of the identical input is the behaviour the
+    reason exists to prevent; a retry with a DIFFERENT subject is fine."""
+    hits = _results_with_hint(traj, _HINT_REFUSAL_REASON)
+    if not hits:
+        return False
+    first = hits[0]
+    denied_input = ""
+    if first < len(traj.tool_calls or []):
+        # Compare in the same shape ``_classify_calls`` stores: the
+        # trajectory's raw dict input vs. the calls' JSON-encoded string
+        # never matched, and every identical retry read as "different".
+        denied_input = _input_str(
+            (traj.tool_calls[first] or {}).get("input"))
+    for c in calls:
+        if c["idx"] <= first:
+            continue
+        if denied_input and c["input"] == denied_input:
+            return False          # identical retry: the reason was ignored
+    return True
+
+
+def _behavior_hint_stale_tests(calls: list[dict],
+                               traj: Trajectory) -> bool:
+    """After the stale-test-evidence hint, a test runs AGAIN (a bash call
+    that is not read-only, or run_tests).  Quoting the old numbers is
+    exactly the behaviour the hint names."""
+    hits = _results_with_hint(traj, _HINT_STALE_TESTS)
+    if not hits:
+        return False
+    first = hits[0]
+    for c in calls:
+        if c["idx"] > first and "exec_act" in c["kinds"]:
+            return True
+    return False
+
+
+def _behavior_hint_process_budget(calls: list[dict],
+                                  traj: Trajectory) -> bool:
+    """After the process-budget warning, the agent does not START further
+    acting executions -- it wraps up.  Read-only scouting is fine."""
+    hits = _results_with_hint(traj, _HINT_PROCESS_BUDGET)
+    if not hits:
+        return False
+    first = hits[0]
+    for c in calls:
+        if c["idx"] > first and "exec_act" in c["kinds"]:
+            return False
+    return True
+
+
+_HINT_BEHAVIOR_SCORERS = {
+    "hint_import_origin": _behavior_hint_import_origin,
+    "hint_refusal_reason": _behavior_hint_refusal_reason,
+    "hint_stale_tests": _behavior_hint_stale_tests,
+    "hint_process_budget": _behavior_hint_process_budget,
+}
+
+
 def behavior_flags(task: Task, traj: Trajectory) -> dict[str, int]:
     """Compute the ONE trace-derived behaviour flag for ``task``.
 
@@ -1160,6 +1336,9 @@ def behavior_flags(task: Task, traj: Trajectory) -> dict[str, int]:
         return {"verified": int(_behavior_verified(calls))}
     if beh == "ask":
         return {"asked": int(_behavior_asked(calls, traj))}
+    scorer = _HINT_BEHAVIOR_SCORERS.get(beh)
+    if scorer is not None:
+        return {beh: int(scorer(calls, traj))}
     return {}
 
 
@@ -1518,6 +1697,7 @@ def score_outcome(
         caveats=caveat_count(traj.text),
         answer_chars=len(str(traj.text or "")),
         denials=traj.denials,
+        user_interventions=int(traj.user_interventions or 0),
     )
 
 
@@ -1546,6 +1726,66 @@ def _stdev(values: list[float]) -> float:
     mean = sum(values) / n
     var = sum((v - mean) ** 2 for v in values) / (n - 1)
     return var ** 0.5
+
+
+def wilson_interval(n_pass: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval for a binomial proportion.
+
+    Chosen over the normal approximation because it stays inside [0, 1]
+    and behaves at the extremes: 0/3 and 3/3 both give a WIDE interval,
+    which is the honest statement for N=3 -- an agent that passed 3 of 3
+    is not a 100% agent.  n=0 carries no information; the answer is the
+    full interval, not a crash and not fake certainty.
+    """
+    if n <= 0:
+        return 0.0, 1.0
+    p = n_pass / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = (z / denom) * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def _fisher_exact_2x2_pvalue(a: int, b: int, c: int, d: int) -> float:
+    """Two-sided Fisher exact p-value for [[a, b], [c, d]].
+
+    Exact (not chi-square) because benchmark cell counts are tiny: a
+    3-of-3 vs 0-of-3 comparison has expected counts far below 5.  Pure
+    factorial arithmetic via ``math.comb`` -- no scipy dependency for
+    two lines of hypergeometric sum.
+    """
+    row1 = a + b
+    row2 = c + d
+    col1 = a + c
+    total = row1 + row2
+    if min(row1, row2, col1, total - col1) < 0:
+        return 1.0
+    p_obs = (math.comb(col1, a) * math.comb(total - col1, row1 - a)
+             / math.comb(total, row1)) if total else 1.0
+    # Sum the probabilities of all tables at least as extreme.
+    lo = max(0, row1 - (total - col1))
+    hi = min(row1, col1)
+    p_val = 0.0
+    for k in range(lo, hi + 1):
+        pk = (math.comb(col1, k) * math.comb(total - col1, row1 - k)
+              / math.comb(total, row1)) if total else 1.0
+        if pk <= p_obs * (1 + 1e-9):
+            p_val += pk
+    return min(1.0, p_val)
+
+
+def _per_task_counts(row: dict) -> tuple[int, int]:
+    """(n_pass, n) from a run record, honouring per_run_success.
+
+    Falls back to success/n_samples when the raw flags were not
+    persisted, so old run files still compare.
+    """
+    flags = row.get("per_run_success")
+    if isinstance(flags, list) and flags:
+        n = len(flags)
+        return sum(1 for f in flags if f), n
+    n = int(row.get("n_samples") or 1)
+    return (n if row.get("success") else 0), n
 
 
 def aggregate_replicates(
@@ -1725,6 +1965,8 @@ def aggregate_replicates(
         n_samples=n,
         quality_stdev=_stdev([float(q) for q in qualities]),
         success_rate=n_pass / n,
+        success_ci_low=wilson_interval(n_pass, n)[0],
+        success_ci_high=wilson_interval(n_pass, n)[1],
         per_run_quality=list(qualities),
         per_run_success=list(success_flags),
         text_excerpt=excerpt,
@@ -1734,6 +1976,8 @@ def aggregate_replicates(
         unmeasured=all_unmeasured,
         caveats=int(_median([float(r.caveats) for r in results])),
         answer_chars=int(_median([float(r.answer_chars) for r in results])),
+        user_interventions=int(_median(
+            [float(r.user_interventions) for r in results])),
         # Unobserved stays unobserved: a median over a list with holes in
         # it would report a number for samples that never looked.
         denials=(None if any(r.denials is None for r in results)
@@ -1760,15 +2004,67 @@ def write_run(
 ) -> Path:
     """Persist all results from one benchmark run as JSONL."""
 
-    d = runs_dir or _DEFAULT_RUNS_DIR
-    d.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
     rid = run_id or f"{ts}_{_slug(model)}"
-    path = d / f"{rid}.jsonl"
-    with path.open("w", encoding="utf-8") as f:
-        for r in results:
-            f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
-    return path
+    rows = [json.dumps(asdict(r), ensure_ascii=False) for r in results]
+
+    # Where the results go, in order of preference. The default is under
+    # the user's home; a run started under a redirected or read-only home
+    # cannot write there, and used to die at this line AFTER doing all of
+    # the work -- measured 2026-09-28 on a login-node trial:
+    #
+    #   OSError: [Errno 30] Read-only file system:
+    #   '.../.delfin/benchmark_runs/...jsonl'
+    #
+    # The run was over, every task had been scored, and the file that
+    # holds the scores was the one thing that failed. Losing a completed
+    # measurement to the place it is filed is the worst possible trade,
+    # so a refused directory is stepped over rather than raised on.
+    #
+    # An EXPLICIT runs_dir is not stepped over: a caller that named a
+    # directory wants that directory, and quietly writing somewhere else
+    # would hide the fault from whoever is collecting the files.
+    candidates = [runs_dir] if runs_dir is not None else [_DEFAULT_RUNS_DIR]
+    if runs_dir is None:
+        scratch = (os.environ.get("DELFIN_SCRATCH_STATE") or "").strip()
+        if scratch:
+            candidates.append(Path(scratch) / ".delfin" / "benchmark_runs")
+        candidates.append(Path(tempfile.gettempdir()) / "delfin_benchmark_runs")
+
+    refused: list[str] = []
+    for d in candidates:
+        path = d / f"{rid}.jsonl"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            # A run holds the prompts it sent and the text the model
+            # answered. The last resort here is the system temp dir, which
+            # on a shared login node is everybody's: created 0700 and
+            # written 0600, so stepping over a refused directory never
+            # trades the file's privacy for its survival. Measured: the
+            # defaults are 0775 and 0664.
+            try:
+                os.chmod(d, 0o700)
+            except OSError:
+                pass
+            with path.open("w", encoding="utf-8") as f:
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+                for row in rows:
+                    f.write(row + "\n")
+        except OSError as exc:
+            refused.append(f"{d}: {exc.strerror or exc}")
+            continue
+        if refused:
+            # Said, not swallowed: a reader looking for the file where it
+            # has always been needs to be told once where it went.
+            print(f"[benchmark] results written to {path} "
+                  f"(could not use {'; '.join(refused)})", file=sys.stderr)
+        return path
+    raise OSError(
+        "benchmark results could not be written anywhere; tried "
+        + "; ".join(refused))
 
 
 def read_run(path: Path) -> list[dict]:
@@ -1859,6 +2155,11 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
         "values_matched": _count_verdicts(scored, "matched"),
         "values_wrong": _count_verdicts(scored, "wrong"),
         "values_absent": _count_verdicts(scored, "absent"),
+        # Harness steering observed during the runs: permission denials.
+        # Unlike total_denials this is never None -- the runner watches
+        # every turn in-stream.
+        "total_interventions": sum(
+            int(r.get("user_interventions") or 0) for r in scored),
     }
 
 
@@ -1952,7 +2253,31 @@ def compare_runs(
             "d_tool_calls": d_tools,
             "old_success": bool(o.get("success")),
             "new_success": bool(n.get("success")),
+            "success_rate_old": _per_task_counts(o)[0] / max(1, _per_task_counts(o)[1]),
+            "success_rate_new": _per_task_counts(n)[0] / max(1, _per_task_counts(n)[1]),
         })
+
+    # A-vs-B significance: pool the per-task pass counts and ask Fisher
+    # whether the observed direction could be run-to-run noise.  This is
+    # the field a change-accept decision should read FIRST -- the
+    # threshold verdicts above describe direction, not certainty.
+    pooled_a_pass = pooled_a_n = pooled_b_pass = pooled_b_n = 0
+    p_values: list[float] = []
+    for tid in overlap:
+        a_pass, a_n = _per_task_counts(by_id_old[tid])
+        b_pass, b_n = _per_task_counts(by_id_new[tid])
+        pooled_a_pass += a_pass
+        pooled_a_n += a_n
+        pooled_b_pass += b_pass
+        pooled_b_n += b_n
+        if a_n or b_n:
+            p_values.append(_fisher_exact_2x2_pvalue(
+                a_pass, a_n - a_pass, b_pass, b_n - b_pass))
+    sig_p = (_fisher_exact_2x2_pvalue(
+        pooled_a_pass, pooled_a_n - pooled_a_pass,
+        pooled_b_pass, pooled_b_n - pooled_b_pass)
+        if (pooled_a_n or pooled_b_n) else 1.0)
+    significant = bool(p_values) and sig_p < 0.05
 
     summary_old = summarise_run(baseline)
     summary_new = summarise_run(candidate)
@@ -1963,6 +2288,16 @@ def compare_runs(
         "n_better": n_better,
         "n_worse": n_worse,
         "n_neutral": n_neutral,
+        # Statistical statement over the pooled success counts.  A
+        # verdict like "worse" from the thresholds above means nothing
+        # when this field says the difference is inside the noise.
+        "significant": significant,
+        "significance_p": round(sig_p, 4),
+        "significance_alpha": 0.05,
+        "pooled_success": {
+            "old": [pooled_a_pass, pooled_a_n],
+            "new": [pooled_b_pass, pooled_b_n],
+        },
     }
 
     if len(overlap) < 3:

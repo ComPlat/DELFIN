@@ -103,10 +103,22 @@ def _pressed(text, stop_at=1, seconds=120):
             time.sleep(0.005)
         part.submit_optimize_btn.value = False
     # The press puts its own switch back up when it is done, which is the one
-    # signal that means "this press is over" whichever way it ended.
-    while part.submit_optimize_btn.value and time.time() - began < seconds:
+    # signal that means "this press is over" whichever way it ended.  A
+    # stopped run has tidy-up of its own behind that -- the run number is
+    # moved on and the row the stop leaves is written after the switch -- so
+    # the switch alone is not the end: measured under load, the row still
+    # showed the busy spinner a third of a second past it, and the stop was
+    # read as a press that never finished.  Wait for the row itself: the
+    # worker is gone (optimize_run cleared) and what it last said is a
+    # verdict rather than the busy line it started with.
+    def _the_row_is_written():
+        if part.state.get('optimize_run') is not None:
+            return False
+        said = str(part.state.get('gfn_last_status')
+                   or part.mol_status.value)
+        return 'Optimising' not in said and 'delfin-busy' not in said
+    while (not _the_row_is_written() and time.time() - began < seconds):
         time.sleep(0.02)
-    time.sleep(0.3)
     said = str(part.state.get('gfn_last_status') or part.mol_status.value)
     return said, gfn.largest_shift(before, part.coords_widget.value)
 

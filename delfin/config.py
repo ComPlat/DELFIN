@@ -56,9 +56,9 @@ _PLACEHOLDER_MESSAGES: Dict[str, str] = {
         "CPCM/SMD"
     ),
     "method": "Placeholder [METHOD] must be set to one of: classic, manually, OCCUPIER",
-    "smiles_converter": "Placeholder [SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR",
+    "smiles_converter": "Placeholder [SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, MACE",
     "stability_constant_mode": "Placeholder [STABILITY_CONSTANT_MODE] must be set to one of: auto, reaction",
-    "thdy_smiles_converter": "Placeholder [THDY_SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR",
+    "thdy_smiles_converter": "Placeholder [THDY_SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, MACE",
     "thdy_preopt": "Placeholder [THDY_PREOPT] must be set to one of: none, xtb, crest, goat",
     "ESD_modus": "Placeholder [ESD_MODUS] must be set to one of: TDDFT, deltaSCF, hybrid1",
     "ESD_T1_opt": "Placeholder [ESD_T1_OPT] must be set to one of: uks, tddft",
@@ -68,7 +68,7 @@ _MISSING_KEY_MESSAGES: Dict[str, str] = {
     # structure from a SMILES, so say that rather than naming a bare key.
     "smiles_converter": (
         "This run builds its structure from a SMILES, so smiles_converter must "
-        "be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR"
+        "be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, MACE"
     ),
 }
 _CONTROL_KEY_ALIASES: Dict[str, str] = {

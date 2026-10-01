@@ -69,6 +69,12 @@ _NOT_EXERCISED_HERE = {
     "session_message": "tests/test_sessions_can_write_to_each_other.py — "
                        "needs a second open session",
     "run_tests": "would run the suite inside the suite",
+    # Exercised through the real executor in their own files, each with
+    # the store it needs set up under a redirected HOME.
+    "skill_propose_patch": "tests/test_skill_patch_tool.py — needs an "
+                           "active skill and the proposal store",
+    "session_search": "tests/test_session_search_end_to_end.py — needs an "
+                      "indexed session archive",
     # Side effects that leave the machine.
     "remote_trigger": "sends a request to a configured remote",
     "push_notification": "delivers to a configured channel",

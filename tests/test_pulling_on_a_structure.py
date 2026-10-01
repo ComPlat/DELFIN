@@ -798,6 +798,15 @@ def test_a_push_stops_at_a_conformational_product_not_past_it():
     past the minimum instead of at the far end, `reached` names where, and the
     structure released from the load is the anti product rather than the
     over-strained wreck the old ramp settled from.
+
+    Eight levels, not eighteen: the historical measurement was taken on the
+    eighteen-level ramp, but the answer it describes -- the stop at the
+    product -- arrives within six (measured: 6 of 8 levels, the same
+    `reached` and the same anti settle), and the eighteen-level run measured
+    83 s on an idle node, which is past the 300 s SLURM ceiling once the
+    suite's sixteen parallel pytest processes take their share.  The
+    assertion the ramp cannot talk its way out of is unchanged: the walk
+    must stop WELL SHORT of what it was offered, and settle at anti.
     """
     rdkit = pytest.importorskip('rdkit')
     from rdkit import Chem
@@ -818,15 +827,15 @@ def test_a_push_stops_at_a_conformational_product_not_past_it():
     got = load.walk_under_load(
         xyz, [{'atom': carbons[0], 'vector': (0.0, 0.0, -6.0)},
               {'atom': carbons[3], 'vector': (0.0, 0.0, 6.0)}],
-        'gfn2', steps=18, force_from=3.0, force_to=90.0)
+        'gfn2', steps=8, force_from=3.0, force_to=90.0)
     assert got['ok'], got['status']
 
     # No bond changed -- it is a conformational reaction.
     assert got['gave'] is None, got['gave']
     # But it reached a product minimum and stopped there, well short of the
-    # eighteen levels it was offered.
+    # levels it was offered.
     assert got['reached'] is not None, 'the ramp ran past the product minimum'
-    assert len(got['points']) < 18, len(got['points'])
+    assert len(got['points']) < 8, len(got['points'])
 
     # The kept structure -- released from the load -- is the anti product,
     # near 180 degrees, not a strained gauche near 62.

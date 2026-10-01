@@ -18,18 +18,12 @@ if "delfin.dashboard" not in sys.modules:
     _DASHBOARD_PKG.__path__ = [str(_ROOT / "dashboard")]
     sys.modules["delfin.dashboard"] = _DASHBOARD_PKG
 
-_HELPERS = sys.modules.get("delfin.dashboard.helpers")
-if _HELPERS is None:
-    _HELPERS = types.ModuleType("delfin.dashboard.helpers")
-    sys.modules["delfin.dashboard.helpers"] = _HELPERS
-
-if not hasattr(_HELPERS, "disable_spellcheck"):
-    _HELPERS.disable_spellcheck = lambda *args, **kwargs: None
-if not hasattr(_HELPERS, "save_neb_trajectory_csv"):
-    _HELPERS.save_neb_trajectory_csv = lambda *args, **kwargs: None
-if not hasattr(_HELPERS, "save_neb_trajectory_plot_png"):
-    _HELPERS.save_neb_trajectory_plot_png = lambda *args, **kwargs: None
-
+# No stub for delfin.dashboard.helpers: the browser module's "from .helpers
+# import ..." must resolve against the REAL module. A leaf-module stub has no
+# __file__, so any name it forgets to pre-attach fails collection here with
+# "cannot import name ... (unknown location)" (that is exactly how
+# js_string_literal broke this file). The real module is cheap to import —
+# the browser module already pulls in ipywidgets and .constants itself.
 _SPEC = importlib.util.spec_from_file_location("delfin.dashboard.tab_calculations_browser", _MODULE_PATH)
 if _SPEC is None or _SPEC.loader is None:
     raise RuntimeError(f"Could not load calculations browser module from {_MODULE_PATH}")

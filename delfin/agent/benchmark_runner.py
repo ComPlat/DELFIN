@@ -109,12 +109,19 @@ def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0,
         text=text,
         actions=extract_actions(text),
         tool_calls=list(raw.get("tool_calls") or []),
+        # What the tools answered, index-aligned with tool_calls.  The
+        # harness hints (import origin, refusal reason, stale evidence,
+        # process budget) live HERE, not in the calls -- see
+        # ``Trajectory.tool_results``.  An older run_once (or a stub)
+        # that returns no key keeps working: empty list, hint flags 0.
+        tool_results=[str(r) for r in (raw.get("tool_results") or [])],
         duration_s=float(duration_s),
         cost_usd=float(cost_usd),
         input_tokens=int(raw.get("input_tokens") or 0),
         output_tokens=int(raw.get("output_tokens") or 0),
         error=str(raw.get("error") or ""),
         checkout_root=str(checkout_root or ""),
+        user_interventions=int(raw.get("user_interventions") or 0),
     )
 
 
@@ -207,6 +214,15 @@ def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Option
         # and want data with the things real data has -- a duplicate
         # geometry, a run that did not converge.
         rel = "science_workspace"
+    elif cls == "chemistry":
+        # Chemistry tasks are seeded by their setup script
+        # (chem_start_geometries.py writes chem/<molecule>/start.xyz),
+        # but the folder has to exist BEFORE that script runs:
+        # run_setup launches it with cwd=workspace, and Popen fails on
+        # a non-existent cwd with a bare FileNotFoundError -- observed on
+        # the first SLURM trial, where every sample read "setup script
+        # could not run: [Errno 2]" while the script itself was fine.
+        rel = "chemistry_workspace"
     if rel is None:
         return None
     candidate = Path(root) / "tests" / "fixtures" / rel
@@ -385,6 +401,10 @@ _BEHAVIOR_WS_RELS: tuple[Path, ...] = (
     # the run -- caught by driving one task end to end and asking whether
     # the fixture came back.
     Path("tests") / "fixtures" / "science_workspace",
+    # Same contract as science: chemistry tasks are graded on what they
+    # build, and their setup refuses an existing chem/ tree. Without
+    # restore, repeat 2 collides with repeat 1's fixture.
+    Path("tests") / "fixtures" / "chemistry_workspace",
 )
 _BEHAVIOR_WS_REL = _BEHAVIOR_WS_RELS[0]
 
@@ -881,8 +901,44 @@ def _run_task_once(
                     raise _SetupFailed(
                         f"engine init failed: task setup "
                         f"{task.setup!r} did not run: {setup_output[:300]}")
+            # Collect tool RESULTS alongside the calls: the Wave-4 hint
+            # scorers read them from the Trajectory.  Collected here via
+            # the callback _run_once offers (its return contract is
+            # pinned to five keys by the JSON tests); aligned by index
+            # with the calls -- a placeholder per observed call keeps
+            # the pairing even when a result never arrives.  A test
+            # double whose run_once takes no such kwarg keeps working:
+            # results stay empty, hint flags read 0, the run itself is
+            # unaffected.
+            _results: list[str] = []
+
+            def _collect_result(name: str, output: str) -> None:
+                _results.append(output)
+
+            # Interventions: each permission denial is the harness
+            # steering the run; counted in-stream, forwarded only when
+            # the run_once accepts it (old test doubles keep working
+            # and read 0 -- see the user_interventions docstring).
+            _denied: list[str] = []
+
+            def _collect_denial(name: str) -> None:
+                _denied.append(name)
+
             with _fixture_calc_dirs(_ws):
-                raw = run_once(engine, task.prompt, max_tokens=max_tokens)
+                try:
+                    raw = run_once(engine, task.prompt,
+                                   max_tokens=max_tokens,
+                                   on_tool_result=_collect_result,
+                                   on_permission_denied=_collect_denial)
+                except TypeError:
+                    # Old test doubles / run_once signatures take only
+                    # max_tokens; no callbacks means results and
+                    # interventions read 0 -- the docstrings say so.
+                    raw = run_once(engine, task.prompt,
+                                   max_tokens=max_tokens)
+            raw["tool_results"] = _results[:len(raw.get("tool_calls")
+                                                 or [])]
+            raw["user_interventions"] = len(_denied)
             # Inside the guard on purpose: it puts the workspace back on
             # the way out, so anything the task produced exists only
             # here. A check that ran afterwards would find the fixture.

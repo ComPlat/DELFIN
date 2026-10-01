@@ -296,6 +296,46 @@ def test_the_complaint_is_found_even_though_it_arrives_last():
     assert 'Bannwarth' not in said, 'the citation list is not a reason'
 
 
+def test_a_shell_that_names_a_missing_program_is_the_reason():
+    """A program a child tried to run and could not is the reason it died.
+
+    Measured on this box (2026-09-26): a parallel ORCA shells out to
+    ``mpirun``, and when the mpirun it was built against is not on the PATH
+    the run was started with, it dies with ``sh: line 1: mpirun: command not
+    found`` -- a line with neither "error" nor "xtb" in it, so none of the
+    markers caught it, and the backwards scan for a complaint settled on a
+    WARNING from the top of the output about a dipole moment instead.  Ten
+    runs of the suite said "WARNING: Found dipole moment calculation with
+    XTB calculation" for a missing mpirun, and the word mpirun appeared
+    nowhere in any of them.
+
+    The shell's own wording is kept, because the program it names is the
+    thing to fix.
+    """
+    from delfin.dashboard.gfn_optimize import why_it_stopped
+
+    band = (
+        'WARNING: Geometry Optimization\n'
+        '  ===> : Switching off AutoStart\n'
+        'WARNING: Found dipole moment calculation with XTB calculation\n'
+        '  ===> : Switching off dipole moment calculation\n'
+        '\n'
+        'sh: line 1: mpirun: command not found\n'
+        '\n'
+        'ORCA finished by error termination in orca_util\n'
+        'Calling Command: mpirun -np 8 orca_util_mpi in orca_hostfile in \n'
+        '[file orca_tools/qcmsg.cpp, line 394]: \n'
+        '  .... aborting the run\n')
+    said = why_it_stopped(band)
+    assert 'mpirun' in said, 'the program that could not be run is the reason'
+    assert 'command not found' in said
+    assert 'dipole' not in said.lower(), 'a warning is not a reason'
+    # And the same wording wherever the shell puts it, not only in sh's.
+    assert 'command not found' in why_it_stopped(
+        '/bin/bash: orca_util_mpi: command not found\n'
+        'ORCA finished by error termination\n')
+
+
 # ---------------------------------------------------------------------------
 # installing means installing
 # ---------------------------------------------------------------------------

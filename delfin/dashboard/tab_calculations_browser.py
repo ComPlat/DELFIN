@@ -31,7 +31,10 @@ from .input_processing import (
     contains_metal,
     is_smiles,
 )
-from .helpers import disable_spellcheck, save_neb_trajectory_csv, save_neb_trajectory_plot_png
+from .helpers import (
+    disable_spellcheck, js_string_literal, save_neb_trajectory_csv,
+    save_neb_trajectory_plot_png,
+)
 from . import docx_view as _docx
 from . import pdf_view as _pdf
 from . import formula_engine as _formula_engine
@@ -179,6 +182,15 @@ def create_tab(ctx):
     CALC_XYZ_MAX_READ_BYTES = 50 * 1024 * 1024          # 50 MB – skip full read for huge trajectories
     CALC_CUBE_MAX_READ_BYTES = 100 * 1024 * 1024         # 100 MB – skip full read for huge cube files
     CALC_IMAGE_MAX_READ_BYTES = 20 * 1024 * 1024         # 20 MB – skip inline base64 for huge images
+    # An image travels to the page as base64 inside the markup, which inflates
+    # it by a third and then has to be parsed as HTML: an 18 MB photograph took
+    # ten seconds before anything appeared, while a 4 MB text file took half a
+    # second and a sixty-page PDF the same. Above this size a downscaled
+    # preview goes first and the full image follows in the background, so
+    # moving between large files stays answerable.
+    CALC_IMAGE_PREVIEW_BYTES = 1_500_000
+    CALC_IMAGE_PREVIEW_PX = 1800
+    CALC_IMAGE_SUFFIXES = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff')
     CALC_LOG_XYZ_EXTRACT_MAX = 50 * 1024 * 1024          # 50 MB – skip XYZ extraction from huge logs
     #: How much of a drawing to show as text when there is no editor to
     #: open it in.  A .ket is JSON and unreadable either way; this is
@@ -354,6 +366,14 @@ def create_tab(ctx):
     # One name, read everywhere, so moving a feature across later is this
     # line rather than a hunt through the file.
     _OFFICE_DOC_FEEL = _is_office_tab
+
+    # Viewing a document is the same job in every clone of this browser, so it
+    # behaves the same in all of them: a PDF scrolls through rather than
+    # turning one page at a time, the frame takes the height the pane has
+    # instead of a fixed one, a spreadsheet is a grid the tab's search reaches,
+    # and the cursor stays where it was. Only writing still differs -- the
+    # Backups folder belongs beside a document, not inside a calculation.
+    _DOC_VIEW_FEEL = True
 
     # Saving keeps a copy of the original. Beside every document that is a
     # file list nobody can read; in one folder it is a folder that can be
@@ -848,6 +868,26 @@ def create_tab(ctx):
         value='name',
         layout=widgets.Layout(width='90px', min_width='90px', height='26px', margin='0 0 0 4px'),
     )
+    # A dot folder is bookkeeping -- DELFIN's, or the system's. Over a home
+    # directory that is most of what is there, so the list starts without them
+    # and this says so; over a calculations folder they were always shown and
+    # still are, because a .delfin_last_run.json is something people look for.
+    _dotfiles_hidden_at_start = bool(_OFFICE_DOC_FEEL or getattr(ctx, 'browser_hides_dotfiles', False))
+    # Only where they are in the way: a home directory is mostly dot folders,
+    # a calculations folder is not, and a button nobody presses is clutter.
+    calc_dotfiles_btn = widgets.ToggleButton(
+        value=not _dotfiles_hidden_at_start,
+        description=('Hide .files' if not _dotfiles_hidden_at_start else 'Show .files'),
+        tooltip='Show or hide entries whose name starts with a dot',
+        layout=widgets.Layout(width='118px', min_width='118px', height='26px'),
+    )
+
+    # Offered where a user has reason to look for them, which is the home
+    # directory. Office hides them as it always did, silently: its folder
+    # holds documents, and DELFIN's bookkeeping there is not the user's.
+    _dotfiles_children = ([calc_dotfiles_btn]
+                          if getattr(ctx, 'browser_hides_dotfiles', False) else [])
+
     calc_filter_sort_row = widgets.HBox(
         [calc_folder_search, calc_sort_dropdown],
         layout=widgets.Layout(
@@ -3346,7 +3386,7 @@ def create_tab(ctx):
 
             _mol3d_counter[0] += 1
             viewer_id = f"calc_preselect_3dmol_{_mol3d_counter[0]}"
-            mol_json = json.dumps(mol_block)
+            mol_json = js_string_literal(mol_block)
             style_js = profile['style_js']
             viewer_config_js = profile['viewer_config_js']
             display(HTML(f"""
@@ -4111,7 +4151,7 @@ def create_tab(ctx):
         viewer_id = f"mol3d_{_mol3d_counter[0]}"
         wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
         wrapper_seq = _mol3d_counter[0]
-        data_json = json.dumps(data)
+        data_json = js_string_literal(data)
         view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
         scope_id_json = json.dumps(calc_scope_id)
         style_js = profile['style_js']
@@ -7140,8 +7180,8 @@ def create_tab(ctx):
         viewer_id = f'mol3d_rmsd_{_mol3d_counter[0]}'
         wrapper_id = f'calc_mol_wrap_{_mol3d_counter[0]}'
         wrapper_seq = _mol3d_counter[0]
-        ref_json = json.dumps(reference_xyz)
-        target_json = json.dumps(target_xyz)
+        ref_json = js_string_literal(reference_xyz)
+        target_json = js_string_literal(target_xyz)
         view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
         scope_id_json = json.dumps(calc_scope_id)
         viewer_config_js = profile['viewer_config_js']
@@ -7327,8 +7367,8 @@ def create_tab(ctx):
             viewer_container = (
                 f'<div id="{viewer_id}" style="width:100%;height:{viewer_height};position:relative;"></div>'
             )
-        target_json = json.dumps(target_xyz)
-        ref_json = json.dumps(reference_xyz)
+        target_json = js_string_literal(target_xyz)
+        ref_json = js_string_literal(reference_xyz)
         viewer_config_js = profile['viewer_config_js']
         target_style_js = molecule_view_style_js(profile['style'], color='#1f5fff')
         reference_style_js = molecule_view_style_js(profile['style'], color='#d32f2f')
@@ -7457,6 +7497,7 @@ def create_tab(ctx):
                     f"{calc_scope_id}:{state.get('current_path') or '/'}"
                 )
                 scope_id_json = json.dumps(calc_scope_id)
+                xyz_json = js_string_literal(full_xyz)
                 html_content = f"""
                 <div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">
                     <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
@@ -7557,7 +7598,7 @@ def create_tab(ctx):
                         }}
                         var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                         {VIEWER_MOUSE_PATCH_JS}
-                        var xyz = `{full_xyz}`;
+                        var xyz = {xyz_json};
                         viewer.addModelsAsFrames(xyz, "xyz");
                         viewer.setStyle({{}}, {traj_style_js});
                         if (savedView && typeof viewer.setView === 'function') {{
@@ -8056,9 +8097,8 @@ def create_tab(ctx):
                     unread_set = update_calc_running_transitions(current_running)
                 except Exception:
                     unread_set = set()
-            if _OFFICE_DOC_FEEL:
-                # A dot folder is DELFIN's own bookkeeping, not the user's
-                # filing. It is still on disk and still reachable by path.
+            if not calc_dotfiles_btn.value:
+                # Still on disk and still reachable by path; only out of sight.
                 entries = [e for e in entries if not e.name.startswith('.')]
             for entry in entries:
                 if entry.is_dir():
@@ -8110,6 +8150,16 @@ def create_tab(ctx):
                         items.append(f'✏️ {entry.name}')
                     elif suffix in ['.doc', '.docx']:
                         items.append(f'📃 {entry.name}')
+                    elif suffix == '.pdf':
+                        items.append(f'📕 {entry.name}')
+                    elif suffix in ['.xlsx', '.xls', '.ods', '.csv', '.tsv']:
+                        items.append(f'📊 {entry.name}')
+                    elif suffix in ['.ppt', '.pptx']:
+                        items.append(f'📽 {entry.name}')
+                    elif suffix in ['.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z']:
+                        items.append(f'🗜 {entry.name}')
+                    elif suffix in ['.jpg', '.jpeg', '.gif', '.svg', '.bmp', '.webp', '.tif', '.tiff']:
+                        items.append(f'🖼 {entry.name}')
                     else:
                         items.append(f'📄 {entry.name}')
         except PermissionError:
@@ -8247,6 +8297,14 @@ def create_tab(ctx):
             _add_target(current_dir)
             if limit is not None and len(targets) >= limit:
                 return targets
+
+        if getattr(ctx, 'browser_scan_is_bounded', False):
+            # A clone rooted at the home directory: walking it to find every
+            # workspace would walk a micromamba installation and every cache
+            # with it, on each change of directory. The report button then
+            # offers what is in sight, which is what a file browser over a
+            # home directory can honestly offer.
+            return targets
 
         try:
             for control_path in current_dir.rglob('CONTROL.txt'):
@@ -11178,6 +11236,15 @@ def create_tab(ctx):
         with ctx.js_output:
             display(_JS(_js))
 
+    def calc_on_dotfiles_change(change):
+        calc_dotfiles_btn.description = (
+            'Hide .files' if calc_dotfiles_btn.value else 'Show .files')
+        saved_filter = calc_folder_search.value
+        calc_list_directory()
+        if saved_filter:
+            calc_folder_search.value = saved_filter
+            calc_filter_file_list()
+
     def calc_on_sort_change(change):
         saved_filter = calc_folder_search.value
         calc_list_directory()
@@ -11857,10 +11924,10 @@ def create_tab(ctx):
             lossy_note=lossy,
             scroll_top=scroll_top,
             cursor=cursor,
-            office=_OFFICE_DOC_FEEL,
+            office=_DOC_VIEW_FEEL,
         )
         # Plain-text fallback for the tab's search box and the Copy button.
-        state['search_kind'] = 'sheet' if _OFFICE_DOC_FEEL else 'text'
+        state['search_kind'] = 'sheet' if _DOC_VIEW_FEEL else 'text'
         state['file_content'] = _sheet.grid_to_tsv(sheet)
         state['file_is_preview'] = False
         state['file_preview_note'] = ''
@@ -12037,7 +12104,7 @@ def create_tab(ctx):
             note = f'{len(ops)} change{"" if len(ops) == 1 else "s"} saved'
             if backup is not None:
                 note += f' · backup: {backup.name}'
-            if not _OFFICE_DOC_FEEL:
+            if not _DOC_VIEW_FEEL:
                 _calc_render_sheet(path, sheet_name=sheet_name,
                                    scroll_top=scroll_top, status=note)
                 return
@@ -12061,7 +12128,7 @@ def create_tab(ctx):
             # user back where they were standing.
             state['sheet_pending'].pop(key, None)
             _calc_render_sheet(path, sheet_name=sheet_name, scroll_top=scroll_top,
-                               cursor=cursor if _OFFICE_DOC_FEEL else None,
+                               cursor=cursor if _DOC_VIEW_FEEL else None,
                                status='Changes discarded')
             return
 
@@ -12195,10 +12262,9 @@ def create_tab(ctx):
             # height and the one-page-at-a-time view it always had.
             panel = _pdf.PdfPanel(
                 run_js=_run_js,
-                continuous=_OFFICE_DOC_FEEL,
+                continuous=_DOC_VIEW_FEEL,
                 backup_dir_name=OFFICE_BACKUP_DIR if _OFFICE_DOC_FEEL else None,
-                height_px=(None if _OFFICE_DOC_FEEL
-                           else max(240, CALC_CONTENT_HEIGHT - 80)),
+                height_px=None if _DOC_VIEW_FEEL else max(240, CALC_CONTENT_HEIGHT - 80),
             )
             state['pdf_panel'] = panel
             calc_pdf_container.children = [panel.widget]
@@ -12298,6 +12364,54 @@ def create_tab(ctx):
         calc_set_message(f'{full_path.name} is open in the editor.')
 
     # -- item open logic (shared by dblclick and single-click on files) ------
+
+    def _calc_show_image(data, mime, name, size_str, note=''):
+        """Put image bytes on screen, as small a detour through markup as the widget allows."""
+        b64 = base64.b64encode(data).decode('ascii')
+        label = f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b> ({size_str})'
+        if note:
+            label += f' <span style="color:#888;">&middot; {_html.escape(note)}</span>'
+        calc_file_info.value = label
+        calc_content_area.value = (
+            "<div style='height:100%; width:100%; border:1px solid #ddd; padding:6px;"
+            " background:#fafafa; box-sizing:border-box; display:flex;"
+            " align-items:center; justify-content:center; overflow:hidden;'>"
+            f"<img src='data:image/{mime};base64,{b64}' style='max-width:100%; max-height:100%;"
+            " width:auto; height:auto; object-fit:contain; display:block;' />"
+            "</div>"
+        )
+        calc_update_view()
+
+    def _calc_image_preview(path):
+        """A downscaled copy, or None when Pillow cannot make one.
+
+        Decoding and shrinking costs a fraction of what shipping the original
+        through the page costs, and the result is what fits on screen anyway.
+        """
+        try:
+            from PIL import Image
+            with Image.open(path) as img:
+                img.draft('RGB', (CALC_IMAGE_PREVIEW_PX, CALC_IMAGE_PREVIEW_PX))
+                img = img.convert('RGB') if img.mode in ('CMYK', 'P') else img
+                img.thumbnail((CALC_IMAGE_PREVIEW_PX, CALC_IMAGE_PREVIEW_PX))
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG', optimize=False, compress_level=1)
+                return buffer.getvalue()
+        except Exception:
+            return None
+
+    def _calc_image_full_later(path, mime, name, size_str, opened_as):
+        """Replace the preview with the original -- unless the user moved on."""
+        try:
+            data = path.read_bytes()
+        except Exception:
+            return
+        if state.get('open_label') != opened_as:
+            return                      # another file is on screen now
+        try:
+            _calc_show_image(data, mime, name, size_str)
+        except Exception:
+            pass
 
     def _calc_open_item(selected):
         """Open/display a single item given its label string."""
@@ -12636,7 +12750,7 @@ def create_tab(ctx):
             return
 
         # --- PNG image ---
-        if suffix == '.png':
+        if suffix in CALC_IMAGE_SUFFIXES:
             _calc_set_png_button_mode(main=False)
             if size > CALC_IMAGE_MAX_READ_BYTES:
                 calc_file_info.value = (
@@ -12645,22 +12759,21 @@ def create_tab(ctx):
                 )
                 calc_set_message(f'Image too large for inline display ({size_str}).')
                 return
+            mime = {'.jpg': 'jpeg', '.tif': 'tiff'}.get(suffix, suffix.lstrip('.'))
+            opened_as = state.get('open_label')
             try:
-                data = full_path.read_bytes()
-                b64 = base64.b64encode(data).decode('ascii')
-                calc_file_info.value = (
-                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
-                    f' ({size_str})'
-                )
-                calc_content_area.value = (
-                    "<div style='height:100%; width:100%; border:1px solid #ddd; padding:6px;"
-                    " background:#fafafa; box-sizing:border-box; display:flex;"
-                    " align-items:center; justify-content:center; overflow:hidden;'>"
-                    f"<img src='data:image/png;base64,{b64}' style='max-width:100%; max-height:100%;"
-                    " width:auto; height:auto; object-fit:contain; display:block;' />"
-                    "</div>"
-                )
-                calc_update_view()
+                if size > CALC_IMAGE_PREVIEW_BYTES:
+                    preview = _calc_image_preview(full_path)
+                    if preview is not None:
+                        _calc_show_image(preview, 'png', name, size_str,
+                                         note='preview, full image loading')
+                        threading.Thread(
+                            target=_calc_image_full_later,
+                            args=(full_path, mime, name, size_str, opened_as),
+                            daemon=True,
+                        ).start()
+                        return
+                _calc_show_image(full_path.read_bytes(), mime, name, size_str)
             except Exception as e:
                 calc_set_message(f'Error: {e}')
             return
@@ -12829,7 +12942,7 @@ def create_tab(ctx):
             return
 
         # --- DOCX files ---
-        if suffix == '.docx' and _OFFICE_DOC_FEEL:
+        if suffix == '.docx' and _DOC_VIEW_FEEL:
             # Rendered from the document itself so every paragraph carries
             # the address an edit is written back to. mammoth below produces
             # nicer HTML but nothing in it says which paragraph a line came
@@ -13392,6 +13505,7 @@ def create_tab(ctx):
     calc_preselect_close.on_click(_calc_preselect_close_view)
     calc_preselect_new3d.on_click(_calc_preselect_new_3d_structure)
     calc_sort_dropdown.observe(calc_on_sort_change, names='value')
+    calc_dotfiles_btn.observe(calc_on_dotfiles_change, names='value')
     calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
     calc_xyz_loop_checkbox.observe(calc_on_xyz_loop_change, names='value')
     calc_xyz_fps_input.observe(calc_on_xyz_fps_change, names='value')
@@ -14604,7 +14718,8 @@ def create_tab(ctx):
         ),
     )
     calc_nav_selection_row = widgets.HBox(
-        [calc_explorer_new_btn, calc_explorer_rename_btn, calc_duplicate_btn, *_archive_selection_children],
+        [calc_explorer_new_btn, calc_explorer_rename_btn, calc_duplicate_btn,
+         *_dotfiles_children, *_archive_selection_children],
         layout=widgets.Layout(
             width='100%', overflow_x='hidden',
             justify_content='flex-start', gap='6px',
@@ -14802,7 +14917,7 @@ def create_tab(ctx):
         '.calc-left .widget-vbox { overflow:hidden !important; }'
         '.calc-left code { display:block !important; overflow:hidden !important;'
         ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
-        '.calc-splitter { width:8px; height:100%; cursor:col-resize;'
+        '.calc-splitter { width:8px; height:100%; cursor:col-resize; touch-action:none;'
         ' background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);'
         ' border-radius:4px; display:block;'
         ' z-index:10; pointer-events:auto !important; position:relative; }'
@@ -14847,7 +14962,7 @@ def create_tab(ctx):
                     calc_download_btn,
                     calc_report_btn,
                     calc_view_toggle,
-                    *([calc_fullscreen_btn] if _OFFICE_DOC_FEEL else []),
+                    *([calc_fullscreen_btn] if _DOC_VIEW_FEEL else []),
                 ],
                 layout=widgets.Layout(
                     gap='10px',
@@ -15018,17 +15133,26 @@ def create_tab(ctx):
                 left.style.minWidth = w + 'px';
                 left.style.maxWidth = w + 'px';
             }}
-            function onUp() {{
-                document.removeEventListener('mousemove', onMove);
-                document.removeEventListener('mouseup', onUp);
+            function onUp(e) {{
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                document.removeEventListener('pointercancel', onUp);
+                try {{ if (e && e.pointerId != null) splitter.releasePointerCapture(e.pointerId); }}
+                catch (err) {{ /* the pointer was already released */ }}
                 if (window["{calc_resize_mol_fn}"]) {{
                     setTimeout(window["{calc_resize_mol_fn}"], 50);
                 }}
             }}
-            splitter.addEventListener('mousedown', function(e) {{
+            /* Pointer events rather than mouse events: the same drag then works
+               with a finger and a pen, and capturing the pointer keeps the drag
+               alive when it leaves the 8 px strip -- which is most drags. */
+            splitter.addEventListener('pointerdown', function(e) {{
                 e.preventDefault();
-                document.addEventListener('mousemove', onMove);
-                document.addEventListener('mouseup', onUp);
+                try {{ splitter.setPointerCapture(e.pointerId); }}
+                catch (err) {{ /* older engines: the document listeners carry it */ }}
+                document.addEventListener('pointermove', onMove);
+                document.addEventListener('pointerup', onUp);
+                document.addEventListener('pointercancel', onUp);
             }});
         }}
 
@@ -15246,6 +15370,7 @@ def create_tab(ctx):
         # Navigation
         'calc_path_input': calc_path_input,
         'calc_sort_dropdown': calc_sort_dropdown,
+        'calc_dotfiles_btn': calc_dotfiles_btn,
         'calc_folder_search': calc_folder_search,
         'calc_search_input': calc_search_input,
         'calc_top_btn': calc_top_btn,

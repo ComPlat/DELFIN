@@ -251,3 +251,21 @@ def test_openai_client_emits_message_start_with_round_prompt_tokens(openai_clien
     assert starts[0].input_tokens == 4321
     # cached stays on message_delta only (no double count via message_start)
     assert all((getattr(e, "cached_tokens", 0) or 0) == 0 for e in starts)
+
+
+def test_each_round_reports_its_output_for_display_and_bills_once(openai_client):
+    """A running turn's output reaches the status line per round
+    (round_usage), while the bill stays on the one final message_delta --
+    the two never add up to more than the provider counted."""
+    def _create(**kwargs):
+        return _Stream([_Chunk(
+            [_Choice(_Delta(content="done"), finish="stop")],
+            usage=_Usage(prompt=100, completion=37))])
+
+    openai_client.client.chat.completions.create = _create
+    events = list(openai_client.stream_message(
+        "sys", [{"role": "user", "content": "go"}], max_tokens=64))
+    rounds = [e for e in events if e.type == "round_usage"]
+    finals = [e for e in events if e.type == "message_delta"]
+    assert [e.output_tokens for e in rounds] == [37]
+    assert sum(e.output_tokens for e in finals) == 37

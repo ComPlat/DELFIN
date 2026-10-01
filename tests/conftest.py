@@ -46,6 +46,19 @@ _GENERATED_ROOTS = (
     # The benchmark workbooks, materialised from a reviewable spec before
     # every run -- see delfin/agent/benchmark_fixtures.py.
     "tests/fixtures/office_workspace",
+    # The other three fixture workspaces the benchmark guard
+    # (_PristineWorkspace) snapshots and restores PER ATTEMPT: tracked
+    # files can be away for the length of an attempt and back after it.
+    # The same race that produced the office entry (SLURM 7188718)
+    # booked tracked files here as "appeared" in runs 7199892, 7210626,
+    # 7214159 and 7225552 -- a parallel pytest process walked the tree
+    # inside a neighbour's mid-attempt window. Inside these roots git's
+    # ignore rules decide, as inside the two above; nothing in them is
+    # generated wholesale, so the rules here are simply "tracked is
+    # expected, everything else is a finding".
+    "tests/fixtures/behavior_workspace",
+    "tests/fixtures/user_project_workspace",
+    "tests/fixtures/science_workspace",
 )
 
 # Build noise: byte-code caches and tool caches created by running at all,
@@ -53,7 +66,16 @@ _GENERATED_ROOTS = (
 # separate working copies with their own runs going on in them.
 _CHECKOUT_NOISE = ("__pycache__", ".pytest_cache", ".git", ".mypy_cache",
                    ".ruff_cache", ".hypothesis",
-                   ".claude", ".venv", "node_modules")
+                   ".claude", ".venv", "node_modules",
+                   # The gate/coordination directory the operator and the
+                   # swarm workers write their controls, control runs and
+                   # SLURM log archives into -- WHILE tests are running
+                   # (reproduced by s13, 2026-09-26: new logs under
+                   # .gate/rot/logs/ arrived mid-run and the guard booked
+                   # them as a checkout leak). None of it is a suite
+                   # process's output, and the directory is gitignored
+                   # either way.
+                   ".gate")
 
 
 def _checkout_entries() -> frozenset:
@@ -109,7 +131,14 @@ def _unexpected_under_a_generated_root() -> frozenset:
     import subprocess
     try:
         done = subprocess.run(
-            ["git", "-C", str(_CHECKOUT_ROOT), "status", "--porcelain", "-z",
+            # --no-optional-locks: this is a pure read of the real
+            # checkout, and `git status` otherwise opportunistically
+            # refreshes its index under index.lock. A suite process
+            # killed mid-refresh (the OOM killer did, twice on
+            # 2026-09-22) leaves that lock behind and blocks every
+            # later `git add` in the worktree.
+            ["git", "--no-optional-locks", "-C", str(_CHECKOUT_ROOT),
+             "status", "--porcelain", "-z",
              "--", *_GENERATED_ROOTS],
             capture_output=True, text=True, timeout=60, check=False)
     except (OSError, subprocess.SubprocessError):
@@ -122,8 +151,126 @@ def _unexpected_under_a_generated_root() -> frozenset:
         entry[3:] for entry in done.stdout.split("\0") if entry[3:])
 
 
+# Rescan gaps for the confirmation below, growing so a short neighbour
+# window is waited out cheaply and only a persistent change pays the
+# full ~2 s. Stopping at the first clean rescan keeps the common case
+# (a real, lasting finding) at the full cost and the transient case at
+# the gap that outlived the neighbour.
+#
+# Up to ~15 s: the first parallel run with the ~2 s window (SLURM 7199892,
+# 16 workers per tree on Lustre) still booked a neighbour's restore as a
+# leak in 20 files -- rmtree+copytree under that load outlives 2 s. A
+# real leak pays the full wait once, at the end of the test that made it.
+_CONFIRM_GAPS_S = (0.05, 0.2, 0.5, 1.25, 3.0, 5.0, 5.0)
+
+
+def _confirmed_under_a_generated_root() -> frozenset:
+    """What the scan still says once a neighbour has had time to pass.
+
+    A neighbouring suite process that holds a fixture workspace
+    mid-restore (the benchmark guard removes
+    tests/fixtures/office_workspace and copies a snapshot back) makes
+    tracked files vanish for exactly the moment our scan runs. Eleven
+    files in the parallel suite run of 2026-09-25 (SLURM job 7188718)
+    failed their teardown that way -- "N passed, 1 error", every error
+    a deletion booked as an appearance, the same files green when run
+    alone.
+
+    The confirmation does not decide what counts as a finding: a
+    deletion or a modification of a tracked file is real damage and
+    stays one. It only waits out the neighbour's window -- rescans
+    with growing gaps, stopping as soon as one comes back clean, so
+    the suite pays this only when a scan saw something. A change
+    still there after the last rescan is not a race and is reported
+    exactly as before.
+    """
+    first = _unexpected_under_a_generated_root()
+    if not first:
+        return first
+    import time
+    now = first
+    for gap in _CONFIRM_GAPS_S:
+        time.sleep(gap)
+        now = _unexpected_under_a_generated_root()
+        if not now:
+            return now
+    return now
+
+
+def _teardown_new_paths(before: frozenset,
+                        before_generated: frozenset) -> list:
+    """What the session teardown reports as new in the checkout.
+
+    Confirmed, not raw. The raw tree diff is re-walked with growing
+    gaps, exactly like the generated-root scan beside it, because the
+    raw version booked two kinds of parallel neighbour as a leak:
+
+    * a neighbour restoring a fixture workspace makes tracked files
+      vanish for the instant of this walk and return after it (SLURM
+      7188718, eleven false "1 error" teardowns -- the reason the
+      generated-root half grew its confirmation);
+    * a transient entry another process creates and removes in its
+      own finally (.delfin_leak_probe, SLURM 7214160: a probe
+      directory that lives between two statements of a neighbouring
+      test's teardown) exists for one walk and is gone for the next.
+
+    Both are waited out rather than trusted: a change that is still
+    there after the last rescan is not a race and is reported exactly
+    as the raw diff would have.
+    """
+    import time
+    new: set = set(_checkout_entries() - before)
+    for gap in _CONFIRM_GAPS_S:
+        time.sleep(gap)
+        # Anything the raw diff saw that a neighbour's window owned is
+        # gone by now; a change that is still here is not a race.
+        new = set(_checkout_entries() - before)
+        if not new:
+            break
+    confirmed = sorted(p for p in new)
+    confirmed += sorted(
+        str(_CHECKOUT_ROOT / p)
+        for p in _confirmed_under_a_generated_root() - before_generated)
+    return confirmed
+
+
 _LIFELINE_NAMES = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
 _LIFELINE_SAVED: dict = {}
+
+
+def child_env(tmp_path) -> dict:
+    """An environment for a child process a test starts, so that the
+    child -- which inherits none of the suite's in-memory redirects --
+    still resolves every ``~/.delfin`` sink of its own outside the real
+    home.
+
+    The suite redirects its sinks by swapping module attributes in the
+    TEST process (``_isolate_user_state``, from the product's one table
+    in delfin/agent/state_paths.py). That redirect stops at the process
+    boundary. A child a test starts -- a voila server, an agent script,
+    any ``sys.executable -c`` importing delfin -- resolves its sinks at
+    import time against whatever HOME and the environment say: measured
+    2026-09-22, nine confirmation requests from suite children landed
+    in the operator's real ``~/.delfin/terminal_confirmations``.
+
+    Two variables, each doing its half. ``HOME`` is what every
+    ``Path.home()`` sink follows (``terminal_confirm._PENDING_DIR``
+    among them), so a private HOME alone already moves the child's
+    whole user state. ``DELFIN_SCRATCH_STATE`` carries the same for
+    children that honour it through the product's environment route
+    (delfin.agent.cli applies it before any sink import); for the rest
+    it is inert. The directories exist before the child starts, so a
+    first write does not have to race a ``mkdir``.
+    """
+    import os
+    home = tmp_path / "child_home"
+    scratch = tmp_path / "child_scratch"
+    home.mkdir(exist_ok=True)
+    (scratch / ".delfin").mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["DELFIN_SCRATCH_STATE"] = str(scratch)
+    return env
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -139,6 +286,44 @@ def _the_suite_lives_under_no_lifeline():
     every later test (seen from a dashboard shell, 2026-09-16)."""
     yield
 
+
+
+@pytest.fixture()
+def a_path_others_can_walk(tmp_path):
+    """Make *tmp_path* genuinely reachable from the root, and put it back.
+
+    pytest's own base directory is 0700, so nothing underneath it can be
+    read by another account — correctly, and that is the trouble: a test
+    about a file "others can read" cannot state its premise there. Before
+    reachability was checked at all, the mode bits of the file alone made
+    the premise true by fiat; now the premise has to be real.
+
+    Only directories under pytest's base are touched, and each is put
+    back the way it was.
+    """
+    import os as _os
+
+    changed = []
+    node = tmp_path.resolve()
+    while True:
+        try:
+            mode = node.stat().st_mode & 0o7777
+        except OSError:
+            break
+        if not (mode & 0o001) or not (mode & 0o010):
+            changed.append((node, mode))
+            _os.chmod(node, mode | 0o011)
+        if node.parent == node or str(node) == "/tmp":
+            break
+        node = node.parent
+    try:
+        yield tmp_path
+    finally:
+        for node, mode in reversed(changed):
+            try:
+                _os.chmod(node, mode)
+            except OSError:
+                pass
 
 @pytest.fixture()
 def gone_pid():
@@ -234,18 +419,41 @@ def _the_suite_does_not_write_into_the_checkout():
     is a new path, so nothing escapes there. Comparing contents instead
     would mean hashing the tree twice per run, and would false-fail on
     every file the package legitimately rewrites.
+
+    That limit is no longer hypothetical, and the instance says how to
+    read it. ``censo.log`` had sat in one developer's checkout since June,
+    matched ``.gitignore``'s ``*.log``, and was therefore invisible to
+    both this guard and ``git status`` on that machine -- for months,
+    while the same run reported it on a checkout that did not have it yet.
+    Two people looking at one leak saw different things, and the one who
+    had lived with it longest saw nothing.
+
+    So: a checkout that has run the suite before is a WEAKER instrument
+    than a fresh one. When this guard is silent and something still looks
+    wrong, clean the tree (``git clean -xdn`` first, to read before
+    deleting) rather than trusting the silence.
     """
     before = _checkout_entries()
     before_generated = _unexpected_under_a_generated_root()
     yield
-    new = sorted(p for p in _checkout_entries() - before)
-    new += sorted(
-        str(_CHECKOUT_ROOT / p)
-        for p in _unexpected_under_a_generated_root() - before_generated)
+    new = _teardown_new_paths(before, before_generated)
+    # The last test of the run has nothing after it, so no later setup ever
+    # sees what it left -- and the leak this was written for was exactly
+    # that: the last test in its file. One more comparison here closes the
+    # gap the per-start check cannot.
+    if _CHECKOUT_TOP_LAST is not None:
+        for name in _checkout_top() - _CHECKOUT_TOP_LAST:
+            _CHECKOUT_TOP_BLAME.setdefault(name, _CHECKOUT_TOP_LAST_NODE)
+
+    def _named(path) -> str:
+        import os
+        who = _CHECKOUT_TOP_BLAME.get(os.path.basename(str(path).rstrip("/")))
+        return f"{path} (after {who})" if who else str(path)
+
     assert not new, (
         f"{len(new)} path(s) appeared in the checkout during the run; "
         "a git ignore rule may make them invisible to `git status`: "
-        + ", ".join(str(p) for p in new[:20])
+        + ", ".join(_named(p) for p in new[:20])
     )
 
 
@@ -264,11 +472,61 @@ def _delfin_env() -> dict:
     return {k: v for k, v in os.environ.items() if k.startswith("DELFIN_")}
 
 
+# name -> the nodeid of the first test after which it appeared at the top
+# of the checkout. Attribution only; the session guard below still decides.
+_CHECKOUT_TOP_BLAME: dict[str, str] = {}
+
+# The checkout's top-level names as of the last test start, and whose start
+# that was. A name that is new at the next start belongs to the test in
+# between.
+_CHECKOUT_TOP_LAST: frozenset | None = None
+_CHECKOUT_TOP_LAST_NODE: str = "(before the first test)"
+
+
+def _checkout_top() -> frozenset:
+    """The direct children of the checkout root. Shallow on purpose.
+
+    Measured: the full walk the session guard uses costs 7.0 ms, which is
+    250 s over a suite this size once before and once after every test;
+    this listing costs 0.016 ms, or 0.6 s. So every test can afford this
+    one and none can afford that one.
+
+    The limit that buys: a path created DEEPER in the tree is not
+    attributed here. The session guard still reports it -- it walks
+    everything -- it just cannot say who. Most leaks land at the top,
+    because a child process writes them relative to its working
+    directory, and that is the case this names.
+    """
+    import os
+    try:
+        return frozenset(os.listdir(_CHECKOUT_ROOT))
+    except OSError:
+        return frozenset()
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item):
     import os
     _CWD_BEFORE_TEST[item.nodeid] = os.getcwd()
     _DELFIN_ENV_BEFORE_TEST[item.nodeid] = _delfin_env()
+    # ---- who put that there ------------------------------------------
+    # Compared HERE and blamed on the test that ran BEFORE this one, not
+    # in teardown. Measured, after the teardown version recorded nothing:
+    # setup runs for every test, and this file's teardown hook is skipped
+    # for some of them -- including the one that was leaking. A guard that
+    # depends on a hook it cannot show running is not a guard.
+    #
+    # Recorded, never failed: the session-wide check is what decides, on
+    # the whole tree. This only answers the question that check could not,
+    # which is WHICH test -- a leak reported with no name cost an
+    # afternoon of bisecting a suite to find a single argument.
+    global _CHECKOUT_TOP_LAST, _CHECKOUT_TOP_LAST_NODE
+    top = _checkout_top()
+    if _CHECKOUT_TOP_LAST is not None:
+        for name in top - _CHECKOUT_TOP_LAST:
+            _CHECKOUT_TOP_BLAME.setdefault(name, _CHECKOUT_TOP_LAST_NODE)
+    _CHECKOUT_TOP_LAST = top
+    _CHECKOUT_TOP_LAST_NODE = item.nodeid
 
 
 @pytest.hookimpl(trylast=True)

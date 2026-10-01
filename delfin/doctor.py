@@ -37,6 +37,7 @@ __all__ = [
     "check_scratch_dir",
     "check_slurm",
     "check_kit_toolbox_key",
+    "check_kit_toolbox_key_live",
     "check_docs_index",
     "check_command_isolation",
     "check_no_exported_key",
@@ -206,6 +207,58 @@ def check_slurm() -> CheckResult:
     )
 
 
+def check_kit_toolbox_key_live(timeout_s: float = 15.0) -> CheckResult:
+    """Ask the KIT-Toolbox whether the stored key is still accepted.
+
+    Deliberately NOT part of run_all: it reaches the network, so it would
+    make every doctor run wait on a remote host and could hang one that
+    only wanted to know what is installed. Called when somebody asks.
+
+    Read-only -- it lists models and sends nothing. The key travels to the
+    endpoint it belongs to and nowhere else, and never appears in the
+    result: an expired key and a wrong key are the same answer here, and
+    printing either would put a secret in a log.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    try:
+        from delfin.agent.credentials import load_credential
+        key = load_credential("KIT_TOOLBOX_API_KEY")
+    except Exception:
+        key = os.environ.get("KIT_TOOLBOX_API_KEY", "")
+    if not key:
+        return CheckResult(
+            "kit_toolbox_key_live", MISSING,
+            "no KIT_TOOLBOX_API_KEY to check",
+            "delfin-agent credentials set KIT_TOOLBOX_API_KEY")
+    request = urllib.request.Request(
+        "https://ki-toolbox.scc.kit.edu/api/v1/models",
+        headers={"Authorization": f"Bearer {key}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as answer:
+            data = _json.loads(answer.read() or b"{}")
+        count = len(data.get("data") or [])
+        return CheckResult("kit_toolbox_key_live", OK,
+                           f"accepted ({count} models offered)")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return CheckResult(
+                "kit_toolbox_key_live", MISSING,
+                f"the stored key is refused by the server (HTTP {exc.code})",
+                "delfin-agent credentials set KIT_TOOLBOX_API_KEY")
+        return CheckResult("kit_toolbox_key_live", MISSING,
+                           f"the server answered HTTP {exc.code}")
+    except Exception as exc:
+        # Unreachable is not the same as refused, and saying so keeps
+        # somebody from replacing a key that was never the problem.
+        return CheckResult(
+            "kit_toolbox_key_live", MISSING,
+            f"could not be checked: {type(exc).__name__}",
+            "this says nothing about the key; check the connection first")
+
+
 def check_kit_toolbox_key() -> CheckResult:
     """KIT-Toolbox API key configured — presence only, never the value.
 
@@ -219,8 +272,14 @@ def check_kit_toolbox_key() -> CheckResult:
     except Exception:
         present = bool(os.environ.get("KIT_TOOLBOX_API_KEY"))
     if present:
+        # Presence, and the message says so. A stored key that the server
+        # has since expired reads exactly like a working one here, and
+        # then the run dies at engine start -- measured 2026-09-28, where
+        # a benchmark trial was blocked by a key this check called
+        # configured. check_kit_toolbox_key_live() is the one that asks.
         return CheckResult("kit_toolbox_key", OK,
-                           "KIT_TOOLBOX_API_KEY is configured")
+                           "KIT_TOOLBOX_API_KEY is configured "
+                           "(present; not checked against the server)")
     return CheckResult(
         "kit_toolbox_key", MISSING, "KIT_TOOLBOX_API_KEY is not configured",
         "store it with `delfin-agent credentials set KIT_TOOLBOX_API_KEY` "

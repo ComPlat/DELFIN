@@ -366,6 +366,14 @@ def _granted_dir_note(resolved) -> str:
         f"that already succeeded."
     )
 
+def _capped_context_window(window: int) -> int:
+    """Thin forwarder: the ONE source is delfin.agent.context_window
+    (moved there 2026-09-26 so the api_client's in-turn elision budget
+    reads the same cap). Kept for the existing callers and tests."""
+    from .context_window import capped_window
+    return capped_window(window)
+
+
 class AgentEngine:
     """Core orchestration engine for the DELFIN agent.
 
@@ -393,7 +401,7 @@ class AgentEngine:
         provider: str = "claude",
         api_key: str = "",
         model: str = "",
-        mode: str = "quick",
+        mode: str = "solo",
         permission_mode: str = "",
         pack_dir: Path | None = None,
         mcp_config: str = "",
@@ -405,6 +413,11 @@ class AgentEngine:
         effort: str = "",
         kit_confirm_callback=None,
     ):
+        # No agent without its principles: every entry point builds its
+        # agent here, so a changed or missing principles file stops them
+        # all (principles_guard; the digest is pinned in two places).
+        from .principles_guard import enforce as _enforce_principles
+        _enforce_principles()
         self.repo_dir = Path(repo_dir)
         # DELFIN-bias gate: chemistry/cluster escalation patterns and
         # DELFIN-specific tools are only applied when the engine is
@@ -453,7 +466,10 @@ class AgentEngine:
         # across turns). Codex CLI spawns per turn and the chat-API backends
         # rebuild every request, so the loader re-injects there (its default).
         self.loader.stateful_backend = (backend == "cli" and provider == "claude")
-        self.mode = mode
+        # Migrate here, not only in _load_mode: until that runs, self.mode is
+        # whatever was passed in, and a retired name read from it (a status
+        # line, a bug report) names a mode nobody can select.
+        self.mode = _migrate_mode(mode)
         self._agent_workspace_dir = agent_workspace_dir
         self.route: list[str] = []
         self.mode_description: str = ""
@@ -704,6 +720,14 @@ class AgentEngine:
             self._distiller.enabled = enabled
 
     # -- KIT-Toolbox coding-agent permissions --------------------------------
+
+    def _refusal_entries(self) -> list:
+        """The session's refusals with reasons, for the working-state block."""
+        mem = getattr(self.kit_permissions, "refusal_memory", None)
+        try:
+            return mem.to_dict().get("entries", []) if mem is not None else []
+        except Exception:
+            return []
 
     @property
     def kit_permissions(self):
@@ -1120,6 +1144,10 @@ class AgentEngine:
             "role_total": len(self.route),
             "input_tokens": self.token_usage.get("input", 0),
             "output_tokens": self.token_usage.get("output", 0),
+            # What a running turn has produced so far, for the live status
+            # line; equals output_tokens once the turn has ended.
+            "output_tokens_live": (self.token_usage.get("output", 0)
+                                   + getattr(self, "_round_output_live", 0)),
             "cached_tokens": self.token_usage.get("cached", 0),
             "cost_usd": self.cost_usd,
             # Cumulative for the session, like cost_usd above, so a caller
@@ -1184,7 +1212,8 @@ class AgentEngine:
             api_key = getattr(self.client, "_api_key", "") or ""
             caps = _resolve_caps(self.provider, model, base_url, api_key=api_key)
             if caps and caps.context_window > 0:
-                self.context_window_tokens = int(caps.context_window)
+                self.context_window_tokens = _capped_context_window(
+                    int(caps.context_window))
                 self._active_capabilities = caps
         except Exception:
             # Keep whatever window is already set (100k default).
@@ -2323,6 +2352,7 @@ class AgentEngine:
         images: list[str] | None = None,
         on_notice: Callable[[str], None] | None = None,
         on_tool_result_meta: Callable[[str, dict], None] | None = None,
+        on_wait: Callable[[str], None] | None = None,
     ) -> str:
         """Send a user message and stream the response.
 
@@ -2351,6 +2381,14 @@ class AgentEngine:
             empty-turn notices, the cost ceiling, a blocking hook. When
             omitted these go to ``on_token``, which is what every caller
             saw before this parameter existed.
+        on_wait : callable, optional
+            Called with the "waiting for the model … Ns" tick while the
+            endpoint has not sent its first byte. Separate from
+            ``on_notice`` because the tick REPLACES the one before it: a
+            caller with a surface it can overwrite (a status line, a
+            spinner label, a terminal row) shows one line, where a caller
+            appending to a transcript showed one per tick. Omitted, the
+            ticks fall back to ``on_notice`` unchanged.
         on_tool_result_meta : callable, optional
             Called with (tool_name, meta) after each tool result, where
             *meta* carries ``chars``, ``truncated``, ``notes``, ``ok`` and
@@ -2814,6 +2852,33 @@ class AgentEngine:
                     if on_token:
                         on_token(event.text)
 
+                elif event.type == "waiting" and event.text:
+                    # The harness saying the endpoint has not answered yet
+                    # ("waiting for the model … Ns"). Shown to the user and
+                    # fed to nothing else: it is not the model producing,
+                    # so it never lands in `chunks` and never stamps
+                    # _turn_ttft. Unlike a notice it does NOT fall back to
+                    # on_token: a waiting line in the answer text is the
+                    # old "retry banner scored as the answer" bug back
+                    # for every caller that passes no on_notice.
+                    #
+                    # The tick is PROGRESS, not history: each one replaces
+                    # the one before it, and a caller with a surface that
+                    # can be overwritten takes them on `on_wait` and shows
+                    # a single line. `on_notice` is the fallback, not the
+                    # default -- a caller without such a surface must
+                    # still see that something is happening, and before
+                    # on_wait existed that was the only route. The
+                    # producer emits one tick per tenth of the request
+                    # deadline, capped at ten seconds, so a stall to the
+                    # default 600 s deadline is sixty of them.
+                    _wait_sink = on_wait or on_notice
+                    if _wait_sink:
+                        try:
+                            _wait_sink(event.text)
+                        except Exception:
+                            pass
+
                 elif event.type == "notice" and event.text:
                     # The harness talking about itself: a retry banner, a
                     # stop, a cost ceiling. Shown to the user and to
@@ -3020,6 +3085,15 @@ class AgentEngine:
                     if event.text:
                         self.session_id = event.text
 
+                elif event.type == "round_usage":
+                    # Display only: the output of each finished round of a
+                    # turn still running. Billing stays on message_delta,
+                    # which clears this, so it is never counted twice.
+                    with self._lock:
+                        self._round_output_live = (
+                            getattr(self, "_round_output_live", 0)
+                            + int(event.output_tokens or 0))
+
                 elif event.type == "message_start":
                     # Input tokens tracked here (authoritative count
                     # including cache).  Do NOT also add in message_delta.
@@ -3083,6 +3157,7 @@ class AgentEngine:
                         # Only output tokens and cost from the final event.
                         # Input tokens already counted in message_start.
                         self.token_usage["output"] += event.output_tokens
+                        self._round_output_live = 0
                         self.cost_usd += event.cost_usd
                         # Accounting fallback for backends that never emit
                         # message_start: count the turn's input here so
@@ -3536,6 +3611,7 @@ class AgentEngine:
                     max_tokens=max_tokens,
                     on_notice=on_notice,
                     on_tool_result_meta=on_tool_result_meta,
+                    on_wait=on_wait,
                 )
             except Exception:
                 pass
@@ -4106,6 +4182,7 @@ class AgentEngine:
         max_tokens: int = 0,
         on_notice: Callable[[str], None] | None = None,
         on_tool_result_meta: Callable[[str, dict], None] | None = None,
+        on_wait: Callable[[str], None] | None = None,
     ) -> str:
         """Enforce evidence grounding on a finished answer (all modes).
 
@@ -4232,6 +4309,7 @@ class AgentEngine:
                 max_tokens=max_tokens,
                 on_notice=on_notice,
                 on_tool_result_meta=on_tool_result_meta,
+                on_wait=on_wait,
             )
         except Exception:
             correction = ""
@@ -5008,6 +5086,32 @@ class AgentEngine:
             + "\n".join(lines)
         )
 
+    def _log_compaction(self, state_block: str = "",
+                        compacted_texts: list | None = None,
+                        summary_text: str = "") -> None:
+        """Persist one record of the last compaction event to the
+        session's compaction log (best-effort — a broken log must never
+        break compaction). Headings and counts only, never contents."""
+        try:
+            from .compaction_log import record_compaction
+            info = self.last_compaction_info or {}
+            record_compaction(
+                str(getattr(self, "session_id", "") or ""),
+                kind=str(info.get("kind", "") or "compaction"),
+                tokens_before=info.get("tokens_before"),
+                tokens_after=info.get("tokens_after"),
+                messages_compacted=int(info.get("messages_compacted", 0) or 0),
+                messages_trimmed=int(info.get("messages_trimmed", 0) or 0),
+                pinned_kept=int(info.get("pinned_kept", 0) or 0),
+                forced=bool(info.get("forced", False)),
+                note=str(info.get("note", "") or ""),
+                state_block=state_block,
+                compacted_texts=compacted_texts,
+                summary_text=summary_text,
+            )
+        except Exception:
+            pass
+
     def _compact_history(self, *, force: bool = False) -> None:
         """Summarize older messages, keeping recent ones intact.
 
@@ -5046,6 +5150,7 @@ class AgentEngine:
                         "tokens_after": self._estimate_context_tokens(),
                         "archived_at": _time.time(),
                     }
+                    self._log_compaction()
         except Exception:
             pass
 
@@ -5098,6 +5203,7 @@ class AgentEngine:
                     "tokens_after": self._estimate_context_tokens(),
                     "archived_at": _time.time(),
                 }
+                self._log_compaction()
                 return
         except Exception:
             pass
@@ -5147,8 +5253,20 @@ class AgentEngine:
                     # compounding loss across repeated compactions on long
                     # sessions. Carry it forward near-whole instead (bounded,
                     # header stripped so we don't nest "[summary]" markers).
-                    if text.lstrip().startswith(self._SUMMARY_BLOCK_PREFIX):
-                        body = text.split("\n", 1)[1].strip() if "\n" in text else text.strip()
+                    # CONTAINED, not leading: the compaction composes the
+                    # working-state block AHEAD of the summary text, so
+                    # the message starts with "[Working state" and a
+                    # startswith check never fires -- the very erosion
+                    # this branch exists to prevent, resurrected by the
+                    # block's own header.
+                    if self._SUMMARY_BLOCK_PREFIX in text:
+                        # Strip everything up to and including the
+                        # summary header line, then the first newline
+                        # after it (the header itself).
+                        after = text.split(
+                            self._SUMMARY_BLOCK_PREFIX, 1)[1]
+                        body = after.split("\n", 1)[1].strip() \
+                            if "\n" in after else after.strip()
                         if len(body) > 3000:
                             body = body[:3000] + "\n... [older summary detail elided] ..."
                         if body:
@@ -5188,6 +5306,7 @@ class AgentEngine:
                     f"budget."
                 ),
             }
+            self._log_compaction()
             return
 
         n_compacted = len(compactable)
@@ -5211,8 +5330,32 @@ class AgentEngine:
         except Exception:
             pass
 
+        # Working-state block: rebuilt deterministically from the
+        # session's own records (machine turns, change journal, task
+        # store) — never from model text, never via a model call. A
+        # returning agent needs files-changed, last test outcome, open
+        # tasks, denials-with-reasons and standing instructions; those
+        # only survived the summary by accident before. Built from the
+        # messages ABOUT to be replaced (compactable), so it describes
+        # exactly what was compacted away. Best-effort: a broken store
+        # must not break compaction.
+        _state_block = ""
+        try:
+            from .working_state import build_working_state_block
+            _state_block = build_working_state_block(
+                compactable,
+                session_id=str(getattr(self, "session_id", "") or ""),
+                workspace=getattr(self, "repo_dir", None),
+                refusals=self._refusal_entries(),
+            )
+        except Exception:
+            _state_block = ""
+
+        _summary_msg = f"[Conversation summary — older messages compacted]\n{summary}"
+        if _state_block:
+            _summary_msg = f"{_state_block}\n{_summary_msg}"
         self.messages = [
-            {"role": "user", "content": f"[Conversation summary — older messages compacted]\n{summary}"},
+            {"role": "user", "content": _summary_msg},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
         ] + pinned_old + recent
         # `recent` starts with an assistant turn whenever compaction fires right
@@ -5245,6 +5388,16 @@ class AgentEngine:
                 "— less faithful than a summary. The full transcript is in "
                 "the archive."
             )
+        # One durable record of this compaction: kind, tokens before/after,
+        # messages replaced, and which sections the working-state block
+        # carried (headings + counts only).
+        self._log_compaction(
+            state_block=_state_block,
+            compacted_texts=[
+                str(m.get("content", "")) for m in compactable
+            ],
+            summary_text=summary,
+        )
 
         # CLI backend: by default tear down the persistent process so the
         # next stream_message starts fresh and the compacted history
@@ -6362,6 +6515,45 @@ class AgentEngine:
         # One sub-dict, written and read as a unit, so a new ledger is
         # added in one place instead of four.
         out["evidence"] = self._export_evidence()
+        # The refusals the user gave THIS conversation. They live on the
+        # permission object, which a resume rebuilds from the launch
+        # arguments -- so without this block a continued session asked for
+        # the same denied file again (observed 26 Sep 2026). Grants are
+        # deliberately NOT here: the dialog says "for the rest of this
+        # session. Nothing is saved", and whether a resume is "the same
+        # session" is the user's call, not ours -- asking once too often is
+        # the safe side of that question.
+        out["refusals"] = self._export_refusals()
+        return out
+
+    def _export_refusals(self) -> dict:
+        """The denials on the permission object, as plain data.
+
+        Empty dict whenever there is no permission object (non-KIT
+        backend) or nothing was denied -- an export must not be the thing
+        that breaks on an engine built for a targeted test.
+        """
+        perms = getattr(self, "kit_permissions", None)
+        if perms is None:
+            return {}
+        out: dict = {}
+        try:
+            denied = getattr(perms, "denied_paths", None) or set()
+            out["denied_paths"] = sorted(str(p) for p in denied)
+        except Exception:
+            out["denied_paths"] = []
+        try:
+            actions = getattr(perms, "denied_actions", None) or {}
+            out["denied_actions"] = {str(k): str(v)
+                                     for k, v in dict(actions).items()}
+        except Exception:
+            out["denied_actions"] = {}
+        mem = getattr(perms, "refusal_memory", None)
+        if mem is not None:
+            try:
+                out["refusal_memory"] = mem.to_dict()
+            except Exception:
+                pass
         return out
 
     def _export_evidence(self) -> dict:
@@ -6559,13 +6751,22 @@ class AgentEngine:
         s_restored, s_missing, s_failed = self._load_declared_fields(
             data, section="state")
         ev = self._restore_evidence(data)
+        # The denials come back onto the permission object, not onto the
+        # engine: that is where every gate reads them. The object is
+        # rebuilt by the time a resume runs (cli builds the client first,
+        # then calls restore_state), so writing here is not a race; if
+        # there is no permission object the denials are reported missing,
+        # not silently dropped -- a backend with no gate would otherwise
+        # "restore" a refusal nothing enforces.
+        ref_restored = self._restore_refusals(data.get("refusals"))
         # The restored read-ledger has to reach the client before the first
         # turn's post-stream update, or it is discarded unread.
         self._seed_client_observed_files()
 
         report = AgentEngine.RestoreReport(
             schema_version=version,
-            restored=tuple(restored + s_restored + list(ev.restored)),
+            restored=tuple(restored + s_restored + list(ev.restored)
+                           + ref_restored),
             missing=tuple(missing + s_missing + list(ev.missing)),
             failed=tuple(drifted + s_failed + list(ev.failed)),
             migrations=migrations,
@@ -6590,6 +6791,54 @@ class AgentEngine:
             pass
         self.last_restore_report = report
         return report
+
+    def _restore_refusals(self, blob) -> list[str]:
+        """Write the exported denials back onto the permission object.
+
+        Returns the restored names for the report. Grants are never
+        restored -- that decision is the user's, one dialog at a time, and
+        is pinned by its own test.
+        """
+        perms = getattr(self, "kit_permissions", None)
+        if not isinstance(blob, dict):
+            return []
+        names: list[str] = []
+        paths = blob.get("denied_paths")
+        if isinstance(paths, list):
+            try:
+                perms.denied_paths.update(str(p) for p in paths if p)
+                names.append("denied_paths")
+            except Exception:
+                pass
+        actions = blob.get("denied_actions")
+        if isinstance(actions, dict):
+            try:
+                perms.denied_actions.update({str(k): str(v) for k, v in
+                                             actions.items()})
+                names.append("denied_actions")
+            except Exception:
+                pass
+        mem_blob = blob.get("refusal_memory")
+        if isinstance(mem_blob, dict):
+            try:
+                from .refusal_memory import RefusalMemory
+                if perms.refusal_memory is None:
+                    perms.refusal_memory = RefusalMemory()
+                restored_mem = RefusalMemory.from_dict(mem_blob)
+                # Merge instead of overwrite: the fresh object may already
+                # carry entries of its own (a denial in the first turn
+                # before the restore is rare, but possible).
+                for entry in restored_mem.to_dict().get("entries", []):
+                    from .refusal_memory import Refusal
+                    try:
+                        perms.refusal_memory.record(
+                            Refusal.from_dict(entry))
+                    except Exception:
+                        pass
+                names.append("refusal_memory")
+            except Exception:
+                pass
+        return names
 
     def available_modes(self) -> list[str]:
         """Return list of available mode IDs."""

@@ -57,6 +57,19 @@ def _engine_defaults() -> dict[str, str]:
             for k in ("backend", "provider", "model", "effort")}
 
 
+def guard_principles_or_exit(pack_dir: "Path | None" = None) -> None:
+    """Refuse to start when the principles were changed or removed.
+
+    The engine enforces the same check for every entry point; here the
+    terminal gets a clean exit with the reason instead of a traceback.
+    """
+    from .principles_guard import PrinciplesTampered, enforce
+    try:
+        enforce(pack_dir)
+    except PrinciplesTampered as exc:
+        raise SystemExit(f"refusing to start: {exc}") from None
+
+
 def _build_engine(args: argparse.Namespace):
     """Construct an AgentEngine for the given CLI args.
 
@@ -262,7 +275,9 @@ def _json_line(obj: dict) -> None:
 
 
 def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
-              emit: Any = None) -> dict[str, Any]:
+                 emit: Any = None,
+                 on_tool_result: Any = None,
+                 on_permission_denied: Any = None) -> dict[str, Any]:
     """Stream a single turn and collect text + tool-calls + token-usage.
 
     AgentEngine's ``stream_response`` is callback-driven, not event-
@@ -276,16 +291,55 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     that want the turn as a stream rather than as one answer at the end.
     The return value is unchanged either way, so the summary a streaming
     caller prints last is the same object the JSON caller prints alone.
+
+    ``on_tool_result`` (optional) receives ``(name, output)`` per tool
+    result -- the harness hints (import origin, refusal reasons, …)
+    live there.  It is PASSED to the engine only when given: a stub
+    engine with a fixed ``stream_response`` signature (the scheduler
+    and benchmark test doubles) must keep working, and the return
+    contract stays exactly the five keys the JSON tests pin -- the
+    benchmark runner collects results through this callback instead
+    of a sixth key.
+
+    ``on_permission_denied`` (optional) receives ``(tool_name)`` each
+    time the harness refused a call -- same forward-only pattern, so
+    the benchmark can count interventions without a sixth key.
     """
     chunks: list[str] = []
     tool_calls: list[dict] = []
     error = ""
+
+    def _forward_tool_result(name: str, output: str) -> None:
+        if on_tool_result is not None:
+            try:
+                on_tool_result(name, str(output or ""))
+            except Exception:
+                pass
 
     def _on_token(text: str) -> None:
         if text:
             chunks.append(text)
             if emit is not None:
                 emit({"type": "text", "text": text})
+
+    def _on_notice(text: str) -> None:
+        # Harness speech (retry banners, a stop, a cost ceiling).
+        # Deliberately NOT appended to chunks — a notice is not the
+        # model's answer, and _run_once's return contract says "text"
+        # is the answer. Emitted with its own type so stream-json
+        # readers and the CLI renderer can tell the two apart.
+        if text and emit is not None:
+            emit({"type": "notice", "text": text})
+
+    def _on_wait(text: str) -> None:
+        # The first-byte tick. Its own event type, because it differs
+        # from a notice in what the reader must DO with it: each tick
+        # replaces the previous one, where a notice is a line of the
+        # record. A stream-json consumer can now overwrite its status
+        # field instead of appending sixty entries that differ only in
+        # the number of seconds.
+        if text and emit is not None:
+            emit({"type": "wait", "text": text})
 
     def _on_tool_use(name: str, input_json: str) -> None:
         try:
@@ -299,13 +353,51 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     in_before = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_before = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
 
+    kwargs: dict[str, Any] = dict(
+        user_message=prompt,
+        on_token=_on_token,
+        on_tool_use=_on_tool_use,
+        max_tokens=max_tokens,
+    )
+    # on_notice only when the engine takes it. Two branches of one wave
+    # disagreed here: one made the waiting line reach this caller, the
+    # other pinned a test that _run_once must keep working against an
+    # engine with a FIXED signature -- a test double, or a backend out of
+    # this tree. Both are right, and the engine itself already resolves
+    # exactly this for `no_tools` the same way.
+    #
+    # Losing the waiting line on an older engine costs a progress
+    # message; passing it costs a TypeError and the whole turn.
     try:
-        full_text = engine.stream_response(
-            user_message=prompt,
-            on_token=_on_token,
-            on_tool_use=_on_tool_use,
-            max_tokens=max_tokens,
-        ) or ""
+        import inspect as _inspect
+        _sig = _inspect.signature(engine.stream_response)
+        _takes = ("on_notice" in _sig.parameters or any(
+            prm.kind is _inspect.Parameter.VAR_KEYWORD
+            for prm in _sig.parameters.values()))
+    except (TypeError, ValueError):
+        _takes = True
+    if _takes:
+        kwargs["on_notice"] = _on_notice
+    # Same probe, same reason: on_wait is newer than on_notice, so an
+    # engine double or an out-of-tree backend may accept one and not the
+    # other. Without it the ticks fall back to on_notice and the caller
+    # keeps exactly the behaviour it had -- visible, just not in place.
+    try:
+        import inspect as _inspect2
+        _sig2 = _inspect2.signature(engine.stream_response)
+        _takes_wait = ("on_wait" in _sig2.parameters or any(
+            prm.kind is _inspect2.Parameter.VAR_KEYWORD
+            for prm in _sig2.parameters.values()))
+    except (TypeError, ValueError):
+        _takes_wait = True
+    if _takes_wait:
+        kwargs["on_wait"] = _on_wait
+    if on_tool_result is not None:
+        kwargs["on_tool_result"] = _forward_tool_result
+    if on_permission_denied is not None:
+        kwargs["on_permission_denied"] = on_permission_denied
+    try:
+        full_text = engine.stream_response(**kwargs) or ""
     except Exception as exc:
         error = str(exc)
         full_text = ""
@@ -426,9 +518,26 @@ def cmd_run(args: argparse.Namespace) -> int:
     if _human_stream:
         from .cli_stream import StreamRenderer
 
+        # One row for the wait tick. The renderer returns it as a
+        # carriage return plus an erase and no newline, so the next tick
+        # lands on the same row; printed with the default end="\n" every
+        # tick would stand and a stalled round would scroll sixty copies
+        # of one sentence past the user. The state lives here and not in
+        # the renderer because the renderer is called per event and
+        # therefore cannot remember what it printed last.
+        _on_wait_row = [False]
+
         def _render_event(event: dict) -> None:
+            is_wait = event.get("type") == "wait"
+            if _on_wait_row[0] and not is_wait:
+                # Leaving the wait row: erase it so the answer does not
+                # start halfway along "waiting for the model … 240s".
+                print("\r\x1b[K", end="", flush=True)
+                _on_wait_row[0] = False
             for line in StreamRenderer([event], is_tty=True):
-                print(line, flush=True)
+                print(line, end="" if is_wait else "\n", flush=True)
+                if is_wait:
+                    _on_wait_row[0] = True
 
         _emit = {"emit": _render_event}
     else:
@@ -440,6 +549,23 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         from .session_report import write_session_report
         write_session_report(sid or getattr(engine, "session_id", ""))
+    except Exception:
+        pass
+    # Shared session-end stage: skill learning, same hook as the CLI
+    # chat and the dashboard. Best-effort; never breaks the run.
+    try:
+        from .session_end import learn_at_session_end
+        learn_at_session_end(
+            _display_messages(engine),
+            session_id=str(sid or getattr(engine, "session_id", "") or ""))
+    except Exception:
+        pass
+    # Session-end stage (Paket 5): the ended session becomes searchable.
+    # Own try/except like the learning stage; never breaks the run.
+    try:
+        from .session_end import index_at_session_end
+        index_at_session_end(
+            str(sid or getattr(engine, "session_id", "") or ""))
     except Exception:
         pass
 
@@ -884,6 +1010,19 @@ def _startup_banner(engine, report, workspace: Path,
         # store. Printing all 32 characters put the one useful field on
         # the widest line of the banner.
         lines.append(f"session    {sid[:8]}   (/status for the full id)")
+    # What the memory store could shed, said once and only when there is
+    # something. Deterministic and measured at 43 ms over 1000 notes, so
+    # it costs nothing to ask; a command nobody is told about is a
+    # command nobody runs.
+    try:
+        from .memory_store import _delfin_memory_dir
+        from .memory_tidy import hint as _tidy_hint
+        _line = _tidy_hint(_delfin_memory_dir(Path(workspace)),
+                           repo_root=Path(workspace))
+        if _line:
+            lines.append(_line)
+    except Exception:
+        pass
     lines.append("esc interrupt · shift+tab approval mode · /help · ctrl+d exit")
     return "\n".join(lines)
 
@@ -1400,6 +1539,25 @@ def cmd_chat(args: argparse.Namespace) -> int:
         try:
             from .session_report import write_session_report
             write_session_report(getattr(engine, "session_id", "") or "")
+        except Exception:
+            pass
+        # Shared session-end stage: skill learning (the same call the
+        # dashboard's session end uses). The CLI chat previously never
+        # distilled NOR learned; this is the single shared hook. Its own
+        # failure never breaks the exit.
+        try:
+            from .session_end import learn_at_session_end
+            learn_at_session_end(
+                _display_messages(engine),
+                session_id=str(getattr(engine, "session_id", "") or ""))
+        except Exception:
+            pass
+        # Session-end stage (Paket 5): the ended session becomes
+        # searchable. Own try/except, same rule as the learning stage.
+        try:
+            from .session_end import index_at_session_end
+            index_at_session_end(
+                str(getattr(engine, "session_id", "") or ""))
         except Exception:
             pass
         try:
@@ -2143,6 +2301,88 @@ def cmd_credentials(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_skills(args: argparse.Namespace) -> int:
+    """Skill proposals: what is waiting, its full preview, the decision.
+
+    The other side of ``skill_proposals``: `show` prints text, evidence
+    and safety findings so the accept/reject decision is made with a
+    real preview, `accept` activates a pending proposal, `reject
+    --reason` turns it away (into ``rejected/``, never deleted).
+    """
+    from . import skill_proposals as sp
+
+    action = getattr(args, "skills_action", "") or "proposals"
+
+    if action == "proposals":
+        rows = sp.list_proposals()
+        if not rows:
+            print("no skill proposals waiting — a proposal is created at "
+                  "the end of a qualifying session and accepted by a "
+                  "person")
+            return 0
+        for p in rows:
+            print(f"{p.name:<24} [{p.status}] {len(p.evidence)} evidence")
+        print("\nshow one with: delfin-agent skills show <name>")
+        return 0
+
+    name = getattr(args, "name", "")
+    if action == "show":
+        p = sp.get_proposal(name)
+        if p is None:
+            print(f"ERROR: no proposal named {name!r}", file=sys.stderr)
+            return 2
+        print(f"proposal {p.name} — status: {p.status}")
+        print(f"source: {p.source}   created: {p.created}")
+        if p.base_version:
+            print(f"base version: {p.base_version}")
+        print()
+        print(p.text)
+        print()
+        print(f"evidence ({len(p.evidence)}):")
+        for ev in p.evidence:
+            line = f"  [{ev.kind}] {ev.ref}"
+            if ev.detail:
+                line += f" — {ev.detail}"
+            print(line)
+        if p.findings:
+            print("safety findings:")
+            for f in p.findings:
+                print(f"  ! {f}")
+        else:
+            print("safety findings: none")
+        return 0
+
+    who = os.environ.get("USER", "")
+
+    if action == "accept":
+        try:
+            target = sp.accept(name, by=who)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"accepted: {name} -> {target}")
+        print("the skill is live for new sessions now")
+        return 0
+
+    if action == "reject":
+        reason = (getattr(args, "reason", "") or "").strip()
+        if not reason:
+            print("ERROR: a rejection needs --reason: the next session "
+                  "reads why, instead of guessing the same thing again",
+                  file=sys.stderr)
+            return 2
+        try:
+            target = sp.reject(name, reason=reason, by=who)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"rejected: {name} -> {target}")
+        return 0
+
+    print(f"ERROR: unknown skills action {action!r}", file=sys.stderr)
+    return 2
+
+
 def cmd_approvals(args: argparse.Namespace) -> int:
     """The questions a headless session waits on, and the answers.
 
@@ -2158,6 +2398,23 @@ def cmd_approvals(args: argparse.Namespace) -> int:
     from . import file_confirm as _fc
 
     action = getattr(args, "approvals_action", "") or "ls"
+
+    if action == "answer":
+        # A choice question (ask_user_question) published by a terminal
+        # session. approve/deny is no answer to one: the operator had to
+        # deny and hide the pick in the refusal reason. The choice itself
+        # resolves against the question's own options; anything that is
+        # not a choice question is refused here, not guessed at.
+        from . import approval_answers as _ans
+        who = os.environ.get("USER", "")
+        try:
+            picks = _ans.answer(args.request_id, args.choice, by=who)
+        except _ans.ChoiceError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"answer: {args.request_id}")
+        print(f"choice: {', '.join(picks)}")
+        return 0
 
     if action in ("approve", "deny"):
         who = os.environ.get("USER", "")
@@ -2230,27 +2487,86 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         return 0
 
     rows = _fc.pending()
-    # A question waiting in a terminal pane is answered there, not here.
-    # It is listed anyway: the pane cuts the preview to 24 lines and to
-    # its own width, and a supervisor who cannot read a question cannot
-    # give an answer to it. `show` prints these whole.
+    # A question a supervisor cannot read is one they cannot answer: `ls`
+    # showed id/tool/path and seconds, so every question needed a second
+    # `show`. One line per entry now says what it is about -- command,
+    # path, or the question of a choice request -- clipped to the pane
+    # width so a long command cannot push the rest off the screen.
     from . import terminal_confirm as _tc
+    from . import approval_answers as _ans
     at_terminals = _tc.pending_at_terminals()
     if not rows and not at_terminals:
         print("(nothing waiting)")
         return 0
+    width = _ls_width()
     for row in rows:
         waited = int(_time.time() - float(row.get("asked_at") or 0))
-        print(f"{row.get('id', ''):<24} {row.get('tool', ''):<12} "
-              f"{(row.get('path') or '-')[:40]:<40} {waited}s")
+        head = f"{row.get('id', ''):<24} {row.get('tool', ''):<12} "
+        tail = f" {waited}s"
+        subject = _ans.preview_line(
+            row, max(10, width - len(head) - len(tail)))
+        print((head + subject + tail)[:width])
     if at_terminals:
         print("\nWaiting at a terminal — answer here or in that session:")
         for row in at_terminals:
             waited = int(_time.time() - float(row.get("asked_at") or 0))
             mark = " PROTECTED" if row.get("protected") else ""
-            print(f"  {row.get('id', ''):<24} "
-                  f"{(row.get('session_key') or '?'):<14} "
-                  f"{row.get('tool', ''):<12} {waited}s{mark}")
+            head = (f"  {row.get('id', ''):<24} "
+                    f"{(row.get('session_key') or '?'):<14} "
+                    f"{row.get('tool', ''):<12} ")
+            tail = f" {waited}s{mark}"
+            subject = _ans.preview_line(
+                row, max(10, width - len(head) - len(tail)))
+            print((head + subject + tail)[:width])
+    return 0
+
+
+def _ls_width() -> int:
+    """The pane width for `approvals ls`, 120 when there is none.
+
+    COLUMNS is respected first -- inside a pipe it carries the width of
+    the terminal the operator is actually looking at, which is the one
+    the clipping is for.
+    """
+    try:
+        cols = int(os.environ.get("COLUMNS", "") or 0)
+        if cols > 0:
+            return cols
+    except ValueError:
+        pass
+    try:
+        import shutil
+        return shutil.get_terminal_size().columns or 120
+    except Exception:
+        return 120
+
+
+def cmd_memory(args: argparse.Namespace) -> int:
+    """Show what tidying the memory store would do, and do it on request.
+
+    Merging near-duplicates happens today only as a memory is WRITTEN, so
+    look-alikes already in a store stay there; and the decay prune
+    deletes on its own schedule without showing anyone what it took. This
+    reports first and changes nothing until --apply.
+    """
+    from pathlib import Path as _P
+
+    from . import memory_tidy as _tidy
+    from .memory_store import _delfin_memory_dir
+
+    root = _P(getattr(args, "workspace", "") or os.getcwd())
+    store = _delfin_memory_dir(root)
+    proposal = _tidy.propose(store, repo_root=root)
+    print(f"store: {store}")
+    print(proposal.render())
+    if not getattr(args, "apply", False):
+        return 0
+    if not (proposal.merges or proposal.retire):
+        return 0
+    done = _tidy.apply(proposal)
+    print(f"merged {done['merged']}, retired {done['retired']}"
+          + (f", failed {done['failed']}" if done["failed"] else ""))
+    print(f"retired files are in {store / 'retired'} — nothing was deleted")
     return 0
 
 
@@ -2285,6 +2601,23 @@ def cmd_session(args: argparse.Namespace) -> int:
                   f"{snippet.replace(chr(10), ' ')}")
         if not hits:
             print(f"(no matches for {args.query!r})")
+        return 0
+    if args.session_action == "export":
+        from . import session_export as _se
+        sid = args.session_id
+        if sid == "latest":
+            row = _ss.latest_session()
+            if not row:
+                print("ERROR: no saved sessions to export", file=sys.stderr)
+                return 1
+            sid = row["session_id"]
+        data = _ss.load_session(sid)
+        if data is None:
+            print(f"ERROR: session {sid!r} not found", file=sys.stderr)
+            return 1
+        out = args.notebook or f"{sid}.ipynb"
+        path = _se.export_session_to_file(data, out)
+        print(f"exported {sid} -> {path}")
         return 0
     print(f"ERROR: unknown session action {args.session_action!r}",
           file=sys.stderr)
@@ -2573,16 +2906,123 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if any(r.get("status") == "FAIL" for r in results) else 0
 
 
+def _load_limits() -> dict:
+    """The user's load alarm thresholds, from `agent.load_limits` settings.
+
+    ``~/.delfin/settings.json`` always, plus the trusted project files —
+    the same sources hooks read. Anything unreadable or malformed falls
+    back to session_load's defaults: thresholds are configuration, and
+    broken configuration must not break the reporting.
+    """
+    try:
+        from . import hooks as _hooks
+        # The raw settings dict is needed for agent.*, which load_hooks'
+        # merged HookConfig does not carry; read the user file directly.
+        # The trusted-project override is a refinement a settings file of
+        # this kind does not need yet.
+        raw = _hooks._read_json_safe(_hooks._user_settings_path()) or {}
+        limits = raw.get("agent", {}).get("load_limits")
+        if isinstance(limits, dict):
+            return dict(limits)
+    except Exception:
+        pass
+    from . import session_load as _sl_default
+    return dict(_sl_default.DEFAULT_LIMITS)
+
+
+def format_load_row(key: str, load: dict, alarms: list[str]) -> str:
+    """One watch line: session, procs, rss, cpu — alarms up front.
+
+    cpu is a difference between two measurements; before the second one
+    there is no number, and a dash says so instead of a made-up 0.0.
+    """
+    rss = float(load.get("rss_bytes") or 0)
+    for unit, factor in (("G", 1 << 30), ("M", 1 << 20), ("k", 1 << 10)):
+        if rss >= factor or unit == "k":
+            rss_txt = f"{rss / factor:.1f}{unit}"
+            break
+    cores = load.get("cpu_cores")
+    cores_txt = "-" if cores is None else f"{cores:.1f}"
+    line = (f"  {key[:16]:<16} procs {int(load.get('procs') or 0):>4}  "
+            f"rss {rss_txt:>6}  cpu {cores_txt:>4}")
+    for alarm in alarms:
+        line += f"  ! {alarm}"
+    return line
+
+
+def _print_session_load(watch_seconds: float) -> None:
+    """The --load view: one line per open session on THIS host, repeated.
+
+    Only this host's sessions have readable pids; others are listed
+    without numbers so the absence is explained rather than silent.
+    cpu needs two measurements a window apart, so the first pass shows
+    a dash and the second onward shows cores. Never raises: a monitor
+    that crashes on a dead session is worse than no monitor.
+    """
+    import socket as _socket
+    import time as _time
+
+    from . import session_load as _sl
+
+    host = _socket.gethostname()
+    limits = _load_limits()
+    previous: dict[str, dict] = {}   # key -> last load_of, for cpu cores
+    while True:
+        try:
+            from . import session_presence as _pres
+            records = _pres.open_sessions()
+        except Exception:
+            records = []
+        for rec in records:
+            pid = int(rec.get("pid") or 0)
+            key = str(rec.get("key") or "?")
+            if str(rec.get("host") or host) != host or pid <= 0:
+                print(f"  {key[:16]:<16} (on another host — not counted here)")
+                continue
+            load = _sl.load_of(pid, previous.get(key))
+            print(format_load_row(key, load, _sl.alarms(load, limits)))
+            previous[key] = load
+        if not watch_seconds:
+            return
+        _time.sleep(watch_seconds)
+
+
 def cmd_sessions(args: argparse.Namespace) -> int:
     """What ran here before, as a table that says how to come back."""
     from . import cli_resume as _cr
 
+    watch = getattr(args, "watch", None)
+    if getattr(args, "load", False) or watch:
+        try:
+            _print_session_load(float(watch) if watch else 0)
+        except Exception as exc:  # a broken /proc must not hide history
+            print(f"(load unavailable: {exc})")
+        return 0
+
     # What is open NOW comes first. A table of history read as "nothing
     # is running" while five sessions were, and the supervisor had to
     # assemble the live picture from tmux panes and git logs instead.
-    live = _cr.render_open(_cr.open_now())
+    live_rows = _cr.open_now()
+    live = _cr.render_open(live_rows)
     if live:
         print(live)
+        # What the open ones cost this host, in the same breath: the
+        # listing is where an operator looks first, so the load belongs
+        # here too — one quiet line each, alarms and all.
+        try:
+            import socket as _socket
+            from . import session_load as _sl
+            limits = _load_limits()
+            host = _socket.gethostname()
+            for row in live_rows:
+                pid = int(row.get("pid") or 0)
+                key = str(row.get("key") or "?")
+                if str(row.get("host") or host) != host or pid <= 0:
+                    continue
+                load = _sl.load_of(pid)
+                print(format_load_row(key, load, _sl.alarms(load, limits)))
+        except Exception:  # history answers even when /proc cannot
+            pass
         print()
     rows = _cr.list_sessions(limit=max(1, int(getattr(args, "limit", 20) or 20)))
     if not rows:
@@ -2711,13 +3151,37 @@ def cmd_watch(args: argparse.Namespace) -> int:
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
-    otherwise the terminal rendering."""
+    otherwise the terminal rendering.
+
+    `--since <time>` switches to the round report: ONE report over every
+    session with activity since that point (relative like `12h`/`3d`, or
+    a date `2026-09-18`), optionally filtered by `--name PREFIX`. The
+    hand tally this replaces covered tool calls/failures, dialogues,
+    denials, >5min calls, commits, tokens, ttft and endpoint errors.
+    """
     import dataclasses
     import json as _json
 
     from . import session_report as _sr
 
+    since = (getattr(args, "since", "") or "").strip()
     sid = (getattr(args, "session", "") or "").strip()
+    if since and not sid:
+        from . import round_report as _rpt
+        try:
+            since_s = _rpt.parse_since(since)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        data = _rpt.collect(
+            since_s=since_s,
+            name=(getattr(args, "name", "") or "").strip(),
+            # The real compaction archive, so the per-session compaction
+            # count in the round report is this machine's own number.
+            archive_root=None)
+        print(_rpt.render_text(data))
+        return 0
+
     if not sid:
         # No id: the most recently updated session, via the same source
         # `session ls` reads (sorted by updated_at, missing dir -> []).
@@ -2797,6 +3261,42 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
                    dest="max_tokens",
                    help="Max output tokens; 0 = the role's budget")
     p.add_argument("--cwd", default="", help="Run in this directory")
+
+
+def cmd_watchpost(args: argparse.Namespace) -> int:
+    """The read-only look-out over the user's own account."""
+    from delfin.watchpost import scan as wp_scan
+    from delfin.watchpost import scheduler_entry
+    home = Path(args.home) if args.home else Path.home()
+    report = Path(args.report) if args.report else \
+        home / ".delfin" / "watchpost"
+    if args.watchpost_action == "enable":
+        info = scheduler_entry.enable(
+            every_minutes=args.every_minutes or 30)
+        print(f"watchpost scheduled every {info['every_seconds'] // 60}m "
+              f"(entry {info['id']})")
+        return 0
+    if args.watchpost_action == "disable":
+        removed = scheduler_entry.disable()
+        print("watchpost schedule removed" if removed
+              else "no watchpost schedule was set")
+        return 0
+    if args.watchpost_action == "baseline":
+        findings = wp_scan.run_scan(home, report, mode="baseline")
+        print(f"baseline reset; {len(findings)} current findings recorded")
+    elif args.watchpost_action == "diff":
+        findings = wp_scan.run_scan(home, report, mode="diff")
+        print(f"{len(findings)} new finding(s) since baseline")
+    else:
+        findings = wp_scan.run_scan(home, report, mode="report")
+        print(f"{len(findings)} finding(s)")
+    for f in findings:
+        loc = f"{f.path}:{f.line}" if f.line else f.path
+        print(f"[{f.severity}] {f.check} {loc} -- {f.what}")
+    if args.json:
+        import json as _json
+        print(_json.dumps([f.as_dict() for f in findings], indent=2))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3167,7 +3667,55 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--limit", type=int, default=20)
     srch = sess_sub.add_parser("search", help="Grep across session chats")
     srch.add_argument("query")
+    exp = sess_sub.add_parser(
+        "export", help="Export a session as a replayable notebook")
+    exp.add_argument("session_id",
+                     help="Session id, or 'latest' for the most recent")
+    exp.add_argument("--notebook", default="",
+                     help="Write the notebook here (default: <session_id>.ipynb)")
     sess.set_defaults(func=cmd_session)
+
+    # watchpost — read-only look-out over the user's own account
+    wp = sub.add_parser(
+        "watchpost",
+        help="Read-only intrusion-trace scan of your own account "
+             "(never changes anything)")
+    wp_sub = wp.add_subparsers(dest="watchpost_action", required=True)
+    wp_run = wp_sub.add_parser(
+        "run", help="Scan once and report findings")
+    wp_run.add_argument("--home", default="",
+                        help="Home directory to look at (default: yours)")
+    wp_run.add_argument("--report", default="",
+                        help="Report directory (default: ~/.delfin/watchpost)")
+    wp_run.add_argument("--json", action="store_true",
+                        help="Also print findings as JSON")
+    wp_sub.add_parser(
+        "diff", help="Report only what is new since the baseline")
+    wp_sub.add_parser(
+        "baseline", help="Reset the baseline (first run, or on purpose)")
+    wp_en = wp_sub.add_parser(
+        "enable", help="Schedule a recurring watchpost run")
+    wp_en.add_argument("--every", dest="every_minutes", type=int, default=30,
+                       metavar="30m", help="Interval in minutes (default 30)")
+    wp_sub.add_parser("disable", help="Remove the watchpost schedule")
+    wp.set_defaults(func=cmd_watchpost, home="", report="", json=False)
+
+    # memory — tidy the typed-memory store
+    mem = sub.add_parser(
+        "memory",
+        help="Inspect and tidy the per-project memory store")
+    mem_sub = mem.add_subparsers(dest="memory_action", required=False)
+    mem_tidy = mem_sub.add_parser(
+        "tidy",
+        help="Report near-duplicates and unrecalled model notes (default: "
+             "changes nothing)")
+    mem_tidy.add_argument("--apply", action="store_true",
+                          help="Carry out the proposal; retired notes are "
+                               "moved to <store>/retired, never deleted")
+    mem_tidy.add_argument("--workspace", default="",
+                          help="Which project's store (default: this "
+                               "directory)")
+    mem.set_defaults(func=cmd_memory, memory_action="tidy")
 
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
@@ -3187,11 +3735,42 @@ def build_parser() -> argparse.ArgumentParser:
         "--reason", default="",
         help="Tell the agent why, and what to do instead — it reads this "
              "in the same turn instead of guessing")
+    appr_ans = appr_sub.add_parser(
+        "answer", help="Answer a choice question (ask_user_question): "
+                       "pick by number or by option text")
+    appr_ans.add_argument("request_id")
+    appr_ans.add_argument(
+        "choice", help="The pick: an option's number (2) or its text, "
+                       "comma-separated when the question allows more")
     appr_watch = appr_sub.add_parser(
         "watch", help="One line per new request, as they arrive")
     appr_watch.add_argument("--seconds", type=float, default=0.0,
                             help="Stop after N seconds (0: keep watching)")
     appr.set_defaults(func=cmd_approvals, approvals_action="ls")
+
+    # skills — the human side of skill proposals (accept/reject)
+    sk = sub.add_parser(
+        "skills",
+        help="Skill proposals: what sessions learned, waiting for a "
+             "person to accept or reject")
+    sk_sub = sk.add_subparsers(dest="skills_action", required=False)
+    sk_sub.add_parser("proposals",
+                      help="What is waiting (the default)")
+    sk_show = sk_sub.add_parser(
+        "show", help="Full preview of one proposal: text, evidence, "
+                     "safety findings")
+    sk_show.add_argument("name")
+    sk_ok = sk_sub.add_parser("accept", help="Make a pending proposal "
+                                             "a live skill")
+    sk_ok.add_argument("name")
+    sk_no = sk_sub.add_parser("reject", help="Turn a proposal away "
+                                             "(moved to rejected/, kept)")
+    sk_no.add_argument("name")
+    sk_no.add_argument(
+        "--reason", default="",
+        help="Why it is rejected — the next session reads this instead "
+             "of guessing the same thing again")
+    sk.set_defaults(func=cmd_skills, skills_action="proposals")
 
     # bug — triage / watch the user bug-report archive (maintainer tool)
     bug = sub.add_parser(
@@ -3315,6 +3894,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.add_argument("--session", default="",
                         help="Session ID (default: the most recent session)")
+    report.add_argument(
+        "--since", default="",
+        help="Round report: one report over every session with activity "
+             "since this point (12h / 3d / 2026-09-18) instead of one")
+    report.add_argument(
+        "--name", default="",
+        help="With --since: only sessions whose id starts with this prefix")
     report.add_argument("--json", action="store_true",
                         help="Print the SessionReport as JSON instead of "
                              "the terminal rendering")
@@ -3364,6 +3950,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sessions_p.add_argument("--limit", type=int, default=20,
                             help="How many to list (default 20)")
+    sessions_p.add_argument("--load", action="store_true",
+                            help="One line per open session on this host: "
+                                 "processes, RSS, CPU cores, alarms "
+                                 "(reporting only — nothing is signalled)")
+    sessions_p.add_argument("--watch", type=int, default=None, metavar="SECONDS",
+                            help="With --load: repeat every SECONDS "
+                                 "(Ctrl-C to stop)")
     sessions_p.set_defaults(func=cmd_sessions)
 
     # jobs — the cluster's jobs, read-only, without starting a session.
@@ -3428,6 +4021,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))
     if getattr(args, "func", None) in (cmd_chat, cmd_run):
+        guard_principles_or_exit()
         # An agent in a terminal ends with an emergency stop given anywhere
         # (stop_all), and with the dashboard it was started from, if any.
         from . import lifeline as _lifeline

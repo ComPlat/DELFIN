@@ -118,7 +118,8 @@ def test_every_packaged_writing_class_has_a_workspace():
         t.get("task_class", "") for t in _tasks()
         if (str(t.get("task_class", "")).startswith("behavior")
             or str(t.get("task_class", "")).startswith("science")
-            or t.get("task_class") in ("office", "generic_project"))
+            or t.get("task_class") in ("office", "generic_project",
+                                        "chemistry"))
         and workspace_for(_ROOT, mode=t.get("mode", ""),
                           task_class=t.get("task_class", "")) is None
     })
@@ -129,11 +130,13 @@ def test_the_counts_still_match_what_was_measured():
     """If a task file grows a new writing class, this says so rather than
     letting it inherit the checkout unnoticed."""
     counts = {"office": 0, "behavior": 0, "generic_project": 0,
-              "science": 0, "other": 0}
+              "science": 0, "chemistry": 0, "other": 0}
     for t in _tasks():
         c = str(t.get("task_class", ""))
         if c == "office":
             counts["office"] += 1
+        elif c == "chemistry":
+            counts["chemistry"] += 1
         elif c.startswith("behavior"):
             counts["behavior"] += 1
         elif c == "generic_project":
@@ -200,8 +203,20 @@ def test_the_counts_still_match_what_was_measured():
     # faster than A" is the commonest empirical question here and one run
     # of each answers it wrongly with near-certainty; its setup builds two
     # variants whose runtimes are drawn from the same distribution.
-    assert counts == {"office": 13, "behavior": 12, "generic_project": 15,
-                      "science": 11, "other": 48}, counts
+    #
+    # chemistry 0 -> 5: tasks_chem.yaml (M2, 2026-09-28) -- chemistry
+    # tasks are graded on the physics their artifacts carry (a minimum,
+    # an angle, an energy ordering), seeded by chem_start_geometries.py
+    # into the chemistry_workspace fixture, guarded like science.
+    # other 48 -> 50: tasks_gate_forms.yaml (night run 2026-09-25, K) --
+    # two lookups that must be done through the reading tools, with the
+    # shell forms that make the gate ask ($( ), awk, xargs, sed -i) as
+    # forbidden signals.
+    # behavior 12 -> 16: tasks_auto_hints.yaml (wave 5, LD, 2026-09-26) --
+    # one behaviour task per harness hint (import origin, refusal reason,
+    # stale test evidence, process budget).
+    assert counts == {"office": 13, "behavior": 16, "generic_project": 15,
+                      "science": 11, "chemistry": 5, "other": 50}, counts
 
 
 # ---------------------------------------------------------------------------

@@ -90,109 +90,36 @@ def _isolation_wanted():
     return not inline
 
 
-def _kill_process_group(proc):
-    """Kill a timed-out build and everything it spawned.
+# The subprocess runner, the process-group kill and the hapto retry live in
+# delfin.common.manta_build, shared with delfin-manta and the CONTROL pipeline,
+# so every entry point builds the manifold the same way.  The old names stay.
+from delfin.common.manta_build import (
+    HAPTO_FAILFAST_TOKEN as _HAPTO_FAILFAST_TOKEN,
+    build_isomers_isolated as _build_isomers_isolated,
+    hapto_retry_wanted as _hapto_retry_wanted,
+    kill_process_group as _kill_process_group,
+    run_isomers_isolated as _run_isomers_isolated,
+)
 
-    The builder's own children are the point: it opens a ProcessPoolExecutor
-    for batch UFF, so a bare ``proc.kill()`` can leave dozens of workers
-    reparented to init.  SIGTERM to the group first so anything with a handler
-    can tidy up, SIGKILL after a short grace period, then reap.
-    """
-    import signal
-    import time
-
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (OSError, ProcessLookupError):
-        pgid = None
-
-    for sig, wait in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 1.0)):
-        try:
-            if pgid is not None:
-                os.killpg(pgid, sig)
-            else:
-                proc.send_signal(sig)
-        except (OSError, ProcessLookupError):
-            break
-        deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                break
-            time.sleep(0.05)
-        if proc.poll() is not None:
-            break
-    try:
-        proc.communicate(timeout=1.0)
-    except Exception:                              # noqa: BLE001
-        pass
+#: Appended to a timed-out dashboard build, so nobody takes the cut for a
+#: property of the molecule: the budget is the dashboard's, the CLI has none.
+_TIMEOUT_NOTE = (
+    " -- the dashboard's build budget (DELFIN_UI_ISOLATE_TIMEOUT / MANTA_TIME_BUDGET; "
+    "0 = no limit) cut this build; delfin-manta on the command line builds the same "
+    "manifold without any time cap")
 
 
-def _run_isomers_subprocess(smiles, kwargs, timeout=None):
-    """Run ``smiles_to_xyz_isomers`` in a fresh subprocess.
+def _run_isomers_subprocess(smiles, kwargs, timeout=None, env=None):
+    """Run ``smiles_to_xyz_isomers`` in a fresh subprocess (see manta_build).
 
-    Returns ``(results, error)`` where ``results`` is a list of
-    ``(xyz_string, label)`` tuples and ``error`` is an optional string.
-    Subprocess exits after returning -> all RDKit / OB memory is
-    released back to the OS, which keeps the Voila kernel's RSS
-    bounded across many conversions.
-
-    Input ``kwargs`` are JSON-serialised, so only primitives / lists
-    are accepted.  Output XYZ strings + labels are also JSON-safe.
+    ``timeout`` is resolved against the dashboard budget; ``env`` is the
+    construction environment for this build, handed to the subprocess only.
     """
     timeout = _resolve_isolate_timeout(timeout)
-    payload = json.dumps({"smiles": smiles, "kwargs": kwargs})
-    script = (
-        "import json, sys\n"
-        "from delfin.smiles_converter import smiles_to_xyz_isomers\n"
-        "req = json.loads(sys.stdin.read())\n"
-        "res, err = smiles_to_xyz_isomers(req['smiles'], **req['kwargs'])\n"
-        "out = {'r': [list(t) for t in (res or [])], 'e': err}\n"
-        "sys.stdout.write('__DELFIN_RESULT__' + json.dumps(out))\n"
-    )
-    try:
-        # Fixed PYTHONHASHSEED in the child so set / dict iteration order
-        # is stable across invocations.  Without this, the same SMILES can
-        # produce wildly different isomer counts (e.g. 1 vs 9 vs 30) between
-        # runs because the enumerator's candidate-retention order depends
-        # on Python hash randomisation.
-        env = dict(os.environ)
-        env.setdefault("PYTHONHASHSEED", "0")
-        # ``start_new_session`` puts the child in its own process group so the
-        # timeout can kill the group.  ``subprocess.run(timeout=)`` kills only
-        # the direct child, and this child is not a leaf: the builder opens a
-        # ProcessPoolExecutor for batch UFF with up to DELFIN_MAX_PROCESS_WORKERS
-        # (64) workers.  Killing the parent alone leaves those reparented to
-        # init, holding RAM until somebody notices -- measured elsewhere in this
-        # tree as 128 orphans alive for 3-5 hours after one such kill.
-        proc = subprocess.Popen(
-            [sys.executable, "-c", script],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            start_new_session=True,
-        )
-        try:
-            out, err = proc.communicate(input=payload, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _kill_process_group(proc)
-            return [], f"Subprocess timed out after {timeout}s"
-        proc = subprocess.CompletedProcess(
-            proc.args, proc.returncode, stdout=out, stderr=err)
-    except subprocess.TimeoutExpired:
-        return [], f"Subprocess timed out after {timeout}s"
-    if proc.returncode != 0:
-        tail = (proc.stderr or "").splitlines()[-10:]
-        return [], f"Subprocess failed (exit {proc.returncode}): {' | '.join(tail)}"
-    marker = "__DELFIN_RESULT__"
-    for line in proc.stdout.splitlines():
-        idx = line.find(marker)
-        if idx >= 0:
-            j = json.loads(line[idx + len(marker):])
-            results = [tuple(x) for x in j.get("r", [])]
-            return results, j.get("e")
-    return [], "Subprocess returned no result marker"
+    results, error = _run_isomers_isolated(smiles, kwargs, timeout=timeout, env=env)
+    if error and "timed out" in str(error):
+        error = str(error) + _TIMEOUT_NOTE
+    return results, error
 try:
     from delfin.smiles_converter import (
         smiles_to_xyz_quick_hapto_previews as _delfin_smiles_to_xyz_quick_hapto_previews,
@@ -200,11 +127,11 @@ try:
 except ImportError:
     _delfin_smiles_to_xyz_quick_hapto_previews = None
 
-_HAPTO_FAILFAST_TOKEN = "Hapto (eta) coordination detected"
-
 
 def _is_hapto_failfast(error: str) -> bool:
-    return bool(error) and _HAPTO_FAILFAST_TOKEN in error
+    # Shared rule (manta_build.hapto_retry_wanted): a fail-fast answer is retried
+    # with the approximation unless the user set DELFIN_HAPTO_APPROX=0 on purpose.
+    return _hapto_retry_wanted(error, None)
 
 
 def smiles_to_xyz(smiles, apply_uff=True, hapto_approx=None):
@@ -318,10 +245,16 @@ def smiles_to_xyz_isomers(
     seeds_override=None,
     n_metal_smart=True,
     max_isomers=None,
+    num_confs=None,
+    env=None,
 ):
     """Generate distinct coordination isomers for a SMILES string.
 
     Returns ``([(xyz_string, num_atoms, label), ...], error)``.
+
+    ``env`` is the construction environment of this build (MANTA:
+    ``cli_manta.construction_env``); it reaches the build subprocess only and
+    never the calling kernel.
 
     ``quality_mode`` defaults to ``"extreme"`` (60 ETKDG seeds, 5 chelate
     ranks, 5 templates, 12 alt-binding tries).  The pipeline honours
@@ -347,16 +280,31 @@ def smiles_to_xyz_isomers(
     # MANTA button can request the COMPLETE manifold (never cut off).
     if max_isomers is not None:
         base_kwargs["max_isomers"] = int(max_isomers)
+    if num_confs is not None:
+        base_kwargs["num_confs"] = int(num_confs)
     if _isolation_wanted():
-        results, error = _run_isomers_subprocess(smiles, base_kwargs)
-        if error and hapto_approx is None and _is_hapto_failfast(error):
-            retry_kwargs = dict(base_kwargs, hapto_approx=True)
-            results, error = _run_isomers_subprocess(smiles, retry_kwargs)
+        # The same runner delfin-manta uses: construction env to the child only,
+        # PYTHONHASHSEED fixed, shared hapto retry.  Only the budget is the UI's.
+        results, error = _build_isomers_isolated(
+            smiles, base_kwargs, timeout=_resolve_isolate_timeout(None), env=env)
+        if error and "timed out" in str(error):
+            error = str(error) + _TIMEOUT_NOTE
     else:
-        results, error = _delfin_smiles_to_xyz_isomers(smiles, **base_kwargs)
-        if error and hapto_approx is None and _is_hapto_failfast(error):
-            retry_kwargs = dict(base_kwargs, hapto_approx=True)
-            results, error = _delfin_smiles_to_xyz_isomers(smiles, **retry_kwargs)
+        # DELFIN_UI_INLINE=1 (debugging): the build runs in this process, so the
+        # construction env has to be set here -- scoped and restored.
+        saved = {k: os.environ.get(k) for k in (env or {})}
+        os.environ.update(env or {})
+        try:
+            results, error = _delfin_smiles_to_xyz_isomers(smiles, **base_kwargs)
+            if _hapto_retry_wanted(error, hapto_approx):
+                retry_kwargs = dict(base_kwargs, hapto_approx=True)
+                results, error = _delfin_smiles_to_xyz_isomers(smiles, **retry_kwargs)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
     if error:
         return [], error
     out = []
