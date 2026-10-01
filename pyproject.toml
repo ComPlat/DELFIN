@@ -131,6 +131,9 @@ ai-complex = [
     "molSimplify",
     "architector",
     "numba",   # architector imports it without declaring it
+    # epic-MACE (the MACE button, smiles_converter=MACE) is no extra: it needs
+    # Python 3.7 + RDKit 2020.09 and gets an environment of its own,
+    # python -m delfin.installer --install epic-mace.
 ]
 agent = [
     "anthropic>=0.40",
@@ -214,6 +217,7 @@ delfin_NMR = "delfin.cli_nmr_report:main"
 delfin-json = "delfin.cli_delfin_collect:main"
 delfin-build = "delfin.build_up_complex:main"
 delfin-manta = "delfin.cli_manta:main"
+delfin-cluster = "delfin.cluster_bench.cli:main"
 delfin-guppy = "delfin.guppy_sampling:main"
 delfin-guppy-batch = "delfin.guppy_batch:main"
 delfin-fukui = "delfin.cli_fukui:main"

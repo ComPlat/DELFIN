@@ -35,6 +35,7 @@ from . import solvents as _solvents
 from . import structure_editor as _structure_editor
 from . import ketcher as _ketcher
 from . import separate_systems as _separate
+from .construction_batch import create_construction_batch_panel
 from .molecule_viewer import (
     apply_molecule_view_style, structure_viewer_fullscreen_bootstrap_js,
     structure_viewer_fullscreen_css, structure_viewer_fullscreen_kind_js,
@@ -83,7 +84,8 @@ def create_tab(ctx):
     Returns ``(tab_widget, refs_dict)``.
     """
     SUBMIT_MOL_HEIGHT = 650
-    SMILES_CONVERTER_PLACEHOLDERS = ('[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]',
+    SMILES_CONVERTER_PLACEHOLDERS = ('[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]',
+                                    '[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]',
                                     '[QUICK|NORMAL|MANTA|ARCHITECTOR]')
     main_io_loop = getattr(getattr(get_ipython(), 'kernel', None), 'io_loop', None)
 
@@ -138,6 +140,8 @@ def create_tab(ctx):
     )
 
     smiles_batch_output = widgets.Output()
+    # Many SMILES with one builder: delfin cluster behind four buttons (construction_batch.py).
+    construction_batch_panel = create_construction_batch_panel(ctx, smiles_batch_widget)
 
     smiles_prev_button = widgets.Button(
         description='\u25c0', button_style='info',
@@ -184,7 +188,7 @@ def create_tab(ctx):
         style=COMMON_STYLE, layout=widgets.Layout(width='220px'),
     )
     only_goat_smiles_converter = widgets.Dropdown(
-        options=['QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY'],
+        options=['QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'],
         value='QUICK', description='Converter:', style=COMMON_STYLE,
         layout=widgets.Layout(width='220px'),
     )
@@ -345,6 +349,7 @@ def create_tab(ctx):
     manta_settings_row = _editor.manta_settings_row
     architector_button = _editor.architector_button
     molsimplify_button = _editor.molsimplify_button
+    mace_button = _editor.mace_button
     xyz_copy_btn = _editor.xyz_copy_btn
     xyz_copy_status = _editor.xyz_copy_status
     isomer_nav_row = _editor.isomer_nav_row
@@ -979,7 +984,7 @@ def create_tab(ctx):
         if not text or text in SMILES_CONVERTER_PLACEHOLDERS:
             return ''
         normalized = text.upper()
-        if normalized in {'QUICK', 'NORMAL', 'MANTA', 'GUPPY', 'ARCHITECTOR', 'MOLSIMPLIFY'}:
+        if normalized in {'QUICK', 'NORMAL', 'MANTA', 'GUPPY', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'}:
             return normalized
         return ''
 
@@ -2052,9 +2057,9 @@ def create_tab(ctx):
         widgets.HBox([build_complex_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         manta_settings_row,
-        # MANTA button sits directly UNDER its settings; the two external
+        # MANTA button sits directly UNDER its settings; the external
         # metal-complex constructors stand beside it as equals.
-        widgets.HBox([manta_button, architector_button, molsimplify_button],
+        widgets.HBox([manta_button, architector_button, molsimplify_button, mace_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
@@ -2064,6 +2069,7 @@ def create_tab(ctx):
             layout=widgets.Layout(gap='2px', align_items='center', flex_wrap='wrap'),
         ),
         smiles_batch_output,
+        construction_batch_panel,
         spacer_large,
         widgets.HTML('<b>CONTROL.txt:</b>'), control_widget, spacer,
         widgets.HBox([validate_button, submit_button]),
@@ -2288,6 +2294,7 @@ def create_tab(ctx):
         'submit_button': submit_button,
         'job_name_widget': job_name_widget,
         'smiles_batch_widget': smiles_batch_widget,
+        'construction_batch_panel': construction_batch_panel,
         'job_type_widget': job_type_widget,
         'custom_time_widget': custom_time_widget,
         'handle_submit': handle_submit,

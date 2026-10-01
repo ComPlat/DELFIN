@@ -60,6 +60,9 @@ ORCA is licensed and never downloaded; point the script at an unpacked copy with
 `--orca DIR|TARBALL`. What was left out can be added later with `--only`, from the
 dashboard's Settings tab, or automatically when a calculation first needs it.
 `python -m delfin.installer --list` shows what can be installed, `--status` what is.
+A tool that cannot live in DELFIN's own Python gets an environment of its own: epic-MACE
+(`--install epic-mace`) is built with micromamba as Python 3.7 + RDKit 2020.09 under
+`~/.delfin/ai_tools/.mamba_env/epic_mace` and is called there as an external program.
 
 ### Standard install
 
@@ -244,6 +247,7 @@ A SMILES goes through the converter named by `smiles_converter`:
 | `MANTA` | Builds the coordination manifold of a metal complex, ranks it, and picks a winner. See *Structure generation*. |
 | `ARCHITECTOR` | The external Architector builder, for metal complexes. |
 | `MOLSIMPLIFY` | The external molSimplify builder, for metal complexes. |
+| `MACE` | The external epic-MACE builder, for metal complexes (hapto ligands included). |
 
 Then, if enabled and in this order: `XTB_preOPT` (a quick xTB optimisation), `global_optimizer=GOAT|CREST` (a conformer search), `XTB_SOLVATOR` (explicit solvent shells). Each writes its result back over `start.txt`, so the next step starts from the last one.
 
@@ -344,7 +348,7 @@ Within OCCUPIER this is split once more: keys that only the stage frequency jobs
 | Key | Default | Description |
 |-----|---------|-------------|
 | `xTB_method` | `XTB2` | xTB method for pre-optimisation |
-| `smiles_converter` | (required for a SMILES run) | `QUICK`, `NORMAL`, `MANTA`, `ARCHITECTOR` or `MOLSIMPLIFY` (own section). `GUPPY` is still read as a spelling of `MANTA` |
+| `smiles_converter` | (required for a SMILES run) | `QUICK`, `NORMAL`, `MANTA`, `ARCHITECTOR`, `MOLSIMPLIFY` or `MACE` (own section). `GUPPY` is still read as a spelling of `MANTA` |
 | `XTB_preOPT` | `no` | Run xTB geometry optimisation before DFT |
 | `global_optimizer` | (empty) | Global optimisation: `GOAT`, `CREST`, or none |
 | `multiplicity_global_opt` | (empty) | Override multiplicity for pre-optimisation |
@@ -455,7 +459,7 @@ alone computes nothing. List the states and transitions you want. ESD also requi
 | `thermodynamics_reaction` | the template's own pattern | Reaction SMILES: `a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...` |
 | `n_explicit_solvent` | `6` | Number of explicit solvent molecules |
 | `logK_exp` | (empty) | Experimental log K for comparison |
-| `thdy_smiles_converter` | `NORMAL` | Converter: `QUICK`, `NORMAL`, `MANTA`, `ARCHITECTOR` or `MOLSIMPLIFY` |
+| `thdy_smiles_converter` | `NORMAL` | Converter: `QUICK`, `NORMAL`, `MANTA`, `ARCHITECTOR`, `MOLSIMPLIFY` or `MACE` |
 | `thdy_preopt` | `xtb` | Pre-optimisation: `none`, `xtb`, `crest` or `goat` |
 
 ### Electrical Properties
@@ -1012,7 +1016,7 @@ Can also be run standalone: `delfin --imag`.
 One CONTROL key decides, and a run that builds from a SMILES must set it:
 
 ```ini
-smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
 ```
 
 | Value | What it does |
@@ -1022,8 +1026,11 @@ smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]
 | `MANTA` | Builds the coordination manifold of a metal complex and ranks it down to one geometry — see below. |
 | `ARCHITECTOR` | The external Architector builder; needs a metal-containing SMILES. Its lowest-energy structure is used. |
 | `MOLSIMPLIFY` | The external molSimplify builder; needs a metal-containing SMILES. Its first geometry (square planar for CN 4, octahedral for CN 6) is used. |
+| `MACE` | The external epic-MACE builder; needs a metal-containing SMILES. The lowest-energy conformer of its first geometry (octahedral for 6 donor sites, square planar for 4) is used. |
 
-Both external builders are optional (`pip install 'delfin-complat[ai-complex]'`) and share one build with the dashboard buttons (`delfin/common/external_builders.py`): the SMILES is split into metal and ligands, the coordination number and oxidation state are read from it, and the tool runs in its own process. When the tool lives in another Python environment, point `DELFIN_ARCHITECTOR_PYTHON` / `DELFIN_MOLSIMPLIFY_PYTHON` to that interpreter. A missing tool is an error; nothing falls back to another builder. Mononuclear complexes only.
+The external builders are optional (Architector and molSimplify: `pip install 'delfin-complat[ai-complex]'`; epic-MACE: `python -m delfin.installer --install epic-mace`, see below) and share one build with the dashboard buttons (`delfin/common/external_builders.py`): the SMILES is split into metal and ligands, the coordination number and oxidation state are read from it, and the tool runs in its own process. When the tool lives in another Python environment, point `DELFIN_ARCHITECTOR_PYTHON` / `DELFIN_MOLSIMPLIFY_PYTHON` / `DELFIN_MACE_PYTHON` to that interpreter. A missing tool is an error; nothing falls back to another builder. Mononuclear complexes only.
+
+epic-MACE (Chernyshov & Pidko, *J. Chem. Theory Comput.* 2024, 20, 2313; [EPiCs-group/epic-mace](https://github.com/EPiCs-group/epic-mace), GPL-3.0) needs Python 3.7 and RDKit 2020.09, so it is never installed beside DELFIN: `python -m delfin.installer --install epic-mace` (or `install.sh --only epic-mace`, or the Install button in Settings) builds an environment of its own with micromamba under `~/.delfin/ai_tools/.mamba_env/epic_mace` (from the pinned GitHub commit efb5778e, which adds hapto ligands and the TET/SPY/TBP/SAN geometries to the octahedron and square of the PyPI release), and DELFIN calls it there as an external program; `DELFIN_MACE_PYTHON` points it to another interpreter. The geometry follows from the number of donor sites (a hapto ligand is one site): OH for 6, SP + TET for 4, SPY + TBP for 5, SAN for two hapto ligands. Every stereomer (enantiomers kept) gets ten conformers; MACE has no random seed, so two builds can differ.
 
 `GUPPY` is still read as a spelling of `MANTA`, as is the older bare `GUPPY=yes`.
 
@@ -1068,11 +1075,14 @@ If MANTA's refinement already produced a GOAT-optimised winner, the separate
 | `BUILD COMPLEX` | Stepwise assembly with ORCA's `%DOCKER` | Metal complexes (submitted as a job) |
 | `ARCHITECTOR` | Every isomer Architector builds, lowest energy first, with isomer navigation | Metal complexes |
 | `MOLSIMPLIFY` | One molSimplify structure per geometry of the coordination number | Metal complexes |
+| `MACE` | Every epic-MACE stereomer of every geometry that fits the donor sites, ten conformers each, geometry by geometry, lowest energy first | Metal complexes, hapto ligands |
 | `SUBMIT GUPPY` | MANTA's sampling funnel as a submitted job | Robust start structures |
 
-`CONVERT SMILES` through `MANTA`, `ARCHITECTOR` and `MOLSIMPLIFY` live in the structure
+`CONVERT SMILES` through `MANTA`, `ARCHITECTOR`, `MOLSIMPLIFY` and `MACE` live in the structure
 editor, which the Submit and ORCA Builder tabs both embed (in the ORCA Builder every
 frame becomes a named block); `BUILD COMPLEX` and `SUBMIT GUPPY` belong to the Submit tab.
+
+Batch construction of many SMILES with any of these builders (`delfin cluster`, Slurm array or workstation, resumable, one archive): [CONSTRUCTION_BATCH.md](CONSTRUCTION_BATCH.md).
 
 ### delfin-build (ORCA/XTB DOCKER)
 
