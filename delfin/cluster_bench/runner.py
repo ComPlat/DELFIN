@@ -45,12 +45,12 @@ MANTA_STATUSES = ("ok", "empty", "timeout", "fail")
 def cbatch_manta_env() -> dict:
     """The build environment: inherited variables that could change a build are removed
     (every DELFIN_/WEDDELL_/LOOP_/EYE_ switch, thread counts, hash seed, PYTHONPATH), then the
-    fixed settings.  The construction switches come from the child itself."""
+    fixed settings.  The construction switches come from the child itself.  PYTHONNOUSERSITE is
+    inherited (the sbatch script sets it), see provenance.cbatch_tool_child_env."""
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(_SANITISE_PREFIXES) and k not in _SANITISE_KEYS}
     env["DELFIN_DETERMINISTIC"] = "1"
     env["PYTHONHASHSEED"] = "0"
-    env["PYTHONNOUSERSITE"] = "1"
     for t in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         env[t] = "1"
     return env

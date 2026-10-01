@@ -91,7 +91,9 @@ def cbatch_tool_child_env(base) -> dict:
     env.update(base)
     for k in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "LD_LIBRARY_PATH"):
         env.pop(k, None)
-    env["PYTHONNOUSERSITE"] = "1"
+    # PYTHONNOUSERSITE is NOT forced here: the sbatch script exports it (a user site in $HOME
+    # must not leak into a cluster build), while an interpreter that keeps packages in its user
+    # site (a local reference env) must see them -- otherwise every build would fail on import.
     env["PYTHONHASHSEED"] = "0"
     for v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         env[v] = "1"
