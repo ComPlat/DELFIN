@@ -1579,6 +1579,10 @@ def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
     arg_list = list(argv if argv is not None else sys.argv[1:])
+    if arg_list and arg_list[0] == "cluster":
+        from delfin.cluster_bench.cli import main as _cluster_main
+
+        return _cluster_main(arg_list[1:])
     if arg_list and arg_list[0] == "doctor":
         return _run_doctor_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "qm_check":

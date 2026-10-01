@@ -48,6 +48,7 @@ _ENTRY_POINTS = {
     "delfin-json": ("delfin.cli_delfin_collect", "main"),
     "delfin-build": ("delfin.build_up_complex", "main"),
     "delfin-manta": ("delfin.cli_manta", "main"),
+    "delfin-cluster": ("delfin.cluster_bench.cli", "main"),
     "delfin-guppy-batch": ("delfin.guppy_batch", "main"),
     "delfin-docs-server": ("delfin.doc_server.__main__", "main"),
     "delfin-ops-server": ("delfin.ops_server.__main__", "main"),
