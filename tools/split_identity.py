@@ -72,10 +72,10 @@ sys.stdout.write("__SPLIT_IDENTITY__" + json.dumps(out))
 # every isomer, no label collapse, binding-mode isomers on, UFF on,
 # deterministic, quality extreme.  ``max_isomers`` is read from the tree.
 _ENV_PROBE = r"""
-import json
+import json, sys
 from delfin import cli_manta
 print(json.dumps({
-    "env": cli_manta.construction_env("champion"),
+    "env": cli_manta.construction_env(sys.argv[1]),
     "max_isomers": cli_manta._ALL_ISOMERS,
 }))
 """
@@ -103,8 +103,8 @@ def tree_env(tree: Path) -> dict:
     return env
 
 
-def probe_construction(tree: Path) -> dict:
-    out = subprocess.run([sys.executable, "-c", _ENV_PROBE], env=tree_env(tree),
+def probe_construction(tree: Path, construction: str = "champion") -> dict:
+    out = subprocess.run([sys.executable, "-c", _ENV_PROBE, construction], env=tree_env(tree),
                          capture_output=True, text=True, check=True, cwd=str(tree))
     return json.loads(out.stdout.strip().splitlines()[-1])
 
@@ -169,9 +169,10 @@ def build_one(tree: Path, construction: dict, sid: str, smiles: str,
     }
 
 
-def build_set(tree: Path, rows, out_dir: Path, workers: int, timeout) -> dict:
+def build_set(tree: Path, rows, out_dir: Path, workers: int, timeout,
+              construction_name: str = "champion") -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
-    construction = probe_construction(tree)
+    construction = probe_construction(tree, construction_name)
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futs = {pool.submit(build_one, tree, construction, sid, smi, out_dir, timeout): sid
@@ -250,6 +251,8 @@ def main(argv=None) -> int:
     ap.add_argument("--keep-ref-outputs", type=Path, default=None,
                     help="with --record: keep the reference artefacts here; "
                          "in a compare: read them from here for the first-diff lines")
+    ap.add_argument("--construction", choices=["champion", "builder", "default"],
+                    default="champion", help="construction config, as delfin manta --construction")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--timeout", type=float, default=3600.0)
     ap.add_argument("--only", default=None, help="comma-separated ids to build")
@@ -278,7 +281,7 @@ def main(argv=None) -> int:
                               capture_output=True, text=True).stdout.strip()
         new_dir = out / "tree"
         print(f"building on tree {args.tree} (HEAD {head[:12]})")
-        new = build_set(args.tree, rows, new_dir, args.workers, args.timeout)
+        new = build_set(args.tree, rows, new_dir, args.workers, args.timeout, args.construction)
 
         if args.record:
             manifest = {
@@ -300,7 +303,7 @@ def main(argv=None) -> int:
             export_commit(args.ref_commit, ref_tree)
             ref_dir = out / "ref"
             print(f"building reference commit {args.ref_commit}")
-            ref = build_set(ref_tree, rows, ref_dir, args.workers, args.timeout)
+            ref = build_set(ref_tree, rows, ref_dir, args.workers, args.timeout, args.construction)
             print(f"\ncompare tree vs commit {args.ref_commit}:")
             return compare(ref["results"], new["results"], ref_dir, new_dir)
 
