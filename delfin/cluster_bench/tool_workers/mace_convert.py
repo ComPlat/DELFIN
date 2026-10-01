@@ -21,8 +21,10 @@ n >= 2); every other donor is one site.  A hapto group becomes one MACE centroid
 document it:
   * 5- or 6-membered all-carbon ring ("anchor"): the centroid is bonded to ONE ring carbon; MACE
     expands it to the whole ring.  The anchor gets the free valence by dropping its formal charge
-    or a radical, else one ring double bond at the anchor becomes single (the partner keeps a
-    radical).  H counts are frozen, so the composition is exactly the spec's.
+    or a radical, else one ring double bond at the anchor becomes single (the partner becomes a
+    carbocation, which RDKit 2020.09 keeps SP2; a radical partner would be typed SP3 and MACE
+    would read the closed-shell arene as eta1).  H counts are frozen, so the composition is
+    exactly the spec's.
   * every other group ("star", eta2 alkene / eta3 allyl / eta4 diene / heteroatom rings ...): the
     centroid is bonded to every group atom and the bonds INSIDE the group are removed, as in the
     authors' eta2-ethylene "[*:4]([CH2])[CH2]" and eta3-allyl "[*:1]([CH2])([CH])[CH2]" examples.
@@ -138,14 +140,18 @@ def _free_valence_for_anchor(rw, ring):
             else:
                 a.SetNumRadicalElectrons(a.GetNumRadicalElectrons() - 1)
             return i
-    for i in ring:  # a ring double bond at the anchor becomes single, partner keeps a radical
+    for i in ring:  # a ring double bond at the anchor becomes single, the partner becomes a
+        # carbocation.  A radical partner is typed SP3 by RDKit 2020.09 and MACE then does not
+        # see the pi ring (eta1 instead of eta5/eta6); the cation stays SP2.  Same atoms, same
+        # H; the charge only enters MACE's UFF typing.  (external_builders._mace_ring_anchor,
+        # the dashboard path, does the same.)
         a = rw.GetAtomWithIdx(i)
         for b in a.GetBonds():
             j = b.GetOtherAtomIdx(i)
             if j in rs and b.GetBondType() == Chem.BondType.DOUBLE:
                 b.SetBondType(Chem.BondType.SINGLE)
                 p = rw.GetAtomWithIdx(j)
-                p.SetNumRadicalElectrons(p.GetNumRadicalElectrons() + 1)
+                p.SetFormalCharge(p.GetFormalCharge() + 1)
                 return i
     return ring[0]
 
