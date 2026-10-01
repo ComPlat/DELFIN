@@ -31,6 +31,8 @@ Screening:
 Metal Complex ML:
   - molSimplify  — ML-based transition metal complex design
   - architector  — automated metal complex structure generation
+  - epic-MACE    — stereomers and 3D conformers of metal complexes
+                   (own Python 3.7 environment, called as an external program)
 
 Visualization:
   - plotly       — interactive plots for dashboards
@@ -212,6 +214,21 @@ def get_architector_version() -> Optional[str]:
         return None
     return _pkg_version("architector") or "installed"
 
+def epic_mace_available() -> bool:
+    """epic-MACE in its own environment (or where DELFIN_MACE_PYTHON points)."""
+    from delfin import installer
+    return installer.present(installer.find("epic_mace"))
+
+def get_epic_mace_version() -> Optional[str]:
+    if not epic_mace_available():
+        return None
+    from delfin.common.external_builders import tool_python
+    from pathlib import Path
+    prefix = Path(tool_python("mace")).resolve().parent.parent
+    for meta in prefix.glob("lib/python*/site-packages/epic_mace-*.dist-info"):
+        return meta.name[len("epic_mace-"):-len(".dist-info")]
+    return "installed"
+
 
 # ── Visualization ────────────────────────────────────────────────────
 
@@ -276,6 +293,9 @@ _TOOL_REGISTRY = [
     ("architector", "Metal Complex ML", architector_available, get_architector_version,
      "Automated metal complex structure generation",
      "pip install architector"),
+    ("epic-MACE", "Metal Complex ML", epic_mace_available, get_epic_mace_version,
+     "Stereomers and 3D conformers of metal complexes (own Python 3.7 environment)",
+     "python -m delfin.installer --install epic-mace"),
     ("plotly", "Visualization", plotly_available, get_plotly_version,
      "Interactive plots for dashboards",
      "pip install plotly"),

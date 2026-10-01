@@ -1876,6 +1876,7 @@ def _as_ap_method(value: Any) -> int | None:
 #: accepted because a CONTROL file written before the rename is still a valid
 #: CONTROL file, and the run it describes has not changed.
 _SMILES_CONVERTER_PLACEHOLDERS = (
+    "[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]",
     "[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]",
     "[QUICK|NORMAL|MANTA|ARCHITECTOR]",
     "[QUICK|NORMAL|GUPPY|ARCHITECTOR]",
@@ -1887,7 +1888,7 @@ _SMILES_CONVERTER_PLACEHOLDERS = (
 #: ranking on top.  The rename says what it was already doing.
 _SMILES_CONVERTER_ALIASES = {"GUPPY": "MANTA"}
 
-_SMILES_CONVERTER_MODES = ("QUICK", "NORMAL", "MANTA", "ARCHITECTOR", "MOLSIMPLIFY")
+_SMILES_CONVERTER_MODES = ("QUICK", "NORMAL", "MANTA", "ARCHITECTOR", "MOLSIMPLIFY", "MACE")
 
 
 def _as_manta_quality(value: Any) -> str:
@@ -2075,7 +2076,7 @@ def _as_smiles_converter(value: Any) -> str:
 
     normalized = _SMILES_CONVERTER_ALIASES.get(text.upper(), text.upper())
     if normalized not in _SMILES_CONVERTER_MODES:
-        raise ValueError("must be QUICK, NORMAL, MANTA, ARCHITECTOR, or MOLSIMPLIFY")
+        raise ValueError("must be QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, or MACE")
     return normalized
 
 
@@ -2534,7 +2535,7 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
                     for text in _SMILES_CONVERTER_PLACEHOLDERS)
         ):
             errors.append(
-                "thermodynamics=yes requires thdy_smiles_converter to be set to QUICK, NORMAL, MANTA, ARCHITECTOR, or MOLSIMPLIFY."
+                "thermodynamics=yes requires thdy_smiles_converter to be set to QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, or MACE."
             )
         if (
             "thdy_preopt" not in config

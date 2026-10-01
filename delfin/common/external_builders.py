@@ -1,9 +1,15 @@
-"""Architector and molSimplify as SMILES constructors, one definition per tool.
+"""Architector, molSimplify and epic-MACE as SMILES constructors, one definition per tool.
 
 The dashboard (Submit Job and ORCA Builder, through the shared structure
 editor) and the CONTROL pipeline (``smiles_converter=ARCHITECTOR`` /
-``MOLSIMPLIFY``) all build through :func:`build_frames`, the same way the MANTA
-entry points all build through :mod:`delfin.common.manta_build`.
+``MOLSIMPLIFY`` / ``MACE``) all build through :func:`build_frames`, the same
+way the MANTA entry points all build through :mod:`delfin.common.manta_build`.
+
+epic-MACE (Chernyshov & Pidko, J. Chem. Theory Comput. 2024, 20, 2313;
+github.com/EPiCs-group/epic-mace, GPL-3.0) is called as an external program in
+an environment of its own -- Python 3.7 with RDKit 2020.09 -- and is never
+imported into DELFIN.  ``python -m delfin.installer --install epic-mace``
+builds that environment; ``DELFIN_MACE_PYTHON`` overrides where it is.
 
 How a build runs
 ----------------
@@ -17,13 +23,16 @@ How a build runs
    without ``coreCN`` Architector fills the core up with water, and without
    ``metal_ox`` it reads the SMILES charge as the metal charge.
 2. The spec is turned into the tool's own input (:func:`architector_input`,
-   :func:`molsimplify_inputs`).
+   :func:`molsimplify_inputs`, :func:`mace_job`).  For epic-MACE the spec is
+   cut in the caller's interpreter (current RDKit) and handed to the worker,
+   which only writes it into MACE's input.
 3. The tool runs in a subprocess (``python -m delfin.common.external_builders``)
    so that its crashes, its ``quit()`` calls and its stdout never reach the
    caller (a Voila kernel, a pipeline), and so that it can live in another
    Python environment than DELFIN: ``DELFIN_ARCHITECTOR_PYTHON`` /
-   ``DELFIN_MOLSIMPLIFY_PYTHON`` name that interpreter; default is the running
-   one.
+   ``DELFIN_MOLSIMPLIFY_PYTHON`` / ``DELFIN_MACE_PYTHON`` name that
+   interpreter; default is the tool's managed environment when DELFIN built
+   one (epic-MACE), else the running one.
 4. Every frame the tool returns comes back, lowest energy first when the tool
    gives energies.  Nothing falls back to another builder: a missing tool or a
    failed build is an error message.
@@ -42,8 +51,31 @@ Known pitfalls handled here (Architector 0.0.10, molSimplify 2.0.0):
   ligand string similar to one of its dictionary names as that ligand
   (``CO`` -> carbonyl); ligands are re-spelled until neither happens.
 
-This module has no import-time dependency beyond the standard library, so the
-worker runs in a tool environment that only has rdkit, openbabel and the tool.
+epic-MACE (GitHub commit efb5778e, the hapto centroids and the TET / SPY /
+TBP / SAN geometries of its unreleased 0.6.0; PyPI 0.5.0 has OH and SP only):
+
+* Each ligand of the spec becomes a ligand SMILES with atom-mapped donors, and
+  ``mace.ComplexFromLigands`` puts them on the central atom ``[M+ox]``.
+* Donors of one ligand bonded to each other form one hapto group, written as
+  one centroid dummy atom: bonded to one carbon of a 5- or 6-membered carbon
+  ring (MACE expands it to the ring), else bonded to every group atom with the
+  bonds inside the group removed.  The centroids (element X in MACE's output)
+  are dropped from the frames.
+* The geometry follows from the number of sites, not from the CN (a hapto
+  group is one site): ``paper`` = OH for 6, SP for 4 (the geometries of the
+  paper); ``extended`` (default) adds SPY + TBP for 5, TET for 4 and SAN for
+  two hapto centroids.  Every geometry that fits is built.
+* Stereomers: ``GetStereomers(regime='all', dropEnantiomers=False,
+  minTransCycle=None, merRule=False)`` -- every arrangement at the metal and at
+  unassigned ligand stereocentres, enantiomers kept; ``merRule=True`` (the
+  library default) returns no stereomer at all for fac-only tripods.
+* 3D: ``AddConformers(numConfs=10, maxAttempts=10, rmsThresh=-1)`` per
+  stereomer, ordered by MACE's force-field energy (UFF, kcal/mol).  MACE has
+  no random seed, so two builds can differ.
+
+This module has no import-time dependency beyond the standard library and runs
+under Python 3.7, so the worker runs in a tool environment that only has
+rdkit and the tool (and openbabel for Architector and molSimplify).
 """
 
 from __future__ import annotations
@@ -69,7 +101,29 @@ TOOLS = {
         "pip": "molSimplify",
         "python_env": "DELFIN_MOLSIMPLIFY_PYTHON",
     },
+    "mace": {
+        "display": "epic-MACE",
+        "module": "mace",
+        "python_env": "DELFIN_MACE_PYTHON",
+        # Built by install_ai_tools.sh (INSTALL_EPIC_MACE) under the AI tools
+        # root: Python 3.7 + RDKit 2020.09, which DELFIN itself cannot run in.
+        "managed_env": ".mamba_env/epic_mace",
+        "install": "python -m delfin.installer --install epic-mace",
+        "spec_in_caller": True,
+        "energy_unit": "kcal/mol, UFF",
+        # Geometry by geometry as listed (the paper's OH / SP first), lowest
+        # energy first within each: force-field energies of a square and a
+        # tetrahedron are no ranking of the two.
+        "keep_order": True,
+    },
 }
+
+#: epic-MACE settings, the same for the dashboard and for CONTROL.
+MACE_DEFAULTS = {"geometries": "extended", "num_confs": 10, "max_attempts": 10}
+
+#: epic-MACE geometries per number of donor sites (a hapto group is one site).
+MACE_GEOMS = {"paper": {6: ["OH"], 4: ["SP"]},
+              "extended": {6: ["OH"], 5: ["SPY", "TBP"], 4: ["SP", "TET"]}}
 
 #: molSimplify geometries (its coordinations.dict names) per coordination number.
 MS_GEOMS = {2: ["li"], 3: ["tpl"], 4: ["sqp", "thd"], 5: ["spy", "tbp"],
@@ -97,14 +151,44 @@ def tool_key(tool: str) -> str:
     return key
 
 
-def tool_python(tool: str, environ=None) -> str:
-    """The interpreter the tool runs in: its env variable, else this one."""
+def managed_python(tool: str, environ=None):
+    """The interpreter of the environment DELFIN's installer builds for *tool*.
+
+    ``<AI tools root>/<managed_env>/bin/python`` (the root is
+    ``DELFIN_AI_TOOLS_ROOT``, else ``~/.delfin/ai_tools``, where the installer
+    puts it), or ``None`` when the tool has no environment of its own.
+    """
+    rel = TOOLS[tool_key(tool)].get("managed_env")
+    if not rel:
+        return None
     env = os.environ if environ is None else environ
-    return (env.get(TOOLS[tool_key(tool)]["python_env"]) or "").strip() or sys.executable
+    root = (env.get("DELFIN_AI_TOOLS_ROOT") or "").strip()
+    base = Path(root).expanduser() if root else Path.home() / ".delfin" / "ai_tools"
+    return str(base / rel / "bin" / "python")
+
+
+def tool_python(tool: str, environ=None) -> str:
+    """The interpreter the tool runs in.
+
+    Its env variable, else its managed environment when that exists, else this
+    one.
+    """
+    env = os.environ if environ is None else environ
+    named = (env.get(TOOLS[tool_key(tool)]["python_env"]) or "").strip()
+    if named:
+        return named
+    managed = managed_python(tool, env)
+    if managed and os.access(managed, os.X_OK):
+        return managed
+    return sys.executable
 
 
 def not_installed_message(tool: str, python: str) -> str:
     info = TOOLS[tool_key(tool)]
+    if info.get("install"):
+        return (f"{info['display']} is not installed in {python}. Install it with "
+                f"{info['install']} (it builds an environment of its own), "
+                f"or set {info['python_env']} to a Python interpreter that has it.")
     return (f"{info['display']} is not installed in {python}. Install it with "
             f"pip install 'delfin-complat[ai-complex]' (or pip install {info['pip']}), "
             f"or set {info['python_env']} to a Python interpreter that has it.")
@@ -347,6 +431,171 @@ def molsimplify_inputs(spec: dict) -> list:
     return [(g, dict(base, **{"-geometry": g})) for g in MS_GEOMS[spec["cn"]]]
 
 
+def _mace_donor_groups(mol, coord):
+    """Connected components of the donor atoms in the ligand graph (sorted)."""
+    cs = set(coord)
+    seen, groups = set(), []
+    for d in sorted(cs):
+        if d in seen:
+            continue
+        comp, stack = [], [d]
+        seen.add(d)
+        while stack:
+            a = stack.pop()
+            comp.append(a)
+            for n in mol.GetAtomWithIdx(a).GetNeighbors():
+                j = n.GetIdx()
+                if j in cs and j not in seen:
+                    seen.add(j)
+                    stack.append(j)
+        groups.append(sorted(comp))
+    return groups
+
+
+def _mace_carbon_ring(mol, group):
+    """The ring a hapto group is, when it is a whole 5- or 6-membered carbon ring."""
+    if len(group) not in (5, 6):
+        return None
+    gs = set(group)
+    if not all(mol.GetAtomWithIdx(i).GetAtomicNum() == 6 for i in group):
+        return None
+    for ring in mol.GetRingInfo().AtomRings():
+        if len(ring) == len(gs) and set(ring) == gs:
+            return list(ring)
+    return None
+
+
+def _mace_ring_anchor(rw, ring):
+    """Give one ring carbon a free valence for the centroid; its index.
+
+    Only the Lewis structure changes, never the atoms or their hydrogens:
+    adjacent radical carbons are joined into a double bond; a radical carbon
+    left without a double bond, or a charged / radical carbon, is the anchor;
+    else a ring double bond at the anchor becomes single and its partner a
+    carbocation (an sp2 cation keeps the ring planar for RDKit 2020.09, where a
+    radical would be typed sp3 and MACE would read eta1 instead of the ring).
+    """
+    from rdkit import Chem
+
+    rs = set(ring)
+    n = len(ring)
+    for k in range(n):
+        i, j = ring[k], ring[(k + 1) % n]
+        ai, aj = rw.GetAtomWithIdx(i), rw.GetAtomWithIdx(j)
+        b = rw.GetBondBetweenAtoms(i, j)
+        if (b is not None and b.GetBondType() == Chem.BondType.SINGLE
+                and ai.GetNumRadicalElectrons() > 0 and aj.GetNumRadicalElectrons() > 0
+                and not any(x.GetBondType() == Chem.BondType.DOUBLE
+                            for x in list(ai.GetBonds()) + list(aj.GetBonds()))):
+            b.SetBondType(Chem.BondType.DOUBLE)
+            ai.SetNumRadicalElectrons(ai.GetNumRadicalElectrons() - 1)
+            aj.SetNumRadicalElectrons(aj.GetNumRadicalElectrons() - 1)
+    for i in ring:
+        a = rw.GetAtomWithIdx(i)
+        if a.GetNumRadicalElectrons() > 0 and not any(
+                x.GetBondType() == Chem.BondType.DOUBLE for x in a.GetBonds()):
+            a.SetNumRadicalElectrons(a.GetNumRadicalElectrons() - 1)
+            return i
+    for i in ring:
+        a = rw.GetAtomWithIdx(i)
+        if a.GetFormalCharge() != 0:
+            a.SetFormalCharge(0)
+            return i
+        if a.GetNumRadicalElectrons() > 0:
+            a.SetNumRadicalElectrons(a.GetNumRadicalElectrons() - 1)
+            return i
+    for i in ring:
+        for b in rw.GetAtomWithIdx(i).GetBonds():
+            j = b.GetOtherAtomIdx(i)
+            if j in rs and b.GetBondType() == Chem.BondType.DOUBLE:
+                b.SetBondType(Chem.BondType.SINGLE)
+                p = rw.GetAtomWithIdx(j)
+                p.SetFormalCharge(p.GetFormalCharge() + 1)
+                return i
+    return ring[0]
+
+
+def mace_ligand(lig: dict) -> tuple:
+    """A spec ligand as epic-MACE's ligand SMILES; ``(smiles, sites)``.
+
+    Donor atoms carry atom-map number 1; each hapto group becomes one centroid
+    dummy ``[*:1]`` (see the module docstring).  Raises :class:`BuildError`.
+    """
+    from rdkit import Chem
+
+    m = Chem.MolFromSmiles(lig["smiles"])
+    if m is None:
+        raise BuildError(f"ligand {lig['smiles']} cannot be read by the RDKit of epic-MACE")
+    try:
+        Chem.Kekulize(m, clearAromaticFlags=True)
+    except Exception as exc:
+        raise BuildError(f"ligand {lig['smiles']} cannot be kekulized: {exc}") from exc
+    for a in m.GetAtoms():          # the hydrogens are final
+        a.SetNumExplicitHs(a.GetTotalNumHs())
+        a.SetNoImplicit(True)
+    rw = Chem.RWMol(m)
+    sites = []
+    for g in _mace_donor_groups(m, lig["coordList"]):
+        if len(g) == 1:
+            rw.GetAtomWithIdx(g[0]).SetAtomMapNum(1)
+            sites.append({"kind": "atom", "elem": m.GetAtomWithIdx(g[0]).GetSymbol()})
+            continue
+        ring = _mace_carbon_ring(m, g)
+        star = rw.AddAtom(Chem.Atom(0))
+        rw.GetAtomWithIdx(star).SetAtomMapNum(1)
+        if ring is not None:
+            rw.AddBond(star, _mace_ring_anchor(rw, ring), Chem.BondType.SINGLE)
+            sites.append({"kind": "hapto", "eta": len(g), "enc": "anchor"})
+        else:
+            gs = set(g)
+            for b in list(m.GetBonds()):
+                i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+                if i in gs and j in gs:
+                    rw.RemoveBond(i, j)
+            for i in g:
+                rw.AddBond(star, i, Chem.BondType.SINGLE)
+            sites.append({"kind": "hapto", "eta": len(g), "enc": "star"})
+    mol = rw.GetMol()
+    try:
+        mol.UpdatePropertyCache(strict=False)
+        Chem.SanitizeMol(mol)
+    except Exception as exc:
+        raise BuildError(f"ligand {lig['smiles']} cannot be written for epic-MACE: "
+                         f"{str(exc)[:120]}") from exc
+    return Chem.MolToSmiles(mol), sites
+
+
+def mace_job(spec: dict, geometries: str = "extended") -> dict:
+    """The epic-MACE input of a spec: ligands, central atom, geometries.
+
+    ``{'geoms', 'ligands', 'CA', 'info'}``.  Raises :class:`BuildError` when no
+    epic-MACE geometry has the number of sites.
+    """
+    if geometries not in MACE_GEOMS:
+        raise ValueError(f"unknown epic-MACE geometry set {geometries!r} "
+                         f"(known: {', '.join(sorted(MACE_GEOMS))})")
+    ligs, sites = [], []
+    for lig in spec["ligands"]:
+        s, info = mace_ligand(lig)
+        ligs.append(s)
+        sites += info
+    n_sites = len(sites)
+    hapto = [(s["eta"], s["enc"]) for s in sites if s["kind"] == "hapto"]
+    ox = spec.get("metal_ox")
+    ca = (f"[{spec['metal']}+{ox}]" if isinstance(ox, int) and 0 < ox <= 8
+          else f"[{spec['metal']}]")
+    geoms = list(MACE_GEOMS[geometries].get(n_sites, []))
+    if geometries == "extended" and n_sites == 2 and len(hapto) == 2:
+        geoms = ["SAN"]
+    if not geoms:
+        have = ", ".join(f"{k} ({'/'.join(v)})" for k, v in sorted(MACE_GEOMS[geometries].items()))
+        raise BuildError(f"epic-MACE has no geometry for {n_sites} donor sites "
+                         f"(a hapto ligand is one site; it has: {have}"
+                         + ("; two hapto sites: SAN" if geometries == "extended" else "") + ")")
+    return {"geoms": geoms, "ligands": ligs, "CA": ca,
+            "info": {"n_sites": n_sites, "hapto": hapto}}
+
+
 # ---------------------------------------------------------------------------
 # the worker (runs in the tool's interpreter)
 # ---------------------------------------------------------------------------
@@ -421,6 +670,81 @@ def _run_molsimplify(spec: dict, work: str, options: dict) -> tuple:
     return frames, {"per_geometry": per_geo}
 
 
+def _run_mace(spec: dict, work: str, options: dict) -> tuple:
+    import mace
+
+    opts = dict(MACE_DEFAULTS, **(options or {}))
+    job = mace_job(spec, opts["geometries"])
+    frames, per_geo = [], {}
+    for geom in job["geoms"]:
+        try:
+            X = mace.ComplexFromLigands(job["ligands"], job["CA"], geom)
+            # As MACE's own command line does before a stereomer search: every
+            # donor mapped (and marked) alike, the complex rebuilt from that.
+            for idx in X._DAs:
+                X.mol.GetAtomWithIdx(idx).SetAtomMapNum(1)
+                X.mol.GetAtomWithIdx(idx).SetIsotope(1)
+            X = mace.ComplexFromMol(X.mol, X.geom)
+            stereomers = X.GetStereomers("all", False, None, False)
+        except Exception as exc:
+            text = str(exc).strip().splitlines()
+            per_geo[geom] = f"{type(exc).__name__}: {text[0][:160] if text else ''}"
+            continue
+        n_before = len(frames)
+        for k, x in enumerate(stereomers):
+            try:
+                x.AddConformers(numConfs=int(opts["num_confs"]),
+                                maxAttempts=int(opts["max_attempts"]), rmsThresh=-1)
+            except Exception:
+                continue
+            if not x.GetNumConformers():
+                continue
+            x.OrderConfsByEnergy()
+            for j in range(x.GetNumConformers()):
+                block = x.ToXYZBlock(j).splitlines()
+                n = int(block[0])
+                try:
+                    e = json.loads(block[1]).get("E")
+                except ValueError:
+                    e = None
+                syms, xyz = [], []
+                for row in block[2:2 + n]:
+                    p = row.split()
+                    if p[0] == "X":      # a hapto centroid, not an atom
+                        continue
+                    syms.append(p[0])
+                    xyz.append([float(p[1]), float(p[2]), float(p[3])])
+                frames.append({"label": f"{geom}-iso{k}-conf{j}", "symbols": syms,
+                               "coords": xyz, "energy": float(e) if e is not None else None})
+        mine = frames[n_before:]
+        mine.sort(key=lambda f: (f["energy"] is None, f["energy"] or 0.0))
+        frames[n_before:] = mine
+        per_geo[geom] = (f"{len(stereomers)} stereomers, {len(frames) - n_before} frames"
+                         if len(frames) > n_before else
+                         f"{len(stereomers)} stereomers, no conformer embedded")
+    return frames, {"per_geometry": per_geo, "mace_input": {k: job[k] for k in ("ligands", "CA")}}
+
+
+def _is_the_tool(key: str) -> bool:
+    """Whether the importable module is the tool and not a namesake.
+
+    ``import mace`` is also the MACE machine-learning potential (mace-torch),
+    which DELFIN installs into its own environment; epic-MACE is the one with
+    ``ComplexFromLigands``.
+    """
+    if key != "mace":
+        return True
+    try:
+        import mace
+    except Exception:
+        return False
+    return hasattr(mace, "ComplexFromLigands")
+
+
+_RUNNERS = {"architector": _run_architector, "molsimplify": _run_molsimplify,
+            "mace": _run_mace}
+
+
 def _worker(tool: str, request_path: str, result_path: str) -> int:
     # rdkit before any tool: see the module docstring (libstdc++).
     result = {"frames": [], "error": None}
@@ -430,14 +754,14 @@ def _worker(tool: str, request_path: str, result_path: str) -> int:
         req = json.loads(Path(request_path).read_text())
         key = tool_key(tool)
         import importlib.util
-        if importlib.util.find_spec(TOOLS[key]["module"]) is None:
+        if importlib.util.find_spec(TOOLS[key]["module"]) is None or not _is_the_tool(key):
             result["error"] = not_installed_message(key, sys.executable)
             result["not_installed"] = True
         else:
-            spec = split_complex_smiles(req["smiles"])
+            # A spec cut by the caller (spec_in_caller) is taken as it is.
+            spec = req.get("spec") or split_complex_smiles(req["smiles"])
             result["spec"] = spec
-            run = _run_architector if key == "architector" else _run_molsimplify
-            frames, extra = run(spec, req["work"], req.get("options") or {})
+            frames, extra = _RUNNERS[key](spec, req["work"], req.get("options") or {})
             result.update(extra)
             result["frames"] = frames
             if not frames:
@@ -467,10 +791,13 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
     """Build *smiles* with *tool*; ``([(xyz_body, n_atoms, label), ...], error)``.
 
     Frames come back lowest energy first when the tool gives energies (it is
-    Architector's order anyway), else in the tool's order.  *error* is ``None``
+    Architector's order anyway), else in the tool's order (epic-MACE: geometry
+    by geometry, lowest energy first within each).  *error* is ``None``
     on success, else a message for the user.  *options* for Architector:
     ``{'mode': 'full'}`` (default: every isomer it finds) or ``'default'``
-    (its own defaults, one structure per core geometry).
+    (its own defaults, one structure per core geometry).  For epic-MACE:
+    :data:`MACE_DEFAULTS` (``geometries`` ``'extended'`` or ``'paper'``,
+    ``num_confs``, ``max_attempts``).
     """
     key = tool_key(tool)
     info = TOOLS[key]
@@ -479,11 +806,24 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
         import importlib.util
         if importlib.util.find_spec(info["module"]) is None:
             return [], not_installed_message(key, python)
+    spec = None
+    if info.get("spec_in_caller"):
+        # Cut here, with DELFIN's RDKit; the tool's environment may carry an
+        # RDKit years older (epic-MACE: 2020.09) that only has to write it out.
+        try:
+            spec = split_complex_smiles(smiles)
+        except BuildError as exc:
+            return [], f"{info['display']}: {exc}"
     import delfin
 
     repo_root = str(Path(delfin.__file__).resolve().parent.parent)
     env = dict(os.environ if environ is None else environ)
-    env["PYTHONPATH"] = repo_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    if info.get("managed_env"):
+        # Another Python version: nothing of this one's paths may reach it.
+        env["PYTHONPATH"] = repo_root
+        env["PYTHONNOUSERSITE"] = "1"
+    else:
+        env["PYTHONPATH"] = repo_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["PYTHONHASHSEED"] = "0"
     for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         env.setdefault(var, "1")
@@ -497,7 +837,8 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
     result_path = os.path.join(tmp, "result.json")
     log_path = os.path.join(tmp, "tool.log")
     Path(request_path).write_text(json.dumps(
-        {"smiles": str(smiles).strip(), "work": work, "options": dict(options or {})}))
+        {"smiles": str(smiles).strip(), "work": work, "options": dict(options or {}),
+         "spec": spec}))
     cmd = [python, "-m", "delfin.common.external_builders", key, request_path, result_path]
     keep = os.environ.get("DELFIN_EXTERNAL_BUILDER_KEEP", "0") == "1"
     try:
@@ -524,14 +865,16 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
             keep = True
         if res.get("error") and not frames:
             return [], f"{info['display']}: {res['error']}"
-        if frames and all(f.get("energy") is not None for f in frames):
+        if (frames and not info.get("keep_order")
+                and all(f.get("energy") is not None for f in frames)):
             frames = sorted(frames, key=lambda f: f["energy"])
         out = []
         for i, f in enumerate(frames, start=1):
             e = f.get("energy")
             label = f"{info['display']} {f.get('label') or i}"
             if e is not None:
-                label += f" (E = {e:.4f} eV)"   # Architector's xTB energy, ASE units
+                # Architector: its xTB energy in ASE units; epic-MACE: UFF.
+                label += f" (E = {e:.4f} {info.get('energy_unit', 'eV')})"
             out.append((_xyz_body(f["symbols"], f["coords"]), len(f["symbols"]), label))
         return out, None
     finally:

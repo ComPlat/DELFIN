@@ -131,6 +131,9 @@ ai-complex = [
     "molSimplify",
     "architector",
     "numba",   # architector imports it without declaring it
+    # epic-MACE (the MACE button, smiles_converter=MACE) is no extra: it needs
+    # Python 3.7 + RDKit 2020.09 and gets an environment of its own,
+    # python -m delfin.installer --install epic-mace.
 ]
 agent = [
     "anthropic>=0.40",
