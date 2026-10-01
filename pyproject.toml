@@ -74,7 +74,15 @@ dependencies = [
     "ipywidgets>=8.0,<9",
     "py3Dmol>=2.0.4,<3",
     "python-docx>=0.8.11,<2",
-    "pymol-open-source>=2.5,<4",
+    # pymol-open-source is the [pymol] extra below, not a core dependency.
+    # PyPI carries it only as manylinux_2_35 wheels (3.2.0a0; 3.1.0a0 is
+    # cp311/manylinux_2_34 only, and there is no sdist), so on a glibc 2.34
+    # system such as RHEL 9 with Python 3.12 the requirement has no
+    # candidate at all and pip refuses to install DELFIN. A conda-forge
+    # pymol-open-source does not help either: it carries no pip dist-info
+    # under that name, so pip still looks for it on the index. PyMOL renders
+    # report pictures (ESP, dipole and orbital PNGs); nothing in the
+    # construction needs it.
     "voila>=0.5,<0.6",
     "Pillow>=10,<13",
     # Page rendering and in-document search for the file browser's PDF
@@ -89,6 +97,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# PyMOL renders the ESP, dipole-moment and orbital pictures of the Word and
+# ESD reports (delfin/reporting/esp_report.py, delfin_docx_report.py). Without
+# it those pictures are skipped with a logged notice and every other part of
+# DELFIN -- construction, dashboard, 3D viewer (py3Dmol), agent -- is unchanged.
+# An extra because the only PyPI wheels need glibc >= 2.35; RHEL 9 and its
+# clones, the usual HPC login nodes, have 2.34 (see the core dependencies).
+# The reference lock still pins its version for whoever can install it.
+pymol = [
+    "pymol-open-source>=2.5,<4",
+]
 csp = [
     "mpi4py",
 ]

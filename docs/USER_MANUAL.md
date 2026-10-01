@@ -85,7 +85,13 @@ pip install -e .
 ```bash
 pip install -e ".[agent,docs,dev]"      # the agent, the MCP servers, the test tools
 pip install -e ".[analysis,mlp]"        # analysis wrappers and ML potentials
+pip install -e ".[pymol]"               # PyMOL: ESP, dipole and orbital pictures in the reports
 ```
+
+PyMOL is optional: without it the reports come without those pictures (a notice
+is logged) and everything else, construction and dashboard included, is unchanged.
+Its PyPI wheels need glibc 2.35 or newer; on RHEL 9 and its clones (glibc 2.34,
+typical for HPC login nodes) the `pymol` extra does not resolve, so leave it out.
 
 ### External QM tool setup
 

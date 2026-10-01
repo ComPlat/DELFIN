@@ -170,8 +170,9 @@ pip install -e .
 
 Dauer: ca. 3-5 Minuten
 
-HINWEIS: Es gibt eine Warnung über pymol-open-source - das ist OK!
-         PyMOL ist optional und wird nur für 3D-Visualisierungen benötigt.
+HINWEIS: PyMOL wird nicht mitinstalliert (optionales Extra "pymol"; seine
+         PyPI-Wheels brauchen glibc >= 2.35, der Cluster hat 2.34). Es wird
+         nur für die ESP-/Dipol-/Orbitalbilder der Reports gebraucht.
 
 3.8. DELFIN testen
 ------------------
