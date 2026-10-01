@@ -238,7 +238,7 @@ ctx = create_dashboard(backend="auto")   # SLURM when available, else local
 
 | Tab | Purpose |
 |-----|---------|
-| **Submit Job** | SMILES/XYZ input, 3D preview and editor, converter choice (`QUICK`, `NORMAL`, `MANTA`, `ARCHITECTOR`), `BUILD COMPLEX`, `MANTA`, `SUBMIT FUKUI`, `SUBMIT ONLY GOAT`, `SUBMIT DELFIN + CO2`, `VALIDATE CONTROL` |
+| **Submit Job** | SMILES/XYZ input, 3D preview and editor, converter choice (`QUICK`, `NORMAL`, `MANTA`, `ARCHITECTOR`, `MOLSIMPLIFY`, `MACE`), `BUILD COMPLEX`, `MANTA`, `ARCHITECTOR`, `MOLSIMPLIFY`, `MACE`, `SUBMIT FUKUI`, `SUBMIT ONLY GOAT`, `SUBMIT DELFIN + CO2`, `VALIDATE CONTROL` |
 | **Recalc** | Edit an existing `CONTROL.txt` and resubmit; a smart recalc recomputes only what the edit changed |
 | **ORCA Builder** | Interactive ORCA input generation with geometry preview |
 | **TURBOMOLE Builder** | Turbomole define workflow (SLURM backends) |
@@ -399,7 +399,7 @@ The DOCX and JSON reports are written at the end of every main run; a failure th
 Which builder runs is decided by one CONTROL key, and a SMILES run must set it:
 
 ```ini
-smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
 ```
 
 | Value | What it does | Best for |
@@ -408,6 +408,10 @@ smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]
 | `NORMAL` | RDKit ETKDG with multi-seed embedding and optional UFF refinement (RDKit / Open Babel). One structure. **This is the default when nothing is set.** | Organic molecules |
 | `MANTA` | DELFIN's own coordination builder: the enumerated coordination-isomer × conformer manifold, then screening, optimisation and refinement down to one geometry. | Metal complexes |
 | `ARCHITECTOR` | [architector](https://github.com/lanl/Architector) automated 3D generation; needs a metal-containing SMILES. | Metal complexes, instant preview |
+| `MOLSIMPLIFY` | [molSimplify](https://molsimplify.mit.edu/), one structure per geometry of the coordination number; needs a metal-containing SMILES. | Metal complexes |
+| `MACE` | [epic-MACE](https://github.com/EPiCs-group/epic-mace) (Chernyshov & Pidko, JCTC 2024): every stereomer of the geometries that fit the donor sites, ten conformers each; runs in its own Python 3.7 environment. | Metal complexes, hapto ligands |
+
+epic-MACE (Chernyshov & Pidko, *J. Chem. Theory Comput.* 2024, 20, 2313; [EPiCs-group/epic-mace](https://github.com/EPiCs-group/epic-mace), GPL-3.0) needs Python 3.7 and RDKit 2020.09, so it is never installed beside DELFIN: `python -m delfin.installer --install epic-mace` (or `install.sh --only epic-mace`, or the Install button in Settings) builds an environment of its own with micromamba under `~/.delfin/ai_tools/.mamba_env/epic_mace` (from the pinned GitHub commit efb5778e, which adds hapto ligands and the TET/SPY/TBP/SAN geometries to the octahedron and square of the PyPI release), and DELFIN calls it there as an external program; `DELFIN_MACE_PYTHON` points it to another interpreter. The geometry follows from the number of donor sites (a hapto ligand is one site): OH for 6, SP + TET for 4, SPY + TBP for 5, SAN for two hapto ligands. Every stereomer (enantiomers kept) gets ten conformers; MACE has no random seed, so two builds can differ.
 
 In the Submit tab the same choice appears as the converter dropdown, next to `BUILD COMPLEX` (stepwise assembly using ORCA's `%DOCKER`, submitted as a job) and the `CONVERT SMILES`, `QUICK CONVERT SMILES` and `CONVERT SMILES + UFF` buttons of the structure editor.
 
@@ -451,7 +455,7 @@ DELFIN is configured by `CONTROL.txt` in the working directory. `delfin --define
 * `parallel_workflows = yes | no | auto`
 
 ### Structure
-* `smiles_converter = QUICK | NORMAL | MANTA | ARCHITECTOR` (required for a SMILES run)
+* `smiles_converter = QUICK | NORMAL | MANTA | ARCHITECTOR | MOLSIMPLIFY | MACE` (required for a SMILES run)
 * `MANTA_*` — the MANTA builder and its funnel: construction quality, gates, screening, optimisation, refinement, time budget
 * `XTB_preOPT = yes | no` / `global_optimizer = GOAT | CREST`
   * the older spellings `XTB_OPT` / `XTB_GOAT` / `CREST` are still accepted
@@ -758,7 +762,7 @@ DELFIN finds the 90+ supported programs by itself, in two ways: external binarie
 
 Install and update buttons for the pip-installable integrations are in the dashboard under `Settings → Tool Installation`.
 
-Of the AI/ML tools listed below, DELFIN detects and installs all of them, and **architector** is additionally wired into structure generation; the others are made available for you to use, not called by a DELFIN workflow.
+Of the AI/ML tools listed below, DELFIN detects and installs all of them, and **architector**, **molSimplify** and **epic-MACE** are additionally wired into structure generation (epic-MACE in an environment of its own); the others are made available for you to use, not called by a DELFIN workflow.
 
 <details>
 <summary><b>Linked overview of supported tools</b></summary>
@@ -847,9 +851,10 @@ Of the AI/ML tools listed below, DELFIN detects and installs all of them, and **
 [DeepChem](https://deepchem.io/),
 [ADMETlab](https://admetlab3.scbdd.com/)
 
-**AI/ML — Metal Complex ML (2):**
+**AI/ML — Metal Complex ML (3):**
 [molSimplify](https://molsimplify.mit.edu/),
-[architector](https://github.com/lanl/Architector)
+[architector](https://github.com/lanl/Architector),
+[epic-MACE](https://github.com/EPiCs-group/epic-mace)
 
 **Analysis / Post-Processing (15):**
 [cclib](https://cclib.github.io/),
@@ -915,7 +920,7 @@ Of the AI/ML tools listed below, DELFIN detects and installs all of them, and **
 * **ORCA not found** — check that `orca` is on your PATH (`which orca`), then `delfin doctor`.
 * **CREST/xTB tools missing** — install them and add them to PATH, or disable the corresponding flags in `CONTROL.txt`.
 * **Optional tool not detected** — check the dashboard's Settings tab, or run `delfin doctor` (and `delfin qm_check`, `delfin mlp_check`, `delfin analysis_check` for the specific families).
-* **A SMILES run stops immediately** — `smiles_converter` must be set to `QUICK`, `NORMAL`, `MANTA` or `ARCHITECTOR`.
+* **A SMILES run stops immediately** — `smiles_converter` must be set to `QUICK`, `NORMAL`, `MANTA`, `ARCHITECTOR`, `MOLSIMPLIFY` or `MACE`.
 
 ---
 

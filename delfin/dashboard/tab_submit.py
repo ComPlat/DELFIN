@@ -83,7 +83,8 @@ def create_tab(ctx):
     Returns ``(tab_widget, refs_dict)``.
     """
     SUBMIT_MOL_HEIGHT = 650
-    SMILES_CONVERTER_PLACEHOLDERS = ('[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]',
+    SMILES_CONVERTER_PLACEHOLDERS = ('[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]',
+                                    '[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]',
                                     '[QUICK|NORMAL|MANTA|ARCHITECTOR]')
     main_io_loop = getattr(getattr(get_ipython(), 'kernel', None), 'io_loop', None)
 
@@ -184,7 +185,7 @@ def create_tab(ctx):
         style=COMMON_STYLE, layout=widgets.Layout(width='220px'),
     )
     only_goat_smiles_converter = widgets.Dropdown(
-        options=['QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY'],
+        options=['QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'],
         value='QUICK', description='Converter:', style=COMMON_STYLE,
         layout=widgets.Layout(width='220px'),
     )
@@ -345,6 +346,7 @@ def create_tab(ctx):
     manta_settings_row = _editor.manta_settings_row
     architector_button = _editor.architector_button
     molsimplify_button = _editor.molsimplify_button
+    mace_button = _editor.mace_button
     xyz_copy_btn = _editor.xyz_copy_btn
     xyz_copy_status = _editor.xyz_copy_status
     isomer_nav_row = _editor.isomer_nav_row
@@ -979,7 +981,7 @@ def create_tab(ctx):
         if not text or text in SMILES_CONVERTER_PLACEHOLDERS:
             return ''
         normalized = text.upper()
-        if normalized in {'QUICK', 'NORMAL', 'MANTA', 'GUPPY', 'ARCHITECTOR', 'MOLSIMPLIFY'}:
+        if normalized in {'QUICK', 'NORMAL', 'MANTA', 'GUPPY', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'}:
             return normalized
         return ''
 
@@ -2052,9 +2054,9 @@ def create_tab(ctx):
         widgets.HBox([build_complex_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         manta_settings_row,
-        # MANTA button sits directly UNDER its settings; the two external
+        # MANTA button sits directly UNDER its settings; the external
         # metal-complex constructors stand beside it as equals.
-        widgets.HBox([manta_button, architector_button, molsimplify_button],
+        widgets.HBox([manta_button, architector_button, molsimplify_button, mace_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),

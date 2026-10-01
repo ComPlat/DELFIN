@@ -1672,7 +1672,7 @@ def _resolve_smiles_converter(config: Dict[str, Any]) -> str:
     if raw_value == 'GUPPY':
         # The old spelling of the same builder; see config._apply_guppy_legacy.
         return 'MANTA'
-    if raw_value in {'QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY'}:
+    if raw_value in {'QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'}:
         return raw_value
     if str(config.get('GUPPY', 'no')).strip().lower() == 'yes':
         return 'GUPPY'
@@ -1699,6 +1699,7 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
         is_smiles_string,
         smiles_to_xyz,
         smiles_to_xyz_architector,
+        smiles_to_xyz_mace,
         smiles_to_xyz_molsimplify,
         smiles_to_xyz_quick,
     )
@@ -1760,11 +1761,12 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
                 except Exception as exc:  # noqa: BLE001
                     logger.error("Could not write QUICK-converted coordinates to '%s': %s", start_path, exc)
                     raise ValueError(f"Could not write QUICK-converted coordinates: {exc}") from exc
-            elif converter in ('ARCHITECTOR', 'MOLSIMPLIFY'):
+            elif converter in ('ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'):
                 # The shared external build (delfin.common.external_builders),
                 # the same one as the dashboard's buttons; its first frame.
-                build = (smiles_to_xyz_architector if converter == 'ARCHITECTOR'
-                         else smiles_to_xyz_molsimplify)
+                build = {'ARCHITECTOR': smiles_to_xyz_architector,
+                         'MOLSIMPLIFY': smiles_to_xyz_molsimplify,
+                         'MACE': smiles_to_xyz_mace}[converter]
                 xyz_content, error = build(smiles_line)
 
                 if error:

@@ -1073,10 +1073,12 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
 
 
 def _run_external_build(cleaned_data, tool):
-    """The build behind the ARCHITECTOR / MOLSIMPLIFY buttons, without any widget.
+    """The build behind the ARCHITECTOR / MOLSIMPLIFY / MACE buttons, without any widget.
 
     One definition per tool lives in :mod:`delfin.common.external_builders`,
-    shared with ``smiles_converter=ARCHITECTOR|MOLSIMPLIFY`` in CONTROL.  Every
+    shared with ``smiles_converter=ARCHITECTOR|MOLSIMPLIFY|MACE`` in CONTROL,
+    with the same settings (nothing is passed here that CONTROL does not pass
+    either).  Every
     frame the tool returns comes back as an isomer, in the result shape
     ``_apply_smiles_conversion_result`` consumes -- so the frames land where
     MANTA's do: the isomer stepper in Submit Job, the named blocks in the ORCA
@@ -1105,6 +1107,7 @@ class Editor:
         """The widgets a tab hands out, under the names they have here."""
         keep = ('mol_output', 'mol_status', 'mol_status_fs', 'manta_button',
                 'manta_settings_row', 'architector_button', 'molsimplify_button',
+                'mace_button',
                 'convert_smiles_button',
                 'convert_smiles_quick_button', 'convert_smiles_uff_button',
                 'isomer_nav_row', 'isomer_label', 'isomer_prev_btn',
@@ -21163,6 +21166,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 '(one structure per geometry of the coordination number). Needs the '
                 'optional molSimplify package or DELFIN_MOLSIMPLIFY_PYTHON.',
     )
+    mace_button = widgets.Button(
+        description='MACE', button_style='warning',
+        layout=widgets.Layout(width='150px'),
+        tooltip='epic-MACE (Chernyshov & Pidko, JCTC 2024): build the metal-complex '
+                'SMILES with MACE -- every stereomer of every geometry that fits the '
+                'number of donor sites, ten conformers each. Runs in its own Python 3.7 '
+                'environment: python -m delfin.installer --install epic-mace, or '
+                'DELFIN_MACE_PYTHON pointing to a Python that has it.',
+    )
 
     # --- MANTA settings (the 5 keys a user actually needs; MANTA button sits BELOW) ---
     # Power-user knobs are CLI-only and pinned in _MANTA_DASH_DEFAULTS (module level).
@@ -21265,6 +21277,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 convert_smiles_uff_button,
                 architector_button,
                 molsimplify_button,
+                mace_button,
                 isomer_prev_btn,
                 isomer_next_btn,
             ],
@@ -22058,7 +22071,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _convert_smiles(apply_uff=True)
 
     def _start_external_build(tool):
-        """ARCHITECTOR / MOLSIMPLIFY: the SMILES in the box, built by that tool.
+        """ARCHITECTOR / MOLSIMPLIFY / MACE: the SMILES in the box, built by that tool.
 
         The input is read the way the convert buttons read it, and the result
         goes through the same ``_apply_smiles_conversion_result`` as MANTA's
@@ -22096,6 +22109,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def handle_molsimplify(button):
         _start_external_build('molsimplify')
 
+    def handle_mace(button):
+        _start_external_build('mace')
+
 
     def _clean_xyz_block(raw_xyz):
         text = (raw_xyz or '').strip()
@@ -22119,6 +22135,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     manta_button.on_click(handle_manta)
     architector_button.on_click(handle_architector)
     molsimplify_button.on_click(handle_molsimplify)
+    mace_button.on_click(handle_mace)
 
     isomer_prev_btn.on_click(handle_isomer_prev)
     isomer_next_btn.on_click(handle_isomer_next)

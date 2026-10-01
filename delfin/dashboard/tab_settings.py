@@ -2810,6 +2810,38 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         _outdated_cache.clear()
         refresh_fn()
 
+    #: An install hint that names DELFIN's installer instead of pip: the tool
+    #: cannot be pip-installed beside DELFIN (epic-MACE builds a Python 3.7
+    #: environment of its own), so its button runs delfin.installer.
+    _INSTALLER_HINT = 'python -m delfin.installer --install '
+
+    def _installer_install_tool(tool_name, label, refresh_fn):
+        """Install *tool_name* through delfin.installer, in the background."""
+        tool_install_log.value = f'Installing {label}...\n'
+        _set_status(f'Installing {label}; the log below follows it.', color='#ef6c00')
+
+        def work():
+            from delfin import installer
+
+            lines = []
+
+            def on_line(text):
+                lines.append(str(text))
+                tool_install_log.value = '\n'.join(lines[-400:])
+
+            try:
+                outcome = installer.install([tool_name], on_line=on_line)
+                if outcome['ok']:
+                    _set_status(f'{label} installed successfully.', color='#2e7d32')
+                else:
+                    _set_status(f'{label} installation failed; the log says why.', color='#d32f2f')
+            except Exception as exc:
+                tool_install_log.value += f'\nError: {exc}'
+                _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+            refresh_fn()
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _pip_update_tool(pip_pkg, label, refresh_fn):
         """Run pip install --upgrade for a specific package."""
         import subprocess
@@ -2989,6 +3021,19 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 layout=widgets.Layout(min_width='300px'),
             )
             has_cmd = conda_cmd if use_conda else install_cmd
+            if has_cmd and install_cmd.startswith(_INSTALLER_HINT):
+                btn = widgets.Button(
+                    description='Install',
+                    button_style='warning',
+                    layout=widgets.Layout(width='80px', height='24px'),
+                    tooltip=install_cmd,
+                )
+                btn.on_click(lambda b, cmd=install_cmd, lbl=name, fn=refresh_fn:
+                             _installer_install_tool(cmd[len(_INSTALLER_HINT):].split()[0], lbl, fn))
+                return widgets.HBox(
+                    [label, btn],
+                    layout=widgets.Layout(width='100%', margin='1px 0', align_items='center'),
+                )
             if has_cmd:
                 if use_conda:
                     conda_exe_name = (_detect_conda()[0] or 'conda').rsplit('/', 1)[-1]

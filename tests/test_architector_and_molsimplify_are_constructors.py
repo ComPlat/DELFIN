@@ -112,6 +112,8 @@ def test_a_missing_tool_is_an_error_not_another_builder():
         frames, error = eb.build_frames(tool, CISPLATIN, python=sys.executable)
         assert frames == []
         assert "not installed" in error and eb.TOOLS[tool]["python_env"] in error
+        if eb.TOOLS[tool].get("install"):
+            assert eb.TOOLS[tool]["install"] in error
         checked += 1
     if not checked:
         pytest.skip("both tools are installed in this interpreter")
@@ -119,7 +121,9 @@ def test_a_missing_tool_is_an_error_not_another_builder():
 
 # -- the builds, where the tool is -----------------------------------------------
 
-@pytest.mark.parametrize("tool", sorted(eb.TOOLS))
+# epic-MACE has its own set (tests/test_mace_is_a_constructor.py): it does not
+# embed [Co(NH3)5Cl]2+ within its ten attempts, and it builds hapto ligands.
+@pytest.mark.parametrize("tool", sorted(set(eb.TOOLS) - {"mace"}))
 @pytest.mark.parametrize("smiles", THREE)
 def test_every_frame_has_the_formula_of_the_smiles(tool, smiles):
     """Through the dashboard's own build function, headless."""
@@ -141,6 +145,7 @@ def test_every_frame_has_the_formula_of_the_smiles(tool, smiles):
 @pytest.mark.parametrize("tool, convert", [
     ("architector", "smiles_to_xyz_architector"),
     ("molsimplify", "smiles_to_xyz_molsimplify"),
+    ("mace", "smiles_to_xyz_mace"),
 ])
 def test_the_control_converter_uses_the_same_build(tool, convert):
     _needs(tool)
