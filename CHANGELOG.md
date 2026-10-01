@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — PyMOL is an optional extra, so DELFIN installs on glibc 2.34 (RHEL 9)
+
+`pymol-open-source` moves from the core dependencies to the new `pymol` extra
+(`pip install "delfin-complat[pymol]"`). PyPI carries it only as
+manylinux_2_35 wheels (3.2.0a0; 3.1.0a0 is cp311-only, there is no sdist), so
+on an HPC login node running RHEL 9 (glibc 2.34) with Python 3.12 the
+requirement had no candidate at all and `pip install -e . -c
+env/reference-environment.lock` ended in ResolutionImpossible; a conda-forge
+PyMOL did not satisfy pip either. PyMOL only renders the ESP, dipole-moment and
+orbital pictures of the reports; those are now skipped with a logged notice
+naming the extra, and nothing else changes. The reference lock keeps its
+`pymol-open-source==3.2.0a0` pin (a constraint applies only when the extra is
+requested) and the CI reference-environment job requests the extra so the pin
+stays exercised.
+
 ## [1.3.3] - 2026-09-19
 
 ### Added — Landing 4: hydrogen placement with three guards (AB:hplace6k4)
