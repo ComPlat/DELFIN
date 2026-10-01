@@ -76,10 +76,14 @@ scan_steps=25
 # adduct_xyz: pre-optimised adduct geometry to start the scan from its M–substrate bond length
 # scan_dissoc=true: scan outward from r0 to dissoc_distance instead of inward to scan_end
 # dissoc_distance: target M–substrate distance for dissociation (default 6.0 A)
+# substrate_atom: element symbol of the substrate anchor atom (nearest to the metal), e.g. N for NH3, C for CO2
+# substrate_atom_index: explicit 0-based anchor index (overrides substrate_atom; use when ambiguous)
 ------------------------------------
 adduct_xyz=
 scan_dissoc=false
 dissoc_distance=6.0
+substrate_atom=
+substrate_atom_index=
 
 # Alignment (0-based indices)
 ------------------------------------
@@ -615,6 +619,59 @@ def detect_metal_index(atoms):
         if not c:
             return int(np.argmax([a.number for a in atoms]))
     return c[0] if len(c) == 1 else max(c, key=lambda i: atoms[i].number)
+
+
+def _resolve_substrate_anchor(atoms, metal_idx, substrate_symbol, substrate_idx_raw, source="adduct"):
+    """Identify the substrate anchor atom index in an adduct geometry.
+
+    Precedence:
+      1. ``substrate_atom_index`` (explicit integer, 0-based).
+      2. ``substrate_atom`` (element symbol, e.g. "C" or "N") — picks the
+         atom of that element closest to the metal. If several are within
+         1.0 A of the minimum distance, raises ValueError for ambiguity.
+    """
+    if substrate_idx_raw is not None and str(substrate_idx_raw).strip() != "":
+        raw = str(substrate_idx_raw).strip()
+        try:
+            idx = int(raw)
+        except ValueError:
+            raise ValueError(
+                f"substrate_atom_index={raw!r} is not an integer. "
+                "Use a 0-based index or substrate_atom=<element symbol>."
+            )
+        if not (0 <= idx < len(atoms)) or idx == metal_idx:
+            raise ValueError(
+                f"substrate_atom_index={idx} is invalid for '{source}' "
+                f"({len(atoms)} atoms, metal at {metal_idx})."
+            )
+        return idx
+    if substrate_symbol:
+        sym = substrate_symbol.strip()
+        candidates = [i for i, a in enumerate(atoms)
+                      if a.symbol.capitalize() == sym.capitalize()
+                      and i != metal_idx]
+        if not candidates:
+            raise ValueError(
+                f"substrate_atom={sym}: no {sym} atom found in '{source}' "
+                f"(available: {sorted({a.symbol for a in atoms})})."
+            )
+        d = {i: float(np.linalg.norm(
+            atoms.positions[i] - atoms.positions[metal_idx])) for i in candidates}
+        best = min(d, key=d.get)
+        close = [i for i, dist in d.items() if dist <= d[best] + 1.0]
+        if len(close) > 1:
+            listing = ", ".join(f"{i} ({d[i]:.2f} A)" for i in sorted(close))
+            raise ValueError(
+                f"substrate_atom={sym} is ambiguous: several {sym} atoms are "
+                f"equally close to the metal ({listing}). "
+                f"Set substrate_atom_index explicitly to pick one."
+            )
+        return best
+    raise ValueError(
+        "scan_dissoc=true requires substrate_atom=<element symbol> or "
+        "substrate_atom_index (0-based index of the substrate atom "
+        "bonded to the metal, e.g. N for NH3 or the C of CO2)."
+    )
 
 def guess_neighbors(atoms, metal_index, scale=1.15):
     ZM = atoms[metal_index].number
@@ -1471,6 +1528,112 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
     print(f"[OK] Best orientation: {best_angle}°")
     return best_xyz, best_angle, best_energy
 
+
+# === Inverse RSS Runner ===
+def run_inverse_rss_scan(atoms_adduct, adduct_xyz, args, workdir=None):
+    """Run the inverse RSS (dissociation scan) from an optimised adduct.
+
+    Calculates r0 (metal to substrate anchor) and scans outward to
+    dissoc_distance in scan_steps steps using write_orca_input_and_run.
+    Returns a dict with scan metadata (start_distance, end_distance, steps, etc.).
+    """
+    cwd = None
+    if workdir:
+        cwd = os.getcwd()
+        os.chdir(workdir)
+    try:
+        metal_idx = detect_metal_index(atoms_adduct)
+        if metal_idx is None:
+            raise ValueError(f"No metal atom found in adduct_xyz '{adduct_xyz}'.")
+        substrate_idx_raw = args.get("substrate_atom_index")
+        substrate_symbol = _clean_str(args.get("substrate_atom"))
+        co2_c_idx = _resolve_substrate_anchor(
+            atoms_adduct, metal_idx, substrate_symbol, substrate_idx_raw,
+            source=adduct_xyz)
+        qm_atom_count = len(atoms_adduct)
+        co2_indices = [co2_c_idx]
+        qmmm_range = (0, qm_atom_count - 1)
+        start_distance = float(np.linalg.norm(
+            atoms_adduct.positions[metal_idx] - atoms_adduct.positions[co2_c_idx]
+        ))
+        dissoc_distance = float(args.get("dissoc_distance", 6.0))
+        scan_steps = int(args.get("scan_steps", 25))
+        print(f"[INFO] Inverse RSS: adduct r0 (M–substrate) = {start_distance:.3f} A, "
+              f"scanning outward to {dissoc_distance} A in {scan_steps} steps.")
+        if dissoc_distance <= start_distance:
+            print(f"[WARN] dissoc_distance ({dissoc_distance} A) <= r0 "
+                  f"({start_distance:.3f} A) — scan will move inward, not dissociate.")
+
+        scan_job = args.get("scan_job", "OPT")
+        scan_orca_keywords = build_orca_keywords(args, scan_job)
+        if "orca_keywords" in args:
+            custom_scan = args.get("orca_keywords")
+            if _clean_str(custom_scan):
+                scan_orca_keywords = custom_scan
+        if not scan_orca_keywords:
+            raise ValueError("Keine gültigen ORCA-Schlüsselwörter für den Distanzscan gefunden. Bitte CONTROL-Einträge prüfen.")
+
+        broken_sym_raw = args.get("broken_sym", "")
+        metal_symbol = args.get("metal")
+        if not metal_symbol or str(metal_symbol).lower() in {"auto", "[metal]"}:
+            metal_symbol = atoms_adduct[metal_idx].symbol
+        if isinstance(broken_sym_raw, str) and metal_symbol:
+            broken_sym = broken_sym_raw.replace("[METAL]", metal_symbol)
+        else:
+            broken_sym = broken_sym_raw or ""
+
+        metal_basis = _clean_str(args.get("metal_basisset", "def2-TZVP")) or "def2-TZVP"
+
+        def _int_or_default(val, default):
+            if val is None:
+                return default
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return default
+
+        charge = _int_or_default(args.get("charge"), -2)
+        multiplicity = _int_or_default(args.get("multiplicity"), 1)
+        PAL = _int_or_default(args.get("PAL"), 32)
+        maxcore = _int_or_default(args.get("maxcore"), 3800)
+
+        write_orca_input_and_run(
+            atoms_adduct,
+            adduct_xyz,
+            metal_idx,
+            co2_c_idx,
+            start_distance=start_distance,
+            end_distance=float(dissoc_distance),
+            steps=int(scan_steps),
+            orca_keywords=scan_orca_keywords,
+            broken_sym=broken_sym,
+            charge=charge,
+            multiplicity=multiplicity,
+            PAL=PAL,
+            maxcore=maxcore,
+            metal_symbol=metal_symbol,
+            metal_basis=metal_basis,
+            control_args=args,
+            qmmm_range=qmmm_range,
+            co2_indices=co2_indices,
+        )
+        scan_dat = os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat")
+        if os.path.exists(scan_dat):
+            plot_scan_result(scan_dat)
+        return {
+            "status": "ok",
+            "start_distance": start_distance,
+            "end_distance": dissoc_distance,
+            "steps": scan_steps,
+            "metal_index": metal_idx,
+            "anchor_index": co2_c_idx,
+            "scan_dir": os.path.abspath("relaxed_surface_scan"),
+        }
+    finally:
+        if cwd:
+            os.chdir(cwd)
+
+
 # === Main ===
 def main():
     args = _minimal_read_control_file()
@@ -1591,56 +1754,7 @@ def main():
     # dissoc_distance. No orientation freedom, no jumps between scan points.
     if scan_dissoc:
         atoms_adduct = _read_xyz_robust(adduct_xyz)
-        metal_idx = detect_metal_index(atoms_adduct)
-        if metal_idx is None:
-            raise ValueError(f"No metal atom found in adduct_xyz '{adduct_xyz}'.")
-        substrate_idx_raw = args.get("substrate_atom_index")
-        if substrate_idx_raw is None or str(substrate_idx_raw).strip() == "":
-            raise ValueError(
-                "scan_dissoc=true requires substrate_atom_index "
-                "(0-based index of the substrate atom bonded to the metal, "
-                "e.g. the CO2 carbon in the adduct)."
-            )
-        co2_c_idx = int(str(substrate_idx_raw).strip())
-        if not (0 <= co2_c_idx < len(atoms_adduct)) or co2_c_idx == metal_idx:
-            raise ValueError(
-                f"substrate_atom_index={co2_c_idx} is invalid for "
-                f"'{adduct_xyz}' ({len(atoms_adduct)} atoms, metal at {metal_idx})."
-            )
-        qm_atom_count = len(atoms_adduct)
-        co2_indices = [co2_c_idx]
-        qmmm_range = (0, qm_atom_count - 1)
-        start_distance = float(np.linalg.norm(
-            atoms_adduct.positions[metal_idx] - atoms_adduct.positions[co2_c_idx]
-        ))
-        print(f"[INFO] Inverse RSS: adduct r0 (M–substrate) = {start_distance:.3f} A, "
-              f"scanning outward to {dissoc_distance} A in {scan_steps} steps.")
-        if dissoc_distance <= start_distance:
-            print(f"[WARN] dissoc_distance ({dissoc_distance} A) <= r0 "
-                  f"({start_distance:.3f} A) — scan will move inward, not dissociate.")
-
-        metal_symbol_scan = metal_symbol or atoms_adduct[metal_idx].symbol
-        write_orca_input_and_run(
-            atoms_adduct,
-            adduct_xyz,
-            metal_idx,
-            co2_c_idx,
-            start_distance=start_distance,
-            end_distance=float(dissoc_distance),
-            steps=int(scan_steps),
-            orca_keywords=scan_orca_keywords,
-            broken_sym=broken_sym,
-            charge=charge,
-            multiplicity=multiplicity,
-            PAL=PAL,
-            maxcore=maxcore,
-            metal_symbol=metal_symbol_scan,
-            metal_basis=metal_basis,
-            control_args=args,
-            qmmm_range=qmmm_range,
-            co2_indices=co2_indices,
-        )
-        plot_scan_result(os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat"))
+        run_inverse_rss_scan(atoms_adduct, adduct_xyz, args)
         return
 
     # --- 1) Align complex ---

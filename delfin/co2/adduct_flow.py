@@ -11,9 +11,9 @@ Orchestrates the steps that follow CO2 placement:
    ``run_xtb``; off by default so tests never execute ORCA).
 3. Coordination test: metal-substrate distance vs ``coord_max_dist``.
 4. Prepare (but do NOT execute) an OCCUPIER-ready job directory.
-5. Write ``adduct_flow_result.json`` with the outcome.
-
-The inverse-RSS scan logic is explicitly out of scope here.
+5. Optional automatic OCCUPIER pass (``run_occupier``).
+6. Optional automatic inverse RSS dissociation scan (``scan_dissoc``).
+7. Write ``adduct_flow_result.json`` with the outcome.
 """
 from __future__ import annotations
 
@@ -237,11 +237,11 @@ def run_adduct_flow(coordinator_outdir: str, workdir: Optional[str] = None) -> D
         print("[adduct_flow] run_xtb=false — skipping xTB step (dry run)")
 
     # c) coordination test: metal vs substrate anchor atom
-    substrate_idx = control.get("substrate_atom_index")
-    if substrate_idx is None or substrate_idx == "":
-        raise ValueError("[adduct_flow] CONTROL key 'substrate_atom_index' is required for the adduct flow.")
-    substrate_idx = int(substrate_idx)
     metal_idx = _coord.detect_metal_index(atoms)
+    substrate_symbol = _coord._clean_str(control.get("substrate_atom"))
+    substrate_idx_raw = control.get("substrate_atom_index")
+    substrate_idx = _coord._resolve_substrate_anchor(
+        atoms, metal_idx, substrate_symbol, substrate_idx_raw, source=current_xyz)
     distance = float(np.linalg.norm(atoms.positions[metal_idx] - atoms.positions[substrate_idx]))
 
     coord_max_dist = _coord._parse_float(control.get("coord_max_dist"), 3.0)
@@ -278,7 +278,21 @@ def run_adduct_flow(coordinator_outdir: str, workdir: Optional[str] = None) -> D
             else:
                 result["occupier_opt_xyz"] = occ_result.get("optimized_xyz")
 
-    # e) result JSON
+        # f) optional automatic inverse RSS (dissociation scan from optimized adduct)
+        if _coord._is_enabled(control.get("scan_dissoc", False)):
+            print("[adduct_flow] scan_dissoc=true — starting inverse RSS dissociation scan")
+            scan_xyz = result.get("occupier_opt_xyz") or current_xyz
+            scan_atoms = _coord._read_xyz_robust(scan_xyz)
+            try:
+                rss_result = _coord.run_inverse_rss_scan(
+                    scan_atoms, scan_xyz, control, workdir=workdir)
+                result["inverse_rss"] = rss_result
+                print(f"[adduct_flow] Inverse RSS scan finished: status={rss_result.get('status')}")
+            except Exception as exc:
+                print(f"[adduct_flow][WARN] Inverse RSS scan failed: {exc}")
+                result["inverse_rss"] = {"status": "error", "error": str(exc)}
+
+    # g) result JSON
     result_path = os.path.join(workdir, "adduct_flow_result.json")
     with open(result_path, "w", newline="\n") as f:
         json.dump(result, f, indent=2)

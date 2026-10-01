@@ -80,8 +80,71 @@ class TestRunAdductFlow:
 
     def test_missing_substrate_index_raises(self, tmp_path):
         d = _make_coordinator_dir(tmp_path, substrate_atom_index="")
-        with pytest.raises(ValueError, match="substrate_atom_index"):
+        with pytest.raises(ValueError, match="substrate_atom"):
             adduct_flow.run_adduct_flow(str(d), workdir=str(d))
+
+    def test_substrate_atom_symbol_resolves_anchor(self, tmp_path):
+        d = tmp_path / "CO2_coordination_sym"
+        d.mkdir()
+        _write_adduct_xyz(d / "complex_aligned_with_CO2.xyz", m_c_dist=2.1)
+        write_default_files(str(d / "CONTROL.txt"), str(d / "co2.xyz"))
+        text = (d / "CONTROL.txt").read_text()
+        text += (
+            "\nadduct_flow=true\nadduct_start_xyz=complex_aligned_with_CO2.xyz\n"
+            "substrate_atom=C\ncoord_max_dist=3.0\nrun_xtb=false\n"
+        )
+        (d / "CONTROL.txt").write_text(text)
+        result = adduct_flow.run_adduct_flow(str(d), workdir=str(d))
+        assert result["status"] == "coordinated"
+        assert result["metal_substrate_distance_A"] == pytest.approx(2.1, abs=1e-4)
+
+    def test_automatic_inverse_rss_triggered_after_occupier(self, tmp_path, monkeypatch):
+        d = _make_coordinator_dir(
+            tmp_path,
+            extra="run_occupier=true\nscan_dissoc=true\ndissoc_distance=4.0\nscan_steps=10\n"
+        )
+        api_calls = []
+        rss_calls = []
+
+        def fake_api_run(control_file="CONTROL.txt", **kwargs):
+            api_calls.append(control_file)
+            job_dir = os.path.dirname(control_file)
+            occ = os.path.join(job_dir, "adduct_OCCUPIER", "opt")
+            os.makedirs(occ, exist_ok=True)
+            with open(os.path.join(occ, "optimized.xyz"), "w") as f:
+                f.write("3\nopt\nNi 0 0 0\nC 0 0 1.95\nO 0 0 3.11\n")
+            return 0
+
+        def fake_write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index,
+                                         start_distance, end_distance, steps, **kwargs):
+            rss_calls.append({
+                "xyz_path": xyz_path,
+                "metal_index": metal_index,
+                "co2_c_index": co2_c_index,
+                "start_distance": start_distance,
+                "end_distance": end_distance,
+                "steps": steps,
+            })
+            scan_dir = os.path.join(os.path.dirname(xyz_path) or ".", "relaxed_surface_scan")
+            os.makedirs(scan_dir, exist_ok=True)
+            with open(os.path.join(scan_dir, "scan.relaxscanact.dat"), "w") as f:
+                f.write("# dummy scan data\n1.95 -100.0\n4.00 -99.8\n")
+
+        import delfin.api as api_mod
+        from delfin.co2 import CO2_Coordinator6 as coord_mod
+        monkeypatch.setattr(api_mod, "run", fake_api_run, raising=False)
+        monkeypatch.setattr(coord_mod, "write_orca_input_and_run", fake_write_orca_input_and_run)
+
+        result = adduct_flow.run_adduct_flow(str(d), workdir=str(d))
+
+        assert len(api_calls) == 1
+        assert len(rss_calls) == 1
+        assert rss_calls[0]["end_distance"] == pytest.approx(4.0)
+        assert rss_calls[0]["start_distance"] == pytest.approx(1.95, abs=1e-3)
+        assert rss_calls[0]["steps"] == 10
+        assert result["inverse_rss"]["status"] == "ok"
+        assert result["inverse_rss"]["start_distance"] == pytest.approx(1.95, abs=1e-3)
+        assert result["inverse_rss"]["end_distance"] == pytest.approx(4.0)
 
     def test_coordination_distance_is_reported(self, tmp_path):
         d = _make_coordinator_dir(tmp_path, m_c_dist=2.5)
