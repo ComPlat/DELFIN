@@ -18,5 +18,5 @@ runs in its own Python environment: its worker (``tool_workers/``) is started wi
 environment's interpreter and imports nothing from DELFIN.
 
 No input data ships with this package; lists, selections and results live in the run directory.
-See docs/CLUSTER_BATCH_JUSTUS.md.
+See docs/CONSTRUCTION_BATCH.md.
 """

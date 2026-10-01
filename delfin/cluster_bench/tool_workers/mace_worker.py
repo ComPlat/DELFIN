@@ -9,7 +9,7 @@ Same archive format as bench_worker.py: ARCHIVE_DIR/<REF>.xyz (multi-frame; comm
 ARCHIVE_DIR/_meta/<REF>.json.  Label = '<GEOM>-iso<k>-conf<j>': k = MACE stereomer index (the
 order of Complex.GetStereomers), j = conformer rank by MACE's MM energy.  MACE's centroid dummies
 of hapto ligands (element X in its xyz) are dropped; atom order otherwise as MACE emits it
-(the eye maps by graph isomorphism).  Runs in the epic-MACE environment, single-threaded.
+(compare structures by graph isomorphism).  Runs in the epic-MACE environment, single-threaded.
 
 Settings = the defaults of epic-MACE's CLI (mace/__main__.py: prepare_complexes +
 run_mace_for_system), with one deliberate exception (enantiomers are kept):
@@ -18,13 +18,13 @@ run_mace_for_system), with one deliberate exception (enantiomers are kept):
     (ComplexFromMol), exactly as the CLI does before a stereomer search;
   * stereomers: GetStereomers(regime='all', dropEnantiomers=False, minTransCycle=None,
     merRule=False): every arrangement at the metal AND every unassigned ligand stereocentre
-    (the held-out SMILES carry no stereo), enantiomers kept (the crystal is one of them;
-    MANTA and the eye distinguish them; CLI default would drop one of each pair).
+    (a SMILES without stereo marks leaves them open), enantiomers kept (MANTA keeps both,
+    too; the CLI default would drop one of each pair).
     minTransCycle=None = CLI default --trans-cycle unset (no chelate ring spans trans
     positions); merRule=False = CLI default (--mer-rule not given).  The library API default
     merRule=True was tried first and rejected: its empirical "rigid X-Y-Z only mer" rule
-    returns ZERO stereomers for fac-only tripods (scorpionate/tripodal tetradentates in the
-    pilot) and dropped 4 of 10 stereomers of a hexacoordinate pilot system;
+    returns ZERO stereomers for fac-only tripods (scorpionate/tripodal tetradentates) and
+    dropped 4 of 10 stereomers of a hexacoordinate test system;
   * 3D: AddConformers(numConfs=10, maxAttempts=10, rmsThresh=-1) per stereomer (the CLI default
     num-confs 10; its default rms-thresh 0.0 never removes a conformer, -1 is the same result
     without the RMS computations), then OrderConfsByEnergy.  Each conformer: RDKit distance

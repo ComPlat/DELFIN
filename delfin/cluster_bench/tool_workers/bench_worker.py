@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-"""Build ONE system with ONE competitor and write it in DELFIN's archive format.
+"""Build ONE system with ONE external builder and write it in DELFIN's archive format.
 
     bench_worker.py {architector|molsimplify} REFCODE SPECS.jsonl ARCHIVE_DIR WORK_DIR [--mode M]
 
 Writes ARCHIVE_DIR/<REFCODE>.xyz (multi-frame: count line, comment line, 'Sym x y z' lines;
 comment = '<REF> frame<i> <label> tool=<tool> E=<energy or na>') and
 ARCHIVE_DIR/_meta/<REFCODE>.json (status, n_frames, wall time, error).  Atom order is whatever
-the tool emits; the eye maps by graph isomorphism.  Runs in the Architector/molSimplify environment, single-threaded.
+the tool emits; compare structures by graph isomorphism, not by atom index.  Runs in the Architector/molSimplify environment, single-threaded.
 
 Architector modes:
   full    : n_conformers = n_symmetries = 10  -> every distinct symmetry (isomer) Architector

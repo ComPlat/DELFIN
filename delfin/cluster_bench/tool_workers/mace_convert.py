@@ -10,10 +10,10 @@ Input choice: the spec, i.e. the SAME metal / ligand SMILES / donor atoms (coord
 Architector and molSimplify get (bench_convert.py).  epic-MACE wants dative SMILES (donor -> metal,
 donor atoms carrying atom-map numbers, one central atom); the spec's free-ligand SMILES are written
 into exactly that form with the authors' own API (mace.ComplexFromLigands: ligand SMILES with
-mapped donors + central-atom SMILES).  Dative SMILES from a structure database are NOT used:
+mapped donors + central-atom SMILES).  Dative SMILES written by other programs are NOT used:
 for hapto systems they can differ in composition from the input SMILES (H on pi-bound C), and
 they write a hapto ligand as n separate dative bonds, which MACE cannot read either (it needs a
-centroid) -- see docs/CLUSTER_BATCH_JUSTUS.md.
+centroid) -- see docs/CONSTRUCTION_BATCH.md.
 
 Donor sites.  Donors of one ligand that are bonded to each other form one hapto group (eta-n,
 n >= 2); every other donor is one site.  A hapto group becomes one MACE centroid dummy [*:1]
@@ -223,7 +223,7 @@ def mace_convert(rec, geoms="paper"):
             "ox_outside_0_8": ox is None or not 0 <= ox <= 8}
     if n_sites == 4:
         # MACE's paper geometries have no tetrahedron: CN4 goes to SP.  Record where that is
-        # chemically unlikely (d10 / d0: tetrahedral in the CSD almost always).
+        # chemically unlikely (d10 / d0 centres with four donors are usually tetrahedral).
         info["cn4_tetrahedral_expected"] = d in (0, 10)
     g = list(GEOMS[geoms].get(n_sites, []))
     if geoms == "extended" and n_sites == 2 and n_hapto == 2:

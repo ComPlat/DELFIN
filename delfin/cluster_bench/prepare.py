@@ -232,10 +232,40 @@ def _write_set(root: Path, shards, specs) -> dict:
     return {"n_shards": len(shards), "n_systems": sum(len(s) for s in shards), "shards": table}
 
 
+#: Distribution (or, for epic-MACE, the probed file hash) that shows the tool is installed.
+_TOOL_PACKAGE = {"architector": "architector", "molsimplify": "molSimplify"}
+
+
+def cbatch_default_tool_python(tool) -> str:
+    """The interpreter an external builder runs in when ``--tool-python`` is not given: the
+    one DELFIN's own builders use (``DELFIN_<TOOL>_PYTHON``, else the environment DELFIN's
+    installer built for the tool, else this interpreter)."""
+    from delfin.common import external_builders as eb
+
+    py = eb.tool_python(tool)
+    if tool == "mace" and py == sys.executable:
+        raise SystemExit("epic-MACE runs in an environment of its own (Python 3.7): install it "
+                         "with  python -m delfin.installer --install epic-mace  or pass "
+                         "--tool-python (or set DELFIN_MACE_PYTHON)")
+    return py
+
+
+def cbatch_tool_missing(tool, tool_env: dict):
+    """A message when the probed tool environment does not have the tool, else None."""
+    if tool == "mace":
+        if tool_env.get("mace_files_sha256"):
+            return None
+    elif _TOOL_PACKAGE[tool] in tool_env.get("packages", {}):
+        return None
+    from delfin.common import external_builders as eb
+
+    return eb.not_installed_message(tool, tool_env.get("executable", "?"))
+
+
 def cbatch_prepare(*, tool, input_list, run_dir, selection=None, specs_file=None, size=None,
                    salt="delfin-cluster-v1", mode=None, tool_python=None, timeout_base=21600,
                    speed_factor=1.0, workers=None, threads=None, repeat=0, spec_workers=8,
-                   label=None) -> dict:
+                   label=None, check_tool=True) -> dict:
     if tool not in TOOLS:
         raise SystemExit(f"unknown tool {tool!r}; one of {sorted(TOOLS)}")
     t = TOOLS[tool]
@@ -243,8 +273,7 @@ def cbatch_prepare(*, tool, input_list, run_dir, selection=None, specs_file=None
     if mode not in MODES[tool]:
         raise SystemExit(f"mode {mode!r} not valid for {tool}: {MODES[tool]}")
     if t["needs_specs"] and not tool_python:
-        raise SystemExit(f"{tool} runs in its own environment: pass --tool-python "
-                         f"(e.g. $WS/{'mace' if tool == 'mace' else 'bench'}_env/bin/python)")
+        tool_python = cbatch_default_tool_python(tool)
     tool_python = str(Path(tool_python).absolute()) if tool_python else sys.executable
     run = Path(run_dir)
     if run.exists():
@@ -266,6 +295,10 @@ def cbatch_prepare(*, tool, input_list, run_dir, selection=None, specs_file=None
     for key in ("delfin_env", "tool_env"):
         if "error" in prov.get(key, {}):
             raise SystemExit(f"{key}: the interpreter could not be probed: {prov[key]['error']}")
+    if t["needs_specs"] and check_tool:
+        missing = cbatch_tool_missing(tool, prov.get("tool_env", {}))
+        if missing:
+            raise SystemExit(missing)
     run.mkdir(parents=True)
     sets = {"main": _write_set(run / "shards" / "main", shards, specs)}
     if rep_rows:

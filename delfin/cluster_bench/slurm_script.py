@@ -1,6 +1,6 @@
 """The Slurm array script of a run: one shard per array task, one full node per task.
 
-Defaults for JUSTUS 2 (48-core nodes, 72 h maximum wall time): ``--cpus-per-task=48``,
+Defaults fit a 48-core node and a 72 h wall-time limit (JUSTUS 2, for example): ``--cpus-per-task=48``,
 ``--time=72:00:00``, array throttle ``%N``.  The per-system limit is NOT the job's wall time: it is
 ceil(timeout_base x speed_factor) inside the runner.  A task that reaches the job's wall time
 leaves its finished systems in place; resubmitting the same index continues it.

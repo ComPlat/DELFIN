@@ -6,8 +6,8 @@ Run by path, never imported: the construction switches must be in the environmen
 ``delfin`` is imported, and a fresh process per system keeps every build independent of the one
 before it (module caches, RDKit state, peak memory).
 
-What the build is -- the same call the campaign harness of the MANTA paper makes for every
-system, so a cluster run and a local reference run give the same bytes:
+What the build is -- the same call for every system, so a cluster run and a run on a
+workstation with the same code and environment give the same bytes:
 
 * the construction switches of ``delfin.cli_manta.construction_env(CONFIG)`` (``champion`` =
   the shipped MANTA construction).  If they cannot be read the build STOPS (exit 3): a guessed

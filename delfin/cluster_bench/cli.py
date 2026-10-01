@@ -31,7 +31,8 @@ def cbatch_parser() -> argparse.ArgumentParser:
     p.add_argument("--specs", default=None,
                    help="precomputed specs (JSONL, one per ID) instead of computing them")
     p.add_argument("--tool-python", default=None,
-                   help="interpreter of the tool's own environment (external builders)")
+                   help="interpreter of the tool's own environment (external builders); default: "
+                        "DELFIN_<TOOL>_PYTHON, else the environment DELFIN's installer built, else this one")
     p.add_argument("--mode", default=None,
                    help="; ".join(f"{t}: {'/'.join(m)}" for t, m in MODES.items()))
     p.add_argument("--shard-size", type=int, default=None, help="manta 500, others 250")

@@ -36,7 +36,7 @@ from delfin.cluster_bench.provenance import (HERE, REPO_ROOT, WORKERS_DIR, cbatc
                                              cbatch_provenance, cbatch_provenance_mismatch,
                                              cbatch_sha256_file, cbatch_tool_child_env)
 
-_SANITISE_PREFIXES = ("DELFIN_", "WEDDELL_", "LOOP_", "EYE_")
+_SANITISE_PREFIXES = ("DELFIN_",)
 _SANITISE_KEYS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
                   "NUMEXPR_NUM_THREADS", "PYTHONHASHSEED", "PYTHONPATH", "PYTHONSTARTUP")
 MANTA_STATUSES = ("ok", "empty", "timeout", "fail")
@@ -44,7 +44,7 @@ MANTA_STATUSES = ("ok", "empty", "timeout", "fail")
 
 def cbatch_manta_env() -> dict:
     """The build environment: inherited variables that could change a build are removed
-    (every DELFIN_/WEDDELL_/LOOP_/EYE_ switch, thread counts, hash seed, PYTHONPATH), then the
+    (every DELFIN_ switch, thread counts, hash seed, PYTHONPATH), then the
     fixed settings.  The construction switches come from the child itself.  PYTHONNOUSERSITE is
     inherited (the sbatch script sets it), see provenance.cbatch_tool_child_env."""
     env = {k: v for k, v in os.environ.items()

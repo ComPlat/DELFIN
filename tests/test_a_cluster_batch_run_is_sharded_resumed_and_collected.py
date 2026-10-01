@@ -200,7 +200,7 @@ def test_an_external_builder_shard_gives_every_class(tmp_path, monkeypatch):
     specs.write_text("".join(json.dumps({"refcode": i, "status": "split_failed" if i == "NE1" else "ok",
                                          "bail": "radical_in_ligand", "cn": 4}) + "\n" for i in ids))
     cp.cbatch_prepare(tool="molsimplify", input_list=inp, run_dir=tmp_path / "run", specs_file=specs,
-                      tool_python=sys.executable, timeout_base=2, size=4)
+                      tool_python=sys.executable, timeout_base=2, size=4, check_tool=False)
     assert crun.cbatch_run_shard(tmp_path / "run", 0, log=lambda m: None) == 0
     assert crun.cbatch_run_shard(tmp_path / "run", 1, log=lambda m: None) == 0
     s = crep.cbatch_collect(tmp_path / "run")
@@ -229,3 +229,37 @@ def test_the_code_is_compared_by_content_and_by_commit_only_where_both_know_it()
     assert cprov.cbatch_provenance_mismatch(a, no_git) == []
     other = {"code": {"commit": "abc", "code_sha256": "2"}, "tool_env": {"python": "3.11"}}
     assert cprov.cbatch_provenance_mismatch(a, other) == ["code", "tool_env"]
+
+
+# ---------------------------------------------------------------- the tool's interpreter
+
+
+def test_the_tool_interpreter_defaults_to_the_one_delfins_builders_use(tmp_path, monkeypatch):
+    fake = tmp_path / "py"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("DELFIN_MOLSIMPLIFY_PYTHON", str(fake))
+    assert cp.cbatch_default_tool_python("molsimplify") == str(fake)
+    monkeypatch.delenv("DELFIN_MACE_PYTHON", raising=False)
+    monkeypatch.setenv("DELFIN_AI_TOOLS_ROOT", str(tmp_path / "no_tools_here"))
+    with pytest.raises(SystemExit, match="epic-mace"):
+        cp.cbatch_default_tool_python("mace")
+
+
+def test_an_environment_without_the_tool_is_refused_before_anything_is_written():
+    assert cp.cbatch_tool_missing("architector", {"packages": {"architector": "0.0.10"}}) is None
+    assert "molSimplify" in cp.cbatch_tool_missing("molsimplify", {"packages": {}, "executable": "x"})
+    assert cp.cbatch_tool_missing("mace", {"mace_files_sha256": "ab"}) is None
+    assert "epic-MACE" in cp.cbatch_tool_missing("mace", {"packages": {}})
+
+
+def test_the_batch_code_and_its_guide_name_no_private_place():
+    root = Path(cp.__file__).resolve().parent
+    texts = {p: p.read_text() for p in root.rglob("*.py")}
+    guide = root.parent.parent / "docs" / "CONSTRUCTION_BATCH.md"
+    texts[guide] = guide.read_text()
+    for path, text in texts.items():
+        low = text.lower()
+        for word in ("agent_workspace", "/home/", "weddell", "delfin-backup", "heldout",
+                     "batch_v2", "ccdc", "csd "):
+            assert word not in low, f"{path}: {word}"
