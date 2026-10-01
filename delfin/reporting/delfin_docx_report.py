@@ -2294,7 +2294,9 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
         import numpy as np
         from ase.io import read, write
     except ImportError as e:
-        logger.warning(f"PyMOL or required dependencies not available; skipping dipole moment plot: {e}")
+        from delfin.reporting.esp_report import PYMOL_MISSING_NOTICE
+
+        logger.warning("Dipole moment plot: %s (%s)", PYMOL_MISSING_NOTICE, e)
         return None
 
     # Get dipole moment from data
@@ -2509,7 +2511,9 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
         import pymol
         from pymol import cmd
     except ImportError:
-        logger.warning("PyMOL not available; skipping MO visualizations")
+        from delfin.reporting.esp_report import PYMOL_MISSING_NOTICE
+
+        logger.warning("MO pictures: %s", PYMOL_MISSING_NOTICE)
         return {}
 
     # Try S0.gbw first, fallback to initial.gbw in parent directory

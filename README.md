@@ -153,6 +153,8 @@ pip install -e ".[agent,docs,dev]"
 
 All Python dependencies (RDKit/Open Babel for SMILES workflows, ipywidgets/py3Dmol for dashboard visualisation, python-docx for reports) are installed automatically. This exposes the console command **`delfin`** and enables `python -m delfin`.
 
+PyMOL is optional. It renders the ESP, dipole-moment and orbital pictures of the Word and ESD reports; without it those pictures are skipped with a notice in the log and everything else works. Install it with the `pymol` extra, `pip install "delfin-complat[pymol]"` (or `-e ".[pymol]"` from source). Its PyPI wheels need glibc 2.35 or newer, so on RHEL 9 and its clones (glibc 2.34, the usual HPC login nodes) the extra does not resolve; leave it out there.
+
 #### Reference environment for reproducible MANTA builds
 
 `pyproject.toml` admits version ranges, so a plain `pip install` resolves whatever is newest inside them, and MANTA geometry comes out of RDKit, Open Babel and numpy. The published MANTA structures were built with **CPython 3.12.11, numpy 2.2.2, RDKit 2025.9.3, openbabel-wheel 3.1.1.22, SciPy 1.16.2, NetworkX 3.1 and stk 2026.1.4.0**; [`env/reference-environment.lock`](env/reference-environment.lock) lists every Python package of that interpreter at its exact version. To rebuild against it, use it as a constraints file:
@@ -163,7 +165,7 @@ source .venv/bin/activate
 pip install -e ".[agent,docs,dev]" -c env/reference-environment.lock
 ```
 
-A byte-identical rebuild of published structures is only to be expected in this environment. CI installs it on every push (job *reference environment* in `.github/workflows/ci.yml`) and runs the MANTA tests in it, so the file keeps resolving and the construction keeps passing there.
+A byte-identical rebuild of published structures is only to be expected in this environment. CI installs it on every push (job *reference environment* in `.github/workflows/ci.yml`) and runs the MANTA tests in it, so the file keeps resolving and the construction keeps passing there. The lock also pins `pymol-open-source`; as a constraint that only takes effect when the `pymol` extra is requested, so the command above does not ask for it and resolves on glibc 2.34 systems (RHEL 9) as well. The construction does not use PyMOL, so the rebuild is the same with or without it.
 
 External QM binaries are not installed by `pip`. For the local binary-based setup of `xtb`, `crest`, `xtb4stda`, `stda`, `std2` and the `xtb4stda` runtime bundle, see `delfin/qm_tools/README.txt`.
 
