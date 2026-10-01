@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from conftest import child_env
 from delfin.dashboard import construction_batch as cb
 
 LIST = ("cisplatin;[Cl][Pt-2]([Cl])([NH3+])[NH3+]\n"
@@ -46,7 +47,7 @@ def test_the_dashboard_and_the_cli_prepare_the_same_run_directory(tmp_path):
     done = subprocess.run([sys.executable, "-m", "delfin", "cluster", "prepare", "--tool", "manta",
                            "--input", str(inp), "--run-dir", str(cli), "--shard-size", "2",
                            "--timeout", "600", "--speed-factor", "1.3", "--repeat", "1"],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, env=child_env(tmp_path))
     assert done.returncode == 0, done.stderr
 
     a, b = _run_dir_bytes(dash), _run_dir_bytes(cli)

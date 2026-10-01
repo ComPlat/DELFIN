@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import child_env
 
 pytest.importorskip("rdkit")
 
@@ -169,7 +170,7 @@ def test_the_mace_potential_is_not_taken_for_epic_mace(tmp_path):
     request = tmp_path / "request.json"
     result = tmp_path / "result.json"
     request.write_text(json.dumps({"smiles": CISPLATIN, "work": str(tmp_path), "options": {}}))
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(REPO), str(tmp_path / "site")]))
+    env = {**child_env(tmp_path), "PYTHONPATH": os.pathsep.join([str(REPO), str(tmp_path / "site")])}
     subprocess.run([sys.executable, "-m", "delfin.common.external_builders", "mace",
                     str(request), str(result)], env=env, check=True, timeout=120)
     answer = json.loads(result.read_text())
