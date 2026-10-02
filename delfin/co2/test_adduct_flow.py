@@ -83,6 +83,44 @@ class TestRunAdductFlow:
         with pytest.raises(ValueError, match="substrate_atom"):
             adduct_flow.run_adduct_flow(str(d), workdir=str(d))
 
+    def test_substrate_atom_with_ambiguous_complex_carbons(self, tmp_path):
+        """The complex has C ligands NEARER to the metal than the substrate C.
+
+        Mirrors calc 81-105_87_sub_irss: 9 complex C atoms within 3 A made
+        substrate_atom=C raise 'ambiguous'. The anchor search must be
+        restricted to the substrate tail (co2= sequence matches the last
+        atoms of the placement geometry).
+        """
+        d = tmp_path / "CO2_coordination_amb"
+        d.mkdir()
+        co2_xyz = d / "co2.xyz"
+        co2_xyz.write_text("3\nCO2\nO 0 0 -1.0\nC 0 0 0.0\nO 0 0 1.16\n")
+        # Placement geometry: complex with 3 C ligands close to the metal,
+        # then the CO2 tail (O, C, O — same sequence as co2.xyz).
+        xyz = d / "complex_aligned_with_CO2.xyz"
+        xyz.write_text(
+            "7\ncomplex + CO2\n"
+            "Ni  0.0 0.0 0.0\n"
+            "C   0.0 1.9 0.0\n"    # complex ligand, 1.9 A
+            "C   0.0 2.5 0.0\n"    # complex ligand, 2.5 A
+            "C   0.0 2.7 0.0\n"    # complex ligand, 2.7 A
+            "O   0.0 0.0 4.05\n"   # substrate tail
+            "C   0.0 0.0 5.05\n"   # substrate C, 5.05 A from metal
+            "O   0.0 0.0 6.21\n"
+        )
+        write_default_files(str(d / "CONTROL.txt"), str(co2_xyz))
+        text = (d / "CONTROL.txt").read_text()
+        text += (
+            "\nadduct_flow=true\nadduct_start_xyz=complex_aligned_with_CO2.xyz\n"
+            "substrate_atom=C\ncoord_max_dist=7.0\nrun_xtb=false\n"
+        )
+        (d / "CONTROL.txt").write_text(text)
+        result = adduct_flow.run_adduct_flow(str(d), workdir=str(d))
+        assert result["status"] == "coordinated"
+        # The resolved anchor must be the SUBSTRATE C (index 5), not a
+        # complex C ligand (indices 1-3, all closer to the metal).
+        assert result["metal_substrate_distance_A"] == pytest.approx(5.05, abs=0.01)
+
     def test_general_substrate_co_end_on_flow(self, tmp_path):
         d = tmp_path / "CO_coordination"
         d.mkdir()

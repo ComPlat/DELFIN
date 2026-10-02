@@ -621,7 +621,8 @@ def detect_metal_index(atoms):
     return c[0] if len(c) == 1 else max(c, key=lambda i: atoms[i].number)
 
 
-def _resolve_substrate_anchor(atoms, metal_idx, substrate_symbol, substrate_idx_raw, source="adduct"):
+def _resolve_substrate_anchor(atoms, metal_idx, substrate_symbol, substrate_idx_raw, source="adduct",
+                              allowed_indices=None):
     """Identify the substrate anchor atom index in an adduct geometry.
 
     Precedence:
@@ -629,6 +630,13 @@ def _resolve_substrate_anchor(atoms, metal_idx, substrate_symbol, substrate_idx_
       2. ``substrate_atom`` (element symbol, e.g. "C" or "N") — picks the
          atom of that element closest to the metal. If several are within
          1.0 A of the minimum distance, raises ValueError for ambiguity.
+
+    ``allowed_indices`` restricts the element-symbol search to substrate
+    atoms (e.g. the tail of a placement geometry). Without it the closest
+    match may be a ligand atom of the COMPLEX itself — the cobalt complex
+    of calc 81-105_87_sub_irss has 9 C atoms within 3 A of the metal,
+    which made substrate_atom=C ambiguous even though the CO2 C was
+    unambiguous within the substrate.
     """
     if substrate_idx_raw is not None and str(substrate_idx_raw).strip() != "":
         raw = str(substrate_idx_raw).strip()
@@ -647,9 +655,11 @@ def _resolve_substrate_anchor(atoms, metal_idx, substrate_symbol, substrate_idx_
         return idx
     if substrate_symbol:
         sym = substrate_symbol.strip()
+        allowed = set(allowed_indices) if allowed_indices is not None else None
         candidates = [i for i, a in enumerate(atoms)
                       if a.symbol.capitalize() == sym.capitalize()
-                      and i != metal_idx]
+                      and i != metal_idx
+                      and (allowed is None or i in allowed)]
         if not candidates:
             raise ValueError(
                 f"substrate_atom={sym}: no {sym} atom found in '{source}' "

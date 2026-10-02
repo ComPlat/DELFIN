@@ -207,6 +207,33 @@ def _find_latest_optimized_xyz(job_dir: str) -> Optional[str]:
     return max(candidates)[1]
 
 
+def _substrate_indices(atoms, control: Dict[str, Any], coordinator_outdir: str) -> Optional[List[int]]:
+    """Indices of the substrate atoms at the tail of the placement geometry.
+
+    ``place_co2_general`` appends the substrate after the complex, so the
+    tail of the geometry IS the substrate. The tail is matched against the
+    substrate xyz file given as ``co2=`` in the CONTROL: when the last
+    n_substrate atoms have exactly the substrate's element sequence, those
+    indices are returned; otherwise None (caller falls back to searching
+    the whole geometry).
+    """
+    substrate_path = _coord._clean_str(control.get("co2")) or "co2.xyz"
+    if not os.path.isabs(substrate_path):
+        substrate_path = os.path.join(coordinator_outdir, substrate_path)
+    try:
+        substrate_atoms = _coord._read_xyz_robust(substrate_path)
+    except Exception:
+        return None
+    n_sub = len(substrate_atoms)
+    if n_sub == 0 or n_sub > len(atoms):
+        return None
+    sub_seq = [a.symbol for a in substrate_atoms]
+    tail_seq = [a.symbol for a in atoms[len(atoms) - n_sub:]]
+    if tail_seq == sub_seq:
+        return list(range(len(atoms) - n_sub, len(atoms)))
+    return None
+
+
 def run_adduct_flow(coordinator_outdir: str, workdir: Optional[str] = None) -> Dict[str, Any]:
     """Run the automatic CO2 adduct chain.
 
@@ -240,8 +267,10 @@ def run_adduct_flow(coordinator_outdir: str, workdir: Optional[str] = None) -> D
     metal_idx = _coord.detect_metal_index(atoms)
     substrate_symbol = _coord._clean_str(control.get("substrate_atom"))
     substrate_idx_raw = control.get("substrate_atom_index")
+    allowed = _substrate_indices(atoms, control, coordinator_outdir)
     substrate_idx = _coord._resolve_substrate_anchor(
-        atoms, metal_idx, substrate_symbol, substrate_idx_raw, source=current_xyz)
+        atoms, metal_idx, substrate_symbol, substrate_idx_raw, source=current_xyz,
+        allowed_indices=allowed)
     distance = float(np.linalg.norm(atoms.positions[metal_idx] - atoms.positions[substrate_idx]))
 
     coord_max_dist = _coord._parse_float(control.get("coord_max_dist"), 3.0)
