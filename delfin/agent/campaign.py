@@ -366,6 +366,12 @@ class Campaign:
     stagnation_tolerance: float = 0.01
     observations: dict = field(default_factory=dict)   # index -> gap_eV
     _best_score: float = math.inf
+    # The scheduler is set by the caller (a workflow step or the agent
+    # runtime).  Anything duck-typing Scheduler.schedule_once works --
+    # tests pass a recorder; the real thing is
+    # delfin.agent.scheduler.get_scheduler().
+    scheduler: Any = None
+    workspace: str = ""
 
     # --- decisions ---------------------------------------------------
 
@@ -377,9 +383,45 @@ class Campaign:
         """The condition (if any) that justifies waking the model."""
         if self.budget.exhausted:
             return DecisionReason.BUDGET
-        if self.best_score() <= self._best_score + self.stagnation_tolerance:
+        # Stagnation needs data: a campaign that has measured nothing
+        # is not stagnated (best_score() is inf, and inf <= inf + tol
+        # would otherwise fire "stagnation" on an empty loop).
+        if self.observations and \
+                self.best_score() <= self._best_score + self.stagnation_tolerance:
             return DecisionReason.STAGNATION
         return None
+
+    def report_to_scheduler(self, *, delay_seconds: int = 60) -> Optional[dict]:
+        """Set the LLM-free wake-up if (and only if) one is justified.
+
+        The model is woken ONLY on failure, stagnation or budget
+        exhaustion — the same rule ``campaign_should_wake`` pins.  A
+        healthy loop never sets a wake-up and returns ``None``.  The
+        wake-up itself goes through DELFIN's own
+        ``Scheduler.schedule_once`` (delfin/agent/scheduler.py:360),
+        with the campaign folder as workspace so the woken turn finds
+        its own decision log and observations.
+        """
+        reason = self._wake_reason()
+        if reason is None or not campaign_should_wake(reason=reason):
+            return None
+        self._decide(WAKE, reason, {
+            "best_score": self.best_score(),
+            "n_observations": len(self.observations),
+        })
+        if self.scheduler is None:
+            return None
+        summary = (
+            f"campaign wake-up ({reason}): "
+            f"{len(self.observations)}/{self.budget.max_evaluations} "
+            f"evaluations done, best score {self.best_score():.3f} "
+            f"(target {self.target.target_eV} eV). "
+            f"Decision log: {self.log.path}"
+        )
+        return self.scheduler.schedule_once(
+            delay_seconds=delay_seconds, prompt=summary,
+            reason=reason, workspace=str(self.workspace or self.work_dir),
+        )
 
     def best_score(self) -> float:
         if not self.observations:
