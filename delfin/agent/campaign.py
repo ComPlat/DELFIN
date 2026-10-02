@@ -198,13 +198,21 @@ def score_candidate(*, params: dict, value: float, target: TargetGap) -> dict:
 # ---------------------------------------------------------------------------
 
 
+#: Fixed seed for the seed design AND the random baseline: a campaign
+#: must be reproducible run to run — the Bayes-vs-random comparison is
+#: only a statement about the acquisition if both sides sample the same
+#: deterministic design.
+_CAMPAIGN_SEED = 0
+
+
 def _latin_hypercube_points(space_size: int, n: int,
                             rng: Optional[np.random.Generator] = None,
                             ) -> list[int]:
     """Seed design: ``n`` distinct indices via scipy qmc Latin hypercube.
 
     Falls back to even spreading if qmc is unavailable, so the module
-    never hard-depends on a scipy minor feature.
+    never hard-depends on a scipy minor feature.  Deterministic by
+    default (fixed module seed) — pass ``rng`` for a different stream.
     """
     n = min(n, space_size)
     if n <= 0:
@@ -215,9 +223,27 @@ def _latin_hypercube_points(space_size: int, n: int,
         stride = max(1, space_size // max(n, 1))
         return sorted({min(i * stride, space_size - 1)
                        for i in range(n)})[:n]
+    if rng is None:
+        rng = np.random.default_rng(_CAMPAIGN_SEED)
     sampler = LatinHypercube(d=1, seed=rng)
     sample = sampler.random(n).ravel()
     return sorted({int(s * space_size) for s in sample})[:n]
+
+
+def _seed_indices(remaining: Sequence, n: int) -> list:
+    """Deterministic seed design over the REMAINING candidates.
+
+    ``remaining`` is the candidate list after blocking observations and
+    failures.  The fixed-seed LHS design is generated ONCE over that
+    list — so with ``n=1`` per round, the next round gets the NEXT
+    design point instead of re-drawing the same first point (a fixed
+    seed with n=1 would otherwise re-propose the same candidate until
+    the budget burns on one index).  Already-visited positions are
+    consumed: the design state lives in the caller, not here.
+    """
+    design = _latin_hypercube_points(len(remaining),
+                                     min(n, len(remaining)))
+    return [remaining[p] for p in design]
 
 
 def _gp_surrogate(x: np.ndarray, y: np.ndarray):
@@ -251,18 +277,31 @@ def expected_improvement(gap_eV: float, y_best: float,
 
 def select_next(space: Sequence, observations: dict,
                 n: int = 1, target: Optional[TargetGap] = None,
-                seed_used: int = 0) -> list:
+                seed_used: int = 0, excluded: Optional[set] = None,
+                seed_offset: int = 0) -> list:
     """Pick the next ``n`` candidates.
 
-    With no (or too few) observations, Latin-hypercube seeding.  With
-    data, EI on a GP surrogate over the SCORES — never proposing a
-    point already observed.
+    With no (or too few) observations, Latin-hypercube seeding over the
+    REMAINING candidates; ``seed_offset`` advances the deterministic
+    design so consecutive seeding rounds do not re-draw the same first
+    point (a fixed seed with n=1 would otherwise re-propose the same
+    candidate until the budget burns on one index).  With data, EI on a
+    GP surrogate over the SCORES — never proposing a point already
+    observed.  ``excluded`` marks candidates the loop already burned
+    budget on WITHOUT getting a value (failed conversion, failed xtb):
+    re-proposing them would spend the budget on a candidate that
+    provably yields nothing.
     """
-    untried = [i for i in range(len(space)) if i not in observations]
+    blocked = set(observations) | set(excluded or set())
+    untried = [i for i in range(len(space)) if i not in blocked]
     if not untried:
         return []
     if len(observations) < max(2, seed_used):
-        return _latin_hypercube_points(len(untried), n)
+        # Advance the fixed design by the offset, then take the next n.
+        design = _latin_hypercube_points(len(untried),
+                                         len(untried))
+        design = [untried[p] for p in design[seed_offset % len(design):]]
+        return design[:n]
     target = target or TargetGap(None)
     x = np.array([i / max(len(space) - 1, 1)
                   for i in sorted(observations)]).reshape(-1, 1)
@@ -322,17 +361,11 @@ def _evaluate_with_xtb(geom_xyz: str, work_dir: str | Path,
     Returns ``{"value": gap_eV, "error": None}`` or
     ``{"value": None, "error": "..."}`` on failure.
     """
-    import os
-    from delfin.tools._runner import run_step
-
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)
     geometry = work / "geometry.xyz"
     geometry.write_text(geom_xyz, encoding="utf-8")
 
-    # Resolve xtb the way DELFIN does, and hand the adapter an env
-    # whose PATH carries it (see _xtb_binary_env).
-    env = _xtb_binary_env()
     from delfin.tools._registry import get as get_adapter
     adapter = get_adapter("xtb_sp")
     if adapter is None:
@@ -341,8 +374,8 @@ def _evaluate_with_xtb(geom_xyz: str, work_dir: str | Path,
         work, geometry=geometry, cores=cores,
         charge=charge, mult=mult, method="gfn2",
     )
-    if getattr(result, "status", None) is not None and \
-            getattr(result, "status", "").name == "FAILED":
+    status = getattr(result, "status", None)
+    if status is not None and getattr(status, "name", "") == "FAILED":
         return {"value": None,
                 "error": str(getattr(result, "error", "xtb failed"))}
     data = getattr(result, "data", None) or {}
@@ -350,6 +383,53 @@ def _evaluate_with_xtb(geom_xyz: str, work_dir: str | Path,
     if gap is None:
         return {"value": None, "error": "no HOMO-LUMO gap in xtb output"}
     return {"value": float(gap), "error": None}
+
+
+def _smiles_to_geometry(smiles: str, work_dir: str | Path) -> dict:
+    """SMILES -> XYZ via DELFIN's existing converter (no rebuild).
+
+    Uses ``delfin.smiles_converter.smiles_to_xyz`` (RDKit ETKDG, see
+    delfin/manta/single_structure.py:349).  Returns
+    ``{"xyz": str, "error": None}`` or ``{"xyz": None, "error": ...}``.
+    """
+    try:
+        from delfin.smiles_converter import smiles_to_xyz
+    except Exception as exc:                       # pragma: no cover
+        return {"xyz": None, "error": f"converter import failed: {exc}"}
+    try:
+        xyz_content, error = smiles_to_xyz(smiles)
+    except Exception as exc:
+        return {"xyz": None, "error": f"SMILES conversion failed: {exc}"}
+    if not xyz_content:
+        return {"xyz": None,
+                "error": str(error or "SMILES conversion returned nothing")}
+    return {"xyz": xyz_content, "error": None}
+
+
+def _evaluate_candidate(smiles: str, work_dir: str | Path,
+                        log: Optional[DecisionLog] = None,
+                        index: int = -1,
+                        *, charge: int = 0, mult: int = 1,
+                        cores: int = 1) -> dict:
+    """Full candidate chain: SMILES -> XYZ -> xtb_sp -> gap.
+
+    Every sub-step failure is returned as ``{"value": None, "error"}``
+    so the loop logs it as a FAILURE and wakes the model — the only
+    failure path that is allowed to.
+    """
+    work = Path(work_dir)
+    work.mkdir(parents=True, exist_ok=True)
+    geom = _smiles_to_geometry(smiles, work)
+    if log is not None:
+        log.record(CampaignDecision(
+            kind="convert",
+            reason="ok" if geom["xyz"] else "failed",
+            payload={"index": index, "smiles": smiles,
+                     "error": geom["error"]}))
+    if geom["xyz"] is None:
+        return {"value": None, "error": geom["error"]}
+    return _evaluate_with_xtb(geom["xyz"], work, charge=charge,
+                              mult=mult, cores=cores)
 
 
 @dataclass
@@ -365,6 +445,14 @@ class Campaign:
     stagnation_rounds: int = 3
     stagnation_tolerance: float = 0.01
     observations: dict = field(default_factory=dict)   # index -> gap_eV
+    # Candidates whose evaluation produced NO value (failed conversion
+    # or failed xtb).  Budget was burned; the acquisition must never
+    # re-propose them.
+    failed: set = field(default_factory=set)
+    # How many points of the deterministic seed design are already
+    # consumed — what makes consecutive one-point seeding rounds walk
+    # the design instead of re-drawing its first point.
+    _seed_offset: int = 0
     _best_score: float = math.inf
     # The scheduler is set by the caller (a workflow step or the agent
     # runtime).  Anything duck-typing Scheduler.schedule_once works --
@@ -443,3 +531,100 @@ class Campaign:
                 break
             self._decide(EVALUATE, DecisionReason.EVALUATE, {"index": p})
         return picks
+
+    # --- chemistry evaluation ------------------------------------------
+
+    def evaluate_candidates(self, *, strategy: str = "ei") -> list[dict]:
+        """Run candidate evaluations until budget or stagnation stops.
+
+        One cycle per call: acquire, evaluate, log.  Repeated calls
+        continue an existing campaign (resume) and are bounded by the
+        same budget.  ``strategy`` selects the acquisition family —
+        ``"ei"`` (default) is the GP/EI loop, ``"random"`` is the
+        fixed-seed Latin-hypercube baseline for the demo comparison.
+        """
+        if self.budget.exhausted:
+            self._decide(STOP, DecisionReason.BUDGET, {})
+            return []
+        evaluations: list[dict] = []
+        while not self.budget.exhausted:
+            blocked = set(self.observations) | self.failed
+            if strategy == "random":
+                # Baseline: the fixed-seed LHS design over the remaining
+                # space, advanced by the seed offset — no surrogate, no
+                # EI.  The offset is what makes consecutive one-point
+                # rounds walk the design instead of re-drawing point 0.
+                untried = [i for i in range(len(self.space))
+                           if i not in blocked]
+                design = _latin_hypercube_points(len(untried), len(untried))
+                if not design:
+                    break
+                picks = [untried[design[self._seed_offset % len(design)]]]
+            else:
+                picks = select_next(self.space, self.observations, n=1,
+                                    target=self.target,
+                                    seed_used=self.seed_used,
+                                    excluded=self.failed,
+                                    seed_offset=self._seed_offset)
+            if not picks:
+                break
+            for p in picks:
+                if self.budget.exhausted or not self.budget.spend():
+                    break
+                self._seed_offset += 1
+                evaluations.append(self._evaluate_one(p))
+            self._decide(ACQUIRE, DecisionReason.ACQUIRE,
+                         {"strategy": strategy, "picked": picks})
+            if self._stagnated():
+                self._decide(STOP, DecisionReason.STAGNATION, {
+                    "best_score": self.best_score()})
+                break
+        self._best_score = self.best_score() if self.observations \
+            else math.inf
+        return evaluations
+
+    def _stagnated(self) -> bool:
+        """Best score failed to improve over the last window."""
+        if not self.observations:
+            return False
+        scores = [self.target.score(v)
+                  for v in self.observations.values()]
+        if len(scores) < self.stagnation_rounds:
+            return False
+        window = scores[-self.stagnation_rounds:]
+        return max(window) - min(window) < self.stagnation_tolerance
+
+    def _evaluate_one(self, index: int) -> dict:
+        """Evaluate one candidate and log the observation."""
+        work = Path(self.work_dir) / f"candidate_{index}"
+        smiles = str(self.space[index])
+        # The real chemistry: DELFIN's existing converter for the
+        # geometry, then the registered xtb_sp adapter for the gap.
+        result = _evaluate_candidate(smiles, work, self.log, index)
+        self._decide(EVALUATE, DecisionReason.EVALUATE, {
+            "index": index,
+            "params": {"smiles": smiles},
+            "value": result.get("value"),
+            "error": result.get("error"),
+        })
+        if result.get("value") is None:
+            # A burned candidate: budget was spent and no value came
+            # back.  Record it as failed so the acquisition never
+            # re-proposes it — re-running a provably useless candidate
+            # is the fastest way to waste a budget cap.
+            self.failed.add(index)
+            self._decide(WAKE, DecisionReason.FAILURE, {
+                "index": index, "error": result.get("error")})
+            return {"index": index, "error": result.get("error")}
+        self.observations[index] = float(result["value"])
+        return {"index": index, "value": float(result["value"]),
+                "score": self.target.score(result["value"])}
+
+    def best_observations(self) -> dict:
+        """index -> {params, value, score} for every observed candidate."""
+        out: dict = {}
+        for idx, value in self.observations.items():
+            out[idx] = score_candidate(
+                params={"smiles": str(self.space[idx])},
+                value=value, target=self.target)
+        return out
