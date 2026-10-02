@@ -1745,9 +1745,15 @@ def main():
     adduct_xyz = (args.get("adduct_xyz") or "").strip() if isinstance(args.get("adduct_xyz"), str) else args.get("adduct_xyz")
     scan_dissoc = _is_enabled(args.get("scan_dissoc", False))
     dissoc_distance = args.get("dissoc_distance", 6.0)
-    if scan_dissoc:
+    adduct_flow = _is_enabled(args.get("adduct_flow", False))
+    if scan_dissoc and not adduct_flow:
+        # Direct inverse RSS: the adduct geometry must already exist.
+        # (With adduct_flow=true the flow itself produces the optimized
+        # adduct — placement -> xTB -> OCCUPIER — and runs the scan on
+        # its result, so adduct_xyz is not required up front.)
         if not adduct_xyz:
-            raise ValueError("scan_dissoc=true requires adduct_xyz (path to the pre-optimised adduct geometry).")
+            raise ValueError("scan_dissoc=true requires adduct_xyz (path to the pre-optimised adduct geometry), "
+                             "or adduct_flow=true so the automatic chain produces one.")
         if not os.path.exists(adduct_xyz):
             raise FileNotFoundError(f"adduct_xyz not found: {adduct_xyz}")
         try:
