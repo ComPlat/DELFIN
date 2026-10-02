@@ -41,6 +41,24 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 from delfin.common.logging import get_logger
 from delfin.energies import find_electronic_energy, find_gibbs_energy
 
+
+def _write_smiles_inputs(smiles: str, label: str, workdir: Path):
+    """Delegate to DELFIN's SMILES converter through tadf_xtb's helper."""
+    from delfin.tadf_xtb import _write_smiles_inputs as _delfin_write
+
+    return _delfin_write(smiles, label, workdir)
+
+
+def run_orca(input_file_path, output_log, **kwargs):
+    """Delegate to DELFIN's ORCA runner (resolved, CONTROL-overridden).
+
+    Patch point for tests: monkeypatching ``delfin.pka.run_orca`` swaps
+    out the ORCA execution for the whole pKa cycle.
+    """
+    from delfin.orca import run_orca as _delfin_run_orca
+
+    return _delfin_run_orca(input_file_path, output_log, **kwargs)
+
 logger = get_logger(__name__)
 
 # ln(10) * R in kcal/(mol*K), CODATA 2018 molar gas constant.
@@ -322,5 +340,144 @@ def read_cycle_gibbs_energies(
                 "pKa cycle: output %s has no Gibbs thermochemistry", path
             )
     return values
+
+
+def _write_xyz_input_from_file(xyz_path: Path, workdir: Path) -> str:
+    """Read the coordinate block of a generated XYZ as input text."""
+    lines = xyz_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    if len(lines) < 3:
+        raise RuntimeError(f"XYZ file is incomplete: {xyz_path}")
+    atom_count = int(lines[0].strip())
+    return "\n".join(lines[2 : atom_count + 2]) + "\n"
+
+
+def prepare_cycle(
+    species_list: List[Species],
+    cycle_dir: Path,
+    *,
+    write_smiles_inputs=None,
+) -> List[Species]:
+    """Generate the 3D structure of every species of the cycle.
+
+    Structure generation goes through DELFIN's SMILES converter (via
+    :func:`delfin.tadf_xtb._write_smiles_inputs`); a species without a
+    SMILES string is passed through unchanged so pre-made XYZ inputs
+    remain usable.
+
+    Args:
+        species_list: the four Species of one cycle, in plan order.
+        cycle_dir: working directory receiving one XYZ per species.
+        write_smiles_inputs: test seam; defaults to the DELFIN helper.
+
+    Returns:
+        The species list in the same order (a caller writes the inputs).
+    """
+    cycle_dir = Path(cycle_dir)
+    cycle_dir.mkdir(parents=True, exist_ok=True)
+    if write_smiles_inputs is None:
+        write_smiles_inputs = _write_smiles_inputs
+    for species in species_list:
+        if species.smiles:
+            _start, xyz_path = write_smiles_inputs(
+                species.smiles, species.label, cycle_dir
+            )
+            if not xyz_path.is_file():
+                raise RuntimeError(
+                    f"SMILES conversion produced no XYZ for {species.label}"
+                )
+    return species_list
+
+
+def run_cycle(
+    acid: str,
+    cycle_dir: Path,
+    *,
+    solvent: str = _DEFAULT_SOLVENT,
+    pal: int = 8,
+    maxcore: int = 4000,
+    reference_acid: str = REFERENCE_ACID,
+    temperature_k: float = PKA_KELVIN_DEFAULT,
+) -> Dict[str, Any]:
+    """Run the full isodesmic cycle of one acid through ORCA.
+
+    Per species: XYZ from DELFIN's SMILES converter, one Opt+Freq ORCA
+    run (SMD solvent), Gibbs energy read with energies.find_gibbs_energy
+    through read_cycle_gibbs_energies.  The pKa is anchored to the
+    reference acid's experimental value with pka_from_cycle.
+
+    Returns:
+        Dict with keys:
+        - ``pka``: the estimated pKa, or None when any species failed
+          (the cycle refuses to guess from partial data);
+        - ``gibbs``: label -> Gibbs energy in Hartree (None where absent);
+        - ``failures``: labels whose ORCA run failed or produced no
+          thermochemistry.
+    """
+    cycle_dir = Path(cycle_dir)
+    species_list = plan_species(acid, reference_acid=reference_acid)
+    prepare_cycle(species_list, cycle_dir)
+
+    gibbs: Dict[str, Optional[float]] = {}
+    failures: List[str] = []
+    for species in species_list:
+        xyz_path = cycle_dir / f"{species.label}.xyz"
+        inp_path = cycle_dir / f"{species.label}.inp"
+        out_path = cycle_dir / f"{species.label}.out"
+        xyz_text = _write_xyz_input_from_file(xyz_path, cycle_dir)
+        inp_path.write_text(
+            build_opt_freq_input(
+                xyz_text,
+                charge=species.charge,
+                multiplicity=species.multiplicity,
+                solvent=solvent,
+                pal=pal,
+                maxcore=maxcore,
+            ),
+            encoding="utf-8",
+        )
+        # Call the module attribute, not a saved alias: tests patch
+        # delfin.pka.run_orca, and an alias would silently bypass the
+        # patch and hit the real ORCA resolver (module probe, process
+        # budget).
+        ok = run_orca(str(inp_path), str(out_path))
+        if not ok:
+            logger.error(
+                "pKa cycle: ORCA run for %s failed ( %s )", species.label, out_path
+            )
+            failures.append(species.label)
+            gibbs[species.label] = None
+            continue
+        gibbs[species.label] = find_gibbs_energy(str(out_path))
+        if gibbs[species.label] is None:
+            failures.append(species.label)
+
+    # Map per-species Gibbs energies onto the cycle keys.
+    target = acid
+    reference = reference_acid
+    cycle_gibbs = {
+        "target_HA": gibbs.get(f"{target}_{_HA}"),
+        "target_A": gibbs.get(f"{target}_{_A}"),
+        "reference_HA": gibbs.get(f"{reference}_{_HA}"),
+        "reference_A": gibbs.get(f"{reference}_{_A}"),
+    }
+    if failures:
+        logger.warning(
+            "pKa cycle for %s incomplete: failed species: %s",
+            acid,
+            ", ".join(failures),
+        )
+        return {"pka": None, "gibbs": cycle_gibbs, "failures": failures}
+
+    try:
+        pka = pka_from_cycle(
+            cycle_gibbs,
+            reference_pka=KNOWN_ACIDS[reference]["pka"],
+            temperature_k=temperature_k,
+        )
+    except ValueError as exc:
+        logger.warning("pKa cycle for %s incomplete: %s", acid, exc)
+        return {"pka": None, "gibbs": cycle_gibbs, "failures": failures}
+
+    return {"pka": pka, "gibbs": cycle_gibbs, "failures": []}
 
 
