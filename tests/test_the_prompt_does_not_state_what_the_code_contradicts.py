@@ -113,9 +113,12 @@ def test_the_playbook_states_no_line_number_it_cannot_keep(rel):
     ("RecoveryStrategy", "delfin/orca_recovery.py"),
     ("OrcaInputModifier", "delfin/orca_recovery.py"),
     ("RetryStateTracker", "delfin/orca_recovery.py"),
-    ("_try_multiple_strategies", "delfin/smiles_converter.py"),
-    ("_manual_metal_embed", "delfin/smiles_converter.py"),
-    ("_find_hapto_groups", "delfin/smiles_converter.py"),
+    # The MANTA split (2026-10) moved the constructor helpers out of
+    # smiles_converter.py into delfin/manta/ modules; the old path re-exports
+    # them, the definitions are where the playbook now says they are.
+    ("_try_multiple_strategies", "delfin/manta/embed_strategies.py"),
+    ("_manual_metal_embed", "delfin/manta/embed_strategies.py"),
+    ("_find_hapto_groups", "delfin/manta/hapto_detect.py"),
     ("create_tab", "delfin/dashboard/tab_agent.py"),
 ])
 def test_a_symbol_the_playbook_names_exists_in_the_file_it_names(
