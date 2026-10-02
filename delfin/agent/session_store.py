@@ -588,7 +588,14 @@ def _enforce_elided_cap(path: Path, cap: int | None = None) -> None:
     atomic (temp file + replace) so a crash never tears the store.
     ``cap`` defaults to the module-level :data:`_ELIDED_CAP` at call time
     so tests can shrink it.
+
+    Best-effort stays right — a failed cap enforcement must never break
+    the append that triggered it — but a failing REWRITE after a
+    successful read is no longer silent: every caller believes the cap
+    is enforced, and an unbounded store would grow forever with nothing
+    anywhere saying so. The store is left whole either way.
     """
+    import logging
     if cap is None:
         cap = _ELIDED_CAP
     try:
@@ -604,8 +611,10 @@ def _enforce_elided_cap(path: Path, cap: int | None = None) -> None:
             if text and not text.endswith("\n"):
                 text += "\n"
             _atomic_write_text(path, text)
-    except OSError:
-        pass
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            "elided store cap enforcement failed (%s): %s — the store "
+            "keeps growing past %s records", type(exc).__name__, exc, cap)
 
 
 def append_elided_record(
