@@ -36,14 +36,25 @@ def _read_control(coordinator_outdir: str) -> Dict[str, Any]:
 
 
 def _xtb_keywords(control: Dict[str, Any]) -> str:
-    """Build the GFN2-xTB OPT keyword line, adding solvent if requested."""
+    """Build the GFN2-xTB OPT keyword line, adding solvent if requested.
+
+    ORCA's xTB interface only implements ALPB, ddCOSMO and CPCMX; CPCM or
+    SMD with a GFN2-XTB job abort in main_input_check ("Skipping actual
+    calculation ... aborting the run" — calc 81-105_87_sub_irss, job
+    7421995). Any other solvation model is therefore remapped to ALPB.
+    """
     config = {
         "functional": "GFN2-XTB",
         # reuse the coordinator's keyword builder
         "scan_job": _coord._clean_str(control.get("scan_job"), "OPT") or "OPT",
         "solvent": _coord._clean_str(control.get("solvent")),
-        "implicit_solvation_model": _coord._clean_str(control.get("implicit_solvation_model"), "ALPB"),
     }
+    model = _coord._clean_str(control.get("implicit_solvation_model"), "ALPB").upper()
+    if model not in ("ALPB", "DDCOSMO", "CPCMX"):
+        print(f"[adduct_flow] implicit_solvation_model={model} is not implemented "
+              "for xTB (ORCA supports ALPB/ddCOSMO/CPCMX) — using ALPB instead.")
+        model = "ALPB"
+    config["implicit_solvation_model"] = model
     return _coord.build_orca_keywords(config, config["scan_job"])
 
 
