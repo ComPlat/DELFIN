@@ -6777,6 +6777,13 @@ class AgentEngine:
         # never committed. Inject the recovery note using the house
         # user-note + assistant-ack pair (same shape as the compaction
         # summary) so message alternation survives _sanitize_messages.
+        # NOT silent: this read is the only reader of a surviving crash
+        # checkpoint, and swallowing a failure here dropped the note while
+        # the session went on as if the previous turn had ended cleanly.
+        # The loss goes into the restore report (which the CLI prints on an
+        # incomplete restore); the checkpoint file is left in place when it
+        # cannot be consumed, so the evidence is not deleted unread.
+        _note_failed = ""
         try:
             from . import session_store as _ss_ckpt
             _note = _ss_ckpt.consume_crash_recovery_note(self.session_id)
@@ -6787,8 +6794,16 @@ class AgentEngine:
                     "content": "Understood. I will verify the workspace "
                                "state before continuing.",
                 })
-        except Exception:
-            pass
+        except Exception as _note_exc:
+            _note_failed = f"recovery note ({type(_note_exc).__name__})"
+        if _note_failed:
+            report = AgentEngine.RestoreReport(
+                schema_version=report.schema_version,
+                restored=report.restored,
+                missing=report.missing,
+                failed=report.failed + (_note_failed,),
+                migrations=report.migrations,
+            )
         self.last_restore_report = report
         return report
 
