@@ -90,6 +90,17 @@ _TEST_TASK_RE = re.compile(
     r"|\b\w+tests\b|\b\w+testsuite\b)"
 )
 
+# Wave-10/s1: tasks about RUNNING A CALCULATION. Same evidence shape as
+# the test class (a green run in the window), but the proof comes from
+# the calculation ledger, not the test ledger. Method words (dft, orca)
+# are the strong signal; the optimisation verbs are guarded by the
+# ledger: without a calc ledger the class stays unchecked, so code
+# tasks ("Optimiere den Import") are untouched.
+_CALC_TASK_RE = re.compile(
+    r"(?i)(?:\b(?:calculat\w*|comput\w*|optimiz\w*|optimis\w*|"
+    r"optimier\w*|berechn\w*|rechn\w*|dft|orca)\b)"
+)
+
 # Extensions a subject can name unambiguously enough to key a check on.
 _TASK_PATH_EXTS: frozenset[str] = frozenset({
     "py", "pyi", "ipynb", "js", "jsx", "ts", "tsx", "json", "yaml", "yml",
@@ -264,6 +275,7 @@ def check_completion_claim(
     changes=(),
     observed=None,
     tests=None,
+    calcs=None,
     window_start: float = 0.0,
     current_fingerprint: dict | None = None,
 ) -> dict:
@@ -273,8 +285,9 @@ def check_completion_claim(
     ``{"verdict", "kind", "detail", "note"}`` with verdict
     ``verified`` / ``unmet`` / ``unchecked``; pure over its arguments
     (*changes* the write ledger ``[{path, ts, created}]``, *observed*
-    the read ledger, *tests* the test-evidence ledger, *window_start*
-    the epoch the task went in_progress).
+    the read ledger, *tests* the test-evidence ledger, *calcs* the
+    calculation ledger (``[{ts, folder, outcome, worst}]``, wave-10/s1),
+    *window_start* the epoch the task went in_progress).
 
     The difference is WHAT counts as a claim. Only the object of the
     task accuses: a path from the subject that is not merely mentioned
@@ -412,7 +425,36 @@ def check_completion_claim(
                 "is a test task and this session recorded no test run at "
                 "all.")
 
-        # 4. An edit / refactor task with no path named: the journal has
+        # 4. Wave-10/s1: a calculation task needs a clean run in the
+        #    window -- a failed run, or a run the result critic flagged
+        #    error-level, does not verify the claim. Only fires when a
+        #    calc ledger exists; without one the answer is unchecked,
+        #    so the optimisation words stay safe for code tasks.
+        if calcs is not None and _CALC_TASK_RE.search(subject_text):
+            entries = [e for e in calcs if isinstance(e, dict)]
+            in_window = [
+                e for e in entries
+                if float(e.get("ts", 0) or 0) >= float(window_start or 0)
+            ]
+            clean = [e for e in in_window
+                     if str(e.get("outcome", "")).lower() == "succeeded"
+                     and str(e.get("worst", "")).lower() in ("ok", "warn",
+                                                             "")]
+            if clean:
+                return _verdict("calc", "verified",
+                                f"{len(clean)} clean run(s)")
+            if in_window:
+                return _verdict(
+                    "calc_red", "unmet",
+                    f"{len(in_window)} run(s), none clean",
+                    "is a calculation task and the runs recorded since it "
+                    "started either failed or carry a critic error.")
+            return _verdict(
+                "calc_none", "unmet", "no run recorded",
+                "is a calculation task and this session recorded no "
+                "calculation run at all.")
+
+        # 5. An edit / refactor task with no path named: the journal has
         #    to show a mutation. A change earlier in the session still
         #    counts -- editing first and flipping the status afterwards
         #    is doing the work, not faking it.
