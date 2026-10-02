@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent
-                       / ".gate" / "campaign_demo"))
+                       / "examples" / "campaign_demo"))
 import run_demo  # noqa: E402
 
 
