@@ -2765,6 +2765,9 @@ class AgentEngine:
         # turns never touch disk. See session_store.save_turn_checkpoint.
         _ckpt_events = 0
         _ckpt_last = _turn_t0
+        # The checkpoint-write failure notice is once per TURN (a full
+        # disk would otherwise warn on every throttled write).
+        _ckpt_warned = False
         self._saw_message_start = False
         self._floor_captured_this_turn = False
         # Per-turn runaway circuit-breaker: snapshot the cost at turn start so a
@@ -3057,6 +3060,12 @@ class AgentEngine:
                     # tool rounds — persist a cheap checkpoint (throttled,
                     # best-effort) so a SIGKILL mid-loop costs the last few
                     # rounds, not the whole turn. Cleared at turn end.
+                    # Best-effort stays right — a failed checkpoint must
+                    # never break the turn — but a failure is no longer
+                    # silent: every checkpoint would vanish for the whole
+                    # run while the turn looked perfectly guarded. The
+                    # notice is once per turn, not once per write, so a
+                    # full disk cannot spam the stream.
                     _ckpt_events += 1
                     _ckpt_now = _time.monotonic()
                     if _ckpt_events >= 10 or (_ckpt_now - _ckpt_last) >= 60.0:
@@ -3071,8 +3080,14 @@ class AgentEngine:
                                     "tool_calls": _turn_tool_calls,
                                     "ts": _time.time(),
                                 })
-                        except Exception:
-                            pass
+                        except Exception as _ckpt_exc:
+                            if not _ckpt_warned:
+                                _ckpt_warned = True
+                                _notice(
+                                    "mid-turn checkpoint could not be "
+                                    f"written ({type(_ckpt_exc).__name__}): "
+                                    "a crash in this turn now costs the "
+                                    "whole turn, not just the last rounds.")
 
                 elif event.type == "permission_denied":
                     if on_permission_denied:
@@ -6777,6 +6792,13 @@ class AgentEngine:
         # never committed. Inject the recovery note using the house
         # user-note + assistant-ack pair (same shape as the compaction
         # summary) so message alternation survives _sanitize_messages.
+        # NOT silent: this read is the only reader of a surviving crash
+        # checkpoint, and swallowing a failure here dropped the note while
+        # the session went on as if the previous turn had ended cleanly.
+        # The loss goes into the restore report (which the CLI prints on an
+        # incomplete restore); the checkpoint file is left in place when it
+        # cannot be consumed, so the evidence is not deleted unread.
+        _note_failed = ""
         try:
             from . import session_store as _ss_ckpt
             _note = _ss_ckpt.consume_crash_recovery_note(self.session_id)
@@ -6787,8 +6809,16 @@ class AgentEngine:
                     "content": "Understood. I will verify the workspace "
                                "state before continuing.",
                 })
-        except Exception:
-            pass
+        except Exception as _note_exc:
+            _note_failed = f"recovery note ({type(_note_exc).__name__})"
+        if _note_failed:
+            report = AgentEngine.RestoreReport(
+                schema_version=report.schema_version,
+                restored=report.restored,
+                missing=report.missing,
+                failed=report.failed + (_note_failed,),
+                migrations=report.migrations,
+            )
         self.last_restore_report = report
         return report
 

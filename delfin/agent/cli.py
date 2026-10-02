@@ -545,62 +545,80 @@ def cmd_run(args: argparse.Namespace) -> int:
     out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096,
                     **_emit)
     sid = _save_session(engine, repo)
+
+    def _session_end_stage(name: str, fn) -> None:
+        """One best-effort session-end stage, said when it fails.
+
+        Best-effort stays right — a report write must never break the
+        answer's exit code — but a stage that fails on EVERY scheduled
+        unattended run vanished silently here: the run printed its
+        answer and the failure was indistinguishable from a stage that
+        did its job. The warning is the same shape as the save-failure
+        line above.
+        """
+        try:
+            fn()
+        except Exception as exc:
+            print(f"WARN: session-end stage {name} failed: {exc}",
+                  file=sys.stderr)
+
     # Session report: best-effort Markdown write; never breaks exit.
-    try:
+    def _report_stage(sid_, engine_):
         from .session_report import write_session_report
-        write_session_report(sid or getattr(engine, "session_id", ""))
-    except Exception:
-        pass
-    # Shared session-end stage: skill learning, same hook as the CLI
-    # chat and the dashboard. Best-effort; never breaks the run.
-    try:
+        write_session_report(sid_ or getattr(engine_, "session_id", ""))
+
+    def _learn_stage(engine_, sid_):
         from .session_end import learn_at_session_end
         learn_at_session_end(
-            _display_messages(engine),
-            session_id=str(sid or getattr(engine, "session_id", "") or ""))
-    except Exception:
-        pass
-    # Session-end stage (Paket 5): the ended session becomes searchable.
-    # Own try/except like the learning stage; never breaks the run.
-    try:
+            _display_messages(engine_),
+            session_id=str(sid_ or getattr(engine_, "session_id", "") or ""))
+
+    def _index_stage(sid_):
         from .session_end import index_at_session_end
-        index_at_session_end(
-            str(sid or getattr(engine, "session_id", "") or ""))
-    except Exception:
-        pass
+        index_at_session_end(str(sid_ or ""))
+
+    def _episode_stage(engine_, sid_, repo_, out_):
+        from .episodes import build_episode_from_state, save_episode
+        fields = build_episode_from_state(engine_.export_state(), [])
+        save_episode(
+            sid_,
+            repo_root=repo_,
+            verdict="FAIL" if out_["error"] else "PASS",
+            **fields,
+        )
+
+    def _eval_stage():
+        from .eval_loop import maybe_run_scheduled
+        maybe_run_scheduled()
+
+    _session_end_stage("report", lambda: _report_stage(sid, engine))
+    # Shared session-end stage: skill learning, same hook as the CLI
+    # chat and the dashboard. Best-effort; never breaks the run.
+    _session_end_stage("skill learning", lambda: _learn_stage(engine, sid))
+    # Session-end stage (Paket 5): the ended session becomes searchable.
+    _session_end_stage("indexing", lambda: _index_stage(sid))
 
     # Learning signal: record the outcome so provider profiles learn from
     # CLI/headless usage too — previously only dashboard cycles fed the
     # profile, so KIT/CLI sessions contributed nothing.
-    try:
-        engine.record_cycle_outcome(
+    _session_end_stage(
+        "cycle outcome",
+        lambda: engine.record_cycle_outcome(
             "FAIL" if out["error"] else "PASS",
             prompt,
             error_type=("cli_error" if out["error"] else None),
             start_time=_t0,
-        )
-    except Exception:
-        pass
+        ))
     # Episodic memory: persist one compact per-session record so a future
     # session can recall similar past work (best-effort, LLM-free) —
     # without this the saved session state is write-only.
-    try:
-        from .episodes import build_episode_from_state, save_episode
-        fields = build_episode_from_state(engine.export_state(), [])
-        save_episode(
-            sid,
-            repo_root=repo,
-            verdict="FAIL" if out["error"] else "PASS",
-            **fields,
-        )
-    except Exception:
-        pass
+    _session_end_stage(
+        "episodic memory",
+        lambda: _episode_stage(engine, sid, repo, out))
     # Close the eval loop opportunistically (opt-in, LLM-free, max 1/day).
-    try:
-        from .eval_loop import maybe_run_scheduled
-        maybe_run_scheduled()
-    except Exception:
-        pass
+    _session_end_stage(
+        "eval loop",
+        lambda: _eval_stage())
 
     if stream_json:
         # The last line closes the stream and carries the same payload the
