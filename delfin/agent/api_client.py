@@ -8700,6 +8700,7 @@ def check_completion_claim(
     changes=(),
     observed=None,
     tests=None,
+    calcs=None,
     window_start: float = 0.0,
     current_fingerprint: Optional[dict] = None,
 ) -> dict:
@@ -8711,10 +8712,13 @@ def check_completion_claim(
     judged on the work rather than on words in the task text. The previous
     implementation and its helpers are gone; the journal and timestamp
     helpers above serve the live call site, _verify_task_completion.
+    ``calcs`` is the calc-evidence ledger (Welle 10): the runs the
+    session actually observed via get_calc_info, verdicting a calculation
+    task on real work.
     """
     from .task_evidence import check_completion_claim as _check
     return _check(subject, description, changes=changes, observed=observed,
-                  tests=tests, window_start=window_start,
+                  tests=tests, calcs=calcs, window_start=window_start,
                   current_fingerprint=current_fingerprint)
 
 
@@ -10961,6 +10965,14 @@ class _DocToolExecutor:
         self._index: dict | None = None
         self._calc_engine = None
         self._calc_dirs: dict[str, str] = {}  # set by caller
+        # Calc-evidence ledger: every get_calc_info call records the run's
+        # outcome + result-critic worst level here, so the task-completion
+        # check can verdict a calculation task on real runs (the calcs
+        # ledger _check_completion reads through the bound
+        # evidence_provider). Session-scale, never cleared mid-turn: a run
+        # observed before the task window starts is filtered by window,
+        # not by dropping it.
+        self._calc_evidence: list[dict] = []
         # Where the index was actually built from, filled in by
         # _ensure_calc_loaded so a calc answer can name its corpus.
         self._calc_roots: dict[str, str] = {}
@@ -12113,6 +12125,22 @@ class _DocToolExecutor:
             if info is None:
                 return json.dumps({"error": f"Calculation '{calc_id}' not found."})
             info = self._inject_scientific_check(info)
+            # Calc-evidence ledger (Welle 10): record what this run showed,
+            # so the completion check can verdict a calculation task on
+            # real runs instead of the agent's word. outcome/worst follow
+            # the exact keys check_completion_claim's calc branch reads.
+            try:
+                self._calc_evidence.append({
+                    "ts": time.time(),
+                    "folder": str(info.get("path") or info.get("folder")
+                                  or calc_id),
+                    "outcome": str(info.get("status")
+                                   or info.get("outcome") or ""),
+                    "worst": str((info.get("scientific_check") or {})
+                                 .get("worst", "ok") or "ok"),
+                })
+            except Exception:
+                pass
             return json.dumps(info, indent=2, ensure_ascii=False)
 
         elif name == "calc_summary":
@@ -18757,20 +18785,23 @@ class _DocToolExecutor:
         sid = getattr(perms, "task_session_id", "") or ""
         observed = None
         tests = None
+        calcs = None
         try:
             provider = getattr(perms, "evidence_provider", None)
             if callable(provider):
                 ledgers = provider() or {}
                 observed = ledgers.get("observed")
                 tests = ledgers.get("tests")
+                calcs = ledgers.get("calcs")
         except Exception:
-            observed, tests = None, None
+            observed, tests, calcs = None, None, None
         return check_completion_claim(
             str(task.get("subject", "")),
             str(task.get("description", "")),
             changes=_journal_changes(sid),
             observed=observed,
             tests=tests,
+            calcs=calcs,
             window_start=_task_ts_epoch(task.get("started_at")),
             current_fingerprint=_current_fingerprint(
                 tests, getattr(perms, "workspace", None)),
@@ -20566,6 +20597,8 @@ class OpenAIClient(_BaseClient):
                     "observed": set(
                         getattr(self, "_observed_files_session", None) or ()),
                     "tests": list(getattr(self, "_test_evidence", None) or ()),
+                    "calcs": list(getattr(_doc_executor,
+                                          "_calc_evidence", None) or ()),
                 }
             except Exception:
                 pass
