@@ -764,8 +764,10 @@ _AGENT_CSS = """\
     max-width: 85%;
     word-wrap: break-word;
 }
+/* Consecutive tool rows sit close but never overlap: a negative margin
+   here pulled a multi-line command into the row above it. */
 .delfin-chat-tool + .delfin-chat-tool {
-    margin-top: -6px;
+    margin-top: 4px;
 }
 .delfin-chat-user {
     background: #dbeafe;
