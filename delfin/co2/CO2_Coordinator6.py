@@ -1769,7 +1769,12 @@ def main():
     # already IS the quantum-chemically optimised binding situation, so the
     # scan simply walks outward from its M–substrate distance r0 to
     # dissoc_distance. No orientation freedom, no jumps between scan points.
-    if scan_dissoc:
+    # Direct mode only (adduct_xyz given): with adduct_flow=true the flow
+    # below first produces the optimised adduct and runs the scan itself,
+    # so this branch must NOT fire on scan_dissoc alone — it did, with
+    # adduct_xyz=None, and crashed in _read_xyz_robust (calc
+    # 81-105_87_sub_irss, job 7420205).
+    if scan_dissoc and not adduct_flow:
         atoms_adduct = _read_xyz_robust(adduct_xyz)
         run_inverse_rss_scan(atoms_adduct, adduct_xyz, args)
         return
