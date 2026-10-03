@@ -31,17 +31,24 @@ integration there is exactly one place to rewire.
 
 from __future__ import annotations
 
+import hashlib
+import os
+import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Iterable, Optional, Sequence
 
 
 __all__ = [
     "Experiment",
     "ExperimentError",
+    "InstrumentStamp",
+    "Measurement",
+    "assert_same_stamp",
+    "instrument_stamp",
     "pre_register",
     "record_measurement",
     "status_of",
-    "Measurement",
 ]
 
 
@@ -180,3 +187,132 @@ def record_measurement(
     if exp.status == "registered":
         exp._move("recording")
     return rec
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 -- instrument stamp
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class InstrumentStamp:
+    """A content stamp of the instrument a measurement was taken with.
+
+    Hashes the DECLARED code/judge/tool files' contents, the DECLARED
+    environment variables' values, and the judge version, all taken once at
+    stamp time.  Frozen by construction: an instrument cannot be quietly
+    changed under a measurement, and two results measured under different
+    stamps must not be compared (see :func:`assert_same_stamp`).
+
+    ``stamp_id`` is the single hash over every component -- content, env,
+    judge -- so equality of ids is the equality of the whole instrument.
+    """
+
+    content_hash: str
+    env_hash: str
+    judge: str
+    files: tuple[str, ...]
+    env_keys: tuple[str, ...]
+    taken_at: float
+
+    @property
+    def stamp_id(self) -> str:
+        h = hashlib.sha256()
+        h.update(self.content_hash.encode("utf-8", "replace"))
+        h.update(self.env_hash.encode("utf-8", "replace"))
+        h.update(str(self.judge).encode("utf-8", "replace"))
+        return h.hexdigest()[:16]
+
+
+def _file_content_hash(files: Sequence[str]) -> str:
+    """sha256 over the concatenation of every file's bytes, in declared order.
+
+    Content is read exactly as stored -- an empty file is "empty content",
+    not a skip -- so a changed file always changes the hash.
+    """
+    _require(bool(files), "instrument stamp needs at least one code/judge/tool file")
+    seen: set[str] = set()
+    h = hashlib.sha256()
+    for raw in files:
+        path = Path(raw)
+        _require(bool(str(path).strip()), "instrument stamp file path must be non-empty")
+        key = os.path.abspath(str(path))
+        _require(path.is_file(), f"instrument stamp cannot read a missing file: {key}")
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise ExperimentError(
+                f"instrument stamp cannot read {key}: {exc}") from exc
+        h.update(len(data).to_bytes(8, "big"))
+        h.update(data)
+        h.update(b"\x00")
+        seen.add(key)
+    _require(len(seen) == len(files),
+             "instrument stamp refuses the same file listed twice (ambiguous instrument)")
+    return h.hexdigest()
+
+
+def _env_hash(env_keys: Sequence[str]) -> str:
+    """sha256 over the values of the DECLARED environment variables.
+
+    Only the declared keys are read -- an undeclared environment variable is
+    out of scope BY CONSTRUCTION and cannot change the stamp.  A declared key
+    that is missing from the environment is a refusal: the instrument is not
+    reproducible if a component it names does not exist.
+    """
+    _require(bool(env_keys), "instrument stamp needs at least one relevant environment key")
+    h = hashlib.sha256()
+    for key in env_keys:
+        _require(bool(str(key).strip()), "environment keys must be non-empty")
+        _require(key in os.environ,
+                 f"instrument stamp declares environment variable {key!r} which is not set")
+        h.update(str(key).encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update(os.environ[key].encode("utf-8", "replace"))
+    return h.hexdigest()
+
+
+def instrument_stamp(
+    *,
+    files: Sequence[str],
+    env_keys: Sequence[str],
+    judge: str = "",
+) -> InstrumentStamp:
+    """Take the instrument stamp for *files* + *env_keys* + *judge*.
+
+    Raises :class:`ExperimentError` on an unusable instrument: no files, a
+    missing or unreadable file, a file listed twice, no environment keys, a
+    declared environment variable that is not set.  The result is frozen and
+    stamped with its creation time, so it can be stored as the record of
+    exactly which instrument a comparison was measured under.
+    """
+    content_hash = _file_content_hash(files)
+    env = _env_hash(env_keys)
+    return InstrumentStamp(
+        content_hash=content_hash,
+        env_hash=env,
+        judge=str(judge),
+        files=tuple(files),
+        env_keys=tuple(env_keys),
+        taken_at=time.time(),
+    )
+
+
+def assert_same_stamp(a: InstrumentStamp, b: InstrumentStamp) -> None:
+    """Refuse to compare two results measured under different instruments.
+
+    Two results are comparable only when BOTH the content and the
+    environment and the judge match.  A difference in any one is a refusal
+    with a message naming the differing component, so an agent that moved a
+    knob between the arms of an experiment sees exactly what changed.
+    """
+    _require(a.content_hash == b.content_hash,
+             "refused: results were measured under different instrument content "
+             "(the code, judge or tool files differ)")
+    _require(a.env_hash == b.env_hash,
+             "refused: results were measured under a different relevant environment "
+             "(a declared environment variable changed)")
+    _require(str(a.judge) == str(b.judge),
+             f"refused: results were judged by different judge versions "
+             f"({a.judge!r} vs {b.judge!r})")
+
