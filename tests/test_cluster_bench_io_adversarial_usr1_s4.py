@@ -96,6 +96,9 @@ def _fake_workers_dir(tmp_path: Path) -> Path:
         "open(os.path.join(archive, ref + '.xyz'), 'w').write('1\\n%s frame0\\nFe 0 0 0\\n' % ref)\n"
         "json.dump({'refcode': ref, 'tool': tool, 'status': 'ok', 'n_frames': 1},\n"
         "          open(os.path.join(archive, '_meta', ref + '.json'), 'w'))\n"
+        "ran = os.environ.get('CB_RAN')\n"
+        "if ran:\n"
+        "    open(ran, 'a').write(ref + '\\n')\n"
         "if ref in os.environ.get('CB_HANG_IDS', '').split(','):\n"
         "    while not os.path.exists(os.environ['CB_RELEASE']):\n"
         "        time.sleep(0.02)\n")
@@ -163,3 +166,43 @@ def test_the_usr1_flag_flushes_finished_systems_without_a_further_completion(
         (tmp_path / "release").write_text("")      # let the workers exit
         th.join(timeout=60)
     assert result.get("rc") == 0
+
+
+def test_a_system_with_a_final_record_is_skipped_so_resubmitting_the_shard_resumes(
+        tmp_path, monkeypatch):
+    """Phase-3 contract: the USR1 kill must never cost finished work.  A system whose
+    workspace _meta/<rid>.json carries final:true is skipped on a re-run -- after the
+    trap's flush and re-reap, resubmitting the array index rebuilds nothing finished."""
+    monkeypatch.setenv("CB_INTERP_MARKER", str(tmp_path / "interp"))
+    monkeypatch.setenv("CB_REALPY", sys.executable)
+    monkeypatch.setenv("CB_RAN", str(tmp_path / "ran.txt"))
+    run_dir = _prepared_run(tmp_path, monkeypatch, ["R1", "R2"])
+    archive_ws = (Path(run_dir) / "out" / "main_main" / "chunk_0000" / "archive")
+    (archive_ws / "_meta").mkdir(parents=True, exist_ok=True)
+    (archive_ws / "_meta" / "R1.json").write_text(
+        json.dumps({"refcode": "R1", "tool": "molsimplify", "status": "ok",
+                    "n_frames": 1, "final": True}))
+    rc = crun.cbatch_run_shard(run_dir, 0, log=lambda m: None)
+    assert rc == 0, "pre-finished R1 must complete the shard"
+    ran = (tmp_path / "ran.txt").read_text().split()
+    assert ran == ["R2"], f"worker ran {ran}, final-recorded R1 was rebuilt"
+    assert (archive_ws / "_meta" / "R2.json").exists()
+
+
+def test_a_crash_residue_meta_without_final_does_NOT_skip_the_system(tmp_path, monkeypatch):
+    """The negative case: a meta lacking final:true (a partial write, a crash between
+    xyz and meta, or last run's non-final residue) must NOT mark the system finished --
+    otherwise a half-baked result survives a resubmit and masquerades as a success."""
+    monkeypatch.setenv("CB_INTERP_MARKER", str(tmp_path / "interp"))
+    monkeypatch.setenv("CB_REALPY", sys.executable)
+    monkeypatch.setenv("CB_RAN", str(tmp_path / "ran.txt"))
+    run_dir = _prepared_run(tmp_path, monkeypatch, ["N1", "N2"])
+    archive_ws = (Path(run_dir) / "out" / "main_main" / "chunk_0000" / "archive")
+    (archive_ws / "_meta").mkdir(parents=True, exist_ok=True)
+    (archive_ws / "_meta" / "N1.json").write_text(
+        json.dumps({"refcode": "N1", "status": "ok", "n_frames": 1}))   # no final key
+    rc = crun.cbatch_run_shard(run_dir, 0, log=lambda m: None)
+    assert rc == 0
+    ran = (tmp_path / "ran.txt").read_text().split()
+    assert "N1" in ran, "system without a final record was skipped: stale residue read as done"
+    assert (archive_ws / "_meta" / "N1.json").exists()
