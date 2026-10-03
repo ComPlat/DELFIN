@@ -601,6 +601,126 @@ _FENCED_BLOCK = re.compile(r"```.*?```", re.DOTALL)
 
 
 @dataclass(frozen=True)
+class ArithmeticFlag:
+    """One stated equation whose arithmetic does not hold.
+
+    "0.031522 - 0.087844 = 0.056322" claims an identity; the operands
+    and the operator are IN the claim, so the check is exact -- no pool,
+    no tolerance beyond the printed precision. This is the only place
+    the wave-10 sign flip (s17) is detectable: against an unordered
+    observation pool a sign can never be checked, because for any pair
+    a, b both ordered differences a-b and b-a exist. See the module
+    docstring of the test that pins this (tests/test_claim_wrong_arithmetic.py).
+    """
+
+    equation: str      # the matched equation, whitespace-normalized
+    claimed: str       # the stated result, as printed
+    actual: float      # the value the operands give
+
+    def message(self) -> str:
+        return (
+            f"⚠️ Verify: the equation '{self.equation}' does not hold -- "
+            f"the operands give {self.actual:.6g}, not {self.claimed}. "
+            f"Recompute or state the numbers as unverified.")
+
+
+# An equation of two decimal numbers joined by + or -, then a result:
+# "0.031522 - 0.087844 = -0.056322". Unicode minus is accepted (the
+# scanner's own _QTY_NUM class does the same). The second operand may be
+# parenthesised -- "E(S1) - (-1705.219605)" is how answers write a
+# difference of negative energies, the commonest form in this project.
+_ARITHMETIC_EQ_RE = re.compile(
+    r"(?<![\w.])([-+−]?\d+(?:[.,]\d+)?)\s*([+−-])\s*(?:\(\s*"
+    r"([-+−]?\d+(?:[.,]\d+)?)\s*\)|([-+−]?\d+(?:[.,]\d+)?))"
+    r"\s*=\s*([-+−]?\d+(?:[.,]\d+)?)")
+
+
+def _read_decimal(token: str) -> float | None:
+    """The value of a decimal token under BOTH separator conventions.
+
+    "0.056322" is unambiguous; "0,056322" is the German form of the same
+    value; "1.234" could be a grouped thousand. A guard that has to
+    guess should guess toward silence: the equation is flagged only when
+    it is wrong under EVERY reading the operands and result admit. See
+    _claim_readings for the same discipline on single numbers.
+    """
+    token = token.replace("−", "-")
+    readings: list[float] = []
+    if "," in token:
+        head, _, tail = token.partition(",")
+        try:
+            readings.append(float(f"{head}.{tail}"))
+        except ValueError:
+            return None
+        if len(tail) == 3:
+            try:
+                readings.append(float(head + tail))
+            except ValueError:
+                pass
+        return readings[0] if len(readings) == 1 else None
+    if "." in token:
+        head, _, tail = token.partition(".")
+        try:
+            readings.append(float(token))
+        except ValueError:
+            return None
+        if len(tail) == 3:
+            try:
+                readings.append(float(head + tail))
+            except ValueError:
+                pass
+        return readings[0] if len(readings) == 1 else None
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def scan_for_wrong_arithmetic(text: str, max_flags: int = 6
+                              ) -> list[ArithmeticFlag]:
+    """Equations the answer states whose arithmetic does not hold.
+
+    Fires only on "A + B = C" / "A - B = C" forms written in the agent's
+    own prose (fenced blocks and backtick spans are blanked first, like
+    every scanner here). An equation is flagged only when the arithmetic
+    is wrong under every reading its ambiguous decimals admit -- a
+    number with three digits after the separator is read both ways, and
+    a disagreement inside the 5e-3 absolute tolerance the quantity
+    grounding already uses is not claimed. Never raises.
+    """
+    flags: list[ArithmeticFlag] = []
+    try:
+        if not text or not text.strip() or max_flags <= 0:
+            return []
+        scrubbed = _strip_non_claim_regions(text)
+        seen: set[str] = set()
+        for m in _ARITHMETIC_EQ_RE.finditer(scrubbed):
+            a_raw, op, b_paren, b_bare, c_raw = m.groups()
+            b_raw = b_paren if b_paren is not None else b_bare
+            a = _read_decimal(a_raw)
+            b = _read_decimal(b_raw)
+            c = _read_decimal(c_raw)
+            if a is None or b is None or c is None:
+                continue
+            actual = (a + b) if op == "+" else (a - b)
+            tolerance = max(abs(actual) * 1e-4, 5e-3)
+            if abs(actual - c) <= tolerance:
+                continue
+            equation = " ".join(m.group(0).split())
+            key = equation.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            flags.append(ArithmeticFlag(equation=equation,
+                                        claimed=c_raw, actual=actual))
+            if len(flags) >= max_flags:
+                break
+    except Exception:
+        return flags
+    return flags
+
+
+@dataclass(frozen=True)
 class QuantityClaimFlag:
     """One physical-quantity claim stated without any evidence act."""
 
