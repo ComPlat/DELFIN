@@ -890,10 +890,16 @@ class TerminalAgent:
         self.transcript.finish()
         self._report_compaction(compaction_before)
         self._report_tasks()
-        self._offer_next_steps()
-        self._report_status()
         result = result_box[0] if result_box \
             else TurnResult(error="turn produced nothing")
+        # A turn that ended on a question or a denial leaves its note for
+        # the next prompt (read and consumed by _wake_text). The result
+        # comes before the note: the note reads the turn's own words.
+        denied = bool(getattr(self, "_denied_in_turn", False))
+        self.__dict__.pop("_denied_in_turn", None)
+        self._note_turn_blocked(result.text, denied=denied)
+        self._offer_next_steps()
+        self._report_status()
         # For the length-continuation: a length end WITH a tool call is
         # the tool loop's to carry on, not ours.
         self.__dict__["_turn_used_tools"] = bool(result.tool_calls)
@@ -975,6 +981,12 @@ class TerminalAgent:
                 if item.kind == "done":
                     self._clear_bottom()
                     return
+                if item.kind == "denied":
+                    # A refusal inside the turn is the second half of the
+                    # turn-end blocked signal: _note_turn_blocked reads
+                    # this flag, so the next prompt says what the turn
+                    # stopped on even when its own words do not.
+                    self._denied_in_turn = True
                 self._count_streamed(item)
                 self._render_around_bottom(item)
 
@@ -2030,6 +2042,36 @@ class TerminalAgent:
                 self.transcript.chrome(self.transcript.theme.dim(line))
 
     # -- the loop --------------------------------------------------------
+    def _note_turn_blocked(self, text: str, denied: bool = False) -> None:
+        """Record, after a turn, whether it ended blocked on something.
+
+        Called at the terminal's turn end (after ``_report_tasks``, which
+        read the same task store). If the turn's own words end with an
+        open question or report a denial, and open tasks remain, the
+        note is stored for the next idle prompt (_wake_text delivers it
+        once, then it is consumed). Never raises: a courtesy note must
+        not take the turn it follows down with it.
+        """
+        try:
+            if not (text or "").strip():
+                return
+            engine = getattr(self, "engine", None)
+            sid = str(getattr(engine, "session_id", "") or "")
+            from .agent_tasks import OPEN_STATUSES, get_store, \
+                resolve_session_scope
+            store = get_store(Path(self.opts.cwd))
+            tasks = store.list(session_id=resolve_session_scope(sid))
+            open_tasks = [t for t in tasks or []
+                          if t.get("status") in OPEN_STATUSES]
+            if not open_tasks:
+                return
+            from . import job_wake
+            note = job_wake.note_turn_blocked(text, open_tasks, denied=denied)
+            if note:
+                self.__dict__["_blocked_note"] = note
+        except Exception:
+            return
+
     def _checkpoint_session(self) -> None:
         """Save the conversation after a finished turn. Never raises.
 
@@ -2442,6 +2484,8 @@ class TerminalAgent:
     #: loop ticks ten times a second; asking the job registry that often
     #: would be a poll, and this is a look.
     _WAKE_EVERY_S = 5.0
+    # Scheduler-backed watch look: at most one squeue per this many seconds.
+    _WATCH_EVERY_S = 30.0
 
     def _steer_operator_mail(self) -> None:
         """Take waiting mail and steer it into the running turn.
@@ -2849,9 +2893,36 @@ class TerminalAgent:
             # whole wake-up into an empty line -- silently, which is how a
             # notification path fails worst.
             _eng = getattr(self, "engine", None)
-            return job_wake.wake_prompt(job_wake.finished_shells(
-                seen,
-                session_id=str(getattr(_eng, "session_id", "") or "")))
+            sid = str(getattr(_eng, "session_id", "") or "")
+            done = job_wake.finished_shells(seen, session_id=sid)
+            # The missing half of the wave-10 idle (90 minutes after a
+            # finished SLURM job): the same session-scoped watch file the
+            # dashboard tick drains, now pulled at the idle prompt too.
+            # Only for a session that HAS one -- an empty id would read
+            # every session's watches, which is the scoping bug of
+            # 2026-09-28 again. check_agent_jobs asks the scheduler
+            # (squeue) whenever a watch exists, so this look has its own,
+            # slower gate: the shell look above runs every _WAKE_EVERY_S,
+            # but a scheduler query from every idle terminal every few
+            # seconds is the per-widget squeue load the cluster operators
+            # objected to (one query per _WATCH_EVERY_S at most).
+            _opts = getattr(self, "opts", None)
+            _ws = str(getattr(_opts, "cwd", "") or "")
+            _now = _time.monotonic()
+            if (sid and _ws and _now - getattr(self, "_watch_last_look", -1e9)
+                    >= self._WATCH_EVERY_S):
+                self._watch_last_look = _now
+                done = done + job_wake.finished_watched_jobs(
+                    _ws, seen, session_id=sid)
+            # A turn that ended blocked leaves its note here, so the
+            # next prompt opens on the state and not on a task list
+            # with no sentence about it (wave-10: an hour at a
+            # question nobody answered). Consumed on read.
+            _note = self.__dict__.pop("_blocked_note", "")
+            prompt = job_wake.wake_prompt(done)
+            if _note:
+                prompt = (prompt + "\n\n" + _note) if prompt else _note
+            return prompt
         except Exception:
             return ""
 
