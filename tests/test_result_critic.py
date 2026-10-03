@@ -127,3 +127,74 @@ def test_folder_report_and_never_raises(tmp_path):
     # garbage input never raises
     assert rc.critique_output(tmp_path / "does-not-exist.out")
     assert rc.critique_folder("/no/such/dir") == {}
+
+
+# ---------------------------------------------------------------------------
+# Wave-10/s1 coverage gaps: opt without frequencies, soft SCF warnings.
+# Both fixtures are abridged real-shape ORCA output (TNR, SCF cycles,
+# geometry-convergence banner) -- the runs are numerically "done" yet
+# the critic used to score them a clean ok.
+# ---------------------------------------------------------------------------
+
+_SCF_OK = (
+    "SCF ITERATIONS\n"
+    "ITER Energy        Delta-E\n"
+    "1   -76.32643500\n"
+    "2   -76.32643401\n"
+    "Convergence achieved.\n")
+
+
+def test_converged_opt_without_freq_is_a_warning(tmp_path):
+    out = _write(tmp_path, "nofreq.out", _TERM + _ENERGY + _SCF_OK + _OPT)
+    crits = rc.critique_output(out)
+    flag = next(c for c in crits if c.code == "opt-no-freq")
+    assert flag.level == "warn"
+    assert "minimum" in flag.message.lower()
+    # Caution, not a hard failure: the run itself is complete.
+    assert rc.worst_level(crits) == "warn"
+
+
+def test_opt_with_freq_scores_clean_again(tmp_path):
+    out = _write(tmp_path, "withfreq.out", _TERM + _ENERGY + _OPT + _FREQ)
+    crits = rc.critique_output(out)
+    assert "opt-no-freq" not in _codes(crits)
+
+
+def test_soft_scf_warning_is_flagged_even_when_run_ends_green(tmp_path):
+    out = _write(
+        tmp_path, "soft.out",
+        _TERM + _ENERGY + _SCF_OK
+        + "Warning: SCF was not fully converged.\n"
+        + "The SCF procedure does not converge.\n"
+        + _OPT)
+    crits = rc.critique_output(out)
+    flag = next(c for c in crits if c.code == "scf-not-fully-converged")
+    assert flag.level == "warn"
+    assert rc.worst_level(crits) == "warn"
+
+
+def test_soft_scf_warning_in_early_cycle_stays_a_warning(tmp_path):
+    # ORCA prints the soft warning inside a running opt cycle and a
+    # later cycle converges: caution, not a hard failure signal. The
+    # hard failure must NOT be reported for this output.
+    out = _write(
+        tmp_path, "early.out",
+        "GEOMETRY OPTIMIZATION CYCLE 1\n"
+        "Warning: SCF was not fully converged.\n"
+        "The SCF procedure does not converge.\n"
+        "SCF CONVERGED AFTER 25 ITERATIONS\n"
+        "GEOMETRY OPTIMIZATION CYCLE 4\n"
+        "HURRAY! THE OPTIMIZATION HAS CONVERGED.\n"
+        + _TERM)
+    crits = rc.critique_output(out)
+    codes = _codes(crits)
+    assert "scf-not-fully-converged" in codes
+    assert "scf-not-converged" not in codes
+    assert rc.worst_level(crits) == "warn"
+
+
+def test_hard_scf_failure_stays_an_error_alongside_the_soft_check(tmp_path):
+    out = _write(tmp_path, "hard.out", "SCF NOT CONVERGED\n" + _TERM)
+    crits = rc.critique_output(out)
+    assert "scf-not-converged" in _codes(crits)
+    assert rc.worst_level(crits) == "error"

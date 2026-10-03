@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
@@ -9,6 +10,17 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Sequence
+
+"""Shared helpers for finding QM tools on this machine.
+
+The module probe (``available_modules``) is the most expensive stage of
+any tool search: it starts a login shell whose module initialization can
+fan out past a process budget.  It stands behind every cheaper stage
+(qm_tools, env overrides, the active venv, PATH, system_dirs) and runs
+at most once per process.  ``DELFIN_NO_MODULE_PROBE=1`` skips it
+entirely — set by the agent's process cage or by anyone who knows this
+node's module init explodes — and the skip is logged, not silent.
+"""
 
 
 @dataclass(frozen=True)
@@ -81,8 +93,41 @@ def _normalize_module_line(line: str) -> str:
     return candidate.rstrip("/")
 
 
+#: Set to "1" in an environment where a login-shell module probe must
+#: not run at all: the agent's process cage (a 64-process budget per
+#: tool call) or a node whose module init fans out past any budget —
+#: one `bash -lc module -t avail` raised the live process count to 128
+#: on the login node (2026-09-26, reproduced 2026-09-28).  The probe is
+#: then skipped and the skip is logged, so a missing module result is
+#: explained by the log, not by silence.
+_NO_MODULE_PROBE_ENV = "DELFIN_NO_MODULE_PROBE"
+
+#: The probe's answer is remembered per process whether it succeeded or
+#: failed: a failed probe (`_run_login_shell` returned None, the module
+#: init died, the node has no module system) must not be re-asked by the
+#: next resolve in the same process — each fresh pytest process used to
+#: pay for it again.
+_probe_asked: list[bool] = []
+
+
+def _module_probe_allowed() -> bool:
+    """Whether the login-shell module probe may run in this process."""
+    if _probe_asked:
+        return False
+    if os.environ.get(_NO_MODULE_PROBE_ENV, "").strip() in ("1", "true", "yes"):
+        return False
+    return True
+
+
 @lru_cache(maxsize=1)
 def available_modules() -> tuple[str, ...]:
+    if not _module_probe_allowed():
+        _probe_asked.append(True)
+        logging.getLogger(__name__).info(
+            "module probe skipped: %s is set, module-driven tool "
+            "discovery stays empty this process", _NO_MODULE_PROBE_ENV)
+        return ()
+    _probe_asked.append(True)
     result = _run_login_shell("module -t avail 2>&1", timeout=20)
     if result is None:
         return ()
@@ -133,6 +178,8 @@ def _clean_module_value(raw_value: str) -> str:
 
 @lru_cache(maxsize=128)
 def module_show_paths(module_name: str) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
+    if not _module_probe_allowed():
+        return (), ()
     quoted = shlex.quote(module_name)
     result = _run_login_shell(f"module show {quoted} 2>&1", timeout=20)
     if result is None:
