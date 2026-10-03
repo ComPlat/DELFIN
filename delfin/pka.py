@@ -223,15 +223,24 @@ def build_opt_freq_input(
     basis: str = _DEFAULT_BASIS,
     pal: int = 8,
     maxcore: int = 4000,
+    solvation_model: str = "SMD",
     extra_keywords: Optional[Iterable[str]] = None,
 ) -> str:
     """Write the ORCA Opt+Freq input that yields Gibbs energies in solution.
 
-    Solvation via SMD (ORCA Manual 6.1.1 section 2.13.3); the thermo-
-    chemistry block gives the 'Final Gibbs free energy' line that
+    Solvation via SMD by default (ORCA Manual 6.1.1 section 2.13.3);
+    ``solvation_model="CPCM"`` switches the continuum model while the
+    solvent name stays the same.  The thermochemistry block gives the
+    'Final Gibbs free energy' line that
     :func:`delfin.energies.find_gibbs_energy` reads.
     """
-    keywords = [functional, basis, "Opt", "Freq", f"SMD({solvent})"]
+    keywords = [
+        functional,
+        basis,
+        "Opt",
+        "Freq",
+        f"{solvation_model}({solvent})",
+    ]
     if extra_keywords:
         keywords.extend(extra_keywords)
     return _render_input(
@@ -254,6 +263,7 @@ def build_single_point_input(
     basis: str = _DEFAULT_SP_BASIS,
     pal: int = 8,
     maxcore: int = 4000,
+    solvation_model: str = "SMD",
     extra_keywords: Optional[Iterable[str]] = None,
 ) -> str:
     """Write the ORCA single-point input refining the energy at a larger basis.
@@ -264,7 +274,7 @@ def build_single_point_input(
     different basis -- combine refined energies with the small-basis
     thermochemistry correction explicitly instead.
     """
-    keywords = [functional, basis, f"SMD({solvent})", "TightSCF"]
+    keywords = [functional, basis, f"{solvation_model}({solvent})", "TightSCF"]
     if extra_keywords:
         keywords.extend(extra_keywords)
     return _render_input(
@@ -393,6 +403,7 @@ def run_cycle(
     cycle_dir: Path,
     *,
     solvent: str = _DEFAULT_SOLVENT,
+    solvation_model: str = "SMD",
     pal: int = 8,
     maxcore: int = 4000,
     reference_acid: str = REFERENCE_ACID,
@@ -401,9 +412,11 @@ def run_cycle(
     """Run the full isodesmic cycle of one acid through ORCA.
 
     Per species: XYZ from DELFIN's SMILES converter, one Opt+Freq ORCA
-    run (SMD solvent), Gibbs energy read with energies.find_gibbs_energy
-    through read_cycle_gibbs_energies.  The pKa is anchored to the
-    reference acid's experimental value with pka_from_cycle.
+    run (continuum solvation, SMD by default, CPCM selectable via
+    ``solvation_model``), Gibbs energy read with
+    energies.find_gibbs_energy through read_cycle_gibbs_energies.  The
+    pKa is anchored to the reference acid's experimental value with
+    pka_from_cycle.
 
     Returns:
         Dict with keys:
@@ -430,6 +443,7 @@ def run_cycle(
                 charge=species.charge,
                 multiplicity=species.multiplicity,
                 solvent=solvent,
+                solvation_model=solvation_model,
                 pal=pal,
                 maxcore=maxcore,
             ),

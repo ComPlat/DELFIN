@@ -137,3 +137,18 @@ def test_a_missing_output_is_reported_and_the_cycle_refuses_to_guess(tmp_path):
     }
     with pytest.raises(ValueError):
         pka_from_cycle(gibbs, reference_pka=4.756)
+
+
+def test_the_input_can_solvate_with_cpcm_for_a_water_validation():
+    """Operator's validation mandate runs the cycle in CPCM(water).
+
+    SMD stays the module default; the operator-approved validation must
+    be able to pick CPCM without touching the module source.
+    """
+    xyz_text = "2\nacetic\nC 0.0 0.0 0.0\nO 1.3 0.0 0.0\n"
+    text = build_opt_freq_input(
+        xyz_text, charge=0, multiplicity=1, solvent="water",
+        solvation_model="CPCM",
+    )
+    assert "CPCM(water)" in text
+    assert "SMD(water)" not in text
