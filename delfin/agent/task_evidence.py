@@ -376,6 +376,15 @@ def check_completion_claim(
                 e for e in entries
                 if float(e.get("ts", 0) or 0) >= float(window_start or 0)
             ]
+            # A run that executed no tests proves nothing: pytest maps
+            # "all skipped / deselected / nothing collected" to exit 0 and
+            # the runner to status "ok" (delfin/agent/test_runner.py), so
+            # failed == 0 alone cannot separate it from a pass. The bash
+            # path in api_client states the same rule for red-state
+            # clearing ("only a run that demonstrably executed tests").
+            ran_any = [e for e in in_window
+                       if int(e.get("passed", 0) or 0) > 0
+                       or int(e.get("failed", 0) or 0) > 0]
             if current_fingerprint is not None:
                 # Entries from ledgers that predate stamping carry no
                 # fingerprint; is_stale reports them stale, the safe
@@ -392,6 +401,8 @@ def check_completion_claim(
                     if int(e.get("failed", 0) or 0) == 0
                     and str(e.get("status", "")) not in ("failed", "error",
                                                          "gave_up")]
+            fresh_green = [e for e in fresh_green
+                           if e in ran_any]
             if fresh_green:
                 return _verdict("tests", "verified",
                                 f"{len(fresh_green)} green run(s)")
@@ -409,6 +420,13 @@ def check_completion_claim(
                         "tests_stale_state", "unmet", "state moved on",
                         f"is a test task and every recorded run predates the "
                         f"current tree state -- {why}")
+            if in_window and not ran_any:
+                return _verdict(
+                    "tests_empty", "unmet", "no tests executed",
+                    "is a test task and every run recorded since it "
+                    "started executed no tests (all skipped, deselected "
+                    "or nothing collected) -- a run that runs nothing "
+                    "does not verify the claim.")
             if in_window:
                 worst = max(int(e.get("failed", 0) or 0) for e in in_window)
                 return _verdict(
