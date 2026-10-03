@@ -12129,18 +12129,26 @@ class _DocToolExecutor:
             # so the completion check can verdict a calculation task on
             # real runs instead of the agent's word. outcome/worst follow
             # the exact keys check_completion_claim's calc branch reads.
+            # The run's folder comes from the index entry, never from a
+            # tool argument: nothing here touches a path.
+            run_folder = next(
+                (info[key] for key in ("path", "folder") if info.get(key)),
+                calc_id)
             try:
                 self._calc_evidence.append({
                     "ts": time.time(),
-                    "folder": str(info.get("path") or info.get("folder")
-                                  or calc_id),
+                    "folder": str(run_folder),
                     "outcome": str(info.get("status")
                                    or info.get("outcome") or ""),
                     "worst": str((info.get("scientific_check") or {})
                                  .get("worst", "ok") or "ok"),
                 })
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # The answer still goes out; the completion check just
+                # lacks this run as evidence, so it says so.
+                import logging
+                logging.getLogger(__name__).warning(
+                    "calc evidence for %s not recorded: %s", calc_id, exc)
             return json.dumps(info, indent=2, ensure_ascii=False)
 
         elif name == "calc_summary":

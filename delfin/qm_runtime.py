@@ -427,7 +427,7 @@ def _generic_tool_spec(name: str) -> ToolSpec:
 
 
 def resolve_tool(name: str) -> Optional[ResolvedTool]:
-    """The tool lookup, asked once per canonical name per process.
+    """The tool lookup, asked once per canonical name and environment.
 
     Every finder (orca.py, dashboard/saddle.py, dashboard/gfn_optimize.py,
     and the direct callers tadf_xtb, xtb_crest, hyperpol, backend_slurm,
@@ -435,12 +435,14 @@ def resolve_tool(name: str) -> Optional[ResolvedTool]:
     chain — qm_tools dirs, env overrides, the venv bin, PATH, the locator,
     and at the very end the login-shell module probe — is paid once, not
     once per finder.  The "not found" answer is cached too: a failed
-    search is as definitive as a successful one.
+    search is as definitive as a successful one — for the same PATH, HOME,
+    tool env vars and DELFIN_* overrides; a change to any of them asks
+    again (``_resolver_env_key``).
 
     An explicit path stays outside the cache: it is user input pointing
     at a file that may exist by the time of a later ask.
 
-    When the environment changes inside a running process — the Settings
+    When something outside the environment changes — the Settings
     tab's ``apply_runtime_environment`` (runtime_setup.py), which the
     dashboard calls after installing tools or editing tool paths — the
     cache is cleared there, so a freshly installed tool is found instead
@@ -455,13 +457,39 @@ def resolve_tool(name: str) -> Optional[ResolvedTool]:
             path=direct_candidate,
             source="explicit",
         )
-    return _resolve_tool_cached(name)
+    return _resolve_tool_cached(name, _resolver_env_key())
+
+
+# Environment variables the candidate chain reads besides the DELFIN_*
+# family: a change to any of them makes a cached answer stale.
+_RESOLVER_ENV_VARS = frozenset(
+    {"PATH", "HOME", "MODULEPATH", "LOADEDMODULES"}
+    | {key for spec in _TOOL_SPECS for key in spec.env_vars}
+    | {key for spec in _TOOL_SPECS for key in spec.module_env_hints}
+)
+
+
+def _resolver_env_key() -> tuple[tuple[str, str], ...]:
+    """The part of the environment a lookup depends on, as a cache key.
+
+    A process whose PATH, HOME, tool env vars or DELFIN_* overrides change
+    (a test's monkeypatch, a shell that loads a module, a dashboard that
+    re-points a tool) asks afresh instead of inheriting an answer — found
+    or "not found" — that was true for a different environment.
+    """
+    return tuple(sorted(
+        (key, value) for key, value in os.environ.items()
+        if key in _RESOLVER_ENV_VARS or key.startswith("DELFIN_")
+    ))
 
 
 @lru_cache(maxsize=None)
-def _resolve_tool_cached(name: str) -> Optional[ResolvedTool]:
-    """The canonical-name core of resolve_tool, cached — including a
-    "not found" answer, which is as definitive as a found one."""
+def _resolve_tool_cached(
+    name: str, env_key: tuple[tuple[str, str], ...]
+) -> Optional[ResolvedTool]:
+    """The canonical-name core of resolve_tool, cached per environment —
+    including a "not found" answer, which is as definitive as a found one
+    for the same environment.  ``env_key`` only keys the cache."""
     canonical = canonical_tool_name(name)
     spec = _SPEC_BY_CANONICAL.get(canonical, _generic_tool_spec(canonical))
     for candidate, source in _iter_tool_candidates(spec):

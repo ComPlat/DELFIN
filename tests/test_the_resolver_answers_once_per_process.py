@@ -12,7 +12,9 @@ processes per ask on the login node (see
 ``test_the_module_probe_is_the_last_resort_of_a_tool_search.py``).
 
 So ``resolve_tool``'s canonical-name core is cached: one answer per
-canonical name per process, including the "not found" answer, and
+canonical name and environment per process, including the "not found"
+answer (a changed PATH, HOME, tool env var or DELFIN_* override asks
+again), and
 ``clear_resolver_cache()`` forgets them all so a changed environment —
 the Settings tab's apply_runtime_environment — and tests can force a
 re-ask.  The per-spec module probe stays a last resort behind the
@@ -111,6 +113,37 @@ def test_a_changed_environment_forces_a_re_ask(monkeypatch, tmp_path):
     assert second is not None and second.path == str(fake_censo), (
         "after the clear the resolve did not pick up the new env")
     assert second.path != first_path
+
+
+def test_a_changed_environment_is_seen_without_a_clear(
+        monkeypatch, tmp_path):
+    """A miss cached under one environment does not outlive it.
+
+    The full suite showed it: an earlier test in the same process asked
+    for xtb while none was reachable, the miss was cached, and the
+    viewer tests that later named xtb through the environment were told
+    "xtb was not found".  Nobody calls clear_resolver_cache() between a
+    monkeypatch.setenv and the next ask, so the cache has to key on the
+    environment it was filled in.
+    """
+    monkeypatch.delenv("DELFIN_CENSO_BINARY", raising=False)
+    first = qm_runtime.resolve_tool("censo")
+    first_path = first.path if first else None
+
+    fake_censo = tmp_path / "censo"
+    fake_censo.write_text("#!/bin/sh\nexit 0\n")
+    fake_censo.chmod(0o755)
+    monkeypatch.setenv("DELFIN_CENSO_BINARY", str(fake_censo))
+
+    second = qm_runtime.resolve_tool("censo")
+    assert second is not None and second.path == str(fake_censo), (
+        "the resolver answered from a cache filled in another environment")
+    assert second.path != first_path
+
+    monkeypatch.delenv("DELFIN_CENSO_BINARY")
+    third = qm_runtime.resolve_tool("censo")
+    assert (third.path if third else None) == first_path, (
+        "back in the first environment the first answer must return")
 
 
 def test_the_finders_share_one_cache(monkeypatch, tmp_path):
