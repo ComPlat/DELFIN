@@ -4165,10 +4165,11 @@ class AgentEngine:
 
     def _scan_claim_grounding(
         self, text: str, turn_tools: list[str] | None,
-    ) -> tuple[list, list]:
-        """Scan a finished answer for ungrounded code-location and
-        physical-quantity claims against this session's observed evidence.
-        Returns (location_flags, quantity_flags); never raises."""
+    ) -> tuple[list, list, list]:
+        """Scan a finished answer for ungrounded code-location,
+        physical-quantity and stated-equation claims against this
+        session's observed evidence. Returns (location_flags,
+        quantity_flags, arithmetic_flags); never raises."""
         try:
             from . import verify_guard as _vg
             observed = getattr(self, "_last_observed_files", None) or set()
@@ -4179,9 +4180,10 @@ class AgentEngine:
                 text, observed_files=observed,
                 evidence_tools_used=set(turn_tools or ()),
                 numbers=_vg.observed_numbers())
-            return loc, qty
+            arith = _vg.scan_for_wrong_arithmetic(text)
+            return loc, qty, arith
         except Exception:
-            return [], []
+            return [], [], []
 
     def _enforce_claim_grounding(
         self,
@@ -4219,7 +4221,7 @@ class AgentEngine:
 
         Returns the (possibly extended) answer text."""
         from . import verify_guard as _vg
-        loc, qty = self._scan_claim_grounding(
+        loc, qty, arith = self._scan_claim_grounding(
             response_text, getattr(self, "_last_turn_tools", None))
         func = self._scan_functional_claims(response_text)
         # A figure over a column the reader could not read joins the caveat
@@ -4275,7 +4277,8 @@ class AgentEngine:
             wrong_language = _vg.scan_for_language_mismatch(
                 response_text,
                 "" if _asked.lstrip().startswith("[Verify]") else _asked)
-        if not loc and not qty and not conflicts and not wrong_language:
+        if (not loc and not qty and not arith
+                and not conflicts and not wrong_language):
             return self._append_answer_caveats(
                 response_text, functional=func, ambiguous=ambiguous,
                 on_token=on_token)
@@ -4283,7 +4286,7 @@ class AgentEngine:
             # The single correction for this user turn is spent (e.g. a
             # nested continuation re-entered here) — annotate, never loop.
             return self._append_answer_caveats(
-                response_text + _vg.grounding_caveat(loc, qty)
+                response_text + _vg.grounding_caveat(loc, qty, arith)
                 + _vg.conflicting_figure_caveat(conflicts)
                 + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
@@ -4293,6 +4296,9 @@ class AgentEngine:
                 loc, observed=getattr(self, "_last_observed_files", None)))
         if qty:
             parts.append(_vg.quantity_claim_feedback(qty))
+        if arith:
+            parts.append(_vg.arithmetic_feedback(arith)
+                         .replace("[Verify] ", "", 1))
         if conflicts:
             parts.append(_vg.conflicting_figure_feedback(conflicts)
                          .replace("[Verify] ", "", 1))
@@ -4332,7 +4338,7 @@ class AgentEngine:
             self._claim_guard_active = False
         if not correction:
             return self._append_answer_caveats(
-                response_text + _vg.grounding_caveat(loc, qty)
+                response_text + _vg.grounding_caveat(loc, qty, arith)
                 + _vg.conflicting_figure_caveat(conflicts)
                 + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
@@ -4349,7 +4355,7 @@ class AgentEngine:
             combined = response_text + "\n\n" + correction
         # Re-scan the correction: the recursive turn refreshed the
         # observed-files snapshot and _last_turn_tools.
-        loc2, qty2 = self._scan_claim_grounding(
+        loc2, qty2, arith2 = self._scan_claim_grounding(
             correction, getattr(self, "_last_turn_tools", None))
         # The correction may restate the functional claim — scan it too and
         # merge (order-stable, de-duplicated: the flags are frozen).
@@ -4358,16 +4364,16 @@ class AgentEngine:
         ambiguous = self._scan_ambiguous_column_totals(combined)
         new_files = set(
             getattr(self, "_last_observed_files", None) or ()) - observed_before
-        if loc2 or qty2:
+        if loc2 or qty2 or arith2:
             # The retry produced its own ungrounded claims.
-            caveat = _vg.grounding_caveat(loc2, qty2)
+            caveat = _vg.grounding_caveat(loc2, qty2, arith2)
         elif not new_files:
             # It read nothing. The scanners are silent because the wording
             # changed, not because anything was checked — so the ORIGINAL
             # claims are named, exactly as unverified as before. The
             # feedback offers "restate as unverified" as a way out, and
             # taking it must not be indistinguishable from verifying.
-            caveat = _vg.grounding_caveat(loc, qty)
+            caveat = _vg.grounding_caveat(loc, qty, arith)
         else:
             caveat = ""
             self._claim_guard_corrected = True
