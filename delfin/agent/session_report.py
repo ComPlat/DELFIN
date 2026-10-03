@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import math
 import re
 
 from . import tool_trace
@@ -635,14 +636,29 @@ def _object_tokens(command: str) -> set[str]:
     basename), so an unrelated later command is never a "rework".
     """
     tokens: set[str] = set()
+    # A leading `cd DIR &&` sets where relative paths point, so
+    # `cd /work && rm scratch.tmp` and `rm /work/scratch.tmp` are one object.
+    base = ""
+    m = re.match(r"\s*cd\s+(\S+)\s*&&\s*(.*)$", command or "")
+    if m:
+        base, command = m.group(1).rstrip("/"), m.group(2)
     for t in (command or "").split():
-        t = t.strip(",;|&")
-        if not t or t.startswith("-") or t.startswith("'") or t.startswith('"'):
+        t = t.strip(",;|&()'\"")
+        if not t or t.startswith("-"):
             continue
         if "/" in t or "." in t:
-            tokens.add(t)
-            tokens.add(t.rsplit("/", 1)[-1])  # basename, so paths/locals collide
+            # The whole path only: a shared basename is not the same object
+            # (`rm a.py` and `python other/a.py` touch different files).
+            t = t[2:] if t.startswith("./") else t
+            tokens.add(f"{base}/{t}" if base and not t.startswith("/") else t)
     return tokens
+
+
+#: Commands that only look at a file. Reading the file a refused command
+#: named is inspection, not the same action reached another way.
+_INSPECT_RE = re.compile(
+    r"^\s*(?:sed\s+-n|cat|head|tail|less|more|grep|rg|ls|wc|stat|file|diff|"
+    r"git\s+(?:show|log|diff|status|blame))\b")
 
 
 def _is_denial(e: dict) -> bool:
@@ -659,6 +675,12 @@ def _is_denial(e: dict) -> bool:
 def _extract_target(command: str) -> str:
     """The file a slice command reads, or '' when none is identifiable."""
     toks = (command or "").strip().split()
+    # Everything from a redirection on is where the output goes, not what
+    # the slice reads: `sed -n 1,50p big.out > s1.txt` reads big.out.
+    for i, t in enumerate(toks):
+        if t.startswith(">") or t.startswith("1>") or t.startswith("2>"):
+            toks = toks[:i]
+            break
     for t in reversed(toks):
         if t.startswith("-") or t.startswith("'") or t.startswith('"'):
             continue
@@ -687,7 +709,9 @@ def _ts(e: dict) -> float:
         v = float(e.get("ts") or 0)
     except (TypeError, ValueError):
         return 0.0
-    return v
+    # NaN/Inf would slip past every gap comparison and then make round()
+    # raise, blanking the whole report; treat them as a missing stamp.
+    return v if math.isfinite(v) else 0.0
 
 
 def _idle_gaps(entries: list[dict], *, idle_min_s: float,
@@ -761,7 +785,10 @@ def compute_friction(
                 continue
             is_bash = "bash" in str(e.get("tool", "")).lower()
             cmd = _command(e, is_bash)
-            if _norm_cmd(cmd) == _norm_cmd(d["cmd"]):
+            same = (_norm_cmd(cmd) == _norm_cmd(d["cmd"]) if is_bash
+                    else _norm_cmd(str(e.get("input") or ""))
+                    == _norm_cmd(str(d["entry"].get("input") or "")))
+            if same:
                 gap = round(e_ts - d_ts)
                 waits.append({"kind": "approval_wait", "magnitude": gap,
                               "unit": "s", "detail": d["cmd"],
@@ -787,6 +814,8 @@ def compute_friction(
                 continue
             cmd = _command(e, True)
             if not cmd or _norm_cmd(cmd) == _norm_cmd(d["cmd"]):
+                continue
+            if _INSPECT_RE.match(cmd):
                 continue
             if denied_objs & _object_tokens(cmd):
                 items["denial_reworked"].append({
