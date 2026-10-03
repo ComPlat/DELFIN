@@ -12,6 +12,7 @@ import pytest
 from delfin.agent.experiment import (
     Experiment,
     ExperimentError,
+    _prereg_digest,
     pre_register,
     record_measurement,
     status_of,
@@ -42,27 +43,26 @@ def _registered(**over) -> Experiment:
 def test_prereg_content_is_tamper_evident_after_measurement():
     """The recorded measurement must carry a digest of the pre-registered
     content, so a later mutation of expectation/reading is provable
-    against the record instead of invisible."""
+    against the record instead of invisible.
+
+    Reviewer s6 post-fix note: the fix implements the digest with its own
+    construction (_prereg_digest: delimited ordered fields, 16-hex
+    truncation).  The FINDING was the tamper-evidence PROPERTY, so this
+    test pins the property -- record carries the experiment's digest,
+    and the digest changes when pre-registered content is mutated --
+    not one particular hash scheme.
+    """
     exp = _registered()
     rec = record_measurement(exp, case="c1", outcome={"runtime_s": 12.0})
-    digest = hashlib.sha256(
-        json.dumps({"expectation": exp.expectation,
-                    "reading": exp.reading,
-                    "why_chain": exp.why_chain,
-                    "hypothesis": exp.hypothesis},
-                   sort_keys=True).encode("utf-8")).hexdigest()
-    # The record must expose what pre-registration it was taken under.
-    assert rec.prereg_digest == digest
+    assert rec.prereg_digest == exp.prereg_digest
+    assert rec.prereg_digest == _prereg_digest(exp)
+    mutated = _registered()
+    mutated.expectation = "MUTATED GOALPOST"
+    assert _prereg_digest(mutated) != rec.prereg_digest
     # Moving the goalposts afterwards must be provable: the digest of the
     # mutated experiment no longer matches the recorded one.
     exp.expectation = "quietly redefined as: anything better than nothing"
-    mutated = hashlib.sha256(
-        json.dumps({"expectation": exp.expectation,
-                    "reading": exp.reading,
-                    "why_chain": exp.why_chain,
-                    "hypothesis": exp.hypothesis},
-                   sort_keys=True).encode("utf-8")).hexdigest()
-    assert rec.prereg_digest != mutated
+    assert rec.prereg_digest != _prereg_digest(exp)
 
 
 # ── A2.6 direct status writes must not bypass the pre-registration gate ──
@@ -70,10 +70,19 @@ def test_prereg_content_is_tamper_evident_after_measurement():
 
 def test_status_write_to_recording_bypasses_the_gate():
     """A caller (or the agent being protected against) that sets status
-    directly must NOT be able to measure without pre-registration."""
+    directly must NOT be able to measure without pre-registration.
+
+    Reviewer s6 post-fix note: the fix makes status a read-only property
+    (experiment.py:125-128) -- a direct write raises AttributeError
+    (Python's mechanism for a setter-less property), which IS the
+    refusal.  The finding demanded 'cannot bypass', not a specific
+    exception type, so this pins the write failing and the gate holding.
+    """
     exp = _draft()
-    exp.status = "recording"
-    with pytest.raises(ExperimentError):
+    with pytest.raises(AttributeError):
+        exp.status = "recording"
+    assert exp.status == "draft"          # nothing moved
+    with pytest.raises(ExperimentError):  # the gate itself still holds
         record_measurement(exp, case="c1", outcome={"runtime_s": 12.0})
 
 
@@ -81,11 +90,21 @@ def test_status_cannot_move_backwards():
     """The docstring promises the status 'only moves forward'
     (experiment.py module docstring, Experiment class); a backwards write
     must not succeed -- otherwise a 'measured' experiment can be rewound
-    and re-registered with different expectations."""
+    and re-registered with different expectations.
+
+    Reviewer s6 post-fix note: _move now enforces monotonic order across
+    _STATUSES (experiment.py:130-141).  A backwards _move raises
+    ExperimentError; a direct assignment raises AttributeError because
+    the property has no setter.  The finding demanded 'no backwards
+    movement', so both refusals are pinned.
+    """
     exp = _registered()
     record_measurement(exp, case="c1", outcome={})
-    with pytest.raises(ExperimentError):
-        exp.status = "draft"
+    with pytest.raises(AttributeError):
+        exp.status = "draft"              # direct write: no setter
+    assert exp.status != "draft"          # still measured
+    with pytest.raises(ExperimentError):  # the internal path refuses too
+        exp._move("draft")
 
 
 # ── A2.3 refusals must come through ExperimentError, not a crash ─────────
