@@ -76,6 +76,15 @@ def test_a_bash_run_with_zero_executed_tests_is_not_evidence():
     assert check["verdict"] == "unmet", check
 
 
+def test_a_legacy_entry_without_count_keys_still_verifies():
+    """The pre-count ledger shape carries only failed/status. It does
+    not CLAIM that nothing ran -- only a run that positively says
+    passed == 0 proves an empty execution."""
+    run = {"tool": "run_tests", "failed": 0, "status": "ok", "ts": 100.0}
+    check = _check([run], window_start=0.0)
+    assert check["verdict"] == "verified", check
+
+
 def test_mixed_runs_green_plus_empty_are_evidence():
     """One run that executed tests and passed carries the claim; the
     empty run beside it does not veto it."""

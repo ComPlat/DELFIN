@@ -477,8 +477,15 @@ def check_completion_claim(
             # failed == 0 alone cannot separate it from a pass. The bash
             # path in api_client states the same rule for red-state
             # clearing ("only a run that demonstrably executed tests").
+            # Only an entry that POSITIVELY says passed == 0 (and no
+            # failure) proves an empty execution. An entry without a
+            # "passed" key is the pre-count ledger shape (only
+            # failed/status) -- it claims nothing about how many tests
+            # ran, and judging it empty broke
+            # test_a_completed_task_must_show_the_work (wave-10 pin).
             ran_any = [e for e in in_window
-                       if int(e.get("passed", 0) or 0) > 0
+                       if "passed" not in e
+                       or int(e.get("passed", 0) or 0) > 0
                        or int(e.get("failed", 0) or 0) > 0]
             if current_fingerprint is not None:
                 # Entries from ledgers that predate stamping carry no
