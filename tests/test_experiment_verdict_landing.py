@@ -323,3 +323,35 @@ def test_double_approval_record_is_refused(tmp_path, monkeypatch):
     # landing twice is refused -- cannot double-land
     with pytest.raises(ExperimentError):
         land(exp)
+
+
+# ---------------------------------------------------------------------------
+# Reviewer findings A5.3 + A5.5 (P5 adversarial, from nacht-s6's
+# tests/test_experiment_adversarial_verdict_landing.py @ 0e72df4e).  Both
+# must be RED on the current code and GREEN after the fix.
+# ---------------------------------------------------------------------------
+
+def test_a53_empty_baseline_arm_is_a_refusal_not_a_verdict(tmp_path, monkeypatch):
+    exp = _exp(tmp_path, monkeypatch)
+    s = _stamp(tmp_path, monkeypatch)
+    _, cand = _improvement(exp)
+    # an EMPTY baseline arm must refuse, not produce a verdict on old_n=0
+    with pytest.raises(ExperimentError):
+        verdict_with_noise_gate(exp, baseline_rows=[], candidate_rows=cand,
+                                stamp_baseline=s, stamp_candidate=s)
+
+
+def test_a55_significant_improvement_on_a_contaminated_null_is_refused(
+        tmp_path, monkeypatch):
+    exp = _exp(tmp_path, monkeypatch)
+    s = _stamp(tmp_path, monkeypatch)
+    base, cand = _improvement(exp)   # significant improvement
+    # null run of the SAME state that comes back significant by chance
+    # (pooled 4/16 vs 16/16, p ~ 0.0006) contaminates the thresholds; no
+    # artefact classification -> the improvement must be refused too.
+    null_a = [_row("c", 4, 16)]
+    null_b = [_row("c", 16, 16)]
+    with pytest.raises(ExperimentError):
+        verdict_with_noise_gate(exp, baseline_rows=base, candidate_rows=cand,
+                                stamp_baseline=s, stamp_candidate=s,
+                                null_rows=(null_a, null_b))
