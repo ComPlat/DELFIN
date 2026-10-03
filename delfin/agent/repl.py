@@ -2849,9 +2849,23 @@ class TerminalAgent:
             # whole wake-up into an empty line -- silently, which is how a
             # notification path fails worst.
             _eng = getattr(self, "engine", None)
-            return job_wake.wake_prompt(job_wake.finished_shells(
-                seen,
-                session_id=str(getattr(_eng, "session_id", "") or "")))
+            sid = str(getattr(_eng, "session_id", "") or "")
+            done = job_wake.finished_shells(seen, session_id=sid)
+            # The missing half of the wave-10 idle (90 minutes after a
+            # finished SLURM job): the same session-scoped watch file the
+            # dashboard tick drains, now pulled at the idle prompt too.
+            # Only for a session that HAS one -- an empty id would read
+            # every session's watches, which is the scoping bug of
+            # 2026-09-28 again. Job state comes from the throttled
+            # query_job_states_detailed inside check_agent_jobs, never
+            # from a private scheduler loop; the throttle is this
+            # method's _WAKE_EVERY_S gate.
+            _opts = getattr(self, "opts", None)
+            _ws = str(getattr(_opts, "cwd", "") or "")
+            if sid and _ws:
+                done = done + job_wake.finished_watched_jobs(
+                    _ws, seen, session_id=sid)
+            return job_wake.wake_prompt(done)
         except Exception:
             return ""
 

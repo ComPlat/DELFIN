@@ -78,6 +78,35 @@ def finished_shells(seen: set, *, registry: Any = None,
     return out
 
 
+def finished_watched_jobs(workspace: str, seen: set, *,
+                          session_id: Optional[str] = None,
+                          run_fn: Any = None) -> list[dict]:
+    """Agent-registered jobs that reached a terminal state since the last look.
+
+    The terminal's counterpart to the dashboard tick's
+    ``check_agent_jobs`` call. ``seen`` is the caller's memory across
+    looks (the same set the shells use, ``_wake_seen``), so a job is
+    reported once even though ``check_agent_jobs`` with
+    ``consume=False`` never removes the entry. ``session_id`` scopes the
+    report to this session's own submissions, exactly as the dashboard
+    scopes it.
+
+    Job state comes from ``job_monitor.query_job_states_detailed`` via
+    ``check_agent_jobs`` — one tri-state scheduler query for all ids,
+    never a private squeue loop. The look is pulled by the idle prompt
+    behind ``_WAKE_EVERY_S`` (repl), so the throttle lives at the caller.
+
+    Never raises — a wake-up that throws is worse than one that misses.
+    """
+    try:
+        from .job_monitor import check_agent_jobs
+        return check_agent_jobs(workspace, run_fn=run_fn,
+                                consume=False, marker="wake_notified",
+                                session_id=session_id or None)
+    except Exception:
+        return []
+
+
 def wake_prompt(done: Iterable[dict]) -> str:
     """The message a finished watched job sends an idle agent; "" for none.
 
