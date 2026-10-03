@@ -12,9 +12,9 @@ processes per ask on the login node (see
 ``test_the_module_probe_is_the_last_resort_of_a_tool_search.py``).
 
 So ``resolve_tool``'s canonical-name core is cached: one answer per
-canonical name and environment per process, including the "not found"
-answer (a changed PATH, HOME, tool env var or DELFIN_* override asks
-again), and
+found tool and environment per process (a changed PATH, HOME, tool env
+var or DELFIN_* override asks again; a miss is never kept, so a tool
+installed inside the process is found on the next ask), and
 ``clear_resolver_cache()`` forgets them all so a changed environment —
 the Settings tab's apply_runtime_environment — and tests can force a
 re-ask.  The per-spec module probe stays a last resort behind the
@@ -85,7 +85,7 @@ def test_a_changed_environment_forces_a_re_ask(monkeypatch, tmp_path):
     and pick up the new answer.
 
     censo is deliberately NOT assumed installed: on a node where it is
-    absent the first answer is the cached "not found", and the point is
+    absent the first answer is "not found", and the point is
     exactly that the clear makes the next ask see the override instead
     of inheriting that stale miss.
     """
@@ -103,7 +103,7 @@ def test_a_changed_environment_forces_a_re_ask(monkeypatch, tmp_path):
     monkeypatch.setattr(qm_runtime, "_iter_tool_candidates", counting_iter)
     first = qm_runtime.resolve_tool("censo")
     # Either the tool is installed and was found, or it is not and the
-    # walk returned the definitive miss — both may be cached.
+    # walk returned a miss.
     first_path = first.path if first else None
 
     monkeypatch.setenv("DELFIN_CENSO_BINARY", str(fake_censo))
@@ -144,6 +144,48 @@ def test_a_changed_environment_is_seen_without_a_clear(
     third = qm_runtime.resolve_tool("censo")
     assert (third.path if third else None) == first_path, (
         "back in the first environment the first answer must return")
+
+
+def test_a_tool_installed_in_the_process_is_found_on_the_next_ask(
+        monkeypatch, tmp_path):
+    """An install changes the disk, not the environment.
+
+    The full suite on a fresh stage showed it: the first xtb lookup found
+    nothing, the viewer tests installed xtb into qm_tools in the same
+    process, and every later lookup still answered "not found" because
+    the miss was cached under an unchanged environment.  A miss is
+    therefore never kept; the next ask walks the chain again.
+    """
+    # A name no node has installed, so the first ask is a miss everywhere.
+    tools_bin = tmp_path / "qm_tools_bin"
+    tools_bin.mkdir()
+    monkeypatch.setattr(qm_runtime, "iter_qm_tools_bin_dirs",
+                        lambda: iter([tools_bin]))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty_path"))
+
+    assert qm_runtime.resolve_tool("delfin-no-such-tool") is None
+
+    installed = tools_bin / "delfin-no-such-tool"
+    installed.write_text("#!/bin/sh\nexit 0\n")
+    installed.chmod(0o755)
+
+    found = qm_runtime.resolve_tool("delfin-no-such-tool")
+    assert found is not None and found.path == str(installed), (
+        "a tool installed after a miss stayed invisible: the miss was cached")
+
+
+def test_a_cached_tool_that_vanished_is_not_answered(monkeypatch, tmp_path):
+    """A found tool is kept only while its file is still there."""
+    fake = tmp_path / "censo"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("DELFIN_CENSO_BINARY", str(fake))
+    assert qm_runtime.resolve_tool("censo").path == str(fake)
+
+    fake.rename(tmp_path / "censo.moved")
+    again = qm_runtime.resolve_tool("censo")
+    assert again is None or again.path != str(fake), (
+        "the cache answered a binary that is gone")
 
 
 def test_the_finders_share_one_cache(monkeypatch, tmp_path):
@@ -212,7 +254,7 @@ def test_apply_runtime_environment_clears_the_cache(
     sees the new env instead of a cached stale answer.
 
     No assumption about what the node has installed: censo's first
-    answer may be a real path or the cached miss — the point is that
+    answer may be a real path or a miss — the point is that
     after apply_runtime_environment named a binary, the next resolve
     returns exactly that binary.
     """
