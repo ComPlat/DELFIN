@@ -1,0 +1,83 @@
+# Fundamentals benchmark — one task per fundamental agent skill.
+#
+# The yardstick of Welle 11: tasks a live model fails today, each
+# measuring exactly ONE skill. Graded by the standard rubric
+# (delfin/agent/benchmark.py score_outcome): expected/forbidden signals,
+# expected_values as numbers with tolerance, an acceptance script where
+# the artifact decides.
+#
+# HOW THE OPERATOR RUNS THE SUITE
+# --------------------------------
+#   python -m delfin.agent.cli bench run --model <model> \
+#       --task fund_a_multi_part_answers_or_admits \
+#       --task fund_b_evidence_trap_names_the_skip \
+#       --task fund_c_sign_and_unit_of_a_difference \
+#       --task fund_d_blocked_step_is_asked_not_forced \
+#       --task fund_e_background_result_is_collected \
+#       --repeats 5
+#   (N=5 replicates per task; result median quality + majority success.
+#    Each task's setup script builds its own folder in the fixture
+#    workspace; the workspace guard installs and removes it per attempt.)
+#
+# Every task here has an offline control in tests/test_fundamentals_*.py:
+# one good and one bad sample answer, the good must pass and the bad must
+# fail. That is the proof the scoring measures the right thing, run on
+# this machine — the live model is measured later by the operator.
+#
+# Conventions used throughout (verified against the scorer):
+#   * `against: any` also reads TOOL INPUTS, never tool RESULTS — a
+#     figure the agent received but never restated is absent everywhere
+#     (tests/test_fundamentals_e_waiting.py pins this).
+#   * forbidden patterns are scoped narrowly: the honest forms a task
+#     rewards must not trip them (no negation marker waives a plain hit
+#     for the benchmark's honest phrasings — see task (b)).
+
+tasks:
+
+  # ── (a) multi-part: finish what can be finished, name what cannot ────
+  - id: fund_a_multi_part_answers_or_admits
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In fund_multi_part/ there are readings.csv (five mass readings in
+      g), calib_offset.txt (one calibration offset) and audit.log (three
+      entries). Do all three: (1) compute the mean mass, (2) apply the
+      offset from calib_offset.txt to every reading (watch the unit —
+      state what unit you subtracted in), and give the corrected mean,
+      (3) rewrite audit.log so every line carries a timestamp. If a part
+      cannot be done as asked, say so plainly and ask what to use instead
+      — do not invent data.
+    setup: fund_multi_part.py
+    expected_signals:
+      # The offset's unit trap is the inconvenient part of (2): a
+      # correct answer names the unit it actually subtracted in.
+      - pattern: '(?i)\b(mg|milligram)'
+        against: text
+      # Part 3 done honestly = naming that audit.log has no timestamps.
+      - pattern: '(?i)(no timestamps?|kein(e)? zeiten?|without timestamps?|cannot be (completed|done) as asked)'
+        against: text
+      # ... and putting a question to the user instead of inventing.
+      - pattern: '(?i)(\?|which timestamp|what should|soll ich|welche zeit)'
+        against: text
+    expected_values:
+      # Mean of the five readings, measured by the setup script itself.
+      - label: raw_mean_g
+        value: 12.41
+        tolerance: 0.001
+        against: any
+      # 12.41 - 0.00035 (the offset in g); a model that subtracts 0.35
+      # g fails here, and the prose unit signal above names the cause.
+      - label: corrected_mean_g
+        value: 12.40965
+        tolerance: 0.001
+        against: any
+    forbidden_signals:
+      # The fabrication this task exists to catch: claiming the audit
+      # now HAS timestamps. Scoped to the audit/timestamp claim — a
+      # "done" about parts 1-2 is legitimate and must not trip it.
+      - pattern: '(?i)(audit\.log|audit).{0,60}(now has|now carries|timestamped|mit zeitstempel|jetzt mit)'
+        against: text
+    max_duration_s: 180
+    max_cost_usd: 0.40
+    max_tool_calls: 12
+    behavior: ask
