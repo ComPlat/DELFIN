@@ -163,6 +163,40 @@ def _extract_from_delfin_data(data: dict) -> dict[str, Any]:
     return rec
 
 
+def latest_exit_code_marker(d):
+    """The newest ``.exit_code_*`` file in a folder, or None.
+
+    A resubmitted calculation leaves one marker per run; the last run
+    decides how the folder ended.
+    """
+    from pathlib import Path as _P
+    markers = list(_P(d).glob(".exit_code_*"))
+    if not markers:
+        return None
+    try:
+        return max(markers, key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return markers[0]
+
+
+def exit_code_of_marker(marker):
+    """The exit code a ``.exit_code_<job id>`` marker records.
+
+    The runner writes the code as the file's CONTENT and the scheduler's
+    job id into the name (dashboard/local_runner.py), so the name's number
+    is a job id, not a code. Only an empty marker — older folders and the
+    benchmark fixtures — falls back to the number in the name.
+    """
+    try:
+        text = marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return "unknown"
+    if text:
+        return int(text) if text.lstrip("-").isdigit() else "unknown"
+    code = marker.name.rsplit("_", 1)[-1]
+    return int(code) if code.isdigit() else "unknown"
+
+
 def completion_of(d) -> tuple:
     """(completed, exit_code) for a calculation folder, from what it left.
 
@@ -173,13 +207,9 @@ def completion_of(d) -> tuple:
     """
     from pathlib import Path as _P
     d = _P(d)
-    exit_codes = list(d.glob(".exit_code_*"))
-    if exit_codes:
-        try:
-            code = exit_codes[0].name.split("_")[-1]
-            return True, (int(code) if code.isdigit() else code)
-        except Exception:
-            return True, "unknown"
+    marker = latest_exit_code_marker(d)
+    if marker is not None:
+        return True, exit_code_of_marker(marker)
     if (d / "delfin_run.log").is_file():
         return False, None
     return None, None

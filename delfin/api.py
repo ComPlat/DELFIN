@@ -755,7 +755,7 @@ def calculation_status(folder: str) -> CalculationStatus:
     """
     from pathlib import Path as _P
     from delfin.doc_server.calc_indexer import (
-        _largest_output, _tail_text, outcome_of_folder)
+        _largest_output, _tail_text, exit_code_of_marker, outcome_of_folder)
     import json as _json
     d = _P(folder)
     if not d.is_dir():
@@ -763,8 +763,8 @@ def calculation_status(folder: str) -> CalculationStatus:
                                  outcome="unknown (folder missing)")
     evidence: list[dict] = []
     for f in sorted(d.glob(".exit_code_*")):
-        code = f.name.rsplit("_", 1)[-1]
-        evidence.append({"source": f.name, "says": f"exit code {code}"})
+        evidence.append({"source": f.name,
+                         "says": f"exit code {exit_code_of_marker(f)}"})
     log = d / "delfin_run.log"
     if log.is_file():
         lines = [ln.strip() for ln in _tail_text(log).splitlines() if ln.strip()]
