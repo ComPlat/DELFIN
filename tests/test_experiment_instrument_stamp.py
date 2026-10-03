@@ -17,7 +17,6 @@ import pytest
 
 from delfin.agent.experiment import (
     ExperimentError,
-    InstrumentStamp,
     assert_same_stamp,
     instrument_stamp,
 )
@@ -143,3 +142,14 @@ def test_stamp_message_is_clear(tmp_path, monkeypatch):
     except ExperimentError as e:
         msg = str(e)
         assert "judge" in msg or "stamp" in msg or "instrument" in msg
+
+
+@pytest.mark.parametrize("key", ["KIT_TOOLBOX_API_KEY", "GITHUB_TOKEN", "db_password", "MY_SECRET", "AWS_CREDENTIALS"])
+def test_a_secret_never_enters_the_stamp(tmp_path, monkeypatch, key):
+    """A hash of a short key or password can be guessed offline, and a stamp
+    travels with every result: secret-named variables are refused outright."""
+    f = tmp_path / "judge.py"
+    f.write_text("x = 1\n")
+    monkeypatch.setenv(key, "hunter2")
+    with pytest.raises(ExperimentError, match="never part of an instrument"):
+        instrument_stamp(files=[str(f)], env_keys=[key])

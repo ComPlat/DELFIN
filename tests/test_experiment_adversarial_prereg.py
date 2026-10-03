@@ -4,8 +4,6 @@ registration, bypass the state machine, or push the refusals off the
 ExperimentError channel.
 """
 
-import hashlib
-import json
 
 import pytest
 
@@ -15,7 +13,6 @@ from delfin.agent.experiment import (
     _prereg_digest,
     pre_register,
     record_measurement,
-    status_of,
 )
 
 

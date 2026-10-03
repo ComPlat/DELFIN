@@ -33,10 +33,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Optional, Sequence
 
 
 __all__ = [
@@ -311,6 +312,9 @@ def _file_content_hash(files: Sequence[str]) -> str:
     return h.hexdigest()
 
 
+_SECRET_KEY_RE = re.compile(r"KEY|TOKEN|SECRET|PASSW|CREDENTIAL", re.IGNORECASE)
+
+
 def _env_hash(env_keys: Sequence[str]) -> str:
     """sha256 over the values of the DECLARED environment variables.
 
@@ -323,6 +327,11 @@ def _env_hash(env_keys: Sequence[str]) -> str:
     h = hashlib.sha256()
     for key in env_keys:
         _require(bool(str(key).strip()), "environment keys must be non-empty")
+        # A secret never enters a stamp: a hash of a short key or password
+        # can be guessed offline, and a stamp is shared with every result.
+        _require(not _SECRET_KEY_RE.search(str(key)),
+                 f"instrument stamp refuses environment variable {key!r}: "
+                 "keys, tokens, secrets and passwords are never part of an instrument")
         _require(key in os.environ,
                  f"instrument stamp declares environment variable {key!r} which is not set")
         h.update(str(key).encode("utf-8", "replace"))

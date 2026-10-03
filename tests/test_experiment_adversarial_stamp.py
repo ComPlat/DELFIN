@@ -13,7 +13,6 @@ these go after what was NOT declared:
   A3.7  directory in the file list is a refusal, not a silent skip
 """
 
-import os
 
 import pytest
 

@@ -23,8 +23,6 @@ from delfin.agent.experiment import (
     Experiment,
     ExperimentError,
     HumanApproval,
-    assert_same_stamp,
-    can_land,
     instrument_stamp,
     land,
     pre_register,

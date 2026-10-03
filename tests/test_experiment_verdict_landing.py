@@ -18,21 +18,17 @@ impossible.
 
 import pytest
 
-from delfin.agent.benchmark import compare_runs
 
 from delfin.agent.experiment import (
     BlockerClassification,
     Experiment,
     ExperimentError,
     HumanApproval,
-    InstrumentStamp,
-    assert_same_stamp,
     can_land,
     instrument_stamp,
     land,
     pre_register,
     record_human_approval,
-    record_measurement,
     status_of,
     submit_for_human_review,
     verdict_with_noise_gate,
@@ -53,8 +49,6 @@ def _row(task_id: str, n_pass: int, n: int) -> dict:
 
 
 def _exp(tmp_path, monkeypatch, *, status_ok=True) -> Experiment:
-    import os
-    import time as _t
     f = tmp_path / "code.py"
     f.write_text("switch default off", encoding="utf-8")
     monkeypatch.setenv("DELFIN_EXP_P5_ENV", "x")
