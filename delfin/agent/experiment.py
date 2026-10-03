@@ -86,6 +86,10 @@ class Measurement:
 
     case: str
     outcome: dict[str, Any] = field(default_factory=dict)
+    prereg_digest: Optional[str] = None
+    # The proof of what was written down at pre-registration time (see
+    # ``Experiment.prereg_digest``).  Copied onto every measurement so a
+    # goalpost moved after the first measurement is visible as a mismatch.
 
 
 @dataclass
@@ -110,11 +114,31 @@ class Experiment:
     expectation: Optional[str] = None
     reading: Optional[str] = None
     pool_size: str = "small"
-    status: str = "draft"
     measurements: list[Measurement] = field(default_factory=list)
+    # Content digest of everything written down at pre-registration (id,
+    # hypothesis, why-chain, switch, expectation, reading).  Set by
+    # ``pre_register``; copied onto every measurement for tamper evidence.
+    prereg_digest: Optional[str] = None
+    _status: str = field(default="draft", repr=False)
+
+    @property
+    def status(self) -> str:
+        """The current state.  Read-only: the only way to change it is
+        ``_move``, which enforces the forward-only rule."""
+        return self._status
 
     def _move(self, status: str) -> None:
-        self.status = status
+        """Advance the state machine.  Refuses any non-forward transition,
+        so a measured experiment can never be rewound to re-register with
+        fresh expectations (that would be the goalpost-moving self-bias)."""
+        _require(status in _STATUSES,
+                 f"unknown state {status!r}; not in {_STATUSES!r}")
+        cur = _STATUSES.index(self._status)
+        new = _STATUSES.index(status)
+        _require(new > cur,
+                 f"cannot move {self._status!r} -> {status!r}; "
+                 "the state machine only moves forward")
+        self._status = status
 
 
 def _require(condition: bool, message: str) -> None:
@@ -141,8 +165,26 @@ def _validate_draft(exp: Experiment) -> None:
              "experiment needs a switch behind which the change sits")
     _require(bool(exp.why_chain),
              "experiment needs a why-chain: the reason steps to the effect")
-    _require(all(bool(step.strip()) for step in exp.why_chain),
-             "why-chain steps must be non-empty")
+    _require(all(isinstance(step, str) and bool(step.strip())
+                 for step in exp.why_chain),
+             "why-chain steps must be non-empty text")
+
+
+def _prereg_digest(exp: Experiment) -> str:
+    """Content digest of everything written down at pre-registration.
+
+    Hashed in order: id, hypothesis, switch, why-chain, expectation and
+    reading -- the substance, not the source text of anything.  Stored on the
+    experiment and copied onto each measurement, so a goalpost moved after
+    the first measurement shows up as a digest mismatch.
+    """
+    h = hashlib.sha256()
+    parts = (exp.id, exp.hypothesis, exp.switch,
+             "\x1f".join(exp.why_chain), exp.expectation or "",
+             exp.reading or "")
+    for part in parts:
+        h.update(f"{part}\x1e".encode("utf-8", "replace"))
+    return h.hexdigest()[:16]
 
 
 def pre_register(
@@ -163,13 +205,16 @@ def pre_register(
     """
     _require(exp.status == "draft", f"cannot pre-register an experiment in state {exp.status!r}")
     _validate_draft(exp)
-    _require(bool(expectation.strip()), "pre-registration needs an expected effect")
-    _require(bool(reading.strip()), "pre-registration needs a reading (how each outcome is judged)")
+    _require(isinstance(expectation, str) and bool(expectation.strip()),
+             "pre-registration needs an expected effect")
+    _require(isinstance(reading, str) and bool(reading.strip()),
+             "pre-registration needs a reading (how each outcome is judged)")
     _require(pool_size in _POOL_SIZES,
              f"pool_size must be one of {_POOL_SIZES!r}, got {pool_size!r}")
     exp.expectation = expectation
     exp.reading = reading
     exp.pool_size = pool_size
+    exp.prereg_digest = _prereg_digest(exp)
     exp._move("registered")
     return exp
 
@@ -187,11 +232,16 @@ def record_measurement(
     gate the package exists for: a measurement taken without pre-registration
     is exactly the self-bias it stops, so it raises instead of recording.
     """
-    _require(bool(case.strip()), "a measurement needs a case name")
+    _require(isinstance(case, str) and bool(case.strip()),
+             "a measurement needs a case name")
+    _require(exp.prereg_digest is not None,
+             "cannot measure: the experiment was never pre-registered "
+             "(no expectation + reading written down)")
     _require(exp.status in _RECORDING_STATES,
              f"cannot measure an experiment in state {exp.status!r}; "
              "pre-register it (expectation + reading written down) first")
-    rec = Measurement(case=case, outcome=dict(outcome))
+    rec = Measurement(case=case, outcome=dict(outcome),
+                      prereg_digest=exp.prereg_digest)
     exp.measurements.append(rec)
     if exp.status == "registered":
         exp._move("recording")
@@ -519,6 +569,11 @@ def verdict_with_noise_gate(
     old_rate = comp["old_pass"] / comp["old_n"] if comp["old_n"] else 0.0
     new_rate = comp["new_pass"] / comp["new_n"] if comp["new_n"] else 0.0
 
+    _require(comp["old_n"] > 0 and comp["new_n"] > 0,
+             "cannot verdict: one arm is empty (old_n=%s new_n=%s); "
+             "a verdict on an empty arm is not a result"
+             % (comp["old_n"], comp["new_n"]))
+
     null_significant = False
     if null_rows is not None:
         base_rows, cand_rows = null_rows
@@ -536,25 +591,24 @@ def verdict_with_noise_gate(
 
     if effect == "noise":
         final = "noise"
+    elif null_significant and "measurement_artefact" not in kinds:
+        raise ExperimentError(
+            "noise-gate refusal: the null run (same state twice) came "
+            "back significant by chance; classify that null as a "
+            "measurement artefact (with a reason) or measure more -- a "
+            "verdict on a contaminated threshold is not a result")
     elif effect == "better":
         final = "improved"
+    elif "real_regression" in kinds:
+        final = "regressed"
+    elif "measurement_artefact" in kinds:
+        final = "noise"
     else:
-        if null_significant and "measurement_artefact" not in kinds:
-            raise ExperimentError(
-                "noise-gate refusal: the null run (same state twice) came "
-                "back significant by chance; classify that null as a "
-                "measurement artefact (with a reason) or measure more -- a "
-                "regression on a contaminated threshold is not a result")
-        if "real_regression" in kinds:
-            final = "regressed"
-        elif "measurement_artefact" in kinds:
-            final = "noise"
-        else:
-            raise ExperimentError(
-                "blocker-classification refusal: a significant regression "
-                "needs every blocker classified as real_regression or "
-                "measurement_artefact -- with a reason -- before the verdict "
-                "counts")
+        raise ExperimentError(
+            "blocker-classification refusal: a significant regression "
+            "needs every blocker classified as real_regression or "
+            "measurement_artefact -- with a reason -- before the verdict "
+            "counts")
 
     exp._move("verdict")
     return {
