@@ -29,7 +29,6 @@ fixable part.
 
 from __future__ import annotations
 
-import pytest
 
 from delfin.agent.benchmark import Trajectory, load_tasks, score_outcome
 
