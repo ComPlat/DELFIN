@@ -890,10 +890,14 @@ class TerminalAgent:
         self.transcript.finish()
         self._report_compaction(compaction_before)
         self._report_tasks()
-        self._offer_next_steps()
-        self._report_status()
         result = result_box[0] if result_box \
             else TurnResult(error="turn produced nothing")
+        # A turn that ended on a question or a denial leaves its note for
+        # the next prompt (read and consumed by _wake_text). The result
+        # comes before the note: the note reads the turn's own words.
+        self._note_turn_blocked(result.text)
+        self._offer_next_steps()
+        self._report_status()
         # For the length-continuation: a length end WITH a tool call is
         # the tool loop's to carry on, not ours.
         self.__dict__["_turn_used_tools"] = bool(result.tool_calls)
@@ -2030,6 +2034,36 @@ class TerminalAgent:
                 self.transcript.chrome(self.transcript.theme.dim(line))
 
     # -- the loop --------------------------------------------------------
+    def _note_turn_blocked(self, text: str, denied: bool = False) -> None:
+        """Record, after a turn, whether it ended blocked on something.
+
+        Called at the terminal's turn end (after ``_report_tasks``, which
+        read the same task store). If the turn's own words end with an
+        open question or report a denial, and open tasks remain, the
+        note is stored for the next idle prompt (_wake_text delivers it
+        once, then it is consumed). Never raises: a courtesy note must
+        not take the turn it follows down with it.
+        """
+        try:
+            if not (text or "").strip():
+                return
+            engine = getattr(self, "engine", None)
+            sid = str(getattr(engine, "session_id", "") or "")
+            from .agent_tasks import OPEN_STATUSES, get_store, \
+                resolve_session_scope
+            store = get_store(Path(self.opts.cwd))
+            tasks = store.list(session_id=resolve_session_scope(sid))
+            open_tasks = [t for t in tasks or []
+                          if t.get("status") in OPEN_STATUSES]
+            if not open_tasks:
+                return
+            from . import job_wake
+            note = job_wake.note_turn_blocked(text, open_tasks, denied=denied)
+            if note:
+                self.__dict__["_blocked_note"] = note
+        except Exception:
+            return
+
     def _checkpoint_session(self) -> None:
         """Save the conversation after a finished turn. Never raises.
 
@@ -2865,7 +2899,15 @@ class TerminalAgent:
             if sid and _ws:
                 done = done + job_wake.finished_watched_jobs(
                     _ws, seen, session_id=sid)
-            return job_wake.wake_prompt(done)
+            # A turn that ended blocked leaves its note here, so the
+            # next prompt opens on the state and not on a task list
+            # with no sentence about it (wave-10: an hour at a
+            # question nobody answered). Consumed on read.
+            _note = self.__dict__.pop("_blocked_note", "")
+            prompt = job_wake.wake_prompt(done)
+            if _note:
+                prompt = (prompt + "\n\n" + _note) if prompt else _note
+            return prompt
         except Exception:
             return ""
 
