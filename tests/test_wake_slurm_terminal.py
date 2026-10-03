@@ -164,3 +164,27 @@ def test_the_terminal_wake_never_raises(agent, monkeypatch):
         raise RuntimeError("watch file unreadable")
     monkeypatch.setattr(job_wake, "finished_watched_jobs", _boom)
     assert agent._wake_text("") == ""
+
+
+def test_the_scheduler_backed_look_is_slower_than_the_shell_look(agent, monkeypatch):
+    """The shell look may run every _WAKE_EVERY_S, but every watched-job look
+    is a squeue: an idle terminal must not ask the scheduler more often than
+    once per _WATCH_EVERY_S (the per-widget squeue load the cluster operators
+    objected to), even when the shell window has elapsed many times."""
+    calls = {"n": 0}
+
+    def _count(workspace, seen, session_id="", run_fn=None):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(job_wake, "finished_watched_jobs", _count)
+    clock = {"t": 1000.0}
+    import time as _t
+    monkeypatch.setattr(_t, "monotonic", lambda: clock["t"])
+    for _ in range(5):                       # five shell windows, 25 s total
+        agent._wake_text("")
+        clock["t"] += R.TerminalAgent._WAKE_EVERY_S
+    assert calls["n"] == 1, f"asked the scheduler {calls['n']} times in 25 s"
+    clock["t"] += R.TerminalAgent._WATCH_EVERY_S
+    agent._wake_text("")
+    assert calls["n"] == 2, "the watched-job look never came back"

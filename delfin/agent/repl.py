@@ -2484,6 +2484,8 @@ class TerminalAgent:
     #: loop ticks ten times a second; asking the job registry that often
     #: would be a poll, and this is a look.
     _WAKE_EVERY_S = 5.0
+    # Scheduler-backed watch look: at most one squeue per this many seconds.
+    _WATCH_EVERY_S = 30.0
 
     def _steer_operator_mail(self) -> None:
         """Take waiting mail and steer it into the running turn.
@@ -2898,13 +2900,18 @@ class TerminalAgent:
             # dashboard tick drains, now pulled at the idle prompt too.
             # Only for a session that HAS one -- an empty id would read
             # every session's watches, which is the scoping bug of
-            # 2026-09-28 again. Job state comes from the throttled
-            # query_job_states_detailed inside check_agent_jobs, never
-            # from a private scheduler loop; the throttle is this
-            # method's _WAKE_EVERY_S gate.
+            # 2026-09-28 again. check_agent_jobs asks the scheduler
+            # (squeue) whenever a watch exists, so this look has its own,
+            # slower gate: the shell look above runs every _WAKE_EVERY_S,
+            # but a scheduler query from every idle terminal every few
+            # seconds is the per-widget squeue load the cluster operators
+            # objected to (one query per _WATCH_EVERY_S at most).
             _opts = getattr(self, "opts", None)
             _ws = str(getattr(_opts, "cwd", "") or "")
-            if sid and _ws:
+            _now = _time.monotonic()
+            if (sid and _ws and _now - getattr(self, "_watch_last_look", -1e9)
+                    >= self._WATCH_EVERY_S):
+                self._watch_last_look = _now
                 done = done + job_wake.finished_watched_jobs(
                     _ws, seen, session_id=sid)
             # A turn that ended blocked leaves its note here, so the
