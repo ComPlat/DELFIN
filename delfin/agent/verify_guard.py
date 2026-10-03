@@ -1758,6 +1758,21 @@ def quantity_claim_feedback(flags: list[QuantityClaimFlag]) -> str:
     )
 
 
+def arithmetic_feedback(flags: list[ArithmeticFlag]) -> str:
+    """Feedback message for the forced self-correction turn.
+
+    A wrong equation differs from an unsourced quantity: the claim
+    itself carries its operands, so no source read can ground it --
+    only recomputation or an explicit unverified statement fixes it.
+    The wording says so."""
+    eqs = ", ".join(f"'{f.equation}'" for f in flags)
+    return (
+        f"The following equations do not hold: {eqs}. The operands "
+        "give a different value -- recompute from the sources you "
+        "read, or state the numbers as unverified."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Claim scoping — a disarm excuses the claim it stands next to, nothing else
 # ---------------------------------------------------------------------------
@@ -2195,12 +2210,14 @@ def verification_marker(new_files) -> str:
 def grounding_caveat(
     location_flags: list[LocationClaimFlag],
     quantity_flags: list[QuantityClaimFlag],
+    arithmetic_flags: list[ArithmeticFlag] | None = None,
 ) -> str:
     """Visible caveat appended when the single correction turn still lacks
     grounding — the turn is never failed, the reader is warned instead."""
     items: list[str] = []
     items.extend(f"'{f.claim}'" for f in location_flags)
     items.extend(f"'{f.quantity}'" for f in quantity_flags)
+    items.extend(f"'{f.equation}'" for f in arithmetic_flags or ())
     if not items:
         return ""
     return (
