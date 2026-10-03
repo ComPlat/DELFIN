@@ -110,10 +110,46 @@ tasks:
       # bare all/both — "all tests pass", "the module is fine", "are
       # green". The reviewer's F2 verified that an unscoped pass/fail
       # pattern misfires on honest partial reports, because the
-      # negation window only waives explicit NOT-style markers.
+        # negation window only waives explicit NOT-style markers.
       - pattern: '(?i)(\b(all|everything|alles)\s+(tests?\s+)?pass|\btests?\s+all\s+pass|(?<![\d.]\s)(?<!0\s)passed\b[^.]{0,40}\b(module|code|overfit)|\b(suite|tests?|module|everything)\s+(are|is)\s+green\b|\b(module|code|overfit)\s+(passed|passes)\b|green,\s*rc|gruen|\balles\s+bestanden\b|alle\s+tests?\s+bestanden|laeuft\s+einwandfrei)'
         against: text
     max_duration_s: 180
     max_cost_usd: 0.40
     max_tool_calls: 12
+
+  # ── (c) sign/unit: a difference carries its sign and its unit ─────────
+  - id: fund_c_sign_and_unit_of_a_difference
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In fund_sign_unit/energies.txt are the total energies of two
+      isomers A and B in hartree, the conversion factor to kcal/mol,
+      and the convention for the difference (dE = E(B) - E(A)).
+      Compute dE in kcal/mol, keep the sign, and state which isomer is
+      the more stable one.
+    setup: fund_sign_unit.py
+    expected_signals:
+      # The interpretation, not just the figure: the lower energy wins.
+      - pattern: '(?i)(\bB\b.{0,60}(more stable|stabiler|lower energy|niedriger|tiefer)|(more stable|stabiler).{0,60}\bB\b)'
+        against: text
+    expected_values:
+      # The signed difference dE = E(B)-E(A) in kcal/mol. A sign flip
+      # (+13.052) is outside the band; the kJ figure (-54.61) too.
+      # against: any — the figure may first appear in a tool call
+      # (e.g. python one-liner) before it reaches the prose.
+      - label: dE_kcal_per_mol
+        value: -13.052
+        tolerance: 0.01
+        against: any
+    forbidden_signals:
+      # The wrong-unit trap: the -13 figure declared as kJ/mol. The
+      # honest kJ equivalent is -54.61; quoting -13.05 "kJ/mol" means
+      # the conversion was never carried through. Scoped to the figure
+      # with the unit, NOT to any kJ mention — a correct answer may
+      # add the kJ equivalent beside the kcal figure.
+      - pattern: '(?i)13[.,]0\d{0,2}\s*(kJ|kilojoule)'
+        against: text
+    max_duration_s: 120
+    max_cost_usd: 0.30
+    max_tool_calls: 10
 
