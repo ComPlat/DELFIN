@@ -1788,6 +1788,41 @@ def _per_task_counts(row: dict) -> tuple[int, int]:
     return (n if row.get("success") else 0), n
 
 
+# Significance alpha for every "within/beyond noise" decision in this
+# module.  Kept as one constant so the compare output can print the alpha
+# that decided each label instead of leaving it implicit.
+_SIG_ALPHA = 0.05
+
+
+def classify_pass_delta(
+    a_pass: int, a_n: int, b_pass: int, b_n: int,
+    *, alpha: float = _SIG_ALPHA,
+) -> dict:
+    """Is a per-task pass-rate difference more than run-to-run noise?
+
+    Two-sided Fisher exact p for the 2x2 table
+    [[a_pass, a_n - a_pass], [b_pass, b_n - b_pass]] -- the same test the
+    pooled compare already uses, applied to ONE task's repeats.
+
+    Returns ``{"label", "p"}`` where ``label`` is ``"beyond"`` when
+    ``p < alpha`` and ``"within"`` otherwise.  The label is a certainty
+    statement, NOT the direction: "within noise" does not mean "no change",
+    it means "this N cannot tell a real change from a sampling accident".
+    Direction is preserved separately by the caller (success_rate_old/new).
+
+    At N=3 the smallest two-sided p is 0.10, so no single-task delta can be
+    called "beyond" -- which is the honest answer, and the point: a compare
+    that must decide needs more repeats, and ``min_n_for_delta`` tells how
+    many (see phase 4).
+    """
+    p = _fisher_exact_2x2_pvalue(
+        a_pass, a_n - a_pass, b_pass, b_n - b_pass)
+    # No rounding: the exact two-sided Fisher p is what the label is built
+    # on, and the markdown renders it with a format spec.  Rounding here
+    # would discard precision a reviewer then has to re-derive.
+    return {"label": "beyond" if p < alpha else "within", "p": p}
+
+
 def aggregate_replicates(
     results: list[BenchmarkResult],
 ) -> BenchmarkResult:
@@ -2242,6 +2277,9 @@ def compare_runs(
         else:
             cls = "neutral"
             n_neutral += 1
+        oc = _per_task_counts(o)
+        nc = _per_task_counts(n)
+        _delta = classify_pass_delta(*oc, *nc)
         per_task.append({
             "task_id": tid,
             "class": cls,
@@ -2253,8 +2291,16 @@ def compare_runs(
             "d_tool_calls": d_tools,
             "old_success": bool(o.get("success")),
             "new_success": bool(n.get("success")),
-            "success_rate_old": _per_task_counts(o)[0] / max(1, _per_task_counts(o)[1]),
-            "success_rate_new": _per_task_counts(n)[0] / max(1, _per_task_counts(n)[1]),
+            "success_rate_old": oc[0] / max(1, oc[1]),
+            "success_rate_new": nc[0] / max(1, nc[1]),
+            # Whether THIS task's pass-rate swing is more than its own
+            # sampling noise.  Direction (old/new) and certainty (noise
+            # label) are kept apart: `class` says which way it moved, the
+            # label says whether N can trust that move.
+            "success_counts_old": oc,
+            "success_counts_new": nc,
+            "delta_noise": _delta["label"],
+            "delta_p": _delta["p"],
         })
 
     # A-vs-B significance: pool the per-task pass counts and ask Fisher
@@ -2277,7 +2323,7 @@ def compare_runs(
         pooled_a_pass, pooled_a_n - pooled_a_pass,
         pooled_b_pass, pooled_b_n - pooled_b_pass)
         if (pooled_a_n or pooled_b_n) else 1.0)
-    significant = bool(p_values) and sig_p < 0.05
+    significant = bool(p_values) and sig_p < _SIG_ALPHA
 
     summary_old = summarise_run(baseline)
     summary_new = summarise_run(candidate)
@@ -2293,7 +2339,7 @@ def compare_runs(
         # when this field says the difference is inside the noise.
         "significant": significant,
         "significance_p": round(sig_p, 4),
-        "significance_alpha": 0.05,
+        "significance_alpha": _SIG_ALPHA,
         "pooled_success": {
             "old": [pooled_a_pass, pooled_a_n],
             "new": [pooled_b_pass, pooled_b_n],
@@ -2461,6 +2507,36 @@ def format_compare_markdown(
     )
     lines.append("")
 
+    # Significance: is the change real, or within the run's own sampling
+    # noise?  The verdict line says WHICH WAY it moved; this section says
+    # whether N can trust that direction.  Empty overlap → nothing to say.
+    _ov = summary.get("n_overlap") or 0
+    _ps = summary.get("pooled_success") or {}
+    _oldc = _ps.get("old") or [0, 0]
+    _newc = _ps.get("new") or [0, 0]
+    _p = float(summary.get("significance_p") or 1.0)
+    _alpha = float(summary.get("significance_alpha") or _SIG_ALPHA)
+    if _ov:
+        _plab = "beyond noise" if summary.get("significant") else "within noise"
+        _olo, _ohi = wilson_interval(int(_oldc[0]), int(_oldc[1]))
+        _nlo, _nhi = wilson_interval(int(_newc[0]), int(_newc[1]))
+        lines.append("## Significance (is this real or noise?)")
+        lines.append("")
+        lines.append(
+            f"Pooled success {int(_oldc[0])}/{int(_oldc[1])} -> "
+            f"{int(_newc[0])}/{int(_newc[1])}: two-sided Fisher exact "
+            f"p={_p:.4g} at alpha={_alpha:.2f} -> **{_plab}**"
+        )
+        lines.append(
+            f"  old pass rate Wilson 95% CI (n={int(_oldc[1])}): "
+            f"{_olo:.0%} - {_ohi:.0%}"
+        )
+        lines.append(
+            f"  new pass rate Wilson 95% CI (n={int(_newc[1])}): "
+            f"{_nlo:.0%} - {_nhi:.0%}"
+        )
+        lines.append("")
+
     # Per-task table
     per_task = cmp_result.get("per_task") or []
     if per_task:
@@ -2468,11 +2544,11 @@ def format_compare_markdown(
         lines.append("")
         lines.append(
             "| Task                          | Class   | Quality | Δq   | "
-            "Δcost     | Δdur      |"
+            "Δcost     | Δdur      | Δpass      | noise  |"
         )
         lines.append(
             "|-------------------------------|---------|---------|------|"
-            "-----------|-----------|"
+            "-----------|-----------|------------|--------|"
         )
         for row in per_task:
             mark = _CLASS_MARK.get(row.get("class") or "", "[?]")
@@ -2482,9 +2558,14 @@ def format_compare_markdown(
             dq = int(row.get("d_quality") or 0)
             dc = float(row.get("d_cost_usd") or 0)
             dd = float(row.get("d_duration_s") or 0)
+            o_rate = float(row.get("success_rate_old") or 0)
+            n_rate = float(row.get("success_rate_new") or 0)
+            _opass = row.get("delta_noise") or "within"
+            _noise_mark = "[!] " if _opass == "beyond" else "[~] "
             lines.append(
                 f"| `{tid:<29}` | {mark:<7} | {oq2:>3}→{nq2:<3} | "
-                f"{dq:+5d} | {dc:+9.4f} | {dd:+8.2f}s |"
+                f"{dq:+5d} | {dc:+9.4f} | {dd:+8.2f}s | "
+                f"{o_rate:.0%}→{n_rate:<3.0%} | {_noise_mark}{_opass:<7} |"
             )
         lines.append("")
 
