@@ -46,11 +46,15 @@ def _staging_block(text: str) -> str:
 
 def _run_staging(tmp_path: Path, tool_python, tmpdir):
     """Execute the staging block under the sbatch's own `set -euo pipefail`,
-    with a real tiny venv to pack; return (result, exported vars)."""
+    with a real tiny venv to pack; return (result, exported vars).  The venv's
+    bin/python is a SYMLINK to a base interpreter, as every real venv has it."""
+    real = tmp_path / "real_base"
+    (real / "bin").mkdir(parents=True, exist_ok=True)
+    (real / "bin" / "python").write_text("#!/bin/sh\nexit 0\n")
+    (real / "bin" / "python").chmod(0o755)
     venv = tmp_path / "ws_venv"
     (venv / "bin").mkdir(parents=True, exist_ok=True)
-    (venv / "bin" / "python").write_text("#!/bin/sh\nexit 0\n")
-    (venv / "bin" / "python").chmod(0o755)
+    (venv / "bin" / "python").symlink_to(real / "bin" / "python")
     (venv / "pyvenv.cfg").write_text("home = /nowhere\n")
     site = venv / "lib" / "python3.9" / "site-packages"
     site.mkdir(parents=True, exist_ok=True)
@@ -74,7 +78,11 @@ def _run_staging(tmp_path: Path, tool_python, tmpdir):
 
 def test_the_staging_block_exports_a_python_that_exists_and_runs(tmp_path):
     """The exported staged interpreter must be a file that actually exists: children are
-    spawned with it 48 x thousands of times, so a wrong path kills every array task."""
+    spawned with it 48 x thousands of times, so a wrong path kills every array task.
+    The staged bin/python must stay a SYMLINK (GNU sed -i over a symlink replaces it with
+    an edited copy of the target binary -- submit_delfin.sh edits only bin/activate for
+    this reason), and the venv tree must not share its root with the runner's work/logs/
+    archive."""
     nodetmp = tmp_path / "nodetmp"
     nodetmp.mkdir()
     done, out = _run_staging(tmp_path, None, str(nodetmp))
@@ -83,9 +91,17 @@ def test_the_staging_block_exports_a_python_that_exists_and_runs(tmp_path):
     assert tp, "no staged interpreter exported"
     assert tp != str(tmp_path / "ws_venv" / "bin" / "python"), "exported the workspace venv"
     assert os.path.isfile(tp) and os.access(tp, os.X_OK), f"staged python not usable: {tp}"
+    assert os.path.islink(tp), f"sed -i destroyed the interpreter symlink: {tp}"
     lr = Path(out["LOCAL_ROOT"])
     assert lr.is_dir()
     assert list(lr.rglob("pkg_module.py")), "venv content not unpacked under the local root"
+    assert (lr / "bin" / "python").exists() or (lr / "venv" / "bin" / "python").exists(), \
+        "neither a direct nor a venv-subdir layout was produced"
+    # the venv tree must not be mixed with the runner's per-job directories
+    venv_dir = Path(tp).parent.parent   # .../venv (or the root itself in the broken layout)
+    for stray in ("work", "logs", "archive"):
+        assert not (venv_dir / stray).exists(), \
+            f"the runner's {stray}/ shares a root with the staged venv"
 
 
 def test_the_staging_block_falls_back_when_tmpdir_is_unset_not_crash(tmp_path):
