@@ -2134,6 +2134,8 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
             "n_unmeasured": 0, "unmeasured_tasks": [],
             "avg_quality": 0.0, "total_cost_usd": 0.0,
             "total_duration_s": 0.0, "total_tool_calls": 0,
+            "total_input_tokens": 0, "total_output_tokens": 0,
+            "per_call_input_tokens": None, "per_call_output_tokens": None,
             "avg_caveats": 0.0, "max_caveats": 0,
             "values_matched": 0, "values_wrong": 0, "values_absent": 0,
             "avg_output_tokens": 0.0, "avg_answer_chars": 0.0,
@@ -2150,6 +2152,12 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
     n_unmeasured = len(rows) - len(scored)
     n = len(scored)
     n_pass = sum(1 for r in scored if r.get("success"))
+    # Token sums over scored tasks, and the per-call normalisation that
+    # tells a real saving from "did less work" (see the per-call comment
+    # below).  Exact values, no rounding: the caller renders them.
+    total_input_tokens = sum(int(r.get("input_tokens") or 0) for r in scored)
+    total_output_tokens = sum(int(r.get("output_tokens") or 0) for r in scored)
+    scored_calls = sum(int(r.get("tool_calls") or 0) for r in scored)
     return {
         "n_tasks": n,
         "n_pass": n_pass,
@@ -2162,6 +2170,19 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
         "total_cost_usd": sum(float(r.get("cost_usd") or 0) for r in rows),
         "total_duration_s": sum(float(r.get("duration_s") or 0) for r in rows),
         "total_tool_calls": sum(int(r.get("tool_calls") or 0) for r in rows),
+        # The token side, and the per-call normalisation that tells a real
+        # saving ("cheaper per call") from a fake one ("did less work":
+        # fewer calls, same or higher tokens each).  A total that shrank
+        # while the per-call number held or rose is not a saving -- the
+        # wave-10 case.  No per-model-call count is recorded anywhere in
+        # the run record, so "per tool call" is the honest cell; dividing
+        # by a model-call count that is not there would be fabrication.
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "per_call_input_tokens": (
+            None if not scored_calls else total_input_tokens / scored_calls),
+        "per_call_output_tokens": (
+            None if not scored_calls else total_output_tokens / scored_calls),
         # The cost side. These do not judge the run, they are what a
         # later run is compared against: a suite can hold 11/11 while
         # every answer grows another hedge, and only these move.
@@ -2504,6 +2525,38 @@ def format_compare_markdown(
     nd = float(new.get("total_duration_s") or 0)
     lines.append(
         f"| Total time   | {od:>9.1f}s | {nd:>9.1f}s | {nd - od:+9.1f}s |"
+    )
+    oit = int(old.get("total_input_tokens") or 0)
+    nit = int(new.get("total_input_tokens") or 0)
+    oot = int(old.get("total_output_tokens") or 0)
+    not_ = int(new.get("total_output_tokens") or 0)
+    lines.append(
+        f"| In tokens    | {oit:>11,} | {nit:>11,} | {(nit - oit):+11,} |"
+    )
+    lines.append(
+        f"| Out tokens   | {oot:>11,} | {not_:>11,} | {(not_ - oot):+11,} |"
+    )
+
+    # Per-call normalisation: the figure that reveals "did less work" vs
+    # "cheaper per call".  None (no tool calls) prints as n/a rather than
+    # a crash.
+    def _pc(v: Any) -> str:
+        return f"{float(v):>10,.1f}" if v is not None else f"{'n/a':>10}"
+
+    def _pcd(old_v: Any, new_v: Any) -> str:
+        if old_v is None or new_v is None:
+            return f"{'n/a':>10}"
+        return f"{float(new_v) - float(old_v):+10,.1f}"
+
+    _oin = old.get("per_call_input_tokens")
+    _nin = new.get("per_call_input_tokens")
+    _oout = old.get("per_call_output_tokens")
+    _nout = new.get("per_call_output_tokens")
+    lines.append(
+        f"| In tok/call  | {_pc(_oin)} | {_pc(_nin)} | {_pcd(_oin, _nin)} |"
+    )
+    lines.append(
+        f"| Out tok/call | {_pc(_oout)} | {_pc(_nout)} | {_pcd(_oout, _nout)} |"
     )
     lines.append("")
 
