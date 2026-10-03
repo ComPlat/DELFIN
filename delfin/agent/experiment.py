@@ -45,9 +45,11 @@ __all__ = [
     "InstrumentStamp",
     "Measurement",
     "assert_same_stamp",
+    "check_reach",
     "instrument_stamp",
     "pre_register",
     "record_measurement",
+    "require_switch_off_identical",
     "status_of",
 ]
 
@@ -315,4 +317,77 @@ def assert_same_stamp(a: InstrumentStamp, b: InstrumentStamp) -> None:
     _require(str(a.judge) == str(b.judge),
              f"refused: results were judged by different judge versions "
              f"({a.judge!r} vs {b.judge!r})")
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 -- reach and additivity
+# ---------------------------------------------------------------------------
+
+
+def check_reach(
+    *,
+    switch_read: bool,
+    switch_name: str,
+    targeted: Sequence[str],
+    effective: Sequence[str],
+) -> None:
+    """Prove the switch is READ and is EFFECTIVE on every case it targets.
+
+    "Ran" is not "hit": before a measurement means anything, the switch must
+    have been read (the change was actually in force) and must have changed
+    something on exactly the cases it targets.
+
+    Refuses (raises :class:`ExperimentError`) when:
+    * the switch was never read -- the experiment would measure a no-op;
+    * the switch changed zero targeted cases -- it did nothing at all;
+    * the switch hit only a SUBSET of its targets -- that is a partial reach,
+      the silent self-deception this package exists to stop;
+    * the switch changed a case it did NOT target -- it reaches beyond its
+      declared surface, which is a defect, not a hit.
+    """
+    _require(bool(switch_name.strip()), "reach check needs a switch name")
+    _require(bool(targeted), "reach check needs the targeted cases")
+    _require(switch_read,
+             f"reach check: switch {switch_name!r} was never read; the "
+             "'ran' is not a 'hit' -- measure nothing")
+    _require(bool(effective),
+             f"reach check: switch {switch_name!r} changed nothing on its "
+             "targeted cases; measure nothing")
+    targeted_set = set(targeted)
+    effective_set = set(effective)
+    missing = targeted_set - effective_set
+    _require(not missing,
+             f"reach check: switch {switch_name!r} hit only a subset of its "
+             f"targets; missing {sorted(missing)!r} -- a partial reach is not a hit")
+    strays = effective_set - targeted_set
+    _require(not strays,
+             f"reach check: switch {switch_name!r} changed untargeted cases "
+             f"{sorted(strays)!r}; it reaches beyond its declared surface")
+
+
+def require_switch_off_identical(
+    *,
+    switch_off: bytes,
+    baseline: bytes,
+    label: str,
+) -> None:
+    """ABORT unless the switch-off output is byte-identical to baseline.
+
+    This is the additivity check: a candidate change behind one switch,
+    default off, must produce exactly baseline when the switch is off.
+    Byte-identity is STRICT -- no stripping, no normalising, no smoothing of
+    timestamps or counters.  A switch-off output that differs by a single
+    byte ABORTS (raises :class:`ExperimentError`) and the caller must not
+    record the measurement: the change is not additive by construction.
+    """
+    _require(bool(label.strip()), "additivity check needs a label for the case")
+    _require(
+        isinstance(switch_off, bytes) and isinstance(baseline, bytes),
+        "additivity check compares byte content only")
+    _require(
+        switch_off == baseline,
+        f"additivity abort: switch-off output for {label!r} is NOT "
+        "byte-identical to baseline; the change is not additive by "
+        "construction -- abort, do not normalise")
+
 
