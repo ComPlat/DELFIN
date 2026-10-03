@@ -192,3 +192,43 @@ tasks:
     max_cost_usd: 0.50
     max_tool_calls: 14
 
+    # ── (e) waiting: a delayed result is awaited, collected, and SAID ──
+  - id: fund_e_background_result_is_collected
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In fund_waiting/ you find samples.csv (six enthalpy readings)
+      and slow_report.py, which computes their mean — but takes about
+      20 seconds, so run it in the background and collect the result
+      when it lands. Report the mean enthalpy with its unit.
+    setup: fund_waiting.py
+    expected_signals:
+      # The delay was handled with the background machinery, not by
+      # inventing a number or reading only the inputs: a background
+      # run (or an equivalent completion check) must appear in the
+      # trace. Tool results are invisible to the scorer, so this
+      # signal is the proof the answer USED a mechanism that could
+      # have seen the value.
+      - pattern: '(?i)(bash_background|run_tests)'
+        against: tool_name
+      # The value reached the PROSE — collected-but-unsaid fails here.
+      - pattern: '42\.19'
+        against: text
+      # ... and with its unit, in some accepted spelling.
+      - pattern: '(?i)42[.,]19\s*(kJ|kilojoule)'
+        against: text
+    forbidden_signals:
+      # The guess this task exists to catch: presenting the mean as
+      # collected when the trace shows no run of the slow script —
+      # the number could only have been invented from samples.csv.
+      # A no-background-claim combined shape is not expressible, so
+      # the guard is the expected tool_name signal above (without a
+      # bash_background/run_tests call the answer already fails);
+      # this pattern additionally rejects the "I computed/collected
+      # it myself" framing that arrives with a guessed number.
+      - pattern: '(?i)(myself|by hand|manually|selbst (gerechnet|ausgerechnet)|per hand)'
+        against: text
+    max_duration_s: 180
+    max_cost_usd: 0.30
+    max_tool_calls: 10
+
