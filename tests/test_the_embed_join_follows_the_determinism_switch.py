@@ -24,6 +24,11 @@ this branch was sent out to diagnose.
 
 Molecule choice is asserted, not assumed: 40..50 atoms, checked before the
 probe runs.
+
+The embed itself is slowed to a fixed 0.3 s (``_slow_embed``): a real
+quaterphenyl embed finished inside 50 ms on the GitHub runner, so a probe
+that relies on the machine being slow measures the machine, not the join.
+The slowed call still runs RDKit's real embed afterwards.
 """
 from __future__ import annotations
 
@@ -53,6 +58,37 @@ def _restore(saved):
 _QUATERPHENYL = "c1ccccc1-c1ccccc1-c1ccccc1-c1ccccc1"
 
 
+_EMBED_DELAY_S = 0.3
+
+
+@pytest.fixture(autouse=True)
+def _slow_embed(monkeypatch):
+    """Every embed takes at least 0.3 s, six times the 50 ms join timeout,
+    whatever the machine: the legacy join must give up, the deterministic
+    one must wait."""
+    import time
+
+    from delfin.manta import embed_timeout
+
+    real = embed_timeout.AllChem
+
+    class _SlowAllChem:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        @staticmethod
+        def EmbedMolecule(*args, **kwargs):
+            time.sleep(_EMBED_DELAY_S)
+            return real.EmbedMolecule(*args, **kwargs)
+
+        @staticmethod
+        def EmbedMultipleConfs(*args, **kwargs):
+            time.sleep(_EMBED_DELAY_S)
+            return real.EmbedMultipleConfs(*args, **kwargs)
+
+    monkeypatch.setattr(embed_timeout, "AllChem", _SlowAllChem())
+
+
 def _probe_mol():
     from rdkit import Chem
 
@@ -79,17 +115,15 @@ def test_embed_join_ignores_the_wall_clock_under_deterministic_mode():
 
     saved = _clear_delfin_env()
     try:
-        # ORDER IS FIXED: legacy first. The deterministic call warms RDKit's
-        # process-wide ETKDG tables — measured on this RDKit (2025.09.6),
-        # a warm quaterphenyl embed takes <50 ms, so a legacy probe run
-        # after a deterministic one would finish "too fast" and measure
-        # nothing. Cold legacy must time out; warm deterministic must wait.
+        # The embed is held at 0.3 s by _slow_embed, so legacy must time
+        # out and deterministic must wait, in either order and on any
+        # machine.
         os.environ.pop("DELFIN_DETERMINISTIC", None)
         legacy = _embed_with_timeout(Chem.Mol(mol), params, timeout=0.05)
         assert legacy == -1, (
-            "legacy embed finished within 50 ms — the probe molecule is "
-            "too easy on this machine and the wall-clock join was not "
-            "exercised; the legacy assertion measures nothing here"
+            "legacy embed returned a result although the embed took "
+            "0.3 s against a 50 ms join — the wall-clock join no longer "
+            "gives up in legacy mode"
         )
 
         os.environ["DELFIN_DETERMINISTIC"] = "1"
@@ -127,8 +161,9 @@ def test_multiembed_join_yields_the_full_set_under_deterministic_mode():
         legacy = _embed_multiple_confs_with_timeout(
             Chem.Mol(mol), 5, _params(), timeout=0.05)
         assert len(legacy) < 5, (
-            "legacy multiembed placed all 5 conformers within 50 ms — "
-            "probe too easy on this machine, measured nothing"
+            "legacy multiembed returned all 5 conformers although the "
+            "embed took 0.3 s against a 50 ms join — the join no longer "
+            "gives up in legacy mode"
         )
 
         os.environ["DELFIN_DETERMINISTIC"] = "1"
