@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -49,7 +51,8 @@ def _sbatch_man(**settings):
 def test_the_sbatch_stages_a_cached_venv_onto_tmpdir_once_per_job(tmp_path):
     text = cbatch_render_sbatch(tmp_path, _sbatch_man(tool_python="/ws/venv/bin/python"))
     assert "venv_cache_key" in text or "ensure_venv_tar" in text   # the shared cache logic
-    assert 'DELFIN_CLUSTER_LOCAL_ROOT="$TMPDIR/' in text            # node-local root
+    assert "${TMPDIR}" in text                              # node-local root under $TMPDIR
+    assert 'DELFIN_CLUSTER_LOCAL_ROOT="${TMPDIR}' in text   # but never triggers set -u (guarded)
     assert "export DELFIN_CLUSTER_TOOL_PYTHON=" in text            # children use the staged copy
     assert "SLURM_JOB_ID" in text                                  # unique per job
 
@@ -58,6 +61,49 @@ def test_the_staged_python_point_to_the_unpacked_copy_not_the_workspace_venv(tmp
     text = cbatch_render_sbatch(tmp_path, _sbatch_man(tool_python="/ws/venv/bin/python"))
     assert 'DELFIN_CLUSTER_TOOL_PYTHON="$DELFIN_CLUSTER_LOCAL_ROOT/venv/bin/python"' in text
     assert "TOOL_PYTHON=/ws/venv/bin/python" in text   # the venv to pack is named, from the manifest
+
+
+def test_the_rendered_staging_block_stages_and_runs_a_fake_venv(tmp_path):
+    """EXECUTES the emitted bash (not a string assert): a tiny fake venv packed onto a temp
+    TMPDIR must produce an interpreter that exists, is executable, is still a symlink (no
+    sed over bin/*), and keeps the venv tree separate from work/logs/archive."""
+    from delfin.cluster_bench.slurm_script import _cbatch_staging_lines
+
+    venv = tmp_path / "toolenv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").symlink_to(sys.executable)          # real venvs symlink the interpreter
+    (venv / "bin" / "activate").write_text('export VIRTUAL_ENV="x"\n')
+    (venv / "pyvenv.cfg").write_text("home = %s\n" % sys.prefix)
+    (venv / "lib" / "python3.12" / "site-packages").mkdir(parents=True)
+    (venv / "lib" / "python3.12" / "site-packages" / "marker.txt").write_text("x")
+
+    node = tmp_path / "nodetmp"; node.mkdir()
+    cache = tmp_path / "venvcache"; cache.mkdir()
+    expr = tmp_path / "expr"; root = tmp_path / "root"
+
+    block = "\n".join(_cbatch_staging_lines(str(venv / "bin" / "python")))
+    script = (
+        "set -euo pipefail\n"
+        "export TMPDIR=%s\n"
+        "export DELFIN_VENV_CACHE_DIR=%s\n"
+        "%s\n"
+        "printf '%%s\\n' \"$DELFIN_CLUSTER_TOOL_PYTHON\" > %s\n"
+        "printf '%%s\\n' \"$DELFIN_CLUSTER_LOCAL_ROOT\" > %s\n"
+    ) % (node, cache, block, expr, root)
+    sh_file = tmp_path / "stage.sh"
+    sh_file.write_text(script)
+
+    res = subprocess.run(["bash", str(sh_file)], capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    tp = Path(expr.read_text().strip())
+    assert tp.exists() and os.access(tp, os.X_OK), tp          # staged interpreter present + executable
+    assert tp.is_symlink() and tp.resolve() == Path(sys.executable).resolve(), \
+        "bin/python must stay a symlink (no sed over bin/*)"
+    lr = Path(root.read_text().strip())
+    assert (lr / "venv" / "bin" / "python").exists()
+    # the venv tree is its own subdir: no runner dirs inside it
+    for sub in ("work", "logs", "archive"):
+        assert not (lr / "venv" / sub).exists(), sub
 
 
 def test_the_sbatch_falls_back_with_a_warning_when_tmpdir_is_unusable(tmp_path):
