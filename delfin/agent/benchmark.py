@@ -1784,8 +1784,99 @@ def _per_task_counts(row: dict) -> tuple[int, int]:
     if isinstance(flags, list) and flags:
         n = len(flags)
         return sum(1 for f in flags if f), n
-    n = int(row.get("n_samples") or 1)
+    n = int(row.get("n_samples") or 0)
     return (n if row.get("success") else 0), n
+
+
+def _aggregate_counts(rows: Iterable[dict]) -> tuple[int, int]:
+    """Sum (n_pass, n) across every row sharing one task_id.
+
+    A run file may carry the same task more than once (repeats written
+    un-aggregated).  Summing - rather than letting a dict comprehension's
+    last-wins collapse do the job - keeps the pooled counts equal to the
+    counts the per-task rows claim to pool, so a duplicate cannot silently
+    halve the significance table.
+    """
+    tp = tn = 0
+    for r in rows:
+        p, n_ = _per_task_counts(r)
+        tp += p
+        tn += n_
+    return tp, tn
+
+
+# Significance alpha for every "within/beyond noise" decision in this
+# module.  Kept as one constant so the compare output can print the alpha
+# that decided each label instead of leaving it implicit.
+_SIG_ALPHA = 0.05
+
+
+def classify_pass_delta(
+    a_pass: int, a_n: int, b_pass: int, b_n: int,
+    *, alpha: float = _SIG_ALPHA,
+) -> dict:
+    """Is a per-task pass-rate difference more than run-to-run noise?
+
+    Two-sided Fisher exact p for the 2x2 table
+    [[a_pass, a_n - a_pass], [b_pass, b_n - b_pass]] -- the same test the
+    pooled compare already uses, applied to ONE task's repeats.
+
+    Returns ``{"label", "p"}`` where ``label`` is ``"beyond"`` when
+    ``p < alpha`` and ``"within"`` otherwise.  The label is a certainty
+    statement, NOT the direction: "within noise" does not mean "no change",
+    it means "this N cannot tell a real change from a sampling accident".
+    Direction is preserved separately by the caller (success_rate_old/new).
+
+    At N=3 the smallest two-sided p is 0.10, so no single-task delta can be
+    called "beyond" -- which is the honest answer, and the point: a compare
+    that must decide needs more repeats, and ``min_n_for_delta`` tells how
+    many (see phase 4).
+    """
+    p = _fisher_exact_2x2_pvalue(
+        a_pass, a_n - a_pass, b_pass, b_n - b_pass)
+    # No rounding: the exact two-sided Fisher p is what the label is built
+    # on, and the markdown renders it with a format spec.  Rounding here
+    # would discard precision a reviewer then has to re-derive.
+    return {"label": "beyond" if p < alpha else "within", "p": p}
+
+
+def min_n_for_delta(
+    p_high: float, p_low: float, *,
+    alpha: float = _SIG_ALPHA, max_n: int = 200,
+) -> int | None:
+    """Smallest per-arm N at which a ``p_high``-vs-``p_low`` pass-rate
+    difference reaches two-sided Fisher significance (``p < alpha``).
+
+    Both arms share the SAME N because a benchmark that compares a change
+    runs the same number of repeats on each side.  At each N the two rates
+    are snapped to integer success counts (``round(p*n)`` of ``n``) and the
+    two-sided Fisher p of that 2x2 table -- the same test classify_pass_delta
+    and the pooled compare use -- decides.  Returns ``None`` when the gap
+    cannot be resolved by ``max_n`` per arm (a zero gap is zero at every N;
+    a too-small gap never clears the cap).
+    """
+    if alpha <= 0:
+        # alpha is a significance threshold; 0 or negative can never be
+        # crossed, so the gap is unresolvable by construction.  Return
+        # None up front rather than searching the whole cap to discover it.
+        return None
+    if not (0.0 <= p_high <= 1.0) or not (0.0 <= p_low <= 1.0):
+        raise ValueError(
+            f"rates must lie in [0, 1], got p_high={p_high}, p_low={p_low}")
+    if p_low >= p_high:
+        return None
+    for n in range(1, max_n + 1):
+        # Snap with round half up (int(x + 0.5)), not round()'s banker's
+        # rounding: the docstring promises the SMALLEST N that resolves the
+        # gap, and a .5 count snapping DOWN understates the extreme table,
+        # finding the promised minimum one step late (min_n_for_delta(0.5,
+        # 0.0) returned 10 when 5/9 already clears).
+        a = min(n, max(0, int(p_high * n + 0.5)))
+        b = min(n, max(0, int(p_low * n + 0.5)))
+        p = _fisher_exact_2x2_pvalue(a, n - a, b, n - b)
+        if p < alpha:
+            return n
+    return None
 
 
 def aggregate_replicates(
@@ -2099,6 +2190,8 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
             "n_unmeasured": 0, "unmeasured_tasks": [],
             "avg_quality": 0.0, "total_cost_usd": 0.0,
             "total_duration_s": 0.0, "total_tool_calls": 0,
+            "total_input_tokens": 0, "total_output_tokens": 0,
+            "per_call_input_tokens": None, "per_call_output_tokens": None,
             "avg_caveats": 0.0, "max_caveats": 0,
             "values_matched": 0, "values_wrong": 0, "values_absent": 0,
             "avg_output_tokens": 0.0, "avg_answer_chars": 0.0,
@@ -2115,6 +2208,15 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
     n_unmeasured = len(rows) - len(scored)
     n = len(scored)
     n_pass = sum(1 for r in scored if r.get("success"))
+    # Token sums over scored tasks, and the per-call normalisation that
+    # tells a real saving from "did less work" (see the per-call comment
+    # below).  Exact values, no rounding: the caller renders them.
+    total_input_tokens = sum(
+        max(0, int(r.get("input_tokens") or 0)) for r in scored)
+    total_output_tokens = sum(
+        max(0, int(r.get("output_tokens") or 0)) for r in scored)
+    scored_calls = sum(
+        max(0, int(r.get("tool_calls") or 0)) for r in scored)
     return {
         "n_tasks": n,
         "n_pass": n_pass,
@@ -2126,7 +2228,20 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
                             for r in scored) / n) if n else 0.0,
         "total_cost_usd": sum(float(r.get("cost_usd") or 0) for r in rows),
         "total_duration_s": sum(float(r.get("duration_s") or 0) for r in rows),
-        "total_tool_calls": sum(int(r.get("tool_calls") or 0) for r in rows),
+        "total_tool_calls": scored_calls,
+        # The token side, and the per-call normalisation that tells a real
+        # saving ("cheaper per call") from a fake one ("did less work":
+        # fewer calls, same or higher tokens each).  A total that shrank
+        # while the per-call number held or rose is not a saving -- the
+        # wave-10 case.  No per-model-call count is recorded anywhere in
+        # the run record, so "per tool call" is the honest cell; dividing
+        # by a model-call count that is not there would be fabrication.
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "per_call_input_tokens": (
+            None if not scored_calls else total_input_tokens / scored_calls),
+        "per_call_output_tokens": (
+            None if not scored_calls else total_output_tokens / scored_calls),
         # The cost side. These do not judge the run, they are what a
         # later run is compared against: a suite can hold 11/11 while
         # every answer grows another hedge, and only these move.
@@ -2192,15 +2307,26 @@ def compare_runs(
     if isinstance(candidate, Path):
         candidate = read_run(candidate)
 
-    by_id_old = {r.get("task_id"): r for r in baseline}
-    by_id_new = {r.get("task_id"): r for r in candidate}
-    overlap = sorted(set(by_id_old) & set(by_id_new))
+    # Group rows by task_id into lists, so a task written more than once
+    # (repeats un-aggregated in one run file) is summed rather than
+    # silently collapsed by a last-wins dict.  `dup_*` names every task
+    # seen more than once so the compare can say so instead of lying
+    # about certainty.
+    old_rows: dict = {}
+    for r in baseline:
+        old_rows.setdefault(r.get("task_id"), []).append(r)
+    new_rows: dict = {}
+    for r in candidate:
+        new_rows.setdefault(r.get("task_id"), []).append(r)
+    overlap = sorted(set(old_rows) & set(new_rows))
+    dup_old = sorted(t for t, rs in old_rows.items() if len(rs) > 1)
+    dup_new = sorted(t for t, rs in new_rows.items() if len(rs) > 1)
 
     per_task: list[dict] = []
     n_better = n_worse = n_neutral = 0
     for tid in overlap:
-        o = by_id_old[tid]
-        n = by_id_new[tid]
+        o = old_rows[tid][-1]
+        n = new_rows[tid][-1]
         d_quality = int(n.get("quality_0_100") or 0) - int(o.get("quality_0_100") or 0)
         d_cost = float(n.get("cost_usd") or 0) - float(o.get("cost_usd") or 0)
         d_dur = float(n.get("duration_s") or 0) - float(o.get("duration_s") or 0)
@@ -2242,6 +2368,9 @@ def compare_runs(
         else:
             cls = "neutral"
             n_neutral += 1
+        oc = _aggregate_counts(old_rows[tid])
+        nc = _aggregate_counts(new_rows[tid])
+        _delta = classify_pass_delta(*oc, *nc)
         per_task.append({
             "task_id": tid,
             "class": cls,
@@ -2253,8 +2382,16 @@ def compare_runs(
             "d_tool_calls": d_tools,
             "old_success": bool(o.get("success")),
             "new_success": bool(n.get("success")),
-            "success_rate_old": _per_task_counts(o)[0] / max(1, _per_task_counts(o)[1]),
-            "success_rate_new": _per_task_counts(n)[0] / max(1, _per_task_counts(n)[1]),
+            "success_rate_old": oc[0] / max(1, oc[1]),
+            "success_rate_new": nc[0] / max(1, nc[1]),
+            # Whether THIS task's pass-rate swing is more than its own
+            # sampling noise.  Direction (old/new) and certainty (noise
+            # label) are kept apart: `class` says which way it moved, the
+            # label says whether N can trust that move.
+            "success_counts_old": oc,
+            "success_counts_new": nc,
+            "delta_noise": _delta["label"],
+            "delta_p": _delta["p"],
         })
 
     # A-vs-B significance: pool the per-task pass counts and ask Fisher
@@ -2264,8 +2401,8 @@ def compare_runs(
     pooled_a_pass = pooled_a_n = pooled_b_pass = pooled_b_n = 0
     p_values: list[float] = []
     for tid in overlap:
-        a_pass, a_n = _per_task_counts(by_id_old[tid])
-        b_pass, b_n = _per_task_counts(by_id_new[tid])
+        a_pass, a_n = _aggregate_counts(old_rows[tid])
+        b_pass, b_n = _aggregate_counts(new_rows[tid])
         pooled_a_pass += a_pass
         pooled_a_n += a_n
         pooled_b_pass += b_pass
@@ -2277,7 +2414,7 @@ def compare_runs(
         pooled_a_pass, pooled_a_n - pooled_a_pass,
         pooled_b_pass, pooled_b_n - pooled_b_pass)
         if (pooled_a_n or pooled_b_n) else 1.0)
-    significant = bool(p_values) and sig_p < 0.05
+    significant = bool(p_values) and sig_p < _SIG_ALPHA
 
     summary_old = summarise_run(baseline)
     summary_new = summarise_run(candidate)
@@ -2288,12 +2425,15 @@ def compare_runs(
         "n_better": n_better,
         "n_worse": n_worse,
         "n_neutral": n_neutral,
+        # Task ids seen more than once in a run; their repeats were pooled
+        # rather than silently dropped.  An EMPTY list is the honest state.
+        "duplicate_task_ids": {"old": dup_old, "new": dup_new},
         # Statistical statement over the pooled success counts.  A
         # verdict like "worse" from the thresholds above means nothing
         # when this field says the difference is inside the noise.
         "significant": significant,
         "significance_p": round(sig_p, 4),
-        "significance_alpha": 0.05,
+        "significance_alpha": _SIG_ALPHA,
         "pooled_success": {
             "old": [pooled_a_pass, pooled_a_n],
             "new": [pooled_b_pass, pooled_b_n],
@@ -2459,7 +2599,108 @@ def format_compare_markdown(
     lines.append(
         f"| Total time   | {od:>9.1f}s | {nd:>9.1f}s | {nd - od:+9.1f}s |"
     )
+    oit = int(old.get("total_input_tokens") or 0)
+    nit = int(new.get("total_input_tokens") or 0)
+    oot = int(old.get("total_output_tokens") or 0)
+    not_ = int(new.get("total_output_tokens") or 0)
+    lines.append(
+        f"| In tokens    | {oit:>11,} | {nit:>11,} | {(nit - oit):+11,} |"
+    )
+    lines.append(
+        f"| Out tokens   | {oot:>11,} | {not_:>11,} | {(not_ - oot):+11,} |"
+    )
+
+    # Per-call normalisation: the figure that reveals "did less work" vs
+    # "cheaper per call".  None (no tool calls) prints as n/a rather than
+    # a crash.
+    def _pc(v: Any) -> str:
+        return f"{float(v):>10,.1f}" if v is not None else f"{'n/a':>10}"
+
+    def _pcd(old_v: Any, new_v: Any) -> str:
+        if old_v is None or new_v is None:
+            return f"{'n/a':>10}"
+        return f"{float(new_v) - float(old_v):+10,.1f}"
+
+    _oin = old.get("per_call_input_tokens")
+    _nin = new.get("per_call_input_tokens")
+    _oout = old.get("per_call_output_tokens")
+    _nout = new.get("per_call_output_tokens")
+    lines.append(
+        f"| In tok/call  | {_pc(_oin)} | {_pc(_nin)} | {_pcd(_oin, _nin)} |"
+    )
+    lines.append(
+        f"| Out tok/call | {_pc(_oout)} | {_pc(_nout)} | {_pcd(_oout, _nout)} |"
+    )
     lines.append("")
+
+    # A task id written more than once in a run is pooled, not silently
+    # dropped; say so so a reader does not mistake the accounting.
+    _dups = summary.get("duplicate_task_ids") or {"old": [], "new": []}
+    if _dups.get("old") or _dups.get("new"):
+        lines.append(
+            f"**Duplicate task ids (pooled, not collapsed):** old "
+            f"{', '.join(map(str, _dups.get('old') or [])) or '-'}, "
+            f"new {', '.join(map(str, _dups.get('new') or [])) or '-'}")
+        lines.append("")
+
+    # Significance: is the change real, or within the run's own sampling
+    # noise?  The verdict line says WHICH WAY it moved; this section says
+    # whether N can trust that direction.  Empty overlap → nothing to say.
+    _ov = summary.get("n_overlap") or 0
+    _ps = summary.get("pooled_success") or {}
+    _oldc = _ps.get("old") or [0, 0]
+    _newc = _ps.get("new") or [0, 0]
+    _sp = summary.get("significance_p")
+    # A sub-threshold p that rounded to 0.0 must NOT read as absent: the
+    # `or 1.0` fallback turns the truest "noise-crossed" verdict into
+    # p=1 beside a "beyond noise" label.  Only a genuinely missing field
+    # falls back to p=1 ("we did not compute one").
+    _p = float(_sp) if _sp is not None else 1.0
+    _alpha = float(summary.get("significance_alpha") or _SIG_ALPHA)
+    if _ov and int(_oldc[1]) and int(_newc[1]):
+        _plab = "beyond noise" if summary.get("significant") else "within noise"
+        _olo, _ohi = wilson_interval(int(_oldc[0]), int(_oldc[1]))
+        _nlo, _nhi = wilson_interval(int(_newc[0]), int(_newc[1]))
+        lines.append("## Significance (is this real or noise?)")
+        lines.append("")
+        lines.append(
+            f"Pooled success {int(_oldc[0])}/{int(_oldc[1])} -> "
+            f"{int(_newc[0])}/{int(_newc[1])}: two-sided Fisher exact "
+            f"p={_p:.4g} at alpha={_alpha:.2f} -> **{_plab}**"
+        )
+        lines.append(
+            f"  old pass rate Wilson 95% CI (n={int(_oldc[1])}): "
+            f"{_olo:.0%} - {_ohi:.0%}"
+        )
+        lines.append(
+            f"  new pass rate Wilson 95% CI (n={int(_newc[1])}): "
+            f"{_nlo:.0%} - {_nhi:.0%}"
+        )
+        if not summary.get("significant") and int(_oldc[1]) and int(_newc[1]):
+            # Not significant is not the end of the story: name the N that
+            # would settle the observed pooled gap, so a reader who wants a
+            # verdict knows what to run next.  A zero gap has no resolving
+            # N; a small-but-real gap may just need more than the search
+            # covers -- saying "zero" for that would mislead.
+            _or = int(_oldc[0]) / int(_oldc[1])
+            _nr = int(_newc[0]) / int(_newc[1])
+            if _or == _nr:
+                lines.append(
+                    f"  N too small to decide: the observed pooled gap is "
+                    f"zero, so no repeat count can separate these runs.")
+            else:
+                _need = min_n_for_delta(max(_or, _nr), min(_or, _nr))
+                if _need is not None:
+                    lines.append(
+                        f"  N too small to decide: resolving a swing this "
+                        f"large needs ~{_need} repeats per arm.")
+                else:
+                    lines.append(
+                        f"  N too small to decide: this small a gap is not "
+                        f"resolvable within the repeats searched so far; "
+                        f"run far more repeats per arm or test a stronger "
+                        f"effect.")
+        lines.append("")
 
     # Per-task table
     per_task = cmp_result.get("per_task") or []
@@ -2468,11 +2709,11 @@ def format_compare_markdown(
         lines.append("")
         lines.append(
             "| Task                          | Class   | Quality | Δq   | "
-            "Δcost     | Δdur      |"
+            "Δcost     | Δdur      | Δpass      | noise  |"
         )
         lines.append(
             "|-------------------------------|---------|---------|------|"
-            "-----------|-----------|"
+            "-----------|-----------|------------|--------|"
         )
         for row in per_task:
             mark = _CLASS_MARK.get(row.get("class") or "", "[?]")
@@ -2482,9 +2723,20 @@ def format_compare_markdown(
             dq = int(row.get("d_quality") or 0)
             dc = float(row.get("d_cost_usd") or 0)
             dd = float(row.get("d_duration_s") or 0)
+            o_rate = float(row.get("success_rate_old") or 0)
+            n_rate = float(row.get("success_rate_new") or 0)
+            _opass = row.get("delta_noise")
+            if _opass not in ("within", "beyond"):
+                # A row from an older caller (or a hand-built cmp_result)
+                # carries no noise label.  "within" as a silent default
+                # asserts a certainty the data never gave; render unknown.
+                _opass, _noise_mark = "unknown", "[?] "
+            else:
+                _noise_mark = "[!] " if _opass == "beyond" else "[~] "
             lines.append(
                 f"| `{tid:<29}` | {mark:<7} | {oq2:>3}→{nq2:<3} | "
-                f"{dq:+5d} | {dc:+9.4f} | {dd:+8.2f}s |"
+                f"{dq:+5d} | {dc:+9.4f} | {dd:+8.2f}s | "
+                f"{o_rate:.0%}→{n_rate:<3.0%} | {_noise_mark}{_opass:<7} |"
             )
         lines.append("")
 
