@@ -130,9 +130,16 @@ def test_no_probe_when_the_tool_is_found_without_it(
         lambda *a, **k: (calls.append(a), None)[1])
 
     from delfin import qm_runtime
-    resolved = qm_runtime.resolve_tool("orca")
-    assert resolved is not None, "the env override was not used"
-    assert resolved.path == str(fake_orca)
+    # The resolver caches one answer per canonical name per process; an
+    # earlier test may have cached the real orca. This test's premise is
+    # that the env override decides, so the cache must not decide first.
+    qm_runtime.clear_resolver_cache()
+    try:
+        resolved = qm_runtime.resolve_tool("orca")
+        assert resolved is not None, "the env override was not used"
+        assert resolved.path == str(fake_orca)
+    finally:
+        qm_runtime.clear_resolver_cache()
     assert not calls, (
         "the module probe ran although DELFIN_ORCA_BINARY named the tool"
     )

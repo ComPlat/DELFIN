@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import which
+from functools import lru_cache
 from typing import Iterable, Mapping, Optional, Sequence
 
 from delfin.common.logging import get_logger
@@ -426,6 +427,26 @@ def _generic_tool_spec(name: str) -> ToolSpec:
 
 
 def resolve_tool(name: str) -> Optional[ResolvedTool]:
+    """The tool lookup, asked once per canonical name per process.
+
+    Every finder (orca.py, dashboard/saddle.py, dashboard/gfn_optimize.py,
+    and the direct callers tadf_xtb, xtb_crest, hyperpol, backend_slurm,
+    runtime_setup, calculators) walks this one function, so the candidate
+    chain — qm_tools dirs, env overrides, the venv bin, PATH, the locator,
+    and at the very end the login-shell module probe — is paid once, not
+    once per finder.  The "not found" answer is cached too: a failed
+    search is as definitive as a successful one.
+
+    An explicit path stays outside the cache: it is user input pointing
+    at a file that may exist by the time of a later ask.
+
+    When the environment changes inside a running process — the Settings
+    tab's ``apply_runtime_environment`` (runtime_setup.py), which the
+    dashboard calls after installing tools or editing tool paths — the
+    cache is cleared there, so a freshly installed tool is found instead
+    of inheriting a stale "not found".  Tests that patch the resolver's
+    inputs clear it through ``qm_runtime.clear_resolver_cache()``.
+    """
     direct_candidate = _validate_candidate(str(name))
     if direct_candidate:
         return ResolvedTool(
@@ -434,7 +455,13 @@ def resolve_tool(name: str) -> Optional[ResolvedTool]:
             path=direct_candidate,
             source="explicit",
         )
+    return _resolve_tool_cached(name)
 
+
+@lru_cache(maxsize=None)
+def _resolve_tool_cached(name: str) -> Optional[ResolvedTool]:
+    """The canonical-name core of resolve_tool, cached — including a
+    "not found" answer, which is as definitive as a found one."""
     canonical = canonical_tool_name(name)
     spec = _SPEC_BY_CANONICAL.get(canonical, _generic_tool_spec(canonical))
     for candidate, source in _iter_tool_candidates(spec):
@@ -453,6 +480,17 @@ def resolve_tool(name: str) -> Optional[ResolvedTool]:
 def find_tool_executable(name: str) -> Optional[str]:
     resolved = resolve_tool(name)
     return resolved.path if resolved else None
+
+
+def clear_resolver_cache() -> None:
+    """Forget every cached tool lookup.
+
+    Call when the environment a resolver walks changes inside a running
+    process — after ``apply_runtime_environment`` re-pointed PATH or the
+    tool env vars, after a qm_tools install, or in a test that patches
+    the resolver's inputs.
+    """
+    _resolve_tool_cached.cache_clear()
 
 
 def discover_tool_installations(name: str) -> list[ResolvedTool]:
