@@ -6,13 +6,21 @@ operator-submitted), each species B3LYP/def2-SVP CPCM(water),
 %pal nprocs 4, %maxcore 1500, <= 2 h walltime per job.
 Structures from DELFIN's SMILES converter; Gibbs energies read with
 delfin.energies.find_gibbs_energy via pka.read_cycle_gibbs_energies;
-pKa anchored with pka.pka_from_cycle (1 atm -> 1 M correction included).
+pKa anchored with pka.pka_from_cycle. No 1 atm -> 1 M standard-state
+correction is applied, and none is needed: in the isodesmic reaction
+HA + Ref- -> A- + RefH both sides carry two solutes, so the correction
+cancels between target and reference (pka_from_cycle, pka.py:173-188,
+computes only the deprotonation-Gibbs difference).
 
 ## Job status
 
 All ten ORCA outputs end with "ORCA TERMINATED NORMALLY".
 The parser's "failed (exit code 743526x)" outcome reads the SLURM job id
-from the wrapper log as an exit code — the ORCA outputs themselves are
+as an exit code: the run leaves a marker file named
+`.exit_code_<jobid>` (content: the real code, here 0), and the reader
+parses the job id out of the FILE NAME instead of the content
+(delfin/doc_server/calc_indexer.py:176-179 names the glob and the
+split). The ORCA outputs themselves are
 clean; no imaginary frequencies in any of the ten outputs.
 
 ## Gibbs energies (Hartree, CPCM(water))
@@ -52,17 +60,22 @@ resemble the target: the deprotonation Gibbs energy of the nitrile-
 substituted acid contains strong through-inductive effects that an
 acetic-anchored cycle cannot cancel. Phenol (-1.49) suffers the same
 reference mismatch (aryl-OH vs alkyl-OH). Formic (-1.91) and benzoic
-(-2.50) lie between. The deviations are systematically negative, i.e.
-the computed deprotonation Gibbs energies are too positive relative to
-experiment — consistent with CPCM missing specific solvation of the
-deprotonated anions (hydrogen bonding to water is not in a continuum
-model).
+(-2.50) lie between. The deviations are systematically negative,
+i.e. the computed pKa values come out too LOW: the isodesmic
+dG_deprot(target) - dG_deprot(acetic) is too NEGATIVE, so the target
+anions come out too STABLE relative to acetate.
+Interpretation, not a tested cause: candidates are CPCM missing
+specific solvation of the anions (hydrogen bonding to water is not
+in a continuum model), delocalised anion electronic structure that
+the small basis handles unevenly, the single conformer per species,
+and the missing dispersion correction. Which of them dominates is
+not decided by this run.
 
 Known limitations of this validation, stated openly:
 - def2-SVP without dispersion correction, single conformer per species
   (SMILES converter geometry, no conformer search).
-- The thermochemistry uses ORCA's default 298.15 K / 1 atm standard
-  state; the 1 atm -> 1 M correction (-1.89 kcal/mol at 298.15 K) is
-  applied inside pka_from_cycle as documented in the module docstring.
+- ORCA's thermochemistry is at the 298.15 K / 1 atm standard state;
+  no 1 atm -> 1 M correction is applied because the isodesmic reaction
+  has two solutes on each side and the term cancels (see above).
 - Experimental pKa values are the module's KNOWN_ACIDS constants
   (delfin/pka.py:71-99), quoted from standard tables at 298.15 K.
