@@ -19,7 +19,6 @@ from __future__ import annotations
 import ast
 import inspect
 
-import pytest
 
 from delfin.agent import job_wake
 
