@@ -1823,6 +1823,32 @@ def classify_pass_delta(
     return {"label": "beyond" if p < alpha else "within", "p": p}
 
 
+def min_n_for_delta(
+    p_high: float, p_low: float, *,
+    alpha: float = _SIG_ALPHA, max_n: int = 200,
+) -> int | None:
+    """Smallest per-arm N at which a ``p_high``-vs-``p_low`` pass-rate
+    difference reaches two-sided Fisher significance (``p < alpha``).
+
+    Both arms share the SAME N because a benchmark that compares a change
+    runs the same number of repeats on each side.  At each N the two rates
+    are snapped to integer success counts (``round(p*n)`` of ``n``) and the
+    two-sided Fisher p of that 2x2 table -- the same test classify_pass_delta
+    and the pooled compare use -- decides.  Returns ``None`` when the gap
+    cannot be resolved by ``max_n`` per arm (a zero gap is zero at every N;
+    a too-small gap never clears the cap).
+    """
+    if p_low >= p_high:
+        return None
+    for n in range(1, max_n + 1):
+        a = min(n, max(0, int(round(p_high * n))))
+        b = min(n, max(0, int(round(p_low * n))))
+        p = _fisher_exact_2x2_pvalue(a, n - a, b, n - b)
+        if p < alpha:
+            return n
+    return None
+
+
 def aggregate_replicates(
     results: list[BenchmarkResult],
 ) -> BenchmarkResult:
@@ -2588,6 +2614,21 @@ def format_compare_markdown(
             f"  new pass rate Wilson 95% CI (n={int(_newc[1])}): "
             f"{_nlo:.0%} - {_nhi:.0%}"
         )
+        if not summary.get("significant") and int(_oldc[1]) and int(_newc[1]):
+            # Not significant is not the end of the story: name the N that
+            # would settle the observed pooled gap, so a reader who wants a
+            # verdict knows what to run next.  A zero gap has no resolving N.
+            _or = int(_oldc[0]) / int(_oldc[1])
+            _nr = int(_newc[0]) / int(_newc[1])
+            _need = min_n_for_delta(max(_or, _nr), min(_or, _nr))
+            if _need is not None:
+                lines.append(
+                    f"  N too small to decide: resolving a swing this large "
+                    f"needs ~{_need} repeats per arm.")
+            else:
+                lines.append(
+                    f"  N too small to decide: the observed pooled gap is "
+                    f"zero, so no repeat count can separate these runs.")
         lines.append("")
 
     # Per-task table
