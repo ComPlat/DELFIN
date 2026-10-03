@@ -40,17 +40,24 @@ from typing import Any, Iterable, Optional, Sequence
 
 
 __all__ = [
+    "BlockerClassification",
     "Experiment",
     "ExperimentError",
+    "HumanApproval",
     "InstrumentStamp",
     "Measurement",
     "assert_same_stamp",
+    "can_land",
     "check_reach",
     "instrument_stamp",
+    "land",
     "pre_register",
+    "record_human_approval",
     "record_measurement",
     "require_switch_off_identical",
     "status_of",
+    "submit_for_human_review",
+    "verdict_with_noise_gate",
 ]
 
 
@@ -389,5 +396,237 @@ def require_switch_off_identical(
         f"additivity abort: switch-off output for {label!r} is NOT "
         "byte-identical to baseline; the change is not additive by "
         "construction -- abort, do not normalise")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 -- noise-gated verdict and landing
+# ---------------------------------------------------------------------------
+
+# The states from which a verdict may be produced: any pre-registered
+# (non-draft) state.  The pre-registration gate -- not whether a raw
+# measurement was recorded -- is what the verdict enforces.
+def _require_pre_registered(exp: Experiment) -> None:
+    _require(exp.status != "draft",
+             f"cannot judge an experiment in state {exp.status!r}; "
+             "pre-register it (expectation + reading written down) first")
+
+
+@dataclass(frozen=True)
+class BlockerClassification:
+    """Why a blocking observation in a verdict is NOT a real regression.
+
+    Every blocker in a verdict must be classified (real regression or
+    measurement artefact) with a non-empty reason BEFORE the verdict counts;
+    an unclassified blocker makes the verdict refuse rather than "count".
+    """
+
+    blocker: str
+    kind: str   # "real_regression" | "measurement_artefact"
+    reason: str
+
+
+@dataclass(frozen=True)
+class HumanApproval:
+    """The only record that may take an experiment to ``approved``.
+
+    A landing state machine's ONLY path to ``approved`` is a human approval
+    record like this -- ``by`` names the human.  A message from another agent
+    is never an approval and is refused by :func:`record_human_approval`.
+    """
+
+    by: str
+    note: str = ""
+    ts: float = field(default_factory=time.time)
+
+
+# The one place this module calls into package D's benchmark statistics.
+def _noise_gate(baseline_rows, candidate_rows, alpha: float) -> dict:
+    """The significance statement for the two arms, via ``compare_runs``.
+
+    Every ``delfin.agent.benchmark`` call in this module goes through here --
+    a single integration point, so if the consumed interface ever changes at
+    integration there is exactly one function to rewire.  The verdict reads
+    the ``significant`` field as its SINGLE instrument: a threshold-only
+    verdict string is not used, so "2 of 3 vs 1 of 3 is not distinguishable
+    from noise" stays honest.
+    """
+    from delfin.agent import benchmark as _bm
+    out = _bm.compare_runs(list(baseline_rows), list(candidate_rows))
+    summary = out.get("summary", {}) or {}
+    pooled = summary.get("pooled_success") or {"old": [0, 0], "new": [0, 0]}
+    old_pass, old_n = pooled.get("old", [0, 0])
+    new_pass, new_n = pooled.get("new", [0, 0])
+    return {
+        "significant": bool(summary.get("significant")),
+        "significance_p": float(summary.get("significance_p") or 1.0),
+        "old_pass": int(old_pass),
+        "old_n": int(old_n),
+        "new_pass": int(new_pass),
+        "new_n": int(new_n),
+    }
+
+
+def _validate_classifications(classifications: Sequence[BlockerClassification]) -> None:
+    for c in classifications:
+        _require(isinstance(c, BlockerClassification),
+                 "classifications must be BlockerClassification records")
+        _require(bool(c.blocker and c.blocker.strip()),
+                 "a blocker classification needs a blocker name")
+        _require(bool(c.reason and c.reason.strip()),
+                 "a blocker classification needs a reason (real regression vs "
+                 "measurement artefact is a decision, and a decision without a "
+                 "reason is not a decision)")
+        _require(c.kind in ("real_regression", "measurement_artefact"),
+                 f"blocker kind must be 'real_regression' or "
+                 f"'measurement_artefact', got {c.kind!r}")
+
+
+def verdict_with_noise_gate(
+    exp: Experiment,
+    *,
+    baseline_rows,
+    candidate_rows,
+    stamp_baseline: InstrumentStamp,
+    stamp_candidate: InstrumentStamp,
+    alpha: float = 0.05,
+    null_rows=None,
+    classifications: Sequence[BlockerClassification] = (),
+) -> dict:
+    """Compute the noise-gated verdict for *exp*'s two arms.
+
+    Reads the effect through package D's statistics (``compare_runs``, via
+    ``_noise_gate``) using ONLY the ``significant`` field as the instrument.
+    Refuses when the arms were measured under different stamps, when the
+    experiment was never pre-registered, or when a regression has no blocker
+    classification.
+
+    ``null_rows``, when given as ``(null_baseline, null_candidate)`` rows of
+    the SAME state measured twice, is the noise calibration: if that null
+    comparison itself comes back significant (a ~5% chance at alpha 0.05),
+    the thresholds are contaminated and a main regression needs it explained
+    as a measurement artefact before it can count.
+
+    Returns a dict with ``significant``, ``significance_p``, ``effect``
+    (better / regression / noise), ``null_significant``, ``classifications``
+    and ``final`` (improved / regressed / noise).
+    """
+    _require_pre_registered(exp)
+    assert_same_stamp(stamp_baseline, stamp_candidate)
+    _validate_classifications(classifications)
+
+    comp = _noise_gate(baseline_rows, candidate_rows, alpha)
+    significant = bool(comp["significant"])
+    old_rate = comp["old_pass"] / comp["old_n"] if comp["old_n"] else 0.0
+    new_rate = comp["new_pass"] / comp["new_n"] if comp["new_n"] else 0.0
+
+    null_significant = False
+    if null_rows is not None:
+        base_rows, cand_rows = null_rows
+        null_comp = _noise_gate(base_rows, cand_rows, alpha)
+        null_significant = bool(null_comp["significant"])
+
+    if not significant:
+        effect = "noise"
+    elif new_rate > old_rate:
+        effect = "better"
+    else:
+        effect = "regression"
+
+    kinds = {c.kind for c in classifications}
+
+    if effect == "noise":
+        final = "noise"
+    elif effect == "better":
+        final = "improved"
+    else:
+        if null_significant and "measurement_artefact" not in kinds:
+            raise ExperimentError(
+                "noise-gate refusal: the null run (same state twice) came "
+                "back significant by chance; classify that null as a "
+                "measurement artefact (with a reason) or measure more -- a "
+                "regression on a contaminated threshold is not a result")
+        if "real_regression" in kinds:
+            final = "regressed"
+        elif "measurement_artefact" in kinds:
+            final = "noise"
+        else:
+            raise ExperimentError(
+                "blocker-classification refusal: a significant regression "
+                "needs every blocker classified as real_regression or "
+                "measurement_artefact -- with a reason -- before the verdict "
+                "counts")
+
+    exp._move("verdict")
+    return {
+        "significant": significant,
+        "significance_p": comp["significance_p"],
+        "effect": effect,
+        "final": final,
+        "null_significant": null_significant,
+        "classifications": [
+            {"blocker": c.blocker, "kind": c.kind, "reason": c.reason}
+            for c in classifications
+        ],
+    }
+
+
+def submit_for_human_review(exp: Experiment, verdict: dict) -> Experiment:
+    """Move a verdict to human review.
+
+    Requires the experiment to have produced a verdict; moves
+    ``verdict -> human_review``.
+    """
+    _require(exp.status in ("verdict", "human_review"),
+             f"cannot submit to human review from state {exp.status!r}; "
+             "produce a verdict first")
+    if exp.status == "verdict":
+        exp._move("human_review")
+    return exp
+
+
+def can_land(exp: Experiment) -> bool:
+    """True only when a human has approved the experiment (``approved``)."""
+    return exp.status == "approved"
+
+
+def record_human_approval(exp: Experiment, approval: HumanApproval) -> Experiment:
+    """The ONLY path to ``approved``: a human approval record.
+
+    Refuses anything that is not a :class:`HumanApproval` (an agent message,
+    a bare string, a dict) and refuses approval when the experiment is not in
+    human review, or when an approval already exists (a double approval
+    record is refused).  Moves ``human_review -> approved``.
+    """
+    _require(isinstance(approval, HumanApproval),
+             "only a HumanApproval record can approve an experiment; "
+             "a message from another agent is never an approval")
+    _require(bool(approval.by.strip()),
+             "a human approval record needs the name of the human approving")
+    _require(exp.status == "human_review",
+             f"cannot approve an experiment in state {exp.status!r}; "
+             "it must be in human review first")
+    _require(getattr(exp, "approval", None) is None,
+             "a second approval record is refused; an experiment is "
+             "approved once")
+    exp.approval = approval
+    exp._move("approved")
+    return exp
+
+
+def land(exp: Experiment) -> Experiment:
+    """Land a fully approved experiment.
+
+    The landing state machine's only path to ``approved`` is a human approval
+    record (:func:`record_human_approval`), and this wraps it up: refuses to
+    land an experiment that is not ``approved`` and refuses to land twice.
+    Moves ``approved -> landed``.
+    """
+    _require(exp.status == "approved",
+             f"cannot land an experiment in state {exp.status!r}; "
+             "landing requires a human approval record first -- approval "
+             "is the only path, and no message from another agent counts")
+    exp._move("landed")
+    return exp
+
 
 
