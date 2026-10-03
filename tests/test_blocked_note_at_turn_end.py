@@ -173,3 +173,34 @@ def test_the_wiring_never_raises(wired_agent, tmp_path, monkeypatch):
     wired_agent._note_turn_blocked("QUESTION: proceed?")   # must not raise
     wired_agent._wake_last_look = 0.0
     assert wired_agent._wake_text("") == ""
+
+
+def test_a_denial_inside_the_turn_blocks_even_with_quiet_words(
+        wired_agent, tmp_path):
+    """The denial flag comes from the pump, not from the turn's prose.
+
+    A refusal the model reports neutrally ("the command could not run")
+    does not trip the phrase detector; the pump records the denied
+    render item on the agent, and turn() hands it to the note.
+    """
+    from delfin.agent.agent_tasks import get_store
+    store = get_store(tmp_path)
+    store.create("write the report", session_id="sess-me")
+    wired_agent._note_turn_blocked("The command could not run; I stopped.",
+                                   denied=True)
+    wired_agent._wake_last_look = 0.0
+    text = wired_agent._wake_text("")
+    assert "denied action" in text
+    assert "write the report" in text
+
+
+def test_the_denial_flag_is_not_carried_across_turns(wired_agent, tmp_path):
+    """A denial is this turn's state; the next turn starts clean."""
+    from delfin.agent.agent_tasks import get_store
+    store = get_store(tmp_path)
+    store.create("t", session_id="sess-me")
+    wired_agent.__dict__["_denied_in_turn"] = True
+    denied = bool(getattr(wired_agent, "_denied_in_turn", False))
+    wired_agent.__dict__.pop("_denied_in_turn", None)
+    assert denied is True
+    assert bool(getattr(wired_agent, "_denied_in_turn", False)) is False

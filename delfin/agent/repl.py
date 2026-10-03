@@ -895,7 +895,9 @@ class TerminalAgent:
         # A turn that ended on a question or a denial leaves its note for
         # the next prompt (read and consumed by _wake_text). The result
         # comes before the note: the note reads the turn's own words.
-        self._note_turn_blocked(result.text)
+        denied = bool(getattr(self, "_denied_in_turn", False))
+        self.__dict__.pop("_denied_in_turn", None)
+        self._note_turn_blocked(result.text, denied=denied)
         self._offer_next_steps()
         self._report_status()
         # For the length-continuation: a length end WITH a tool call is
@@ -979,6 +981,12 @@ class TerminalAgent:
                 if item.kind == "done":
                     self._clear_bottom()
                     return
+                if item.kind == "denied":
+                    # A refusal inside the turn is the second half of the
+                    # turn-end blocked signal: _note_turn_blocked reads
+                    # this flag, so the next prompt says what the turn
+                    # stopped on even when its own words do not.
+                    self._denied_in_turn = True
                 self._count_streamed(item)
                 self._render_around_bottom(item)
 
