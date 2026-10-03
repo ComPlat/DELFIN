@@ -215,8 +215,14 @@ def test_the_counts_still_match_what_was_measured():
     # behavior 12 -> 16: tasks_auto_hints.yaml (wave 5, LD, 2026-09-26) --
     # one behaviour task per harness hint (import origin, refusal reason,
     # stale test evidence, process budget).
+    #
+    # science 11 -> 16 on 2026-10-03: five fundamentals tasks
+    # (tasks_fundamentals.yaml, wave 11, agent/s11-a11 commits 64617132 ..
+    # 38b20559) -- multi-part, evidence trap, sign+unit, blocked step,
+    # waiting. Each has a setup script; the guard installs and removes the
+    # fixture workspace, nothing reaches the checkout.
     assert counts == {"office": 13, "behavior": 16, "generic_project": 15,
-                      "science": 11, "chemistry": 5, "other": 50}, counts
+                      "science": 16, "chemistry": 5, "other": 50}, counts
 
 
 # ---------------------------------------------------------------------------
