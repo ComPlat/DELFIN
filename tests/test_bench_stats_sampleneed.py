@@ -81,3 +81,15 @@ def test_markdown_identical_pooled_is_too_small_not_a_number():
     md = format_compare_markdown(out)
     assert "too small" in md.lower()
     assert "zero" in md.lower()
+
+
+def test_markdown_small_nonzero_gap_is_not_called_zero():
+    # A tiny-but-real pooled gap (1pp) is not resolvable within the search
+    # cap; it must NOT be described as a zero gap -- that would mislead a
+    # reader into thinking there is no effect at all.
+    out = compare_runs([_row("t", 51, 100)], [_row("t", 50, 100)])
+    md = format_compare_markdown(out)
+    assert "too small" in md.lower()
+    assert "zero" not in md.lower()
+    assert "not resolvable" in md.lower()
+

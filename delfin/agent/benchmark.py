@@ -2617,18 +2617,27 @@ def format_compare_markdown(
         if not summary.get("significant") and int(_oldc[1]) and int(_newc[1]):
             # Not significant is not the end of the story: name the N that
             # would settle the observed pooled gap, so a reader who wants a
-            # verdict knows what to run next.  A zero gap has no resolving N.
+            # verdict knows what to run next.  A zero gap has no resolving
+            # N; a small-but-real gap may just need more than the search
+            # covers -- saying "zero" for that would mislead.
             _or = int(_oldc[0]) / int(_oldc[1])
             _nr = int(_newc[0]) / int(_newc[1])
-            _need = min_n_for_delta(max(_or, _nr), min(_or, _nr))
-            if _need is not None:
-                lines.append(
-                    f"  N too small to decide: resolving a swing this large "
-                    f"needs ~{_need} repeats per arm.")
-            else:
+            if _or == _nr:
                 lines.append(
                     f"  N too small to decide: the observed pooled gap is "
                     f"zero, so no repeat count can separate these runs.")
+            else:
+                _need = min_n_for_delta(max(_or, _nr), min(_or, _nr))
+                if _need is not None:
+                    lines.append(
+                        f"  N too small to decide: resolving a swing this "
+                        f"large needs ~{_need} repeats per arm.")
+                else:
+                    lines.append(
+                        f"  N too small to decide: this small a gap is not "
+                        f"resolvable within the repeats searched so far; "
+                        f"run far more repeats per arm or test a stronger "
+                        f"effect.")
         lines.append("")
 
     # Per-task table
