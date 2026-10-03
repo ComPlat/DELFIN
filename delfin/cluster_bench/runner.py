@@ -29,7 +29,7 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 
 from delfin.cluster_bench.prepare import cbatch_chunk_dir, cbatch_load_manifest, cbatch_shard_rows
@@ -51,20 +51,32 @@ def cbatch_tool_python(man) -> str:
     return os.environ.get("DELFIN_CLUSTER_TOOL_PYTHON") or man["settings"]["tool_python"]
 
 
-def cbatch_copy_system(archive_ws: Path, archive_build: Path, rid: str) -> None:
+def cbatch_copy_system(archive_ws: Path, archive_build: Path, rid: str,
+                       log_build: Path | None = None, log_ws: Path | None = None) -> None:
     """Place one finished system's result (xyz + final meta) into the workspace archive.
     The meta is written atomically (temp + ``os.replace``), so a reader never sees a partial
     record.  Finished systems are copied back in batches -- the workspace archive keeps the exact
-    layout resume and ``cbatch_collect`` read, without the per-system intermediate files."""
+    layout resume and ``cbatch_collect`` read, without the per-system intermediate files.
+    A system that did not end ``ok`` also takes its log along: on node-local disk the log is
+    the only diagnosis and would vanish with the node.  Logs of ok systems stay local."""
     src_xyz = archive_build / f"{rid}.xyz"
     if src_xyz.exists():
         shutil.copyfile(src_xyz, archive_ws / f"{rid}.xyz")
     src_meta = archive_build / "_meta" / f"{rid}.json"
     if src_meta.exists():
+        text = src_meta.read_text()
         dst = archive_ws / "_meta" / f"{rid}.json"
         tmp = dst.with_name(f".{rid}.json.part")
-        tmp.write_text(src_meta.read_text())
+        tmp.write_text(text)
         os.replace(tmp, dst)
+        try:
+            status = str(json.loads(text).get("status", ""))
+        except ValueError:
+            status = ""
+        src_log = (log_build / f"{rid}.log") if log_build else None
+        if status != "ok" and src_log is not None and log_ws is not None and src_log.exists():
+            log_ws.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src_log, log_ws / f"{rid}.log")
 
 
 def cbatch_sync_size() -> int:
@@ -317,28 +329,47 @@ def _tool_shard(man, rows, specs: Path, chunk: Path, workers, timeout, log) -> d
     todo.sort(key=lambda r: -cn.get(r, 0))
     sync_size = cbatch_sync_size()
     pending: list = []
+    log_ws = chunk / "logs"
     if archive_build == archive_ws:
         def _sync():
             pending.clear()
+
+        def _flush_all():
+            pass
     else:
         def _sync():
             for rid in pending:
-                cbatch_copy_system(archive_ws, archive_build, rid)
+                cbatch_copy_system(archive_ws, archive_build, rid, logroot, log_ws)
+            pending.clear()
+
+        def _flush_all():
+            # USR1: copy every system whose final record already exists locally -- also
+            # those whose child has not exited yet -- since the node is reaped soon.
+            for meta in (archive_build / "_meta").glob("*.json"):
+                rid = meta.stem
+                if not (archive_ws / "_meta" / meta.name).exists():
+                    cbatch_copy_system(archive_ws, archive_build, rid, logroot, log_ws)
             pending.clear()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex, \
             open(chunk / "run_summary.jsonl", "a") as summ:
-        futs = [ex.submit(cbatch_tool_one, man, r, specs, archive_build, workroot, logroot, timeout)
-                for r in todo]
-        for f in as_completed(futs):
-            m = f.result()
-            summ.write(json.dumps(m) + "\n")
-            summ.flush()
-            finished[m["refcode"]] = m
-            pending.append(m["refcode"])
-            if cbatch_flush_requested(local) or len(pending) >= sync_size:
+        not_done = {ex.submit(cbatch_tool_one, man, r, specs, archive_build, workroot, logroot,
+                              timeout) for r in todo}
+        while not_done:
+            # Poll instead of blocking on the next completion: the USR1 flag must be honoured
+            # even when no further system finishes before the wall time.
+            done, not_done = wait(not_done, timeout=2.0, return_when=FIRST_COMPLETED)
+            for f in done:
+                m = f.result()
+                summ.write(json.dumps(m) + "\n")
+                summ.flush()
+                finished[m["refcode"]] = m
+                pending.append(m["refcode"])
+                log(f"{m['refcode']:<12} {str(m['status'])[:40]:<40} frames={m['n_frames']:<4} "
+                    f"wall={m['wall_total_s']:8.1f}s rss={m['rss_gb']:.2f}G")
+            if cbatch_flush_requested(local):
+                _flush_all()
+            elif len(pending) >= sync_size:
                 _sync()
-            log(f"{m['refcode']:<12} {str(m['status'])[:40]:<40} frames={m['n_frames']:<4} "
-                f"wall={m['wall_total_s']:8.1f}s rss={m['rss_gb']:.2f}G")
     _sync()   # final copy-back of whatever the last pending batch could not reach
     return {r: finished[r].get("status") for r in ids if r in finished}
 
