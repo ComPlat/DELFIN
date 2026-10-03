@@ -1811,6 +1811,30 @@ def create_tab(ctx):
         margin='5px 0', width='100%', overflow_x='hidden', gap='6px',
         display='none',
     ))
+    # --- Conformer clustering panel (EnAn clustering of a GOAT ensemble) ---
+    # Shown only while the opened file is a *.finalensemble.xyz; the button
+    # runs delfin.analysis_tools.conformer_clustering.run_clustering on it.
+    calc_clustering_btn = widgets.Button(
+        description='⬢ Conformer Clustering', button_style='success',
+        layout=widgets.Layout(width='200px', min_width='200px', height='26px'),
+        disabled=True,
+    )
+    calc_clustering_status = widgets.HTML(
+        value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_clustering_toolbar = widgets.VBox([
+        widgets.HBox(
+            [calc_clustering_btn],
+            layout=widgets.Layout(
+                width='100%', overflow_x='hidden', gap='8px',
+                align_items='center',
+            ),
+        ),
+        calc_clustering_status,
+    ], layout=widgets.Layout(
+        margin='5px 0', width='100%', overflow_x='hidden', gap='6px',
+        display='none',
+    ))
     # --- Calc NMR panel widgets ---
     calc_nmr_pal = widgets.BoundedIntText(
         value=12, min=1, max=999, description='PAL',
@@ -3628,6 +3652,7 @@ def create_tab(ctx):
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
             calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_clustering_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
             calc_censo_nmr_panel.layout.display = 'none'
         else:
@@ -3637,6 +3662,7 @@ def create_tab(ctx):
                 calc_content_toolbar.layout.display = 'none'
                 calc_recalc_toolbar.layout.display = 'flex'
                 calc_xyz_workflow_toolbar.layout.display = 'none'
+                calc_clustering_toolbar.layout.display = 'none'
             elif state['xyz_workflow_active']:
                 calc_content_toolbar.layout.display = 'none'
                 calc_recalc_toolbar.layout.display = 'none'
@@ -3645,10 +3671,12 @@ def create_tab(ctx):
                 calc_content_toolbar.layout.display = 'none'
                 calc_recalc_toolbar.layout.display = 'none'
                 calc_xyz_workflow_toolbar.layout.display = 'none'
+                calc_clustering_toolbar.layout.display = 'none'
             else:
                 calc_content_toolbar.layout.display = 'flex'
                 calc_recalc_toolbar.layout.display = 'none'
                 calc_xyz_workflow_toolbar.layout.display = 'none'
+                calc_clustering_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
             calc_censo_nmr_panel.layout.display = 'none'
 
@@ -6106,6 +6134,13 @@ def create_tab(ctx):
         js = js.replace('__START__', str(int(start_pos))).replace('__END__', str(int(end_pos)))
         _run_js(js)
 
+    def _calc_opened_file_is_finalensemble():
+        """True when the currently opened file is a GOAT finalensemble.xyz."""
+        source = state.get('selected_file_path')
+        if not source:
+            return False
+        return Path(source).name.lower().endswith('finalensemble.xyz')
+
     def calc_update_view():
         if _is_archive_tab and state.get('table_panel_active', False):
             calc_mol_container.layout.display = 'none'
@@ -6116,6 +6151,7 @@ def create_tab(ctx):
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
             calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_clustering_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
             calc_censo_nmr_panel.layout.display = 'none'
             return
@@ -6134,6 +6170,7 @@ def create_tab(ctx):
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
             calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_clustering_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
             calc_censo_nmr_panel.layout.display = 'none'
             return
@@ -6150,6 +6187,7 @@ def create_tab(ctx):
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
             calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_clustering_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
             calc_censo_nmr_panel.layout.display = 'none'
             return
@@ -6164,6 +6202,7 @@ def create_tab(ctx):
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
             calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_clustering_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
             calc_censo_nmr_panel.layout.display = 'none'
         else:
@@ -6178,6 +6217,7 @@ def create_tab(ctx):
                 calc_text_area.layout.display = 'block'
                 calc_recalc_toolbar.layout.display = 'none'
                 calc_xyz_workflow_toolbar.layout.display = 'none'
+                calc_clustering_toolbar.layout.display = 'none'
             elif state['recalc_active']:
                 calc_content_toolbar.layout.display = 'none'
                 calc_content_area.layout.display = 'none'
@@ -6185,6 +6225,7 @@ def create_tab(ctx):
                 calc_text_area.layout.display = 'none'
                 calc_recalc_toolbar.layout.display = 'flex'
                 calc_xyz_workflow_toolbar.layout.display = 'none'
+                calc_clustering_toolbar.layout.display = 'none'
             elif state['xyz_workflow_active']:
                 calc_content_toolbar.layout.display = 'none'
                 calc_content_area.layout.display = 'block'
@@ -6199,6 +6240,15 @@ def create_tab(ctx):
                 calc_text_area.layout.display = 'none'
                 calc_recalc_toolbar.layout.display = 'none'
                 calc_xyz_workflow_toolbar.layout.display = 'none'
+                # The conformer-clustering panel rides on the plain text
+                # view: visible exactly when the opened file is a GOAT
+                # finalensemble.xyz, which the opener decides.
+                if _calc_opened_file_is_finalensemble():
+                    calc_clustering_toolbar.layout.display = ''
+                    calc_clustering_btn.disabled = bool(
+                        state.get('clustering_running'))
+                else:
+                    calc_clustering_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
             calc_censo_nmr_panel.layout.display = 'none'
 
@@ -8297,6 +8347,7 @@ def create_tab(ctx):
         calc_xyz_workflow_info.value = ''
         calc_xyz_workflow_status.value = ''
         calc_xyz_workflow_toolbar.layout.display = 'none'
+        calc_clustering_toolbar.layout.display = 'none'
 
     def calc_get_recalc_base_name(stem):
         match = re.match(r'^(.*)_recalc_(\d+)$', stem)
@@ -9944,6 +9995,59 @@ def create_tab(ctx):
                 )
         except Exception as e:
             calc_override_status.value = f'<span style="color:#d32f2f;">Error: {_html.escape(str(e))}</span>'
+
+    def _calc_on_conformer_clustering_click(_button=None):
+        """Run the EnAn conformer clustering on the opened finalensemble.xyz.
+
+        The clustering is pure analysis (no job scheduler involved), but it
+        can take a few seconds on large ensembles, so it runs in a daemon
+        thread like the report builder and posts its progress into the
+        panel's status line.
+        """
+        source = state.get('selected_file_path')
+        if source is None or not Path(source).exists():
+            calc_clustering_status.value = (
+                '<span style="color:#d32f2f;">No finalensemble.xyz file '
+                'opened.</span>'
+            )
+            return
+        if state.get('clustering_running'):
+            return
+        state['clustering_running'] = True
+        calc_clustering_btn.disabled = True
+        calc_clustering_status.value = (
+            '<span style="color:#1976d2;">Clustering conformer families '
+            '(PCA + KMeans)...</span>'
+        )
+
+        def _run_clustering():
+            try:
+                from delfin.analysis_tools.conformer_clustering import (
+                    run_clustering,
+                )
+
+                summary = run_clustering(source)
+                n_conf = summary.get('n_conformers')
+                n_fam = summary.get('n_families')
+                k = summary.get('k_chosen')
+                out_dir = summary.get('out_dir')
+                calc_clustering_status.value = (
+                    '<span style="color:#2e7d32;">Clustered '
+                    f'{n_conf} conformers into {n_fam} families '
+                    f'(k={k}). Results in '
+                    f'<code>{_html.escape(str(out_dir))}</code></span>'
+                )
+                calc_list_directory()
+            except Exception as exc:  # noqa: BLE001 - status line, never crash
+                calc_clustering_status.value = (
+                    '<span style="color:#d32f2f;">Clustering failed: '
+                    f'{_html.escape(str(exc)[:200])}</span>'
+                )
+            finally:
+                state['clustering_running'] = False
+                calc_clustering_btn.disabled = False
+
+        threading.Thread(target=_run_clustering, daemon=True).start()
 
     def calc_on_recalc_click(button):
         if not state['selected_inp_path'] or not state['selected_inp_path'].exists():
@@ -12600,6 +12704,19 @@ def create_tab(ctx):
 
         next_suffix = full_path.suffix.lower()
         next_name_lower = full_path.name.lower()
+
+        # The conformer-clustering button exists only for GOAT ensemble
+        # files: *.finalensemble.xyz (any case).  Hide it (and its status
+        # line) for everything else, and disarm a stale running flag.
+        _is_finalensemble = (
+            next_suffix == '.xyz' and next_name_lower.endswith('finalensemble.xyz')
+        )
+        calc_clustering_toolbar.layout.display = (
+            '' if _is_finalensemble else 'none'
+        )
+        if not _is_finalensemble:
+            state['clustering_running'] = False
+            calc_clustering_status.value = ''
         keep_previous_viewer_during_load = (
             next_name_lower == 'coord' or next_suffix in ['.xyz', '.cube', '.cub']
         )
@@ -13582,6 +13699,7 @@ def create_tab(ctx):
     calc_recalc_btn.on_click(calc_on_recalc_click)
     calc_submit_recalc_btn.on_click(calc_on_submit_recalc)
     calc_submit_xyz_workflow_btn.on_click(_calc_submit_xyz_browser_workflow)
+    calc_clustering_btn.on_click(_calc_on_conformer_clustering_click)
     calc_delete_btn.on_click(calc_on_delete_click)
     calc_delete_yes_btn.on_click(calc_on_delete_yes)
     calc_delete_no_btn.on_click(calc_on_delete_no)
@@ -15155,6 +15273,7 @@ def create_tab(ctx):
     calc_right_children.extend([
         calc_recalc_toolbar,
         calc_xyz_workflow_toolbar,
+        calc_clustering_toolbar,
         calc_nmr_panel,
         calc_censo_nmr_panel,
         calc_content_toolbar,

@@ -1088,6 +1088,30 @@ def _as_response_engine(value: Any) -> str:
     raise ValueError("must be std2 or stda")
 
 
+def _as_conformer_clustering_method(value: Any) -> str:
+    text = str(value or "enan").strip().lower()
+    if text == "enan":
+        return text
+    raise ValueError(
+        "must be 'enan' (Ensemble-Analyzer EDM-eigenvalue clustering, "
+        "Pellegrini et al., JCIM 2026)"
+    )
+
+
+def _as_conformer_clusters(value: Any) -> Any:
+    """'auto' or a cluster count >= 2."""
+    text = str(value or "auto").strip().lower()
+    if text == "auto":
+        return "auto"
+    try:
+        number = int(text)
+    except ValueError as exc:
+        raise ValueError("must be 'auto' or an integer >= 2") from exc
+    if number < 2:
+        raise ValueError("must be 'auto' or an integer >= 2")
+    return number
+
+
 def _as_stability_constant_mode(value: Any) -> str:
     text = str(value or "auto").strip().lower()
     if text == "[auto|reaction]":
@@ -2280,6 +2304,13 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("logK_exp", _as_str, default=""),
     FieldSpec("thdy_smiles_converter", _as_smiles_converter, default="NORMAL"),
     FieldSpec("thdy_preopt", _as_preopt_mode, default="xtb"),
+    # Conformer-family clustering of the GOAT ensemble (EnAn-style;
+    # Pellegrini et al., JCIM 2026, DOI 10.1021/acs.jcim.6c00273)
+    FieldSpec("conformer_clustering", _as_yes_no, default="no"),
+    FieldSpec("conformer_clustering_method", _as_conformer_clustering_method, default="enan"),
+    FieldSpec("conformer_clusters", _as_conformer_clusters, default="auto"),
+    FieldSpec("conformer_cluster_exclude_h", _as_yes_no, default="no"),
+    FieldSpec("conformer_cluster_seed", _as_int, default=42),
 )
 
 
