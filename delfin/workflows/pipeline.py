@@ -193,6 +193,15 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
         else:
             XTB_GOAT(multiplicity, charge, config)
 
+    if str(config.get('conformer_clustering', 'no')).lower() == "yes":
+        from delfin.analysis_tools.conformer_clustering import maybe_run_from_config
+
+        maybe_run_from_config(
+            config,
+            ctx.control_file_path.parent,
+            logger_=logger,
+        )
+
     if config['CREST'] == "yes":
         run_crest_workflow(ctx.PAL, ctx.solvent, charge, multiplicity, ctx.config.get('input_file'))
 
@@ -550,6 +559,15 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
             logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
         else:
             XTB_GOAT(multiplicity, charge, config)
+
+    if str(config.get('conformer_clustering', 'no')).lower() == "yes":
+        from delfin.analysis_tools.conformer_clustering import maybe_run_from_config
+
+        maybe_run_from_config(
+            config,
+            ctx.control_file_path.parent,
+            logger_=logger,
+        )
 
     if config['CREST'] == "yes":
         run_crest_workflow(ctx.PAL, ctx.solvent, charge, multiplicity, ctx.config.get('input_file'))

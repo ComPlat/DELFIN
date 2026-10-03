@@ -483,6 +483,12 @@ def _run_hyperpol_subcommand(argv: list[str]) -> int:
     return run_hyperpol_cli(argv)
 
 
+def _run_ensemble_cluster_subcommand(argv: list[str]) -> int:
+    from .analysis_tools.conformer_clustering import run_cli as _ensemble_cluster_cli
+
+    return _ensemble_cluster_cli(argv)
+
+
 _SAFE_FILE_NAMES: set[str] = {
     "DELFIN.txt",
     "OCCUPIER.txt",
@@ -1601,6 +1607,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_analysis_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "tadf_xtb":
         return _run_tadf_xtb_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "ensemble_cluster":
+        return _run_ensemble_cluster_subcommand(arg_list[1:])
     if arg_list and arg_list[0] in {"hyperpol", "hyperpol_xtb"}:
         return _run_hyperpol_subcommand(arg_list[1:])
 

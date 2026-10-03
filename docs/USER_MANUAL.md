@@ -456,6 +456,26 @@ alone computes nothing. List the states and transitions you want. ESD also requi
 | `tadf_xTB_energy_window` | `10.0` | Energy window (eV) |
 | `tadf_xTB_run_t1_opt` | `yes` | Optimize T1 state |
 
+### Conformer Clustering (GOAT ensembles)
+
+Families of structurally similar conformers from a GOAT run, after the
+Ensemble Analyzer method (Pellegrini et al., JCIM 2026,
+DOI 10.1021/acs.jcim.6c00273). Runs automatically after GOAT when enabled,
+or standalone: `delfin ensemble_cluster molecule.finalensemble.xyz`.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `conformer_clustering` | `no` | Cluster the GOAT `*.finalensemble.xyz` into families |
+| `conformer_clustering_method` | `enan` | Clustering method (only `enan`) |
+| `conformer_clusters` | `auto` | Family count: `auto` (silhouette scan) or integer >= 2 |
+| `conformer_cluster_exclude_h` | `no` | Exclude hydrogens from the distance matrix |
+| `conformer_cluster_seed` | `42` | Random seed for PCA and KMeans |
+
+The results are written to `conformer_clustering/` next to the ensemble
+file: `clustered_representatives.xyz` (lowest-energy conformer per family),
+`cluster_assignments.csv`, `cluster_summary.json`, `silhouette_scan.csv`,
+`pca_coordinates.csv`, `pca_clusters.png` and `silhouette_scan.png`.
+
 ### Thermodynamics
 
 | Key | Default | Description |

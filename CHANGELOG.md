@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Conformer-family clustering of GOAT ensembles (EnAn method)
+
+GOAT ensembles (`*.finalensemble.xyz`) can now be clustered into structural
+conformer families, replicating the Ensemble Analyzer method (Pellegrini et
+al., JCIM 2026, 66, 5018–5025, DOI 10.1021/acs.jcim.6c00273; reference
+implementation `andre-cloud/ensemble_analyzer`, Zenodo
+DOI 10.5281/zenodo.18255912). The core lives in the new
+`delfin/analysis_tools/conformer_clustering.py`: euclidean distance-matrix
+eigenvalues as translation/rotation-invariant features (no superposition, no
+RMSD), PCA, KMeans, and for `conformer_clusters = auto` a silhouette scan
+over k = [10 %..80 %] of the ensemble, all with the reference parameters
+(`n_init='auto'`, `random_state=42`, scan on PCA scores). Within each family
+the lowest-energy conformer becomes the representative. New CONTROL keys
+`conformer_clustering` (default `no`), `conformer_clustering_method`,
+`conformer_clusters`, `conformer_cluster_exclude_h` and
+`conformer_cluster_seed`; the clustering runs automatically on the GOAT
+ensemble when enabled, and standalone via
+`delfin ensemble_cluster <ensemble.xyz>`. In the dashboard Calculations tab,
+opening a `*.finalensemble.xyz` reveals a "Conformer Clustering" button that
+runs the same analysis and writes the result folder next to the ensemble.
+Results go to
+`conformer_clustering/` next to the ensemble file (representatives XYZ,
+assignments CSV, summary JSON, silhouette scan CSV, PCA coordinates CSV and
+two PNG plots). Degenerate inputs (identical conformers, N = 1) fall back to
+documented single-family behaviour instead of a raw sklearn traceback; the
+reference implementation crashes on those inputs.
+
 ### Changed — PyMOL is an optional extra, so DELFIN installs on glibc 2.34 (RHEL 9)
 
 `pymol-open-source` moves from the core dependencies to the new `pymol` extra
