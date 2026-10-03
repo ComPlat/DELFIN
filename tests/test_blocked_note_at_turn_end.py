@@ -118,8 +118,20 @@ class _Agent(R.TerminalAgent):
 
 
 @pytest.fixture()
-def wired_agent(tmp_path):
+def wired_agent(tmp_path, monkeypatch):
+    """A TerminalAgent with the fields the wiring needs.
+
+    ``finished_shells`` is patched to nothing ON PURPOSE: this file pins
+    the BLOCKED NOTE, and the global bash registry is shared process
+    state — a neighbour test's finished "echo done" job is announced
+    deliberately to unowned sessions (job_wake.py: "an unowned job is
+    better announced twice than lost"), which would make every
+    _wake_text() here non-empty for a reason this file does not test.
+    """
     a = _Agent(tmp_path, [])
+    monkeypatch.setattr(job_wake, "finished_shells", lambda seen, **k: [])
+    monkeypatch.setattr(job_wake, "finished_watched_jobs",
+                        lambda ws, seen, **k: [])
     return a
 
 
