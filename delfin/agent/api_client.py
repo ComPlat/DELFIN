@@ -972,6 +972,8 @@ _BASH_NO_DEST_OPTS: dict[str, frozenset[str]] = {
     "set": frozenset(), "shopt": frozenset(),
     # ...and the one that writes, where only the ambiguous flag is muted.
     "sort": frozenset({"-d"}),
+    # git -C <dir> only says where to run; --output=<file> still writes.
+    "git": frozenset({"-C"}),
 }
 
 
