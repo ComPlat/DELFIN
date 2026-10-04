@@ -28,7 +28,7 @@ from . import repl_render as rr
 __all__ = [
     "RenderItem", "Transcript", "TurnResult", "run_turn", "TURN_KEYS",
     "ReplOptions", "TerminalAgent", "read_block", "HISTORY_NAME",
-    "permission_mode",
+    "permission_mode", "fresh_context_for_turn",
 ]
 
 HISTORY_NAME = "agent_repl_history"
@@ -408,6 +408,48 @@ def permission_mode(engine) -> str:
 def _usage(engine) -> tuple[int, int]:
     usage = getattr(engine, "token_usage", {}) or {}
     return int(usage.get("input", 0) or 0), int(usage.get("output", 0) or 0)
+
+
+# Context-budget restart: a long session re-sends the whole history every
+# turn. Once the session's input-token usage is above the budget, the
+# terminal starts the next turn from a small fresh context instead.
+_FRESH_CONTEXT_MARKER = "[Fresh context — full history cut at the token budget]"
+
+
+def fresh_context_for_turn(
+    engine,
+    task_state,
+    *,
+    token_budget: int,
+    working_state_block: str = "",
+) -> str:
+    """One fresh, small turn context when the session is over budget.
+
+    Returns ``""`` while input-token usage is at or under ``token_budget``
+    (the caller keeps the full history). Above it, returns a bounded block
+    built from ``task_state.render()`` — which names the open phase — plus an
+    optional ``working_state_block``, prefixed with a marker so the model
+    knows history was deliberately cut. Deterministic, no model call, never
+    raises: a broken engine/state degrades to ``""`` and the full history.
+
+    ``task_state`` is duck-typed — anything with ``render()`` works, so the
+    test drives it with a fake engine and a real ``task_state.TaskState``.
+    """
+    input_tokens, _ = _usage(engine)
+    if input_tokens <= token_budget:
+        return ""
+    try:
+        core = task_state.render() if task_state is not None else ""
+    except Exception:
+        core = ""
+    parts = [_FRESH_CONTEXT_MARKER]
+    if working_state_block:
+        block = str(working_state_block).strip()
+        if block:
+            parts.append(block)
+    if core and core.strip():
+        parts.append(core.strip())
+    return "\n\n".join(parts)
 
 
 def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
