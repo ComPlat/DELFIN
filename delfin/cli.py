@@ -1533,24 +1533,34 @@ def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
     co2_dir = workspace_root / "CO2_coordination"
     co2_control = co2_dir / "CONTROL.txt"
 
-    # Recover missing CO2 workspace from current DELFIN outputs if needed.
-    if not co2_control.exists():
-        delta_raw = config.get("co2_species_delta", 0)
-        try:
-            delta = int(delta_raw)
-        except Exception:
-            delta = 0
-        try:
-            from delfin.co2.chain_setup import setup_co2_from_delfin
+    # Recover missing CO2 workspace from current DELFIN outputs if needed;
+    # regenerate an existing one so a changed main CONTROL (e.g. new
+    # co2_* overrides like adduct_source/manta_smiles) reaches the
+    # coordinator. setup_co2_from_delfin only rewrites input.xyz, co2.xyz
+    # and CONTROL.txt — earlier coordinator outputs stay untouched.
+    delta_raw = config.get("co2_species_delta", 0)
+    try:
+        delta = int(delta_raw)
+    except Exception:
+        delta = 0
+    try:
+        from delfin.co2.chain_setup import setup_co2_from_delfin
 
+        if co2_control.exists():
+            logger.info(
+                "[recalc] CO2 workspace exists. Regenerating CONTROL/input from the "
+                "current CONTROL.txt (delta=%s) so co2_* overrides apply.",
+                delta,
+            )
+        else:
             logger.info(
                 "[recalc] CO2 workspace missing/incomplete. Recreating CO2_coordination (delta=%s).",
                 delta,
             )
-            setup_co2_from_delfin(workspace_root, delta)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("[recalc] Failed to prepare CO2 workspace: %s", exc, exc_info=True)
-            return False
+        setup_co2_from_delfin(workspace_root, delta)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[recalc] Failed to prepare CO2 workspace: %s", exc, exc_info=True)
+        return False
 
     logger.info("[recalc] Starting CO2 Coordinator recalc in %s", co2_dir)
     prev_cwd = Path.cwd()
