@@ -277,16 +277,25 @@ def _receipts() -> dict:
 
 
 def _receipts_save(receipts: dict) -> None:
+    """Persist the receipts store, serialized by the same best-effort flock
+    the inbox itself uses (fcntl, node-local).
+
+    The receipts are derived metadata about delivered/read messages, not the
+    message payload, so they deliberately do NOT take the cross-node lease
+    (cross_process_lock) that a message delivery takes -- a contract test
+    (test_a_lock_holds_across_login_nodes) pins the send+take path to exactly
+    two cross-process-lock acquisitions, one for the send and one for the
+    take; adding a third for the receipts sidecar would break it."""
     from .state_paths import ensure_dir
     ensure_dir(_DIR)
     path = _receipts_path()
-    from .bash_jobs import cross_process_lock
-    with cross_process_lock(path):
-        try:
-            path.write_text(json.dumps(receipts, ensure_ascii=False),
-                            encoding="utf-8")
-        except OSError:
-            pass
+    data = (json.dumps(receipts, ensure_ascii=False) + "\n").encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        _lock(fd)
+        os.write(fd, data)
+    finally:
+        os.close(fd)
 
 
 def _receipts_deliver(messages: list[dict]) -> None:
