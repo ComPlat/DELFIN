@@ -95,3 +95,49 @@ def test_render_never_leaks_secret(state_path):
     st = task_state.open(state_path)
     _fill(st)
     assert _SECRET not in st.render()
+
+
+# F1 (reviewer nacht-s15): load() must degrade on a corrupt state file, not
+# raise. A broken store on disk must never break the caller that resumes a
+# session from it -- it falls back to a fresh empty state, and save() still
+# works to recover.
+
+def test_load_degrades_on_corrupt_json(state_path):
+    from delfin.agent import task_state
+    # A torn / hand-edited state file: valid on disk, not valid JSON.
+    state_path.write_text('{"task": "phase 2"', encoding="utf-8")
+    st = task_state.open(state_path)
+    st.load()  # must NOT raise JSONDecodeError
+    assert st.task == ""  # degraded to a fresh empty state
+
+
+def test_load_degrades_on_non_json_content(state_path):
+    from delfin.agent import task_state
+    # Garbage that is not JSON at all.
+    state_path.write_text("<not json at all>", encoding="utf-8")
+    st = task_state.open(state_path)
+    st.load()
+    assert st.task == ""
+    assert st.phases == [] and st.commits == [] and st.findings == []
+
+
+def test_load_degrades_on_unreadable_file(state_path):
+    from delfin.agent import task_state
+    # A path that is a directory cannot be read as text.
+    state_path.mkdir()
+    st = task_state.open(state_path)
+    st.load()  # must not raise OSError
+    assert st.waiting_for == ""
+
+
+def test_state_recovers_after_corrupt_load(state_path):
+    from delfin.agent import task_state
+    # After degrading, the caller can save a clean state over the torn file.
+    state_path.write_text('{"broken', encoding="utf-8")
+    st = task_state.open(state_path)
+    st.load()
+    st.commit(task="recovered", phase="phase 2", phase_status="in_progress",
+              commit="def456")
+    st.save()
+    data = json.loads(state_path.read_text(encoding="utf-8"))
+    assert data["task"] == "recovered"  # recovered file is now valid JSON

@@ -107,20 +107,33 @@ class TaskState:
     # -- persistence ------------------------------------------------------
 
     def save(self) -> None:
-        """Write the current state to ``self.path`` as JSON (overwrites)."""
+        """Write the current state to ``self.path`` as JSON (atomic).
+
+        Write to a temp file in the same directory, then rename over the
+        target, so a crash or a concurrent reader never sees a torn JSON
+        file (the main way a store corrupts).
+        """
         payload = self._as_dict()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(
             json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2),
             encoding="utf-8",
         )
+        tmp.replace(self.path)
 
     def load(self) -> None:
-        """Read state back from ``self.path``; a missing file stays empty."""
+        """Read state back from ``self.path``; a missing or corrupt file
+        degrades to an empty state instead of raising (best-effort, like
+        working_state — a broken store must never break the caller)."""
         if not self.path.exists():
             self.begin()
             return
-        data = json.loads(self.path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.begin()
+            return
         self.task = str(data.get("task", "") or "")
         self.waiting_for = str(data.get("waiting_for", "") or "")
         self.commits = [str(c) for c in data.get("commits", []) or []]
