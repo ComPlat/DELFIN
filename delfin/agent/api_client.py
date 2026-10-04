@@ -967,6 +967,9 @@ _BASH_NO_DEST_OPTS: dict[str, frozenset[str]] = {
     "cut": frozenset(), "uniq": frozenset(), "join": frozenset(),
     "paste": frozenset(), "column": frozenset(), "date": frozenset(),
     "od": frozenset(), "xxd": frozenset(),
+    # Shell builtins whose -o names an OPTION: `set -o pipefail` is the
+    # prefix the test recipe puts in front of every gate run.
+    "set": frozenset(), "shopt": frozenset(),
     # ...and the one that writes, where only the ambiguous flag is muted.
     "sort": frozenset({"-d"}),
 }
