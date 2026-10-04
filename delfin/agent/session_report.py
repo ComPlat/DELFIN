@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import math
 import re
 
 from . import tool_trace
@@ -585,6 +586,286 @@ def render_terminal(report: SessionReport) -> str:
         f" out {_fmt_int(report.output_tokens)}",
     ]
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# friction: lost time and stumbles, computed from the recorded trace only.
+#
+# The four wave-10 patterns -- lost time waiting on an approval, a denied
+# action reworked in another form, one file read in many slices, and idle
+# time after a job -- are all reconstructible from the per-call trace record
+# (``tool_trace.record``: ts, tool, input, duration_ms, ok, error) with NO
+# new logging inside the security code. Everything here reads the trace only;
+# nothing reads security_events (an in-process ring buffer a CLI report
+# always sees empty) and nothing depends on wall-clock time.
+# --------------------------------------------------------------------------
+
+_IDLE_MIN_S = 300.0          # consecutive-call gap this long is idle
+_WAIT_MAX_S = 14400.0        # deny -> successful identical retry window (4h)
+_REWORK_MAX_S = 600.0        # deny -> reworked-form window (a deliberate retry)
+_READ_MIN_COUNT = 3          # same file sliced at least this often -> friction
+_TOP_DEFAULT = 3
+
+# Slice commands that read PART of a file -- the wave-10 pattern of one file
+# read in many sed -n slices, each paying for an approval. grep deliberately
+# excluded: grepping a big file is the intended lookup, not an inefficient
+# partial read, so counting it would over-report ordinary use.
+_EXTRACT_RE = re.compile(r"^\s*(?:sed\b|head\b|tail\b|awk\b)", re.I)
+
+
+def _norm_cmd(command: str) -> str:
+    """Normalise a bash command for same-action comparison (whitespace only)."""
+    return re.sub(r"\s+", " ", (command or "").strip())
+
+
+def _command(e: dict, is_bash: bool) -> str:
+    """The command of a bash entry (via tool_trace.command_of), else ''."""
+    if not is_bash:
+        return ""
+    try:
+        return tool_trace.command_of(e) or ""
+    except Exception:
+        return ""
+
+
+def _object_tokens(command: str) -> set[str]:
+    """Path/file-like tokens a command touches, plus each one's basename.
+
+    Used to decide whether a later call performs the same action in another
+    form: the two commands must act on the SAME object (a shared path or file
+    basename), so an unrelated later command is never a "rework".
+    """
+    tokens: set[str] = set()
+    # A leading `cd DIR &&` sets where relative paths point, so
+    # `cd /work && rm scratch.tmp` and `rm /work/scratch.tmp` are one object.
+    base = ""
+    m = re.match(r"\s*cd\s+(\S+)\s*&&\s*(.*)$", command or "")
+    if m:
+        base, command = m.group(1).rstrip("/"), m.group(2)
+    for t in (command or "").split():
+        t = t.strip(",;|&()'\"")
+        if not t or t.startswith("-"):
+            continue
+        if "/" in t or "." in t:
+            # The whole path only: a shared basename is not the same object
+            # (`rm a.py` and `python other/a.py` touch different files).
+            t = t[2:] if t.startswith("./") else t
+            tokens.add(f"{base}/{t}" if base and not t.startswith("/") else t)
+    return tokens
+
+
+#: Commands that only look at a file. Reading the file a refused command
+#: named is inspection, not the same action reached another way.
+_INSPECT_RE = re.compile(
+    r"^\s*(?:sed\s+-n|cat|head|tail|less|more|grep|rg|ls|wc|stat|file|diff|"
+    r"git\s+(?:show|log|diff|status|blame))\b")
+
+
+def _is_denial(e: dict) -> bool:
+    """A blocked call (ok is False, and the error is a refusal), not a timeout."""
+    if e.get("ok", True):
+        return False
+    try:
+        from .report_denials import _categorize
+        return _categorize(str(e.get("error") or "")) is not None
+    except Exception:
+        return False
+
+
+def _extract_target(command: str) -> str:
+    """The file a slice command reads, or '' when none is identifiable."""
+    toks = (command or "").strip().split()
+    # Everything from a redirection on is where the output goes, not what
+    # the slice reads: `sed -n 1,50p big.out > s1.txt` reads big.out.
+    for i, t in enumerate(toks):
+        if t.startswith(">") or t.startswith("1>") or t.startswith("2>"):
+            toks = toks[:i]
+            break
+    for t in reversed(toks):
+        if t.startswith("-") or t.startswith("'") or t.startswith('"'):
+            continue
+        if "/" in t or "." in t:
+            return t
+    return ""
+
+
+def _refusal_entries(entries: list[dict]) -> list[dict]:
+    """The trace entries that are refusals, with the command of a bash one."""
+    out = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        if not _is_denial(e):
+            continue
+        is_bash = "bash" in str(e.get("tool", "")).lower()
+        cmd = _command(e, is_bash)
+        out.append({"entry": e, "tool": str(e.get("tool") or ""),
+                    "cmd": cmd, "ts": _ts(e)})
+    return out
+
+
+def _ts(e: dict) -> float:
+    try:
+        v = float(e.get("ts") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    # NaN/Inf would slip past every gap comparison and then make round()
+    # raise, blanking the whole report; treat them as a missing stamp.
+    return v if math.isfinite(v) else 0.0
+
+
+def _idle_gaps(entries: list[dict], *, idle_min_s: float,
+               wait_spans: list) -> list[dict]:
+    """Consecutive-call gaps at or above the threshold, minus the spans already
+    counted as approval waits (a wait and an idle gap over the same stretch
+    would double-count the same lost time)."""
+    gaps = []
+    entries = [e for e in entries if isinstance(e, dict)]
+    for i in range(1, len(entries)):
+        prev, nxt = entries[i - 1], entries[i]
+        p_ts, n_ts = _ts(prev), _ts(nxt)
+        gap = n_ts - p_ts if (p_ts > 0 and n_ts > 0) else 0.0
+        if gap < idle_min_s:
+            continue
+        if any(ws[0] - 1e-9 <= p_ts and n_ts <= ws[1] + 1e-9
+               for ws in wait_spans):
+            continue
+        is_bash = "bash" in str(prev.get("tool", "")).lower()
+        waiting = _command(prev, is_bash) or str(prev.get("tool") or "")
+        gaps.append({"kind": "idle_gap", "magnitude": round(gap),
+                     "unit": "s", "detail": str(prev.get("tool") or ""),
+                     "command": waiting})
+    return gaps
+
+
+def compute_friction(
+    entries: list[dict],
+    *,
+    idle_min_s: float = _IDLE_MIN_S,
+    wait_max_s: float = _WAIT_MAX_S,
+    rework_max_s: float = _REWORK_MAX_S,
+    read_min_count: int = _READ_MIN_COUNT,
+) -> dict:
+    """Every friction event in one session's recorded trace.
+
+    Returns a dict never raising on malformed entries, with one key per
+    pattern, each a list of item dicts ``{kind, magnitude, unit, detail,
+    command}``:
+      approval_wait    a refusal followed later by the identical successful
+                       call; magnitude = wait seconds, command = the denied cmd
+      denial_reworked  a refusal followed later by a DIFFERENT-FORM bash call
+                       on the same object (same path/basename); magnitude =
+                       count, command = the reworked call
+      repeated_reads   the same file sliced by sed/head/tail/awk at least
+                       read_min_count times; magnitude = count, command = one
+                       example slice
+      idle_gap         a consecutive-call gap >= idle_min_s NOT already counted
+                       as an approval wait; magnitude = gap seconds, command =
+                       the call that was waiting
+    """
+    items = {"approval_wait": [], "denial_reworked": [],
+             "repeated_reads": [], "idle_gap": []}
+    waits = items["approval_wait"]
+    wait_spans = []
+
+    for d in _refusal_entries(entries):
+        d_ts = d["ts"]
+        matched = False
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            if e is d["entry"]:
+                continue
+            if e.get("ok", True) is False:
+                continue
+            e_ts = _ts(e)
+            if e_ts <= d_ts or e_ts - d_ts > wait_max_s:
+                continue
+            if str(e.get("tool") or "") != d["tool"]:
+                continue
+            is_bash = "bash" in str(e.get("tool", "")).lower()
+            cmd = _command(e, is_bash)
+            same = (_norm_cmd(cmd) == _norm_cmd(d["cmd"]) if is_bash
+                    else _norm_cmd(str(e.get("input") or ""))
+                    == _norm_cmd(str(d["entry"].get("input") or "")))
+            if same:
+                gap = round(e_ts - d_ts)
+                waits.append({"kind": "approval_wait", "magnitude": gap,
+                              "unit": "s", "detail": d["cmd"],
+                              "command": d["cmd"]})
+                wait_spans.append((d_ts, e_ts))
+                matched = True
+                break
+        if matched:
+            continue
+        # no identical retry -> look for the same object reached another way
+        if not d["cmd"]:
+            continue
+        denied_objs = _object_tokens(d["cmd"])
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            if e is d["entry"] or e.get("ok", True) is False:
+                continue
+            if "bash" not in str(e.get("tool", "")).lower():
+                continue
+            e_ts = _ts(e)
+            if e_ts <= d_ts or e_ts - d_ts > rework_max_s:
+                continue
+            cmd = _command(e, True)
+            if not cmd or _norm_cmd(cmd) == _norm_cmd(d["cmd"]):
+                continue
+            if _INSPECT_RE.match(cmd):
+                continue
+            if denied_objs & _object_tokens(cmd):
+                items["denial_reworked"].append({
+                    "kind": "denial_reworked", "magnitude": 1, "unit": "n",
+                    "detail": cmd, "command": cmd})
+                break
+
+    # repeated partial reads, grouped per file
+    by_file: dict[str, list[str]] = {}
+    for e in entries:
+        if not isinstance(e, dict) or "bash" not in str(e.get("tool", "")).lower():
+            continue
+        cmd = _command(e, True)
+        if not _EXTRACT_RE.match(cmd):
+            continue
+        target = _extract_target(cmd)
+        if target:
+            by_file.setdefault(target, []).append(cmd)
+    for path, cmds in by_file.items():
+        if len(cmds) >= read_min_count:
+            items["repeated_reads"].append({
+                "kind": "repeated_reads", "magnitude": len(cmds),
+                "unit": "reads", "detail": path, "command": cmds[0]})
+
+    items["idle_gap"] = _idle_gaps(entries, idle_min_s=idle_min_s,
+                                   wait_spans=wait_spans)
+    return items
+
+
+def friction_summary(
+    entries: list[dict],
+    *,
+    top: int = _TOP_DEFAULT,
+    idle_min_s: float = _IDLE_MIN_S,
+    read_min_count: int = _READ_MIN_COUNT,
+) -> list[dict]:
+    """The top ``top`` frictions of a session, ranked by magnitude, with the
+    command that caused each. Pure input for the REIBUNG report sessions write
+    by hand. A clean trace returns [].
+    """
+    try:
+        data = compute_friction(entries, idle_min_s=idle_min_s,
+                                read_min_count=read_min_count)
+    except Exception:
+        return []
+    ranked = []
+    for kind, lst in data.items():
+        ranked.extend(lst)
+    ranked.sort(key=lambda r: (r.get("magnitude") or 0), reverse=True)
+    return [dict(r) for r in ranked[:max(0, int(top))]]
 
 
 # --------------------------------------------------------------------------
