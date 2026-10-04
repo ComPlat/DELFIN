@@ -24,7 +24,15 @@ Two kinds of grounding are answered (phase 2):
 
 The path check is bounded: it lists only the immediate parent directory of
 the requested path (which must exist), never the whole workspace tree, so
-a caller cannot turn it into a directory walk.
+a caller cannot turn it into a directory walk. The deliberate cost: a DEEP
+typo whose parent also does not exist (e.g. ``src/deeper/healper.py`` when
+``src/deeper/`` is gone) yields no hint — the check returns None silently.
+That is the accepted O(1) bound: only the immediate parent is ever read.
+
+The known-tool check is OFF whenever ``known_tools`` is None or empty; the
+wiring that injects it MUST pass the real list, because a misspelled tool is
+otherwise silently accepted (returned None) with no error — see
+:func:`check`.
 
 The third kind — a failure budget over repeated identical failing calls —
 lives in :mod:`delfin.agent.action_grounding.FailureBudget` and is covered
