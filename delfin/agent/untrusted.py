@@ -140,12 +140,19 @@ _FLAG_KINDS: tuple[tuple[str, tuple[re.Pattern, ...]], ...] = (
         re.compile(r"\bwe\s+approve\b", re.I),
         re.compile(r"\b(?:the\s+)?(?:operator|qs(?:\s+lead)?|reviewer)\s+"
                    r"approved\b", re.I),
+        # subject-first authorise-family approval: "the operator authorized
+        # the merge", "qs authorised the run" (both spellings).
+        re.compile(r"\b(?:the\s+)?(?:operator|qs(?:\s+lead)?|reviewer)\s+"
+                   r"(?:authoriz|authoris)ed\b", re.I),
+        # passive approval: "RUN approved by operator".
+        re.compile(r"\bapproved\s+by\s+(?:the\s+)?"
+                   r"(?:operator|qs(?:\s+lead)?|reviewer)\b", re.I),
         re.compile(r"\bapprov(?:e|ed|al)\s+(?:this|it|the\b)", re.I),
         re.compile(r"\bapproval\s+granted\b", re.I),
     )),
     ("ignore", (
         re.compile(r"ignore\s+(?:all|any|the|your)?\s*previous\s+"
-                   r"instructions?\b", re.I),
+                   r"(?:instructions?|rules|guidelines)\b", re.I),
         re.compile(r"ignore\s+(?:your|the)\s+(?:prior|earlier|previous)\b",
                    re.I),
         re.compile(r"disregard\s+(?:all|any|the|your)?\s*(?:prior|previous)"
@@ -156,6 +163,15 @@ _FLAG_KINDS: tuple[tuple[str, tuple[re.Pattern, ...]], ...] = (
         # shape without a "previous" qualifier is still an instruction.
         re.compile(r"ignore\s+(?:the|all|any)\s+"
                    r"(?:instructions?|rules|guidelines)\b", re.I),
+        # the standard jailbreak rephrase: "override previous rules".
+        re.compile(r"\boverride\s+(?:all|any|the|your)?\s*"
+                   r"(?:previous|prior|earlier)\b", re.I),
+        # harness-targeting shape: "ignore the system/harness prompt".
+        re.compile(r"\bignore\s+(?:the|your)\s+(?:system|harness)\s+prompt\b",
+                   re.I),
+        # verb synonym: "forget previous instructions".
+        re.compile(r"\bforget\s+(?:all|any|the|your)?\s*(?:prior|previous)?"
+                   r"\s*(?:instructions?|rules|guidelines)\b", re.I),
     )),
     ("push", (
         re.compile(r"\bgit\s+push\b", re.I),
