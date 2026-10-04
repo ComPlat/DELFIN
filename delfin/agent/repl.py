@@ -556,19 +556,16 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
 _BLOCK_FENCE = '"""'
 
 
-def read_block(read_line: Callable[[str], str], *, prompt: str = "> ",
-               cont: str = "… ") -> str:
-    """One message, which may span several lines.
+def _read_block_tail(read_line: Callable[[str], str], first: str, *,
+                     cont: str = "… ") -> str:
+    """What follows the first line of a read_block message.
 
-    Two forms, both deterministic and both testable without a terminal: a
-    line ending in a backslash continues onto the next, and a line that is
-    exactly \"\"\" opens a block that ends at the next one.
-
-    Bracketed paste is the real fix for a multi-line paste becoming N
-    separate turns, and it needs raw mode — so it arrives with the key
-    layer, and the fence is what the help text points at until then.
+    Both read_block and read_block_wakeable share this so there is ONE
+    source of truth for the continuation grammar: a bare \"\"\" line opens
+    and closes a block, and a line ending in a backslash continues onto the
+    next. ``first`` is the line already read (by a blocking read for
+    read_block, or by the wake-aware first read for read_block_wakeable).
     """
-    first = read_line(prompt)
     if first.strip() == _BLOCK_FENCE:
         lines: list[str] = []
         while True:
@@ -583,6 +580,54 @@ def read_block(read_line: Callable[[str], str], *, prompt: str = "> ",
         parts[-1] = parts[-1][:-1]
         parts.append(read_line(cont))
     return "".join(parts) if len(parts) > 1 else parts[0]
+
+
+def read_block(read_line: Callable[[str], str], *, prompt: str = "> ",
+               cont: str = "… ") -> str:
+    """One message, which may span several lines.
+
+    Two forms, both deterministic and both testable without a terminal: a
+    line ending in a backslash continues onto the next, and a line that is
+    exactly \"\"\" opens a block that ends at the next one.
+
+    Bracketed paste is the real fix for a multi-line paste becoming N
+    separate turns, and it needs raw mode — so it arrives with the key
+    layer, and the fence is what the help text points at until then.
+    """
+    return _read_block_tail(read_line, read_line(prompt), cont=cont)
+
+
+def read_block_wakeable(read_line: Callable[[str], str],
+                        wake: Callable[[], str], *,
+                        ready: Callable[[], bool],
+                        prompt: str = "> ", cont: str = "… ",
+                        tick: float = 0.25) -> tuple[str, bool]:
+    """Idle-capable read_block for the readline (non-raw terminal) path.
+
+    readline's read blocks on ``input()`` with no wake timer, so an idle
+    session on that path never saw an incoming session_message until a key
+    was pressed (wave-12 finding 3; the raw path already wakes via
+    read_boxed). This variant polls the terminal with ``ready`` (True when a
+    key is already waiting); while nothing is typed it calls ``wake`` — the
+    caller's throttled message check, e.g. repl._wake_text — and returns a
+    non-empty wake result as the NEXT PROMPT without ever blocking on a key.
+    Returns ``(text, from_wake)``; ``from_wake`` is True exactly when the
+    prompt came from ``wake`` rather than a typed first line. Only the FIRST
+    line is wake-aware; the continuation tail reads through ``read_line`` as
+    before. ``tick`` is the idle sleep between polls (tests pass 0).
+    """
+    import time as _time
+    while True:
+        try:
+            if ready():
+                first = read_line(prompt)
+                return _read_block_tail(read_line, first, cont=cont), False
+        except (EOFError, KeyboardInterrupt):
+            raise
+        woke = wake()
+        if woke:
+            return woke, True
+        _time.sleep(tick)
 
 
 @dataclass
@@ -2129,10 +2174,21 @@ class TerminalAgent:
                         if raw_mode_supported(self._stdin):
                             # The framed box, only on a raw terminal —
                             # a pipe or a redirect keeps the readline
-                            # path exactly as it was.
+                            # path except that IT too wakes on a session
+                            # message now (wave-12 finding 3).
                             pending = self.read_boxed().strip()
                         else:
-                            pending = read_block(self._read_line).strip()
+                            # readline's input() blocks forever, so an idle
+                            # session on this path never saw an incoming
+                            # session_message until a key was pressed. The
+                            # wakeable read polls stdin via _line_ready and
+                            # hands the throttled message check (_wake_text)
+                            # the idle time as its prompt.
+                            text, from_wake = read_block_wakeable(
+                                self._read_line,
+                                lambda: self._wake_text(""),
+                                ready=self._line_ready)
+                            pending = text.strip()
                     except EOFError:
                         self.transcript.chrome("")
                         return 0
@@ -2845,6 +2901,24 @@ class TerminalAgent:
             return "\n\n".join(_msgs.render(m) for m in messages)
         except Exception:
             return ""
+
+    def _line_ready(self) -> bool:
+        """True when a key is already waiting on stdin, else False.
+
+        The idle-capable read (read_block_wakeable) polls this to know
+        whether a real read would block. When nothing is ready it hands the
+        throttled message check (_wake_text) the idle time instead, so an
+        incoming session_message starts a turn even on the readline path.
+        Never raises: a select that throws just reads as "not ready", and
+        the fallback keeps the old blocking behaviour rather than crashing
+        at the prompt.
+        """
+        try:
+            import select
+            r, _, _ = select.select([self._stdin], [], [], 0)
+            return bool(r)
+        except Exception:
+            return False
 
     def _wake_text(self, typed: str) -> str:
         """The message a job that finished hands an idle prompt, or "".
