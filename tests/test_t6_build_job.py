@@ -103,3 +103,24 @@ def test_rejects_bad_test_paths():
         build_job("delfin", "main", ["/etc/passwd"], "cpu", 10)
     with pytest.raises(ValueError):
         build_job("delfin", "main", ["../outside.py"], "cpu", 10)
+
+
+def test_ref_with_command_substitution_is_never_shell_expanded():
+    """A ref like $(touch /tmp/x) must never be emitted into a double-quoted
+    bash word: bash substitutes $(...) inside double quotes, so the whole
+    point of a node-local job would be undone by executing attacker input.
+    Regression for reviewer finding F1 (was DELFIN_TJ_REF="'$(...)'")."""
+    evil = "$(touch /tmp/delfin_probe_should_not_run)"
+    text = build_job("delfin", evil, ["tests/x.py"], "cpu", 10)
+    assert 'DELFIN_TJ_REF="' not in text
+    # The exact ref still reaches the summary, single-quoted and literal.
+    assert "'$(touch /tmp/delfin_probe_should_not_run)'" in text
+
+
+def test_summary_block_parses_counts_not_word_counts():
+    """The node-side summary must parse the actual N from the pytest -q
+    summary line, not count how many times the word appears. Regression for
+    reviewer finding F2 (was txt.count("passed") == 1 for any all-pass run)."""
+    text = build_job("delfin", "main", ["tests/x.py"], "cpu", 10)
+    assert 're.findall(r"(\\d+)\\s+passed\\b", txt)' in text
+    assert 'txt.count("passed")' not in text
