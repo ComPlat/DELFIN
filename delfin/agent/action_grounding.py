@@ -33,6 +33,7 @@ by phase 3.
 from __future__ import annotations
 
 import difflib
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -179,3 +180,119 @@ def check(tool: object, args: dict, workspace: str | Path,
                     )
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: repeated-failure budget — a "stop and ask" when the SAME call
+# (tool * normalized args) has already failed several times in one task.
+#
+# The existing per-call guard (api_client.py:11506-11543 -> failure_log.py)
+# keys on a RAW [:80] command/error string, so two spellings of the same
+# failing call that differ only in argument order or whitespace land in
+# DIFFERENT buckets and reset each other's counter. This module is the pure,
+# reusable counterpart: it keys on ``(tool, normalize_args(args))``, so a
+# reordered / re-spaced / differently-cased repeat of a failing call is
+# recognised as the SAME call. It owns no I/O and no import from api_client
+# or the sandbox — it mirrors ``process_budget.py``'s shape (a frozen
+# limits dataclass + a pure decision object), stays unit-testable, and the
+# protected wiring patch feeds this module's *signature* into the existing
+# failure_log hook instead of adding a parallel note.
+# ---------------------------------------------------------------------------
+
+def normalize_args(args: object) -> str:
+    """A canonical key for a call's arguments.
+
+    So reordered / re-spaced / differently-cased spellings of the same call
+    collapse into ONE signature. Non-dicts fall back to ``repr`` (collapsed);
+    dict keys are sorted, values lowered and whitespace-collapsed.
+    """
+    if isinstance(args, dict):
+        parts = []
+        for key in sorted(args):
+            val = args[key]
+            parts.append(f"{key}={_canonical(val)}")
+        return " ".join(parts)
+    return _canonical(args)
+
+
+def _canonical(value: object) -> str:
+    """Lowercase and collapse runs of whitespace — the only normalisation
+    that is safe for paths AND command strings alike."""
+    text = repr(value) if not isinstance(value, (str, int, float, bool)) \
+        else str(value)
+    return " ".join(text.lower().split())
+
+
+@dataclass(frozen=True)
+class FailureBudgetLimits:
+    """How many identical failing calls before we stop and ask.
+
+    Mirrors ``process_budget.BudgetLimits``: plain frozen dataclass of the
+    knobs the pure decision function reads. ``identical_fail_limit`` is the
+    count of consecutive identical ``(tool, normalized args)`` *failures*
+    at which a subsequent identical call yields a "stop and ask" hint.
+    """
+    identical_fail_limit: int = 3
+
+
+class FailureBudget:
+    """Per-task gate: the same failing call a third time says "stop and ask".
+
+    Pure and stateful but side-effect-free — all state is an in-memory
+    counter keyed on ``(tool, normalize_args(args))``. ``retrospective``
+    reports the failing signature after the fact; ``repeat_hint`` is called
+    BEFORE a call runs and returns a :class:`GroundingHint` when the
+    identical failing call has already fired ``identical_fail_limit`` times.
+    A success for a signature resets its streak.
+    """
+
+    def __init__(self, limits: Optional[FailureBudgetLimits] = None):
+        self._limits = limits or FailureBudgetLimits()
+        self._fails: Counter = Counter()          # (tool, sig) -> fail count
+        self._streaks: dict[tuple[str, str], int] = {}  # consecutive fails
+
+    def _key(self, tool: object, args: object) -> tuple[str, str]:
+        t = str(tool).strip()
+        return t, normalize_args(args)
+
+    def record(self, tool: object, args: object, ok: bool) -> None:
+        """Register the outcome of one call. A success breaks the streak."""
+        key = self._key(tool, args)
+        if ok:
+            self._fails[key] = 0
+            self._streaks[key] = 0
+            return
+        self._fails[key] += 1
+        self._streaks[key] = self._streaks.get(key, 0) + 1
+
+    def repeat_hint(self, tool: object, args: object
+                    ) -> Optional[GroundingHint]:
+        """A "stop and ask" hint when this failing call has already failed
+        ``identical_fail_limit`` times; None otherwise (run the call)."""
+        key = self._key(tool, args)
+        # Use consecutive-failure count, not total: a call that succeeded
+        # in between is not a stuck loop.
+        reached = self._streaks.get(key, 0) >= self._limits.identical_fail_limit
+        if not reached:
+            return None
+        return GroundingHint(
+            kind="repeated_failure",
+            message=(
+                f"this exact call ({key[0]}, normalized args) has failed "
+                f"{self._limits.identical_fail_limit}+ times in a row in this "
+                "task. Repeating it will keep failing. Change approach — pick "
+                "a different argument, a different tool, or STOP and ask the "
+                "user for help."
+            ),
+        )
+
+    def failure_signature(self) -> Optional[str]:
+        """The normalized ``(tool, args)`` string of the most-repeated failing
+        call, for feeding the existing failure_log hook; None when none."""
+        # A success sets a key's count to 0 — never report a reset (0-count)
+        # key as "most repeated", it would mask a real repeating failure.
+        positives = [(k, c) for k, c in self._fails.items() if c > 0]
+        if not positives:
+            return None
+        (tool, sig) = max(positives, key=lambda kc: kc[1])[0]
+        return f"{tool}|{sig}"
