@@ -95,12 +95,22 @@ def test_live_announced_session_still_deliverable():
     assert M.deliverable("nacht-s14") is True
 
 
+@pytest.mark.skip(
+    reason="withdraw tombstone write side PARKED as follow-up by operator scope "
+    "ruling (T3 has three phases; a withdraw feature is not in the wave). The "
+    "read-side _known_key freshness gate (commit 0cd2703a) stays committed as "
+    "inert groundwork; this end-to-end test pins the write contract and will be "
+    "re-enabled when the follow-up builds session_presence.withdraw() to write "
+    "the tombstone instead of unlinking."
+)
 def test_real_withdraw_writes_a_fresh_tombstone():
     """END-TO-END red control for the operator-built withdraw(): a clean exit
     must write a tombstone (not unlink), so the read side can bridge the
     close/restart gap. Fails on the current unlink-withdraw().
 
     This is the write side of the contract the read-side tests above assume.
+    PARKED as a follow-up (see the skip reason): the operator scoped a withdraw
+    feature out of this wave, so the tombstone write is not built yet.
     """
     P.announce("nacht-s15", session_id="s", title="t")
     P.withdraw("nacht-s15")
