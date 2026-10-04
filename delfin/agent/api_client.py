@@ -8145,13 +8145,22 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "session_message",
             "description": (
                 "List other open sessions (no `to`), message one, or all "
-                "with to=all (not as the user)."
+                "with to=all (not as the user). Ask `status=<message_id>` "
+                "for a delivery receipt (queued/delivered/read) or `ls` for "
+                "the messages you know about."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "to": {"type": "string"},
                     "message": {"type": "string"},
+                    "status": {"type": "string",
+                               "description": "A message_id; reply is its "
+                                              "delivery receipt: queued / "
+                                              "delivered / read / unknown."},
+                    "ls": {"type": "boolean",
+                           "description": "List all messages you know "
+                                          "about (queued + delivered/read)."},
                 },
             },
         },
@@ -17617,11 +17626,23 @@ class _DocToolExecutor:
             return json.dumps({"error": (
                 "session_message is available only inside an open dashboard "
                 "session.")})
+        # A delivery receipt: the sender asks what happened to a message it
+        # sent (`status=<message_id>`), or lists the messages it knows about
+        # (`ls`). Neither needs a recipient, so handle them before `to`. Both
+        # are scoped to the asking session (from_key=me) -- a session sees
+        # only mail it itself sent, never another session's or the operator's.
+        mid = str(arguments.get("status") or "").strip()
+        if mid:
+            return json.dumps({"message_id": mid,
+                               "status": _msgs.status(mid, me)},
+                              ensure_ascii=False)
+        if arguments.get("ls"):
+            return json.dumps({"messages": _msgs.ls(me)}, ensure_ascii=False)
         to = str(arguments.get("to") or "").strip()
         text = str(arguments.get("message") or "").strip()
         # Before open_sessions(): it reaps stale presence records, and a
         # closed session is known to the mailbox only by that record.
-        queueable = bool(to) and _msgs.deliverable(to)
+        queueable = bool(to) and to != me and _msgs.deliverable(to)
         others = _presence.open_sessions(exclude_key=me)
         if not to:
             return json.dumps({
