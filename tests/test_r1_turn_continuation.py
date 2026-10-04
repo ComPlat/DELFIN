@@ -147,3 +147,41 @@ class TestShouldContinueNote:
     def test_returns_tuple_shape_always(self):
         assert isinstance(should_continue("x", 0), tuple)
         assert isinstance(should_continue("x", 5), tuple)
+class TestTypographicApostrophe:
+    """U+2019 right single quote — review finding: real transcripts use it."""
+
+    def test_curly_apostrophe_ill(self):
+        # "I\u2019ll fix the failing test now." — RED before the fix.
+        assert announced_action("I\u2019ll fix the failing test now.") is True
+
+    def test_curly_apostrophe_im(self):
+        # "I\u2019m going to run the suite." — RED before the fix.
+        assert announced_action("I\u2019m going to run the suite.") is True
+
+    def test_curly_apostrophe_let_me(self):
+        assert announced_action("Let me check the value first.") is True
+
+    def test_curly_apostrophe_handback_still_suppresses(self):
+        # "I\u2019ll wait for your reply." must stay a hand-back.
+        assert announced_action("I\u2019ll wait for your reply.") is False
+
+
+class TestReviewerDecisions:
+    """Cases the reviewer flagged; decisions documented here."""
+
+    def test_i_will_follow_up_later_is_not_an_action(self):
+        # Back-channel, not an in-session action — accepted as a hand-back.
+        assert announced_action("I will follow up later.") is False
+
+    def test_signal_inside_quoted_instruction_is_accepted(self):
+        # ACCEPTED tradeoff (documented): stripping code blocks / quoted
+        # spans before scanning is fragile and heavy; a quoted "I will …"
+        # inside an answer is rare, while the detector's job is to catch a
+        # REAL first-person announcement. Pin True so the behaviour is
+        # explicit rather than accidental.
+        assert announced_action(
+            'You asked me to "I will book the room".') is True
+
+    def test_signal_inside_code_comment_is_accepted(self):
+        # ACCEPTED tradeoff: same as above.
+        assert announced_action("# let me check the value\n") is True

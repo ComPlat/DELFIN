@@ -1,15 +1,19 @@
 """R1 phase 2 — RED control for the engine wiring (operator runs this).
 
-READ ONLY AFTER the operator applies .gate/r1_turncont.patch to engine.py.
+Kept under tests/ per the operator so it turns GREEN in place when the
+operator applies .gate/r1_turncont.patch to engine.py.
 
-Contract from the patch: after stream_response commits a final assistant
-answer, the engine sets ``pending_turn_continuation`` to a short note exactly
-once when the answer announces further work AND tasks remain open, and never
-refires (``_continuation_fired``). This test proves the wiring.
+Contract from the patch (corrected after review):
+- after stream_response commits a final assistant answer that announces
+  further work AND tasks remain open, the engine sets pending_turn_continuation
+  to a short note exactly once;
+- the one-shot is a SESSION latch (_continuation_fired), initialized in
+  __init__ but NOT reset in the per-turn gate (engine.py:2560-2574) — that
+  would re-arm it on the follow-up turn itself and loop;
+- the latch is cleared only by the engine method clear_turn_continuation().
 
-It is RED on the current engine (attribute absent / never set) and GREEN once
-the patch is in. It is intentionally NOT committed to the branch: it can only
-go green with an engine change the operator owns.
+It is RED on the current engine (attributes absent / never set) and GREEN once
+the patch is in.
 """
 
 from delfin.agent.engine import AgentEngine as Engine
@@ -28,39 +32,50 @@ def test_engine_exposes_the_pending_continuation_slot():
     assert eng.pending_turn_continuation == ""
 
 
-def test_engine_tracks_the_one_shot_guard():
+def test_engine_tracks_the_one_shot_guard_latch():
     eng = _bare_engine()
     # RED today: the guard must start False so the first qualifying turn fires.
     assert hasattr(eng, "_continuation_fired")
     assert eng._continuation_fired is False
 
 
-def test_engine_sets_the_note_exactly_once_for_an_announcing_answer():
-    # Enact the wiring the patch inserts after engine.py:3484, as a pure
-    # harness, so this stays a true RED until the real engine does it.
-    eng = _bare_engine()
+def test_one_shot_is_a_session_latch_cleared_only_by_clear():
+    """The guard must NOT reset per turn; only clear_turn_continuation does.
+
+    Enacts the corrected wiring as a harness: after the first qualifying
+    answer sets the note, a second qualifying answer on a LATER turn must NOT
+    set it again (the SESSION latch holds), and clear_turn_continuation() is
+    the only thing that re-arms it.
+    """
     detector = __import__("delfin.agent.turn_continuation",
                           fromlist=["should_continue"])
-    # Simulate the patch body against a fake workspace with open tasks.
-    eng.workspace = "/nonexistent/r1"
+
+    def enact(answer: str) -> bool:
+        """Model the patched engine block: set the note at most once."""
+        if answer and not eng._continuation_fired:
+            cont, note = detector.should_continue(answer, 2)  # 2 open tasks
+            if cont:
+                eng._continuation_fired = True
+                eng.pending_turn_continuation = note
+                return True
+        return False
+
+    eng = _bare_engine()
     eng.pending_turn_continuation = ""
     eng._continuation_fired = False
 
-    answer = "Let me write the next test."
-    # The task store cannot exist on /nonexistent; supply the open count the
-    # wiring would read. This is the operator-side assertion.
-    n_open = 2
-    fired = False
-    if answer and not eng._continuation_fired:
-        cont, note = detector.should_continue(answer, n_open)
-        if cont:
-            eng._continuation_fired = True
-            eng.pending_turn_continuation = note
-            fired = True
-    assert fired is True
-    assert eng.pending_turn_continuation
-    # Second turn must NOT refire (one-shot).
-    cont2, _ = detector.should_continue(answer, n_open)
-    if cont2 and not eng._continuation_fired:   # guard already taken
-        eng.pending_turn_continuation = ""
-    assert eng._continuation_fired is True
+    # First qualifying turn fires.
+    assert enact("Let me write the next test.") is True
+    assert eng.pending_turn_continuation  # note present
+
+    # A SECOND qualifying answer on a new turn must NOT refire: the session
+    # latch already holds — the exact per-turn-reset bug the review caught.
+    assert enact("I will now run the full suite.") is False
+    assert eng._continuation_fired is True   # still armed, note unchanged
+
+    # Only clear_turn_continuation() re-arms.
+    eng.clear_turn_continuation()
+    assert eng.pending_turn_continuation == ""
+    assert eng._continuation_fired is False
+    # Now a later qualifying turn can schedule again.
+    assert enact("Let me commit the fix.") is True
