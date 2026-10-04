@@ -152,7 +152,7 @@ _FLAG_KINDS: tuple[tuple[str, tuple[re.Pattern, ...]], ...] = (
     )),
     ("ignore", (
         re.compile(r"ignore\s+(?:all|any|the|your)?\s*previous\s+"
-                   r"instructions?\b", re.I),
+                   r"(?:instructions?|rules|guidelines)\b", re.I),
         re.compile(r"ignore\s+(?:your|the)\s+(?:prior|earlier|previous)\b",
                    re.I),
         re.compile(r"disregard\s+(?:all|any|the|your)?\s*(?:prior|previous)"
