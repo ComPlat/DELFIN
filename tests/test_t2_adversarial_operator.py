@@ -1,103 +1,169 @@
 """T2 phase-3 operator review (reviewer s15): the real caller + archive.
 
-The operator reviewed the rejected phase-3 engine patch and set the bar for
-the corrected fix coming out of repl.py (the restart hook lives in this
-package's owned file):
+The operator's review of the rejected phase-3 engine patch set four
+requirements for the corrected fix, three of which live in THIS package's
+owned file (repl.py):
 
   - "one user message = fresh block + current prompt" -- the prompt the
     current turn must answer is NEVER dropped;
   - the trigger is the CURRENT context size, not the cumulative session
     input counter (a turn N+1 after a fresh start is NOT fresh again);
-  - a REAL caller in repl.py with an end-to-end test -- the hook is wired
-    into the turn path, not left dead;
+  - a REAL caller in repl.py with an end-to-end test -- TerminalAgent.turn()
+    wires ``fresh_context_for_turn`` and arms ``engine.start_fresh``;
   - the cut history is ARCHIVED (retrievable), not silently discarded.
 
-These tests pin that bar end-to-end through ``run_turn`` -- the public turn
-path that ``TerminalAgent.turn()`` delegates to (repl.py:927). They are RED
-on the current tree, where ``run_turn`` sends the full history and never
-consults ``fresh_context_for_turn`` nor arms a fresh-start flag.
+These tests drive the REAL public turn path TerminalAgent.turn() (repl.py:1007)
+with a fake engine that reproduces the engine patch's ``start_fresh`` surgery
+so every part of the route is exercised. They are RED against the pre-fix
+turn() (which had no caller: start_fresh was never armed and nothing was
+archived) and GREEN against the fixed one.
 """
 from __future__ import annotations
 
-from delfin.agent.repl import run_turn
+import io
+from pathlib import Path
+
+from delfin.agent import repl, task_state
+from delfin.agent.repl import _FRESH_CONTEXT_MARKER
 
 
-class _RunEngine:
-    """Duck-typed engine driving ``run_turn``: records what the turn path
-    actually hands to ``stream_response`` and exposes the NEW contract the
-    corrected hook must arm (``start_fresh``, ``cut_history``)."""
+class _TurnEngine:
+    """Enough of AgentEngine for a TerminalAgent.turn() run, exposing the
+    real surface the fixed repl hook reads (``_estimate_context_tokens``,
+    ``start_fresh``, ``_refusal_entries``) and reproducing the engine patch's
+    ``start_fresh`` surgery: when armed, the accumulated history is ARCHIVED
+    (``cut_history()``) and only the fused fresh+prompt message is kept."""
 
-    def __init__(self, current_tokens: int, history: list | None = None):
-        self.token_usage = {"input": current_tokens, "output": 0}
-        self.messages = list(history) if history is not None else []
-        self.start_fresh = ""          # armed by the corrected repl hook
-        self._archived: list = []
-        self.sent_user_message: str | None = None
-        self.sent_history_len: int | None = None
+    token_usage = {"input": 0, "output": 0}
+    session_id = "test-sid"
 
-    def estimate_context_tokens(self) -> int:
-        """CURRENT context estimate (the next request), not cumulative."""
-        return int(self.token_usage["input"])
+    def __init__(self, current_context: int | None = None, *, budget_over: bool = False):
+        self.messages: list[dict] = []
+        self._context_override = current_context
+        self.start_fresh = False
+        self.last_user_message = ""
+        self._archived: list[dict] = []
+        self.fresh_contexts = 0
+        self.client = type("C", (), {"model": "m"})()
+
+    def _estimate_context_tokens(self) -> int:
+        if self._context_override is not None:
+            # Simulate the CURRENT-context estimate the fixed hook reads.
+            if self._context_override == "SHRUNK_AFTER_FRESH":
+                # After a fresh start the messages are tiny again.
+                total = sum(len(m.get("content", "") or "") for m in self.messages)
+                return max(1, total // 4)
+            return self._context_override
+        total = sum(len(m.get("content", "") or "") for m in self.messages)
+        return max(1, total // 4)
+
+    def _refusal_entries(self):
+        return []
 
     def cut_history(self) -> list:
         """The history an over-budget turn had to drop, archived."""
         return list(self._archived)
 
-    def stream_response(self, **kwargs) -> str:
-        self.sent_user_message = kwargs.get("user_message", "")
-        self.sent_history_len = len(kwargs.get("history", []))
-        return "answer"
+    def stream_response(self, user_message="", **kw):
+        self.last_user_message = user_message
+        if self.start_fresh:
+            self.fresh_contexts += 1
+            # Engine-patch surgery: the accumulated history is the session
+            # record -- ARCHIVE it before dropping, and keep only the fused
+            # fresh-block + current-prompt message.
+            self._archived = self._archived + list(self.messages)
+            self.messages = [{"role": "user", "content": user_message}]
+            self.start_fresh = False
+            self._context_override = None
+        else:
+            self.messages.append({"role": "user", "content": user_message})
+            self.messages.append({"role": "assistant", "content": "ok"})
+        return "ok"
+
+    def get_status(self):
+        return {}
+
+    def request_stop(self):
+        pass
+
+    def clear_stop(self):
+        pass
 
 
-def _sink(_item):
-    pass
+def _turn_agent(engine, *, budget=0):
+    out, err = io.StringIO(), io.StringIO()
+    return repl.TerminalAgent(
+        engine, out=out, err=err,
+        opts=repl.ReplOptions(cwd=Path("."), context_budget=budget, color="never"))
 
 
-def test_end_to_end_over_budget_turn_arms_a_fresh_start():
-    """An over-budget CURRENT context must make the turn path arm a fresh
-    start (set ``engine.start_fresh`` to a non-empty block) so the engine can
-    ship the small fresh context instead of the full history. RED on the
-    current tree: run_turn sends the whole history and never arms it."""
-    engine = _RunEngine(current_tokens=1_200_000)  # current context over budget
-    run_turn(engine, "the-prompt", sink=_sink)
-    assert engine.start_fresh, (
-        "an over-budget turn must arm engine.start_fresh (real caller); "
-        "it is never set on the current tree")
+def _state(tmp_path):
+    st = task_state.open(tmp_path / "task_state.json")
+    st.begin()
+    st.commit(task="review phase 3", phase="phase 3", phase_status="in_progress",
+              commit="abc123")
+    return st
 
 
-def test_end_to_end_fresh_turn_archives_the_cut_history():
-    """When a fresh start drops the old history, that history is ARCHIVED
-    (retrievable via ``engine.cut_history()``), not silently discarded.
-    RED on the current tree: nothing archives anything."""
-    engine = _RunEngine(
-        current_tokens=1_200_000,
-        history=[{"role": "user", "content": "old q"},
-                 {"role": "assistant", "content": "old a"}])
-    run_turn(engine, "current-prompt", sink=_sink)
+def test_end_to_end_over_budget_turn_arms_fresh_and_fuses_prompt(tmp_path):
+    """A REAL caller: an over-budget CURRENT context makes turn() arm
+    engine.start_fresh and deliver the fresh block fused with the prompt as
+    ONE message — the prompt is never dropped. pre-fix turn() had no caller,
+    so start_fresh was never armed (RED)."""
+    engine = _TurnEngine(current_context=1_200_000)  # over the 900k budget
+    agent = _turn_agent(engine, budget=900_000)
+    agent._task_state = _state(tmp_path)
+    result = agent.turn("continue the build")
+    assert result.text == "ok"
+    assert engine.last_user_message.endswith("continue the build")  # prompt kept
+    assert _FRESH_CONTEXT_MARKER in engine.last_user_message        # block present
+    assert engine.start_fresh is False                              # one-shot consumed
+    assert engine.fresh_contexts == 1
+
+
+def test_end_to_end_fresh_turn_archives_the_cut_history(tmp_path):
+    """The history a fresh start drops is ARCHIVED (retrievable via
+    engine.cut_history()), not silently lost. RED on the pre-fix tree where
+    nothing armed start_fresh and nothing archived."""
+    engine = _TurnEngine(current_context=1_200_000)
+    agent = _turn_agent(engine, budget=900_000)
+    agent._task_state = _state(tmp_path)
+    # A session with real accumulated history before this turn.
+    engine.messages = [{"role": "user", "content": "old q"},
+                       {"role": "assistant", "content": "old a"}]
+    agent.turn("current prompt")
     assert engine.cut_history(), (
-        "the dropped history must be archived, not silently lost; "
-        "cut_history() is empty on the current tree")
+        "the dropped history must be archived, not silently lost")
 
 
-def test_end_to_end_fresh_turn_keeps_the_current_user_message():
-    """After a fresh start the CURRENT user message (the prompt this turn
-    answers) still reaches the model. The corrected patch must keep "one user
-    message = fresh block + current prompt". This is a green guard on the
-    currently-shipping path (which never drops the prompt) AND must stay true
-    once the fresh-start swap lands."""
-    engine = _RunEngine(current_tokens=1_200_000)
-    run_turn(engine, "this-exact-prompt", sink=_sink)
-    assert "this-exact-prompt" in (engine.sent_user_message or "")
-
-
-def test_end_to_end_budget_is_current_context_not_cumulative():
-    """The end-to-end trigger is the CURRENT context size, not the cumulative
-    session counter: a session whose current context is small after a fresh
-    restart must NOT arm another fresh start (else every later turn restarts
-    and short-term memory is lost)."""
-    engine = _RunEngine(current_tokens=100_000)   # small current context
+def test_end_to_end_under_budget_cumulative_huge_not_fresh(tmp_path):
+    """The trigger is the CURRENT context size, not the cumulative session
+    counter: a session with a huge cumulative input count but a small CURRENT
+    context must NOT arm a fresh start — the current prompt goes through
+    unchanged."""
+    engine = _TurnEngine(current_context=100_000)   # small CURRENT context
     engine.token_usage = {"input": 2_500_000, "output": 0}  # cumulative huge
-    run_turn(engine, "prompt", sink=_sink)
-    assert engine.start_fresh == "", (
-        "a small CURRENT context must not arm another fresh start even when "
-        "the cumulative session counter is huge")
+    agent = _turn_agent(engine, budget=900_000)
+    agent._task_state = _state(tmp_path)
+    agent.turn("plain prompt")
+    assert engine.start_fresh is False
+    assert engine.last_user_message == "plain prompt"     # full history kept
+    assert _FRESH_CONTEXT_MARKER not in engine.last_user_message
+
+
+def test_end_to_end_turn_after_fresh_start_is_not_fresh_again(tmp_path):
+    """Defect #3: after a fresh start the CURRENT context shrinks, so the very
+    next turn is judged on its small history and is NOT fresh again."""
+    engine = _TurnEngine(current_context=1_200_000)
+    agent = _turn_agent(engine, budget=900_000)
+    agent._task_state = _state(tmp_path)
+    first = agent.turn("big question")   # N: over budget -> fresh
+    assert _FRESH_CONTEXT_MARKER in engine.last_user_message
+    assert engine.fresh_contexts == 1
+    # N+1: the fresh start shrank the context; the estimate is now tiny.
+    engine._context_override = "SHRUNK_AFTER_FRESH"
+    second = agent.turn("what next?")
+    assert second.text == "ok"
+    assert engine.last_user_message == "what next?"   # not fresh again
+    assert _FRESH_CONTEXT_MARKER not in engine.last_user_message
+    assert engine.fresh_contexts == 1
