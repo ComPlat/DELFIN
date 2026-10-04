@@ -725,6 +725,11 @@ class TerminalAgent:
         self.engine = engine
         self.broker = broker
         self.opts = opts or ReplOptions()
+        try:
+            # The name `delfin-agent pause <session>` reaches this engine by.
+            engine.pause_key = str(getattr(self.opts, "session_name", "") or "").strip()
+        except Exception:
+            pass
         self.out = out if out is not None else sys.stdout
         self.err = err if err is not None else sys.stderr
         self.transcript = Transcript(
@@ -2144,6 +2149,36 @@ class TerminalAgent:
         except Exception:
             pass
 
+    #: Follow-up turns for "announced but not done" in a row, before the
+    #: session waits for real input again (wave-12: sessions sat idle after
+    #: "Let me …"; a cap keeps a model that only ever announces from looping).
+    _ANNOUNCE_FOLLOWUP_CAP = 3
+
+    def _continue_after_announcement(self) -> str:
+        """The engine's pending follow-up note, at most _ANNOUNCE_FOLLOWUP_CAP
+        times in a row; "" when there is none, the cap is reached or the
+        session is paused. Consumes the note either way. Never raises."""
+        engine = getattr(self, "engine", None)
+        note = str(getattr(engine, "pending_turn_continuation", "") or "")
+        try:
+            if engine is not None and hasattr(engine, "clear_turn_continuation"):
+                engine.clear_turn_continuation()
+        except Exception:
+            pass
+        if not note:
+            return ""
+        try:
+            from . import session_pause as _sp
+            if _sp.wake_blocked(self._presence_key()):
+                return ""
+        except Exception:
+            pass
+        done = int(getattr(self, "_announce_followups", 0) or 0)
+        if done >= self._ANNOUNCE_FOLLOWUP_CAP:
+            return ""
+        self._announce_followups = done + 1
+        return note
+
     def run(self, first_prompt: str = "") -> int:
         from . import repl_keys as rk
 
@@ -2236,10 +2271,15 @@ class TerminalAgent:
                 # AT it, has its own continuation -- one that waits out
                 # the outage first. An error turn never also ends at
                 # length, so the two continuations never stack.
+                # A turn from real input (the user, a wake) re-arms the cap
+                # on announced-work follow-ups.
+                self._announce_followups = 0
                 continuation = self._continue_after_length(pending_prompt)
                 if not continuation:
                     continuation = (
                         self._continue_after_endpoint_failure())
+                if not continuation:
+                    continuation = self._continue_after_announcement()
                 while continuation:
                     self._show_user_input(continuation, queued=True)
                     self._checkpoint_session()
@@ -2258,6 +2298,8 @@ class TerminalAgent:
                     if not continuation:
                         continuation = (
                             self._continue_after_endpoint_failure())
+                    if not continuation:
+                        continuation = self._continue_after_announcement()
                 pending = ""
         except rk.TerminalLeft as left:
             # Whatever the session was doing -- at the prompt, in a turn,
@@ -2941,6 +2983,18 @@ class TerminalAgent:
         it, and the prompt is the thing the user is standing at.
         """
         import time as _time
+
+        # Wave-12 finding 2 / phase 4: a paused session must not be woken.
+        # The pause flag (session_pause) is checked here, on the shared wake
+        # path, so no job end and no partner message starts a turn while it
+        # is set. Same "never raises" rule: a flag read that throws just
+        # reads as NOT paused.
+        try:
+            from . import session_pause as _sp
+            if _sp.wake_blocked(self._presence_key()):
+                return ""
+        except Exception:
+            pass
 
         if typed.strip():
             return ""

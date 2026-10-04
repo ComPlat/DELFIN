@@ -2725,6 +2725,24 @@ def _print_stop_all_check(report: dict) -> int:
     return 0
 
 
+def cmd_pause(args: argparse.Namespace) -> int:
+    """Pause one session (see ``session_pause``). It takes effect at the
+    session's next tool call; nothing else is touched."""
+    from . import session_pause
+    session_pause.pause(args.session, args.reason or "delfin-agent pause")
+    print(f"paused {args.session}: it stops at its next tool call; "
+          f"resume with: delfin-agent resume {args.session}")
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    """Lift a pause set by ``delfin-agent pause``."""
+    from . import session_pause
+    was = session_pause.resume(args.session)
+    print(f"resumed {args.session}" if was else f"{args.session} was not paused")
+    return 0
+
+
 def cmd_stop_all(args: argparse.Namespace) -> int:
     """The emergency stop: end every agent of this user on every login node.
 
@@ -3892,6 +3910,17 @@ def build_parser() -> argparse.ArgumentParser:
     stop_all_p.add_argument("--reason", default="",
                             help="Recorded with the stop")
     stop_all_p.set_defaults(func=cmd_stop_all)
+
+    pause_p = sub.add_parser(
+        "pause",
+        help="Pause one session by its -n name: it stops at the next tool "
+             "call, starts no new turn and is not woken until resumed")
+    pause_p.add_argument("session", help="The session's -n name")
+    pause_p.add_argument("--reason", default="", help="Recorded with the pause")
+    pause_p.set_defaults(func=cmd_pause)
+    resume_p = sub.add_parser("resume", help="Resume a paused session")
+    resume_p.add_argument("session", help="The session's -n name")
+    resume_p.set_defaults(func=cmd_resume)
 
     # doctor — aggregate prerequisite health report
     doctor = sub.add_parser(

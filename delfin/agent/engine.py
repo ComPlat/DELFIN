@@ -394,6 +394,16 @@ class AgentEngine:
         DELFIN_AGENT_LITE mode (default: ``"quick"``).
     """
 
+    #: One pending follow-up note for a turn that announced work it did not
+    #: do (see _note_turn_continuation); "" when none. Class defaults so an
+    #: engine built without __init__ (tests, restored sessions) still has them.
+    pending_turn_continuation: str = ""
+    _continuation_fired: bool = False
+    #: The address `delfin-agent pause <session>` uses (the -n name, set by
+    #: the terminal). Empty: this engine cannot be paused by name.
+    pause_key: str = ""
+
+
     def __init__(
         self,
         repo_dir: Path,
@@ -2967,6 +2977,11 @@ class AgentEngine:
                         event.tool_name, event.tool_input)
                     if on_tool_use:
                         on_tool_use(event.tool_name, event.tool_input)
+                    # `delfin-agent pause <session>`: stop at the next tool
+                    # boundary through the ordinary stop path, so the turn
+                    # ends cleanly and the history stays whole. Signals do
+                    # not reach a supervised agent; this flag does.
+                    self._honour_pause()
 
                 elif event.type == "tool_result":
                     if on_tool_result and event.tool_output:
@@ -3498,6 +3513,15 @@ class AgentEngine:
                     thinking_budget=thinking_budget,
                     max_tokens=max_tokens,
                 )
+            # A turn that ends by announcing work ("Let me write X …") while
+            # tasks stay open leaves the session idle until someone pokes it
+            # -- in supervised waves that happened dozens of times a day. The
+            # detector (turn_continuation) decides; this records ONE pending
+            # follow-up note for the caller. _continuation_fired is a session
+            # latch, re-armed only by clear_turn_continuation(), so this
+            # block alone can never loop; the caller additionally caps how
+            # many follow-ups run in a row.
+            self._note_turn_continuation(full_response)
         elif self._stop_requested:
             # Stop before any answer text — during thinking, or before the
             # first token. The message appended at the top of this turn has
@@ -6224,6 +6248,59 @@ class AgentEngine:
             return max(0.0, float(v))
         except Exception:
             return 50.0
+
+    def _open_task_count(self) -> int:
+        """Open (pending / in-progress / blocked) tasks of this session's
+        store; 0 when there is no store or it cannot be read."""
+        try:
+            from delfin.agent.agent_tasks import (
+                OPEN_STATUSES, get_store, resolve_session_scope,
+            )
+            perms = self.kit_permissions
+            if perms is None:
+                return 0
+            tasks = get_store(perms.workspace).list(
+                session_id=resolve_session_scope(
+                    getattr(perms, "task_session_id", "")))
+            return sum(1 for t in tasks or []
+                       if t.get("status") in OPEN_STATUSES)
+        except Exception:
+            return 0
+
+    def _note_turn_continuation(self, answer: str) -> None:
+        """Record one follow-up note when *answer* announces work that it did
+        not do while tasks stay open. Never raises; the latch keeps it to one
+        pending note until the caller calls clear_turn_continuation()."""
+        if not answer or self._continuation_fired:
+            return
+        try:
+            from delfin.agent.turn_continuation import should_continue
+            cont, note = should_continue(answer, self._open_task_count())
+        except Exception:
+            return
+        if cont and note:
+            self._continuation_fired = True
+            self.pending_turn_continuation = note
+
+    def _honour_pause(self) -> bool:
+        """Request a stop when ``delfin-agent pause`` flagged this session.
+        True when it did. Never raises."""
+        if not self.pause_key:
+            return False
+        try:
+            from . import session_pause as _sp
+            if not _sp.pause_gate(self.pause_key):
+                self.request_stop()
+                return True
+        except Exception:
+            pass
+        return False
+
+    def clear_turn_continuation(self) -> None:
+        """Drop the pending note and re-arm the latch. The caller calls this
+        after it has run the follow-up turn (or decided not to)."""
+        self.pending_turn_continuation = ""
+        self._continuation_fired = False
 
     def reset_cycle(
         self,
