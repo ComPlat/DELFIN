@@ -22,6 +22,62 @@ _DIR = Path.home() / ".delfin" / "session_inbox"
 _MAX_TEXT = 4000
 # At most this many messages reach one prompt; older ones are counted, not read.
 _MAX_TAKE = 20
+# The operator is always reachable: a reserved mailbox, no presence needed. A
+# message to it is queued until a session opens under this key (waves 11/12:
+# it was refused with "no other open session 'operator'" unless a heartbeat
+# process faked presence).
+_RESERVED = ("operator",)
+
+
+def _known_key(key: str) -> bool:
+    """Whether ``key`` names a session that exists (or has existed).
+
+    A presence record that is stale still names a real session -- one that has
+    closed or is mid-restart -- and a recipient that has an inbox has received
+    before. Either marks the address as known, so a message to a closed
+    session queues for its next start instead of being refused.
+    Order matters: a presence record may be reaped (deleted) by a check of
+    open_sessions (its `_reap` drops same-host stale records), so look for the
+    key's record file before asking whether it is open."""
+    if key == "operator":
+        return True
+    if _inbox(key).exists():
+        return True
+    try:
+        from . import session_presence as P
+        # A record file (alive or stale) names a real session. Look before
+        # open_sessions() runs `_reap`, which deletes same-host stale records.
+        record = P._path(key)
+        if record.exists():
+            try:
+                data = json.loads(record.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            if isinstance(data, dict) and data.get("key") == key:
+                return True
+        for record in P.open_sessions():
+            if record.get("key") == key:
+                return True
+    except Exception:
+        return _inbox(key).exists()
+    return False
+
+
+def deliverable(to_key: str) -> bool:
+    """Can a message be left for session ``to_key`` -- queued until it takes
+    it, rather than refused as "no other open session"?
+
+    The operator is always deliverable (a reserved mailbox). A session that is
+    known -- announced, stale-but-recorded, or already holding an inbox -- is
+    deliverable even while closed: the message waits and is picked up on its
+    next start. An address that is neither reserved nor known is a typo and is
+    refused."""
+    to_key = str(to_key or "").strip()
+    if not to_key:
+        return False
+    if to_key.lower() in _RESERVED:
+        return True
+    return _known_key(to_key)
 
 
 def _inbox(key: str) -> Path:
