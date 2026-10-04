@@ -73,3 +73,15 @@ def test_gibberish_is_not_deliverable(tmp_path):
     """An address that is neither reserved, announced nor has an inbox is
     unknown — a typo — and is refused rather than queued forever."""
     assert M.deliverable("no-such-session-xyz") is False
+
+
+def test_reserved_mailbox_case_variant_reads_the_same_inbox(tmp_path):
+    """The reserved check is case-insensitive (deliverable('OPERATOR') is True),
+    so a case-variant address must write and read the SAME mailbox file. Without
+    this, send('OPERATOR') writes OPERATOR.jsonl while take('operator') reads
+    operator.jsonl and the message is silently dropped (reviewer finding B)."""
+    assert M.deliverable("OPERATOR") is True
+    sent = M.send("OPERATOR", "case-variant queued", from_key="nacht-s16")
+    assert sent["to"] == "OPERATOR"
+    (msg,) = M.take("operator")
+    assert msg["text"] == "case-variant queued"

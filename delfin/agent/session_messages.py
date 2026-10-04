@@ -80,7 +80,22 @@ def deliverable(to_key: str) -> bool:
     return _known_key(to_key)
 
 
+def _reserved_canonical(key: str) -> str:
+    """The one mailbox every case-variant of a reserved address shares.
+
+    deliverable() is case-insensitive for a reserved mailbox
+    (deliverable('OPERATOR') is True, lower() against _RESERVED), so a
+    case-variant send must write the SAME file a read by its canonical key
+    opens. Without this, send('OPERATOR') writes OPERATOR.jsonl while
+    take('operator') reads operator.jsonl and the message is dropped."""
+    low = str(key).lower()
+    if low in _RESERVED:
+        return low
+    return str(key)
+
+
 def _inbox(key: str) -> Path:
+    key = _reserved_canonical(key)
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in key)[:80]
     return _DIR / f"{safe}.jsonl"
 
