@@ -2280,7 +2280,10 @@ class TerminalAgent:
                         self._continue_after_endpoint_failure())
                 if not continuation:
                     continuation = self._continue_after_announcement()
-                while continuation:
+                # A line typed during the turn -- above all /exit from the
+                # user or a supervisor -- goes before every automatic
+                # follow-up; the continuation is dropped, not deferred.
+                while continuation and not self.queued:
                     self._show_user_input(continuation, queued=True)
                     self._checkpoint_session()
                     # A continued turn is a turn: the third Ctrl+C
