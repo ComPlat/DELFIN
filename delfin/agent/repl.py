@@ -2951,16 +2951,19 @@ class TerminalAgent:
         whether a real read would block. When nothing is ready it hands the
         throttled message check (_wake_text) the idle time instead, so an
         incoming session_message starts a turn even on the readline path.
-        Never raises: a select that throws just reads as "not ready", and
-        the fallback keeps the old blocking behaviour rather than crashing
-        at the prompt.
+        Never raises. A reader that is not this terminal's own input (a
+        test or a script hands one in), or a stdin select cannot watch,
+        reads as "ready": the blocking read is the old behaviour, whereas
+        "not ready" there would poll forever without ever reading.
         """
+        if getattr(self, "_read_line", None) != getattr(self, "_input", None):
+            return True
         try:
             import select
             r, _, _ = select.select([self._stdin], [], [], 0)
             return bool(r)
         except Exception:
-            return False
+            return True
 
     def _wake_text(self, typed: str) -> str:
         """The message a job that finished hands an idle prompt, or "".
