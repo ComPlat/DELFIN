@@ -106,9 +106,21 @@ def test_operator_is_STILL_refused_by_the_end_user_path_after_phase2(tmp_path):
     assert out.get("status") == "sent"
 
 
+@pytest.mark.skip(reason=(
+    "PARKED follow-up per the T3 wave-scope ruling (QS s26 / Operator): the "
+    "withdraw-tombstone write side is NOT part of the three in-scope T3 phases. "
+    "A gracefully withdrawn session is intentionally non-deliverable this wave; "
+    "the tombstone design (session_presence.withdraw writes a bounded tombstone "
+    "instead of unlinking the record, read by session_messages._known_key) is "
+    "tracked as .gate/t3_withdraw.patch follow-up. Re-enable when that lands."))
 def test_queued_to_known_but_closed_session_is_delivered_on_next_start(tmp_path):
     """A message to a known-but-closed session queues and is delivered on its
-    next start (take), instead of being lost. Phase-2 promise."""
+    next start (take), instead of being lost. Phase-2 promise.
+
+    Parked: a session that calls withdraw() (clean close) has its presence
+    record unlinked (session_presence.py:111), so _known_key sees neither
+    record nor inbox and the end-user path still refuses it. Confirmed real by
+    s16; ruled OUT of this wave's scope. See the skip reason."""
     P.announce("nacht-s12", title="t", workspace=str(tmp_path))
     P.withdraw("nacht-s12")  # closed: presence withdrawn, not open
     out = json.loads(_call_session_message("nacht-s12", "wake me", "reviewer",
