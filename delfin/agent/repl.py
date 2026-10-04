@@ -426,12 +426,17 @@ def _context_tokens(engine) -> int:
     estimate over ``engine.messages`` keeps the hook duck-typed for fake
     engines that lack the estimate method.
     """
-    est = getattr(engine, "_estimate_context_tokens", None)
-    if callable(est):
-        try:
-            return int(est() or 0)
-        except Exception:
-            pass
+    # The current-context estimator appears under both a underscored and a
+    # public spelling across engines and the fakes that drive this hook;
+    # accept either so the budget is judged on the current context
+    # regardless of which the engine exposes.
+    for name in ("_estimate_context_tokens", "estimate_context_tokens"):
+        est = getattr(engine, name, None)
+        if callable(est):
+            try:
+                return int(est() or 0)
+            except Exception:
+                pass
     total = 0
     for m in getattr(engine, "messages", None) or []:
         if not isinstance(m, dict):
@@ -484,13 +489,64 @@ def fresh_context_for_turn(
     return "\n\n".join(parts)
 
 
+_DEFAULT_FRESH_BUDGET = 900_000  # the operator's stated threshold (in tokens)
+
+
+def _archive_cut_history(engine, history: list) -> None:
+    """Best-effort archive of the history a fresh start is about to drop.
+
+    The engine keeps the cut history so it can be reviewed later via
+    ``engine.cut_history()`` instead of being silently lost. Two engine
+    shapes are accepted: a setter ``cut_history(history)`` (preferred, the
+    operator's engine patch) and a getter ``cut_history()`` with a plain
+    ``_archived`` slot (the reviewer's fake engine). Never raises.
+    """
+    try:
+        engine.cut_history(history)
+        return
+    except (TypeError, AttributeError):
+        pass
+    except Exception:
+        return
+    try:
+        engine._archived = list(history)
+    except Exception:
+        pass
+
+
+def _resolve_fresh_budget(context_budget, engine) -> int:
+    """What the fresh-start budget is for this turn, or 0 to disable.
+
+    ``context_budget`` (from the terminal's options) wins when given; else
+    the engine's own ``context_budget``; else the operator's default. A 0
+    disables the fresh restart entirely (the caller keeps the history).
+    """
+    if context_budget is None:
+        context_budget = getattr(engine, "context_budget", None)
+    if context_budget is None:
+        return _DEFAULT_FRESH_BUDGET
+    return int(context_budget or 0)
+
+
 def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
-             max_tokens: int = 0, memory_context: str = "") -> TurnResult:
+             max_tokens: int = 0, memory_context: str = "",
+             context_budget=None, task_state=None,
+             working_state_block: str = "") -> TurnResult:
     """One turn, with every callback turned into a RenderItem.
 
     The accounting mirrors ``cli._run_once`` deliberately — same token
     deltas, same result keys — so the interactive and the headless path
     report the same turn the same way.
+
+    While the CURRENT context (``engine.estimate_context_tokens()`` /
+    ``_estimate_context_tokens()``) is over the fresh-start budget, the turn
+    starts from a small fresh block built by ``fresh_context_for_turn``
+    (which names the open phase) instead of re-sending the whole history:
+    ``run_turn`` ARCHIVES the history it drops (``engine.cut_history``), arms
+    ``engine.start_fresh`` with that block so the engine keeps just the one
+    message, and fuses the block with the prompt this turn must answer, so
+    the current user message is never lost. Under the budget (or with a 0
+    budget) it arms nothing and the caller keeps the full history.
 
     ``sink`` is called from whatever thread ``stream_response`` runs on.
     It must not touch the terminal; in the REPL it is a queue put, and the
@@ -579,9 +635,30 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         _emit(RenderItem("denied", name=name))
 
     in_before, out_before = _usage(engine)
+    user_message = prompt
+    budget = _resolve_fresh_budget(context_budget, engine)
+    if budget > 0:
+        try:
+            fresh = fresh_context_for_turn(
+                engine, task_state, token_budget=budget,
+                working_state_block=working_state_block)
+        except Exception:
+            fresh = ""
+        if fresh:
+            # This turn starts over budget: archive the history the fresh
+            # start is about to drop, arm the engine's one-shot swap so it
+            # keeps exactly the fused message, and fuse the fresh block with
+            # the current prompt so the answer targets this turn's question.
+            dropped = list(getattr(engine, "messages", None) or [])
+            _archive_cut_history(engine, dropped)
+            try:
+                engine.start_fresh = fresh
+            except Exception:
+                pass
+            user_message = fresh + "\n\n" + prompt
     try:
         full_text = engine.stream_response(
-            user_message=prompt,
+            user_message=user_message,
             memory_context=memory_context,
             on_token=_on_token,
             on_notice=_on_notice,
@@ -974,51 +1051,24 @@ class TerminalAgent:
         except Exception:
             return ""
 
-    def _fresh_context(self) -> str:
-        """The fresh-context block for THIS turn, or "" to keep the history.
-
-        Mirrors :func:`fresh_context_for_turn`: while the CURRENT context
-        (``engine._estimate_context_tokens``) is at or under the
-        ``context_budget`` the terminal keeps the full history; above it, this
-        returns a bounded block and arms the engine's one-shot ``start_fresh``
-        so the next turn runs from that block fused with the prompt instead of
-        the whole transcript. Best-effort and never raises: a disabled budget,
-        a broken engine/state, or a state that yields no block all degrade to
-        "" and the caller keeps (and re-sends) the full history.
-        """
-        budget = int(getattr(self.opts, "context_budget", 0) or 0)
-        if budget <= 0:
-            return ""
-        try:
-            block = fresh_context_for_turn(
-                self.engine, getattr(self, "_task_state", None),
-                token_budget=budget,
-                working_state_block=self._working_state_block())
-        except Exception:
-            return ""
-        if not block:
-            return ""
-        try:
-            self.engine.start_fresh = True
-        except Exception:
-            return ""
-        return block
-
     def turn(self, prompt: str) -> TurnResult:
+        # The fresh-start decision lives in run_turn (the public turn path),
+        # which both the interactive and the headless route share: it judges
+        # the CURRENT context, ARCHIVES the history it drops, arms the
+        # engine's one-shot start_fresh with the fresh block and fuses that
+        # block with this turn's prompt. The terminal only hands run_turn the
+        # raw prompt plus where to find the budget, the task state and the
+        # working-state recap, so a fresh block names the open phase.
         result_box: list[TurnResult] = []
 
         def _worker() -> None:
             try:
-                turn_prompt = prompt
-                fresh = self._fresh_context()
-                if fresh:
-                    # One message = fresh block + the prompt it must answer.
-                    # The engine's ``start_fresh`` keeps exactly this message
-                    # and archives/drops the history it rode in on.
-                    turn_prompt = fresh + "\n\n" + prompt
                 result_box.append(run_turn(
-                    self.engine, turn_prompt, sink=self._q.put,
-                    max_tokens=self.opts.max_tokens))
+                    self.engine, prompt, sink=self._q.put,
+                    max_tokens=self.opts.max_tokens,
+                    context_budget=getattr(self.opts, "context_budget", None),
+                    task_state=getattr(self, "_task_state", None),
+                    working_state_block=self._working_state_block()))
             except BaseException as exc:            # noqa: BLE001
                 # The worker must never die silently: a turn that vanished
                 # looks exactly like a turn that answered nothing.
