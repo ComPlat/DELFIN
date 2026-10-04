@@ -44,6 +44,7 @@ _KINDS = {
     "self_mod":       ("🛡", "Self-modification guarded"),
     "calc_edit":      ("🧪", "Stored-calculation edit"),
     "read_only_write": ("📕", "Write into a read-only location"),
+    "out_of_write_scope": ("📐", "Write outside the repo's write scope"),
     "outside_ws":     ("📁", "Outside-workspace access"),
     "denied_by_user": ("✋", "User denied"),
     "denied_again":   ("🚫", "Refusal circumvented"),
