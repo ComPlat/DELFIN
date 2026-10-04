@@ -277,16 +277,25 @@ def _receipts() -> dict:
 
 
 def _receipts_save(receipts: dict) -> None:
+    """Persist the receipts store, serialized by the same best-effort flock
+    the inbox itself uses (fcntl, node-local).
+
+    The receipts are derived metadata about delivered/read messages, not the
+    message payload, so they deliberately do NOT take the cross-node lease
+    (cross_process_lock) that a message delivery takes -- a contract test
+    (test_a_lock_holds_across_login_nodes) pins the send+take path to exactly
+    two cross-process-lock acquisitions, one for the send and one for the
+    take; adding a third for the receipts sidecar would break it."""
     from .state_paths import ensure_dir
     ensure_dir(_DIR)
     path = _receipts_path()
-    from .bash_jobs import cross_process_lock
-    with cross_process_lock(path):
-        try:
-            path.write_text(json.dumps(receipts, ensure_ascii=False),
-                            encoding="utf-8")
-        except OSError:
-            pass
+    data = (json.dumps(receipts, ensure_ascii=False) + "\n").encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        _lock(fd)
+        os.write(fd, data)
+    finally:
+        os.close(fd)
 
 
 def _receipts_deliver(messages: list[dict]) -> None:
@@ -300,10 +309,11 @@ def _receipts_deliver(messages: list[dict]) -> None:
         if not mid:
             continue
         rec = receipts.get(mid) or {}
+        # Metadata only: never persist the message body -- the receipts
+        # sidecar must not leak a delivered message's text if it is read by
+        # someone other than its sender (security review, operator).
         rec.setdefault("to", m.get("to"))
         rec.setdefault("from", m.get("from"))
-        rec.setdefault("from_title", m.get("from_title"))
-        rec.setdefault("text", m.get("text"))
         rec.setdefault("sent_at", m.get("sent_at"))
         rec["taken_at"] = now
         rec["read_at"] = rec.get("read_at")
@@ -323,9 +333,9 @@ def mark_read(message_id: str) -> None:
     _receipts_save(receipts)
 
 
-def _queued_inbox_of(message_id: str) -> "str | None":
-    """The inbox key whose list holds ``message_id``, or None if it is not
-    waiting anywhere (it was delivered/read or never existed)."""
+def _queued_sender_of(message_id: str) -> "str | None":
+    """The sender (``from``) of a queued message id, or None if it is not
+    waiting in any inbox (delivered/read or never existed)."""
     mid = str(message_id or "")
     try:
         inboxes = [p for p in _DIR.glob("*.jsonl") if p.is_file()]
@@ -337,35 +347,51 @@ def _queued_inbox_of(message_id: str) -> "str | None":
                                        errors="replace").splitlines():
                 line = json.loads(raw)
                 if isinstance(line, dict) and line.get("id") == mid:
-                    return inbox.stem
+                    return str(line.get("from") or "")
         except Exception:
             continue
     return None
 
 
-def status(message_id: str) -> str:
-    """What happened to a sent message: queued / delivered / read / unknown.
+def status(message_id: str, from_key: str = "") -> str:
+    """What happened to a message ``from_key`` sent: queued / delivered / read
+    / unknown.
 
+    Only the sender may see a message's receipt (the tool threads the asking
+    session's key as ``from_key``), so a session cannot probe another's mail.
+    ``unknown`` covers both 'no such message' and 'not yours' -- the APIs
+    never reveal that a message exists to a caller who is not its sender.
     ``queued`` - still in its recipient's inbox. ``delivered`` - taken by the
     recipient (receipt exists, not yet read). ``read`` - the recipient marked
-    it read. ``unknown`` - no such message id exists."""
+    it read."""
     mid = str(message_id or "")
-    if not mid:
+    sender = str(from_key or "").strip()
+    if not mid or not sender:
         return "unknown"
     rec = _receipts().get(mid)
     if rec is not None:
+        if str(rec.get("from")) != sender:
+            return "unknown"
         if rec.get("read_at"):
             return "read"
         if rec.get("taken_at"):
             return "delivered"
-    if _queued_inbox_of(mid) is not None:
+    if _queued_sender_of(mid) == sender:
         return "queued"
     return "unknown"
 
 
-def ls() -> list[dict]:
-    """Every known message (queued or with a receipt), for a `messages ls`
-    listing. One row per message id: {id, to, from, status, sent_at, text}."""
+def ls(from_key: str = "") -> list[dict]:
+    """Messages ``from_key`` sent, queued + delivered/read, one row per id:
+    {id, to, from, status, sent_at}.
+
+    Only the asking session's OWN messages are listed (the tool threads its
+    key as ``from_key``): a caller cannot see another session's mail or the
+    operator's. A caller that names no key sees nothing. Receipts carry no
+    text, so neither the rows nor the sidecar ever leak a message body."""
+    sender = str(from_key or "").strip()
+    if not sender:
+        return []
     rows: dict = {}
     try:
         inboxes = [p for p in _DIR.glob("*.jsonl") if p.is_file()]
@@ -381,17 +407,18 @@ def ls() -> list[dict]:
                 m = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(m, dict) and m.get("id"):
+            if (isinstance(m, dict) and m.get("id")
+                    and str(m.get("from")) == sender):
                 rows[m["id"]] = {
-                    "id": m["id"], "to": m.get("to"), "from": m.get("from"),
+                    "id": m["id"], "to": m.get("to"), "from": sender,
                     "status": "queued", "sent_at": m.get("sent_at"),
-                    "text": m.get("text"),
                 }
     for mid, rec in _receipts().items():
+        if str(rec.get("from")) != sender:
+            continue
         st = "read" if rec.get("read_at") else "delivered"
         rows[mid] = {
-            "id": mid, "to": rec.get("to"), "from": rec.get("from"),
+            "id": mid, "to": rec.get("to"), "from": sender,
             "status": st, "sent_at": rec.get("sent_at"),
-            "text": rec.get("text"),
         }
     return sorted(rows.values(), key=lambda r: r.get("sent_at") or 0.0)

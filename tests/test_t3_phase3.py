@@ -44,12 +44,12 @@ def test_send_returns_a_message_id(tmp_path):
 def test_status_is_queued_then_delivered_then_read(tmp_path):
     sent = M.send("nacht-s17", "do you have the hash?", from_key="nacht-s16")
     mid = sent["id"]
-    assert M.status(mid) == "queued"
+    assert M.status(mid, "nacht-s16") == "queued"
     (msg,) = M.take("nacht-s17")
     assert msg["id"] == mid
-    assert M.status(mid) == "delivered"
+    assert M.status(mid, "nacht-s16") == "delivered"
     M.mark_read(mid)
-    assert M.status(mid) == "read"
+    assert M.status(mid, "nacht-s16") == "read"
 
 
 def test_status_survives_the_inbox_being_taken(tmp_path):
@@ -58,24 +58,56 @@ def test_status_survives_the_inbox_being_taken(tmp_path):
     sent = M.send("nacht-s17", "heads-up", from_key="nacht-s16")
     mid = sent["id"]
     M.take("nacht-s17")
-    assert M.status(mid) == "delivered"
+    assert M.status(mid, "nacht-s16") == "delivered"
 
 
 def test_status_unknown_for_a_missing_id(tmp_path):
-    assert M.status("definitely-not-a-real-id") == "unknown"
+    assert M.status("definitely-not-a-real-id", "nacht-s16") == "unknown"
 
 
 def test_ls_lists_sent_and_delivered_messages(tmp_path):
     M.send("nacht-s17", "first", from_key="nacht-s16")
     M.send("nacht-s18", "second", from_key="nacht-s16")
-    rows = M.ls()
+    rows = M.ls("nacht-s16")
     assert {r["to"] for r in rows} == {"nacht-s17", "nacht-s18"}
     assert {r["status"] for r in rows} == {"queued"}
     M.take("nacht-s17")
-    by_to = {r["id"]: r["status"] for r in M.ls()}
-    delivered_ids = [i for i, s in by_to.items()
-                     if M.status(i) == "delivered"]
+    by_id = {r["id"]: r["status"] for r in M.ls("nacht-s16")}
+    delivered_ids = [i for i, s in by_id.items()
+                     if M.status(i, "nacht-s16") == "delivered"]
     assert delivered_ids, "delivered message is still listed, with a receipt"
+
+
+def test_ls_without_a_sender_sees_nothing(tmp_path):
+    """A caller that names no key sees nothing -- status and ls never leak a
+    message's existence to a caller who is not its sender."""
+    M.send("nacht-s17", "secret", from_key="nacht-s16")
+    mid = M.ls("nacht-s16")[0]["id"]
+    assert M.ls() == []
+    assert M.status(mid) == "unknown"
+    assert M.status(mid, "") == "unknown"
+
+
+def test_a_session_cannot_see_another_sessions_or_the_operators_mail(tmp_path):
+    """Security: session A must not learn about B's or the operator's
+    messages -- status(scoped to sender) returns unknown and ls(scoped to
+    sender) omits them, and no receipt record ever persists a message body."""
+    b_msg = M.send("nacht-s17", "B's secret to 17", from_key="nacht-s18")
+    op_msg = M.send("operator", "secret to the operator", from_key="nacht-s18")
+    # A asks status for B's and the operator's message ids:
+    assert M.status(b_msg["id"], "nacht-s16") == "unknown"
+    assert M.status(op_msg["id"], "nacht-s16") == "unknown"
+    assert M.status(op_msg["id"], "nacht-s18") in ("queued", "delivered")
+    # A's ls sees none of them:
+    assert [r["id"] for r in M.ls("nacht-s16")] == []
+    # B's own ls sees B's sent messages only (both messages B sent):
+    assert {r["id"] for r in M.ls("nacht-s18")} == {b_msg["id"], op_msg["id"]}
+    # And once delivered, no receipt ever stores the message body:
+    M.take("nacht-s17")
+    receipts = M._receipts()
+    if b_msg["id"] in receipts:
+        assert "text" not in receipts[b_msg["id"]]
+        assert "from_title" not in receipts[b_msg["id"]]
 
 
 def test_a_typo_inbox_ages_out_of_known(tmp_path):
