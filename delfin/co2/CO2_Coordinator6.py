@@ -741,10 +741,23 @@ def _resolve_substrate_anchor(atoms, metal_idx, substrate_symbol=None,
             )
         d = {i: float(np.linalg.norm(
             atoms.positions[i] - atoms.positions[metal_idx])) for i in candidates}
-        best = min(d, key=d.get)
-        close = [i for i, dist in d.items() if dist <= d[best] + 1.0]
+        # Only genuinely bonded atoms can be the substrate anchor. A candidate
+        # further away than ANCHOR_MAX_DISTANCE A from the metal is a ligand
+        # atom, not the coordinated substrate — it must never be picked, and it
+        # does not make the choice ambiguous either.
+        ANCHOR_MAX_DISTANCE = 2.5
+        bonded = {i: dist for i, dist in d.items() if dist <= ANCHOR_MAX_DISTANCE}
+        if not bonded:
+            listing = ", ".join(f"{i} ({d[i]:.2f} A)" for i in sorted(d, key=d.get)[:3])
+            raise ValueError(
+                f"substrate_atom={sym}: no {sym} atom within {ANCHOR_MAX_DISTANCE} A "
+                f"of the metal in '{source}' (closest: {listing}). "
+                "Set substrate_atom_index explicitly if this atom is the substrate anchor."
+            )
+        best = min(bonded, key=bonded.get)
+        close = [i for i, dist in bonded.items() if dist <= bonded[best] + 1.0]
         if len(close) > 1:
-            listing = ", ".join(f"{i} ({d[i]:.2f} A)" for i in sorted(close))
+            listing = ", ".join(f"{i} ({bonded[i]:.2f} A)" for i in sorted(close))
             raise ValueError(
                 f"substrate_atom={sym} is ambiguous: several {sym} atoms are "
                 f"equally close to the metal ({listing}). "
