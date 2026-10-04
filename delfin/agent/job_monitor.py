@@ -35,8 +35,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import time
+
+from delfin import scheduler_client
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -189,12 +190,21 @@ STATE_UNAVAILABLE = "UNAVAILABLE"
 
 
 def _default_run(cmd: list[str]) -> Optional[str]:
-    """Run a scheduler query. ``None`` means it could not be run at all."""
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        return out.stdout if out.returncode == 0 else None
-    except Exception:
-        return None
+    """Run a scheduler query, throttled through the shared scheduler client.
+
+    Every scheduler query the daemon issues goes through
+    :func:`delfin.scheduler_client.query`, the single process-wide gate
+    that lets a distinct query kind reach the scheduler at most once per
+    25 s and serves the shared cache while the gate is closed (wave-11
+    finding 1: idle terminals must not each hammer ``squeue``). ``None``
+    means the scheduler could not be run; :data:`scheduler_client.THROTTLED`
+    means the gate is closed for a not-yet-cached argv.
+    """
+    result = scheduler_client.query(
+        scheduler_client.kind_of_argv(cmd), list(cmd))
+    if result is scheduler_client.THROTTLED:
+        return None  # not asked — indistinguishable from "unavailable" here
+    return result  # type: ignore[return-value]
 
 
 def _parse_state_lines(text: Optional[str]) -> dict[str, str]:
