@@ -11337,6 +11337,29 @@ class _DocToolExecutor:
             except Exception:
                 pass
 
+        # T4 grounding: decide BEFORE dispatch whether this call is
+        # grounded (unknown tool name / missing-path near-miss). The hint
+        # is advisory - never blocks. known_tools is the REAL registered
+        # surface so a misspelled tool surfaces a no-such-tool hint
+        # instead of silently passing (check() returns None when
+        # known_tools is None, so we never leave it unpopulated).
+        _t4_hint = None
+        try:
+            from . import action_grounding as _ag
+            _known = set(_WRITE_TOOL_NAMES)
+            _known |= set(_DELFIN_ONLY_TOOL_NAMES)
+            _known |= {str(t.get("name") or (t.get("function") or {}).get("name") or "")
+                       for t in _DOC_TOOLS_OPENAI}
+            _known.discard("")
+            _hint = _ag.check(
+                name, arguments,
+                getattr(permissions, "workspace", None) or "",
+                known_tools=sorted(_known),
+            )
+            _t4_hint = _hint
+        except Exception:
+            pass
+
 
         # Settings-driven PreToolUse hooks (.delfin-native).
         # A blocking hook short-circuits dispatch and surfaces the
@@ -11541,6 +11564,24 @@ class _DocToolExecutor:
                         result = result.rstrip() + f"\n[heads-up] {_note}"
         except Exception:
             pass
+
+        # T4: a call that FAILED gets the grounding hint (no such tool /
+        # missing path, with the closest real one) inside its JSON error.
+        # Only on an error result: a working call -- a tool registered
+        # outside the static list, an MCP or skill tool -- is never told it
+        # does not exist. Advisory: never blocks, never throws.
+        if _t4_hint is not None:
+            try:
+                _obj = json.loads(result)
+                if isinstance(_obj, dict) and _obj.get("error"):
+                    _obj["grounding"] = {
+                        "grounding": _t4_hint.kind,
+                        "message": _t4_hint.message,
+                        "closest": _t4_hint.closest,
+                    }
+                    result = json.dumps(_obj)
+            except Exception:
+                pass
 
         return result
 
