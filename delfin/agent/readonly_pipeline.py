@@ -16,10 +16,16 @@ read-only" for those forms, conservatively:
   bash, sh, perl, xargs, eval, env, ...).
 
 The read-only command set is deliberately the intrinsically read-only
-core: commands that have no way to write or start a program on their
-own, so once the shell-level write channels are closed they are safe for
-ANY flags and arguments. ``sed`` and ``awk`` are left OUT (both can write
-or run code), as are ``find`` (``-delete``/``-exec``) -- conservative
+core. A command is admitted only when, once the shell-level write
+channels are closed, no flag or argument can make it write or run a
+program: ``sed``/``awk`` are left OUT (both can write or run code), as
+are ``find`` (``-delete``/``-exec``) and ``hostname`` (a positional name
+sets the host). Two admitted commands carry a write in a FLAG and are
+guarded, not trusted: ``sort -o/--output`` writes a file and
+``date -s/--set`` sets the clock, so a line holding that flag is refused.
+``git branch``/``git tag`` are admitted only in LIST form because the
+same subcommand also carries every write (``-d`` delete, ``-m`` move,
+``-a`` annotate, a bare name creates) -- refused otherwise. Conservative
 refusals are the direction this module is allowed to err in.
 """
 
@@ -32,13 +38,26 @@ import re
 #: to a file and command substitution are banned. ``env`` is excluded (it
 #: runs a program), as are sed/awk/find for the reasons in the module
 #: docstring, and ``xargs`` (runs its argument as a command).
+#: ``hostname`` is excluded: with a positional argument it SETS the host.
+#: ``sort``/``date`` are flagged below (``sort -o`` writes a file;
+#: ``date -s`` sets the clock).
 _INTRINSIC_READONLY = frozenset({
     "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep",
     "sort", "uniq", "cut", "tr", "file", "stat", "basename", "dirname",
     "realpath", "readlink", "echo", "printf", "seq", "pwd", "which",
-    "type", "ps", "pgrep", "date", "whoami", "hostname", "uname", "id",
+    "type", "ps", "pgrep", "date", "whoami", "uname", "id",
     "nl", "fold", "column", "uuidgen",
 })
+
+#: Flags that make a specific intrinsic command write (a file or a system
+#: side effect), so the command is NOT read-only when one is present.
+#: ``sort -o f`` / ``sort --output f`` / ``sort --output=f`` write a file;
+#: ``date -s`` / ``date --set`` set the clock. A write in the flag, like
+#: a write in a git subcommand, must never yield a read-only True.
+_WRITE_FLAG = {
+    "sort": frozenset({"-o", "--output"}),
+    "date": frozenset({"-s", "--set"}),
+}
 
 #: ``git`` subcommands that only read. Anything else (add, commit, push,
 #: checkout, reset, merge, ...) is a write or a history change and is
@@ -47,6 +66,22 @@ _READONLY_GIT = frozenset({
     "log", "show", "status", "diff", "rev-parse", "blame", "describe",
     "branch", "tag", "ls-files", "ls-tree", "name-rev", "shortlog",
     "count-objects", "reflog",
+})
+
+#: ``git`` subcommands that are read-only only in LIST form. ``branch`` and
+#: ``tag`` default to a listing query, but the same subcommand ALSO carries
+#: every write: ``-d``/``-D`` delete, ``-m``/``--move`` rename, ``-a``/
+#: ``-A``/``--annotate`` create/annotate, and a bare positional name
+#: creates one. So these are safe only when the rest of the line holds
+#: plain flags and none of them writes.
+_GIT_LIST_ONLY = frozenset({"branch", "tag"})
+
+#: These flags (and the ones below) make a ``git branch``/``git tag`` line
+#: write or history-changing, never read-only.
+_GIT_WRITE_FLAGS = frozenset({
+    "-d", "-D", "-m", "-M", "--move", "--delete", "-a", "-A", "-f",
+    "--force", "-e", "--edit", "--force-create", "--orphan",
+    "--rename", "--track",
 })
 
 #: A command that RUNS another command (or code), so it is never read-only
@@ -184,6 +219,44 @@ def _git_subcommand(segment: str) -> str:
     return ""
 
 
+def _git_line_safe(segment: str) -> bool:
+    """Read-only git? A read-only subcommand, and for the ``branch``/``tag``
+    subcommands (which ALSO carry every write) only the LIST form -- the
+    line after the subcommand holds plain flags and none of them writes.
+    ``git branch -d x``, ``git tag v1.0``, ``git branch -m a b`` are all
+    refused because a True here skips the confirm dialog.
+    """
+    text = _strip_quotes(segment)
+    m = _GIT_WORD.search(text)
+    if not m:
+        return False
+    rest = text[m.end():].split()
+    i = 0
+    while i < len(rest):
+        w = rest[i]
+        if w in ("-C", "--git-dir", "--work-tree", "--exec-path"):
+            i += 2
+            continue
+        if w.startswith("-"):
+            i += 1
+            continue
+        sub = w
+        break
+    else:
+        return False
+    if sub not in _READONLY_GIT:
+        return False
+    args = rest[i + 1:]
+    if sub not in _GIT_LIST_ONLY:
+        return True
+    for a in args:
+        if not a.startswith("-"):
+            return False
+        if a in _GIT_WRITE_FLAGS:
+            return False
+    return True
+
+
 def _segment_is_safe(segment: str) -> bool:
     """True when one pipeline/sequence segment is a read-only command.
 
@@ -204,10 +277,22 @@ def _segment_is_safe(segment: str) -> bool:
     if not cmd:
         return False
     if cmd == "git":
-        return _git_subcommand(segment) in _READONLY_GIT
+        return _git_line_safe(segment)
     if cmd in _RUNNERS:
         return False
-    return cmd in _INTRINSIC_READONLY
+    if cmd not in _INTRINSIC_READONLY:
+        return False
+    banned = _WRITE_FLAG.get(cmd)
+    if banned:
+        for tok in _strip_quotes(segment).split():
+            if tok in banned or _flag_base(tok) in banned:
+                return False
+    return True
+
+
+def _flag_base(tok: str) -> str:
+    """``--output=file`` -> ``--output`` so a value form matches its flag."""
+    return tok.split("=", 1)[0]
 
 
 def is_safe(cmd: str) -> bool:
