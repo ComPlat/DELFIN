@@ -2460,6 +2460,7 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         return 0
 
     if action == "show":
+        from . import approval_answers as _ansq
         for row in _fc.pending():
             if row.get("id") == args.request_id:
                 print(f"id      {row['id']}")
@@ -2469,7 +2470,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s"
                       f" of {int(row.get('timeout_s') or 0)}s")
                 print()
-                print(row.get("preview", ""))
+                body = _ansq.render_question(row)
+                print(body or row.get("preview", ""))
                 return 0
         from . import terminal_confirm as _tc
         for row in _tc.pending_at_terminals():
@@ -2482,7 +2484,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print("answer  here or at that session's terminal — "
                       "whichever comes first")
                 print()
-                print(row.get("preview", ""))
+                body = _ansq.render_question(row)
+                print(body or row.get("preview", ""))
                 return 0
         print(f"ERROR: nothing waiting with id {args.request_id!r}",
               file=sys.stderr)
