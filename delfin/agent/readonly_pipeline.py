@@ -43,7 +43,7 @@ import re
 #: ``date -s`` sets the clock).
 _INTRINSIC_READONLY = frozenset({
     "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep",
-    "sort", "uniq", "cut", "tr", "file", "stat", "basename", "dirname",
+    "sort", "uniq", "cut", "tr", "stat", "basename", "dirname",
     "realpath", "readlink", "echo", "printf", "seq", "pwd", "which",
     "type", "ps", "pgrep", "date", "whoami", "uname", "id",
     "nl", "fold", "column", "uuidgen",
@@ -56,7 +56,34 @@ _INTRINSIC_READONLY = frozenset({
 #: a write in a git subcommand, must never yield a read-only True.
 _WRITE_FLAG = {
     "sort": frozenset({"-o", "--output"}),
-    "date": frozenset({"-s", "--set"}),
+}
+
+#: ``sort`` is judged by an allow-list, not a deny-list: GNU getopt
+#: accepts ``-ofile`` and any unambiguous long-option prefix
+#: (``--out=f``), and ``--compress-program=PROG`` runs a program. Long
+#: options must be one of these (value forms ``--key=...`` included);
+#: a short cluster may not hold ``o`` (output) or ``T`` (temp dir).
+_SORT_LONG_OK = frozenset({
+    "--numeric-sort", "--reverse", "--unique", "--human-numeric-sort",
+    "--version-sort", "--ignore-case", "--key", "--field-separator",
+    "--general-numeric-sort", "--stable", "--zero-terminated",
+    "--month-sort", "--dictionary-order", "--ignore-leading-blanks",
+})
+
+#: Environment prefixes that change no program's behaviour beyond output
+#: formatting. Anything else (LD_PRELOAD, GIT_*, PAGER, ...) is refused.
+_SAFE_ENV = re.compile(r"LANG|LANGUAGE|LC_[A-Z]+|TZ|COLUMNS")
+
+#: ``date`` shows the time only with a ``+FORMAT`` or these flags.
+_DATE_FLAGS_OK = frozenset({"-u", "--utc", "-R", "-I", "--iso-8601"})
+
+#: Recursive reads walk whole trees; on a shared file system that is
+#: operator-visible load, so a recursive form is never auto-allowed.
+_RECURSIVE_FLAG = {
+    "grep": ("-r", "-R", "--recursive", "--dereference-recursive"),
+    "egrep": ("-r", "-R", "--recursive", "--dereference-recursive"),
+    "fgrep": ("-r", "-R", "--recursive", "--dereference-recursive"),
+    "ls": ("-R", "--recursive"),
 }
 
 #: ``git`` subcommands that only read. Anything else (add, commit, push,
@@ -65,8 +92,25 @@ _WRITE_FLAG = {
 _READONLY_GIT = frozenset({
     "log", "show", "status", "diff", "rev-parse", "blame", "describe",
     "branch", "tag", "ls-files", "ls-tree", "name-rev", "shortlog",
-    "count-objects", "reflog",
+    "count-objects",
 })
+
+#: Any of these anywhere on a git line refuses it: ``--output`` writes a
+#: file from log/diff/show, ``--ext-diff``/``--textconv`` run a program,
+#: ``-c``/``--config-env``/``--exec-path`` change what git runs.
+_GIT_BANNED_PREFIX = ("--output", "--ext-diff", "--textconv", "-c",
+                      "--config-env", "--exec-path", "--open-files-in-pager",
+                      "-O")
+
+#: The only flags a ``git branch``/``git tag`` line may carry: listing
+#: flags. Everything else (``-c``/``-C`` copy, ``-u``/``--set-upstream-to``,
+#: ``--unset-upstream``, signing, ...) is refused.
+_GIT_LIST_FLAGS = {
+    "branch": frozenset({"-a", "--all", "-r", "--remotes", "-v", "-vv",
+                         "--verbose", "--list", "-l", "--show-current",
+                         "--no-color", "--no-column"}),
+    "tag": frozenset({"-l", "--list", "-n", "--no-column"}),
+}
 
 #: ``git`` subcommands that are read-only only in LIST form. ``branch`` and
 #: ``tag`` default to a listing query, but the same subcommand ALSO carries
@@ -78,7 +122,7 @@ _GIT_LIST_ONLY = frozenset({"branch", "tag"})
 
 #: These flags (and the ones below) make a ``git branch``/``git tag`` line
 #: write or history-changing, never read-only.
-_GIT_WRITE_FLAGS = frozenset({
+_GIT_WRITE_FLAGS = frozenset({  # kept for the docs; _GIT_LIST_FLAGS decides
     "-d", "-D", "-m", "-M", "--move", "--delete", "-a", "-A", "-f",
     "--force", "-e", "--edit", "--force-create", "--orphan",
     "--rename", "--track",
@@ -99,9 +143,10 @@ _RUNNERS = frozenset({
 _SHELL_OPT_PREFIX = re.compile(
     r"^\s*set\s+(?:(?:-[a-zA-Z]+\s*)|(?:-o\s+\w+\s*))*;\s*")
 
-# A shell word making a FILE redirection. ``2>&1`` is the stream merge and
-# is allowed; ``>``/``>>``/``2>``/``2>>`` writing a file are refused.
-_FILEREDIRECT = re.compile(r"(?<!\d)(?:[12]?|&)>{1,2}(?!&1\b)")
+# A stream merge (``2>&1``, ``>&2``) is the only ``>`` allowed. It is cut
+# out first; any ``>`` left over is a file write (``>f``, ``3>f``,
+# ``>&1.txt``, ``&>f``, ``<>f``) and refuses the segment.
+_STREAM_MERGE = re.compile(r"\d*>&\d+(?=$|[\s|;&)])")
 
 # Heredocs / here-strings, command substitution and process substitution
 # (``<( python … )`` runs a program into a pipe).
@@ -231,6 +276,8 @@ def _git_line_safe(segment: str) -> bool:
     if not m:
         return False
     rest = text[m.end():].split()
+    if any(w.startswith(_GIT_BANNED_PREFIX) for w in rest):
+        return False
     i = 0
     while i < len(rest):
         w = rest[i]
@@ -249,12 +296,8 @@ def _git_line_safe(segment: str) -> bool:
     args = rest[i + 1:]
     if sub not in _GIT_LIST_ONLY:
         return True
-    for a in args:
-        if not a.startswith("-"):
-            return False
-        if a in _GIT_WRITE_FLAGS:
-            return False
-    return True
+    allowed = _GIT_LIST_FLAGS[sub]
+    return all(a in allowed for a in args)
 
 
 def _segment_is_safe(segment: str) -> bool:
@@ -267,15 +310,33 @@ def _segment_is_safe(segment: str) -> bool:
     interpreter -- is refused.
     """
     text = _strip_quotes(segment)
-    if _FILEREDIRECT.search(text):
+    if ">" in _STREAM_MERGE.sub(" ", text):
         return False
     if _HEREDOC.search(text):
         return False
     if _CMDSUBST.search(segment) or _PROCSUBST.search(segment):
         return False
+    words = text.split()
+    while words and _is_env_assignment(words[0]):
+        # GIT_EXTERNAL_DIFF=, LD_PRELOAD=, PAGER= ... run code; only the
+        # locale/time-zone variables are let through.
+        if not _SAFE_ENV.fullmatch(words[0].split("=", 1)[0]):
+            return False
+        words = words[1:]
     cmd = _command_of(segment)
     if not cmd:
         return False
+    for flag in _RECURSIVE_FLAG.get(cmd, ()):
+        if any(w == flag or (flag.startswith("--") and w.startswith(flag))
+               or (not flag.startswith("--") and w.startswith("-")
+                   and not w.startswith("--") and flag[1] in w[1:])
+               for w in words[1:]):
+            return False
+    if cmd == "sort" and not _sort_flags_ok(words[1:]):
+        return False
+    if cmd == "date" and not all(a.startswith("+") or a in _DATE_FLAGS_OK
+                                 for a in words[1:]):
+        return False  # date -s / --set / --s=... set the clock
     if cmd == "git":
         return _git_line_safe(segment)
     if cmd in _RUNNERS:
@@ -286,6 +347,18 @@ def _segment_is_safe(segment: str) -> bool:
     if banned:
         for tok in _strip_quotes(segment).split():
             if tok in banned or _flag_base(tok) in banned:
+                return False
+    return True
+
+
+def _sort_flags_ok(args: list[str]) -> bool:
+    """Every ``sort`` flag on the line is a known non-writing one."""
+    for a in args:
+        if a.startswith("--"):
+            if _flag_base(a) not in _SORT_LONG_OK:
+                return False
+        elif a.startswith("-") and len(a) > 1:
+            if "o" in a[1:] or "T" in a[1:]:
                 return False
     return True
 
