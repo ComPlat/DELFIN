@@ -150,7 +150,7 @@ def build_job(
         'DELFIN_TJ_LOG="$LOCAL/pytest.log" \\',
         '  "$STAGE_PYTHON" - "$RC" ' + q_ref + ' "$LOCAL/summary.json" <<\'PY\'',
         "import json, os, re, sys",
-        "rc, out, ref = sys.argv[1], sys.argv[2], sys.argv[3]",
+        "rc, ref, out = sys.argv[1], sys.argv[2], sys.argv[3]",
         'log = os.environ.get("DELFIN_TJ_LOG", "")',
         "txt = open(log).read() if os.path.exists(log) else \"\"",
         "# the last N passed / N failed in the pytest -q summary line(s): the",

@@ -124,3 +124,54 @@ def test_summary_block_parses_counts_not_word_counts():
     text = build_job("delfin", "main", ["tests/x.py"], "cpu", 10)
     assert 're.findall(r"(\\d+)\\s+passed\\b", txt)' in text
     assert 'txt.count("passed")' not in text
+
+
+def _extract_summary_writer(job_text: str) -> str:
+    """Pull the node-side summary Python out of the rendered job, heredoc
+    delimiters and shell quoting are not part of the executed code."""
+    start = job_text.index('import json, os, re, sys')
+    end = job_text.index("PY", start)
+    # Restore the \\d escape the shell heredoc would deliver literally.
+    return job_text[start:end].replace(r"\\d", r"\d")
+
+
+def test_summary_writer_matches_the_real_shell_argv_order(tmp_path):
+    """Regression for reviewer finding F3: the summary writer is invoked as
+        "$PY" - "$RC" '<ref>' "$LOCAL/summary.json"
+    so a real run hands it argv = [rc, ref, summary_path]. The unwrap must
+    match that order -- out=summary_path, ref=ref -- so a finished job writes
+    summary.json (not a file named after the ref) and its "ref" field is the
+    actual ref string.
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+
+    ref = "myref-hithere"
+    text = build_job("delfin", ref, ["tests/x.py"], "cpu", 10)
+    summary_py = _extract_summary_writer(text)
+    out_dir = tmp_path / "run"
+    out_dir.mkdir()
+    log = out_dir / "pytest.log"
+    log.write_text("4 passed, 1 failed in 2.00s\n")
+    script = out_dir / "writer.py"
+    script.write_text(summary_py)
+    summary = out_dir / "summary.json"
+    # Node side argv is [rc, ref, summary_path] -- the output path is the
+    # literal summary path, matching the shell line
+    # " - $RC '<ref>' $LOCAL/summary.json ".
+    argv = [sys.executable, str(script), "1", ref, str(summary)]
+    proc = subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        env={"DELFIN_TJ_LOG": str(log), **os.environ},
+    )
+    assert proc.returncode == 0, proc.stderr
+    # A correct writer writes summary.json and nothing named after the ref.
+    assert summary.exists(), "summary.json was not written (out/ref swapped?)"
+    assert not (out_dir / ref).exists()
+    payload = json.loads(summary.read_text())
+    assert payload["ref"] == ref
+    assert payload["passed_tests"] == 4 and payload["failed_tests"] == 1
