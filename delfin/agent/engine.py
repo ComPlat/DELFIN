@@ -2607,6 +2607,43 @@ class AgentEngine:
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
 
+        # T2 context-budget fresh start (repl hook). A long session has
+        # re-sent the whole history (>900k tokens) on every turn; compaction
+        # at 0.95 of the window does not save it. When the terminal decides
+        # (via ``fresh_context_for_turn`` in repl.py) that the current
+        # context is over the token budget, it sets ``self.start_fresh`` and
+        # hands the fresh-context block already fused into THIS turn's user
+        # message. Here we drop the accumulated history but KEEP that current
+        # user message, so the turn still runs against the exact prompt it
+        # must answer (one message = fresh block + current prompt).
+        # One-shot: the flag clears so the next turn resumes a normal (now
+        # tiny) history; it never assembles state from model text and never
+        # needs a model call.
+        if getattr(self, "start_fresh", False):
+            self.start_fresh = False
+            # Archive everything BEFORE this turn's message so the cut
+            # history stays recoverable (the session record is never
+            # silently dropped) - the same append-only store compaction
+            # uses, browsable via /session archive ls.
+            try:
+                from delfin.agent.session_store import (
+                    archive_pre_compaction_transcript)
+                archive_pre_compaction_transcript(
+                    getattr(self, "session_id", "") or "",
+                    list(self.messages[:-1]),
+                    info={"kind": "fresh_restart",
+                          "n_messages_archived": max(0, len(self.messages) - 1)},
+                )
+            except Exception:
+                pass
+            if self.messages:
+                self.messages = self.messages[-1:]
+            # Drop the stale pre-fresh input floor so the context estimate
+            # reflects the shrink at once: the next turn is then judged on
+            # its own (now small) context and is NOT a fresh restart again.
+            self._last_input_tokens = 0
+            self._trimmed_chars_since_floor = 0
+
         # Mid-conversation compaction. Fires for solo/dashboard on the
         # legacy message-count threshold, and for any role when the
         # token-budget threshold is exceeded.
