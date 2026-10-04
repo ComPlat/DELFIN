@@ -5172,6 +5172,9 @@ class KitToolPermissions:
     session_allowed_tools: frozenset[str] = frozenset()
     session_denied_tools: frozenset[str] = frozenset()
     bash_deny_patterns: tuple[str, ...] = _DEFAULT_BASH_DENY_PATTERNS
+    # The repo's write scope for file tools (empty = no extra restriction).
+    # Only narrows: every write is still bounded by the workspace roots.
+    write_allow_globs: tuple[str, ...] = ()
     bash_auto_allow_patterns: tuple[str, ...] = _DEFAULT_BASH_AUTO_ALLOW
     path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
     path_protected_globs: tuple[str, ...] = _DEFAULT_PATH_PROTECTED_GLOBS
@@ -9662,6 +9665,47 @@ def _cached_tokens_of(usage) -> int:
         return int(getattr(det, "cached_tokens", 0) or 0) if det else 0
     except Exception:
         return 0
+
+
+def _write_glob_regex(glob: str) -> "re.Pattern[str]":
+    """A git-pathspec-like glob: ``**`` crosses directories, ``*``/``?`` not."""
+    out: list[str] = []
+    i, n = 0, len(glob)
+    while i < n:
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    return re.compile("".join(out))
+
+
+def _write_in_scope(path: Path, perms: "KitToolPermissions") -> bool:
+    """True when the repo sets no write scope or ``path`` matches one glob.
+
+    Globs are matched against the path relative to the workspace. A path
+    outside the workspace matches none of them: the scope never reaches
+    past the repository it was written for.
+    """
+    globs = getattr(perms, "write_allow_globs", ()) or ()
+    if not globs:
+        return True
+    try:
+        rel = Path(path).resolve().relative_to(
+            Path(perms.workspace).resolve()).as_posix()
+    except (OSError, ValueError, TypeError):
+        return False
+    return any(_write_glob_regex(str(g)).fullmatch(rel) for g in globs)
 
 
 def _record_security_event(kind: str, tool: str, detail: str,
@@ -14490,6 +14534,16 @@ class _DocToolExecutor:
         resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             return err
+        if not _write_in_scope(resolved, perms):
+            _record_security_event(
+                "out_of_write_scope", name, self._display_path(resolved, perms),
+                blocked=True)
+            return (
+                f"'{path_arg}' is outside this repository's write scope "
+                f"({', '.join(perms.write_allow_globs)}). A write there was "
+                "not granted. Ask the user to widen the repo's "
+                "write_allow_globs, or place the file inside the scope."
+            )
         # READ-ONLY data — archive of stored calculations, or the DELFIN
         # checkout when you didn't launch there. Writes are HARD-denied; copy
         # into calc/agent_workspace and edit the copy ("archives are fixed …
@@ -23211,6 +23265,7 @@ def create_client(
                                if p not in deny_patterns)
             allow_patterns = allow_patterns + extra_allow
             deny_patterns = deny_patterns + extra_deny
+        write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
 
         kit_perms = KitToolPermissions(
             workspace=kit_workspace,
@@ -23221,6 +23276,7 @@ def create_client(
             confirm_write_dirs=tuple(confirm_write_dirs or ()),
             bash_auto_allow_patterns=allow_patterns,
             bash_deny_patterns=deny_patterns,
+            write_allow_globs=write_globs,
         )
         return OpenAIClient(
             api_key=kit_key, model=model,
