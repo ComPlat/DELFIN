@@ -131,8 +131,21 @@ def _prepare_occupier_job(workdir: str, xyz_path: str, control: Dict[str, Any]) 
     pal = _coord._clean_str(control.get("PAL"), "4") or "4"
     maxcore = _coord._clean_str(control.get("maxcore"), "3800") or "3800"
 
+    # OCCUPIER's preparation (copy_helpers._prepare_run_folder) reads
+    # input.txt as a BARE coordinate file: it counts coordinate lines and
+    # writes '{count}\n\n{coords}' as input0.xyz/input.xyz. A species
+    # pointer ('input.xyz\n') turns that header into
+    # "invalid literal for int() with base 10: 'input.xyz'" and the FoB
+    # jobs fail with 'No atoms parsed from XYZ file input0.xyz'
+    # (calc 81-105_87_sub_irss, job 7453274). So input.txt must hold the
+    # coordinates themselves.
+    with open(xyz_path, "r") as f:
+        xyz_lines = f.readlines()
+    # Drop the standard xyz count + comment header if present.
+    if xyz_lines and xyz_lines[0].strip().isdigit():
+        xyz_lines = xyz_lines[2:]
     with open(os.path.join(job_dir, "input.txt"), "w", newline="\n") as f:
-        f.write("input.xyz\n")
+        f.writelines(xyz_lines)
 
     with open(os.path.join(job_dir, "CONTROL.txt"), "w", newline="\n") as f:
         f.write(

@@ -62,6 +62,13 @@ class TestRunAdductFlow:
         assert "method=OCCUPIER" in ctrl
         assert "enable_auto_recovery=yes" in ctrl
         assert "max_recovery_attempts=3" in ctrl
+        # input.txt must hold the bare coordinates, not a species pointer:
+        # OCCUPIER prep (copy_helpers) counts coordinate lines in it to
+        # build input0.xyz. A pointer produced
+        # "invalid literal for int() with base 10: 'input.xyz'"
+        # (calc 81-105_87_sub_irss, job 7453274).
+        txt = (job / "input.txt").read_text().strip().splitlines()
+        assert txt[0].split()[0] == "Ni"
 
     def test_distant_substrate_reports_no_coordination(self, tmp_path):
         d = _make_coordinator_dir(tmp_path, m_c_dist=4.0)
