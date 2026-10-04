@@ -494,16 +494,25 @@ def _is_semiempirical_keywords(keywords: str) -> bool:
 
 
 def _ensure_qmmm_keyword(keywords: str, qmmm_range: Optional[Tuple[int, int]]) -> str:
+    # A range covering ALL atoms (0..N-1) is a pure QM system, not QM/MM:
+    # ORCA rejects QM/XTB combined with CPCM/SMD ("not implemented",
+    # main_input_check), and there is no MM region for xTB to treat — so no
+    # QM/XTB keyword and no %QMMM block for such a range.
     if not qmmm_range:
         return keywords
     kw = keywords or ""
+    start, end = qmmm_range
+    if start == 0:
+        return kw
     if "QM/XTB" in kw.upper():
         return kw
     return (kw + " QM/XTB").strip()
 
 
 def _build_qmmm_block_lines(qmmm_range: Optional[Tuple[int, int]]) -> List[str]:
-    if not qmmm_range:
+    # No %QMMM block for a range covering all atoms from 0: pure QM (see
+    # _ensure_qmmm_keyword).
+    if not qmmm_range or qmmm_range[0] == 0:
         return []
     start, end = qmmm_range
     return [
