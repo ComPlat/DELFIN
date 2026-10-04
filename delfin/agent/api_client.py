@@ -17617,9 +17617,12 @@ class _DocToolExecutor:
             return json.dumps({"error": (
                 "session_message is available only inside an open dashboard "
                 "session.")})
-        others = _presence.open_sessions(exclude_key=me)
         to = str(arguments.get("to") or "").strip()
         text = str(arguments.get("message") or "").strip()
+        # Before open_sessions(): it reaps stale presence records, and a
+        # closed session is known to the mailbox only by that record.
+        queueable = bool(to) and _msgs.deliverable(to)
+        others = _presence.open_sessions(exclude_key=me)
         if not to:
             return json.dumps({
                 "sessions": [{
@@ -17653,7 +17656,7 @@ class _DocToolExecutor:
                                "not_delivered": failed}, ensure_ascii=False)
         target = next((r for r in others
                        if to in (r.get("key"), r.get("session_id"))), None)
-        if target is None:
+        if target is None and not queueable:
             # The list, here, not a second call: a session addressed a peer
             # by its TITLE, got told the key was unknown, and had to ask
             # for the roster it could have been handed (2026-09-17).
@@ -17670,14 +17673,22 @@ class _DocToolExecutor:
             return json.dumps({"error": "message is required."})
         mine = next((r for r in _presence.open_sessions()
                      if me and r.get("key") == me), {})
+        # The operator (a reserved mailbox) and a known-but-closed session
+        # have no open presence record: deliver to their mailbox key itself, so
+        # the message is queued for their next start instead of refused
+        # (waves 11/12: 'no other open session' lost such messages).
+        mailbox = str(target.get("key") if target else to)
         try:
-            _msgs.send(str(target.get("key")), text, from_key=me,
+            _msgs.send(mailbox, text, from_key=me,
                        from_title=str(mine.get("title") or ""))
         except OSError as exc:
             return json.dumps({"error": f"message not delivered: {exc}"})
-        return json.dumps({"status": "sent", "to": target.get("key"),
-                           "title": target.get("title", "")},
-                          ensure_ascii=False)
+        reply = {"status": "sent", "to": mailbox}
+        if target:
+            reply["title"] = str(target.get("title", ""))
+        else:
+            reply["queued"] = True
+        return json.dumps(reply, ensure_ascii=False)
 
     def _execute_scheduler(self, name: str, arguments: dict,
                            perms: "KitToolPermissions | None" = None) -> str:
