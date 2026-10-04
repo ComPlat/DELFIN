@@ -32,9 +32,11 @@ _RESERVED = ("operator",)
 # ``operatro``) writes an inbox that nobody ever takes; without a bound the
 # key latches 'known' FOREVER, so every later message to the typo is silently
 # accepted and dropped -- the waves 11/12 "sender never knows if read" bug
-# re-created on the typo path (reviewer nacht-s17). An inbox therefore proves
-# its recipient only while it has been touched recently.
-_INBOX_KNOWN_S = 7 * 24 * 3600.0
+# re-created on the typo path (reviewer nacht-s17). QS decision (s26): an
+# inbox OLDER than session_presence._STALE_S no longer marks an address
+# deliverable; a real closed session that re-announces presence is open again,
+# so legitimate delivery is preserved, while a stale typo reverts to being
+# refused loudly.
 # Delivery receipts live in one sidecar under _DIR, so ``status(message_id)``
 # can still answer after take() unlinks the inbox. .receipts is not a *.jsonl
 # inbox and is never scanned as one.
@@ -79,11 +81,18 @@ def _inbox_known(key: str) -> bool:
     """Whether an inbox alone proves ``key``: only while it is fresh.
 
     The inbox file's mtime refreshes on every append, so a live queue keeps
-    its recipient known; a typo with one orphan message ages out and a later
-    message to it is refused instead of silently accepted forever."""
+    its recipient known; a typo with one orphan message ages out (older than
+    session_presence._STALE_S, the same window a dormant presence is reaped
+    at) and a later message to it is refused instead of silently accepted
+    forever."""
     inbox = _inbox(key)
     try:
-        return time.time() - inbox.stat().st_mtime < _INBOX_KNOWN_S
+        from . import session_presence as _presence
+        window = _presence._STALE_S
+    except Exception:
+        window = 15 * 60.0
+    try:
+        return time.time() - inbox.stat().st_mtime < window
     except OSError:
         return False
 

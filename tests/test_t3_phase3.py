@@ -82,19 +82,14 @@ def test_a_typo_inbox_ages_out_of_known(tmp_path):
     """One message to a typo must not make it permanently deliverable: after
     its inbox is idle past the freshness window it is unknown again, so a
     later message is refused instead of silently accepted forever (reviewer
-    finding: no-TTL latch re-creates 'sender never knows if read')."""
+    finding: no-TTL latch re-creates 'sender never knows if read'). The
+    window is session_presence._STALE_S (QS decision)."""
     M.send("operatro", "typo", from_key="nacht-s16")
     assert M.deliverable("operatro") is True   # freshly written inbox
     inbox = M._inbox("operatro")
     now = time.time()
-    os_utime_works = False
-    try:
-        import os
-        os.utime(inbox, (now - M._INBOX_KNOWN_S - 60, now - M._INBOX_KNOWN_S - 60))
-        os_utime_works = True
-    except Exception:
-        os_utime_works = False
-    assert os_utime_works or True   # utime may not be writable; TTL math still valid
+    import os
+    os.utime(inbox, (now - P._STALE_S - 60, now - P._STALE_S - 60))
     assert M.deliverable("operatro") is False   # aged past the window: unknown
 
 
