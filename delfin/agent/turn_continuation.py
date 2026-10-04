@@ -60,6 +60,7 @@ _HANDBACK_RES = tuple(
         "i will get back",
         "i'll get back",
         "waiting for your",
+        "will follow up later",
     )
 )
 
@@ -79,9 +80,16 @@ def announced_action(text: str) -> bool:
     True for a first-person future intent ("Let me fix…", "I will run…",
     "Next I'll…"). False for an empty/whitespace text, a hand-back to the
     user ("Let me know…", "What should I do?"), waiting, or completion.
+
+    Review finding (nacht-s12): real transcripts use the U+2019 right
+    single quote, so "I'll…" and "I'm…" fell through the ASCII-only class.
+    The text is normalised to ASCII apostrophes BEFORE any scan, so the
+    signal and the hand-back table both see one shape.
     """
     if not text or not text.strip():
         return False
+    text = (str(text).replace("\u2019", "'")
+            .replace("\u2018", "'"))
     for rx in _HANDBACK_RES:
         if rx.search(text):
             return False
