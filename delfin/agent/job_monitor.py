@@ -35,8 +35,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import time
+
+from delfin import scheduler_client
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -186,15 +187,25 @@ def remove_watch(job_id: str, path: Path | None = None) -> dict:
 # string, which is why a watch list could sit for days reporting nothing
 # changed while the queue it was watching was unreachable.
 STATE_UNAVAILABLE = "UNAVAILABLE"
+#: The shared scheduler client's gate was closed, so nothing was asked.
+#: Unlike STATE_UNAVAILABLE this is no degradation: the next poll asks.
+STATE_THROTTLED = "THROTTLED"
 
 
 def _default_run(cmd: list[str]) -> Optional[str]:
-    """Run a scheduler query. ``None`` means it could not be run at all."""
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        return out.stdout if out.returncode == 0 else None
-    except Exception:
-        return None
+    """Run a scheduler query, throttled through the shared scheduler client.
+
+    Every scheduler query the daemon issues goes through
+    :func:`delfin.scheduler_client.query`, the single process-wide gate
+    that lets a distinct query kind reach the scheduler at most once per
+    25 s and serves the shared cache while the gate is closed (wave-11
+    finding 1: idle terminals must not each hammer ``squeue``). ``None``
+    means the scheduler could not be run; :data:`scheduler_client.THROTTLED`
+    means the gate is closed for a not-yet-cached argv.
+    """
+    result = scheduler_client.query(
+        scheduler_client.kind_of_argv(cmd), list(cmd))
+    return result  # type: ignore[return-value]  # str, None or THROTTLED
 
 
 def _parse_state_lines(text: Optional[str]) -> dict[str, str]:
@@ -233,12 +244,18 @@ def query_job_states_detailed(
     if not job_ids:
         return result
 
+    throttled = False
+
     def _squeue(ids: list[str]) -> Optional[dict[str, str]]:
+        nonlocal throttled
         out = run_fn(["squeue", "-j", ",".join(ids), "-h", "-o", "%i %T"])
+        if out is scheduler_client.THROTTLED:
+            throttled = True
+            return None
         return None if out is None else _parse_state_lines(out)
 
     found = _squeue(job_ids)
-    if found is None and len(job_ids) > 1:
+    if found is None and len(job_ids) > 1 and not throttled:
         found = {}
         for jid in job_ids[:_MAX_PER_ID_RETRIES]:
             one = _squeue([jid])
@@ -247,15 +264,23 @@ def query_job_states_detailed(
     for jid, state in (found or {}).items():
         if jid in result:
             result[jid] = state
+    if throttled:
+        for jid in job_ids:
+            if result[jid] == STATE_UNAVAILABLE:
+                result[jid] = STATE_THROTTLED
 
     # Anything squeue did not place is asked of accounting. sacct answers
     # for finished jobs and is happy to be asked about ids it does not know.
     missing = [j for j in job_ids
-               if result.get(j) in ("", STATE_UNAVAILABLE)]
+               if result.get(j) in ("", STATE_UNAVAILABLE, STATE_THROTTLED)]
     if missing:
         out = run_fn(["sacct", "-j", ",".join(missing), "-n", "-X",
                       "-o", "JobID,State"])
-        if out is not None:
+        if out is scheduler_client.THROTTLED:
+            for jid in missing:
+                if result[jid] == STATE_UNAVAILABLE:
+                    result[jid] = STATE_THROTTLED
+        elif out is not None:
             acct = _parse_state_lines(out)
             for jid in missing:
                 result[jid] = acct.get(jid, "")
@@ -272,7 +297,7 @@ def query_job_states(
     :func:`query_job_states_detailed` to tell "not known" from "not asked".
     """
     return {j: s for j, s in query_job_states_detailed(job_ids, run_fn).items()
-            if s and s != STATE_UNAVAILABLE}
+            if s and s not in (STATE_UNAVAILABLE, STATE_THROTTLED)}
 
 
 def scan_error_signatures(folder: str, max_bytes: int = 65536) -> list[str]:
@@ -320,6 +345,8 @@ def check_once(
     for job_id, info in jobs.items():
         state = states.get(job_id, "")
         prev = info.get("last_state", "")
+        if state == STATE_THROTTLED:
+            continue  # not asked this time; nothing changed, nothing to say
         if state == STATE_UNAVAILABLE:
             info["unavailable_since"] = info.get("unavailable_since") or time.time()
             continue
@@ -696,6 +723,8 @@ def check_agent_jobs(
             continue
         if _kind(jid, entry) == "slurm":
             state = states.get(jid, "")
+            if state == STATE_THROTTLED:
+                continue  # not asked this time; the next poll asks
             if state == STATE_UNAVAILABLE:
                 # Degradation, not silence: the entry stays, and it says
                 # WHY nothing is being reported about it.

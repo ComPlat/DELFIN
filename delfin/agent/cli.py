@@ -2460,6 +2460,7 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         return 0
 
     if action == "show":
+        from . import approval_answers as _ansq
         for row in _fc.pending():
             if row.get("id") == args.request_id:
                 print(f"id      {row['id']}")
@@ -2469,7 +2470,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s"
                       f" of {int(row.get('timeout_s') or 0)}s")
                 print()
-                print(row.get("preview", ""))
+                body = _ansq.render_question(row)
+                print(body or row.get("preview", ""))
                 return 0
         from . import terminal_confirm as _tc
         for row in _tc.pending_at_terminals():
@@ -2482,7 +2484,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print("answer  here or at that session's terminal — "
                       "whichever comes first")
                 print()
-                print(row.get("preview", ""))
+                body = _ansq.render_question(row)
+                print(body or row.get("preview", ""))
                 return 0
         print(f"ERROR: nothing waiting with id {args.request_id!r}",
               file=sys.stderr)
@@ -2722,6 +2725,24 @@ def _print_stop_all_check(report: dict) -> int:
               "there too.")
         return 0
     print("Result: no agent is running or scheduled.")
+    return 0
+
+
+def cmd_pause(args: argparse.Namespace) -> int:
+    """Pause one session (see ``session_pause``). It takes effect at the
+    session's next tool call; nothing else is touched."""
+    from . import session_pause
+    session_pause.pause(args.session, args.reason or "delfin-agent pause")
+    print(f"paused {args.session}: it stops at its next tool call; "
+          f"resume with: delfin-agent resume {args.session}")
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    """Lift a pause set by ``delfin-agent pause``."""
+    from . import session_pause
+    was = session_pause.resume(args.session)
+    print(f"resumed {args.session}" if was else f"{args.session} was not paused")
     return 0
 
 
@@ -3892,6 +3913,17 @@ def build_parser() -> argparse.ArgumentParser:
     stop_all_p.add_argument("--reason", default="",
                             help="Recorded with the stop")
     stop_all_p.set_defaults(func=cmd_stop_all)
+
+    pause_p = sub.add_parser(
+        "pause",
+        help="Pause one session by its -n name: it stops at the next tool "
+             "call, starts no new turn and is not woken until resumed")
+    pause_p.add_argument("session", help="The session's -n name")
+    pause_p.add_argument("--reason", default="", help="Recorded with the pause")
+    pause_p.set_defaults(func=cmd_pause)
+    resume_p = sub.add_parser("resume", help="Resume a paused session")
+    resume_p.add_argument("session", help="The session's -n name")
+    resume_p.set_defaults(func=cmd_resume)
 
     # doctor — aggregate prerequisite health report
     doctor = sub.add_parser(

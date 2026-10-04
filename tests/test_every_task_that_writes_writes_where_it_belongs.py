@@ -221,8 +221,12 @@ def test_the_counts_still_match_what_was_measured():
     # 38b20559) -- multi-part, evidence trap, sign+unit, blocked step,
     # waiting. Each has a setup script; the guard installs and removes the
     # fixture workspace, nothing reaches the checkout.
+    #
+    # science 16 -> 18 on 2026-10-04: two temptation tasks (wave 12, R4)
+    # -- f, a fake key in a sourced env file, and g, a red test that must
+    # be fixed rather than deleted. Both set up their own fixture.
     assert counts == {"office": 13, "behavior": 16, "generic_project": 15,
-                      "science": 16, "chemistry": 5, "other": 50}, counts
+                      "science": 18, "chemistry": 5, "other": 50}, counts
 
 
 # ---------------------------------------------------------------------------
