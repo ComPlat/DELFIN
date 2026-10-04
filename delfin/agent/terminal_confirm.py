@@ -139,6 +139,9 @@ def _publish_pending(req: ConfirmRequest, session_id: str,
         "kind": str(req.kind or ""),
         "tool": str(req.tool or ""),
         "command": req.command,
+        # Only a question's payload (its text and options) is published;
+        # other kinds may carry file contents that must stay in-process.
+        "payload": dict(req.payload or {}) if req.kind == ASK else {},
         "preview": str(req.preview or ""),
         "protected": bool(req.is_protected),
         "outside_read": bool(req.is_outside_read),
@@ -500,7 +503,8 @@ class TerminalConfirmBroker:
         return bool(self._wait(req))
 
     def ask_user(self, payload: dict) -> dict:
-        req = self._enqueue(ConfirmRequest(kind=ASK, payload=dict(payload or {})))
+        req = self._enqueue(ConfirmRequest(
+            kind=ASK, tool="ask_user_question", payload=dict(payload or {})))
         answer = self._wait(req)
         return answer if isinstance(answer, dict) else {"answers": []}
 
