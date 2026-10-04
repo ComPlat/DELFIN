@@ -323,9 +323,14 @@ def run_adduct_flow(coordinator_outdir: str, workdir: Optional[str] = None) -> D
             print("[adduct_flow] scan_dissoc=true — starting inverse RSS dissociation scan")
             scan_xyz = result.get("occupier_opt_xyz") or current_xyz
             scan_atoms = _coord._read_xyz_robust(scan_xyz)
+            # Restrict the anchor search to the substrate tail, else the
+            # complex's own C ligands shadow the substrate C (calc
+            # 81-105_87_sub_irss: 9 C ligands, the substrate C was idx 42).
+            scan_allowed = _substrate_indices(scan_atoms, control, coordinator_outdir)
             try:
                 rss_result = _coord.run_inverse_rss_scan(
-                    scan_atoms, scan_xyz, control, workdir=workdir)
+                    scan_atoms, scan_xyz, control, workdir=workdir,
+                    allowed_indices=scan_allowed)
                 result["inverse_rss"] = rss_result
                 print(f"[adduct_flow] Inverse RSS scan finished: status={rss_result.get('status')}")
             except Exception as exc:

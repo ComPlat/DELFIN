@@ -202,6 +202,14 @@ def _minimal_read_control_file(path="CONTROL.txt"):
             if "=" not in line:
                 continue
             key, val = map(str.strip, line.split("=", 1))
+            # Strip inline comments AFTER a value ("dissoc_distance=4.0 # goal").
+            # Only a '#' preceded by whitespace starts a comment: SMILES and
+            # other values use '#' without whitespace (triple bonds C#N).
+            if isinstance(val, str):
+                for sep in (" #", "\t#"):
+                    if sep in val:
+                        val = val.split(sep, 1)[0].rstrip()
+                        break
 
             # Boolean values
             if isinstance(val, str):
@@ -1551,12 +1559,16 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
 
 
 # === Inverse RSS Runner ===
-def run_inverse_rss_scan(atoms_adduct, adduct_xyz, args, workdir=None):
+def run_inverse_rss_scan(atoms_adduct, adduct_xyz, args, workdir=None,
+                         allowed_indices=None):
     """Run the inverse RSS (dissociation scan) from an optimised adduct.
 
     Calculates r0 (metal to substrate anchor) and scans outward to
     dissoc_distance in scan_steps steps using write_orca_input_and_run.
     Returns a dict with scan metadata (start_distance, end_distance, steps, etc.).
+    ``allowed_indices`` optionally restricts the substrate-anchor search
+    (e.g. to the substrate tail of the placement geometry — the cobalt
+    complex of calc 81-105_87_sub_irss has 9 C ligands near the metal).
     """
     cwd = None
     if workdir:
@@ -1570,7 +1582,7 @@ def run_inverse_rss_scan(atoms_adduct, adduct_xyz, args, workdir=None):
         substrate_symbol = _clean_str(args.get("substrate_atom"))
         co2_c_idx = _resolve_substrate_anchor(
             atoms_adduct, metal_idx, substrate_symbol, substrate_idx_raw,
-            source=adduct_xyz)
+            source=adduct_xyz, allowed_indices=allowed_indices)
         qm_atom_count = len(atoms_adduct)
         co2_indices = [co2_c_idx]
         qmmm_range = (0, qm_atom_count - 1)

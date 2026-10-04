@@ -16747,6 +16747,17 @@ def is_smiles_string(content: str) -> bool:
 
     first_line = lines[0].strip()
 
+    # A filename is not a SMILES. Species-pointer files like input.txt hold
+    # exactly one line "input.xyz"; the extension dot read as a fragment
+    # separator and the 'n' in the stem as aromatic made "input.xyz" count
+    # as a SMILES string, which then demanded smiles_converter for every
+    # job whose CONTROL points at an xyz file (calc 81-105_87_sub_irss,
+    # job 7453142: OCCUPIER pass died with 'Missing required CONTROL
+    # values for: smiles_converter').
+    if re.match(r'^[\w.\-]+\.(xyz|smi|in|out|txt|mol|mol2|pdb|sdf|gro)$',
+                first_line, re.IGNORECASE):
+        return False
+
     # Empty or comment line
     if not first_line or first_line.startswith('#') or first_line.startswith('*'):
         return False

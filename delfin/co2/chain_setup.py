@@ -54,6 +54,13 @@ def _read_delfin_control(control_path: Path) -> Dict[str, str]:
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
+        # Strip inline comments AFTER a value ("dissoc_distance=4.0 # goal").
+        # Only a '#' preceded by whitespace starts a comment: SMILES and
+        # other values use '#' without whitespace (triple bonds C#N).
+        for sep in (" #", "\t#"):
+            if sep in value:
+                value = value.split(sep, 1)[0].rstrip()
+                break
         if key:
             result[key] = value
     return result
