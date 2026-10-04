@@ -68,6 +68,13 @@ def _known_key(key: str) -> bool:
             except Exception:
                 data = {}
             if isinstance(data, dict) and data.get("key") == key:
+                # A live or stale presence record names a session that exists
+                # (crashes never withdraw): known forever. A withdrawal
+                # tombstone (clean exit) names it only while fresh -- a closed
+                # session bridges the close/restart gap, then ages back to
+                # refuseable so a typo is never permanently deliverable.
+                if data.get("tombstone"):
+                    return _tombstone_fresh(record, data)
                 return True
         for record in P.open_sessions():
             if record.get("key") == key:
@@ -95,6 +102,27 @@ def _inbox_known(key: str) -> bool:
         return time.time() - inbox.stat().st_mtime < window
     except OSError:
         return False
+
+
+def _tombstone_fresh(record: Path, data: dict) -> bool:
+    """Whether a withdrawal tombstone still marks ``key`` deliverable.
+
+    A clean-exit withdraw() writes a tombstone record (withdrawn_at) in place
+    of the presence record; it names an existing session only while fresh, the
+    close/restart bridge, and ages back out at the same _STALE_S window an
+    orphaned inbox is forgotten at -- so a typo/abandoned address reverts to
+    refuseable, matching the latch-TTL ruling. Ordering vs _reap is safe:
+    tombstones are reaped only after _REAP_AFTER_S (= 4x _STALE_S), longer
+    than the freshness window, so a fresh tombstone is always seen first."""
+    try:
+        from . import session_presence as _presence
+        window = _presence._STALE_S
+    except Exception:
+        window = 15 * 60.0
+    withdrawn_at = float(data.get("withdrawn_at") or 0)
+    if withdrawn_at <= 0:
+        return False
+    return time.time() - withdrawn_at < window
 
 
 def deliverable(to_key: str) -> bool:
