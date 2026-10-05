@@ -106,15 +106,20 @@ def test_rejects_bad_test_paths():
 
 
 def test_ref_with_command_substitution_is_never_shell_expanded():
-    """A ref like $(touch /tmp/x) must never be emitted into a double-quoted
-    bash word: bash substitutes $(...) inside double quotes, so the whole
-    point of a node-local job would be undone by executing attacker input.
-    Regression for reviewer finding F1 (was DELFIN_TJ_REF="'$(...)'")."""
+    """A ref like $(touch /tmp/x) must never reach the rendered script at all:
+    bash substitutes $(...) inside double quotes, so emitting it -- even
+    single-quoted on the summary argv, as F1's original fix did -- risks the
+    whole node-local job executing attacker input. The security gate (reviewer
+    F4) now refuses any ref outside a strict allow-list with ValueError.
+
+    Intent preserved: the payload can never run. The mechanism changed from
+    'render it inert' to 'refuse it outright', which is strictly stronger."""
     evil = "$(touch /tmp/delfin_probe_should_not_run)"
-    text = build_job("delfin", evil, ["tests/x.py"], "cpu", 10)
-    assert 'DELFIN_TJ_REF="' not in text
-    # The exact ref still reaches the summary, single-quoted and literal.
-    assert "'$(touch /tmp/delfin_probe_should_not_run)'" in text
+    with pytest.raises(ValueError):
+        build_job("delfin", evil, ["tests/x.py"], "cpu", 10)
+    # A benign ref still renders single-quoted onto the summary argv.
+    text = build_job("delfin", "main", ["tests/x.py"], "cpu", 10)
+    assert "$(touch" not in text
 
 
 def test_summary_block_parses_counts_not_word_counts():

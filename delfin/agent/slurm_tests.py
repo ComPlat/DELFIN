@@ -38,6 +38,47 @@ from delfin.slurm_submit import normalize_time_limit, sbatch_command
 # any Call site; used only to build shell --export / logging text.
 _SAFE_TEST_PATH = re.compile(r"^tests/[A-Za-z0-9_./:-]+$")
 
+# Strict allow-lists for every value that crosses into the rendered bash
+# script. shlex.quote does NOT neutralise newlines / CR / NUL -- a value such
+# as ref='main\ntouch /tmp/x' would put 'touch /tmp/x' on its own line of the
+# script and execute it on the compute node, and partition='cpu\n#SBATCH
+# --export=ALL,EVIL=1' would smuggle in the forbidden export form. So the
+# security boundary is an allow-list applied BEFORE rendering: each value must
+# match its whole-string pattern (which, containing no whitespace or shell
+# metacharacter, cannot break out of one bash token), or build_job refuses
+# with ValueError. shlex.quote remains below as defense-in-depth, but it is
+# no longer the gate.
+
+#: A git ref/tag/branch: word chars, dots, underscores, slashes, dashes; never
+#: leading dash (an option), never ".." (a path escape), never whitespace.
+_SAFE_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
+#: A SLURM partition name.
+_SAFE_PARTITION = re.compile(r"^[A-Za-z0-9_,-]+$")
+#: Memory like 8000, 8G, 512M -- digits with an optional K/M/G/T suffix.
+_SAFE_MEM = re.compile(r"^[0-9]+[KMGT]?$")
+#: A SLURM job name.
+_SAFE_JOB_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+#: A filesystem-ish path: word chars, dots, slashes, underscore, plus, tilde,
+#: dash. Contains no whitespace or shell metacharacter, so a repo or output
+#: dir cannot smuggle a new line / command separator into the script.
+_SAFE_PATHLD = re.compile(r"^[A-Za-z0-9._/+~-]+$")
+
+
+def _require(pat: re.Pattern[str], value: object, what: str) -> str:
+    """Return ``value`` as a validated string or raise ValueError.
+
+    Every caller-facing parameter sits behind one of these checks so an
+    injectable blob (newline, CR, NUL, tab, ``..``) is refused before anything
+    is rendered. A leading dash is also refused -- a rendered value that begins
+    with '-' would read as a shell/option flag, never a name or path.
+    """
+    s = str(value)
+    if not pat.fullmatch(s) or s.startswith("-"):
+        raise ValueError(
+            f"{what} is not a safe value (allow-listed characters only, "
+            f"no whitespace, shell metacharacters or leading '-'); got {s!r}")
+    return s
+
 
 def _validate_test_paths(test_paths: Sequence[str]) -> list[str]:
     """Return the validated test paths; reject anything that escapes the tree.
@@ -85,21 +126,38 @@ def build_job(
     the working copy stays node-local. Pure: returns text, touches nothing.
     """
     paths = _validate_test_paths(test_paths)
-    if not ref.strip():
+    if not ref:
         raise ValueError("ref must not be empty")
     if int(minutes) <= 0:
         raise ValueError("minutes must be a positive number of minutes")
 
-    # shell-quote everything that crosses into bash. test paths are already
-    # validated to a safe charset; quote them anyway for one consistent rule.
-    q_repo = shlex.quote(str(repo))
-    q_ref = shlex.quote(str(ref))
-    q_python = shlex.quote(str(python) if python else "PYTHON_PLACEHOLDER")
-    q_part = shlex.quote(str(partition))
+    # Security gate: strict allow-lists BEFORE rendering (reviewer F4 /
+    # operator SECURITY FINDING). shlex.quote does not neutralise
+    # newlines/CR/NUL, so an injectable value would land a payload on its own
+    # line of the script. Each value must match its allow-list whole-string or
+    # build_job refuses with ValueError.
+    repo = _require(_SAFE_PATHLD, repo, "repo")
+    ref = _require(_SAFE_REF, ref, "ref")
+    if ".." in ref:
+        raise ValueError(f"ref must not contain '..': {ref!r}")
+    partition = _require(_SAFE_PARTITION, partition, "partition")
+    mem = _require(_SAFE_MEM, mem, "mem")
+    job_name = _require(_SAFE_JOB_NAME, job_name, "job_name")
+    output_dir = _require(_SAFE_PATHLD, output_dir, "output_dir")
+    py = _require(_SAFE_PATHLD, python if python else "PYTHON_PLACEHOLDER",
+                  "python")
+
+    # shell-quote everything that crosses into bash. Values are already
+    # allow-listed above (no whitespace or metacharacter), so this is strict
+    # defense-in-depth; it can no longer be the security boundary on its own.
+    q_repo = shlex.quote(repo)
+    q_ref = shlex.quote(ref)
+    q_python = shlex.quote(py)
+    q_part = shlex.quote(partition)
     time = _render_time(int(minutes))
-    q_mem = shlex.quote(str(mem))
-    q_name = shlex.quote(str(job_name))
-    q_outdir = shlex.quote(str(output_dir))
+    q_mem = shlex.quote(mem)
+    q_name = shlex.quote(job_name)
+    q_outdir = shlex.quote(output_dir)
     quoted_paths = " ".join(shlex.quote(p) for p in paths)
 
     header_sb = [
