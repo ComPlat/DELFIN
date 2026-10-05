@@ -25,43 +25,35 @@ import pytest
 
 from delfin.agent.slurm_tests import _SAFE_TEST_PATH, build_job
 
-# A rendered ``DELFIN_TJ_REF="'...'..."`` envelope double-wraps a shlex-quoted
-# (single-quoted) value inside double quotes. In Bash, "$(cmd)" and backticks
-# expand inside double quotes while single quotes are literal characters, so
-# ``"'$(...)'"`` still executes the payload. A correct renderer never emits a
-# double-wrapped command substitution: ``"'$`` then ``)'"`` must be absent.
-_DOUBLE_WRAP_CSUB = "'$("
-_DOUBLE_WRAP_CLOSE = ")'\""
-
-
-def _has_double_wrapped_csub(text: str) -> bool:
-    return _DOUBLE_WRAP_CSUB in text and _DOUBLE_WRAP_CLOSE in text
-
 
 def test_ref_command_substitution_stays_out_of_double_quotes():
-    """A ref carrying ``$(...)`` must never be re-read by the shell as a
-    command substitution. The failed form is the double-wrap: double quotes
-    around an already-single-quoted value. Proves the bug when red."""
+    """A ref carrying ``$(...)`` must never reach the shell: build_job refuses it.
+
+    Old decision (F1): the payload was single-quote-contained in the rendered
+    argv. F4 hardened the contract: command substitution / metacharacter
+    payloads in ref are now refused outright (ValueError), which enforces the
+    same "never executed" intent more strongly.
+    """
     for payload in (
         "$(touch /tmp/x)",
         "$(id)",
         "`touch /tmp/x`",
         "main$(echo hi)",
     ):
-        text = build_job("delfin", payload, ["tests/a.py"], "cpu", 10)
-        assert not _has_double_wrapped_csub(text), (
-            f"ref {payload!r} rendered into a double-wrapped command "
-            f"substitution that a Bash job would execute"
-        )
+        with pytest.raises(ValueError):
+            build_job("delfin", payload, ["tests/a.py"], "cpu", 10)
 
 
 def test_repo_metacharacters_are_single_quoted_for_shell_commands():
-    """repo crosses into ``git -C ...``; it must be shlex-quoted so a
-    payload cannot become an extra command on the archival line."""
-    text = build_job("repo$(id)", "main", ["tests/a.py"], "cpu", 10)
-    # the git archival line quotes the repo with single quotes: -C 'repo$(id)'
-    assert re.search(r"git -C 'repo\$\(id\)' archive main", text) is not None
-    assert not _has_double_wrapped_csub(text)
+    """repo must never let a metachar payload reach the archival line: refused.
+
+    Old decision (F1): repo="repo$(id)" was single-quoted as -C 'repo$(id)'.
+    F4 hardened the contract: shell metacharacters in repo are now refused
+    (ValueError) before any rendering, which is the stronger form of the same
+    "no extra command on the archival line" intent.
+    """
+    with pytest.raises(ValueError):
+        build_job("repo$(id)", "main", ["tests/a.py"], "cpu", 10)
 
 
 def test_export_all_exactly_once_and_no_attached_vars():

@@ -85,34 +85,28 @@ def test_leading_dash_refused(param):
 
 
 def test_ref_newline_cannot_execute_on_its_own_line():
-    """ref='main\\ntouch MARKER' must NOT render 'touch MARKER' on its own line."""
+    """A newline in ref must not reach the script: build_job refuses it (ValueError)."""
     good = _good()
     good["ref"] = "main\ntouch MARKER_NEWLINE"
-    script = build_job(**good)
-    body = script.splitlines()
-    assert "touch MARKER_NEWLINE" not in body  # must not appear as a line
+    with pytest.raises(ValueError):
+        build_job(**good)
 
 
 def test_partition_cannot_inject_sbatch_line():
-    """partition must not smuggle a '#SBATCH --export=ALL,VAR' line in."""
+    """A newline in partition must not smuggle a '#SBATCH --export=ALL,VAR' line: refused."""
     good = _good()
     good["partition"] = "cpu\n#SBATCH --export=ALL,EVIL=1"
-    script = build_job(**good)
-    evil = [L for L in script.splitlines() if L.startswith("#SBATCH --export=ALL,EVIL")]
-    assert not evil
+    with pytest.raises(ValueError):
+        build_job(**good)
 
 
 def test_no_stray_sbatch_lines():
-    """No rendered line beyond the fixed set may start with '#SBATCH'."""
+    """A control char in any #SBATCH-valued param is refused (no stray directive)."""
     for ctl in ("\n", "\r", "\t", "\x00"):
         good = _good()
-        good["partition"] = ("cpu" + ctl).rstrip() or "cpu"
-        script = build_job(**good)
-        for line in script.splitlines():
-            if line.startswith("#SBATCH"):
-                assert any(
-                    line.startswith(prefix) for prefix in _FIXED_SBATCH_STARTS
-                ), f"unexpected #SBATCH line: {line!r}"
+        good["partition"] = "cpu" + ctl
+        with pytest.raises(ValueError):
+            build_job(**good)
 
 
 def test_good_job_still_renders_the_fixed_header():
