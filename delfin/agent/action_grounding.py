@@ -41,7 +41,8 @@ by phase 3.
 from __future__ import annotations
 
 import difflib
-from collections import Counter
+import hashlib
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -239,39 +240,71 @@ class FailureBudgetLimits:
     knobs the pure decision function reads. ``identical_fail_limit`` is the
     count of consecutive identical ``(tool, normalized args)`` *failures*
     at which a subsequent identical call yields a "stop and ask" hint.
+    ``max_entries`` bounds the in-memory table, so a process-lifetime budget
+    (the dispatch wiring holds one per executor, shared across the sessions
+    of a dashboard kernel) cannot grow without bound.
     """
     identical_fail_limit: int = 3
+    max_entries: int = 512
 
 
 class FailureBudget:
     """Per-task gate: the same failing call a third time says "stop and ask".
 
-    Pure and stateful but side-effect-free — all state is an in-memory
-    counter keyed on ``(tool, normalize_args(args))``. ``retrospective``
-    reports the failing signature after the fact; ``repeat_hint`` is called
-    BEFORE a call runs and returns a :class:`GroundingHint` when the
-    identical failing call has already fired ``identical_fail_limit`` times.
-    A success for a signature resets its streak.
+    Pure and stateful but side-effect-free — all state is an in-memory,
+    BOUNDED table keyed on a short SHA-1 hash of ``normalize_args(args)``.
+    Only the tool name and the hash are stored (never the readable
+    signature), so a large ``write_file`` payload is retained neither as a
+    key nor as a value. A SUCCESS deletes its entry entirely instead of
+    leaving a zero-count key resident; the table is capped at
+    ``max_entries`` (new signatures FIFO-drop the oldest past the cap), so
+    process-lifetime usage stays flat. ``failure_signature`` reports the
+    ``tool|hash`` of the most-repeated failing call after the fact;
+    ``repeat_hint`` is called BEFORE a call runs and returns a
+    :class:`GroundingHint` when the identical failing call has already fired
+    ``identical_fail_limit`` times.
     """
 
     def __init__(self, limits: Optional[FailureBudgetLimits] = None):
         self._limits = limits or FailureBudgetLimits()
-        self._fails: Counter = Counter()          # (tool, sig) -> fail count
-        self._streaks: dict[tuple[str, str], int] = {}  # consecutive fails
+        # Bounded, insertion-ordered tables keyed on the (tool, digest) tuple.
+        # _fails = total failures, _streaks = consecutive failures; a key is
+        # present ONLY while its signature has failed at least once.
+        self._fails: "OrderedDict[tuple[str, str], int]" = OrderedDict()
+        self._streaks: "OrderedDict[tuple[str, str], int]" = OrderedDict()
 
     def _key(self, tool: object, args: object) -> tuple[str, str]:
+        """Short signature key: (tool, sha1 of the NORMALIZED args). The
+        readable args are hashed, never stored."""
         t = str(tool).strip()
-        return t, normalize_args(args)
+        digest = hashlib.sha1(normalize_args(args).encode("utf-8")).hexdigest()
+        return t, digest
 
     def record(self, tool: object, args: object, ok: bool) -> None:
-        """Register the outcome of one call. A success breaks the streak."""
+        """Register one call's outcome. A success DELETES the signature, so
+        the table cannot grow on success (no lingering zero-key)."""
         key = self._key(tool, args)
         if ok:
-            self._fails[key] = 0
-            self._streaks[key] = 0
+            self._fails.pop(key, None)
+            self._streaks.pop(key, None)
             return
-        self._fails[key] += 1
+        if key not in self._streaks:
+            self._trim_to_cap()
+        self._fails[key] = self._fails.get(key, 0) + 1
         self._streaks[key] = self._streaks.get(key, 0) + 1
+
+    def _trim_to_cap(self) -> None:
+        """Drop the oldest entries so the table stays bounded (FIFO). Only a
+        genuinely NEW failing signature triggers it; an existing repeat does
+        not (so a stuck loop keeps accumulating toward the hint)."""
+        while len(self._streaks) >= self._limits.max_entries and self._streaks:
+            oldest, _ = self._streaks.popitem(last=False)
+            self._fails.pop(oldest, None)
+
+    @property
+    def entry_count(self) -> int:
+        """How many distinct failing signatures the table currently holds."""
+        return len(self._streaks)
 
     def repeat_hint(self, tool: object, args: object
                     ) -> Optional[GroundingHint]:
@@ -295,12 +328,11 @@ class FailureBudget:
         )
 
     def failure_signature(self) -> Optional[str]:
-        """The normalized ``(tool, args)`` string of the most-repeated failing
-        call, for feeding the existing failure_log hook; None when none."""
-        # A success sets a key's count to 0 — never report a reset (0-count)
-        # key as "most repeated", it would mask a real repeating failure.
+        """The ``{tool}|{hash}`` of the most-repeated failing call, for feeding
+        the existing failure_log hook; None when nothing has failed. Only the
+        hash is exposed — the readable args are never retained."""
         positives = [(k, c) for k, c in self._fails.items() if c > 0]
         if not positives:
             return None
-        (tool, sig) = max(positives, key=lambda kc: kc[1])[0]
-        return f"{tool}|{sig}"
+        key, _count = max(positives, key=lambda kc: kc[1])
+        return f"{key[0]}|{key[1]}"
