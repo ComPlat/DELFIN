@@ -66,8 +66,17 @@ _SIDEBAR_CSS = """<style>
        The shell clips with `clip`, not `hidden` -- `hidden` makes the
        shell a scroll box and a sticky child sticks to that, not the page. */
     position: sticky; top: 8px; align-self: flex-start;
-    box-sizing: border-box; flex: 0 0 236px !important; width: 236px;
-    margin: 0 12px 0 0; padding: 8px 8px 10px; gap: 6px;
+    /* The drag writes --delfin-sessions-w on the shell and this rule
+       reads it. It cannot write `flex` directly: the declaration below is
+       `!important` (widget stylesheets override a plain one), and a
+       stylesheet !important beats an inline declaration -- so the handler
+       on this branch set sidebar.style.flex on every move and the column
+       never changed width. A custom property is read by the !important
+       rule itself, so the drag wins without the rule being weakened. */
+    box-sizing: border-box;
+    flex: 0 0 var(--delfin-sessions-w, 236px) !important;
+    width: var(--delfin-sessions-w, 236px);
+    margin: 0; padding: 8px 8px 10px; gap: 6px;
     background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 10px;
     overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -157,10 +166,22 @@ _SIDEBAR_CSS = """<style>
    browser's .calc-splitter. The shell aligns items at flex-start, so a
    height:100% strip would collapse to zero -- the splitter is sticky too,
    tracking the same 100vh column the sidebar sticks to. */
-.delfin-session-shell { align-items: stretch; }
-.delfin-splitter-host { align-self: stretch; display: flex;
-    flex-direction: column; position: sticky; top: 8px; }
-.delfin-session-splitter { flex: 1 1 auto; width: 8px; min-height: 160px;
+.delfin-session-shell { align-items: flex-start; }
+/* The gap belongs to the SPLITTER, equally on both sides, and not to the
+   sidebar. It was the sidebar's `margin-right: 12px`, which put the whole
+   gap on one side: 12px between column and bar, nothing between bar and
+   chat, so the handle sat flush against the chat with a wide empty strip
+   behind it. One margin here is symmetric by construction -- there is no
+   second number that can drift away from the first. */
+.delfin-splitter-host { align-self: flex-start; display: flex;
+    flex-direction: column; position: sticky; top: 8px;
+    margin: 0 var(--delfin-splitter-gap, 10px); }
+/* Height ends at the Send row, not at the bottom of the page. The JS
+   below measures it; this is what shows until then and if the measure
+   fails -- the chat's own height (tab_agent: 100vh - 460px) plus the
+   composer, so the first paint is already close. */
+.delfin-session-splitter { width: 8px;
+    height: calc(100vh - 400px); min-height: 160px;
     cursor: col-resize; touch-action: none;
     background: linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);
     border-radius: 4px; z-index: 10; pointer-events: auto; }
@@ -185,16 +206,20 @@ _SPLITTER_INIT_JS = """\
             var host = shell.querySelector('.delfin-splitter-host');
             if (!splitter || !sidebar || !host) return;
             var MIN = 170, MAX = 420;
+            // Read and write the one custom property the stylesheet's
+            // !important rule consumes. Writing sidebar.style.flex cannot
+            // work against that rule, and writing it anyway is what made
+            // the drag look dead on the real page while a DOM test that
+            // models no cascade reported it working.
             function current() {
-                var m = /^0\s+0\s+([\d.]+)px$/.exec(sidebar.style.flex);
-                return m ? parseFloat(m[1]) : 236;
+                var v = shell.style.getPropertyValue('--delfin-sessions-w');
+                var n = parseFloat(v);
+                return isNaN(n) ? 236 : n;
             }
             function apply(w) {
                 w = Math.max(MIN, Math.min(MAX, Math.round(w)));
                 if (Math.abs(w - current()) < 1) return;
-                sidebar.style.flex = '0 0 ' + w + 'px';
-                sidebar.style.width = w + 'px';
-                sidebar.style.maxWidth = 'none';
+                shell.style.setProperty('--delfin-sessions-w', w + 'px');
             }
             function onMove(e) {
                 var box = host.parentElement.getBoundingClientRect();
@@ -217,6 +242,34 @@ _SPLITTER_INIT_JS = """\
                 document.addEventListener('pointerup', onUp);
                 document.addEventListener('pointercancel', onUp);
             });
+
+            // The bar reaches down to the Send row and stops there. Run to
+            // the bottom of the column it looked like a page divider and
+            // kept growing with the transcript; the composer is where the
+            // conversation ends, so that is where the handle ends.
+            //
+            // Measured rather than computed from a CSS expression: the
+            // composer's height depends on the textarea, which the user can
+            // grow, and on whether the quick-cycle button is shown. The
+            // stylesheet carries an approximation for the first paint.
+            function fit() {
+                var send = shell.querySelector('.delfin-agent-send-row');
+                if (!send) return;          // no composer yet: keep the CSS
+                var top = shell.getBoundingClientRect().top;
+                var bottom = send.getBoundingClientRect().bottom;
+                var h = Math.round(bottom - top);
+                if (h < 160) return;        // laid out but collapsed
+                splitter.style.height = h + 'px';
+            }
+            fit();
+            // The composer changes height when the textarea is dragged or a
+            // long line wraps, and the window changes it too. A one-shot
+            // measure was right for one layout and wrong after the first
+            // resize.
+            window.addEventListener('resize', fit);
+            try {
+                new ResizeObserver(fit).observe(shell);
+            } catch (err) { /* older browser: resize alone */ }
         })(shells[i]);
     }
 })();
