@@ -131,3 +131,97 @@ def test_a_fresh_inbox_is_still_known(tmp_path):
     any presence record exists."""
     M.send("nacht-s13", "hello", from_key="nacht-s16")
     assert M.deliverable("nacht-s13") is True
+
+
+def test_an_overflow_dropped_message_stays_accountable(tmp_path):
+    """Reviewer finding (s17, absorbed from the withdrawn probe): when a
+    recipient's inbox holds more than _MAX_TAKE messages, _take keeps the
+    newest _MAX_TAKE and discards the older ones -- and, on the old core,
+    discards them WITHOUT a receipt. A sender's status() for a dropped message
+    then regressed from 'queued' to 'unknown', the same value as a never-sent
+    id, and ls() lost it: the sender could no longer tell 'my message was
+    dropped by the cap' from 'I mistyped the id'. That is the silent-loss
+    hazard phase 3 targets. The cap must never make a queued message
+    indistinguishable from one that never existed."""
+    cap = M._MAX_TAKE
+    first_id = None
+    for i in range(cap + 2):  # two messages beyond what one take will deliver
+        sent = M.send("nacht-s17", f"message {i}", from_key="nacht-s16")
+        if i == 0:
+            first_id = sent["id"]
+    # First message was confirmed queued before the capped take.
+    assert M.status(first_id, "nacht-s16") == "queued"
+    got = M.take("nacht-s17")
+    assert len(got) == cap + 1  # cap delivered + one truncation marker
+    # The sender must still be able to account for the dropped message.
+    assert M.status(first_id, "nacht-s16") != "unknown", (
+        "a message that was queued must not become indistinguishable from a "
+        "never-sent id when the inbox cap drops it"
+    )
+    assert any(r["id"] == first_id for r in M.ls("nacht-s16")), (
+        "ls() must still show the dropped message so the sender can see it "
+        "was never delivered"
+    )
+
+
+def test_an_overflow_dropped_message_reports_dropped(tmp_path):
+    """The status a dropped message reports must name the drop honestly --
+    'dropped', not the 'delivered' that a receipt-with-no-read_at would give.
+    It was accepted into the inbox but never handed to the recipient's prompt,
+    so it is not delivered; calling it delivered would lie to the sender."""
+    cap = M._MAX_TAKE
+    first_id = None
+    for i in range(cap + 2):
+        sent = M.send("nacht-s18", f"message {i}", from_key="nacht-s16")
+        if i == 0:
+            first_id = sent["id"]
+    M.take("nacht-s18")
+    assert M.status(first_id, "nacht-s16") == "dropped"
+    row = next(r for r in M.ls("nacht-s16") if r["id"] == first_id)
+    assert row["status"] == "dropped"
+
+
+def test_status_will_still_be_delivered_for_a_cap_survivor(tmp_path):
+    """The cap must not corrupt the receipts of the messages it DOES deliver:
+    the newest _MAX_TAKE that survive a capped take still report delivered."""
+    cap = M._MAX_TAKE
+    survivor_id = None
+    for i in range(cap + 1):  # the newest 'cap' survive; only the oldest drops
+        sent = M.send("nacht-s17", f"message {i}", from_key="nacht-s16")
+        survivor_id = sent["id"]
+    M.take("nacht-s17")
+    assert M.status(survivor_id, "nacht-s16") == "delivered"
+
+
+def test_operator_delivery_is_traceable_by_a_normal_sender(tmp_path):
+    """A normal session can ask status of a message it sent to the operator
+    mailbox -- the operator takes it like any inbox, and the sender sees it
+    delivered/read. The operator path must not be a special case that the
+    sender cannot track."""
+    sent = M.send("operator", "status check", from_key="nacht-s16")
+    mid = sent["id"]
+    assert M.status(mid, "nacht-s16") == "queued"
+    M.take("operator")
+    assert M.status(mid, "nacht-s16") == "delivered"
+    M.mark_read(mid)
+    assert M.status(mid, "nacht-s16") == "read"
+
+
+def test_the_receipts_sidecar_is_never_scanned_as_an_inbox(tmp_path):
+    """The receipts file (.receipts.json) lives inside the inbox dir but must
+    never be handed to a session as a message or listed as a recipient. It is
+    structurally excluded because every inbox scan globs *.jsonl and the
+    sidecar is .receipts.json -- pinned so a future glob widening cannot
+    silently turn the sidecar into deliverable mail or a listed row."""
+    M.send("nacht-s17", "hello", from_key="nacht-s16")
+    M.take("nacht-s17")  # delivers -> writes the .receipts.json sidecar
+    sidecar = M._receipts_path()
+    assert sidecar.suffix == ".json", "the sidecar must not look like an inbox"
+    # Every scan source in the module globs only *.jsonl, and the sidecar is
+    # never among them -- so no inbox scan (take/ls/_queued_sender_of) reads it.
+    scanned = M._DIR.glob("*.jsonl")
+    assert sidecar not in scanned
+    # The genuinely delivered message is still reported, nothing read off the
+    # sidecar file name.
+    rows = M.ls("nacht-s16")
+    assert len(rows) == 1 and rows[0]["to"] == "nacht-s17"

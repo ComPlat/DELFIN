@@ -262,6 +262,13 @@ def _take(path) -> list[dict]:
     # were not.
     if len(out) > _MAX_TAKE:
         dropped = len(out) - _MAX_TAKE
+        # Persist a receipt for the messages the cap discards BEFORE truncating
+        # so a sender can still account for them: on the old core a dropped
+        # message fell off both status() and ls() and became byte-for-byte
+        # indistinguishable from a never-sent id -- the silent-loss hazard
+        # phase 3 targets (reviewer finding). Their receipt carries only
+        # metadata (dropped_at), never the text.
+        _receipts_dropped([m for m in out[:-dropped] if m.get("id")])
         out = out[-_MAX_TAKE:]
         out.insert(0, {"from": "", "from_title": "the session inbox",
                        "text": f"{dropped} earlier message(s) were not "
@@ -349,6 +356,32 @@ def _receipts_deliver(messages: list[dict]) -> None:
     _receipts_save(receipts)
 
 
+def _receipts_dropped(messages: list[dict]) -> None:
+    """Record that each ``message`` was discarded by the inbox cap: accepted
+    into the recipient's inbox but never handed to its prompt.
+
+    Metadata only (never the body, like the deliver receipts): the sender can
+    keep the id -- status() reports it 'dropped' and ls() still lists it -- so
+    'my message was dropped by the cap' stays distinct from 'I mistyped the
+    id', which is exactly the accountability the phase-3 contract promises.
+    """
+    if not messages:
+        return
+    receipts = _receipts()
+    now = time.time()
+    for m in messages:
+        mid = str(m.get("id") or "")
+        if not mid:
+            continue
+        rec = receipts.get(mid) or {}
+        rec.setdefault("to", m.get("to"))
+        rec.setdefault("from", m.get("from"))
+        rec.setdefault("sent_at", m.get("sent_at"))
+        rec["dropped_at"] = now
+        receipts[mid] = rec
+    _receipts_save(receipts)
+
+
 def mark_read(message_id: str) -> None:
     """Mark a delivered message as read (the recipient turned to it)."""
     mid = str(message_id or "")
@@ -391,7 +424,9 @@ def status(message_id: str, from_key: str = "") -> str:
     never reveal that a message exists to a caller who is not its sender.
     ``queued`` - still in its recipient's inbox. ``delivered`` - taken by the
     recipient (receipt exists, not yet read). ``read`` - the recipient marked
-    it read."""
+    it read. ``dropped`` - the recipient's inbox held more than _MAX_TAKE, so
+    the cap discarded it before it reached the prompt; the sender can still
+    account for it (distinct from the ``unknown`` of a never-sent id)."""
     mid = str(message_id or "")
     sender = str(from_key or "").strip()
     if not mid or not sender:
@@ -400,6 +435,8 @@ def status(message_id: str, from_key: str = "") -> str:
     if rec is not None:
         if str(rec.get("from")) != sender:
             return "unknown"
+        if rec.get("dropped_at"):
+            return "dropped"
         if rec.get("read_at"):
             return "read"
         if rec.get("taken_at"):
@@ -444,7 +481,12 @@ def ls(from_key: str = "") -> list[dict]:
     for mid, rec in _receipts().items():
         if str(rec.get("from")) != sender:
             continue
-        st = "read" if rec.get("read_at") else "delivered"
+        if rec.get("dropped_at"):
+            st = "dropped"
+        elif rec.get("read_at"):
+            st = "read"
+        else:
+            st = "delivered"
         rows[mid] = {
             "id": mid, "to": rec.get("to"), "from": sender,
             "status": st, "sent_at": rec.get("sent_at"),
