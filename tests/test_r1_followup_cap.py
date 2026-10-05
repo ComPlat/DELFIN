@@ -79,8 +79,19 @@ def test_the_engine_latch_records_one_note_for_an_announcing_answer(monkeypatch)
     assert eng.pending_turn_continuation == ""
 
 
-def test_no_open_tasks_means_no_note(monkeypatch):
+def test_no_open_tasks_still_records_a_note(monkeypatch):
+    """Changed 2026-10-05 with the two push reports: a turn that
+    announces an action and takes none is followed up whether or not the
+    task list still has rows. The latch above is what keeps it to one."""
     eng = object.__new__(AgentEngine)
     monkeypatch.setattr(AgentEngine, "_open_task_count", lambda self: 0)
     eng._note_turn_continuation("Let me write the next test.")
+    assert eng.pending_turn_continuation
+
+
+def test_a_hand_back_records_no_note_with_no_tasks(monkeypatch):
+    """What actually stops the nudge now."""
+    eng = object.__new__(AgentEngine)
+    monkeypatch.setattr(AgentEngine, "_open_task_count", lambda self: 0)
+    eng._note_turn_continuation("Let me know what you would like next.")
     assert eng.pending_turn_continuation == ""
