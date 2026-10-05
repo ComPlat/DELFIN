@@ -7047,6 +7047,19 @@ def create_tab(ctx):
             state.setdefault("_deferred_on_its_own", []).append(text)
             return False
         try:
+            from delfin.agent import session_pause as _sp
+            _paused = _sp.wake_blocked(str(getattr(ctx, "presence_key", "") or ""))
+        except Exception:
+            _paused = False
+        if _paused:
+            if not state.get("_paused_note_shown"):
+                state["_paused_note_shown"] = True
+                _append_system_message(
+                    "⏸ Paused (delfin-agent pause): nothing starts on its own "
+                    "until `delfin-agent resume`.")
+            return False
+        state["_paused_note_shown"] = False
+        try:
             from delfin.agent import stop_all as _stop_all
             allowed = _stop_all.wakes_allowed(state.get("_armed_at", 0.0))
             note = "" if allowed else _stop_all.held_note()
@@ -8597,6 +8610,12 @@ def create_tab(ctx):
 
             state["engine"] = engine
             ctx.agent_engine = engine
+            # `delfin-agent pause <session>` reaches a dashboard session by
+            # its presence key, as it reaches a terminal one by its name.
+            try:
+                engine.pause_key = str(getattr(ctx, "presence_key", "") or "")
+            except Exception:
+                pass
 
             # The conversation the previous engine held, when this one
             # replaces it for a new model, provider, effort or permission
@@ -16455,6 +16474,7 @@ def create_tab(ctx):
             # the session start turns on its own again (_send_on_its_own).
             state["_armed_at"] = time.time()
             state["_held_note_shown"] = False
+            state["_announce_followups"] = 0
 
         # The offer belonged to the answer before this message. Keeping it
         # would colour the box green through the next turn and put a stale
@@ -17838,6 +17858,12 @@ def create_tab(ctx):
                         getattr(engine, "last_compaction_info", None) or {}
                     ).get("archived_at")
 
+                    try:
+                        from delfin.agent.repl import prepare_fresh_turn
+                        current_msg = prepare_fresh_turn(
+                            engine, current_msg, workspace=ctx.repo_dir or None)
+                    except Exception:
+                        pass
                     _final_text = engine.stream_response(
                         user_message=current_msg,
                         on_token=_on_token,
@@ -19208,13 +19234,36 @@ def create_tab(ctx):
                                 _append_system_message("\n".join(_lines))
                     except Exception:
                         pass
-                    # Process next queued message if any
-                    _process_queue()
+                    # Process next queued message if any; else run the
+                    # announced-but-not-done follow-up the engine noted.
+                    if state.get("message_queue"):
+                        _process_queue()
+                    else:
+                        _continue_after_announcement()
                 else:
                     # Stale worker — just save session, don't touch UI
                     _auto_save_session()
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _continue_after_announcement():
+        """The engine's follow-up note for a turn that ended announcing work
+        (\"Let me ...\") while tasks were open -- at most three in a row; real
+        input re-arms the cap. Same rule as the terminal (repl.py)."""
+        engine = state.get("engine")
+        note = str(getattr(engine, "pending_turn_continuation", "") or "")
+        try:
+            if engine is not None and hasattr(engine, "clear_turn_continuation"):
+                engine.clear_turn_continuation()
+        except Exception:
+            pass
+        if not note or (input_textarea.value or "").strip():
+            return
+        done = int(state.get("_announce_followups") or 0)
+        if done >= 3:
+            return
+        state["_announce_followups"] = done + 1
+        _send_on_its_own(note)
 
     def _process_queue():
         """Send the next queued message, if any."""
