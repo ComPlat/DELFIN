@@ -684,9 +684,13 @@ def _provider_key(name: str) -> str:
 _AGENT_CSS = """\
 <style>
 .delfin-agent-chat {
-    max-height: calc(100vh - 460px);
+    /* Rebuilt during streaming: keep the viewport stable so transcript
+       growth cannot move the composer or the surrounding page. */
+    height: max(200px, calc(100vh - 460px));
+    box-sizing: border-box;
     overflow-y: auto;
-    overflow-anchor: auto;
+    scrollbar-gutter: stable;
+    overflow-anchor: none;
     padding: 10px;
     border: 1px solid #ddd;
     border-radius: 6px;
@@ -697,6 +701,7 @@ _AGENT_CSS = """\
     display: flex;
     flex-direction: column;
 }
+.delfin-agent-chat-host { overflow-anchor: none; }
 /* Return to the newest output. Sticky rather than absolute: the chat is its
    own scrollport, so an absolutely placed control would ride away with the
    content instead of staying within reach. Hidden while the reader is
@@ -6103,6 +6108,7 @@ def create_tab(ctx):
         value=_CHAT_OPEN + '<i>Start a conversation...</i></div>',
         layout=widgets.Layout(min_height="200px"),
     )
+    chat_html.add_class("delfin-agent-chat-host")
 
     # Agent-view switcher: clickable chips to "go INTO" a subagent and watch
     # its activity in the chat window. Shown ONLY while subagents exist this
@@ -6623,6 +6629,9 @@ def create_tab(ctx):
         // a scroll the reader made in the same frame.
         function setTop(c, top, st) {
             st = st || stateFor(c);
+            // Compare the achievable offset. scrollHeight itself is always
+            // beyond the end, so comparing it directly writes on every poll.
+            top = Math.max(0, Math.min(top, c.scrollHeight - c.clientHeight));
             if (c.scrollTop === top) return;
             st.auto = true;
             c.scrollTop = top;
