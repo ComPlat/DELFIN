@@ -76,9 +76,19 @@ const shell = {
 host.parentElement = shell;
 
 const docL = {};
+// The shell appears only after `present` flips -- the real case: the
+// agent tab is not the one in front when the init script runs, so its
+// DOM does not exist yet.
+let present = false;
+const timers = [];
+global.setTimeout = (fn) => { timers.push(fn); return timers.length; };
+function runTimers(n) {
+  for (let i = 0; i < n && timers.length; i++) (timers.shift())();
+}
 global.document = {
+  body: {},
   querySelectorAll: (sel) =>
-    sel === '.delfin-session-shell' ? [shell] : [],
+    (sel === '.delfin-session-shell' && present) ? [shell] : [],
   addEventListener(t, f) { (docL[t] = docL[t] || []).push(f); },
   removeEventListener(t, f) {
     docL[t] = (docL[t] || []).filter((g) => g !== f);
@@ -88,6 +98,9 @@ global.window = {addEventListener() { seen.resize_hooked = true; }};
 global.ResizeObserver = function (fn) {
   this.observe = () => { seen.observer_attached = true; };
 };
+global.MutationObserver = function (fn) {
+  this.observe = () => { seen.mutation_watch_attached = true; };
+};
 
 __SCRIPT__
 
@@ -96,18 +109,55 @@ function width() {
   const v = props['--delfin-sessions-w'];
   return v === undefined ? null : parseFloat(v);
 }
+function down() {
+  // Named rather than crashing: with no retry, nothing is ever bound and
+  // the array is undefined. A TypeError here tells the next reader
+  // nothing, so the property says what was missing.
+  const fns = splitter._listeners.pointerdown;
+  if (!fns || !fns.length) {
+    seen.a_handler_is_attached_at_all = false;
+    console.log(JSON.stringify(seen));
+    process.exit(0);
+  }
+  seen.a_handler_is_attached_at_all = true;
+  fns.forEach((f) => f({preventDefault() {}, pointerId: 1}));
+}
 function drag(x) {
-  splitter._listeners.pointerdown.forEach((f) =>
-    f({preventDefault() {}, pointerId: 1}));
+  down();
   (docL.pointermove || []).forEach((f) => f({clientX: x}));
   (docL.pointerup || []).forEach((f) => f({pointerId: 1}));
 }
+
+// Nothing to bind at first run, and no handler may have been attached.
+seen.nothing_bound_while_absent =
+  shell.dataset.delfinSplitterBound === undefined
+  && (splitter._listeners.pointerdown || []).length === 0;
+
+// The tab is opened: the shell exists now, and a later retry finds it.
+present = true;
+runTimers(5);
+seen.bound_after_the_tab_appears =
+  shell.dataset.delfinSplitterBound === '1'
+  && (splitter._listeners.pointerdown || []).length === 1;
 
 seen.bound_once = shell.dataset.delfinSplitterBound === '1';
 seen.starts_unstyled = width() === null;
 
 drag(320);
 seen.drag_right_widens = width() === 320;
+
+// Dynamic: every move writes, not just the last one before release.
+down();
+const seenWidths = [];
+[300, 280, 260, 240].forEach((x) => {
+  (docL.pointermove || []).forEach((f) => f({clientX: x}));
+  seenWidths.push(width());
+});
+(docL.pointerup || []).forEach((f) => f({pointerId: 1}));
+seen.每_move_writes = false;   // replaced below
+seen.every_move_writes =
+  JSON.stringify(seenWidths) === JSON.stringify([300, 280, 260, 240]);
+delete seen['每_move_writes'];
 
 drag(200);
 seen.drag_left_narrows = width() === 200;
@@ -147,7 +197,7 @@ def test_the_splitter_drags_both_ways_and_stops_at_send():
     seen = json.loads(done.stdout.strip().splitlines()[-1])
     wrong = sorted(name for name, ok in seen.items() if not ok)
     assert not wrong, f"the splitter misbehaved: {', '.join(wrong)}"
-    assert len(seen) == 15, f"the driver checked {len(seen)} things, not 15"
+    assert len(seen) >= 17, f"the driver checked only {len(seen)} things"
 
 
 def test_the_gap_is_one_number_on_both_sides():
