@@ -3692,6 +3692,23 @@ class AgentEngine:
             except Exception:
                 pass
 
+        # A turn that announced an action while plan mode refused its calls
+        # says so in the ANSWER, not only in a notice that scrolls past.
+        # Reports 20261005-135825 / 20261005-140408: four turns of "Let me
+        # push the branch now" with every call read-only-refused, and the
+        # person never told that plan mode was the reason. The notice fires
+        # the moment it happens; this sentence is still there when they
+        # scroll back.
+        try:
+            if getattr(self.client, "_plan_mode_refused_this_turn", False):
+                from delfin.agent.turn_continuation import blocked_by_plan_mode
+                _said = blocked_by_plan_mode(full_response, refusals=1)
+                if _said:
+                    full_response = full_response.rstrip() + "\n\n" + _said
+                self.client._plan_mode_refused_this_turn = False
+        except Exception:
+            pass
+
         return full_response + _guard_note
 
     def _note_session_language(self, user_message: str) -> None:
