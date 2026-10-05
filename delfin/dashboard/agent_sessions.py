@@ -196,15 +196,37 @@ _SIDEBAR_CSS = """<style>
 #: the choice. Mirrors the calc browser's .calc-splitter handler.
 _SPLITTER_INIT_JS = """\
 (function () {
-    var shells = document.querySelectorAll('.delfin-session-shell');
-    for (var i = 0; i < shells.length; i++) {
-        (function (shell) {
-            if (!shell || shell.dataset.delfinSplitterBound) return;
-            shell.dataset.delfinSplitterBound = '1';
+    // The agent tab's DOM may not exist when this runs. ipywidgets Tab
+    // renders the SELECTED child only, and the dashboard sends every
+    // tab's init script once the page is assembled -- so if the agent tab
+    // is not the one in front, querySelectorAll finds no shell, the loop
+    // body never executes, and nothing is ever bound. That is why the
+    // handle could not be dragged even after the width was made
+    // overridable: the handler was never attached in the first place.
+    //
+    // Every other tab with a splitter retries (tab_literature: 40 tries;
+    // tab_calculations_browser: 400). This one ran once. It now retries
+    // AND keeps watching, because a session opened minutes later brings
+    // its own shell, and a bounded retry that has already expired would
+    // leave that one dead.
+    function bindAll() {
+        var shells = document.querySelectorAll('.delfin-session-shell');
+        var bound = 0;
+        for (var i = 0; i < shells.length; i++) {
+            if (bind(shells[i])) bound += 1;
+        }
+        return bound;
+    }
+    function bind(shell) {
+            var bound = false;
+            if (!shell || shell.dataset.delfinSplitterBound) return false;
             var splitter = shell.querySelector('.delfin-session-splitter');
             var sidebar = shell.querySelector('.delfin-sessions');
             var host = shell.querySelector('.delfin-splitter-host');
-            if (!splitter || !sidebar || !host) return;
+            // Not marked until the parts are really there. Marking first
+            // meant a shell seen half-built was written off for good.
+            if (!splitter || !sidebar || !host) return false;
+            shell.dataset.delfinSplitterBound = '1';
             var MIN = 170, MAX = 420;
             // Read and write the one custom property the stylesheet's
             // !important rule consumes. Writing sidebar.style.flex cannot
@@ -242,6 +264,7 @@ _SPLITTER_INIT_JS = """\
                 document.addEventListener('pointerup', onUp);
                 document.addEventListener('pointercancel', onUp);
             });
+            bound = true;
 
             // The bar reaches down to the Send row and stops there. Run to
             // the bottom of the column it looked like a page divider and
@@ -270,8 +293,25 @@ _SPLITTER_INIT_JS = """\
             try {
                 new ResizeObserver(fit).observe(shell);
             } catch (err) { /* older browser: resize alone */ }
-        })(shells[i]);
+            return bound;
     }
+
+    // Try now, then keep trying: the tab may be rendered later, and a
+    // session opened later brings a shell of its own. Bounded polling
+    // first (fast, for the ordinary "tab not in front yet" case), then a
+    // MutationObserver, which costs nothing while nothing changes and
+    // catches a shell that appears long after the polling gave up.
+    bindAll();
+    var tries = 0;
+    (function poll() {
+        tries += 1;
+        bindAll();
+        if (tries < 60) setTimeout(poll, tries < 20 ? 100 : 500);
+    })();
+    try {
+        var seen = new MutationObserver(function () { bindAll(); });
+        seen.observe(document.body, {childList: true, subtree: true});
+    } catch (err) { /* no observer: the polling above did what it could */ }
 })();
 """
 
