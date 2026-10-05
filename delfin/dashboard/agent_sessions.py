@@ -33,6 +33,28 @@ _RESUME_REFRESH_S = 60.0
 # How long the first click on "Stop all agents" waits for the second.
 _STOP_ARM_S = 8.0
 
+#: Ids of contexts whose splitter init script is already registered. The
+#: dashboard builds the agent tab once, but a settings change can rebuild a
+#: tab on the same context; without the guard the drag script would be
+#: emitted twice into the one keep_js() payload.
+_REGISTERED_INIT_JS = set()
+
+
+def _register_init_js(ctx: Any, script: str) -> None:
+    """Add ``script`` to a context's init-js payload, at most once."""
+    add = getattr(ctx, "add_init_js", None)
+    if not callable(add):
+        return
+    key = id(ctx)
+    if key in _REGISTERED_INIT_JS:
+        return
+    _REGISTERED_INIT_JS.add(key)
+    try:
+        add(script)
+    except Exception:
+        _REGISTERED_INIT_JS.discard(key)
+
+
 # The session list, in the agent tab's own palette (tab_agent._AGENT_CSS):
 # system font, slate greys, the chat's light blue for the session on screen.
 # Everything is border-box and the column clips horizontally -- widgets set
@@ -44,8 +66,17 @@ _SIDEBAR_CSS = """<style>
        The shell clips with `clip`, not `hidden` -- `hidden` makes the
        shell a scroll box and a sticky child sticks to that, not the page. */
     position: sticky; top: 8px; align-self: flex-start;
-    box-sizing: border-box; flex: 0 0 236px !important; width: 236px;
-    max-width: 236px; margin: 0 12px 0 0; padding: 8px 8px 10px; gap: 6px;
+    /* The drag writes --delfin-sessions-w on the shell and this rule
+       reads it. It cannot write `flex` directly: the declaration below is
+       `!important` (widget stylesheets override a plain one), and a
+       stylesheet !important beats an inline declaration -- so the handler
+       on this branch set sidebar.style.flex on every move and the column
+       never changed width. A custom property is read by the !important
+       rule itself, so the drag wins without the rule being weakened. */
+    box-sizing: border-box;
+    flex: 0 0 var(--delfin-sessions-w, 236px) !important;
+    width: var(--delfin-sessions-w, 236px);
+    margin: 0; padding: 8px 8px 10px; gap: 6px;
     background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 10px;
     overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -131,7 +162,158 @@ _SIDEBAR_CSS = """<style>
     border: 1px solid #fca5a5 !important; border-radius: 6px; font-size: 12px; }
 .delfin-session-stopall.delfin-armed { background: #b91c1c !important;
     color: #ffffff !important; }
+/* Draggable divide between the sidebar and the chat, mirroring the calc
+   browser's .calc-splitter. The shell aligns items at flex-start, so a
+   height:100% strip would collapse to zero -- the splitter is sticky too,
+   tracking the same 100vh column the sidebar sticks to. */
+.delfin-session-shell { align-items: flex-start; }
+/* The gap belongs to the SPLITTER, equally on both sides, and not to the
+   sidebar. It was the sidebar's `margin-right: 12px`, which put the whole
+   gap on one side: 12px between column and bar, nothing between bar and
+   chat, so the handle sat flush against the chat with a wide empty strip
+   behind it. One margin here is symmetric by construction -- there is no
+   second number that can drift away from the first. */
+.delfin-splitter-host { align-self: flex-start; display: flex;
+    flex-direction: column; position: sticky; top: 8px;
+    margin: 0 var(--delfin-splitter-gap, 10px); }
+/* Height ends at the Send row, not at the bottom of the page. The JS
+   below measures it; this is what shows until then and if the measure
+   fails -- the chat's own height (tab_agent: 100vh - 460px) plus the
+   composer, so the first paint is already close. */
+.delfin-session-splitter { width: 8px;
+    height: calc(100vh - 400px); min-height: 160px;
+    cursor: col-resize; touch-action: none;
+    background: linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);
+    border-radius: 4px; z-index: 10; pointer-events: auto; }
+.delfin-session-splitter:hover { background: linear-gradient(
+    to right, #b0b0b0, #e0e0e0, #b0b0b0); }
 </style>"""
+
+#: Drag the sessions column to a width. Runs once per shell (data-bound
+#: guard) after the page is assembled, along every tab's init script in the
+#: one keep_js() call from the dashboard. The widths it writes override the
+#: 236px CSS default on the sidebar, so a drag sticks and a refresh keeps
+#: the choice. Mirrors the calc browser's .calc-splitter handler.
+_SPLITTER_INIT_JS = """\
+(function () {
+    // The agent tab's DOM may not exist when this runs. ipywidgets Tab
+    // renders the SELECTED child only, and the dashboard sends every
+    // tab's init script once the page is assembled -- so if the agent tab
+    // is not the one in front, querySelectorAll finds no shell, the loop
+    // body never executes, and nothing is ever bound. That is why the
+    // handle could not be dragged even after the width was made
+    // overridable: the handler was never attached in the first place.
+    //
+    // Every other tab with a splitter retries (tab_literature: 40 tries;
+    // tab_calculations_browser: 400). This one ran once. It now retries
+    // AND keeps watching, because a session opened minutes later brings
+    // its own shell, and a bounded retry that has already expired would
+    // leave that one dead.
+    function bindAll() {
+        var shells = document.querySelectorAll('.delfin-session-shell');
+        var bound = 0;
+        for (var i = 0; i < shells.length; i++) {
+            if (bind(shells[i])) bound += 1;
+        }
+        return bound;
+    }
+    function bind(shell) {
+            var bound = false;
+            if (!shell || shell.dataset.delfinSplitterBound) return false;
+            var splitter = shell.querySelector('.delfin-session-splitter');
+            var sidebar = shell.querySelector('.delfin-sessions');
+            var host = shell.querySelector('.delfin-splitter-host');
+            // Not marked until the parts are really there. Marking first
+            // meant a shell seen half-built was written off for good.
+            if (!splitter || !sidebar || !host) return false;
+            shell.dataset.delfinSplitterBound = '1';
+            var MIN = 170, MAX = 420;
+            // Read and write the one custom property the stylesheet's
+            // !important rule consumes. Writing sidebar.style.flex cannot
+            // work against that rule, and writing it anyway is what made
+            // the drag look dead on the real page while a DOM test that
+            // models no cascade reported it working.
+            function current() {
+                var v = shell.style.getPropertyValue('--delfin-sessions-w');
+                var n = parseFloat(v);
+                return isNaN(n) ? 236 : n;
+            }
+            function apply(w) {
+                w = Math.max(MIN, Math.min(MAX, Math.round(w)));
+                if (Math.abs(w - current()) < 1) return;
+                shell.style.setProperty('--delfin-sessions-w', w + 'px');
+            }
+            function onMove(e) {
+                var box = host.parentElement.getBoundingClientRect();
+                apply(e.clientX - box.left);
+            }
+            function onUp(e) {
+                if (e && e.pointerId != null) {
+                    try { splitter.releasePointerCapture(e.pointerId); }
+                    catch (err) { /* already released */ }
+                }
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                document.removeEventListener('pointercancel', onUp);
+            }
+            splitter.addEventListener('pointerdown', function (e) {
+                e.preventDefault();
+                try { splitter.setPointerCapture(e.pointerId); }
+                catch (err) { /* document listeners carry it */ }
+                document.addEventListener('pointermove', onMove);
+                document.addEventListener('pointerup', onUp);
+                document.addEventListener('pointercancel', onUp);
+            });
+            bound = true;
+
+            // The bar reaches down to the Send row and stops there. Run to
+            // the bottom of the column it looked like a page divider and
+            // kept growing with the transcript; the composer is where the
+            // conversation ends, so that is where the handle ends.
+            //
+            // Measured rather than computed from a CSS expression: the
+            // composer's height depends on the textarea, which the user can
+            // grow, and on whether the quick-cycle button is shown. The
+            // stylesheet carries an approximation for the first paint.
+            function fit() {
+                var send = shell.querySelector('.delfin-agent-send-row');
+                if (!send) return;          // no composer yet: keep the CSS
+                var top = shell.getBoundingClientRect().top;
+                var bottom = send.getBoundingClientRect().bottom;
+                var h = Math.round(bottom - top);
+                if (h < 160) return;        // laid out but collapsed
+                splitter.style.height = h + 'px';
+            }
+            fit();
+            // The composer changes height when the textarea is dragged or a
+            // long line wraps, and the window changes it too. A one-shot
+            // measure was right for one layout and wrong after the first
+            // resize.
+            window.addEventListener('resize', fit);
+            try {
+                new ResizeObserver(fit).observe(shell);
+            } catch (err) { /* older browser: resize alone */ }
+            return bound;
+    }
+
+    // Try now, then keep trying: the tab may be rendered later, and a
+    // session opened later brings a shell of its own. Bounded polling
+    // first (fast, for the ordinary "tab not in front yet" case), then a
+    // MutationObserver, which costs nothing while nothing changes and
+    // catches a shell that appears long after the polling gave up.
+    bindAll();
+    var tries = 0;
+    (function poll() {
+        tries += 1;
+        bindAll();
+        if (tries < 60) setTimeout(poll, tries < 20 ? 100 : 500);
+    })();
+    try {
+        var seen = new MutationObserver(function () { bindAll(); });
+        seen.observe(document.body, {childList: true, subtree: true});
+    } catch (err) { /* no observer: the polling above did what it could */ }
+})();
+"""
 
 
 
@@ -512,7 +694,17 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         [widgets.HTML(_SIDEBAR_CSS), head, new_form, notice, list_box,
          resume_dropdown, elsewhere_note, stop_all_btn]), "delfin-sessions")
     stage = _classed(widgets.VBox(), "delfin-session-stage")
-    widget = _classed(widgets.HBox([sidebar, stage]), "delfin-session-shell")
+    splitter_host = _classed(widgets.HBox([widgets.HTML("")]),
+                             "delfin-splitter-host")
+    splitter = _classed(widgets.HTML(""), "delfin-session-splitter")
+    splitter_host.children = (splitter,)
+    widget = _classed(widgets.HBox([sidebar, splitter_host, stage]),
+                      "delfin-session-shell")
+    # Bind the drag once per shell when the whole page is assembled. The
+    # init scripts are gathered by the dashboard into one keep_js() call, so
+    # this runs after the shell is really on the page (the sidebar HTML
+    # alone would render too early to find it).
+    _register_init_js(ctx, _SPLITTER_INIT_JS)
 
     # -- lookup -------------------------------------------------------------
 
