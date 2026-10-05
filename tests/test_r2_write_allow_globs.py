@@ -51,7 +51,7 @@ def test_saving_the_merged_view_never_copies_it_to_the_user_file(tmp_path):
     ("tests/sub/test_foo_x.py", False),   # * does not cross a directory
     ("delfin/agent/engine.py", False),
     ("calc/a/b/c.inp", True),
-    ("calc", False),
+    ("calc", True),                     # dir/** names the directory itself (git pathspec)
 ])
 def test_globs_match_repo_relative_paths(tmp_path, rel, ok):
     perms = A.KitToolPermissions(
@@ -84,3 +84,16 @@ def test_the_write_gate_refuses_with_a_reason(tmp_path):
     assert err and "write scope" in err and "src/ok.py" in err
     assert ex._gate_write_path(str(ws / "src" / "ok.py"), perms,
                                "write_file", {"content": "x"}) is None
+
+
+@pytest.mark.parametrize("rel, ok", [
+    (".gate", True),            # the directory itself, e.g. `mv x .gate/`
+    (".gate/x.py", True),
+    (".gate/a/b.txt", True),
+    (".gatex", False),
+    ("other/.gate", False),
+])
+def test_dir_double_star_includes_the_directory_itself(tmp_path, rel, ok):
+    perms = A.KitToolPermissions(workspace=tmp_path,
+                                 write_allow_globs=(".gate/**",))
+    assert A._write_in_scope(tmp_path / rel, perms) is ok
