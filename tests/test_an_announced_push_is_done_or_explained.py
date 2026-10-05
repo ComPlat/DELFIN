@@ -108,3 +108,67 @@ def test_nothing_is_said_when_the_turn_announced_nothing():
     not carry a warning."""
     assert not TC.blocked_by_plan_mode(
         "The splitter is bound in tab_agent.py:14920.", refusals=3)
+
+
+def test_a_participle_closing_the_turn_is_an_announcement():
+    """One of the four turns ended "Pushing `jn/agent-chat-resizer` to the
+    remote now." -- no first person, no future auxiliary, the same
+    meaning, and the detector missed exactly that turn."""
+    assert TC.announced_action("Pushing `jn/agent-chat-resizer` to the remote now.")
+    assert TC.announced_action("Running the covering tests now.")
+
+
+def test_the_participle_form_stays_narrow():
+    """It must end the text and carry "now", or a report that merely
+    contains a participle would be read as an announcement."""
+    for text in (
+            "Pushing it would need a grant the user has not given, so I stopped.",
+            "Pushed the branch; CI is green now.",
+            "The splitter is bound in tab_agent.py:14920.",
+            "Task 3: pushing the branch",
+            ""):
+        assert not TC.announced_action(text), text
+
+
+def test_the_plan_mode_redirect_also_speaks_to_the_user():
+    """The redirect that exists today is addressed to the MODEL: it tells
+    it to call exit_plan_mode. In report 20261005-140408 the model did
+    not, and the person was left with "Let me push the branch now" and no
+    sign of why nothing ran. The same place must also say it to them.
+
+    Asserted on the source, because the branch sits inside the streaming
+    loop: reaching it needs a provider round whose results carry the
+    plan-mode refusal, which is the loop's own integration test, not a
+    unit of this module.
+    """
+    import pathlib
+
+    from delfin.agent import api_client
+
+    src = pathlib.Path(api_client.__file__).read_text(encoding="utf-8")
+    i = src.index("_plan_redirect_sent = True")
+    window = src[i:i + 2600]
+    assert 'yield StreamEvent(type="notice"' in window, (
+        "the redirect steers the model and tells the person nothing")
+    assert "Plan mode is on" in window
+    assert "/mode solo" in window or "exit_plan_mode" in window, (
+        "a reason that names no way out is what provoked the four repeats")
+    assert "_plan_mode_refused_this_turn" in window
+
+
+def test_the_sentence_reaches_the_answer_and_not_only_a_notice():
+    """A notice scrolls past; the answer is what the user scrolls back
+    to. The engine appends the sentence when the client reports that
+    plan mode refused something this turn, and clears the flag so the
+    next turn does not inherit it."""
+    import pathlib
+
+    from delfin.agent import engine as E
+
+    src = pathlib.Path(E.__file__).read_text(encoding="utf-8")
+    i = src.index("return full_response + _guard_note")
+    window = src[max(0, i - 1400):i]
+    assert "blocked_by_plan_mode" in window, (
+        "the sentence is written and nobody calls it")
+    assert "_plan_mode_refused_this_turn = False" in window, (
+        "the flag must be cleared, or every later turn carries the note")

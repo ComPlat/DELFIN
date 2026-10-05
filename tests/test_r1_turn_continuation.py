@@ -88,13 +88,31 @@ class TestShouldContinue:
         ok, _ = should_continue("I'm done here.", 2)
         assert ok is False
 
-    def test_zero_open_tasks_never_continues(self):
-        ok, _ = should_continue("Let me fix the test.", 0)
-        assert ok is False
+    def test_zero_open_tasks_still_continues(self):
+        """Changed on 2026-10-05, against field reports 20261005-135825
+        and 20261005-140408: the user typed "push" four times, each turn
+        answered "Let me push the branch now" and called nothing, and the
+        task list read {"completed": 5} -- so the old AND gate withheld
+        every nudge. An announcement the turn did not act on is the
+        signal; a task row is at most a hint about where to resume."""
+        ok, note = should_continue("Let me fix the test.", 0)
+        assert ok is True
+        assert note.strip()
+
+    def test_the_note_for_an_empty_list_does_not_talk_about_tasks(self):
+        """A model told to "continue the announced work" while the list
+        says everything is done has two contradictory facts, and the
+        recorded sessions spent their turns re-reading the list."""
+        _, with_tasks = should_continue("Let me fix the test.", 2)
+        _, without = should_continue("Let me fix the test.", 0)
+        assert with_tasks != without
+        assert "task list is not empty" not in without
 
     def test_negative_open_is_treated_as_zero(self):
-        ok, _ = should_continue("I will run the suite.", -3)
-        assert ok is False
+        ok, note = should_continue("I will run the suite.", -3)
+        assert ok is True
+        _, zero = should_continue("I will run the suite.", 0)
+        assert note == zero, "a negative count is not a third case"
 
     def test_note_present_only_when_continuing(self):
         ok, note = should_continue("Let me fix the test.", 1)
