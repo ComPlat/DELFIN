@@ -14,6 +14,7 @@ All exported text is scrubbed with ``memory_store._without_secrets``.
 """
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from typing import Any
 
@@ -105,7 +106,39 @@ def _py_name(arg_key: str) -> str:
     return arg_key.replace("-", "_")
 
 
-def _call_line(short: str, args: dict[str, Any]) -> str:
+def _call_prefix(import_line: str, short: str) -> str:
+    """How *short* must be spelled to be callable after *import_line*.
+
+    Input: the cell's import statement and the tool's function name.
+    Output: "" when the import binds the function itself, or
+    "<module>." when it binds a module the function lives in.
+
+    An import line decides this and nothing else can. `from delfin.api
+    import extract_energy_table` binds the name, so the bare call is
+    right; `from delfin import api` binds only `api`, so the bare call
+    is a NameError. Both forms are in _CHEMISTRY_TOOLS -- 13 module
+    imports and 7 function imports -- and the bare name was emitted for
+    both, so 13 of 20 mapped tools produced a cell that could not run.
+    Parsed rather than pattern-matched on the string: a future entry
+    with an alias or several names stays correct without this being
+    revisited.
+    """
+    try:
+        tree = ast.parse(import_line)
+    except SyntaxError:
+        return ""
+    bound = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound.append(alias.asname or alias.name.split(".")[0])
+    if short in bound:
+        return ""
+    return f"{bound[0]}." if bound else ""
+
+
+def _call_line(short: str, args: dict[str, Any], *,
+               prefix: str = "") -> str:
     """A best-effort native DELFIN call reconstructed from the arguments."""
     if not args:
         return f"# call replay not possible: no recorded arguments\n# original tool: {short}"
@@ -113,7 +146,7 @@ def _call_line(short: str, args: dict[str, Any]) -> str:
     # passed through as keywords so a human sees exactly what was set.
     parts = ", ".join(
         f"{_py_name(k)}={v!r}" for k, v in list(args.items())[:8])
-    return f"{short}({parts})"
+    return f"{prefix}{short}({parts})"
 
 
 def _cells_for_step(entry: dict, md) -> list:
@@ -143,10 +176,13 @@ def _cells_for_step(entry: dict, md) -> list:
 
 def _native_call(short: str, args: dict[str, Any]) -> str:
     import_line = _CHEMISTRY_TOOLS.get(short)
-    call = _call_line(short, args)
-    if import_line:
-        return f"{import_line}\n{call}"
-    return f"from delfin import api  # native surface for `{short}`\n{call}"
+    if not import_line:
+        # The fallback imports the module, so its call needs qualifying
+        # for exactly the same reason the mapped module imports do.
+        import_line = f"from delfin import api  # native surface for `{short}`"
+    call = _call_line(short, args,
+                      prefix=_call_prefix(import_line.split("#")[0], short))
+    return f"{import_line}\n{call}"
 
 
 def _args_of(entry: dict) -> dict:
