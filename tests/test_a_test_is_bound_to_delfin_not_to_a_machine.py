@@ -24,6 +24,21 @@ entry is removed as each file is made universal. Nothing here demands
 that the existing ones be fixed today -- it demands that the next test
 is built the way the rule says.
 
+What this file does NOT see, stated because it reads like a guard
+against machine dependence in general and is not one. It scans skip
+CONDITIONS for host lookups. A test with no `skipif` at all can still
+depend on the machine by reading **shared process state** -- a module
+singleton that accumulates across the session, so what it holds is
+whatever ran earlier on this host.
+
+Measured 2026-10-05: `test_the_calc_ledger_reaches_the_completion_check.py`
+failed two consecutive 20 000-test runs, on two branches, with a real
+observation from the machine's own calc directory inside a list it
+expected to hold only its own entry. This file's detector never looked
+at it and would not have. That class is isolated in conftest
+(`_isolate_shared_ledgers`) and pinned by
+tests/test_a_test_does_not_inherit_anothers_state.py.
+
 How to make one universal, in order of preference:
 
   supply it      give the test its own stand-in on PATH, so the host's
