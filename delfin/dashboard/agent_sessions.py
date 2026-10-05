@@ -85,6 +85,12 @@ _SIDEBAR_CSS = """<style>
     border-radius: 50%; background: #16a34a; vertical-align: middle;
     animation: delfin-session-pulse 1.4s ease-in-out infinite; }
 @keyframes delfin-session-pulse { 50% { opacity: 0.35; } }
+.delfin-session-needs .delfin-session-title::before { content: "";
+    display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0;
+    border-radius: 50%; background: #f97316; vertical-align: middle; }
+.delfin-session-unseen .delfin-session-title::before { content: "";
+    display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0;
+    border-radius: 50%; background: #9ca3af; vertical-align: middle; }
 @media (prefers-reduced-motion: reduce) {
     .delfin-session-busy .delfin-session-title::before { animation: none; } }
 .delfin-session-close { flex: 0 0 22px; width: 22px !important;
@@ -127,6 +133,41 @@ _SIDEBAR_CSS = """<style>
     color: #ffffff !important; }
 </style>"""
 
+
+
+#: The row class for each dot; at most one is set at a time.
+_DOT_CLASSES = {
+    "needs": "delfin-session-needs",
+    "busy": "delfin-session-busy",
+    "unseen": "delfin-session-unseen",
+}
+
+
+def needs_you(state: dict) -> bool:
+    """Whether a session is waiting for the user: an approval dialog, an
+    open question, or a plan to accept. Never raises."""
+    try:
+        broker = state.get("_kit_confirm_broker")
+        if broker is not None and getattr(broker, "_pending", None):
+            return True
+        ev = state.get("_ask_user_event")
+        if ev is not None and not ev.is_set():
+            return True
+        return bool(state.get("_pending_plan_body"))
+    except Exception:
+        return False
+
+
+def session_dot(*, busy: bool, needs: bool, unseen: bool) -> str:
+    """The row class for one session: orange when it needs you, green while
+    it works, grey when it finished while you were in another chat."""
+    if needs:
+        return _DOT_CLASSES["needs"]
+    if busy:
+        return _DOT_CLASSES["busy"]
+    if unseen:
+        return _DOT_CLASSES["unseen"]
+    return ""
 
 def _give_emergency_stop() -> None:
     """Give the emergency stop from a process of its own.
@@ -481,6 +522,22 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
     def _state(rec: dict) -> dict:
         return rec["refs"].get("state") or {}
 
+    def _mark(rec: dict) -> None:
+        """One dot per row: what the session needs from you beats that it
+        is working, which beats that it finished while you looked away."""
+        state = _state(rec)
+        busy = bool(state.get("streaming"))
+        if rec.get("_was_busy") and not busy and view["active"] != rec["key"]:
+            rec["unseen"] = True
+        rec["_was_busy"] = busy
+        wanted = session_dot(busy=busy, needs=needs_you(state),
+                             unseen=bool(rec.get("unseen")))
+        for cls in _DOT_CLASSES.values():
+            if cls == wanted:
+                rec["row"].add_class(cls)
+            else:
+                rec["row"].remove_class(cls)
+
     def _session_id(rec: dict) -> str:
         return str(_state(rec).get("active_session_id") or "")
 
@@ -515,6 +572,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         if rec is None:
             return
         view["active"] = key
+        rec["unseen"] = False
+        _mark(rec)
         for other in sessions:
             other["tab"].layout.display = "" if other["key"] == key else "none"
         state = _state(rec)
@@ -648,10 +707,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             label = _session_title(state)
             if rec["title_btn"].description != label:
                 rec["title_btn"].description = label
-            if state.get("streaming"):
-                rec["row"].add_class("delfin-session-busy")
-            else:
-                rec["row"].remove_class("delfin-session-busy")
+            _mark(rec)
             sid = _session_id(rec)
             if sid != rec.get("remembered_id"):
                 rec["remembered_id"] = sid
