@@ -43,7 +43,12 @@ from delfin.dashboard import structure_editor as editor
 from editor_source import EDITOR_SOURCE
 
 _WATER = "3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
-_needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not installed")
+#: Supplied, not skipped. These tests exercise DELFIN's own handling
+#: -- the command line it builds, the output it parses, the guard it
+#: applies -- and never xtb's arithmetic, so a stand-in on PATH is
+#: enough and the test then runs on every machine. The fixture uses
+#: the real xtb when there is one. See conftest.xtb_on_path.
+_needs_xtb = pytest.mark.usefixtures("xtb_on_path")
 _needs_mopac = pytest.mark.skipif(mopac.find_mopac() is None,
                                   reason="MOPAC not installed")
 

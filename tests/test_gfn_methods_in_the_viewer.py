@@ -21,7 +21,12 @@ from editor_source import (
 )
 
 _WATER = "3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
-_needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not installed")
+#: Supplied, not skipped. These tests exercise DELFIN's own handling
+#: -- the command line it builds, the output it parses, the guard it
+#: applies -- and never xtb's arithmetic, so a stand-in on PATH is
+#: enough and the test then runs on every machine. The fixture uses
+#: the real xtb when there is one. See conftest.xtb_on_path.
+_needs_xtb = pytest.mark.usefixtures("xtb_on_path")
 
 
 # ---------------------------------------------------------------------------
@@ -3828,7 +3833,14 @@ def test_gxtb_holds_what_the_editor_holds():
     assert abs(length - 1.05) < 0.01, f"the held O-H came out at {length:.3f} A"
 
 
-@_needs_xtb
+# The one test in this file that needs a REAL xtb, and it says why: it
+# checks that a stray `param_gfn2-xtb.txt` in the home directory does not
+# beat the parameters compiled into the binary. A stand-in has no
+# parameters to be beaten, so there is nothing here for it to show. Named
+# skip rather than the file's supplied-marker -- the rule is supply,
+# record, then skip with a reason, and this is the third case.
+@pytest.mark.skipif(not shutil.which("xtb"),
+                    reason="reads the real binary's own parameter files")
 def test_xtb_uses_its_own_parameters_and_not_whatever_is_lying_around(tmp_path,
                                                                      monkeypatch):
     """A stray parameter file in the home directory killed every GFN2 run.
