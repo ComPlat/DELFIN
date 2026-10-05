@@ -1089,7 +1089,7 @@ If MANTA's refinement already produced a GOAT-optimised winner, the separate
 editor, which the Submit and ORCA Builder tabs both embed (in the ORCA Builder every
 frame becomes a named block); `BUILD COMPLEX` and `SUBMIT GUPPY` belong to the Submit tab.
 
-Batch construction of many SMILES with any of these builders (`delfin cluster`, Slurm array or workstation, resumable, one archive): [CONSTRUCTION_BATCH.md](CONSTRUCTION_BATCH.md).
+Batch construction of many SMILES with any of these builders (`delfin cluster`, Slurm array or workstation, resumable, one archive): [CONSTRUCTION_BATCH.md](CONSTRUCTION_BATCH.md). In the Submit tab the **Construction batch** panel under the Batch SMILES field does the same: choose Builder and Mode, optionally a Run name (empty = automatic) and a list file (empty = the Batch SMILES field), then Prepare (a one-line summary with molecules, shards, cost and wall time), Submit, Status/Refresh (one progress line per set) and Collect (where the archive is, how many molecules have frames); the rarely needed options are under Advanced, each with its default shown.
 
 ### delfin-build (ORCA/XTB DOCKER)
 
