@@ -11013,6 +11013,20 @@ def _decode_exact(data: "Optional[bytes]") -> "Optional[str]":
 class _DocToolExecutor:
     """Lazy-loaded local executor for doc and calc search tools."""
 
+    # T4 phase 3: per-task failure budget (action_grounding.FailureBudget).
+    # Class-level so it survives executor instances being recreated per call
+    # (the run loop instantiates a fresh executor for every tool call). Keyed
+    # on (tool, NORMALIZED args), so re-cased spellings of one failing call
+    # share one bucket where the raw failure_log detector keeps them apart.
+    _T4_FAIL_BUDGET = None
+
+    def _t4_failure_budget(self):
+        from . import action_grounding as _ag_budget
+        if self.__class__._T4_FAIL_BUDGET is None:
+            self.__class__._T4_FAIL_BUDGET = _ag_budget.FailureBudget()
+        return self.__class__._T4_FAIL_BUDGET
+
+
     def __init__(self) -> None:
         self._engine = None
         self._index: dict | None = None
@@ -11535,6 +11549,15 @@ class _DocToolExecutor:
         except Exception:
             pass
 
+        # T4 phase 3: a call that did NOT fail breaks the failure-budget
+        # streak, so a model that fixed the underlying problem is not told
+        # to stop on the very next fresh failure.
+        if not (result or '').lstrip().startswith('{"error"'):
+            try:
+                self._t4_failure_budget().record(name, arguments, ok=True)
+            except Exception:
+                pass
+
         # Record failure for retrospective learning — agents that hit the
         # same (tool, command-shape, error-shape) >=3 times in 1 h get a
         # heads-up appended to the error so they change approach (the
@@ -11548,6 +11571,19 @@ class _DocToolExecutor:
                     or arguments.get("path")
                     or ""
                 )
+                # T4 phase 3: feed the normalized-key failure budget and
+                # surface a stop-and-ask hint on the THIRD identical call.
+                # The budget is fed BEFORE the check, so the call that
+                # crosses the limit is the one that gets the hint.
+                _t4_stop = None
+                try:
+                    _t4_budget = self._t4_failure_budget()
+                    _t4_budget.record(name, arguments, ok=False)
+                    _stop_hint = _t4_budget.repeat_hint(name, arguments)
+                    if _stop_hint is not None:
+                        _t4_stop = _stop_hint.message
+                except Exception:
+                    _t4_stop = None
                 _fl.record_failure(
                     tool=name, command=str(cmd_repr)[:300],
                     error=str(result)[:300],
@@ -11571,6 +11607,17 @@ class _DocToolExecutor:
                         result = json.dumps(_obj)
                     except (json.JSONDecodeError, TypeError, ValueError):
                         result = result.rstrip() + f"\n[heads-up] {_note}"
+                # The stop-and-ask note goes on AFTER the failure log has
+                # recorded the unchanged error, so the existing repeat
+                # detector still sees one error shape per failing call.
+                if _t4_stop is not None:
+                    try:
+                        _sobj = json.loads(result)
+                        if isinstance(_sobj, dict):
+                            _sobj["stop_and_ask"] = _t4_stop
+                            result = json.dumps(_sobj)
+                    except Exception:
+                        result = result.rstrip() + f"\n[stop-and-ask] {_t4_stop}"
         except Exception:
             pass
 
