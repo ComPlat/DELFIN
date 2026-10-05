@@ -2591,6 +2591,38 @@ def cmd_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_messages(args: argparse.Namespace) -> int:
+    """Delivery receipts for one sender, from the terminal.
+
+    Both subcommands are scoped to the caller's own ``--from`` key
+    (``status(message_id, from_key)`` / ``ls(from_key)``), the security
+    boundary the operator set: a caller that names no key, or a key that is
+    not the sender, sees nothing -- ``unknown`` covers both 'no such message'
+    and 'not yours', so a foreign message's existence is never revealed.
+    Rows and receipts carry no message body, so the CLI never prints one.
+    """
+    from . import session_messages as _msgs
+    from_key = getattr(args, "from_key", "") or ""
+    if args.messages_action == "ls":
+        rows = _msgs.ls(from_key)
+        if not rows:
+            print("(nothing to see)" if not from_key else "(no messages)")
+            return 0
+        for r in rows:
+            print(f"{r['id'][:12]:<14} "
+                  f"{str(r.get('to') or ''):<12} {r['status']}")
+        return 0
+    if args.messages_action == "status":
+        mid = getattr(args, "message_id", "") or ""
+        if not mid:
+            print("ERROR: message_id is required", file=sys.stderr)
+            return 2
+        print(_msgs.status(mid, from_key))
+        return 0
+    print("ERROR: unknown messages action", file=sys.stderr)
+    return 2
+
+
 def cmd_session(args: argparse.Namespace) -> int:
     from . import session_store as _ss
     if args.session_action == "ls":
@@ -3714,6 +3746,23 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Write the notebook here (default: <session_id>.ipynb)")
     sess.set_defaults(func=cmd_session)
 
+    # messages -- delivery receipts for one sender, scoped to --from
+    msgs_p = sub.add_parser("messages",
+                            help="Session-message delivery receipts")
+    msgs_sub = msgs_p.add_subparsers(dest="messages_action", required=True)
+    msgs_ls = msgs_sub.add_parser("ls",
+                                  help="List the mail the sender knows about")
+    msgs_ls.add_argument("--from", dest="from_key", default="",
+                         help="Sender key; without it nothing is shown")
+    msgs_status = msgs_sub.add_parser(
+        "status", help="Receipt for one message (queued/delivered/read/"
+                        "unknown)")
+    msgs_status.add_argument(
+        "message_id", help="The message id to ask about")
+    msgs_status.add_argument("--from", dest="from_key", default="",
+                             help="Sender key; without it status is unknown")
+    msgs_p.set_defaults(func=cmd_messages)
+
     # watchpost — read-only look-out over the user's own account
     wp = sub.add_parser(
         "watchpost",
@@ -4036,6 +4085,28 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_watch.add_argument("--status", action="store_true",
                             help="Report daemon, setting and watched count "
                                  "(default)")
+
+    # T6: run a session's tests on a SLURM compute node from a node-local
+    # copy. The handler lives in delfin/agent/slurm_tests.py; it is imported
+    # on use so an import error there cannot break every other command.
+    def _cmd_test_on_slurm(args):
+        from delfin.agent.slurm_tests import cmd_test_on_slurm
+        return cmd_test_on_slurm(args)
+
+    t6 = sub.add_parser(
+        "test-on-slurm",
+        help="Render and submit a node-local SLURM job that runs the given "
+             "test paths; prints the job id",
+    )
+    t6.add_argument("repo", help="Path to the repository")
+    t6.add_argument("ref", help="Git ref to run at (copied node-local)")
+    t6.add_argument("partition", help="SLURM partition, e.g. cpu")
+    t6.add_argument("minutes", type=int, help="Job time limit in minutes")
+    t6.add_argument("tests", nargs="+",
+                    help="Test paths under tests/, e.g. tests/test_x.py")
+    t6.add_argument("--run-dir", default=".",
+                    help="Dir to write the job and collect logs")
+    t6.set_defaults(func=_cmd_test_on_slurm)
 
     return p
 
