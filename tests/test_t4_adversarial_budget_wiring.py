@@ -30,6 +30,8 @@ Run via the gate:  gate tests/test_t4_adversarial_budget_wiring.py -q | tail -12
 """
 from __future__ import annotations
 
+import pytest
+
 import json
 
 from delfin.agent import api_client as A
@@ -38,6 +40,14 @@ from delfin.agent import api_client as A
 def _run(architecture: object, name: str, arguments: dict, workspace: object):
     perms = A.KitToolPermissions(workspace=workspace, mode="acceptEdits")
     return architecture.execute(name, arguments, perms)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_budget(monkeypatch):
+    """The failure budget is process-wide; a test that counts calls must
+    start from an empty one, whatever ran before it."""
+    monkeypatch.setattr(A._DocToolExecutor, "_T4_FAIL_BUDGET", None,
+                        raising=False)
 
 
 def test_identical_failing_call_third_time_yields_stop_and_ask(tmp_path):

@@ -37,7 +37,7 @@ def test_long_command_whitespace_and_case_only_differs_shares_bucket():
     """
     # Long (>80 chars) so a raw [:80]/[:300] truncation of the value would
     # already have a chance to look different, and the caller is one tool.
-    long_tail = "/pfs/data6/home/ka/ka_ibcs/ka_ew7404/software/delfin/tests"
+    long_tail = "/srv/projects/group/user/software/delfin/tests"
     spaced = f"LS -LA {long_tail} && ECHO done && WC  -l  test_t4_grounding.py"
     plain = f"ls -la {long_tail} && echo done && wc -l test_t4_grounding.py"
     b = FailureBudget()
@@ -56,7 +56,7 @@ def test_dict_key_order_collapses_to_same_bucket():
     """A1b — argument DICT order collapse: the same set of keys in a different
     order is the same failing call (the phase-1 reordered-args case). The key
     SET is identical — only its order changes."""
-    long_tail = "/pfs/data6/home/ka/ka_ibcs/ka_ew7404/software/delfin/tests"
+    long_tail = "/srv/projects/group/user/software/delfin/tests"
     cmd = f"ls -la {long_tail} && echo done"
     b = FailureBudget()
     b.record("bash", {"command": cmd, "cwd": "/tmp"}, ok=False)
