@@ -9672,6 +9672,10 @@ def _cached_tokens_of(usage) -> int:
 
 def _write_glob_regex(glob: str) -> "re.Pattern[str]":
     """A git-pathspec-like glob: ``**`` crosses directories, ``*``/``?`` not."""
+    # "dir/**" also names "dir" itself, as in git pathspec: a move or
+    # copy whose target is the directory must be in scope too.
+    if glob.endswith("/**"):
+        return re.compile(_write_glob_regex(glob[:-3]).pattern + "(?:/.*)?")
     out: list[str] = []
     i, n = 0, len(glob)
     while i < n:
