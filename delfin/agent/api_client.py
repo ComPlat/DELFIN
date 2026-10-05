@@ -19120,13 +19120,17 @@ _UNTRUSTED_FOOTER = "[END UNTRUSTED EXTERNAL CONTENT]"
 
 def _wrap_untrusted(payload: str) -> str:
     """Trust boundary for attacker-controlled text entering the transcript
-    (web pages, search snippets, MCP servers). The wrapper is a marker the
-    model is trained to respect plus an explicit instruction; error payloads
-    pass through unwrapped so tooling keeps parsing them."""
-    s = payload if isinstance(payload, str) else str(payload)
-    if s.lstrip().startswith('{"error"'):
-        return s
-    return f"{_UNTRUSTED_HEADER}\n{s}\n{_UNTRUSTED_FOOTER}"
+    (web pages, search snippets, MCP servers). Routes through
+    delfin.agent.untrusted.wrap, whose fence carries a random per-call nonce
+    in header and footer, so content -- including an error-shaped result that
+    could carry instruction text -- cannot forge or close it early. The
+    earlier fixed footer and the bare '{"error"' passthrough are retired:
+    a fixed footer is forgeable, and an error-string prefix is not proof the
+    payload is the harness's own short-circuit (an attacker who controls a
+    web/MCP result can send an error-envelope string that reaches the model
+    as bare text). QS ruling (nacht-s25) + reviewer findings (nacht-s12)."""
+    from . import untrusted
+    return untrusted.wrap("external", payload)
 
 
 # Singleton — shared across all OpenAIClient instances.
