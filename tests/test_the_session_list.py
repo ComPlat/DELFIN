@@ -202,3 +202,57 @@ def test_two_real_agent_tabs_live_side_by_side(home):
     assert first["refs"]["state"] is not second["refs"]["state"]
     for rec in refs["sessions"]():
         refs["close"](rec["key"])
+
+
+def test_a_session_that_finished_unwatched_keeps_a_grey_dot_until_opened(home):
+    tmp, _saved = home
+    _widget, refs = AS.create_tab(_ctx(tmp), build=_Build())
+    refs["open"](str(tmp / "calc"))
+    first, second = refs["sessions"]()      # second is on screen
+    first["refs"]["state"]["streaming"] = True
+    refs["refresh"]()
+    first["refs"]["state"]["streaming"] = False
+    refs["refresh"]()
+    assert "delfin-session-unseen" in first["row"]._dom_classes
+    refs["activate"](first["key"])
+    assert "delfin-session-unseen" not in first["row"]._dom_classes
+
+
+def test_a_session_that_finished_on_screen_gets_no_grey_dot(home):
+    tmp, _saved = home
+    _widget, refs = AS.create_tab(_ctx(tmp), build=_Build())
+    refs["open"](str(tmp / "calc"))
+    _first, second = refs["sessions"]()     # second is on screen
+    second["refs"]["state"]["streaming"] = True
+    refs["refresh"]()
+    second["refs"]["state"]["streaming"] = False
+    refs["refresh"]()
+    assert "delfin-session-unseen" not in second["row"]._dom_classes
+
+
+def test_a_session_waiting_for_you_is_orange_over_everything(home):
+    import threading
+    tmp, _saved = home
+    _widget, refs = AS.create_tab(_ctx(tmp), build=_Build())
+    refs["open"](str(tmp / "calc"))
+    first, _second = refs["sessions"]()
+    state = first["refs"]["state"]
+    state["streaming"] = True
+    state["_ask_user_event"] = threading.Event()   # an open question
+    refs["refresh"]()
+    assert "delfin-session-needs" in first["row"]._dom_classes
+    assert "delfin-session-busy" not in first["row"]._dom_classes
+    state["_ask_user_event"].set()                  # answered
+    refs["refresh"]()
+    assert "delfin-session-needs" not in first["row"]._dom_classes
+    assert "delfin-session-busy" in first["row"]._dom_classes
+
+
+@pytest.mark.parametrize("state, needs", [
+    ({}, False),
+    ({"_pending_plan_body": "1. do x"}, True),
+    ({"_kit_confirm_broker": type("B", (), {"_pending": [1]})()}, True),
+    ({"_kit_confirm_broker": type("B", (), {"_pending": []})()}, False),
+])
+def test_what_counts_as_waiting_for_you(state, needs):
+    assert AS.needs_you(state) is needs
