@@ -15,6 +15,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import subprocess
 import threading
 import uuid
@@ -323,6 +324,63 @@ _DOT_CLASSES = {
     "busy": "delfin-session-busy",
     "unseen": "delfin-session-unseen",
 }
+
+
+#: Markup a title may open with that says nothing about the session.
+_LABEL_STRIP = re.compile(r"^[\s>#*`\-=|)\]]+")
+#: Only backticks and asterisks. NOT `_` or `~`: markdown uses them for
+#: emphasis, and this domain uses them in names -- stripping `_` turned
+#: the title "test_calc.py schlaegt fehl" into "testcalc.py", a file
+#: that does not exist. An emphasis mark lost is cosmetic; a filename
+#: altered is a wrong answer.
+_LABEL_MARKS = re.compile(r"[`*]+")
+
+#: How long a label may be before it is cut. Wide enough for a sentence
+#: a person wrote, short enough that three of them fit the hint.
+_LABEL_MAX = 40
+
+
+def session_label(title: Any, session_id: Any = "") -> str:
+    """A readable name for a session, from the text it opened with.
+
+    Input: the stored ``title`` (the user's first message) and the
+    session id. Output: a single line, at most ~40 characters plus an
+    ellipsis, never empty.
+
+    A title is a prompt, not a name. Of the 52 sessions on the machine
+    this was written on, 38 were unusable as a label: multi-line,
+    markdown headings, code fences, cut off mid-word. They are shown in
+    the Resume dropdown and in the hint warning that another session
+    already works in this repository -- so the control that exists to
+    keep two sessions out of one checkout was unreadable exactly where
+    it had to be read.
+
+    Truncation alone does not help: the first 40 characters of a
+    handover briefing are "# Übergabe: Sechs Arbeitszweige prüfen, z".
+    The FIRST LINE, with its markup removed and cut on a word boundary,
+    is a name. Falls back to a short form of the id, because a row with
+    no label cannot be told from the row above it.
+    """
+    for raw in str(title or "").splitlines():
+        line = _LABEL_MARKS.sub("", _LABEL_STRIP.sub("", raw)).strip()
+        line = " ".join(line.split())
+        if not line:
+            continue
+        if len(line) <= _LABEL_MAX:
+            return line
+        # Cut on a word boundary: a label that ends mid-word reads as a
+        # different word, and three of them in one sentence read as noise.
+        cut = line[:_LABEL_MAX].rsplit(" ", 1)[0].rstrip(" ,;:.")
+        # ...unless that leaves almost nothing. A title that opens with a
+        # long path ("Bau in tests/fixtures/user_project_workspace/ ein
+        # kleines Modul ...") has no space inside the budget, and the
+        # word boundary reduces it to "Bau in" -- which names no session.
+        # Below half the budget the character cut says more.
+        if len(cut) < _LABEL_MAX // 2:
+            cut = line[:_LABEL_MAX].rstrip()
+        return cut + "\u2026"
+    sid = str(session_id or "").strip()
+    return f"Session {sid[:8]}" if sid else "Untitled session"
 
 
 def needs_you(state: dict) -> bool:
@@ -796,7 +854,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             sid = str(row.get("session_id") or "")
             if not sid or sid in open_ids:
                 continue
-            title = str(row.get("title") or "Untitled")[:40]
+            title = session_label(row.get("title"), sid)
             where = _short_path(str(row.get("workspace") or ""))
             options.append((f"{title} — {where}" if where else title, sid))
         resume_dropdown.options = options
@@ -980,7 +1038,9 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         own_worktree_box.layout.display = "" if in_repo else "none"
         own_worktree_box.value = bool(busy)
         if busy:
-            names = ", ".join(str(r.get("title") or "a session") for r in busy[:3])
+            names = ", ".join(
+                session_label(r.get("title"), r.get("session_id"))
+                for r in busy[:3])
             worktree_hint.value = (
                 "<div style='font-size:10px;color:#546e7a'>Also working in "
                 f"this repository: {html.escape(names)}. A worktree of its "
