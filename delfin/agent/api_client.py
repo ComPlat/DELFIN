@@ -1016,8 +1016,30 @@ def _git_subcommand(rest: list[str]) -> str:
     return ""
 
 
+#: Subcommands that read only in some spellings. Fail closed: anything not
+#: matching the listed read form counts as a write.
+_GIT_LIST_FLAGS_BRANCH = frozenset({
+    "--show-current", "--list", "-l", "-a", "--all", "-r", "--remotes",
+    "-v", "-vv", "--verbose", "--no-color", "--no-column",
+})
+
+
 def _git_reads_only(rest: list[str]) -> bool:
-    return _git_subcommand(rest) in _GIT_READ_ONLY_SUBCOMMANDS
+    sub = _git_subcommand(rest)
+    after = rest[rest.index(sub) + 1:] if sub in rest else []
+    if sub == "reflog":
+        # `reflog expire` / `reflog delete` rewrite the reflog.
+        return not any(a in ("expire", "delete") for a in after)
+    if sub == "branch":
+        # Only the listing form reads; a name or -d/-m/-c/-u writes.
+        return bool(after) and all(a in _GIT_LIST_FLAGS_BRANCH for a in after)
+    if sub == "symbolic-ref":
+        # Reading: options plus at most the ref name; a second positional
+        # sets the ref.
+        positional = [a for a in after if not a.startswith("-")]
+        return len(positional) <= 1 and all(
+            a in ("--short", "-q", "--quiet") for a in after if a.startswith("-"))
+    return sub in _GIT_READ_ONLY_SUBCOMMANDS
 
 
 def _dest_opt_applies(name: str, opt: str) -> bool:
