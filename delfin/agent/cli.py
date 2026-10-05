@@ -4037,6 +4037,28 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Report daemon, setting and watched count "
                                  "(default)")
 
+    # T6: run a session's tests on a SLURM compute node from a node-local
+    # copy. The handler lives in delfin/agent/slurm_tests.py; it is imported
+    # on use so an import error there cannot break every other command.
+    def _cmd_test_on_slurm(args):
+        from delfin.agent.slurm_tests import cmd_test_on_slurm
+        return cmd_test_on_slurm(args)
+
+    t6 = sub.add_parser(
+        "test-on-slurm",
+        help="Render and submit a node-local SLURM job that runs the given "
+             "test paths; prints the job id",
+    )
+    t6.add_argument("repo", help="Path to the repository")
+    t6.add_argument("ref", help="Git ref to run at (copied node-local)")
+    t6.add_argument("partition", help="SLURM partition, e.g. cpu")
+    t6.add_argument("minutes", type=int, help="Job time limit in minutes")
+    t6.add_argument("tests", nargs="+",
+                    help="Test paths under tests/, e.g. tests/test_x.py")
+    t6.add_argument("--run-dir", default=".",
+                    help="Dir to write the job and collect logs")
+    t6.set_defaults(func=_cmd_test_on_slurm)
+
     return p
 
 
