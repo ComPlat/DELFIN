@@ -596,6 +596,55 @@ def pytest_runtest_teardown(item, nextitem):
             "different file")
 
 
+#: Module singletons that accumulate across a process and are read back
+#: by tests as if they were their own. One entry per (module, singleton,
+#: list attribute). Adding one is a deliberate act: it says this state is
+#: shared, so no test may inherit another's.
+_SHARED_LEDGERS = (
+    ("delfin.agent.api_client", "_doc_executor", "_calc_evidence"),
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_shared_ledgers():
+    """Each test gets its own copy of the shared evidence ledgers.
+
+    `api_client._doc_executor` is a module singleton, so
+    `_calc_evidence` holds whatever the whole process has recorded. A
+    test that appends one entry and asserts the list equals exactly that
+    entry passes alone and fails in a full run --
+    test_the_calc_ledger_reaches_the_completion_check.py did, in two
+    consecutive 20 000-test runs on two branches, with a real
+    observation from this machine's own calc directory in the list.
+
+    Isolated rather than leak-reported, which is the difference from the
+    CWD and DELFIN_* guards in the teardown hook above. Those watch state
+    a test may legitimately set; this is state a test has no business
+    inheriting at all, and the fixtures beside this one
+    (_reset_workspace_trust_caches, _isolate_subagent_state) treat
+    process-global state the same way.
+
+    Restored and not cleared: entries belong to whoever recorded them,
+    and discarding them would move the surprise to the next reader.
+    """
+    import importlib
+
+    saved = []
+    for module_name, holder, attr in _SHARED_LEDGERS:
+        try:
+            holder_obj = getattr(importlib.import_module(module_name), holder)
+            value = getattr(holder_obj, attr)
+        except Exception:
+            continue           # not importable here: nothing to isolate
+        if not isinstance(value, list):
+            continue
+        saved.append((value, list(value)))
+        value.clear()
+    yield
+    for value, before in saved:
+        value[:] = before
+
+
 @pytest.fixture(autouse=True)
 def _reset_workspace_trust_caches():
     """Trust state is process-global: a parsed store and a record of which
