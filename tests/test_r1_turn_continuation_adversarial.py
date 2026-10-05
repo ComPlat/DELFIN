@@ -55,17 +55,28 @@ class TestDetectorRefusesNonActs:
 class TestShouldContinueGuard:
     """The gate: announce AND open work, with a sane note when both hold."""
 
-    def test_open_tasks_none_is_no_nudge(self):
+    # The task count no longer gates the nudge (see
+    # tests/test_an_announced_push_is_done_or_explained.py for the two
+    # field reports that changed it). What these pin now is that no
+    # count -- missing, zero or negative -- raises, and that the
+    # announcement alone decides.
+    def test_open_tasks_none_still_nudges(self):
         ok, _ = should_continue("Let me fix it.", None)
-        assert ok is False
+        assert ok is True
 
-    def test_open_tasks_zero_is_no_nudge(self):
+    def test_open_tasks_zero_still_nudges(self):
         ok, _ = should_continue("Let me fix it.", 0)
-        assert ok is False
+        assert ok is True
 
-    def test_negative_open_tasks_is_no_nudge(self):
+    def test_negative_open_tasks_still_nudges(self):
         ok, _ = should_continue("I will run the suite.", -3)
-        assert ok is False
+        assert ok is True
+
+    def test_no_announcement_is_no_nudge_at_any_count(self):
+        """The hand-back table carries the whole weight now."""
+        for count in (None, 0, -3, 7):
+            assert should_continue("Let me know what you want next.",
+                                   count)[0] is False, count
 
     def test_the_note_names_both_conditions(self):
         ok, note = should_continue("Let me fix it.", 1)
