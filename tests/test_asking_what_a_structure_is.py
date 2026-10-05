@@ -44,7 +44,12 @@ from delfin.dashboard import saddle as saddle_mod
 from delfin.dashboard import solvents as solvents_mod
 from editor_source import EDITOR_SOURCE
 
-_needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not installed")
+#: Supplied, not skipped. These tests exercise DELFIN's own handling
+#: -- the command line it builds, the output it parses, the guard it
+#: applies -- and never xtb's arithmetic, so a stand-in on PATH is
+#: enough and the test then runs on every machine. The fixture uses
+#: the real xtb when there is one. See conftest.xtb_on_path.
+_needs_xtb = pytest.mark.usefixtures("xtb_on_path")
 
 #: Hand-built, every C-H at 1.0897 A and nothing relaxed. Its RMS gradient is
 #: 2.6e-3 Hartree per Bohr, twenty-six times what an optimiser converges on.

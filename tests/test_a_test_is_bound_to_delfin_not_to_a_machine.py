@@ -59,6 +59,15 @@ import re
 
 #: The files that gated on the host when this rule was written. Shrinking
 #: this list is the work; growing it is the thing this file refuses.
+#:
+#: 20 -> 17 on 2026-10-05: test_asking_what_a_structure_is,
+#: test_the_budget_prices_a_relaxed_path and
+#: test_what_the_answer_already_computed are supplied an xtb stand-in now
+#: instead of skipping (conftest.xtb_on_path), so 73 of their tests run on
+#: a machine with no xtb where before they did not.
+#: test_gfn_methods_in_the_viewer stays: one test in it reads the real
+#: binary's own parameter files and keeps a named skip, which is the third
+#: choice this file allows and the right one there.
 _BASELINE = frozenset({
     "test_a_drag_says_what_it_is_pulling_with.py",
     "test_a_finished_scan_says_what_it_made_possible.py",
@@ -72,14 +81,11 @@ _BASELINE = frozenset({
     "test_a_scan_says_whether_its_own_barrier_can_be_quoted.py",
     "test_a_scan_shows_the_path_it_walked.py",
     "test_an_agent_process_cannot_be_read_by_its_commands.py",
-    "test_asking_what_a_structure_is.py",
     "test_gfn_methods_in_the_viewer.py",
     "test_git_works_inside_the_sandbox.py",
-    "test_the_budget_prices_a_relaxed_path.py",
     "test_the_derived_roots_bind_the_doc_index.py",
     "test_the_sandbox_holds_on_macos.py",
     "test_tools_that_answer.py",
-    "test_what_the_answer_already_computed.py",
 })
 
 #: What counts as asking the host: an installed binary, an environment

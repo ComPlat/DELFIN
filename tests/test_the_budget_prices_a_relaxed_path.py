@@ -36,7 +36,12 @@ from delfin.dashboard import structure_editor
 from delfin.dashboard.structure_editor import thermal_temperature
 from editor_source import EDITOR_SOURCE
 
-_needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not installed")
+#: Supplied, not skipped. These tests exercise DELFIN's own handling
+#: -- the command line it builds, the output it parses, the guard it
+#: applies -- and never xtb's arithmetic, so a stand-in on PATH is
+#: enough and the test then runs on every machine. The fixture uses
+#: the real xtb when there is one. See conftest.xtb_on_path.
+_needs_xtb = pytest.mark.usefixtures("xtb_on_path")
 
 #: Ethane, so that a drag has a bond to stretch and hydrogens to brush past.
 _ETHANE = """8

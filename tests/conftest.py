@@ -9,6 +9,9 @@ into a real session's next turn.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 
@@ -643,6 +646,45 @@ def _isolate_shared_ledgers():
     yield
     for value, before in saved:
         value[:] = before
+
+
+#: The stand-in used when the machine has no xtb. Shipped with the suite,
+#: so "universal" does not mean "whoever runs this installs xtb first".
+_XTB_STUB_DIR = Path(__file__).resolve().parent / "stubs"
+
+
+@pytest.fixture
+def xtb_on_path(monkeypatch):
+    """Supply xtb for a test instead of skipping the test.
+
+    The rule this implements is in
+    tests/test_a_test_is_bound_to_delfin_not_to_a_machine.py: supply the
+    binary, or record its output; skip last. These tests were skipping.
+
+    Measured 2026-10-05 over the 37 files that gate on xtb: 904 tests,
+    782 pass with no xtb and 122 skip. With a stub that exists and
+    computes nothing, 892 pass -- so 110 of the 122 never used xtb at
+    all. They gate on its presence and then exercise a command line, a
+    parse, a guard, an error path. Those are DELFIN's logic, and they
+    were running on exactly the machines that happen to have a
+    quantum-chemistry program installed.
+
+    A real xtb is left alone: when one is on PATH this fixture does
+    nothing, so a developer's run still exercises the real thing and the
+    stub is only what CI and a bare machine get.
+
+    The five tests that genuinely consume xtb OUTPUT keep their skip. A
+    recorded energy replayed back to a test about that energy is not a
+    check, and pretending otherwise would be worse than the skip.
+    """
+    import shutil
+
+    if shutil.which("xtb"):
+        yield None                     # the real one: change nothing
+        return
+    monkeypatch.setenv(
+        "PATH", f"{_XTB_STUB_DIR}{os.pathsep}{os.environ.get('PATH', '')}")
+    yield _XTB_STUB_DIR / "xtb"
 
 
 @pytest.fixture(autouse=True)
