@@ -186,12 +186,12 @@ _SPLITTER_INIT_JS = """\
             if (!splitter || !sidebar || !host) return;
             var MIN = 170, MAX = 420;
             function current() {
-                var m = /flex:\s*0\s*0\s*([\d.]+)px/.exec(sidebar.style.flex);
+                var m = /^0\s+0\s+([\d.]+)px$/.exec(sidebar.style.flex);
                 return m ? parseFloat(m[1]) : 236;
             }
             function apply(w) {
                 w = Math.max(MIN, Math.min(MAX, Math.round(w)));
-                if (w - current() < 1) return;
+                if (Math.abs(w - current()) < 1) return;
                 sidebar.style.flex = '0 0 ' + w + 'px';
                 sidebar.style.width = w + 'px';
                 sidebar.style.maxWidth = 'none';
