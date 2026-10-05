@@ -85,3 +85,27 @@ def test_the_resume_dropdown_and_the_hint_both_use_it():
     # And neither may fall back to the raw title with a slice.
     assert 'str(row.get("title") or "Untitled")[:40]' not in src
     assert 'str(r.get("title") or "a session")' not in src
+
+
+def test_an_underscore_is_part_of_a_name_not_emphasis():
+    """Found by running this over the real 52 titles: stripping `_` as
+    markdown emphasis turned "test_calc.py schlaegt fehl" into
+    "testcalc.py", a file that does not exist. An emphasis mark lost is
+    cosmetic; a filename altered is a wrong answer."""
+    got = AS.session_label("test_calc.py schlaegt fehl. Finde den Fehler", "x")
+    assert got.startswith("test_calc.py"), got
+    assert "_" in AS.session_label("fix user_project_workspace now", "x")
+    # A tilde is a home path here far more often than strikethrough.
+    assert "~" in AS.session_label("read ~/notes.txt", "x")
+
+
+def test_a_long_path_does_not_collapse_the_label():
+    """Also from the real titles: "Bau in
+    tests/fixtures/user_project_workspace/ ein kleines Modul ..." has no
+    space inside the budget, so the word boundary left "Bau in" -- which
+    names no session. Below half the budget the character cut says more."""
+    got = AS.session_label(
+        "Bau in tests/fixtures/user_project_workspace/ ein kleines Modul "
+        "tagstat.py, das Zeilen zaehlt", "x")
+    assert len(got) > AS._LABEL_MAX // 2, got
+    assert "tests/fixtures" in got, got
