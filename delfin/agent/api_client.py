@@ -967,6 +967,9 @@ _BASH_NO_DEST_OPTS: dict[str, frozenset[str]] = {
     "cut": frozenset(), "uniq": frozenset(), "join": frozenset(),
     "paste": frozenset(), "column": frozenset(), "date": frozenset(),
     "od": frozenset(), "xxd": frozenset(),
+    # Shell builtins whose -o names an OPTION: `set -o pipefail` is the
+    # prefix the test recipe puts in front of every gate run.
+    "set": frozenset(), "shopt": frozenset(),
     # ...and the one that writes, where only the ambiguous flag is muted.
     "sort": frozenset({"-d"}),
 }
@@ -1013,8 +1016,30 @@ def _git_subcommand(rest: list[str]) -> str:
     return ""
 
 
+#: Subcommands that read only in some spellings. Fail closed: anything not
+#: matching the listed read form counts as a write.
+_GIT_LIST_FLAGS_BRANCH = frozenset({
+    "--show-current", "--list", "-l", "-a", "--all", "-r", "--remotes",
+    "-v", "-vv", "--verbose", "--no-color", "--no-column",
+})
+
+
 def _git_reads_only(rest: list[str]) -> bool:
-    return _git_subcommand(rest) in _GIT_READ_ONLY_SUBCOMMANDS
+    sub = _git_subcommand(rest)
+    after = rest[rest.index(sub) + 1:] if sub in rest else []
+    if sub == "reflog":
+        # `reflog expire` / `reflog delete` rewrite the reflog.
+        return not any(a in ("expire", "delete") for a in after)
+    if sub == "branch":
+        # Only the listing form reads; a name or -d/-m/-c/-u writes.
+        return bool(after) and all(a in _GIT_LIST_FLAGS_BRANCH for a in after)
+    if sub == "symbolic-ref":
+        # Reading: options plus at most the ref name; a second positional
+        # sets the ref.
+        positional = [a for a in after if not a.startswith("-")]
+        return len(positional) <= 1 and all(
+            a in ("--short", "-q", "--quiet") for a in after if a.startswith("-"))
+    return sub in _GIT_READ_ONLY_SUBCOMMANDS
 
 
 def _dest_opt_applies(name: str, opt: str) -> bool:
@@ -5172,6 +5197,9 @@ class KitToolPermissions:
     session_allowed_tools: frozenset[str] = frozenset()
     session_denied_tools: frozenset[str] = frozenset()
     bash_deny_patterns: tuple[str, ...] = _DEFAULT_BASH_DENY_PATTERNS
+    # The repo's write scope for file tools (empty = no extra restriction).
+    # Only narrows: every write is still bounded by the workspace roots.
+    write_allow_globs: tuple[str, ...] = ()
     bash_auto_allow_patterns: tuple[str, ...] = _DEFAULT_BASH_AUTO_ALLOW
     path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
     path_protected_globs: tuple[str, ...] = _DEFAULT_PATH_PROTECTED_GLOBS
@@ -8142,13 +8170,16 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "session_message",
             "description": (
                 "List other open sessions (no `to`), message one, or all "
-                "with to=all (not as the user)."
+                "with to=all (not as the user); status=<id> or ls for "
+                "receipts of your own."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "to": {"type": "string"},
                     "message": {"type": "string"},
+                    "status": {"type": "string"},
+                    "ls": {"type": "boolean"},
                 },
             },
         },
@@ -8700,6 +8731,7 @@ def check_completion_claim(
     changes=(),
     observed=None,
     tests=None,
+    calcs=None,
     window_start: float = 0.0,
     current_fingerprint: Optional[dict] = None,
 ) -> dict:
@@ -8711,10 +8743,13 @@ def check_completion_claim(
     judged on the work rather than on words in the task text. The previous
     implementation and its helpers are gone; the journal and timestamp
     helpers above serve the live call site, _verify_task_completion.
+    ``calcs`` is the calc-evidence ledger (Welle 10): the runs the
+    session actually observed via get_calc_info, verdicting a calculation
+    task on real work.
     """
     from .task_evidence import check_completion_claim as _check
     return _check(subject, description, changes=changes, observed=observed,
-                  tests=tests, window_start=window_start,
+                  tests=tests, calcs=calcs, window_start=window_start,
                   current_fingerprint=current_fingerprint)
 
 
@@ -9658,6 +9693,51 @@ def _cached_tokens_of(usage) -> int:
         return int(getattr(det, "cached_tokens", 0) or 0) if det else 0
     except Exception:
         return 0
+
+
+def _write_glob_regex(glob: str) -> "re.Pattern[str]":
+    """A git-pathspec-like glob: ``**`` crosses directories, ``*``/``?`` not."""
+    # "dir/**" also names "dir" itself, as in git pathspec: a move or
+    # copy whose target is the directory must be in scope too.
+    if glob.endswith("/**"):
+        return re.compile(_write_glob_regex(glob[:-3]).pattern + "(?:/.*)?")
+    out: list[str] = []
+    i, n = 0, len(glob)
+    while i < n:
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    return re.compile("".join(out))
+
+
+def _write_in_scope(path: Path, perms: "KitToolPermissions") -> bool:
+    """True when the repo sets no write scope or ``path`` matches one glob.
+
+    Globs are matched against the path relative to the workspace. A path
+    outside the workspace matches none of them: the scope never reaches
+    past the repository it was written for.
+    """
+    globs = getattr(perms, "write_allow_globs", ()) or ()
+    if not globs:
+        return True
+    try:
+        rel = Path(path).resolve().relative_to(
+            Path(perms.workspace).resolve()).as_posix()
+    except (OSError, ValueError, TypeError):
+        return False
+    return any(_write_glob_regex(str(g)).fullmatch(rel) for g in globs)
 
 
 def _record_security_event(kind: str, tool: str, detail: str,
@@ -10956,11 +11036,33 @@ def _decode_exact(data: "Optional[bytes]") -> "Optional[str]":
 class _DocToolExecutor:
     """Lazy-loaded local executor for doc and calc search tools."""
 
+    # T4 phase 3: per-task failure budget (action_grounding.FailureBudget).
+    # Class-level so it survives executor instances being recreated per call
+    # (the run loop instantiates a fresh executor for every tool call). Keyed
+    # on (tool, NORMALIZED args), so re-cased spellings of one failing call
+    # share one bucket where the raw failure_log detector keeps them apart.
+    _T4_FAIL_BUDGET = None
+
+    def _t4_failure_budget(self):
+        from . import action_grounding as _ag_budget
+        if self.__class__._T4_FAIL_BUDGET is None:
+            self.__class__._T4_FAIL_BUDGET = _ag_budget.FailureBudget()
+        return self.__class__._T4_FAIL_BUDGET
+
+
     def __init__(self) -> None:
         self._engine = None
         self._index: dict | None = None
         self._calc_engine = None
         self._calc_dirs: dict[str, str] = {}  # set by caller
+        # Calc-evidence ledger: every get_calc_info call records the run's
+        # outcome + result-critic worst level here, so the task-completion
+        # check can verdict a calculation task on real runs (the calcs
+        # ledger _check_completion reads through the bound
+        # evidence_provider). Session-scale, never cleared mid-turn: a run
+        # observed before the task window starts is filtered by window,
+        # not by dropping it.
+        self._calc_evidence: list[dict] = []
         # Where the index was actually built from, filled in by
         # _ensure_calc_loaded so a calc answer can name its corpus.
         self._calc_roots: dict[str, str] = {}
@@ -11281,6 +11383,29 @@ class _DocToolExecutor:
             except Exception:
                 pass
 
+        # T4 grounding: decide BEFORE dispatch whether this call is
+        # grounded (unknown tool name / missing-path near-miss). The hint
+        # is advisory - never blocks. known_tools is the REAL registered
+        # surface so a misspelled tool surfaces a no-such-tool hint
+        # instead of silently passing (check() returns None when
+        # known_tools is None, so we never leave it unpopulated).
+        _t4_hint = None
+        try:
+            from . import action_grounding as _ag
+            _known = set(_WRITE_TOOL_NAMES)
+            _known |= set(_DELFIN_ONLY_TOOL_NAMES)
+            _known |= {str(t.get("name") or (t.get("function") or {}).get("name") or "")
+                       for t in _DOC_TOOLS_OPENAI}
+            _known.discard("")
+            _hint = _ag.check(
+                name, arguments,
+                getattr(permissions, "workspace", None) or "",
+                known_tools=sorted(_known),
+            )
+            _t4_hint = _hint
+        except Exception:
+            pass
+
 
         # Settings-driven PreToolUse hooks (.delfin-native).
         # A blocking hook short-circuits dispatch and surfaces the
@@ -11447,6 +11572,15 @@ class _DocToolExecutor:
         except Exception:
             pass
 
+        # T4 phase 3: a call that did NOT fail breaks the failure-budget
+        # streak, so a model that fixed the underlying problem is not told
+        # to stop on the very next fresh failure.
+        if not (result or '').lstrip().startswith('{"error"'):
+            try:
+                self._t4_failure_budget().record(name, arguments, ok=True)
+            except Exception:
+                pass
+
         # Record failure for retrospective learning — agents that hit the
         # same (tool, command-shape, error-shape) >=3 times in 1 h get a
         # heads-up appended to the error so they change approach (the
@@ -11460,6 +11594,19 @@ class _DocToolExecutor:
                     or arguments.get("path")
                     or ""
                 )
+                # T4 phase 3: feed the normalized-key failure budget and
+                # surface a stop-and-ask hint on the THIRD identical call.
+                # The budget is fed BEFORE the check, so the call that
+                # crosses the limit is the one that gets the hint.
+                _t4_stop = None
+                try:
+                    _t4_budget = self._t4_failure_budget()
+                    _t4_budget.record(name, arguments, ok=False)
+                    _stop_hint = _t4_budget.repeat_hint(name, arguments)
+                    if _stop_hint is not None:
+                        _t4_stop = _stop_hint.message
+                except Exception:
+                    _t4_stop = None
                 _fl.record_failure(
                     tool=name, command=str(cmd_repr)[:300],
                     error=str(result)[:300],
@@ -11483,8 +11630,37 @@ class _DocToolExecutor:
                         result = json.dumps(_obj)
                     except (json.JSONDecodeError, TypeError, ValueError):
                         result = result.rstrip() + f"\n[heads-up] {_note}"
+                # The stop-and-ask note goes on AFTER the failure log has
+                # recorded the unchanged error, so the existing repeat
+                # detector still sees one error shape per failing call.
+                if _t4_stop is not None:
+                    try:
+                        _sobj = json.loads(result)
+                        if isinstance(_sobj, dict):
+                            _sobj["stop_and_ask"] = _t4_stop
+                            result = json.dumps(_sobj)
+                    except Exception:
+                        result = result.rstrip() + f"\n[stop-and-ask] {_t4_stop}"
         except Exception:
             pass
+
+        # T4: a call that FAILED gets the grounding hint (no such tool /
+        # missing path, with the closest real one) inside its JSON error.
+        # Only on an error result: a working call -- a tool registered
+        # outside the static list, an MCP or skill tool -- is never told it
+        # does not exist. Advisory: never blocks, never throws.
+        if _t4_hint is not None:
+            try:
+                _obj = json.loads(result)
+                if isinstance(_obj, dict) and _obj.get("error"):
+                    _obj["grounding"] = {
+                        "grounding": _t4_hint.kind,
+                        "message": _t4_hint.message,
+                        "closest": _t4_hint.closest,
+                    }
+                    result = json.dumps(_obj)
+            except Exception:
+                pass
 
         return result
 
@@ -12113,6 +12289,30 @@ class _DocToolExecutor:
             if info is None:
                 return json.dumps({"error": f"Calculation '{calc_id}' not found."})
             info = self._inject_scientific_check(info)
+            # Calc-evidence ledger (Welle 10): record what this run showed,
+            # so the completion check can verdict a calculation task on
+            # real runs instead of the agent's word. outcome/worst follow
+            # the exact keys check_completion_claim's calc branch reads.
+            # The run's folder comes from the index entry, never from a
+            # tool argument: nothing here touches a path.
+            run_folder = next(
+                (info[key] for key in ("path", "folder") if info.get(key)),
+                calc_id)
+            try:
+                self._calc_evidence.append({
+                    "ts": time.time(),
+                    "folder": str(run_folder),
+                    "outcome": str(info.get("status")
+                                   or info.get("outcome") or ""),
+                    "worst": str((info.get("scientific_check") or {})
+                                 .get("worst", "ok") or "ok"),
+                })
+            except Exception as exc:  # noqa: BLE001
+                # The answer still goes out; the completion check just
+                # lacks this run as evidence, so it says so.
+                import logging
+                logging.getLogger(__name__).warning(
+                    "calc evidence for %s not recorded: %s", calc_id, exc)
             return json.dumps(info, indent=2, ensure_ascii=False)
 
         elif name == "calc_summary":
@@ -14454,6 +14654,16 @@ class _DocToolExecutor:
         resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             return err
+        if not _write_in_scope(resolved, perms):
+            _record_security_event(
+                "out_of_write_scope", name, self._display_path(resolved, perms),
+                blocked=True)
+            return (
+                f"'{path_arg}' is outside this repository's write scope "
+                f"({', '.join(perms.write_allow_globs)}). A write there was "
+                "not granted. Ask the user to widen the repo's "
+                "write_allow_globs, or place the file inside the scope."
+            )
         # READ-ONLY data — archive of stored calculations, or the DELFIN
         # checkout when you didn't launch there. Writes are HARD-denied; copy
         # into calc/agent_workspace and edit the copy ("archives are fixed …
@@ -17527,9 +17737,24 @@ class _DocToolExecutor:
             return json.dumps({"error": (
                 "session_message is available only inside an open dashboard "
                 "session.")})
-        others = _presence.open_sessions(exclude_key=me)
+        # A delivery receipt: the sender asks what happened to a message it
+        # sent (`status=<message_id>`), or lists the messages it knows about
+        # (`ls`). Neither needs a recipient, so handle them before `to`. Both
+        # are scoped to the asking session (from_key=me) -- a session sees
+        # only mail it itself sent, never another session's or the operator's.
+        mid = str(arguments.get("status") or "").strip()
+        if mid:
+            return json.dumps({"message_id": mid,
+                               "status": _msgs.status(mid, me)},
+                              ensure_ascii=False)
+        if arguments.get("ls"):
+            return json.dumps({"messages": _msgs.ls(me)}, ensure_ascii=False)
         to = str(arguments.get("to") or "").strip()
         text = str(arguments.get("message") or "").strip()
+        # Before open_sessions(): it reaps stale presence records, and a
+        # closed session is known to the mailbox only by that record.
+        queueable = bool(to) and to != me and _msgs.deliverable(to)
+        others = _presence.open_sessions(exclude_key=me)
         if not to:
             return json.dumps({
                 "sessions": [{
@@ -17563,7 +17788,7 @@ class _DocToolExecutor:
                                "not_delivered": failed}, ensure_ascii=False)
         target = next((r for r in others
                        if to in (r.get("key"), r.get("session_id"))), None)
-        if target is None:
+        if target is None and not queueable:
             # The list, here, not a second call: a session addressed a peer
             # by its TITLE, got told the key was unknown, and had to ask
             # for the roster it could have been handed (2026-09-17).
@@ -17580,14 +17805,22 @@ class _DocToolExecutor:
             return json.dumps({"error": "message is required."})
         mine = next((r for r in _presence.open_sessions()
                      if me and r.get("key") == me), {})
+        # The operator (a reserved mailbox) and a known-but-closed session
+        # have no open presence record: deliver to their mailbox key itself, so
+        # the message is queued for their next start instead of refused
+        # (waves 11/12: 'no other open session' lost such messages).
+        mailbox = str(target.get("key") if target else to)
         try:
-            _msgs.send(str(target.get("key")), text, from_key=me,
+            _msgs.send(mailbox, text, from_key=me,
                        from_title=str(mine.get("title") or ""))
         except OSError as exc:
             return json.dumps({"error": f"message not delivered: {exc}"})
-        return json.dumps({"status": "sent", "to": target.get("key"),
-                           "title": target.get("title", "")},
-                          ensure_ascii=False)
+        reply = {"status": "sent", "to": mailbox}
+        if target:
+            reply["title"] = str(target.get("title", ""))
+        else:
+            reply["queued"] = True
+        return json.dumps(reply, ensure_ascii=False)
 
     def _execute_scheduler(self, name: str, arguments: dict,
                            perms: "KitToolPermissions | None" = None) -> str:
@@ -18757,20 +18990,23 @@ class _DocToolExecutor:
         sid = getattr(perms, "task_session_id", "") or ""
         observed = None
         tests = None
+        calcs = None
         try:
             provider = getattr(perms, "evidence_provider", None)
             if callable(provider):
                 ledgers = provider() or {}
                 observed = ledgers.get("observed")
                 tests = ledgers.get("tests")
+                calcs = ledgers.get("calcs")
         except Exception:
-            observed, tests = None, None
+            observed, tests, calcs = None, None, None
         return check_completion_claim(
             str(task.get("subject", "")),
             str(task.get("description", "")),
             changes=_journal_changes(sid),
             observed=observed,
             tests=tests,
+            calcs=calcs,
             window_start=_task_ts_epoch(task.get("started_at")),
             current_fingerprint=_current_fingerprint(
                 tests, getattr(perms, "workspace", None)),
@@ -19020,13 +19256,17 @@ _UNTRUSTED_FOOTER = "[END UNTRUSTED EXTERNAL CONTENT]"
 
 def _wrap_untrusted(payload: str) -> str:
     """Trust boundary for attacker-controlled text entering the transcript
-    (web pages, search snippets, MCP servers). The wrapper is a marker the
-    model is trained to respect plus an explicit instruction; error payloads
-    pass through unwrapped so tooling keeps parsing them."""
-    s = payload if isinstance(payload, str) else str(payload)
-    if s.lstrip().startswith('{"error"'):
-        return s
-    return f"{_UNTRUSTED_HEADER}\n{s}\n{_UNTRUSTED_FOOTER}"
+    (web pages, search snippets, MCP servers). Routes through
+    delfin.agent.untrusted.wrap, whose fence carries a random per-call nonce
+    in header and footer, so content -- including an error-shaped result that
+    could carry instruction text -- cannot forge or close it early. The
+    earlier fixed footer and the bare '{"error"' passthrough are retired:
+    a fixed footer is forgeable, and an error-string prefix is not proof the
+    payload is the harness's own short-circuit (an attacker who controls a
+    web/MCP result can send an error-envelope string that reaches the model
+    as bare text). QS ruling (nacht-s25) + reviewer findings (nacht-s12)."""
+    from . import untrusted
+    return untrusted.wrap("external", payload)
 
 
 # Singleton — shared across all OpenAIClient instances.
@@ -20566,6 +20806,8 @@ class OpenAIClient(_BaseClient):
                     "observed": set(
                         getattr(self, "_observed_files_session", None) or ()),
                     "tests": list(getattr(self, "_test_evidence", None) or ()),
+                    "calcs": list(getattr(_doc_executor,
+                                          "_calc_evidence", None) or ()),
                 }
             except Exception:
                 pass
@@ -23170,6 +23412,7 @@ def create_client(
                                if p not in deny_patterns)
             allow_patterns = allow_patterns + extra_allow
             deny_patterns = deny_patterns + extra_deny
+        write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
 
         kit_perms = KitToolPermissions(
             workspace=kit_workspace,
@@ -23180,6 +23423,7 @@ def create_client(
             confirm_write_dirs=tuple(confirm_write_dirs or ()),
             bash_auto_allow_patterns=allow_patterns,
             bash_deny_patterns=deny_patterns,
+            write_allow_globs=write_globs,
         )
         return OpenAIClient(
             api_key=kit_key, model=model,

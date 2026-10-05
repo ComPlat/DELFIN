@@ -90,6 +90,17 @@ _TEST_TASK_RE = re.compile(
     r"|\b\w+tests\b|\b\w+testsuite\b)"
 )
 
+# Wave-10/s1: tasks about RUNNING A CALCULATION. Same evidence shape as
+# the test class (a green run in the window), but the proof comes from
+# the calculation ledger, not the test ledger. Method words (dft, orca)
+# are the strong signal; the optimisation verbs are guarded by the
+# ledger: without a calc ledger the class stays unchecked, so code
+# tasks ("Optimiere den Import") are untouched.
+_CALC_TASK_RE = re.compile(
+    r"(?i)(?:\b(?:calculat\w*|comput\w*|optimiz\w*|optimis\w*|"
+    r"optimier\w*|berechn\w*|rechn\w*|dft|orca)\b)"
+)
+
 # Extensions a subject can name unambiguously enough to key a check on.
 _TASK_PATH_EXTS: frozenset[str] = frozenset({
     "py", "pyi", "ipynb", "js", "jsx", "ts", "tsx", "json", "yaml", "yml",
@@ -254,6 +265,62 @@ def _verdict(kind: str, verdict: str, detail: str = "", note: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Enumerated parts in the description (Welle 11, phase 2)
+# ---------------------------------------------------------------------------
+
+# A numbered ("1." / "1)") or lettered ("a)" / "a.") item at the start of
+# a line. Dash/bullet lists are deliberately NOT parts: in this repo's
+# task descriptions a dash list is the shape of context notes ("use the
+# gate for tests", "do not push") far more often than of work parts.
+_PART_ITEM_RE = re.compile(
+    r"(?m)^[ \t]*(\d{1,2}|[a-zA-Z])(?:[.)])\s+(\S.*)$")
+
+
+def _enumerated_parts(description: str) -> list[tuple[str, str]]:
+    """The work parts a description enumerates, as (label, text) pairs.
+
+    At least two items make it a parts list -- one numbered line is
+    usually prose numbering, not a decomposition. Contiguous runs of
+    the same kind (digits or letters) are collected; a line that breaks
+    the run ends it.
+    """
+    try:
+        items: list[tuple[str, str]] = []
+        for m in _PART_ITEM_RE.finditer(str(description or "")):
+            items.append((m.group(1), m.group(2)))
+        if len(items) < 2:
+            return []
+        # Mixing "1." with "a)" mid-list is a fragment, not a
+        # decomposition: keep the list only when the labels share their
+        # kind, or it starts as a numbering that continues.
+        kinds = {"d" if label[0].isdigit() else "l" for label, _ in items}
+        if len(kinds) > 1:
+            return []
+        return items
+    except Exception:
+        return []
+
+
+def _part_verdict(part: tuple[str, str], *, changes, observed, tests,
+                  calcs, window_start: float,
+                  current_fingerprint) -> dict:
+    """Judge one enumerated part as if it were the task's subject.
+
+    Reuses the same ladder by calling the check on the part text with
+    the same ledgers; a part's claims are judged the way a subject's
+    are. The subject is NOT included: the part stands alone.
+    """
+    label, text = part
+    sub = check_completion_claim(
+        text, "", changes=changes, observed=observed, tests=tests,
+        calcs=calcs, window_start=window_start,
+        current_fingerprint=current_fingerprint)
+    sub.setdefault("label", label)
+    return sub
+
+
+
+# ---------------------------------------------------------------------------
 # The check
 # ---------------------------------------------------------------------------
 
@@ -264,6 +331,7 @@ def check_completion_claim(
     changes=(),
     observed=None,
     tests=None,
+    calcs=None,
     window_start: float = 0.0,
     current_fingerprint: dict | None = None,
 ) -> dict:
@@ -273,8 +341,9 @@ def check_completion_claim(
     ``{"verdict", "kind", "detail", "note"}`` with verdict
     ``verified`` / ``unmet`` / ``unchecked``; pure over its arguments
     (*changes* the write ledger ``[{path, ts, created}]``, *observed*
-    the read ledger, *tests* the test-evidence ledger, *window_start*
-    the epoch the task went in_progress).
+    the read ledger, *tests* the test-evidence ledger, *calcs* the
+    calculation ledger (``[{ts, folder, outcome, worst}]``, wave-10/s1),
+    *window_start* the epoch the task went in_progress).
 
     The difference is WHAT counts as a claim. Only the object of the
     task accuses: a path from the subject that is not merely mentioned
@@ -297,6 +366,45 @@ def check_completion_claim(
         wants_write = bool(_WRITE_VERB_RE.search(subject_text))
         reads_only = (not wants_write
                       and bool(_READ_VERB_RE.search(subject_text)))
+
+        # 0. Enumerated parts (Welle 11, phase 2): when the description
+        #    decomposes the work into numbered/lettered items, each part
+        #    is judged as a task of its own, and one part without
+        #    evidence holds the whole task back. Placed BEFORE the
+        #    single-subject ladder: the first path claim of the subject
+        #    used to decide alone, and the other parts were invisible
+        #    (wave 10, s14: "fertig" with 1 of 5 parts done).
+        parts = _enumerated_parts(description)
+        if len(parts) >= 2:
+            part_results = [
+                _part_verdict(p, changes=changed, observed=observed,
+                              tests=tests, calcs=calcs,
+                              window_start=window_start,
+                              current_fingerprint=current_fingerprint)
+                for p in parts]
+            unmet_parts = [r for r in part_results
+                           if r.get("verdict") == "unmet"]
+            if unmet_parts:
+                first = unmet_parts[0]
+                label = first.get("label", "?")
+                return _verdict(
+                    "parts", "unmet", first.get("detail", ""),
+                    f"part {label} has no evidence: "
+                    f"{first.get('note') or first.get('detail') or 'nothing checkable in it'}"
+                    .strip())
+            if all(r.get("verdict") == "verified" for r in part_results):
+                return _verdict(
+                    "parts", "verified",
+                    f"{len(part_results)} part(s) evidenced")
+            # Some parts verified, none unmet -- at least one unchecked
+            # part. The honest answer for the task as a whole.
+            unchecked_labels = ", ".join(
+                r.get("label", "?") for r in part_results
+                if r.get("verdict") == "unchecked")
+            return _verdict(
+                "parts", "unchecked", "not all parts checkable",
+                f"part(s) {unchecked_labels} name nothing this session "
+                f"can check.")
 
         # 1. A path the SUBJECT names as its object. The mention guard
         #    applies only where the path must be WRITTEN: for a read
@@ -363,6 +471,22 @@ def check_completion_claim(
                 e for e in entries
                 if float(e.get("ts", 0) or 0) >= float(window_start or 0)
             ]
+            # A run that executed no tests proves nothing: pytest maps
+            # "all skipped / deselected / nothing collected" to exit 0 and
+            # the runner to status "ok" (delfin/agent/test_runner.py), so
+            # failed == 0 alone cannot separate it from a pass. The bash
+            # path in api_client states the same rule for red-state
+            # clearing ("only a run that demonstrably executed tests").
+            # Only an entry that POSITIVELY says passed == 0 (and no
+            # failure) proves an empty execution. An entry without a
+            # "passed" key is the pre-count ledger shape (only
+            # failed/status) -- it claims nothing about how many tests
+            # ran, and judging it empty broke
+            # test_a_completed_task_must_show_the_work (wave-10 pin).
+            ran_any = [e for e in in_window
+                       if "passed" not in e
+                       or int(e.get("passed", 0) or 0) > 0
+                       or int(e.get("failed", 0) or 0) > 0]
             if current_fingerprint is not None:
                 # Entries from ledgers that predate stamping carry no
                 # fingerprint; is_stale reports them stale, the safe
@@ -379,6 +503,8 @@ def check_completion_claim(
                     if int(e.get("failed", 0) or 0) == 0
                     and str(e.get("status", "")) not in ("failed", "error",
                                                          "gave_up")]
+            fresh_green = [e for e in fresh_green
+                           if e in ran_any]
             if fresh_green:
                 return _verdict("tests", "verified",
                                 f"{len(fresh_green)} green run(s)")
@@ -396,6 +522,13 @@ def check_completion_claim(
                         "tests_stale_state", "unmet", "state moved on",
                         f"is a test task and every recorded run predates the "
                         f"current tree state -- {why}")
+            if in_window and not ran_any:
+                return _verdict(
+                    "tests_empty", "unmet", "no tests executed",
+                    "is a test task and every run recorded since it "
+                    "started executed no tests (all skipped, deselected "
+                    "or nothing collected) -- a run that runs nothing "
+                    "does not verify the claim.")
             if in_window:
                 worst = max(int(e.get("failed", 0) or 0) for e in in_window)
                 return _verdict(
@@ -412,7 +545,36 @@ def check_completion_claim(
                 "is a test task and this session recorded no test run at "
                 "all.")
 
-        # 4. An edit / refactor task with no path named: the journal has
+        # 4. Wave-10/s1: a calculation task needs a clean run in the
+        #    window -- a failed run, or a run the result critic flagged
+        #    error-level, does not verify the claim. Only fires when a
+        #    calc ledger exists; without one the answer is unchecked,
+        #    so the optimisation words stay safe for code tasks.
+        if calcs is not None and _CALC_TASK_RE.search(subject_text):
+            entries = [e for e in calcs if isinstance(e, dict)]
+            in_window = [
+                e for e in entries
+                if float(e.get("ts", 0) or 0) >= float(window_start or 0)
+            ]
+            clean = [e for e in in_window
+                     if str(e.get("outcome", "")).lower() == "succeeded"
+                     and str(e.get("worst", "")).lower() in ("ok", "warn",
+                                                             "")]
+            if clean:
+                return _verdict("calc", "verified",
+                                f"{len(clean)} clean run(s)")
+            if in_window:
+                return _verdict(
+                    "calc_red", "unmet",
+                    f"{len(in_window)} run(s), none clean",
+                    "is a calculation task and the runs recorded since it "
+                    "started either failed or carry a critic error.")
+            return _verdict(
+                "calc_none", "unmet", "no run recorded",
+                "is a calculation task and this session recorded no "
+                "calculation run at all.")
+
+        # 5. An edit / refactor task with no path named: the journal has
         #    to show a mutation. A change earlier in the session still
         #    counts -- editing first and flipping the status afterwards
         #    is doing the work, not faking it.

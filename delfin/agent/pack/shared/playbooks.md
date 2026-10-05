@@ -46,17 +46,21 @@ is separate from main CONTROL parser.
 **Invariants:** `RetryStateTracker` prevents infinite loops.
 Recovery must work for both local and SLURM. Never modify the original input.
 
-## smiles_converter.py — LARGEST MODULE
+## smiles_converter.py — THE MANTA ORCHESTRATOR (helpers live in delfin/manta/)
 
-1. ALWAYS Grep first — never Read the whole file
+1. ALWAYS Grep first — `smiles_converter.py` keeps `smiles_to_xyz_isomers` and
+   its implementation; every helper lives in a `delfin/manta/*.py` module and is
+   re-exported from the old path, so grep the package, not the one file
 2. Main classes: `_HybridHaptoFragment`, `_PrimaryOrganometalModule`
-3. Entry point: `_try_multiple_strategies`
-4. Metal handling: `_manual_metal_embed`
-5. Hapto groups: `_find_hapto_groups`
+   (`delfin/manta/hybrid_fragments.py`)
+3. Entry point: `_try_multiple_strategies` (`delfin/manta/embed_strategies.py`)
+4. Metal handling: `_manual_metal_embed` (`delfin/manta/embed_strategies.py`)
+5. Hapto groups: `_find_hapto_groups` (`delfin/manta/hapto_detect.py`)
 
 **Invariants:** Multiple fallback strategies (RDKit → OpenBabel → manual embed).
-Metal bonds → dative bonds via `_convert_metal_bonds_to_dative`. Hapto
-approximation is optional (`_hapto_approx_enabled` flag).
+Metal bonds → dative bonds via `_convert_metal_bonds_to_dative`
+(`delfin/manta/metal_smiles.py`). Hapto approximation is optional
+(`_hapto_approx_enabled` flag, `delfin/manta/hapto_detect.py`).
 
 ## dashboard/tab_agent.py
 

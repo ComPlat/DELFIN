@@ -207,3 +207,24 @@ def preview_line(record: dict, width: int = 80) -> str:
     if len(subject) > width:
         subject = subject[:max(0, width - 1)] + "…"
     return subject
+
+
+def render_question(record: dict) -> str:
+    """The ask question and its numbered options, for ``approvals show``.
+
+    A choice question keeps the ask text and options under ``payload``;
+    an ask record leaves ``command`` and ``preview`` empty, so ``show``
+    printed a blank body for it. This renders the question and each
+    option numbered the way the pane does. Anything that is not a choice
+    question returns "" -- the caller then falls back to the preview.
+    """
+    if str(record.get("kind") or "") != "ask":
+        return ""
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+    question = str(payload.get("question") or "").strip()
+    options = options_of(record)
+    parts = [question] if question else []
+    parts += [f"{i}. {label}" for i, label in enumerate(options, 1)]
+    return "\n".join(parts)
