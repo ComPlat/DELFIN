@@ -528,6 +528,41 @@ def _resolve_fresh_budget(context_budget, engine) -> int:
     return int(context_budget or 0)
 
 
+def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
+                       task_state=None, context_budget=None) -> str:
+    """The message to send for this turn, starting fresh when over budget.
+
+    The dashboard's entry to the same fresh restart the terminal's run_turn
+    performs: under the budget it returns ``prompt`` unchanged; over it, it
+    archives the history, arms the engine's one-shot ``start_fresh`` and
+    returns the fresh block fused with ``prompt``. Never raises.
+    """
+    try:
+        budget = _resolve_fresh_budget(context_budget, engine)
+        if budget <= 0:
+            return prompt
+        block = ""
+        try:
+            from .working_state import build_working_state_block
+            block = build_working_state_block(
+                list(getattr(engine, "messages", []) or []),
+                session_id=str(getattr(engine, "session_id", "") or ""),
+                workspace=workspace,
+                refusals=getattr(engine, "_refusal_entries", lambda: None)(),
+            )
+        except Exception:
+            block = ""
+        fresh = fresh_context_for_turn(engine, task_state, token_budget=budget,
+                                       working_state_block=block)
+        if not fresh:
+            return prompt
+        _archive_cut_history(engine, list(getattr(engine, "messages", None) or []))
+        engine.start_fresh = fresh
+        return fresh + "\n\n" + prompt
+    except Exception:
+        return prompt
+
+
 def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
              max_tokens: int = 0, memory_context: str = "",
              context_budget=None, task_state=None,
