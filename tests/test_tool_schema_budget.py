@@ -184,7 +184,11 @@ _BASELINE_TOKENS = 11_422
 # the rest of the catalogue did not grow. Both are named in
 # _POST_COMPACTION_TOOLS, so the diet ratchet still sees only the
 # compacted surface.
-_TOKEN_BUDGET = 9_804
+# Wave 13 (2026-10-05): session_message gained status=<id> and ls, a
+# sender's own delivery receipts (T3). Trimmed to a bare type per
+# parameter and one clause in the description first; what remains costs
+# 25 tokens, so the budget moves 9_804 -> 9_830.
+_TOKEN_BUDGET = 9_830
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

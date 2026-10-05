@@ -8148,22 +8148,16 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "session_message",
             "description": (
                 "List other open sessions (no `to`), message one, or all "
-                "with to=all (not as the user). Ask `status=<message_id>` "
-                "for a delivery receipt (queued/delivered/read) or `ls` for "
-                "the messages you know about."
+                "with to=all (not as the user); status=<id> or ls for "
+                "receipts of your own."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "to": {"type": "string"},
                     "message": {"type": "string"},
-                    "status": {"type": "string",
-                               "description": "A message_id; reply is its "
-                                              "delivery receipt: queued / "
-                                              "delivered / read / unknown."},
-                    "ls": {"type": "boolean",
-                           "description": "List all messages you know "
-                                          "about (queued + delivered/read)."},
+                    "status": {"type": "string"},
+                    "ls": {"type": "boolean"},
                 },
             },
         },
