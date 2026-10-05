@@ -22692,6 +22692,23 @@ class OpenAIClient(_BaseClient):
                         "which is the ONLY way execution begins. Call "
                         "exit_plan_mode now — nothing else."
                     )})
+                    # ...and the same fact to the PERSON. The steer above
+                    # is addressed to the model, and when the model does
+                    # not act on it the user is left with an answer that
+                    # announces work and no sign of why none happened:
+                    # reports 20261005-135825 and 20261005-140408 are four
+                    # turns of "Let me push the branch now" with plan mode
+                    # silently refusing every call. The reason and the way
+                    # out belong to the only one who can lift it.
+                    _refused = sum(1 for _r in _round_results
+                                   if "plan mode (read-only)" in _r)
+                    self._plan_mode_refused_this_turn = True
+                    yield StreamEvent(type="notice", text=(
+                        "\n\n⚠ Plan mode is on, which is read-only, so "
+                        f"{_refused} action{'s' if _refused != 1 else ''} in "
+                        "this turn were refused. Nothing runs until the plan "
+                        "is approved or you leave plan mode (`/mode solo`, or "
+                        "Perms in the dashboard).\n"))
 
                 # Consecutive-failure check. A "failure round" is one
                 # where every tool_result this round is an `{"error": …}`
