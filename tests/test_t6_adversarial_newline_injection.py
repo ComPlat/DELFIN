@@ -46,6 +46,9 @@ def _good() -> dict:
         test_paths=["tests/a.py"],
         partition="cpu",
         minutes=10,
+        mem="8G",
+        job_name="delfin-agent-tests",
+        output_dir="logs",
     )
 
 
@@ -83,14 +86,18 @@ def test_leading_dash_refused(param):
 
 def test_ref_newline_cannot_execute_on_its_own_line():
     """ref='main\\ntouch MARKER' must NOT render 'touch MARKER' on its own line."""
-    script = build_job(**_good(), ref="main\ntouch MARKER_NEWLINE")
+    good = _good()
+    good["ref"] = "main\ntouch MARKER_NEWLINE"
+    script = build_job(**good)
     body = script.splitlines()
     assert "touch MARKER_NEWLINE" not in body  # must not appear as a line
 
 
 def test_partition_cannot_inject_sbatch_line():
     """partition must not smuggle a '#SBATCH --export=ALL,VAR' line in."""
-    script = build_job(**_good(), partition="cpu\n#SBATCH --export=ALL,EVIL=1")
+    good = _good()
+    good["partition"] = "cpu\n#SBATCH --export=ALL,EVIL=1"
+    script = build_job(**good)
     evil = [L for L in script.splitlines() if L.startswith("#SBATCH --export=ALL,EVIL")]
     assert not evil
 
@@ -98,7 +105,9 @@ def test_partition_cannot_inject_sbatch_line():
 def test_no_stray_sbatch_lines():
     """No rendered line beyond the fixed set may start with '#SBATCH'."""
     for ctl in ("\n", "\r", "\t", "\x00"):
-        script = build_job(**_good(), partition=("cpu" + ctl).rstrip() or "cpu")
+        good = _good()
+        good["partition"] = ("cpu" + ctl).rstrip() or "cpu"
+        script = build_job(**good)
         for line in script.splitlines():
             if line.startswith("#SBATCH"):
                 assert any(
