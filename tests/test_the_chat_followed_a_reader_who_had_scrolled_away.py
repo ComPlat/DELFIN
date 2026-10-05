@@ -150,6 +150,7 @@ _DRIVER = r"""
 const docListeners = {};
 let intervalFn = null;
 let pendingScroll = [];
+let scrollWrites = 0;
 
 const jump = {hidden: true, textContent: '',
               closest: (s) => (s === '.delfin-agent-chat' ? chat : null)};
@@ -164,6 +165,7 @@ const chat = {
 Object.defineProperty(chat, 'scrollTop', {
   get() { return chat._top; },
   set(v) {
+    scrollWrites++;
     const max = Math.max(0, chat.scrollHeight - chat.clientHeight);
     const clamped = Math.max(0, Math.min(max, v));
     if (clamped === chat._top) return;
@@ -251,6 +253,9 @@ chat.scrollHeight = 3000;
 tick();
 seen.own_scroll_kept_following = S().follow === true;
 seen.poll_reached_the_new_end = chat.scrollTop === end();
+const writesAtEnd = scrollWrites;
+tick();
+seen.idle_poll_does_not_write_scroll_again = scrollWrites === writesAtEnd;
 
 // An offset past the end of what is now shown belongs to another
 // conversation, so the reader is put at the end rather than mid-history.
@@ -287,7 +292,7 @@ def test_the_script_follows_only_from_the_end():
     seen = json.loads(done.stdout.strip().splitlines()[-1])
     wrong = sorted(name for name, ok in seen.items() if not ok)
     assert not wrong, f"the chat scroll misbehaved: {', '.join(wrong)}"
-    assert len(seen) == 17, f"the driver checked {len(seen)} things, not 17"
+    assert len(seen) == 18, f"the driver checked {len(seen)} things, not 18"
 
 
 def test_the_chat_script_is_not_inside_the_keyboard_guard():
