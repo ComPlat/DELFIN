@@ -2247,6 +2247,13 @@ def test_an_install_that_produced_no_xtb_is_a_failure_not_a_shrug(monkeypatch):
     assert "micromamba/conda not found" in outcome["status"]
 
 
+# Slow, and only now a cost to the gate: supplying xtb moved this
+# test from "skipped" to "executed", and 19s of the ~79s this
+# change adds is this one test. CI's tests job went from ~20 min
+# past its 35-minute limit and was killed. The heavy half of the
+# suite already has a home with 90 minutes (slow-tests.yml); this
+# goes there and the cheap ~70 stay in the gate.
+@pytest.mark.slow
 @_needs_xtb
 
 
@@ -2640,6 +2647,13 @@ def test_a_pulled_atom_gets_as_far_as_the_force_allows(editor):
     assert abs(hard - gentle) < 0.05, (gentle, hard)
 
 
+# Slow, and only now a cost to the gate: supplying xtb moved this
+# test from "skipped" to "executed", and 60s of the ~79s this
+# change adds is this one test. CI's tests job went from ~20 min
+# past its 35-minute limit and was killed. The heavy half of the
+# suite already has a home with 90 minutes (slow-tests.yml); this
+# goes there and the cheap ~70 stay in the gate.
+@pytest.mark.slow
 @_needs_xtb
 
 

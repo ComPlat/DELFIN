@@ -2396,6 +2396,10 @@ def _forming(text):
             math.dist(here[9:12], here[33:36]))
 
 
+# Over five seconds once it actually runs (10s), so it belongs in
+# slow-tests.yml rather than the gate. See the note on
+# _needs_xtb above: these were skipped before, so their cost is new.
+@pytest.mark.slow
 @_needs_xtb
 def test_a_scan_hands_back_the_minimum_it_crossed_into_not_the_one_it_left():
     """"The scan walked 1 of 20 points. Highest +0.0 kcal/mol."
@@ -2504,6 +2508,10 @@ def test_the_walk_comes_back_to_the_bottom_of_the_descent():
     assert "state['scan_came_back'] = None" in source
 
 
+# Over five seconds once it actually runs (8s), so it belongs in
+# slow-tests.yml rather than the gate. See the note on
+# _needs_xtb above: these were skipped before, so their cost is new.
+@pytest.mark.slow
 @_needs_xtb
 def test_a_walk_that_never_settles_says_so_rather_than_pretending():
     """Anti-butane, driven a whole turn of the C-C-C-C torsion.
@@ -2972,6 +2980,10 @@ def test_a_free_energy_is_a_hessian_and_is_asked_for_never_assumed():
     assert plain.get("free_energy") is None
 
 
+# Over five seconds once it actually runs (8s), so it belongs in
+# slow-tests.yml rather than the gate. See the note on
+# _needs_xtb above: these were skipped before, so their cost is new.
+@pytest.mark.slow
 @_needs_xtb
 def test_the_scan_can_be_priced_with_free_energies():
     """At the three places they are both affordable and meaningful: where the
@@ -3255,6 +3267,10 @@ H           -0.75352744687051       -2.57766461891954       -1.39744649395505
 """
 
 
+# Over five seconds once it actually runs (6s), so it belongs in
+# slow-tests.yml rather than the gate. See the note on
+# _needs_xtb above: these were skipped before, so their cost is new.
+@pytest.mark.slow
 @_needs_xtb
 def test_a_scan_of_a_double_bond_smears_the_twist_and_reaches_the_real_trans():
     """A dihedral scan made as realistic as a relaxed scan can be.
@@ -3485,6 +3501,10 @@ def test_the_path_says_it_where_the_barrier_is_reported():
     assert "lines.append(state['path_depth'])" in source
 
 
+# Over five seconds once it actually runs (5s), so it belongs in
+# slow-tests.yml rather than the gate. See the note on
+# _needs_xtb above: these were skipped before, so their cost is new.
+@pytest.mark.slow
 @_needs_xtb
 def test_a_scan_says_when_the_method_has_run_out_of_depth():
     """A walk runs into such a region without anyone choosing to.
