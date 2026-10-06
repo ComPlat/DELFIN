@@ -137,8 +137,9 @@ def test_remote_port_zero_uses_os_assignment():
     assert 1024 <= selected <= 65535
 
 
+@pytest.mark.parametrize('compatible', [False, True])
 @pytest.mark.parametrize('source', ['repo-env', 'active-env', 'path', 'explicit-python', 'explicit-repo'])
-def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_path, source):
+def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_path, source, compatible):
     import base64
     import os
     import subprocess
@@ -152,6 +153,8 @@ def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_pat
         (path / '__init__.py').write_text('')
     for module in ['delfin/cli_voila.py', 'delfin/agent/where.py', 'delfin/dashboard/session.py']:
         (repo / module).write_text('')
+    option = '--strict-port' if compatible else '--port'
+    (repo / 'delfin/cli_voila.py').write_text(f'def main(argv):\n    print({option!r})\n')
     root = repo / 'env' if source in {'repo-env', 'explicit-repo'} else tmp_path / 'custom environment'
     bin_dir = root / 'bin'
     bin_dir.mkdir(parents=True)
@@ -175,6 +178,11 @@ def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_pat
     script = Path(__file__).resolve().parents[1] / 'tools/windows-launcher/remote_bootstrap.sh'
     result = subprocess.run(['bash', str(script), '0', str(repo), hint, payload, 'dashboard'],
                             env=env, text=True, capture_output=True, timeout=15)
+    if not compatible:
+        assert result.returncode == 1
+        assert 'Server DELFIN is too old' in result.stderr
+        assert 'CHOSEN=' not in result.stdout
+        return
     assert result.returncode == 0, result.stderr
     assert 'CHOSEN=' + str(python) in result.stdout
     assert 'ACTIVATED=' + str(root) in result.stdout
