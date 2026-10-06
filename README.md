@@ -275,6 +275,9 @@ delfin-voila --resume SID    # reopen a previous agent session
 delfin-voila --ip 0.0.0.0 --allow-remote-bind
 ```
 
+Windows SSH desktop launcher (OTP, separate working terminal, tmux reconnect):
+[Setup and installation](tools/windows-launcher/README.md). Copy that folder to your Windows PC.
+
 Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
 
 ---
