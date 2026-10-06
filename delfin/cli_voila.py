@@ -689,6 +689,11 @@ def main(argv=None):
         description="Launch the DELFIN Dashboard with Voila.",
     )
     parser.add_argument(
+        "--strict-port",
+        action="store_true",
+        help="Fail if the requested port is occupied instead of choosing another (SSH launchers).",
+    )
+    parser.add_argument(
         "--port",
         type=int,
         default=8866,
@@ -832,7 +837,10 @@ def main(argv=None):
 
     # Find a free port, starting from the requested one.
     try:
-        args.port = _select_port(args.port)
+        selected_port = _select_port(args.port)
+        if args.strict_port and selected_port != args.port:
+            raise RuntimeError(f"Error: requested port {args.port} is occupied; refusing to change the SSH tunnel target.")
+        args.port = selected_port
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
@@ -979,6 +987,7 @@ def main(argv=None):
         # culler on; the rule itself lives in the kernel manager above.
         *(_resume.cull_config_args() if kernel_manager_class else []),
         f"--port={args.port}",
+        *(["--ServerApp.port_retries=0"] if args.strict_port else []),
         f"--ServerApp.ip={args.ip}",
         f"--ServerApp.root_dir={root_dir}",
         f"--ServerApp.default_url={dashboard_url}",
@@ -1169,7 +1178,7 @@ def main(argv=None):
         from delfin.agent import where as _where
 
         _where.announce_dashboard(
-            port=args.port, token=_token,
+            port=args.port, token=_token, url=dashboard_url,
             resume_path=resume_url_path.split("?")[0] if resume_url_path else "")
         atexit.register(_where.withdraw_dashboard)
         _back = _where.reconnect_command(_where.dashboard())
