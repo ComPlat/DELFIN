@@ -103,3 +103,27 @@ def test_the_stub_directory_holds_only_stand_ins(tool):
     fixture."""
     found = sorted(p.name for p in _STUB.parent.iterdir() if p.is_file())
     assert found == [tool], found
+
+
+def test_a_supplied_test_does_not_assert_how_fast_the_machine_is():
+    """The second kind of machine dependence, found by supplying xtb.
+
+    `test_a_run_shorter_than_the_reading_interval_still_hands_its_path_over`
+    asserted `spent < 0.2` — a wall-clock duration. It had never run in
+    CI before this change, and the first time it did, the runner took
+    0.323 s and the test reported the machine as a defect while the
+    property it exists to protect held perfectly.
+
+    A duration describes the host. The behaviour is asserted
+    unconditionally now, and the timing only decides whether the
+    STRONGER statement (one hand-over, because the loop never read the
+    log) can be made at all.
+    """
+    text = (pathlib.Path(__file__).resolve().parent
+            / "test_gfn_methods_in_the_viewer.py").read_text(encoding="utf-8")
+    assert "assert spent < 0.2" not in text, (
+        "a wall-clock assertion is back; it fails on a slow runner and "
+        "says nothing about the code")
+    assert "_READ_INTERVAL_S" in text, (
+        "the interval must be named, not written as a bare 0.2 in an "
+        "assertion")
