@@ -6,7 +6,7 @@ hint=$3
 payload=$4
 role=$5
 tunnel_path=${6:-}
-keep=${7:-1}
+keep=${7:-0}
 working=${8:-0}
 expand_path() {
     case "$1" in
@@ -94,4 +94,13 @@ if [ "$role" = terminal ]; then
     export PS1
     exec bash --norc -i
 fi
+# Capability check runs argparse help only, before any dashboard/tmux startup.
+if ! dashboard_help=$("$python" -c 'from delfin.cli_voila import main; main(["--help"])' 2>&1); then
+    printf '%s\n' 'DELFIN: Cannot read dashboard CLI capabilities. Check the server DELFIN installation.' >&2
+    exit 1
+fi
+case "$dashboard_help" in
+    *--strict-port*) ;;
+    *) printf '%s\n' 'DELFIN: Server DELFIN is too old for this launcher (--strict-port is missing). Update the server installation to the Windows-launcher release; updating the Windows app alone is not enough.' >&2; exit 1 ;;
+esac
 exec "$python" -c 'import base64,sys;exec(base64.b64decode(sys.argv.pop(1)))' "$payload" "$preferred" "$PWD" "$python" "$tunnel_path" "$keep" "$working"

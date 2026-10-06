@@ -54,6 +54,12 @@ shell, it normally interrupts that shell's foreground command; if pressed in the
 dashboard view, it stops the dashboard process. To keep the server, disconnect or
 use **Ctrl+B, then D** rather than Ctrl+C.
 
+The server DELFIN installation must include the launcher release with
+`delfin-voila --strict-port`. The app checks this before creating a dashboard.
+Updating the Windows app alone does not update the server code. After the release
+is merged, update the server checkout using your normal update process
+(`git pull --ff-only` for a clean checkout on main).
+
 ## Requirements
 
 ### Windows
@@ -296,8 +302,10 @@ On errors the terminal stays open. For a new default-port session, inspect it wi
 `delfin-agent where` to find the actual session name. For an existing session use `delfin-agent where`.
 SSH/VPN/MFA failures and cluster policies are never bypassed.
 
-**Release status:** Windows connection and return tests for this updated version
-remain pending. Do not ship to main until the required Windows checks pass.
+**Validation status:** Windows PowerShell 5.1 CI and repository CI have passed.
+Real cluster login has been exercised. Full Keep/reconnect and the latest exit
+correction still require end-to-end confirmation; CI does not certify a cluster
+configuration.
 
 References: [Microsoft OpenSSH key management](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement),
 [OpenSSH configuration options](https://man.openbsd.org/ssh_config).
