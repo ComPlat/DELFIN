@@ -1,0 +1,19 @@
+name: Windows launcher
+on:
+  pull_request:
+    paths:
+      - 'tools/windows-launcher/**'
+      - 'delfin/cli_voila.py'
+      - '.github/workflows/windows-launcher.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-powershell:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate with Windows PowerShell 5.1
+        shell: powershell
+        run: ./tools/windows-launcher/Test-Launcher.ps1 -SkipOpenSSHCheck
