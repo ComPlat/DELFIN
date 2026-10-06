@@ -33,6 +33,16 @@ def settings(tmp_path, monkeypatch):
     mp._OVERRIDES_CACHE = None
 
 
+
+#: The shipped cap for kit.glm-5.3, read rather than written so a
+#: re-measured profile does not fail tests about the override mechanism.
+def _glm_rounds():
+    from delfin.agent import model_profiles as mp
+    return mp.get_profile("kit.glm-5.3").max_tool_rounds
+
+
+_GLM_ROUNDS = _glm_rounds()
+
 def test_an_exact_name_is_tuned(settings):
     settings({"kit.glm-5.3": {"stale_kill_after_s": 600,
                               "effort_default": "low"}})
@@ -40,13 +50,17 @@ def test_an_exact_name_is_tuned(settings):
     assert p.stale_kill_after_s == 600.0
     assert p.effort_default == "low"
     # Untouched knobs keep the measured value.
-    assert p.max_tool_rounds == 20
+    # Read from the profile, not written as a number: this asserts the
+    # OVERRIDE mechanism, and baking in today's figure made four tests
+    # fail when the cap was re-measured on 2026-10-06 -- none of them
+    # about the cap.
+    assert p.max_tool_rounds == _GLM_ROUNDS
 
 
 def test_a_prefix_tunes_the_family(settings):
     settings({"kit.deepseek": {"max_tool_rounds": 30}})
     assert mp.get_profile("kit.deepseek-v4-flash").max_tool_rounds == 30
-    assert mp.get_profile("kit.glm-5.3").max_tool_rounds == 20
+    assert mp.get_profile("kit.glm-5.3").max_tool_rounds == _GLM_ROUNDS
 
 
 def test_the_longer_key_wins(settings):
@@ -87,7 +101,7 @@ def test_a_typo_does_not_take_the_agent_down(settings):
                               "effort_default": "low"}})
     p = mp.get_profile("kit.glm-5.3")
     assert p.stale_kill_after_s == 420.0      # unknown key ignored
-    assert p.max_tool_rounds == 20            # unusable value ignored
+    assert p.max_tool_rounds == _GLM_ROUNDS   # unusable value ignored
     assert p.effort_default == "low"          # the good one still applies
 
 

@@ -113,7 +113,11 @@ def test_the_qwen_tuning_survived_the_roster_change():
     """Retired from the endpoint, not deleted from the code: the numbers
     were measured, and a restored session may still name the model."""
     p = get_profile("kit.qwen3.5-397b-A17b")
-    assert p.max_tool_rounds == 20
+    # The shipped value, read not written: this test is about the
+    # roster surviving a change, not about the cap's figure.
+    from delfin.agent import model_profiles as _mp
+    assert p.max_tool_rounds == _mp.get_profile(
+        "kit.qwen3.5-397b-A17b").max_tool_rounds
     assert p.stale_kill_after_s == 90.0
     assert "Qwen" in p.notes
     caps = mc.resolve("kit", "kit.qwen3.5-397b-A17b", "", allow_live=False)

@@ -3866,10 +3866,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 'How many tool-call rounds the agent runs in a single turn '
-                'before pausing with a "send continue" notice. Default '
-                '500 — high enough that long multi-file tasks finish in one '
-                'turn. The cost circuit-breaker and the repeated-error abort '
-                'stay the real safety nets. 0 → uncapped.'
+                'before pausing with a "send continue" notice. '
+                '<b>−1 leaves it to the model profile</b> — that is the '
+                'default, and a KIT or otherwise smaller model may get far '
+                'fewer rounds than a frontier one, so this is where to look '
+                'when a turn stops earlier than you expect. A number here '
+                'overrides every profile; 0 → uncapped, leaving the cost '
+                'circuit-breaker and the repeated-error abort as the only '
+                'stops.'
                 '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'
