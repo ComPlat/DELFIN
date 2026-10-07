@@ -21,7 +21,9 @@ def return_url(record, sessions):
     for item in sessions:
         try:
             url = urlsplit(item.get('request_url', ''))
-            if (item.get('host') == socket.gethostname().split('.')[0] and url.port == port
+            if (item.get('host') == socket.gethostname().split('.')[0]
+                    and url.scheme in ('http', 'https') and url.hostname in ('localhost', '127.0.0.1', '::1')
+                    and url.port is not None and 1024 <= url.port <= 65535
                     and parse_qs(url.query).get('token') == [record['token']]
                     and item.get('session_name')):
                 eligible.append(item)

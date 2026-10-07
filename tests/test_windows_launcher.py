@@ -17,16 +17,18 @@ launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
 
 
-def test_return_uses_only_latest_kernel_of_authenticated_server():
+@pytest.mark.parametrize('browser_port', [8866, 58249])
+def test_return_uses_only_latest_kernel_of_authenticated_server(browser_port):
     token = 'a' * 43
     record = {'port': 8866, 'token': token, 'url': '/voila/render/dashboard.ipynb',
               'resume_path': '/voila/render/return.ipynb'}
     host = socket.gethostname().split('.')[0]
-    def session(name, stamp, port=8866, secret=token, node=host):
+    def session(name, stamp, port=browser_port, secret=token, node=host, browser_host='localhost'):
         return {'session_name': name, 'updated_at': stamp, 'host': node,
-                'request_url': f'http://localhost:{port}/?token={secret}'}
+                'request_url': f'http://{browser_host}:{port}/?token={secret}'}
     rows = [session('old', 1), session('new & kept', 2),
-            session('other-port', 100, port=9000),
+            session('other-server', 100, port=9000, secret='b' * 43),
+            session('foreign-url-host', 100, browser_host='attacker.invalid'),
             session('other-server-token', 100, secret='b' * 43),
             session('other-host', 100, node='another-node'),
             session('bad-heartbeat', 'broken')]

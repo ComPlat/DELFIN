@@ -247,6 +247,21 @@ reports a dashboard record on another node and asks you to connect there.
 Use only trusted SSH configurations; do not add unknown ProxyCommand scripts,
 RemoteCommand settings or extra forwardings. Jump hosts have their own login rules.
 
+## Returning to a kept session
+
+Enable Keep session before connecting, then Disconnect without Ctrl+C. Later,
+start the same saved connection again, complete SSH/password/OTP authentication,
+and connect to the same login node. The browser resumes the latest live kept
+kernel authenticated to that server, even if the local tunnel port has changed.
+Keep settings do not bypass a fresh SSH login.
+
+Inside the Agent area, **Resume a saved session…** selects saved agent
+conversations/workspaces. That is distinct from restoring a whole live notebook
+kernel; the launcher chooses the newest eligible kept kernel automatically.
+The dashboard's per-session Keep switch controls whether that browser session
+survives a closed page. The launcher's Keep switch controls the server surviving
+disconnect. Stopping the server with Ctrl+C ends its kernels.
+
 ## Disconnect, reconnect and stop
 
 | Action | Result |
