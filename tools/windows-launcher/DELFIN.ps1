@@ -440,7 +440,17 @@ foreach ($spec in @(@('New',15),@('Save',130),@('Start / Reconnect',280))) {
     } elseif ($spec[0] -eq 'Save') {
         $button.add_Click({ try { [void](Save-Current) } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'DELFIN') } })
     } else {
-        $button.add_Click({ try { $id=Save-Current; Start-Window 'Dashboard' $id } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'DELFIN') } })
+        $button.add_Click({
+            try {
+                $active = @($script:ownedConnections | Where-Object { -not $_.Worker.HasExited })
+                if ($active.Count) {
+                    $script:connectionStatus.Text = 'A connection is already active. Use the dashboard browser, or Disconnect first.'
+                    return
+                }
+                $id=Save-Current
+                Start-Window 'Dashboard' $id
+            } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'DELFIN') }
+        })
     }
     $form.Controls.Add($button)
     $actionButtons += $button
@@ -452,7 +462,7 @@ foreach ($label in @('Show terminal','Disconnect')) {
     $control.Size = New-Object Drawing.Size(160,30)
     $control.Left = if ($label -eq 'Show terminal') { 15 } else { 190 }
     if ($label -eq 'Disconnect') {
-        $control.add_Click({ if ($script:selectedId) { Disconnect-Owned $script:selectedId } })
+        $control.add_Click({ Disconnect-Owned; $script:connectionStatus.Text = 'Disconnect requested...' })
     } else {
         $control.add_Click({
             foreach ($item in $script:ownedConnections) {
@@ -465,13 +475,34 @@ foreach ($label in @('Show terminal','Disconnect')) {
     $form.Controls.Add($control)
     $connectionButtons += $control
 }
-$form.add_FormClosing({ Disconnect-Owned })
+$script:connectionStatus = New-Object Windows.Forms.Label
+$script:connectionStatus.Left = 15
+$script:connectionStatus.Size = New-Object Drawing.Size(555,30)
+$script:connectionStatus.Text = 'Not connected.'
+$form.Controls.Add($script:connectionStatus)
+$statusTimer = New-Object Windows.Forms.Timer
+$statusTimer.Interval = 500
+$statusTimer.add_Tick({
+    $active = @($script:ownedConnections | Where-Object { -not $_.Worker.HasExited })
+    if ($active.Count -eq 0) {
+        $script:connectionStatus.Text = if ($script:ownedConnections.Count) { 'Disconnected. Keep ON dashboards can remain on the server.' } else { 'Not connected.' }
+    } else {
+        $stopping = @($active | Where-Object { Test-Path -LiteralPath (Join-Path $store ('connection-' + $_.Connection + '.stop')) })
+        $ready = @($active | Where-Object { Test-Path -LiteralPath (Join-Path $store ('connection-' + $_.Connection + '.browser-ready')) })
+        if ($stopping.Count) { $script:connectionStatus.Text = 'Disconnecting SSH...' }
+        elseif ($ready.Count) { $script:connectionStatus.Text = 'Connected. Dashboard SSH terminal stays open for Ctrl+C.' }
+        else { $script:connectionStatus.Text = 'Connecting. Complete password/OTP in the SSH window.' }
+    }
+})
+$statusTimer.Start()
+$form.add_FormClosing({ Disconnect-Owned; $statusTimer.Stop() })
 function Show-Advanced {
     foreach ($control in $advancedControls) { $control.Visible = $advanced.Checked }
     $note.Location = New-Object Drawing.Point(15,$(if ($advanced.Checked) { 450 } else { 325 }))
     foreach ($button in $actionButtons) { $button.Top = $(if ($advanced.Checked) { 500 } else { 375 }) }
     foreach ($control in $connectionButtons) { $control.Top = $(if ($advanced.Checked) { 545 } else { 420 }) }
-    $form.ClientSize = New-Object Drawing.Size(590,$(if ($advanced.Checked) { 595 } else { 470 }))
+    $script:connectionStatus.Top = $(if ($advanced.Checked) { 580 } else { 455 })
+    $form.ClientSize = New-Object Drawing.Size(590,$(if ($advanced.Checked) { 625 } else { 500 }))
 }
 $advanced.add_CheckedChanged({ Show-Advanced })
 Show-Advanced

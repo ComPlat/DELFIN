@@ -37,10 +37,16 @@ belongs to the settings app, not a second terminal. Use Ctrl+C there to
 stop the dashboard explicitly, including with Keep ON. The optional working
 terminal is still OFF by default. Keep the DELFIN app open while using the browser.
 **Show terminal** brings back the SSH window if it was hidden.
-**Disconnect** ends this app's connections for the selected profile. Closing the
+**Disconnect** ends all connections started by this app instance. Closing the
 DELFIN settings app ends all connections started by that instance, including a
 pending login. Keep OFF stops dashboards created by those connections; Keep ON
 leaves the server for reconnecting. Pre-existing dashboards keep their lifetime.
+The status line shows Connecting, Connected, Disconnecting or Disconnected.
+Only one settings app instance runs per Windows login; clicking the desktop
+shortcut again brings that existing window forward. The launcher permits only
+one active SSH connection. Repeated Start / Reconnect clicks do not start extra
+connections or dashboards. Open further views inside the DELFIN dashboard in
+your browser. Disconnect before changing the SSH destination.
 Closing a browser tab alone does not disconnect SSH. Authentication/startup
 failures remain visible. Enable the optional working terminal to keep the SSH
 window visible and switch tmux windows. Reinstall to update the shortcuts; unpin
