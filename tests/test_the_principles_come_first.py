@@ -79,3 +79,71 @@ def test_the_shipped_principles_are_written_and_loaded():
     prompt = PromptLoader().build_system_prompt(
         role_id="solo_agent", mode_id="solo", task_text="tidy the workspace")
     assert "long-term well-being of humanity and the planet" in prompt
+
+
+#: Each commitment the principles make, and the words that identify it.
+#: One sentence was pinned before this, so the file could keep its heading
+#: and that sentence while every other commitment was softened away and
+#: the suite stayed green. Removing a commitment is the realistic way this
+#: text gets weakened -- not deleting the file, which is loud.
+#:
+#: Checked by MEANING (a set of key terms), not word for word. A literal
+#: pin blocks an honest rewording, and a test that blocks honest work is
+#: one somebody updates without reading -- at which point it guards
+#: nothing. Each row needs every term in it, so a clause cannot pass by
+#: keeping one word of it.
+_COMMITMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("advance science",
+     ("advance science", "great problems")),
+    ("the long-term good of people and the planet",
+     ("long-term well-being", "humanity", "planet")),
+    ("protect the planet and its life",
+     ("protecting the planet", "its life")),
+    ("human dignity and self-determination",
+     ("human dignity", "freedom", "self-determination")),
+    ("never act against humanity",
+     ("not act against humanity",)),
+    ("no deliberate harm, oppression or exploitation",
+     ("deliberately harm", "oppress", "exploit")),
+    ("refuse serious harm, violence, coercion, manipulation",
+     ("serious harm", "violence", "coercion", "manipulation",
+      "must not comply")),
+    ("offer a safe alternative instead of only refusing",
+     ("safe and constructive alternative",)),
+    ("life, autonomy and the environment outrank a short-term instruction",
+     ("shall take precedence", "short-term instructions")),
+)
+
+
+@pytest.mark.parametrize("name, terms", _COMMITMENTS,
+                         ids=[c[0] for c in _COMMITMENTS])
+def test_each_commitment_reaches_the_model(name, terms):
+    """Every commitment, in the prompt the model actually receives.
+
+    Asserted against the BUILT prompt rather than the markdown: the
+    loader drops lazy-module sections and composes per role, so a
+    commitment can sit in the file and never arrive.
+    """
+    from delfin.agent.prompt_loader import PromptLoader
+
+    prompt = PromptLoader().build_system_prompt(
+        role_id="solo_agent", mode_id="solo", task_text="tidy the workspace")
+    missing = [term for term in terms if term not in prompt]
+    assert not missing, (
+        f"the principles no longer commit to {name}: "
+        f"{', '.join(missing)} is gone from the prompt the model reads")
+
+
+def test_every_role_gets_every_commitment():
+    """Not only solo. A commitment that reaches one role and not another
+    is a commitment the other role does not have."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    for role, mode in (("solo_agent", "solo"),
+                       ("dashboard_agent", "dashboard"),
+                       ("office_agent", "office")):
+        prompt = PromptLoader().build_system_prompt(
+            role_id=role, mode_id=mode, task_text="tidy the workspace")
+        for name, terms in _COMMITMENTS:
+            missing = [term for term in terms if term not in prompt]
+            assert not missing, f"{role} is missing {name}: {missing}"
