@@ -456,7 +456,19 @@ class TestEnAnParity:
     10.5281/zenodo.18255912, GitHub andre-cloud/ensemble_analyzer).
     """
 
-    enan = pytest.importorskip("ensemble_analyzer")
+    @pytest.fixture(autouse=True)
+    def _require_reference(self):
+        """Skip parity tests unless the archived reference submodules import.
+
+        Unlike ``pytest.importorskip("ensemble_analyzer")`` at class level —
+        which succeeds for the bare namespace package even when its source has
+        been deleted and would here wipe the *whole module's* collection — this
+        guards the deep submodule import. The failure mode we guard against is
+        real: the reference source tree was emptied once (only ``__pycache__``
+        left), and a bare top-level import cannot detect that.
+        """
+        pytest.importorskip("ensemble_analyzer._clustering.cluster_manager")
+        pytest.importorskip("ensemble_analyzer._clustering.cluster_config")
 
     def test_eigenvalue_features_match_reference(self):
         import inspect
