@@ -106,4 +106,13 @@ try {
     Assert-That ([BitConverter]::ToUInt16($pe,$peOffset+24+68) -eq 2) 'Starter must use the Windows GUI subsystem.'
     $selfTest = Start-Process -FilePath $starterTest -ArgumentList '--self-test' -Wait -PassThru
     Assert-That ($selfTest.ExitCode -eq 0) 'Starter self-test failed.'
+    # Exercise the actual app-start path with a harmless script instead of the GUI.
+    $probeScript = @'
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class ConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'console.txt'),[ConsoleProbe]::GetConsoleWindow().ToInt64().ToString())
+'@
+    $probeScript | Set-Content -LiteralPath (Join-Path $starterTestFolder 'DELFIN.ps1') -Encoding UTF8
+    $appProbe = Start-Process -FilePath $starterTest -Wait -PassThru
+    Assert-That ($appProbe.ExitCode -eq 0) 'Starter could not run its app script.'
+    Assert-That ((Get-Content -LiteralPath (Join-Path $starterTestFolder 'console.txt') -Raw) -eq '0') 'App script must run without an allocated console.'
 } finally { Remove-Item -LiteralPath $starterTestFolder -Recurse -Force }
