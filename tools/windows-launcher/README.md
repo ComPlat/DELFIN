@@ -31,7 +31,9 @@ open the settings app without a PowerShell console. The settings app is an
 independent main window and stays in the taskbar with the DELFIN icon while open.
 
 A separate dashboard terminal appears for native OpenSSH password/OTP and
-host-key prompts and stays visible after the browser opens. Use Ctrl+C there to
+host-key prompts and stays visible after the browser opens. This is the only
+SSH terminal; it uses the PowerShell icon and an SSH title. The DELFIN logo
+belongs to the settings app, not a second terminal. Use Ctrl+C there to
 stop the dashboard explicitly, including with Keep ON. The optional working
 terminal is still OFF by default. Keep the DELFIN app open while using the browser.
 **Show terminal** brings back the SSH window if it was hidden.

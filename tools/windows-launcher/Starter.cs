@@ -6,6 +6,7 @@ using System.Windows.Forms;
 
 internal static class DelfinStarter {
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AllocConsole();
+    [DllImport("shell32.dll", CharSet=CharSet.Unicode)] private static extern int SetCurrentProcessExplicitAppUserModelID(string id);
     [STAThread]
     private static int Main(string[] args) {
         if (args.Length == 1 && args[0] == "--self-test") return 0;
@@ -21,6 +22,7 @@ internal static class DelfinStarter {
             if (worker) {
                 if (!Guid.TryParse(args[1], out profile) || !Guid.TryParse(args[2], out connection))
                     throw new ArgumentException("Invalid connection identifiers.");
+                SetCurrentProcessExplicitAppUserModelID("ComPlat.DELFIN.SSH");
                 if (!AllocConsole()) throw new InvalidOperationException("Cannot open the SSH login console.");
                 extra = " -Mode Dashboard -ProfileId " + profile.ToString() + " -ConnectionId " + connection.ToString();
             }

@@ -116,6 +116,7 @@ using System.Runtime.InteropServices;
 public static class DelfinConsole {
     [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
+    [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int handle);
     [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr handle, out uint mode);
     [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr handle, uint mode);
@@ -134,6 +135,12 @@ public static class DelfinConsole {
     $showFile = $null
     $disconnectRequested = $false
     $loginWindow = [DelfinConsole]::GetConsoleWindow()
+    Add-Type -AssemblyName System.Drawing
+    $terminalIcon = [Drawing.Icon]::ExtractAssociatedIcon("$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe")
+    if ($loginWindow -ne [IntPtr]::Zero -and $terminalIcon) {
+        [void][DelfinConsole]::SendMessage($loginWindow,0x80,[IntPtr]::Zero,$terminalIcon.Handle)
+        [void][DelfinConsole]::SendMessage($loginWindow,0x80,[IntPtr]1,$terminalIcon.Handle)
+    }
     try {
         $matchingProfiles = @(Read-Profiles | Where-Object { $_.Id -eq $ProfileId })
         if ($matchingProfiles.Count -ne 1) { throw 'Connection not found.' }
@@ -141,7 +148,7 @@ public static class DelfinConsole {
         Check-Profile $p
         $ssh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
         if (-not (Test-Path $ssh)) { throw 'Windows OpenSSH Client is missing. See README.' }
-        $Host.UI.RawUI.WindowTitle = "DELFIN $Mode - $($p.Name)"
+        $Host.UI.RawUI.WindowTitle = "SSH $Mode - $($p.Name)"
         $tunnelPath = ''
         if ($Mode -eq 'Dashboard') {
             $LocalPort = Get-FreeLocalPort ([int]$p.Port)
@@ -287,6 +294,7 @@ public static class DelfinConsole {
             }
             $sshProcess.Dispose()
         }
+        if ($terminalIcon) { $terminalIcon.Dispose() }
         foreach ($file in @($stopFile,$browserReadyFile,$showFile)) {
             if ($file -and (Test-Path -LiteralPath $file)) { Remove-Item -LiteralPath $file -Force }
         }
