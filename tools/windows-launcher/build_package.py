@@ -7,7 +7,7 @@ import zipfile
 def main():
     folder = Path(__file__).resolve().parent
     names = ['Install.cmd', 'Uninstall.cmd', 'DELFIN.ps1', 'Install.ps1', 'Uninstall.ps1', 'Test-Launcher.ps1', 'remote_launcher.py', 'remote_bootstrap.sh',
-             'README.md', 'DELFIN_logo.png', 'DELFIN.ico', 'Starter.cs', 'Build-Starter.ps1']
+             'README.md', 'DELFIN_logo.png', 'DELFIN.ico', 'Starter.cs', 'Build-Starter.ps1', 'Taskbar.cs']
     checksum = folder / 'SHA256SUMS.txt'
     checksum.write_text(''.join(
         f'{hashlib.sha256((folder / name).read_bytes()).hexdigest()}  {name}\n'

@@ -57,7 +57,11 @@ an old PowerShell-based taskbar shortcut and pin the new DELFIN shortcut.
 The installer creates DELFIN shortcuts with the logo on the desktop and in the
 current user's Start menu. Find **DELFIN** in Start, right-click it and select
 **Pin to taskbar** (under **More** on some Windows versions).
-This PowerShell installer does not force a taskbar pin or change your taskbar layout.
+The settings window supplies Windows with DELFIN.exe as its relaunch command,
+the DELFIN icon and its own window AppUserModelID, so pinning that open window
+also targets DELFIN rather than its internal PowerShell host. Remove a previously
+pinned PowerShell entry before pinning the updated DELFIN window.
+This installer does not force a taskbar pin or change your taskbar layout.
 Updates preserve the shortcut location. Before uninstalling, right-click a pinned
 DELFIN icon and select **Unpin from taskbar**; the uninstaller removes the desktop
 and Start menu shortcuts.
