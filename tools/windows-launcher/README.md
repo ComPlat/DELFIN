@@ -23,10 +23,24 @@ There is one SSH authentication sequence for this connection. The server can
 still request multiple authentication factors, retries or jump-host logins.
 Closing the browser does not close SSH or stop the dashboard.
 
-The installed shortcut hides the GUI launcher console. With the working terminal
-disabled, only the dashboard SSH terminal should be visible alongside the app and
-browser. Its tmux status bar is normal; it is the dashboard view, not a free shell.
-Manually starting the script in PowerShell does not hide your existing terminal.
+## Browser-only mode
+
+The installer builds `DELFIN.exe` locally using the Windows .NET Framework
+compiler and the included readable `Starter.cs`. The desktop/Start menu shortcuts
+open the settings app without a PowerShell console.
+
+With **Open working terminal** OFF (default), a separate login window appears
+for native OpenSSH password/OTP and host-key prompts. After the local tunnel is
+verified and the browser opens, that login window is hidden. Keep the DELFIN app
+open while using the browser. **Show terminal** brings back the SSH window.
+**Disconnect** ends this app's connections for the selected profile. Closing the
+DELFIN settings app ends all connections started by that instance, including a
+pending login. Keep OFF stops dashboards created by those connections; Keep ON
+leaves the server for reconnecting. Pre-existing dashboards keep their lifetime.
+Closing a browser tab alone does not disconnect SSH. Authentication/startup
+failures remain visible. Enable the optional working terminal to keep the SSH
+window visible and switch tmux windows. Reinstall to update the shortcuts; unpin
+an old PowerShell-based taskbar shortcut and pin the new DELFIN shortcut.
 
 ## Taskbar shortcut
 
@@ -217,8 +231,8 @@ RemoteCommand settings or extra forwardings. Jump hosts have their own login rul
 | Ctrl+C in the dashboard view | Explicitly stops that dashboard, regardless of Keep |
 | `exit` in the working shell | Closes that tmux working window; does not end the dashboard window |
 
-Keep the single SSH window open for browser access. Closing all app GUI windows
-alone does not close an already opened SSH terminal. Existing non-tmux dashboards
+Keep the DELFIN app open for browser access. Closing it disconnects connections
+started by that app instance, even when their login windows are hidden. Existing non-tmux dashboards
 continue to depend on their original terminal; the app monitors rather than moves
 those processes. A working tmux window is only offered when the dashboard has tmux.
 Server restarts or terminated kernels may require a new session.

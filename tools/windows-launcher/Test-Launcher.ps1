@@ -3,13 +3,13 @@
 param([switch]$SkipOpenSSHCheck)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-foreach ($name in @('DELFIN.ps1','Install.ps1','Uninstall.ps1','Test-Launcher.ps1')) {
+foreach ($name in @('DELFIN.ps1','Install.ps1','Uninstall.ps1','Test-Launcher.ps1','Build-Starter.ps1')) {
     $tokens = $null
     $parseErrors = $null
     [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $name),[ref]$tokens,[ref]$parseErrors)
     if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
 }
-foreach ($name in @('Install.cmd','Uninstall.cmd','remote_launcher.py','remote_bootstrap.sh','README.md','DELFIN_logo.png','DELFIN.ico')) {
+foreach ($name in @('Install.cmd','Uninstall.cmd','remote_launcher.py','remote_bootstrap.sh','README.md','DELFIN_logo.png','DELFIN.ico','Starter.cs','Build-Starter.ps1')) {
     if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $name))) { throw "Missing file: $name" }
 }
 if (-not $SkipOpenSSHCheck -and -not (Test-Path "$env:SystemRoot\System32\OpenSSH\ssh.exe")) { throw 'Windows OpenSSH Client is missing.' }
@@ -94,3 +94,16 @@ $icon=New-Object Drawing.Icon((Join-Path $PSScriptRoot 'DELFIN.ico'))
 $icon.Dispose()
 Assert-That ((Quote-NativeArgument 'a "b" c') -eq '"a \"b\" c"') 'Native Windows arguments must escape quotation marks.'
 Write-Host 'Syntax, connections, SSH options, browser destination and icon checked. Test a real OTP connection separately.'
+
+# Compile the windowless starter and check its Windows GUI subsystem and entry point.
+$starterTestFolder = Join-Path ([IO.Path]::GetTempPath()) ('delfin-starter-test-' + [guid]::NewGuid().ToString())
+[void][IO.Directory]::CreateDirectory($starterTestFolder)
+try {
+    $starterTest = Join-Path $starterTestFolder 'DELFIN.exe'
+    & (Join-Path $PSScriptRoot 'Build-Starter.ps1') -Destination $starterTest
+    $pe = [IO.File]::ReadAllBytes($starterTest)
+    $peOffset = [BitConverter]::ToInt32($pe,0x3c)
+    Assert-That ([BitConverter]::ToUInt16($pe,$peOffset+24+68) -eq 2) 'Starter must use the Windows GUI subsystem.'
+    $selfTest = Start-Process -FilePath $starterTest -ArgumentList '--self-test' -Wait -PassThru
+    Assert-That ($selfTest.ExitCode -eq 0) 'Starter self-test failed.'
+} finally { Remove-Item -LiteralPath $starterTestFolder -Recurse -Force }
