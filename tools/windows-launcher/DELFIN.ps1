@@ -99,6 +99,8 @@ using System.Runtime.InteropServices;
 public static class DelfinLauncherWindow {
     [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
 }
 '@
     $launcherConsole = [DelfinLauncherWindow]::GetConsoleWindow()
@@ -133,7 +135,10 @@ public static class DelfinConsole {
             if ($null -ne $sshProcess -and -not $sshProcess.HasExited) { $sshProcess.Kill() }
         }
         if ($showFile -and (Test-Path -LiteralPath $showFile)) {
-            [void][DelfinConsole]::ShowWindow($loginWindow,5)
+            [void][DelfinConsole]::ShowWindow($loginWindow,9)
+            [void][DelfinConsole]::SetForegroundWindow($loginWindow)
+            $result = if ($loginWindow -ne [IntPtr]::Zero -and [DelfinConsole]::IsWindowVisible($loginWindow)) { 'Terminal restored.' } else { 'Windows could not restore this terminal window.' }
+            [IO.File]::WriteAllText((Join-Path $store ('connection-' + $connection + '.show-status')),$result)
             Remove-Item -LiteralPath $showFile -Force
         }
     }
@@ -144,6 +149,7 @@ public static class DelfinConsole {
     $browserReadyFile = $null
     $showFile = $null
     $disconnectRequested = $false
+    $remoteClosed = $false
     $loginWindow = [DelfinConsole]::GetConsoleWindow()
     Add-Type -AssemblyName System.Drawing
     $terminalIcon = [Drawing.Icon]::ExtractAssociatedIcon("$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe")
@@ -268,6 +274,7 @@ public static class DelfinConsole {
                     [Console]::Write($chunk)
                     $tail += $chunk
                     if ($tail.Contains($closedMarker)) {
+                        $remoteClosed = $true
                         # Remote cleanup has finished. Close lingering SSH channels/PTY holders.
                         if (-not $sshProcess.HasExited) { $sshProcess.Kill() }
                         break
@@ -290,13 +297,17 @@ public static class DelfinConsole {
         if ($readyFile -and (Test-Path -LiteralPath $readyFile)) { Remove-Item -LiteralPath $readyFile -Force }
         if ($null -ne $sshProcess) {
             if (-not $sshProcess.HasExited) { $sshProcess.Kill(); $sshProcess.WaitForExit() }
-            if ($sshProcess.ExitCode -ne 0 -and -not $disconnectRequested -and $ConnectionId) {
+            if ($sshProcess.ExitCode -ne 0 -and -not $disconnectRequested -and -not $remoteClosed -and $ConnectionId) {
                 [void][DelfinConsole]::ShowWindow($loginWindow,5)
                 [void](Read-Host 'SSH ended. Press Enter to close')
             }
             $sshProcess.Dispose()
         }
         if ($terminalIcon) { $terminalIcon.Dispose() }
+        if ($showFile) {
+            $ack = [IO.Path]::ChangeExtension($showFile,'show-status')
+            if (Test-Path -LiteralPath $ack) { Remove-Item -LiteralPath $ack -Force }
+        }
         foreach ($file in @($stopFile,$browserReadyFile,$showFile)) {
             if ($file -and (Test-Path -LiteralPath $file)) { Remove-Item -LiteralPath $file -Force }
         }
@@ -469,11 +480,12 @@ foreach ($label in @('Show terminal','Disconnect')) {
         $control.add_Click({ Disconnect-Owned; $script:connectionStatus.Text = 'Disconnect requested...' })
     } else {
         $control.add_Click({
-            foreach ($item in $script:ownedConnections) {
-                if ($item.Profile -eq $script:selectedId -and -not $item.Worker.HasExited) {
-                    [IO.File]::WriteAllText((Join-Path $store ('connection-' + $item.Connection + '.show')),'show')
-                }
+            $active = @($script:ownedConnections | Where-Object { -not $_.Worker.HasExited })
+            if (-not $active.Count) { $script:connectionStatus.Text = 'No active SSH terminal to show.'; return }
+            foreach ($item in $active) {
+                [IO.File]::WriteAllText((Join-Path $store ('connection-' + $item.Connection + '.show')),'show')
             }
+            $script:connectionStatus.Text = 'Terminal show request sent...'
         })
     }
     $form.Controls.Add($control)
@@ -496,6 +508,14 @@ $statusTimer.add_Tick({
         if ($stopping.Count) { $script:connectionStatus.Text = 'Disconnecting SSH...' }
         elseif ($ready.Count) { $script:connectionStatus.Text = 'Connected. Dashboard SSH terminal stays open for Ctrl+C.' }
         else { $script:connectionStatus.Text = 'Connecting. Complete password/OTP in the SSH window.' }
+        foreach ($item in $active) {
+            $ack = Join-Path $store ('connection-' + $item.Connection + '.show-status')
+            try {
+                if ((Test-Path -LiteralPath $ack) -and ([DateTime]::UtcNow - (Get-Item -LiteralPath $ack).LastWriteTimeUtc).TotalSeconds -lt 8) {
+                    $script:connectionStatus.Text = Get-Content -LiteralPath $ack -Raw
+                }
+            } catch { } # The worker can remove the acknowledgement while disconnecting.
+        }
     }
 })
 $statusTimer.Start()

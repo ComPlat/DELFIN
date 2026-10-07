@@ -36,7 +36,9 @@ SSH terminal; it uses the PowerShell icon and an SSH title. The DELFIN logo
 belongs to the settings app, not a second terminal. Use Ctrl+C there to
 stop the dashboard explicitly, including with Keep ON. The optional working
 terminal is still OFF by default. Keep the DELFIN app open while using the browser.
-**Show terminal** brings back the SSH window if it was hidden.
+**Show terminal** restores the current SSH window if minimized or hidden and
+reports whether Windows could show it. It operates on the active connection
+even if another saved profile is selected.
 **Disconnect** ends all connections started by this app instance. Closing the
 DELFIN settings app ends all connections started by that instance, including a
 pending login. Keep OFF stops dashboards created by those connections; Keep ON
