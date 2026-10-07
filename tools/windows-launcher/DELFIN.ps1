@@ -1,6 +1,6 @@
 #requires -Version 5.1
 [CmdletBinding()]
-param([ValidateSet('App','Dashboard','Terminal','Validate')][string]$Mode = 'App', [string]$ProfileId, [int]$LocalPort = 0, [int]$RemotePort = 0, [string]$ConnectionId)
+param([ValidateSet('App','Dashboard','Terminal','Validate')][string]$Mode = 'App', [string]$ProfileId, [int]$LocalPort = 0, [int]$RemotePort = 0, [string]$ConnectionId, [switch]$HideLauncherConsole)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $store = Join-Path $env:LOCALAPPDATA 'DELFIN Launcher'
@@ -87,6 +87,23 @@ function Start-Window([string]$kind, [string]$id, [int]$local = 0, [int]$remote 
 }
 
 if ($Mode -eq 'Validate') { return }
+
+# Only the installed GUI shortcut opts in; never hide an interactive SSH worker
+# or a user's existing PowerShell window when they run this script manually.
+if ($Mode -eq 'App' -and $HideLauncherConsole) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class DelfinLauncherWindow {
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
+}
+'@
+    $launcherConsole = [DelfinLauncherWindow]::GetConsoleWindow()
+    if ($launcherConsole -ne [IntPtr]::Zero) {
+        [void][DelfinLauncherWindow]::ShowWindow($launcherConsole, 0)
+    }
+}
 
 if ($Mode -ne 'App') {
     $env:TERM = 'xterm-256color'
