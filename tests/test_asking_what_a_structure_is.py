@@ -111,6 +111,16 @@ def test_the_solvent_refusals_measured_for_gfn1_still_hold():
         assert not solvents_mod.refusal("gbsa", missing, "gfn2"), missing
     assert not solvents_mod.refusal("gbsa", "water", "gfn1")
     assert not solvents_mod.refusal("alpb", "dmf", "gfn1"), "ALPB covers it"
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -209,6 +219,16 @@ def test_the_entropy_is_the_difference_of_the_two_totals():
     heat = float(gfn._ENTHALPY_RE.search(text).group(1))
     free = float(gfn._FREE_ENERGY_RE.search(text).group(1))
     assert heat - free == pytest.approx(0.0211142, abs=1e-7)
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -235,6 +255,16 @@ def test_one_press_brings_back_the_shape_and_the_cost_together():
     # xtb none the less counts no imaginary modes.
     assert got["imaginary"]["count"] == 0
     assert gfn.not_a_stationary_point(got["gradient"], 5) != ""
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
