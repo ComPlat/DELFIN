@@ -11,7 +11,7 @@ foreach ($file in @('Install.cmd','Uninstall.cmd','DELFIN.ps1','Install.ps1','Un
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'DELFIN.lnk'))
 $shortcut.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-$shortcut.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -STA -WindowStyle Hidden -File "' + (Join-Path $destination 'DELFIN.ps1') + '"'
+$shortcut.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -STA -WindowStyle Hidden -File "' + (Join-Path $destination 'DELFIN.ps1') + '" -HideLauncherConsole'
 $shortcut.WorkingDirectory = $destination
 $shortcut.IconLocation = (Join-Path $destination 'DELFIN.ico') + ',0'
 $shortcut.Description = 'DELFIN SSH dashboard and terminal'

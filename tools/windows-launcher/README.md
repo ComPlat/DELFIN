@@ -23,6 +23,11 @@ There is one SSH authentication sequence for this connection. The server can
 still request multiple authentication factors, retries or jump-host logins.
 Closing the browser does not close SSH or stop the dashboard.
 
+The installed shortcut hides the GUI launcher console. With the working terminal
+disabled, only the dashboard SSH terminal should be visible alongside the app and
+browser. Its tmux status bar is normal; it is the dashboard view, not a free shell.
+Manually starting the script in PowerShell does not hide your existing terminal.
+
 ## Taskbar shortcut
 
 The installer creates DELFIN shortcuts with the logo on the desktop and in the
