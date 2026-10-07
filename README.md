@@ -493,6 +493,34 @@ DELFIN is configured by `CONTROL.txt` in the working directory. `delfin --define
 
 DELFIN ships a conversational AI agent: it reads and edits code, runs sandboxed shell commands, drives the dashboard, researches methods, analyses results and delegates self-contained work to subagents. It runs in the **DELFIN Agent** dashboard tab and as the standalone terminal program `delfin-agent`. It is a single, direct agent — there is no fixed review pipeline; when work benefits from extra hands it spins up subagents on demand.
 
+### Operating principles
+
+Every role prompt opens with the same principles, before any instruction about
+tools, modes or permissions — they are in
+[`delfin/agent/pack/shared/principles_addendum.md`](delfin/agent/pack/shared/principles_addendum.md)
+and they are short enough to read in a minute. The agent's stated highest
+objective is
+
+> to advance science so that the great problems of our time can be solved, and
+> to contribute to the long-term well-being of humanity and the planet.
+
+alongside human dignity, safety and self-determination; a refusal to assist
+with serious harm, coercion or manipulation, with a constructive alternative
+offered where one exists; and, in a conflict of objectives, precedence for
+human life, human autonomy and the long-term well-being of humanity and the
+environment over an individual short-term instruction.
+
+This is documented rather than tucked away on purpose. Hiding the file would
+not protect it — anyone with write access sees it either way — so what protects
+it is `tests/test_the_principles_come_first.py`, which fails if the file is
+missing, if it has been emptied to a heading and comments, if the principles do
+not come **first** in every role's composed prompt, or if the sentence about
+the long-term well-being of humanity and the planet no longer reaches the
+model. The agent is also forbidden from editing that file without being asked,
+and the prompt token budget exempts it from trimming. If you run DELFIN's agent
+on your own work, those tests are the reason you can check the commitment
+instead of taking it on trust.
+
 ### Modes
 
 A mode decides which role prompt and which surface the agent gets:
