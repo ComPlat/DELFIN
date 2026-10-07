@@ -13,10 +13,11 @@ internal static class DelfinStarter {
             string folder = AppDomain.CurrentDomain.BaseDirectory;
             string script = Path.Combine(folder, "DELFIN.ps1");
             if (!File.Exists(script)) throw new FileNotFoundException("DELFIN.ps1 is missing. Reinstall DELFIN.");
+            bool smoke = args.Length == 1 && args[0] == "--gui-smoke-test";
             bool worker = args.Length == 3 && args[0] == "--dashboard-worker";
             Guid profile, connection;
-            if (args.Length != 0 && !worker) throw new ArgumentException("Invalid starter arguments.");
-            string extra = "";
+            if (args.Length != 0 && !worker && !smoke) throw new ArgumentException("Invalid starter arguments.");
+            string extra = smoke ? " -GuiSmokeTest" : "";
             if (worker) {
                 if (!Guid.TryParse(args[1], out profile) || !Guid.TryParse(args[2], out connection))
                     throw new ArgumentException("Invalid connection identifiers.");
