@@ -81,9 +81,11 @@ function Get-BrowserUrl([string]$encoded, [int]$port) {
 }
 function Start-Window([string]$kind, [string]$id, [int]$local = 0, [int]$remote = 0, [string]$connection = '') {
     if ($PSCommandPath.Contains('"')) { throw 'Invalid installation path.' }
-    $windowArgs = @('-NoProfile','-ExecutionPolicy','RemoteSigned','-STA','-NoExit','-File',('"' + $PSCommandPath + '"'),'-Mode',$kind,'-ProfileId',$id,'-LocalPort',$local,'-RemotePort',$remote)
-    if ($connection) { $windowArgs += @('-ConnectionId',$connection) }
-    Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $windowArgs | Out-Null
+    if (-not $connection) { $connection = [guid]::NewGuid().ToString() }
+    $starter = Join-Path $PSScriptRoot 'DELFIN.exe'
+    if ($kind -ne 'Dashboard' -or -not (Test-Path -LiteralPath $starter)) { throw 'Reinstall DELFIN using Install.cmd to enable the browser-only starter.' }
+    $worker = Start-Process -FilePath $starter -ArgumentList @('--dashboard-worker',$id,$connection) -PassThru
+    [void]$script:ownedConnections.Add([pscustomobject]@{ Profile=$id; Connection=$connection; Worker=$worker })
 }
 
 if ($Mode -eq 'Validate') { return }
@@ -112,6 +114,8 @@ if ($Mode -ne 'App') {
 using System;
 using System.Runtime.InteropServices;
 public static class DelfinConsole {
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int handle);
     [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr handle, out uint mode);
     [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr handle, uint mode);
@@ -125,6 +129,12 @@ public static class DelfinConsole {
     $sshProcess = $null
     $browserJob = $null
     $readyFile = $null
+    $stopFile = $null
+    $browserReadyFile = $null
+    $showFile = $null
+    $hideApplied = $false
+    $disconnectRequested = $false
+    $loginWindow = [DelfinConsole]::GetConsoleWindow()
     try {
         $matchingProfiles = @(Read-Profiles | Where-Object { $_.Id -eq $ProfileId })
         if ($matchingProfiles.Count -ne 1) { throw 'Connection not found.' }
@@ -140,7 +150,7 @@ public static class DelfinConsole {
         }
         $options = @(Get-SSHOptions $Mode $LocalPort $RemotePort $tunnelPath)
         if ($ConnectionId) {
-            if ($ConnectionId -notmatch '^[a-f0-9-]{36}$' -or $LocalPort -lt 1024 -or $RemotePort -lt 1024) { throw 'Invalid tunnel request.' }
+            if ($ConnectionId -notmatch '^[a-f0-9-]{36}$' -or ($Mode -eq 'Terminal' -and ($LocalPort -lt 1024 -or $RemotePort -lt 1024))) { throw 'Invalid tunnel request.' }
             $readyFile = Join-Path $store ('connection-' + $ConnectionId + '.json')
         }
         if ($Mode -eq 'Terminal') {
@@ -177,12 +187,23 @@ public static class DelfinConsole {
             $info.RedirectStandardOutput = $true
             $info.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
             $sshProcess = [Diagnostics.Process]::Start($info)
-            $connection = [guid]::NewGuid().ToString()
+            $connection = if ($ConnectionId) { $ConnectionId } else { [guid]::NewGuid().ToString() }
             $readyFile = Join-Path $store ('connection-' + $connection + '.json')
             [string]$sshProcess.Id | Set-Content -LiteralPath $readyFile -Encoding ASCII
+            $stopFile = Join-Path $store ('connection-' + $connection + '.stop')
+            $browserReadyFile = Join-Path $store ('connection-' + $connection + '.browser-ready')
+            $showFile = Join-Path $store ('connection-' + $connection + '.show')
             $opened = $false
-            while (-not $sshProcess.StandardOutput.EndOfStream) {
-                $line = $sshProcess.StandardOutput.ReadLine()
+            while ($true) {
+                $readTask = $sshProcess.StandardOutput.ReadLineAsync()
+                while (-not $readTask.Wait(100)) {
+                    if (Test-Path -LiteralPath $stopFile) {
+                        $disconnectRequested = $true
+                        if (-not $sshProcess.HasExited) { $sshProcess.Kill() }
+                    }
+                }
+                $line = $readTask.Result
+                if ($null -eq $line) { break }
                 if ($line -match '^DELFIN_BROWSER:([A-Za-z0-9+/=]+)$') {
                     $url = Get-BrowserUrl $Matches[1] 0
                     $remoteUri = [Uri]$url
@@ -192,8 +213,8 @@ public static class DelfinConsole {
                     $url = $builder.Uri.AbsoluteUri
                     $handoffFile = $readyFile
                     Write-Host "Dashboard server port: $($remoteUri.Port); local tunnel port: $actualLocal"
-                    $browserJob = Start-Job -ArgumentList $url,$actualLocal,$handoffFile -ScriptBlock {
-                        param($url,$local,$readyFile)
+                    $browserJob = Start-Job -ArgumentList $url,$actualLocal,$handoffFile,$browserReadyFile -ScriptBlock {
+                        param($url,$local,$readyFile,$browserReadyFile)
                         $deadline = [DateTime]::UtcNow.AddMinutes(5)
                         while ([DateTime]::UtcNow -lt $deadline) {
                             try {
@@ -202,7 +223,7 @@ public static class DelfinConsole {
                                     $connection = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $local -State Listen -ErrorAction Stop
                                     if ($connection.OwningProcess -contains $owner) {
                                         $probe = Invoke-WebRequest -Uri "http://127.0.0.1:$local/login" -UseBasicParsing -TimeoutSec 2
-                                        if ($probe.StatusCode -eq 200) { Start-Process $url; return }
+                                        if ($probe.StatusCode -eq 200) { Start-Process $url; [IO.File]::WriteAllText($browserReadyFile,'ready'); return }
                                     }
                                     if (-not (Get-Process -Id $owner -ErrorAction SilentlyContinue)) { throw 'SSH tunnel ended.' }
                                 }
@@ -221,8 +242,25 @@ public static class DelfinConsole {
                 # Read one decoded character so a short final marker cannot wait for a full buffer.
                 $closedMarker = 'DELFIN_CONNECTION_CLOSED:' + ([IO.Path]::GetFileName([IO.Path]::GetDirectoryName($tunnelPath)))
                 $tail = ''
-                while (($nextChar = $sshProcess.StandardOutput.Read()) -ge 0) {
-                    $chunk = [string][char]$nextChar
+                $oneChar = New-Object char[] 1
+                while ($true) {
+                    $readTask = $sshProcess.StandardOutput.ReadAsync($oneChar,0,1)
+                    while (-not $readTask.Wait(100)) {
+                        if (Test-Path -LiteralPath $stopFile) {
+                            $disconnectRequested = $true
+                            if (-not $sshProcess.HasExited) { $sshProcess.Kill() }
+                        }
+                        if (-not $p.OpenWorkingTerminal -and -not $hideApplied -and (Test-Path -LiteralPath $browserReadyFile)) {
+                            [void][DelfinConsole]::ShowWindow($loginWindow,0)
+                            $hideApplied = $true
+                        }
+                        if (Test-Path -LiteralPath $showFile) {
+                            [void][DelfinConsole]::ShowWindow($loginWindow,5)
+                            Remove-Item -LiteralPath $showFile -Force
+                        }
+                    }
+                    if ($readTask.Result -eq 0) { break }
+                    $chunk = [string]$oneChar[0]
                     [Console]::Write($chunk)
                     $tail += $chunk
                     if ($tail.Contains($closedMarker)) {
@@ -238,15 +276,37 @@ public static class DelfinConsole {
 
         }
 
-    } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
+    } catch {
+        [void][DelfinConsole]::ShowWindow($loginWindow,5)
+        Write-Host $_.Exception.Message -ForegroundColor Red
+        if ($ConnectionId -and -not $disconnectRequested) { [void](Read-Host 'Press Enter to close') }
+    }
     finally {
         if ($browserJob) { Stop-Job $browserJob; Receive-Job $browserJob; Remove-Job $browserJob }
         if ($readyFile -and (Test-Path -LiteralPath $readyFile)) { Remove-Item -LiteralPath $readyFile -Force }
-        if ($null -ne $sshProcess) { if (-not $sshProcess.HasExited) { $sshProcess.Kill() }; $sshProcess.Dispose() }
+        if ($null -ne $sshProcess) {
+            if (-not $sshProcess.HasExited) { $sshProcess.Kill(); $sshProcess.WaitForExit() }
+            if ($sshProcess.ExitCode -ne 0 -and -not $disconnectRequested -and $ConnectionId) {
+                [void][DelfinConsole]::ShowWindow($loginWindow,5)
+                [void](Read-Host 'SSH ended. Press Enter to close')
+            }
+            $sshProcess.Dispose()
+        }
+        foreach ($file in @($stopFile,$browserReadyFile,$showFile)) {
+            if ($file -and (Test-Path -LiteralPath $file)) { Remove-Item -LiteralPath $file -Force }
+        }
     }
     return
 }
 
+$script:ownedConnections = New-Object Collections.ArrayList
+function Disconnect-Owned([string]$profile = '') {
+    foreach ($item in $script:ownedConnections) {
+        if (($profile -eq '' -or $item.Profile -eq $profile) -and -not $item.Worker.HasExited) {
+            [IO.File]::WriteAllText((Join-Path $store ('connection-' + $item.Connection + '.stop')),'disconnect')
+        }
+    }
+}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -331,7 +391,7 @@ $combo.add_SelectedIndexChanged({
     }
 })
 $note = New-Object Windows.Forms.Label
-$note.Text = 'One SSH login. Switch tmux windows: Ctrl+B, then N.'
+$note.Text = 'Login window hides after browser startup. Disconnect or close this app to end your connection.'
 $note.Location = New-Object Drawing.Point(15,370)
 $note.Size = New-Object Drawing.Size(555,35)
 $form.Controls.Add($note)
@@ -365,11 +425,33 @@ foreach ($spec in @(@('New',15),@('Save',130),@('Start / Reconnect',280))) {
     $form.Controls.Add($button)
     $actionButtons += $button
 }
+$connectionButtons = @()
+foreach ($label in @('Show terminal','Disconnect')) {
+    $control = New-Object Windows.Forms.Button
+    $control.Text = $label
+    $control.Size = New-Object Drawing.Size(160,30)
+    $control.Left = if ($label -eq 'Show terminal') { 15 } else { 190 }
+    if ($label -eq 'Disconnect') {
+        $control.add_Click({ if ($script:selectedId) { Disconnect-Owned $script:selectedId } })
+    } else {
+        $control.add_Click({
+            foreach ($item in $script:ownedConnections) {
+                if ($item.Profile -eq $script:selectedId -and -not $item.Worker.HasExited) {
+                    [IO.File]::WriteAllText((Join-Path $store ('connection-' + $item.Connection + '.show')),'show')
+                }
+            }
+        })
+    }
+    $form.Controls.Add($control)
+    $connectionButtons += $control
+}
+$form.add_FormClosing({ Disconnect-Owned })
 function Show-Advanced {
     foreach ($control in $advancedControls) { $control.Visible = $advanced.Checked }
     $note.Location = New-Object Drawing.Point(15,$(if ($advanced.Checked) { 450 } else { 325 }))
     foreach ($button in $actionButtons) { $button.Top = $(if ($advanced.Checked) { 500 } else { 375 }) }
-    $form.ClientSize = New-Object Drawing.Size(590,$(if ($advanced.Checked) { 560 } else { 435 }))
+    foreach ($control in $connectionButtons) { $control.Top = $(if ($advanced.Checked) { 545 } else { 420 }) }
+    $form.ClientSize = New-Object Drawing.Size(590,$(if ($advanced.Checked) { 595 } else { 470 }))
 }
 $advanced.add_CheckedChanged({ Show-Advanced })
 Show-Advanced
