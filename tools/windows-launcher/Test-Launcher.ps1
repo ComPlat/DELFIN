@@ -115,4 +115,16 @@ Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; pu
     $appProbe = Start-Process -FilePath $starterTest -Wait -PassThru
     Assert-That ($appProbe.ExitCode -eq 0) 'Starter could not run its app script.'
     Assert-That ((Get-Content -LiteralPath (Join-Path $starterTestFolder 'console.txt') -Raw) -eq '0') 'App script must run without an allocated console.'
+    # Launch the actual DELFIN GUI through its real starter, then inspect its HWND.
+    foreach ($name in @('DELFIN.ps1','DELFIN_logo.png','DELFIN.ico')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $starterTestFolder $name) -Force
+    }
+    $guiProbe = Start-Process -FilePath $starterTest -ArgumentList '--gui-smoke-test' -PassThru
+    try {
+        if (-not $guiProbe.WaitForExit(30000)) { throw 'Actual DELFIN GUI did not complete its smoke test.' }
+        Assert-That ($guiProbe.ExitCode -eq 0) 'Actual DELFIN GUI startup failed.'
+        $guiReport = Get-Content -LiteralPath (Join-Path $starterTestFolder 'gui-smoke.json') -Raw | ConvertFrom-Json
+        Assert-That ($guiReport.Visible -and $guiReport.ShowInTaskbar -and $guiReport.HasIcon) 'DELFIN GUI must be visible with its icon and taskbar entry enabled.'
+        Assert-That ($guiReport.Owner -eq 0 -and ($guiReport.ExtendedStyle -band 0x80) -eq 0) 'DELFIN GUI must be an independent window, not an owned tool window.'
+    } finally { if (-not $guiProbe.HasExited) { $guiProbe.Kill() }; $guiProbe.Dispose() }
 } finally { Remove-Item -LiteralPath $starterTestFolder -Recurse -Force }

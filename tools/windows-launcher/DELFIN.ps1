@@ -1,6 +1,6 @@
 #requires -Version 5.1
 [CmdletBinding()]
-param([ValidateSet('App','Dashboard','Terminal','Validate')][string]$Mode = 'App', [string]$ProfileId, [int]$LocalPort = 0, [int]$RemotePort = 0, [string]$ConnectionId, [switch]$HideLauncherConsole)
+param([ValidateSet('App','Dashboard','Terminal','Validate')][string]$Mode = 'App', [string]$ProfileId, [int]$LocalPort = 0, [int]$RemotePort = 0, [string]$ConnectionId, [switch]$HideLauncherConsole, [switch]$GuiSmokeTest)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $store = Join-Path $env:LOCALAPPDATA 'DELFIN Launcher'
@@ -309,6 +309,21 @@ function Disconnect-Owned([string]$profile = '') {
 }
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class DelfinAppWindow {
+    [DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string id);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr window, uint command);
+    [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int GetWindowLong(IntPtr window, int index);
+}
+'@
+[void][DelfinAppWindow]::SetCurrentProcessExplicitAppUserModelID('ComPlat.DELFIN.Launcher')
+if ($GuiSmokeTest) {
+    $store = Join-Path $PSScriptRoot 'smoke-state'
+    $profilesFile = Join-Path $store 'profiles.json'
+}
 [Windows.Forms.Application]::EnableVisualStyles()
 $form = New-Object Windows.Forms.Form
 $form.Text = 'DELFIN - SSH Dashboard'
@@ -458,4 +473,15 @@ function Show-Advanced {
 $advanced.add_CheckedChanged({ Show-Advanced })
 Show-Advanced
 if ($combo.Items.Count -gt 0) { $combo.SelectedIndex=0 }
+if ($GuiSmokeTest) {
+    $smokeTimer = New-Object Windows.Forms.Timer
+    $smokeTimer.Interval = 500
+    $smokeTimer.add_Tick({
+        $smokeTimer.Stop()
+        $report = @{ Visible=[DelfinAppWindow]::IsWindowVisible($form.Handle); ShowInTaskbar=$form.ShowInTaskbar; Owner=[DelfinAppWindow]::GetWindow($form.Handle,4).ToInt64(); ExtendedStyle=[DelfinAppWindow]::GetWindowLong($form.Handle,-20); HasIcon=($null -ne $form.Icon) }
+        $report | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'gui-smoke.json') -Encoding UTF8
+        $form.Close()
+    })
+    $form.add_Shown({ $smokeTimer.Start() })
+}
 try { [Windows.Forms.Application]::Run($form) } finally { $logo.Image.Dispose(); $form.Icon.Dispose(); $form.Dispose() }
