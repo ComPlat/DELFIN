@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $destination = Join-Path $env:LOCALAPPDATA 'DELFIN Launcher'
 [void][IO.Directory]::CreateDirectory($destination)
-foreach ($file in @('Install.cmd','Uninstall.cmd','DELFIN.ps1','Install.ps1','Uninstall.ps1','remote_launcher.py','remote_bootstrap.sh','Test-Launcher.ps1','README.md','DELFIN_logo.png','DELFIN.ico','Starter.cs','Build-Starter.ps1')) {
+foreach ($file in @('Install.cmd','Uninstall.cmd','DELFIN.ps1','Install.ps1','Uninstall.ps1','remote_launcher.py','remote_bootstrap.sh','Test-Launcher.ps1','README.md','DELFIN_logo.png','DELFIN.ico','Starter.cs','Build-Starter.ps1','Taskbar.cs')) {
     $source = Join-Path $PSScriptRoot $file
     $target = Join-Path $destination $file
     if ([IO.Path]::GetFullPath($source) -ne [IO.Path]::GetFullPath($target)) { Copy-Item -LiteralPath $source -Destination $target -Force }

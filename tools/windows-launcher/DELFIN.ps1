@@ -347,6 +347,8 @@ $logo.SizeMode = 'Zoom'
 $logo.Image = [Drawing.Image]::FromFile((Join-Path $PSScriptRoot 'DELFIN_logo.png'))
 $form.Controls.Add($logo)
 $form.Icon = New-Object Drawing.Icon((Join-Path $PSScriptRoot 'DELFIN.ico'))
+Add-Type -Path (Join-Path $PSScriptRoot 'Taskbar.cs')
+$form.add_HandleCreated({ [DelfinTaskbar]::Configure($form.Handle,(Join-Path $PSScriptRoot 'DELFIN.exe'),(Join-Path $PSScriptRoot 'DELFIN.ico')) })
 $heading = New-Object Windows.Forms.Label
 $heading.Text = 'DELFIN'
 $heading.Font = New-Object Drawing.Font('Segoe UI',22,[Drawing.FontStyle]::Bold)
@@ -514,7 +516,7 @@ if ($GuiSmokeTest) {
     $smokeTimer.Interval = 500
     $smokeTimer.add_Tick({
         $smokeTimer.Stop()
-        $report = @{ Visible=[DelfinAppWindow]::IsWindowVisible($form.Handle); ShowInTaskbar=$form.ShowInTaskbar; Owner=[DelfinAppWindow]::GetWindow($form.Handle,4).ToInt64(); ExtendedStyle=[DelfinAppWindow]::GetWindowLong($form.Handle,-20); HasIcon=($null -ne $form.Icon) }
+        $report = @{ Visible=[DelfinAppWindow]::IsWindowVisible($form.Handle); ShowInTaskbar=$form.ShowInTaskbar; Owner=[DelfinAppWindow]::GetWindow($form.Handle,4).ToInt64(); ExtendedStyle=[DelfinAppWindow]::GetWindowLong($form.Handle,-20); HasIcon=($null -ne $form.Icon); RelaunchCommand=[DelfinTaskbar]::Read($form.Handle,2); RelaunchIcon=[DelfinTaskbar]::Read($form.Handle,3); RelaunchName=[DelfinTaskbar]::Read($form.Handle,4); AppId=[DelfinTaskbar]::Read($form.Handle,5) }
         $report | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'gui-smoke.json') -Encoding UTF8
         $form.Close()
     })
