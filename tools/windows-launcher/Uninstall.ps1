@@ -11,7 +11,7 @@ if (-not $PSCmdlet.ShouldProcess($destination,'Uninstall the local DELFIN app'))
 if (Test-Path -LiteralPath $destination) {
     if ((Get-Item -LiteralPath $destination).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Installation directory is a link. Refusing recursive removal.' }
     if ($KeepProfiles) {
-        foreach ($name in @('Install.cmd','Uninstall.cmd','DELFIN.ps1','Install.ps1','Uninstall.ps1','Test-Launcher.ps1','remote_launcher.py','remote_bootstrap.sh','README.md','DELFIN_logo.png','DELFIN.ico')) {
+        foreach ($name in @('Install.cmd','Uninstall.cmd','DELFIN.ps1','Install.ps1','Uninstall.ps1','Test-Launcher.ps1','remote_launcher.py','remote_bootstrap.sh','README.md','DELFIN_logo.png','DELFIN.ico','Starter.cs','Build-Starter.ps1','Taskbar.cs','DELFIN.exe')) {
             $path = Join-Path $destination $name
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
         }
