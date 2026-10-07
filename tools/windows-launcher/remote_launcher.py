@@ -43,6 +43,17 @@ def return_url(record, sessions):
     return f'http://127.0.0.1:{port}{path}?{urlencode(query)}'
 
 
+def shell_environment():
+    """Pass the selected environment explicitly; tmux may have an older server environment."""
+    return ' '.join(shlex.quote(key + '=' + os.environ[key])
+                    for key in ('PATH', 'VIRTUAL_ENV', 'CONDA_PREFIX', 'PYTHONPATH', 'PS1')
+                    if key in os.environ)
+
+
+def working_shell_command(directory):
+    return 'cd ' + shlex.quote(directory) + ' && exec env ' + shell_environment() + ' bash --norc -i'
+
+
 def select_port(preferred):
     """Choose a bindable loopback port; dashboard strict-port closes the later race."""
     candidates = range(preferred, min(preferred + 100, 65535) + 1) if preferred else [0]
@@ -197,7 +208,8 @@ def main():
             port = select_port(preferred)
             command = ('cd ' + shlex.quote(directory)
                        + ' && exec env DELFIN_AGENT_SANDBOX=auto DELFIN_AGENT_SANDBOX_NETWORK=0 '
-                       + shlex.quote(python)
+                       + ('DELFIN_KEEP_SESSIONS=1 ' if keep else 'DELFIN_KEEP_SESSIONS=0 ')
+                       + shell_environment() + ' ' + shlex.quote(python)
                        + ' -c ' + shlex.quote('from delfin.cli_voila import main; raise SystemExit(main())')
                        + f' --no-browser --ip 127.0.0.1 --strict-port --port {port}'
                        + (' --keep --resume latest' if keep else ''))
@@ -242,8 +254,7 @@ def run_dashboard_connection(where, dashboard_session, tmux, name, tunnel_path, 
                     if working:
                         result = subprocess.run([tmux, 'list-windows', '-t', '=' + name, '-F', '#{window_name}'], capture_output=True, text=True, check=True)
                         if 'DELFIN-work' not in result.stdout.splitlines():
-                            environment = ' '.join(shlex.quote(key + '=' + os.environ[key]) for key in ('PATH', 'VIRTUAL_ENV', 'CONDA_PREFIX', 'PS1') if key in os.environ)
-                            shell = 'cd ' + shlex.quote(directory) + ' && exec env ' + environment + ' bash --norc -i'
+                            shell = working_shell_command(directory)
                             subprocess.run([tmux, 'new-window', '-d', '-t', '=' + name, '-n', 'DELFIN-work', shell], check=True)
                         print('DELFIN: Working terminal is a tmux window. Switch with Ctrl+B, then N.', flush=True)
                     print('DELFIN: Keep session is ' + ('ON.' if keep else 'OFF.'), flush=True)

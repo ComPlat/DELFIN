@@ -138,15 +138,18 @@ def test_remote_port_zero_uses_os_assignment():
 
 
 @pytest.mark.parametrize('compatible', [False, True])
-@pytest.mark.parametrize('source', ['repo-env', 'active-env', 'path', 'explicit-python', 'explicit-repo'])
+@pytest.mark.parametrize('source', ['repo-env', 'active-env', 'path', 'explicit-python', 'explicit-repo', 'home-software-dotvenv', 'home-software-venv'])
 def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_path, source, compatible):
     import base64
     import os
     import subprocess
     import sys
 
-    repo = tmp_path / 'repo with spaces'
-    repo.mkdir()
+    user_home = tmp_path / 'user home'
+    user_home.mkdir()
+    automatic = source.startswith('home-software-')
+    repo = user_home / 'software/delfin' if automatic else tmp_path / 'repo with spaces'
+    repo.mkdir(parents=True)
     for package in ['delfin', 'delfin/agent', 'delfin/dashboard']:
         path = repo / package
         path.mkdir(exist_ok=True)
@@ -156,6 +159,7 @@ def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_pat
     option = '--strict-port' if compatible else '--port'
     (repo / 'delfin/cli_voila.py').write_text(f'def main(argv):\n    print({option!r})\n')
     root = repo / 'env' if source in {'repo-env', 'explicit-repo'} else tmp_path / 'custom environment'
+    if automatic: root = repo / ('.venv' if source.endswith('dotvenv') else 'venv')
     bin_dir = root / 'bin'
     bin_dir.mkdir(parents=True)
     python = bin_dir / 'python'
@@ -165,6 +169,7 @@ def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_pat
     env.pop('VIRTUAL_ENV', None)
     env.pop('CONDA_PREFIX', None)
     env['PATH'] = '/usr/bin:/bin'
+    env['HOME'] = str(user_home)
     hint = ''
     if source == 'active-env':
         env['VIRTUAL_ENV'] = str(root)
@@ -176,7 +181,7 @@ def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_pat
         hint = str(repo)
     payload = base64.b64encode(b'import os,sys; print("CHOSEN=" + sys.executable); print("ACTIVATED=" + os.environ.get("VIRTUAL_ENV", ""))').decode()
     script = Path(__file__).resolve().parents[1] / 'tools/windows-launcher/remote_bootstrap.sh'
-    result = subprocess.run(['bash', str(script), '0', str(repo), hint, payload, 'dashboard'],
+    result = subprocess.run(['bash', str(script), '0', '' if automatic else str(repo), hint, payload, 'dashboard'],
                             env=env, text=True, capture_output=True, timeout=15)
     if not compatible:
         assert result.returncode == 1
@@ -253,3 +258,27 @@ def test_private_relay_forwards_and_flushes_half_close():
             relay.close()
             worker.join(timeout=5)
         assert not path.parent.exists()
+
+
+def test_working_shell_uses_selected_environment_instead_of_tmux_server_environment(monkeypatch, tmp_path):
+    import os
+    import subprocess
+    import sys
+    repo = tmp_path / 'source repo'
+    repo.mkdir()
+    (repo / 'selected_module.py').write_text('VALUE = "selected-source"\n')
+    environment = tmp_path / 'chosen environment'
+    binary = environment / 'bin'
+    binary.mkdir(parents=True)
+    (binary / 'python').symlink_to(sys.executable)
+    monkeypatch.setenv('PATH', str(binary) + ':/usr/bin:/bin')
+    monkeypatch.setenv('VIRTUAL_ENV', str(environment))
+    monkeypatch.setenv('PYTHONPATH', str(repo))
+    monkeypatch.setenv('PS1', '(selected) $ ')
+    command = launcher.working_shell_command(str(tmp_path))
+    task = 'python -c \'import os,selected_module; print("ENV="+os.environ["VIRTUAL_ENV"]); print("SOURCE="+selected_module.VALUE)\'\nexit\n'
+    result = subprocess.run(['/bin/bash', '-c', command], input=task, text=True,
+                            env={'PATH':'/usr/bin:/bin'}, capture_output=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert 'ENV=' + str(environment) in result.stdout
+    assert 'SOURCE=selected-source' in result.stdout

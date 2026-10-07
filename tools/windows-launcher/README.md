@@ -14,7 +14,7 @@ All app text, terminal messages and instructions are in English.
    dashboard is reused; otherwise the app starts a new dashboard in tmux.
 3. The same SSH connection carries the browser tunnel. The browser signs in using
    DELFIN's mandatory access token. Server and Windows ports are selected automatically.
-4. If **Open working terminal** is enabled, an additional tmux window provides a
+4. If **Working shell (Ctrl+B, then N)** is enabled, an additional tmux window provides a
    working shell through the **same SSH login**. Switch between dashboard and
    working shell with **Ctrl+B, then N**. These are terminal views inside one
    Windows window, not two separately authenticated Windows SSH windows.
@@ -70,7 +70,7 @@ and Start menu shortcuts.
 
 Two options are visible without opening Advanced settings:
 
-- **Open working terminal (same SSH login)**: disabled by default for new saved
+- **Working shell (Ctrl+B, then N)**: disabled by default for new saved
   connections. Enable it to open/reuse a tmux window named `DELFIN-work`.
 - **Keep session after disconnect**: disabled by default for new saved connections.
   When off, disconnecting stops the **new dashboard started by this connection**
@@ -92,6 +92,17 @@ The server DELFIN installation must include the launcher release with
 Updating the Windows app alone does not update the server code. After the release
 is merged, update the server checkout using your normal update process
 (`git pull --ff-only` for a clean checkout on main).
+
+Automatic discovery also checks the current user's `~/software/delfin`,
+`~/software/DELFIN`, `~/delfin` and `~/DELFIN` when no usable environment was found
+in the login environment or current directory. A local `.venv`/`venv` does not
+need to be activated permanently. Source checkouts work without an editable
+package install when their environment has the required dependencies. Multiple
+usable conventional installations require an explicit location in Advanced.
+For another installation path, set **DELFIN location** to that repository or its
+Python environment; discovery does not scan the whole filesystem.
+The selected PATH, Python source path and virtual-environment variables are
+passed explicitly into tmux for the dashboard and working shell.
 
 ## Requirements
 
@@ -266,7 +277,7 @@ and updates the installation. The PowerShell commands above remain available.
 Program files are replaced, saved connections and their IDs are preserved. No uninstall is needed.
 The server installation is updated separately.
 Existing saved checkbox choices are preserved. For an existing connection,
-uncheck **Open working terminal** and save/connect to use dashboard-only mode.
+uncheck **Working shell (Ctrl+B, then N)** and save/connect to use dashboard-only mode.
 
 ## Uninstall
 

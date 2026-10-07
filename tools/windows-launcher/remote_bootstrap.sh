@@ -19,13 +19,35 @@ directory=$(expand_path "$directory")
 hint=$(expand_path "$hint")
 if [ -n "$directory" ]; then cd -- "$directory"; else cd -- "$HOME"; fi
 case "$hint" in ''|/*) ;; *) hint="$PWD/$hint" ;; esac
-usable() {
-    [ -x "$1" ] && "$1" -c 'import delfin.cli_voila, delfin.agent.where, delfin.dashboard.session' >/dev/null 2>&1
-}
 python=''
-choose() { if [ -z "$python" ] && usable "$1"; then python=$1; fi; }
+selected_repo=''
+probe_repo=''
+repository_for_python() {
+    local env_root parent
+    env_root=$(dirname "$(dirname "$1")")
+    parent=$(dirname "$env_root")
+    if [ -f "$env_root/delfin/cli_voila.py" ]; then printf '%s' "$env_root"
+    elif [ -f "$parent/delfin/cli_voila.py" ]; then printf '%s' "$parent"
+    elif [ -n "$probe_repo" ]; then printf '%s' "$probe_repo"
+    elif [ -f "$PWD/delfin/cli_voila.py" ]; then printf '%s' "$PWD"
+    fi
+}
+usable() {
+    local repo
+    [ -x "$1" ] || return 1
+    repo=$(repository_for_python "$1")
+    PYTHONPATH="${repo:+$repo:}${PYTHONPATH:-}" "$1" -c 'import delfin.cli_voila, delfin.agent.where, delfin.dashboard.session' >/dev/null 2>&1
+}
+choose() {
+    if [ -z "$python" ] && usable "$1"; then
+        python=$1
+        selected_repo=$(repository_for_python "$1")
+    fi
+}
 scan_root() {
     local root=$1 candidate
+    probe_repo=''
+    if [ -f "$root/delfin/cli_voila.py" ]; then probe_repo=$root; fi
     local matches=()
     for candidate in "$root/bin/python" "$root/bin/python3" "$root/.venv/bin/python" "$root/venv/bin/python" "$root/env/bin/python" "$root/.env/bin/python"; do
         if usable "$candidate"; then
@@ -37,7 +59,8 @@ scan_root() {
         printf '%s\n' 'DELFIN: Multiple environments found. Set an explicit DELFIN location in advanced settings.' >&2
         exit 1
     fi
-    if [ ${#matches[@]} -eq 1 ]; then python=${matches[0]}; fi
+    if [ ${#matches[@]} -eq 1 ]; then choose "${matches[0]}"; fi
+    probe_repo=''
 }
 if [ -n "$hint" ]; then
     if [ -d "$hint" ]; then
@@ -68,6 +91,30 @@ else
         done
     fi
     if [ -z "$python" ]; then
+        # Bounded conventional locations; never scan other users or the filesystem.
+        found_python=()
+        found_repo=()
+        for conventional in "$HOME/software/delfin" "$HOME/software/DELFIN" "$HOME/delfin" "$HOME/DELFIN"; do
+            if [ -f "$conventional/delfin/cli_voila.py" ]; then
+                scan_root "$conventional"
+                if [ -n "$python" ]; then
+                    found_python+=("$python")
+                    found_repo+=("$selected_repo")
+                    python=''
+                    selected_repo=''
+                fi
+            fi
+        done
+        if [ ${#found_python[@]} -gt 1 ]; then
+            printf '%s\n' 'DELFIN: Multiple installations found. Set the DELFIN location in advanced settings.' >&2
+            exit 1
+        fi
+        if [ ${#found_python[@]} -eq 1 ]; then
+            python=${found_python[0]}
+            selected_repo=${found_repo[0]}
+        fi
+    fi
+    if [ -z "$python" ]; then
         candidate=$(type -P delfin-voila || true)
         if [ -n "$candidate" ]; then choose "$(dirname "$candidate")/python"; choose "$(dirname "$candidate")/python3"; fi
         candidate=$(type -P python || true); if [ -n "$candidate" ]; then choose "$candidate"; fi
@@ -77,6 +124,10 @@ fi
 if [ -z "$python" ]; then
     printf '%s\n' 'DELFIN: Not found in the login environment or repository. Set a working directory or DELFIN environment location.' >&2
     exit 1
+fi
+if [ -n "$selected_repo" ]; then
+    export PYTHONPATH="$selected_repo${PYTHONPATH:+:$PYTHONPATH}"
+    if [ -z "$directory" ]; then cd -- "$selected_repo"; fi
 fi
 python_dir=$(dirname "$python")
 export PATH="$python_dir:$PATH"
