@@ -202,3 +202,88 @@ def test_two_real_agent_tabs_live_side_by_side(home):
     assert first["refs"]["state"] is not second["refs"]["state"]
     for rec in refs["sessions"]():
         refs["close"](rec["key"])
+
+
+def test_a_session_that_finished_unwatched_keeps_a_grey_dot_until_opened(home):
+    tmp, _saved = home
+    _widget, refs = AS.create_tab(_ctx(tmp), build=_Build())
+    refs["open"](str(tmp / "calc"))
+    first, second = refs["sessions"]()      # second is on screen
+    first["refs"]["state"]["streaming"] = True
+    refs["refresh"]()
+    first["refs"]["state"]["streaming"] = False
+    refs["refresh"]()
+    assert "delfin-session-unseen" in first["row"]._dom_classes
+    refs["activate"](first["key"])
+    assert "delfin-session-unseen" not in first["row"]._dom_classes
+
+
+def test_a_session_that_finished_on_screen_gets_no_grey_dot(home):
+    tmp, _saved = home
+    _widget, refs = AS.create_tab(_ctx(tmp), build=_Build())
+    refs["open"](str(tmp / "calc"))
+    _first, second = refs["sessions"]()     # second is on screen
+    second["refs"]["state"]["streaming"] = True
+    refs["refresh"]()
+    second["refs"]["state"]["streaming"] = False
+    refs["refresh"]()
+    assert "delfin-session-unseen" not in second["row"]._dom_classes
+
+
+def test_a_session_waiting_for_you_is_orange_over_everything(home):
+    import threading
+    tmp, _saved = home
+    _widget, refs = AS.create_tab(_ctx(tmp), build=_Build())
+    refs["open"](str(tmp / "calc"))
+    first, _second = refs["sessions"]()
+    state = first["refs"]["state"]
+    state["streaming"] = True
+    state["_ask_user_event"] = threading.Event()   # an open question
+    refs["refresh"]()
+    assert "delfin-session-needs" in first["row"]._dom_classes
+    assert "delfin-session-busy" not in first["row"]._dom_classes
+    state["_ask_user_event"].set()                  # answered
+    refs["refresh"]()
+    assert "delfin-session-needs" not in first["row"]._dom_classes
+    assert "delfin-session-busy" in first["row"]._dom_classes
+
+
+@pytest.mark.parametrize("state, needs", [
+    ({}, False),
+    ({"_pending_plan_body": "1. do x"}, True),
+    ({"_kit_confirm_broker": type("B", (), {"_pending": [1]})()}, True),
+    ({"_kit_confirm_broker": type("B", (), {"_pending": []})()}, False),
+])
+def test_what_counts_as_waiting_for_you(state, needs):
+    assert AS.needs_you(state) is needs
+
+
+def test_the_sessions_bar_is_split_from_the_chat_by_a_drag_handle(home):
+    """The agent tab's left column is resizable like the calc browser's: a
+    splitter sits between the sidebar and the stage, and its width is set at
+    drag time, never hardcoded. Without it the sidebar is a fixed 236px.
+    (Mirrors the .calc-splitter pattern; the agent shell keeps its own
+    class and bounds so the two never share drag state.)"""
+    tmp, _saved = home
+    ctx = _ctx(tmp)
+    widget, _refs = AS.create_tab(ctx)
+    children = list(widget.children)
+    assert len(children) == 3, (
+        "the session shell must be HBox([sidebar, splitter, stage]); "
+        f"found {len(children)} children")
+    _sidebar, splitter_host, _stage = children
+    # The host stretches so the 8px strip can span the sticky column; the
+    # drag handle is its only child.
+    host_classes = set(getattr(splitter_host, "_dom_classes", ()) or ())
+    assert "delfin-splitter-host" in host_classes
+    handle = splitter_host.children[0]
+    handle_classes = set(getattr(handle, "_dom_classes", ()) or ())
+    assert "delfin-session-splitter" in handle_classes
+    assert isinstance(handle, widgets.HTML)
+    # Its styles and drag logic are declared with the sidebar sheet and
+    # registered to run once the page is assembled.
+    assert ".delfin-session-splitter" in AS._SIDEBAR_CSS
+    assert "cursor: col-resize" in AS._SIDEBAR_CSS
+    registered = "\n".join(ctx.init_js_parts)
+    assert "delfin-session-splitter" in registered
+    assert "setPointerCapture" in registered

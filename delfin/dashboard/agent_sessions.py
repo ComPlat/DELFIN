@@ -15,6 +15,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import subprocess
 import threading
 import uuid
@@ -33,6 +34,28 @@ _RESUME_REFRESH_S = 60.0
 # How long the first click on "Stop all agents" waits for the second.
 _STOP_ARM_S = 8.0
 
+#: Ids of contexts whose splitter init script is already registered. The
+#: dashboard builds the agent tab once, but a settings change can rebuild a
+#: tab on the same context; without the guard the drag script would be
+#: emitted twice into the one keep_js() payload.
+_REGISTERED_INIT_JS = set()
+
+
+def _register_init_js(ctx: Any, script: str) -> None:
+    """Add ``script`` to a context's init-js payload, at most once."""
+    add = getattr(ctx, "add_init_js", None)
+    if not callable(add):
+        return
+    key = id(ctx)
+    if key in _REGISTERED_INIT_JS:
+        return
+    _REGISTERED_INIT_JS.add(key)
+    try:
+        add(script)
+    except Exception:
+        _REGISTERED_INIT_JS.discard(key)
+
+
 # The session list, in the agent tab's own palette (tab_agent._AGENT_CSS):
 # system font, slate greys, the chat's light blue for the session on screen.
 # Everything is border-box and the column clips horizontally -- widgets set
@@ -44,8 +67,17 @@ _SIDEBAR_CSS = """<style>
        The shell clips with `clip`, not `hidden` -- `hidden` makes the
        shell a scroll box and a sticky child sticks to that, not the page. */
     position: sticky; top: 8px; align-self: flex-start;
-    box-sizing: border-box; flex: 0 0 236px !important; width: 236px;
-    max-width: 236px; margin: 0 12px 0 0; padding: 8px 8px 10px; gap: 6px;
+    /* The drag writes --delfin-sessions-w on the shell and this rule
+       reads it. It cannot write `flex` directly: the declaration below is
+       `!important` (widget stylesheets override a plain one), and a
+       stylesheet !important beats an inline declaration -- so the handler
+       on this branch set sidebar.style.flex on every move and the column
+       never changed width. A custom property is read by the !important
+       rule itself, so the drag wins without the rule being weakened. */
+    box-sizing: border-box;
+    flex: 0 0 var(--delfin-sessions-w, 236px) !important;
+    width: var(--delfin-sessions-w, 236px);
+    margin: 0; padding: 8px 8px 10px; gap: 6px;
     background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 10px;
     overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -85,6 +117,12 @@ _SIDEBAR_CSS = """<style>
     border-radius: 50%; background: #16a34a; vertical-align: middle;
     animation: delfin-session-pulse 1.4s ease-in-out infinite; }
 @keyframes delfin-session-pulse { 50% { opacity: 0.35; } }
+.delfin-session-needs .delfin-session-title::before { content: "";
+    display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0;
+    border-radius: 50%; background: #f97316; vertical-align: middle; }
+.delfin-session-unseen .delfin-session-title::before { content: "";
+    display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0;
+    border-radius: 50%; background: #9ca3af; vertical-align: middle; }
 @media (prefers-reduced-motion: reduce) {
     .delfin-session-busy .delfin-session-title::before { animation: none; } }
 .delfin-session-close { flex: 0 0 22px; width: 22px !important;
@@ -125,8 +163,251 @@ _SIDEBAR_CSS = """<style>
     border: 1px solid #fca5a5 !important; border-radius: 6px; font-size: 12px; }
 .delfin-session-stopall.delfin-armed { background: #b91c1c !important;
     color: #ffffff !important; }
+/* Draggable divide between the sidebar and the chat, mirroring the calc
+   browser's .calc-splitter. The shell aligns items at flex-start, so a
+   height:100% strip would collapse to zero -- the splitter is sticky too,
+   tracking the same 100vh column the sidebar sticks to. */
+.delfin-session-shell { align-items: flex-start; }
+/* The gap belongs to the SPLITTER, equally on both sides, and not to the
+   sidebar. It was the sidebar's `margin-right: 12px`, which put the whole
+   gap on one side: 12px between column and bar, nothing between bar and
+   chat, so the handle sat flush against the chat with a wide empty strip
+   behind it. One margin here is symmetric by construction -- there is no
+   second number that can drift away from the first. */
+.delfin-splitter-host { align-self: flex-start; display: flex;
+    flex-direction: column; position: sticky; top: 8px;
+    margin: 0 var(--delfin-splitter-gap, 10px); }
+/* Height ends at the Send row, not at the bottom of the page. The JS
+   below measures it; this is what shows until then and if the measure
+   fails -- the chat's own height (tab_agent: 100vh - 460px) plus the
+   composer, so the first paint is already close. */
+.delfin-session-splitter { width: 8px;
+    height: calc(100vh - 400px); min-height: 160px;
+    cursor: col-resize; touch-action: none;
+    background: linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);
+    border-radius: 4px; z-index: 10; pointer-events: auto; }
+.delfin-session-splitter:hover { background: linear-gradient(
+    to right, #b0b0b0, #e0e0e0, #b0b0b0); }
 </style>"""
 
+#: Drag the sessions column to a width. Runs once per shell (data-bound
+#: guard) after the page is assembled, along every tab's init script in the
+#: one keep_js() call from the dashboard. The widths it writes override the
+#: 236px CSS default on the sidebar, so a drag sticks and a refresh keeps
+#: the choice. Mirrors the calc browser's .calc-splitter handler.
+_SPLITTER_INIT_JS = """\
+(function () {
+    // The agent tab's DOM may not exist when this runs. ipywidgets Tab
+    // renders the SELECTED child only, and the dashboard sends every
+    // tab's init script once the page is assembled -- so if the agent tab
+    // is not the one in front, querySelectorAll finds no shell, the loop
+    // body never executes, and nothing is ever bound. That is why the
+    // handle could not be dragged even after the width was made
+    // overridable: the handler was never attached in the first place.
+    //
+    // Every other tab with a splitter retries (tab_literature: 40 tries;
+    // tab_calculations_browser: 400). This one ran once. It now retries
+    // AND keeps watching, because a session opened minutes later brings
+    // its own shell, and a bounded retry that has already expired would
+    // leave that one dead.
+    function bindAll() {
+        var shells = document.querySelectorAll('.delfin-session-shell');
+        var bound = 0;
+        for (var i = 0; i < shells.length; i++) {
+            if (bind(shells[i])) bound += 1;
+        }
+        return bound;
+    }
+    function bind(shell) {
+            var bound = false;
+            if (!shell || shell.dataset.delfinSplitterBound) return false;
+            var splitter = shell.querySelector('.delfin-session-splitter');
+            var sidebar = shell.querySelector('.delfin-sessions');
+            var host = shell.querySelector('.delfin-splitter-host');
+            // Not marked until the parts are really there. Marking first
+            // meant a shell seen half-built was written off for good.
+            if (!splitter || !sidebar || !host) return false;
+            shell.dataset.delfinSplitterBound = '1';
+            var MIN = 170, MAX = 420;
+            // Read and write the one custom property the stylesheet's
+            // !important rule consumes. Writing sidebar.style.flex cannot
+            // work against that rule, and writing it anyway is what made
+            // the drag look dead on the real page while a DOM test that
+            // models no cascade reported it working.
+            function current() {
+                var v = shell.style.getPropertyValue('--delfin-sessions-w');
+                var n = parseFloat(v);
+                return isNaN(n) ? 236 : n;
+            }
+            function apply(w) {
+                w = Math.max(MIN, Math.min(MAX, Math.round(w)));
+                if (Math.abs(w - current()) < 1) return;
+                shell.style.setProperty('--delfin-sessions-w', w + 'px');
+            }
+            function onMove(e) {
+                var box = host.parentElement.getBoundingClientRect();
+                apply(e.clientX - box.left);
+            }
+            function onUp(e) {
+                if (e && e.pointerId != null) {
+                    try { splitter.releasePointerCapture(e.pointerId); }
+                    catch (err) { /* already released */ }
+                }
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                document.removeEventListener('pointercancel', onUp);
+            }
+            splitter.addEventListener('pointerdown', function (e) {
+                e.preventDefault();
+                try { splitter.setPointerCapture(e.pointerId); }
+                catch (err) { /* document listeners carry it */ }
+                document.addEventListener('pointermove', onMove);
+                document.addEventListener('pointerup', onUp);
+                document.addEventListener('pointercancel', onUp);
+            });
+            bound = true;
+
+            // The bar reaches down to the Send row and stops there. Run to
+            // the bottom of the column it looked like a page divider and
+            // kept growing with the transcript; the composer is where the
+            // conversation ends, so that is where the handle ends.
+            //
+            // Measured rather than computed from a CSS expression: the
+            // composer's height depends on the textarea, which the user can
+            // grow, and on whether the quick-cycle button is shown. The
+            // stylesheet carries an approximation for the first paint.
+            function fit() {
+                var send = shell.querySelector('.delfin-agent-send-row');
+                if (!send) return;          // no composer yet: keep the CSS
+                var top = shell.getBoundingClientRect().top;
+                var bottom = send.getBoundingClientRect().bottom;
+                var h = Math.round(bottom - top);
+                if (h < 160) return;        // laid out but collapsed
+                splitter.style.height = h + 'px';
+            }
+            fit();
+            // The composer changes height when the textarea is dragged or a
+            // long line wraps, and the window changes it too. A one-shot
+            // measure was right for one layout and wrong after the first
+            // resize.
+            window.addEventListener('resize', fit);
+            try {
+                new ResizeObserver(fit).observe(shell);
+            } catch (err) { /* older browser: resize alone */ }
+            return bound;
+    }
+
+    // Try now, then keep trying: the tab may be rendered later, and a
+    // session opened later brings a shell of its own. Bounded polling
+    // first (fast, for the ordinary "tab not in front yet" case), then a
+    // MutationObserver, which costs nothing while nothing changes and
+    // catches a shell that appears long after the polling gave up.
+    bindAll();
+    var tries = 0;
+    (function poll() {
+        tries += 1;
+        bindAll();
+        if (tries < 60) setTimeout(poll, tries < 20 ? 100 : 500);
+    })();
+    try {
+        var seen = new MutationObserver(function () { bindAll(); });
+        seen.observe(document.body, {childList: true, subtree: true});
+    } catch (err) { /* no observer: the polling above did what it could */ }
+})();
+"""
+
+
+
+#: The row class for each dot; at most one is set at a time.
+_DOT_CLASSES = {
+    "needs": "delfin-session-needs",
+    "busy": "delfin-session-busy",
+    "unseen": "delfin-session-unseen",
+}
+
+
+#: Markup a title may open with that says nothing about the session.
+_LABEL_STRIP = re.compile(r"^[\s>#*`\-=|)\]]+")
+#: Only backticks and asterisks. NOT `_` or `~`: markdown uses them for
+#: emphasis, and this domain uses them in names -- stripping `_` turned
+#: the title "test_calc.py schlaegt fehl" into "testcalc.py", a file
+#: that does not exist. An emphasis mark lost is cosmetic; a filename
+#: altered is a wrong answer.
+_LABEL_MARKS = re.compile(r"[`*]+")
+
+#: How long a label may be before it is cut. Wide enough for a sentence
+#: a person wrote, short enough that three of them fit the hint.
+_LABEL_MAX = 40
+
+
+def session_label(title: Any, session_id: Any = "") -> str:
+    """A readable name for a session, from the text it opened with.
+
+    Input: the stored ``title`` (the user's first message) and the
+    session id. Output: a single line, at most ~40 characters plus an
+    ellipsis, never empty.
+
+    A title is a prompt, not a name. Of the 52 sessions on the machine
+    this was written on, 38 were unusable as a label: multi-line,
+    markdown headings, code fences, cut off mid-word. They are shown in
+    the Resume dropdown and in the hint warning that another session
+    already works in this repository -- so the control that exists to
+    keep two sessions out of one checkout was unreadable exactly where
+    it had to be read.
+
+    Truncation alone does not help: the first 40 characters of a
+    handover briefing are "# Übergabe: Sechs Arbeitszweige prüfen, z".
+    The FIRST LINE, with its markup removed and cut on a word boundary,
+    is a name. Falls back to a short form of the id, because a row with
+    no label cannot be told from the row above it.
+    """
+    for raw in str(title or "").splitlines():
+        line = _LABEL_MARKS.sub("", _LABEL_STRIP.sub("", raw)).strip()
+        line = " ".join(line.split())
+        if not line:
+            continue
+        if len(line) <= _LABEL_MAX:
+            return line
+        # Cut on a word boundary: a label that ends mid-word reads as a
+        # different word, and three of them in one sentence read as noise.
+        cut = line[:_LABEL_MAX].rsplit(" ", 1)[0].rstrip(" ,;:.")
+        # ...unless that leaves almost nothing. A title that opens with a
+        # long path ("Bau in tests/fixtures/user_project_workspace/ ein
+        # kleines Modul ...") has no space inside the budget, and the
+        # word boundary reduces it to "Bau in" -- which names no session.
+        # Below half the budget the character cut says more.
+        if len(cut) < _LABEL_MAX // 2:
+            cut = line[:_LABEL_MAX].rstrip()
+        return cut + "\u2026"
+    sid = str(session_id or "").strip()
+    return f"Session {sid[:8]}" if sid else "Untitled session"
+
+
+def needs_you(state: dict) -> bool:
+    """Whether a session is waiting for the user: an approval dialog, an
+    open question, or a plan to accept. Never raises."""
+    try:
+        broker = state.get("_kit_confirm_broker")
+        if broker is not None and getattr(broker, "_pending", None):
+            return True
+        ev = state.get("_ask_user_event")
+        if ev is not None and not ev.is_set():
+            return True
+        return bool(state.get("_pending_plan_body"))
+    except Exception:
+        return False
+
+
+def session_dot(*, busy: bool, needs: bool, unseen: bool) -> str:
+    """The row class for one session: orange when it needs you, green while
+    it works, grey when it finished while you were in another chat."""
+    if needs:
+        return _DOT_CLASSES["needs"]
+    if busy:
+        return _DOT_CLASSES["busy"]
+    if unseen:
+        return _DOT_CLASSES["unseen"]
+    return ""
 
 def _give_emergency_stop() -> None:
     """Give the emergency stop from a process of its own.
@@ -471,7 +752,17 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         [widgets.HTML(_SIDEBAR_CSS), head, new_form, notice, list_box,
          resume_dropdown, elsewhere_note, stop_all_btn]), "delfin-sessions")
     stage = _classed(widgets.VBox(), "delfin-session-stage")
-    widget = _classed(widgets.HBox([sidebar, stage]), "delfin-session-shell")
+    splitter_host = _classed(widgets.HBox([widgets.HTML("")]),
+                             "delfin-splitter-host")
+    splitter = _classed(widgets.HTML(""), "delfin-session-splitter")
+    splitter_host.children = (splitter,)
+    widget = _classed(widgets.HBox([sidebar, splitter_host, stage]),
+                      "delfin-session-shell")
+    # Bind the drag once per shell when the whole page is assembled. The
+    # init scripts are gathered by the dashboard into one keep_js() call, so
+    # this runs after the shell is really on the page (the sidebar HTML
+    # alone would render too early to find it).
+    _register_init_js(ctx, _SPLITTER_INIT_JS)
 
     # -- lookup -------------------------------------------------------------
 
@@ -480,6 +771,22 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
 
     def _state(rec: dict) -> dict:
         return rec["refs"].get("state") or {}
+
+    def _mark(rec: dict) -> None:
+        """One dot per row: what the session needs from you beats that it
+        is working, which beats that it finished while you looked away."""
+        state = _state(rec)
+        busy = bool(state.get("streaming"))
+        if rec.get("_was_busy") and not busy and view["active"] != rec["key"]:
+            rec["unseen"] = True
+        rec["_was_busy"] = busy
+        wanted = session_dot(busy=busy, needs=needs_you(state),
+                             unseen=bool(rec.get("unseen")))
+        for cls in _DOT_CLASSES.values():
+            if cls == wanted:
+                rec["row"].add_class(cls)
+            else:
+                rec["row"].remove_class(cls)
 
     def _session_id(rec: dict) -> str:
         return str(_state(rec).get("active_session_id") or "")
@@ -515,6 +822,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         if rec is None:
             return
         view["active"] = key
+        rec["unseen"] = False
+        _mark(rec)
         for other in sessions:
             other["tab"].layout.display = "" if other["key"] == key else "none"
         state = _state(rec)
@@ -545,7 +854,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             sid = str(row.get("session_id") or "")
             if not sid or sid in open_ids:
                 continue
-            title = str(row.get("title") or "Untitled")[:40]
+            title = session_label(row.get("title"), sid)
             where = _short_path(str(row.get("workspace") or ""))
             options.append((f"{title} — {where}" if where else title, sid))
         resume_dropdown.options = options
@@ -648,10 +957,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             label = _session_title(state)
             if rec["title_btn"].description != label:
                 rec["title_btn"].description = label
-            if state.get("streaming"):
-                rec["row"].add_class("delfin-session-busy")
-            else:
-                rec["row"].remove_class("delfin-session-busy")
+            _mark(rec)
             sid = _session_id(rec)
             if sid != rec.get("remembered_id"):
                 rec["remembered_id"] = sid
@@ -732,7 +1038,9 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         own_worktree_box.layout.display = "" if in_repo else "none"
         own_worktree_box.value = bool(busy)
         if busy:
-            names = ", ".join(str(r.get("title") or "a session") for r in busy[:3])
+            names = ", ".join(
+                session_label(r.get("title"), r.get("session_id"))
+                for r in busy[:3])
             worktree_hint.value = (
                 "<div style='font-size:10px;color:#546e7a'>Also working in "
                 f"this repository: {html.escape(names)}. A worktree of its "

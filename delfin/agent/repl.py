@@ -28,7 +28,7 @@ from . import repl_render as rr
 __all__ = [
     "RenderItem", "Transcript", "TurnResult", "run_turn", "TURN_KEYS",
     "ReplOptions", "TerminalAgent", "read_block", "HISTORY_NAME",
-    "permission_mode",
+    "permission_mode", "fresh_context_for_turn",
 ]
 
 HISTORY_NAME = "agent_repl_history"
@@ -410,13 +410,178 @@ def _usage(engine) -> tuple[int, int]:
     return int(usage.get("input", 0) or 0), int(usage.get("output", 0) or 0)
 
 
+# Context-budget restart: a long session re-sends the whole history every
+# turn. Once the session's input-token usage is above the budget, the
+# terminal starts the next turn from a small fresh context instead.
+_FRESH_CONTEXT_MARKER = "[Fresh context — full history cut at the token budget]"
+
+
+def _context_tokens(engine) -> int:
+    """Size of the CURRENT/next request context, not the cumulative total.
+
+    The engine's ``_estimate_context_tokens`` counts the messages that are
+    about to be sent (plus the system prompt) — so it naturally shrinks after
+    a fresh restart, and a following turn is judged on its own (now tiny)
+    context, exactly what the budget must gate. Falling back to a char/4
+    estimate over ``engine.messages`` keeps the hook duck-typed for fake
+    engines that lack the estimate method.
+    """
+    # The current-context estimator appears under both a underscored and a
+    # public spelling across engines and the fakes that drive this hook;
+    # accept either so the budget is judged on the current context
+    # regardless of which the engine exposes.
+    for name in ("_estimate_context_tokens", "estimate_context_tokens"):
+        est = getattr(engine, name, None)
+        if callable(est):
+            try:
+                return int(est() or 0)
+            except Exception:
+                pass
+    total = 0
+    for m in getattr(engine, "messages", None) or []:
+        if not isinstance(m, dict):
+            continue
+        content = m.get("content", "")
+        total += len(content) if isinstance(content, str) else len(str(content))
+    return max(1, total // 4)
+
+
+def fresh_context_for_turn(
+    engine,
+    task_state,
+    *,
+    token_budget: int,
+    working_state_block: str = "",
+) -> str:
+    """One fresh, small turn context when the current context is over budget.
+
+    Returns ``""`` while the CURRENT context is at or under ``token_budget``
+    (the caller keeps the full history). Above it, returns a bounded block
+    built from ``task_state.render()`` — which names the open phase — plus an
+    optional ``working_state_block``, prefixed with a marker so the model
+    knows history was deliberately cut. Deterministic, no model call, never
+    raises: a broken engine/state degrades to ``""`` and the full history.
+
+    The budget is judged on the current context (``engine._estimate_context_
+    tokens``, which counts the messages about to be sent) rather than the
+    session's cumulative input-token usage — a cumulative number never
+    shrinks, so once it passed the budget every following turn would restart
+    fresh and the session would lose its memory for good. The current-context
+    estimate drops back under the budget the moment the fresh start happens,
+    so turn N+1 resumes a normal small history.
+
+    ``task_state`` is duck-typed — anything with ``render()`` works, so the
+    test drives it with a fake engine and a real ``task_state.TaskState``.
+    """
+    if _context_tokens(engine) <= token_budget:
+        return ""
+    try:
+        core = task_state.render() if task_state is not None else ""
+    except Exception:
+        core = ""
+    parts = [_FRESH_CONTEXT_MARKER]
+    if working_state_block:
+        block = str(working_state_block).strip()
+        if block:
+            parts.append(block)
+    if core and core.strip():
+        parts.append(core.strip())
+    return "\n\n".join(parts)
+
+
+_DEFAULT_FRESH_BUDGET = 900_000  # the operator's stated threshold (in tokens)
+
+
+def _archive_cut_history(engine, history: list) -> None:
+    """Best-effort archive of the history a fresh start is about to drop.
+
+    The engine keeps the cut history so it can be reviewed later via
+    ``engine.cut_history()`` instead of being silently lost. Two engine
+    shapes are accepted: a setter ``cut_history(history)`` (preferred, the
+    operator's engine patch) and a getter ``cut_history()`` with a plain
+    ``_archived`` slot (the reviewer's fake engine). Never raises.
+    """
+    try:
+        engine.cut_history(history)
+        return
+    except (TypeError, AttributeError):
+        pass
+    except Exception:
+        return
+    try:
+        engine._archived = list(history)
+    except Exception:
+        pass
+
+
+def _resolve_fresh_budget(context_budget, engine) -> int:
+    """What the fresh-start budget is for this turn, or 0 to disable.
+
+    ``context_budget`` (from the terminal's options) wins when given; else
+    the engine's own ``context_budget``; else the operator's default. A 0
+    disables the fresh restart entirely (the caller keeps the history).
+    """
+    if context_budget is None:
+        context_budget = getattr(engine, "context_budget", None)
+    if context_budget is None:
+        return _DEFAULT_FRESH_BUDGET
+    return int(context_budget or 0)
+
+
+def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
+                       task_state=None, context_budget=None) -> str:
+    """The message to send for this turn, starting fresh when over budget.
+
+    The dashboard's entry to the same fresh restart the terminal's run_turn
+    performs: under the budget it returns ``prompt`` unchanged; over it, it
+    archives the history, arms the engine's one-shot ``start_fresh`` and
+    returns the fresh block fused with ``prompt``. Never raises.
+    """
+    try:
+        budget = _resolve_fresh_budget(context_budget, engine)
+        if budget <= 0:
+            return prompt
+        block = ""
+        try:
+            from .working_state import build_working_state_block
+            block = build_working_state_block(
+                list(getattr(engine, "messages", []) or []),
+                session_id=str(getattr(engine, "session_id", "") or ""),
+                workspace=workspace,
+                refusals=getattr(engine, "_refusal_entries", lambda: None)(),
+            )
+        except Exception:
+            block = ""
+        fresh = fresh_context_for_turn(engine, task_state, token_budget=budget,
+                                       working_state_block=block)
+        if not fresh:
+            return prompt
+        _archive_cut_history(engine, list(getattr(engine, "messages", None) or []))
+        engine.start_fresh = fresh
+        return fresh + "\n\n" + prompt
+    except Exception:
+        return prompt
+
+
 def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
-             max_tokens: int = 0, memory_context: str = "") -> TurnResult:
+             max_tokens: int = 0, memory_context: str = "",
+             context_budget=None, task_state=None,
+             working_state_block: str = "") -> TurnResult:
     """One turn, with every callback turned into a RenderItem.
 
     The accounting mirrors ``cli._run_once`` deliberately — same token
     deltas, same result keys — so the interactive and the headless path
     report the same turn the same way.
+
+    While the CURRENT context (``engine.estimate_context_tokens()`` /
+    ``_estimate_context_tokens()``) is over the fresh-start budget, the turn
+    starts from a small fresh block built by ``fresh_context_for_turn``
+    (which names the open phase) instead of re-sending the whole history:
+    ``run_turn`` ARCHIVES the history it drops (``engine.cut_history``), arms
+    ``engine.start_fresh`` with that block so the engine keeps just the one
+    message, and fuses the block with the prompt this turn must answer, so
+    the current user message is never lost. Under the budget (or with a 0
+    budget) it arms nothing and the caller keeps the full history.
 
     ``sink`` is called from whatever thread ``stream_response`` runs on.
     It must not touch the terminal; in the REPL it is a queue put, and the
@@ -505,9 +670,30 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         _emit(RenderItem("denied", name=name))
 
     in_before, out_before = _usage(engine)
+    user_message = prompt
+    budget = _resolve_fresh_budget(context_budget, engine)
+    if budget > 0:
+        try:
+            fresh = fresh_context_for_turn(
+                engine, task_state, token_budget=budget,
+                working_state_block=working_state_block)
+        except Exception:
+            fresh = ""
+        if fresh:
+            # This turn starts over budget: archive the history the fresh
+            # start is about to drop, arm the engine's one-shot swap so it
+            # keeps exactly the fused message, and fuse the fresh block with
+            # the current prompt so the answer targets this turn's question.
+            dropped = list(getattr(engine, "messages", None) or [])
+            _archive_cut_history(engine, dropped)
+            try:
+                engine.start_fresh = fresh
+            except Exception:
+                pass
+            user_message = fresh + "\n\n" + prompt
     try:
         full_text = engine.stream_response(
-            user_message=prompt,
+            user_message=user_message,
             memory_context=memory_context,
             on_token=_on_token,
             on_notice=_on_notice,
@@ -556,19 +742,16 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
 _BLOCK_FENCE = '"""'
 
 
-def read_block(read_line: Callable[[str], str], *, prompt: str = "> ",
-               cont: str = "… ") -> str:
-    """One message, which may span several lines.
+def _read_block_tail(read_line: Callable[[str], str], first: str, *,
+                     cont: str = "… ") -> str:
+    """What follows the first line of a read_block message.
 
-    Two forms, both deterministic and both testable without a terminal: a
-    line ending in a backslash continues onto the next, and a line that is
-    exactly \"\"\" opens a block that ends at the next one.
-
-    Bracketed paste is the real fix for a multi-line paste becoming N
-    separate turns, and it needs raw mode — so it arrives with the key
-    layer, and the fence is what the help text points at until then.
+    Both read_block and read_block_wakeable share this so there is ONE
+    source of truth for the continuation grammar: a bare \"\"\" line opens
+    and closes a block, and a line ending in a backslash continues onto the
+    next. ``first`` is the line already read (by a blocking read for
+    read_block, or by the wake-aware first read for read_block_wakeable).
     """
-    first = read_line(prompt)
     if first.strip() == _BLOCK_FENCE:
         lines: list[str] = []
         while True:
@@ -585,6 +768,54 @@ def read_block(read_line: Callable[[str], str], *, prompt: str = "> ",
     return "".join(parts) if len(parts) > 1 else parts[0]
 
 
+def read_block(read_line: Callable[[str], str], *, prompt: str = "> ",
+               cont: str = "… ") -> str:
+    """One message, which may span several lines.
+
+    Two forms, both deterministic and both testable without a terminal: a
+    line ending in a backslash continues onto the next, and a line that is
+    exactly \"\"\" opens a block that ends at the next one.
+
+    Bracketed paste is the real fix for a multi-line paste becoming N
+    separate turns, and it needs raw mode — so it arrives with the key
+    layer, and the fence is what the help text points at until then.
+    """
+    return _read_block_tail(read_line, read_line(prompt), cont=cont)
+
+
+def read_block_wakeable(read_line: Callable[[str], str],
+                        wake: Callable[[], str], *,
+                        ready: Callable[[], bool],
+                        prompt: str = "> ", cont: str = "… ",
+                        tick: float = 0.25) -> tuple[str, bool]:
+    """Idle-capable read_block for the readline (non-raw terminal) path.
+
+    readline's read blocks on ``input()`` with no wake timer, so an idle
+    session on that path never saw an incoming session_message until a key
+    was pressed (wave-12 finding 3; the raw path already wakes via
+    read_boxed). This variant polls the terminal with ``ready`` (True when a
+    key is already waiting); while nothing is typed it calls ``wake`` — the
+    caller's throttled message check, e.g. repl._wake_text — and returns a
+    non-empty wake result as the NEXT PROMPT without ever blocking on a key.
+    Returns ``(text, from_wake)``; ``from_wake`` is True exactly when the
+    prompt came from ``wake`` rather than a typed first line. Only the FIRST
+    line is wake-aware; the continuation tail reads through ``read_line`` as
+    before. ``tick`` is the idle sleep between polls (tests pass 0).
+    """
+    import time as _time
+    while True:
+        try:
+            if ready():
+                first = read_line(prompt)
+                return _read_block_tail(read_line, first, cont=cont), False
+        except (EOFError, KeyboardInterrupt):
+            raise
+        woke = wake()
+        if woke:
+            return woke, True
+        _time.sleep(tick)
+
+
 @dataclass
 class ReplOptions:
     cwd: Path = field(default_factory=Path.cwd)
@@ -596,6 +827,11 @@ class ReplOptions:
     #: ``-n/--name``. The address an operator reaches this session by, and
     #: the title it shows in the list of open sessions.
     session_name: str = ""
+    #: Above this CURRENT-context token budget (per ``_estimate_context_tokens``)
+    #: the terminal starts the next turn from a small fresh context (engine
+    #: ``start_fresh`` one-shot) instead of re-sending the whole history.
+    #: 0 disables the restart hook (default).
+    context_budget: int = 0
 
 
 def _is_a_note(text: str) -> bool:
@@ -680,6 +916,11 @@ class TerminalAgent:
         self.engine = engine
         self.broker = broker
         self.opts = opts or ReplOptions()
+        try:
+            # The name `delfin-agent pause <session>` reaches this engine by.
+            engine.pause_key = str(getattr(self.opts, "session_name", "") or "").strip()
+        except Exception:
+            pass
         self.out = out if out is not None else sys.stdout
         self.err = err if err is not None else sys.stderr
         self.transcript = Transcript(
@@ -827,14 +1068,42 @@ class TerminalAgent:
             except Exception:
                 pass
 
+    def _working_state_block(self) -> str:
+        """Deterministic, redacted recap for a fresh start, or "".
+
+        Rebuilt from the session's own records (files changed, last test
+        outcomes, open tasks, denials) via ``working_state.py`` — never from
+        model text, never via a model call, best-effort.
+        """
+        try:
+            from .working_state import build_working_state_block
+            return build_working_state_block(
+                list(getattr(self.engine, "messages", []) or []),
+                session_id=str(getattr(self.engine, "session_id", "") or ""),
+                workspace=getattr(self.opts, "cwd", None),
+                refusals=getattr(self.engine, "_refusal_entries", lambda: None)(),
+            )
+        except Exception:
+            return ""
+
     def turn(self, prompt: str) -> TurnResult:
+        # The fresh-start decision lives in run_turn (the public turn path),
+        # which both the interactive and the headless route share: it judges
+        # the CURRENT context, ARCHIVES the history it drops, arms the
+        # engine's one-shot start_fresh with the fresh block and fuses that
+        # block with this turn's prompt. The terminal only hands run_turn the
+        # raw prompt plus where to find the budget, the task state and the
+        # working-state recap, so a fresh block names the open phase.
         result_box: list[TurnResult] = []
 
         def _worker() -> None:
             try:
                 result_box.append(run_turn(
                     self.engine, prompt, sink=self._q.put,
-                    max_tokens=self.opts.max_tokens))
+                    max_tokens=self.opts.max_tokens,
+                    context_budget=getattr(self.opts, "context_budget", None),
+                    task_state=getattr(self, "_task_state", None),
+                    working_state_block=self._working_state_block()))
             except BaseException as exc:            # noqa: BLE001
                 # The worker must never die silently: a turn that vanished
                 # looks exactly like a turn that answered nothing.
@@ -890,10 +1159,16 @@ class TerminalAgent:
         self.transcript.finish()
         self._report_compaction(compaction_before)
         self._report_tasks()
-        self._offer_next_steps()
-        self._report_status()
         result = result_box[0] if result_box \
             else TurnResult(error="turn produced nothing")
+        # A turn that ended on a question or a denial leaves its note for
+        # the next prompt (read and consumed by _wake_text). The result
+        # comes before the note: the note reads the turn's own words.
+        denied = bool(getattr(self, "_denied_in_turn", False))
+        self.__dict__.pop("_denied_in_turn", None)
+        self._note_turn_blocked(result.text, denied=denied)
+        self._offer_next_steps()
+        self._report_status()
         # For the length-continuation: a length end WITH a tool call is
         # the tool loop's to carry on, not ours.
         self.__dict__["_turn_used_tools"] = bool(result.tool_calls)
@@ -975,6 +1250,12 @@ class TerminalAgent:
                 if item.kind == "done":
                     self._clear_bottom()
                     return
+                if item.kind == "denied":
+                    # A refusal inside the turn is the second half of the
+                    # turn-end blocked signal: _note_turn_blocked reads
+                    # this flag, so the next prompt says what the turn
+                    # stopped on even when its own words do not.
+                    self._denied_in_turn = True
                 self._count_streamed(item)
                 self._render_around_bottom(item)
 
@@ -2030,6 +2311,36 @@ class TerminalAgent:
                 self.transcript.chrome(self.transcript.theme.dim(line))
 
     # -- the loop --------------------------------------------------------
+    def _note_turn_blocked(self, text: str, denied: bool = False) -> None:
+        """Record, after a turn, whether it ended blocked on something.
+
+        Called at the terminal's turn end (after ``_report_tasks``, which
+        read the same task store). If the turn's own words end with an
+        open question or report a denial, and open tasks remain, the
+        note is stored for the next idle prompt (_wake_text delivers it
+        once, then it is consumed). Never raises: a courtesy note must
+        not take the turn it follows down with it.
+        """
+        try:
+            if not (text or "").strip():
+                return
+            engine = getattr(self, "engine", None)
+            sid = str(getattr(engine, "session_id", "") or "")
+            from .agent_tasks import OPEN_STATUSES, get_store, \
+                resolve_session_scope
+            store = get_store(Path(self.opts.cwd))
+            tasks = store.list(session_id=resolve_session_scope(sid))
+            open_tasks = [t for t in tasks or []
+                          if t.get("status") in OPEN_STATUSES]
+            if not open_tasks:
+                return
+            from . import job_wake
+            note = job_wake.note_turn_blocked(text, open_tasks, denied=denied)
+            if note:
+                self.__dict__["_blocked_note"] = note
+        except Exception:
+            return
+
     def _checkpoint_session(self) -> None:
         """Save the conversation after a finished turn. Never raises.
 
@@ -2056,6 +2367,36 @@ class TerminalAgent:
             _save_session(engine, Path(self.opts.cwd))
         except Exception:
             pass
+
+    #: Follow-up turns for "announced but not done" in a row, before the
+    #: session waits for real input again (wave-12: sessions sat idle after
+    #: "Let me …"; a cap keeps a model that only ever announces from looping).
+    _ANNOUNCE_FOLLOWUP_CAP = 3
+
+    def _continue_after_announcement(self) -> str:
+        """The engine's pending follow-up note, at most _ANNOUNCE_FOLLOWUP_CAP
+        times in a row; "" when there is none, the cap is reached or the
+        session is paused. Consumes the note either way. Never raises."""
+        engine = getattr(self, "engine", None)
+        note = str(getattr(engine, "pending_turn_continuation", "") or "")
+        try:
+            if engine is not None and hasattr(engine, "clear_turn_continuation"):
+                engine.clear_turn_continuation()
+        except Exception:
+            pass
+        if not note:
+            return ""
+        try:
+            from . import session_pause as _sp
+            if _sp.wake_blocked(self._presence_key()):
+                return ""
+        except Exception:
+            pass
+        done = int(getattr(self, "_announce_followups", 0) or 0)
+        if done >= self._ANNOUNCE_FOLLOWUP_CAP:
+            return ""
+        self._announce_followups = done + 1
+        return note
 
     def run(self, first_prompt: str = "") -> int:
         from . import repl_keys as rk
@@ -2087,10 +2428,21 @@ class TerminalAgent:
                         if raw_mode_supported(self._stdin):
                             # The framed box, only on a raw terminal —
                             # a pipe or a redirect keeps the readline
-                            # path exactly as it was.
+                            # path except that IT too wakes on a session
+                            # message now (wave-12 finding 3).
                             pending = self.read_boxed().strip()
                         else:
-                            pending = read_block(self._read_line).strip()
+                            # readline's input() blocks forever, so an idle
+                            # session on this path never saw an incoming
+                            # session_message until a key was pressed. The
+                            # wakeable read polls stdin via _line_ready and
+                            # hands the throttled message check (_wake_text)
+                            # the idle time as its prompt.
+                            text, from_wake = read_block_wakeable(
+                                self._read_line,
+                                lambda: self._wake_text(""),
+                                ready=self._line_ready)
+                            pending = text.strip()
                     except EOFError:
                         self.transcript.chrome("")
                         return 0
@@ -2138,11 +2490,19 @@ class TerminalAgent:
                 # AT it, has its own continuation -- one that waits out
                 # the outage first. An error turn never also ends at
                 # length, so the two continuations never stack.
+                # A turn from real input (the user, a wake) re-arms the cap
+                # on announced-work follow-ups.
+                self._announce_followups = 0
                 continuation = self._continue_after_length(pending_prompt)
                 if not continuation:
                     continuation = (
                         self._continue_after_endpoint_failure())
-                while continuation:
+                if not continuation:
+                    continuation = self._continue_after_announcement()
+                # A line typed during the turn -- above all /exit from the
+                # user or a supervisor -- goes before every automatic
+                # follow-up; the continuation is dropped, not deferred.
+                while continuation and not self.queued:
                     self._show_user_input(continuation, queued=True)
                     self._checkpoint_session()
                     # A continued turn is a turn: the third Ctrl+C
@@ -2160,6 +2520,8 @@ class TerminalAgent:
                     if not continuation:
                         continuation = (
                             self._continue_after_endpoint_failure())
+                    if not continuation:
+                        continuation = self._continue_after_announcement()
                 pending = ""
         except rk.TerminalLeft as left:
             # Whatever the session was doing -- at the prompt, in a turn,
@@ -2442,6 +2804,8 @@ class TerminalAgent:
     #: loop ticks ten times a second; asking the job registry that often
     #: would be a poll, and this is a look.
     _WAKE_EVERY_S = 5.0
+    # Scheduler-backed watch look: at most one squeue per this many seconds.
+    _WATCH_EVERY_S = 30.0
 
     def _steer_operator_mail(self) -> None:
         """Take waiting mail and steer it into the running turn.
@@ -2802,6 +3166,27 @@ class TerminalAgent:
         except Exception:
             return ""
 
+    def _line_ready(self) -> bool:
+        """True when a key is already waiting on stdin, else False.
+
+        The idle-capable read (read_block_wakeable) polls this to know
+        whether a real read would block. When nothing is ready it hands the
+        throttled message check (_wake_text) the idle time instead, so an
+        incoming session_message starts a turn even on the readline path.
+        Never raises. A reader that is not this terminal's own input (a
+        test or a script hands one in), or a stdin select cannot watch,
+        reads as "ready": the blocking read is the old behaviour, whereas
+        "not ready" there would poll forever without ever reading.
+        """
+        if getattr(self, "_read_line", None) != getattr(self, "_input", None):
+            return True
+        try:
+            import select
+            r, _, _ = select.select([self._stdin], [], [], 0)
+            return bool(r)
+        except Exception:
+            return True
+
     def _wake_text(self, typed: str) -> str:
         """The message a job that finished hands an idle prompt, or "".
 
@@ -2823,6 +3208,18 @@ class TerminalAgent:
         it, and the prompt is the thing the user is standing at.
         """
         import time as _time
+
+        # Wave-12 finding 2 / phase 4: a paused session must not be woken.
+        # The pause flag (session_pause) is checked here, on the shared wake
+        # path, so no job end and no partner message starts a turn while it
+        # is set. Same "never raises" rule: a flag read that throws just
+        # reads as NOT paused.
+        try:
+            from . import session_pause as _sp
+            if _sp.wake_blocked(self._presence_key()):
+                return ""
+        except Exception:
+            pass
 
         if typed.strip():
             return ""
@@ -2849,9 +3246,36 @@ class TerminalAgent:
             # whole wake-up into an empty line -- silently, which is how a
             # notification path fails worst.
             _eng = getattr(self, "engine", None)
-            return job_wake.wake_prompt(job_wake.finished_shells(
-                seen,
-                session_id=str(getattr(_eng, "session_id", "") or "")))
+            sid = str(getattr(_eng, "session_id", "") or "")
+            done = job_wake.finished_shells(seen, session_id=sid)
+            # The missing half of the wave-10 idle (90 minutes after a
+            # finished SLURM job): the same session-scoped watch file the
+            # dashboard tick drains, now pulled at the idle prompt too.
+            # Only for a session that HAS one -- an empty id would read
+            # every session's watches, which is the scoping bug of
+            # 2026-09-28 again. check_agent_jobs asks the scheduler
+            # (squeue) whenever a watch exists, so this look has its own,
+            # slower gate: the shell look above runs every _WAKE_EVERY_S,
+            # but a scheduler query from every idle terminal every few
+            # seconds is the per-widget squeue load the cluster operators
+            # objected to (one query per _WATCH_EVERY_S at most).
+            _opts = getattr(self, "opts", None)
+            _ws = str(getattr(_opts, "cwd", "") or "")
+            _now = _time.monotonic()
+            if (sid and _ws and _now - getattr(self, "_watch_last_look", -1e9)
+                    >= self._WATCH_EVERY_S):
+                self._watch_last_look = _now
+                done = done + job_wake.finished_watched_jobs(
+                    _ws, seen, session_id=sid)
+            # A turn that ended blocked leaves its note here, so the
+            # next prompt opens on the state and not on a task list
+            # with no sentence about it (wave-10: an hour at a
+            # question nobody answered). Consumed on read.
+            _note = self.__dict__.pop("_blocked_note", "")
+            prompt = job_wake.wake_prompt(done)
+            if _note:
+                prompt = (prompt + "\n\n" + _note) if prompt else _note
+            return prompt
         except Exception:
             return ""
 

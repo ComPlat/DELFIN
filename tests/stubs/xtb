@@ -1,0 +1,35 @@
+#!/bin/sh
+# A stand-in for xtb, so a test can be SUPPLIED the binary instead of
+# skipped when the machine has none.
+#
+# Measured before this was written (2026-10-05), over the 37 test files
+# that gate on xtb: 904 tests collected, 782 pass with no xtb and 122
+# skip. With a stub that exists and computes NOTHING, 892 pass -- so 110
+# of those 122 never consumed xtb output at all. They gate on its
+# presence and then test a command line, a parse, a guard or an error
+# path. Five tests in four files genuinely need output; they keep their
+# skip, because a recorded energy replayed back is not a test of the
+# physics it claims to check.
+#
+# So this stub answers the two things presence-gated code asks -- "are
+# you there" and "which version" -- and refuses everything else loudly
+# rather than inventing a result. A silent zero exit with empty output
+# would make a parse return nothing and the failure land three layers
+# away from the cause.
+case "$*" in
+    *--version*)
+        echo "xtb version 6.7.1 compatible (DELFIN test stand-in)"
+        exit 0
+        ;;
+esac
+
+cat >&2 <<'MSG'
+DELFIN test stand-in for xtb: no output is recorded for this invocation.
+
+This stub exists so tests that only need xtb to BE THERE can run on a
+machine without it. A test that needs a real calculation must either
+keep its skip, or carry a recorded output as a fixture -- see
+tests/test_a_test_is_bound_to_delfin_not_to_a_machine.py.
+MSG
+echo "invocation: $*" >&2
+exit 1

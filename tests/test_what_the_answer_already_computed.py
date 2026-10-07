@@ -43,7 +43,12 @@ from delfin.dashboard import structure_editor as editor
 from editor_source import EDITOR_SOURCE
 
 _WATER = "3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
-_needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not installed")
+#: Supplied, not skipped. These tests exercise DELFIN's own handling
+#: -- the command line it builds, the output it parses, the guard it
+#: applies -- and never xtb's arithmetic, so a stand-in on PATH is
+#: enough and the test then runs on every machine. The fixture uses
+#: the real xtb when there is one. See conftest.xtb_on_path.
+_needs_xtb = pytest.mark.usefixtures("xtb_on_path")
 _needs_mopac = pytest.mark.skipif(mopac.find_mopac() is None,
                                   reason="MOPAC not installed")
 
@@ -190,6 +195,16 @@ def test_nothing_in_the_editor_decides_anything_on_a_bond_order():
     # a sentence: the drag line and the "What is it?" press.
     assert EDITOR_SOURCE.count("_gfn.bond_order_between(") == 1
     assert EDITOR_SOURCE.count("_gfn.bond_order_note(") == 2
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +231,16 @@ def test_every_gfn_answer_carries_its_charges_without_being_asked():
         seen[method] = got["charges"][0]
         assert got["gradient"] is not None, method
     assert seen["gfn2"] != seen["gfn1"] != seen["gfnff"]
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb

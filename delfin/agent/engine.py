@@ -394,6 +394,16 @@ class AgentEngine:
         DELFIN_AGENT_LITE mode (default: ``"quick"``).
     """
 
+    #: One pending follow-up note for a turn that announced work it did not
+    #: do (see _note_turn_continuation); "" when none. Class defaults so an
+    #: engine built without __init__ (tests, restored sessions) still has them.
+    pending_turn_continuation: str = ""
+    _continuation_fired: bool = False
+    #: The address `delfin-agent pause <session>` uses (the -n name, set by
+    #: the terminal). Empty: this engine cannot be paused by name.
+    pause_key: str = ""
+
+
     def __init__(
         self,
         repo_dir: Path,
@@ -2597,6 +2607,43 @@ class AgentEngine:
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
 
+        # T2 context-budget fresh start (repl hook). A long session has
+        # re-sent the whole history (>900k tokens) on every turn; compaction
+        # at 0.95 of the window does not save it. When the terminal decides
+        # (via ``fresh_context_for_turn`` in repl.py) that the current
+        # context is over the token budget, it sets ``self.start_fresh`` and
+        # hands the fresh-context block already fused into THIS turn's user
+        # message. Here we drop the accumulated history but KEEP that current
+        # user message, so the turn still runs against the exact prompt it
+        # must answer (one message = fresh block + current prompt).
+        # One-shot: the flag clears so the next turn resumes a normal (now
+        # tiny) history; it never assembles state from model text and never
+        # needs a model call.
+        if getattr(self, "start_fresh", False):
+            self.start_fresh = False
+            # Archive everything BEFORE this turn's message so the cut
+            # history stays recoverable (the session record is never
+            # silently dropped) - the same append-only store compaction
+            # uses, browsable via /session archive ls.
+            try:
+                from delfin.agent.session_store import (
+                    archive_pre_compaction_transcript)
+                archive_pre_compaction_transcript(
+                    getattr(self, "session_id", "") or "",
+                    list(self.messages[:-1]),
+                    info={"kind": "fresh_restart",
+                          "n_messages_archived": max(0, len(self.messages) - 1)},
+                )
+            except Exception:
+                pass
+            if self.messages:
+                self.messages = self.messages[-1:]
+            # Drop the stale pre-fresh input floor so the context estimate
+            # reflects the shrink at once: the next turn is then judged on
+            # its own (now small) context and is NOT a fresh restart again.
+            self._last_input_tokens = 0
+            self._trimmed_chars_since_floor = 0
+
         # Mid-conversation compaction. Fires for solo/dashboard on the
         # legacy message-count threshold, and for any role when the
         # token-budget threshold is exceeded.
@@ -2967,6 +3014,11 @@ class AgentEngine:
                         event.tool_name, event.tool_input)
                     if on_tool_use:
                         on_tool_use(event.tool_name, event.tool_input)
+                    # `delfin-agent pause <session>`: stop at the next tool
+                    # boundary through the ordinary stop path, so the turn
+                    # ends cleanly and the history stays whole. Signals do
+                    # not reach a supervised agent; this flag does.
+                    self._honour_pause()
 
                 elif event.type == "tool_result":
                     if on_tool_result and event.tool_output:
@@ -3498,6 +3550,15 @@ class AgentEngine:
                     thinking_budget=thinking_budget,
                     max_tokens=max_tokens,
                 )
+            # A turn that ends by announcing work ("Let me write X …") while
+            # tasks stay open leaves the session idle until someone pokes it
+            # -- in supervised waves that happened dozens of times a day. The
+            # detector (turn_continuation) decides; this records ONE pending
+            # follow-up note for the caller. _continuation_fired is a session
+            # latch, re-armed only by clear_turn_continuation(), so this
+            # block alone can never loop; the caller additionally caps how
+            # many follow-ups run in a row.
+            self._note_turn_continuation(full_response)
         elif self._stop_requested:
             # Stop before any answer text — during thinking, or before the
             # first token. The message appended at the top of this turn has
@@ -3630,6 +3691,23 @@ class AgentEngine:
                 )
             except Exception:
                 pass
+
+        # A turn that announced an action while plan mode refused its calls
+        # says so in the ANSWER, not only in a notice that scrolls past.
+        # Reports 20261005-135825 / 20261005-140408: four turns of "Let me
+        # push the branch now" with every call read-only-refused, and the
+        # person never told that plan mode was the reason. The notice fires
+        # the moment it happens; this sentence is still there when they
+        # scroll back.
+        try:
+            if getattr(self.client, "_plan_mode_refused_this_turn", False):
+                from delfin.agent.turn_continuation import blocked_by_plan_mode
+                _said = blocked_by_plan_mode(full_response, refusals=1)
+                if _said:
+                    full_response = full_response.rstrip() + "\n\n" + _said
+                self.client._plan_mode_refused_this_turn = False
+        except Exception:
+            pass
 
         return full_response + _guard_note
 
@@ -6224,6 +6302,59 @@ class AgentEngine:
             return max(0.0, float(v))
         except Exception:
             return 50.0
+
+    def _open_task_count(self) -> int:
+        """Open (pending / in-progress / blocked) tasks of this session's
+        store; 0 when there is no store or it cannot be read."""
+        try:
+            from delfin.agent.agent_tasks import (
+                OPEN_STATUSES, get_store, resolve_session_scope,
+            )
+            perms = self.kit_permissions
+            if perms is None:
+                return 0
+            tasks = get_store(perms.workspace).list(
+                session_id=resolve_session_scope(
+                    getattr(perms, "task_session_id", "")))
+            return sum(1 for t in tasks or []
+                       if t.get("status") in OPEN_STATUSES)
+        except Exception:
+            return 0
+
+    def _note_turn_continuation(self, answer: str) -> None:
+        """Record one follow-up note when *answer* announces work that it did
+        not do while tasks stay open. Never raises; the latch keeps it to one
+        pending note until the caller calls clear_turn_continuation()."""
+        if not answer or self._continuation_fired:
+            return
+        try:
+            from delfin.agent.turn_continuation import should_continue
+            cont, note = should_continue(answer, self._open_task_count())
+        except Exception:
+            return
+        if cont and note:
+            self._continuation_fired = True
+            self.pending_turn_continuation = note
+
+    def _honour_pause(self) -> bool:
+        """Request a stop when ``delfin-agent pause`` flagged this session.
+        True when it did. Never raises."""
+        if not self.pause_key:
+            return False
+        try:
+            from . import session_pause as _sp
+            if not _sp.pause_gate(self.pause_key):
+                self.request_stop()
+                return True
+        except Exception:
+            pass
+        return False
+
+    def clear_turn_continuation(self) -> None:
+        """Drop the pending note and re-arm the latch. The caller calls this
+        after it has run the follow-up turn (or decided not to)."""
+        self.pending_turn_continuation = ""
+        self._continuation_fired = False
 
     def reset_cycle(
         self,

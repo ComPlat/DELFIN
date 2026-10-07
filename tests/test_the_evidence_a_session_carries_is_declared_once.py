@@ -190,6 +190,12 @@ def _assigned_attributes(node: ast.AST) -> set[str]:
 # "does a resumed session need this?" to be answered here, in one line,
 # instead of being answered by silence three releases later.
 _NOT_CARRIED = {
+    # -- per-turn latch: the follow-up note of the turn that just ended;
+    #    a resumed session starts with no turn behind it --
+    "pending_turn_continuation", "_continuation_fired",
+    # -- one-shot per turn: the terminal sets it for THIS turn's fresh
+    #    start; a resumed session has no turn behind it --
+    "start_fresh",
     # -- construction: rebuilt from the launch arguments, never restored --
     "repo_dir", "backend", "provider", "effort", "client", "loader",
     "_lock", "_agent_workspace_dir", "_is_delfin_workspace", "_distiller",

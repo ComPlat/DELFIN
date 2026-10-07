@@ -880,8 +880,18 @@ def _signal_matches(
         haystacks = [ascii_minus(h) for h in haystacks]
     if not waive_negated:
         return any(rx.search(h or "") for h in haystacks)
+    # On the "any" channel the prose comes first and the tool calls follow.
+    # Negation only waives a match in the PROSE: a command is what was done,
+    # and "never" in the answer next to it does not undo `source x.env`.
+    # Measured on the same flattening _strip_any builds, so the boundary
+    # sits exactly where the prose part of that haystack ends.
+    prose_end = (len(ascii_minus(_strip_emphasis(
+        traj.as_string()[:len(traj.text or "")])))
+                 if against == "any" else None)
     for h in haystacks:
         for m in rx.finditer(h or ""):
+            if prose_end is not None and m.start() >= prose_end:
+                return True
             if not _match_is_negated(h or "", m.start(), m.end()):
                 return True
     return False

@@ -44,7 +44,11 @@ class ModelProfile:
 
     # Hard cap on auto-continuation rounds in the dashboard's
     # ACTION-execute loop. Weak models hallucinate longer chains.
-    max_tool_rounds: int = 50
+    # 50 -> 100 on 2026-10-06. The dataclass default is what a profile
+    # that does not mention the field gets -- _SONNET among them -- so
+    # it is the third place the same number had to be changed. One
+    # figure everywhere a user can reach: see the note on _GLM_5_3.
+    max_tool_rounds: int = 100
 
     # Tool-result truncation cap in KB. Weak models choke on 5KB.
     tool_result_cap_kb: int = 5
@@ -123,7 +127,13 @@ STRONG_DEFAULT = ModelProfile(
     compact_prompt=False,
     core_tools_only=False,
     effort_default="medium",
-    max_tool_rounds=50,
+    # 50 -> 100 with the KIT profiles on 2026-10-06, and for the same
+    # reason: this is the budget every installation had before the
+    # profile branch became reachable, and it is what the fallback in
+    # _resolve_max_tool_rounds already documents. It also covers a
+    # model nobody has measured, which is what a fresh install on an
+    # unlisted endpoint gets.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     stale_kill_after_s=120.0,
@@ -177,7 +187,26 @@ _GLM_5_3 = ModelProfile(
     # arm's first sample meant what it appeared to. The safety task
     # leans low (4/4 against 2/3) on numbers too small to carry a claim.
     effort_default="low",
-    max_tool_rounds=20,
+    # 20 -> 100 on 2026-10-06. The 20 was measured as loop protection for
+    # a small model, and it cost a user every long task: a fresh install
+    # stopped after 20 tool calls on real coding work, and the dashboard's
+    # own help text said "Default 500" while 20 was in force. 500 is the
+    # figure this file already documents as the fallback and the figure
+    # every installation ran on until 2026-08-05, when `None` made the
+    # profile branch reachable for the first time.
+    #
+    # What still stops a degenerate loop: the per-turn cost circuit-breaker
+    # and the consecutive-failure abort. This module's own comments call
+    # those "the real safety nets", and they are the ones that bound cost
+    # rather than bounding honest multi-file work.
+    #
+    # Not measured, and said so rather than implied: the 413 recorded turns
+    # available here were all collected UNDER the 20-round cap, so their
+    # distribution is censored at exactly the point this number sets
+    # (median 2, max 21). They cannot support 500 and are not offered as
+    # support for it. The evidence is one user's repeated reports plus the
+    # note left by whoever raised the default to 500 in the first place.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     # A cold prompt head measured at 266s. 120s would kill a turn that was
@@ -219,7 +248,8 @@ _DEEPSEEK_V4_FLASH = ModelProfile(
     compact_prompt=False,
     core_tools_only=False,
     effort_default="medium",
-    max_tool_rounds=20,
+    # Raised with the others on 2026-10-06; see the note on _GLM_5_3.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     stale_kill_after_s=120.0,
@@ -241,7 +271,8 @@ _QWEN35_397B = ModelProfile(
     compact_prompt=False,        # full 7.5k slim prompt is fine
     core_tools_only=False,       # handles the 45-tool surface cleanly
     effort_default="medium",     # MoE doesn't need high; medium is sharp
-    max_tool_rounds=20,          # rarely needs more than 6-8 in practice
+    # Raised with the others on 2026-10-06; see the note on _GLM_5_3.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,  # accept fault-tolerant form anyway
     stale_kill_after_s=90.0,     # responsive — fail fast if hung
@@ -289,7 +320,8 @@ _AZURE_GPT5 = ModelProfile(
     compact_prompt=False,
     core_tools_only=False,
     effort_default="low",         # critical — see api_client reasoning detector
-    max_tool_rounds=20,
+    # Raised with the others on 2026-10-06; see the note on _GLM_5_3.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     stale_kill_after_s=180.0,    # reasoning legitimately takes time
