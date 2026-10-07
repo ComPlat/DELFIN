@@ -27,7 +27,8 @@ Closing the browser does not close SSH or stop the dashboard.
 
 The installer builds `DELFIN.exe` locally using the Windows .NET Framework
 compiler and the included readable `Starter.cs`. The desktop/Start menu shortcuts
-open the settings app without a PowerShell console.
+open the settings app without a PowerShell console. The settings app is an
+independent main window and stays in the taskbar with the DELFIN icon while open.
 
 With **Open working terminal** OFF (default), a separate login window appears
 for native OpenSSH password/OTP and host-key prompts. After the local tunnel is
