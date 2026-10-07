@@ -132,7 +132,6 @@ public static class DelfinConsole {
     $stopFile = $null
     $browserReadyFile = $null
     $showFile = $null
-    $hideApplied = $false
     $disconnectRequested = $false
     $loginWindow = [DelfinConsole]::GetConsoleWindow()
     try {
@@ -249,10 +248,6 @@ public static class DelfinConsole {
                         if (Test-Path -LiteralPath $stopFile) {
                             $disconnectRequested = $true
                             if (-not $sshProcess.HasExited) { $sshProcess.Kill() }
-                        }
-                        if (-not $p.OpenWorkingTerminal -and -not $hideApplied -and (Test-Path -LiteralPath $browserReadyFile)) {
-                            [void][DelfinConsole]::ShowWindow($loginWindow,0)
-                            $hideApplied = $true
                         }
                         if (Test-Path -LiteralPath $showFile) {
                             [void][DelfinConsole]::ShowWindow($loginWindow,5)
@@ -408,7 +403,7 @@ $combo.add_SelectedIndexChanged({
     }
 })
 $note = New-Object Windows.Forms.Label
-$note.Text = 'Login window hides after browser startup. Disconnect or close this app to end your connection.'
+$note.Text = 'Dashboard terminal stays visible. Ctrl+C stops the dashboard. Disconnect respects Keep session.'
 $note.Location = New-Object Drawing.Point(15,370)
 $note.Size = New-Object Drawing.Size(555,35)
 $form.Controls.Add($note)
