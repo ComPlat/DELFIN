@@ -23,17 +23,18 @@ There is one SSH authentication sequence for this connection. The server can
 still request multiple authentication factors, retries or jump-host logins.
 Closing the browser does not close SSH or stop the dashboard.
 
-## Browser-only mode
+## App, dashboard terminal and browser
 
 The installer builds `DELFIN.exe` locally using the Windows .NET Framework
 compiler and the included readable `Starter.cs`. The desktop/Start menu shortcuts
 open the settings app without a PowerShell console. The settings app is an
 independent main window and stays in the taskbar with the DELFIN icon while open.
 
-With **Open working terminal** OFF (default), a separate login window appears
-for native OpenSSH password/OTP and host-key prompts. After the local tunnel is
-verified and the browser opens, that login window is hidden. Keep the DELFIN app
-open while using the browser. **Show terminal** brings back the SSH window.
+A separate dashboard terminal appears for native OpenSSH password/OTP and
+host-key prompts and stays visible after the browser opens. Use Ctrl+C there to
+stop the dashboard explicitly, including with Keep ON. The optional working
+terminal is still OFF by default. Keep the DELFIN app open while using the browser.
+**Show terminal** brings back the SSH window if it was hidden.
 **Disconnect** ends this app's connections for the selected profile. Closing the
 DELFIN settings app ends all connections started by that instance, including a
 pending login. Keep OFF stops dashboards created by those connections; Keep ON
@@ -233,7 +234,7 @@ RemoteCommand settings or extra forwardings. Jump hosts have their own login rul
 | `exit` in the working shell | Closes that tmux working window; does not end the dashboard window |
 
 Keep the DELFIN app open for browser access. Closing it disconnects connections
-started by that app instance, even when their login windows are hidden. Existing non-tmux dashboards
+started by that app instance, including pending logins. Existing non-tmux dashboards
 continue to depend on their original terminal; the app monitors rather than moves
 those processes. A working tmux window is only offered when the dashboard has tmux.
 Server restarts or terminated kernels may require a new session.
