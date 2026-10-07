@@ -312,6 +312,8 @@ Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 $form = New-Object Windows.Forms.Form
 $form.Text = 'DELFIN - SSH Dashboard'
+$form.ShowInTaskbar = $true
+$form.ShowIcon = $true
 $form.ClientSize = New-Object Drawing.Size(590,480)
 $form.BackColor = [Drawing.Color]::White
 $form.Font = New-Object Drawing.Font('Segoe UI',9)
@@ -456,4 +458,4 @@ function Show-Advanced {
 $advanced.add_CheckedChanged({ Show-Advanced })
 Show-Advanced
 if ($combo.Items.Count -gt 0) { $combo.SelectedIndex=0 }
-try { [void]$form.ShowDialog() } finally { $logo.Image.Dispose(); $form.Icon.Dispose(); $form.Dispose() }
+try { [Windows.Forms.Application]::Run($form) } finally { $logo.Image.Dispose(); $form.Icon.Dispose(); $form.Dispose() }
