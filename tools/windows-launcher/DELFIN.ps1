@@ -127,6 +127,16 @@ public static class DelfinConsole {
     if ([DelfinConsole]::GetConsoleMode($consoleHandle,[ref]$consoleMode)) {
         [void][DelfinConsole]::SetConsoleMode($consoleHandle,($consoleMode -bor 4))
     }
+    function Update-WorkerControls {
+        if ($stopFile -and (Test-Path -LiteralPath $stopFile)) {
+            $script:disconnectRequested = $true
+            if ($null -ne $sshProcess -and -not $sshProcess.HasExited) { $sshProcess.Kill() }
+        }
+        if ($showFile -and (Test-Path -LiteralPath $showFile)) {
+            [void][DelfinConsole]::ShowWindow($loginWindow,5)
+            Remove-Item -LiteralPath $showFile -Force
+        }
+    }
     $sshProcess = $null
     $browserJob = $null
     $readyFile = $null
@@ -201,12 +211,10 @@ public static class DelfinConsole {
             $showFile = Join-Path $store ('connection-' + $connection + '.show')
             $opened = $false
             while ($true) {
+                Update-WorkerControls
                 $readTask = $sshProcess.StandardOutput.ReadLineAsync()
                 while (-not $readTask.Wait(100)) {
-                    if (Test-Path -LiteralPath $stopFile) {
-                        $disconnectRequested = $true
-                        if (-not $sshProcess.HasExited) { $sshProcess.Kill() }
-                    }
+                    Update-WorkerControls
                 }
                 $line = $readTask.Result
                 if ($null -eq $line) { break }
@@ -250,16 +258,10 @@ public static class DelfinConsole {
                 $tail = ''
                 $oneChar = New-Object char[] 1
                 while ($true) {
+                    Update-WorkerControls
                     $readTask = $sshProcess.StandardOutput.ReadAsync($oneChar,0,1)
                     while (-not $readTask.Wait(100)) {
-                        if (Test-Path -LiteralPath $stopFile) {
-                            $disconnectRequested = $true
-                            if (-not $sshProcess.HasExited) { $sshProcess.Kill() }
-                        }
-                        if (Test-Path -LiteralPath $showFile) {
-                            [void][DelfinConsole]::ShowWindow($loginWindow,5)
-                            Remove-Item -LiteralPath $showFile -Force
-                        }
+                        Update-WorkerControls
                     }
                     if ($readTask.Result -eq 0) { break }
                     $chunk = [string]$oneChar[0]
