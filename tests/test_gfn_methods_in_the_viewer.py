@@ -57,6 +57,16 @@ def test_a_structure_too_large_says_so_instead_of_starting():
 
 def test_nothing_to_optimise_is_not_an_error_worth_running():
     assert gfn.optimize_with_gfn("1\nx\nH 0 0 0\n", "gfnff")["ok"] is False
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -71,6 +81,16 @@ def test_it_relaxes_and_says_what_it_cost():
     assert result["energy"] is not None
     assert result["seconds"] > 0
     assert "converged" in result["status"]
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -183,6 +203,16 @@ def test_dragging_keeps_a_force_field_that_lives_in_the_browser(editor):
     assert "'uff' if _gfn.is_gfn_method(chosen) else chosen" in live
     # and the live export uses that, not the dropdown
     assert "method=_live_ff_method()," in source
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +229,16 @@ def test_the_result_names_the_program_that_produced_it():
     assert result["version"], "xtb did not report a version"
     assert result["hamiltonian"] == "GFN2-xTB"
     assert "xtb" in result["status"]
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -543,6 +583,16 @@ def test_the_atom_count_in_the_header_is_not_trusted():
     assert gfn._atom_count(headerless) == 3
 
     assert gfn.coordinates_of(lying) == [0, 0, 0, 1, 0, 0, 0, 1, 0]
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -656,6 +706,16 @@ def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
     assert "_offer_isomers(results, drawn=0 if played[0] else None)" in handler
     assert "show=not played[0]" not in handler, (
         "the showing is what writes the box; held back, nothing gets it")
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -837,6 +897,16 @@ def test_optimise_is_a_switch_that_can_be_turned_off(editor):
     assert "switch.value = False" in apply_body, (
         "the switches have to release themselves when the work is over"
     )
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -1292,6 +1362,16 @@ def test_the_dashboard_runs_without_a_clock_because_it_has_a_switch(editor):
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "timeout=None" in handler
     assert "should_stop=_stopped" in handler, "without it nothing could stop it"
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -1329,6 +1409,16 @@ def test_the_path_is_handed_over_while_it_is_still_being_walked(editor):
     assert "on_frames(walking)" in loop
     # and the switch is checked before any of that, every pass
     assert loop.index("should_stop()") < loop.index("read_trajectory(folder)")
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -1355,6 +1445,16 @@ def test_frames_arrive_during_a_long_run_not_after_it():
     assert seen == sorted(seen)
     if seen:
         assert seen[-1] <= len(result["frames"])
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -1610,6 +1710,16 @@ def test_xtb_talks_to_a_file_and_not_into_a_pipe():
     assert "stdout=sink" in runner and "stderr=subprocess.STDOUT" in runner
     assert "subprocess.PIPE" not in runner, "a pipe is what deadlocked"
     assert "record.read_text" in runner, "the output is read back off disk"
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -1716,6 +1826,16 @@ def test_the_grab_ends_the_run_and_the_release_starts_the_next_one(editor):
         "nor draw the path it had walked over the structure now on screen"
     )
     assert "_stream_frames(run_id, frames, final=final)" in optimise
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -1884,6 +2004,16 @@ def test_holding_an_atom_where_it_is_is_not_asked_of_xtb():
         [{"kind": "distance", "atoms": [0, 1], "value": 1.7, "mode": "fix"}]
     )["text"]
     assert "0.4623" in source, "the measurement that decided it has to be here"
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -2850,6 +2980,16 @@ def test_a_burst_is_not_played_at_the_pace_of_a_followed_hand(player_js):
 #: Named, because a test that compares against it should say what it
 #: is comparing against.
 _READ_INTERVAL_S = 0.2
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -3357,6 +3497,16 @@ def test_the_bonding_is_read_before_a_hand_is_laid_on_the_molecule(editor):
     assert "relax_steps(seed, cycles=1" in keeper, (
         "the perception is made from it there and then"
     )
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -3595,6 +3745,16 @@ def test_a_solvent_changes_the_answer_and_the_answer_says_so(editor):
     kcal = (energies[""] - energies["water"]) * 627.5094740631
     assert 3 < kcal < 30, f"solvation energy of {kcal:.1f} kcal/mol is not credible"
     assert "In water (ALPB)" in refs["mol_status"].value
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
@@ -5329,6 +5489,16 @@ def test_no_budget_means_no_leash_at_the_grab(editor, monkeypatch):
     _time.sleep(0.3)
 
     assert editor["submit_gfn_wall"].value == ""
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb

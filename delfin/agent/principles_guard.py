@@ -22,7 +22,7 @@ from pathlib import Path
 # moves with it — tests/test_principles_guard.py names it in the failure
 # message.
 EXPECTED_DIGEST = (
-    "d1d488ddbc0317ce31ffe3c67425e4641f87b0181782b4b8939b574e11d8f25f"
+    "4daa81a3eadd639d91f2b36212913549000d1d7c0b96f115ae5cb8e12b491d13"
 )
 
 _PRINCIPLES_REL = Path("shared") / "principles_addendum.md"

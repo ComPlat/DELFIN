@@ -1,6 +1,8 @@
 """Scrolling up in one session, while another session is running.
 
-Every open session keeps its own ``.delfin-agent-chat`` in the page; only
+Every open session keeps its own ``.delfin-agent-chat-host`` in the page --
+the widget element that scrolls, and that survives a value reassignment
+(see test_the_chat_followed_a_reader_who_had_scrolled_away). Only
 one of them has a viewport, which is how ``__delfinQ`` finds it. But each
 of them carries the scroll tag, and the tag fires whenever THAT session's
 chat is rebuilt -- which a background session does on every refresh.
@@ -60,12 +62,12 @@ function makeChat(id, visible) {
     scrollHeight: visible ? 1000 : 0,
     clientHeight: visible ? 400 : 0,
     offsetParent: visible ? {} : null,
-    classList: {contains: (k) => k === 'delfin-agent-chat'},
+    classList: {contains: (k) => k === 'delfin-agent-chat-host'},
     getAttribute: (k) => (k === 'data-delfin-session' ? id : null),
     dataset: {delfinSession: id},
     querySelector: (s) => (s === '.delfin-chat-jump' ? jump : null),
   };
-  c.closest = (s) => (s === '.delfin-agent-chat' ? c : null);
+  c.closest = (s) => (s === '.delfin-agent-chat-host' ? c : null);
   jump.closest = c.closest;
   Object.defineProperty(c, 'scrollTop', {
     get() { return c._top; },
@@ -88,7 +90,7 @@ global.window = {};
 global.document = {
   querySelectorAll: () => all,
   querySelector(s) {
-    if (s === '.delfin-agent-chat') return read;
+    if (s === '.delfin-agent-chat-host') return read;
     return null;
   },
   addEventListener(type, fn) {

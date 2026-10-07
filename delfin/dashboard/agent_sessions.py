@@ -276,6 +276,16 @@ _SPLITTER_INIT_JS = """\
             // composer's height depends on the textarea, which the user can
             // grow, and on whether the quick-cycle button is shown. The
             // stylesheet carries an approximation for the first paint.
+            // Three guards, and each one is here because the first version
+            // without it made the window jitter visibly -- reported from a
+            // real session where the chat could not be read.
+            //
+            // The loop it closes: fit() writes the height of a CHILD of
+            // `shell`, and the observer watched `shell` itself. Every write
+            // could change the parent's measurement, which fired the
+            // observer, which wrote again.
+            var lastH = 0;
+            var pending = false;
             function fit() {
                 var send = shell.querySelector('.delfin-agent-send-row');
                 if (!send) return;          // no composer yet: keep the CSS
@@ -283,16 +293,40 @@ _SPLITTER_INIT_JS = """\
                 var bottom = send.getBoundingClientRect().bottom;
                 var h = Math.round(bottom - top);
                 if (h < 160) return;        // laid out but collapsed
+                // 1. A tolerance, not equality. Equality stops a repeat of
+                //    the SAME value but not an alternation between two that
+                //    differ by a pixel, which is what sub-pixel layout
+                //    produces and what oscillates forever.
+                if (Math.abs(h - lastH) <= 2) return;
+                lastH = h;
                 splitter.style.height = h + 'px';
+            }
+            // 2. One measurement per frame. A burst of observer callbacks
+            //    during a drag or a reflow collapses into a single write
+            //    instead of a write per callback.
+            function schedule() {
+                if (pending) return;
+                pending = true;
+                var run = function () { pending = false; fit(); };
+                if (typeof requestAnimationFrame === 'function') {
+                    requestAnimationFrame(run);
+                } else {
+                    setTimeout(run, 16);
+                }
             }
             fit();
             // The composer changes height when the textarea is dragged or a
             // long line wraps, and the window changes it too. A one-shot
             // measure was right for one layout and wrong after the first
             // resize.
-            window.addEventListener('resize', fit);
+            window.addEventListener('resize', schedule);
             try {
-                new ResizeObserver(fit).observe(shell);
+                // 3. Watch the ROW that decides the height, not the
+                //    container the splitter lives in. The row's size does
+                //    not depend on the splitter's, so writing the splitter
+                //    cannot feed back into what is being measured.
+                var watched = shell.querySelector('.delfin-agent-send-row');
+                new ResizeObserver(schedule).observe(watched || shell);
             } catch (err) { /* older browser: resize alone */ }
             return bound;
     }
