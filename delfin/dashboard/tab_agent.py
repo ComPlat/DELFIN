@@ -683,9 +683,17 @@ def _provider_key(name: str) -> str:
 
 _AGENT_CSS = """\
 <style>
-.delfin-agent-chat {
-    /* Rebuilt during streaming: keep the viewport stable so transcript
-       growth cannot move the composer or the surrounding page. */
+/* THE SCROLLPORT IS THE HOST, and that is the whole point of this pair.
+   `chat_html.value` is reassigned about four times a second while the
+   agent streams, and every assignment destroys and rebuilds everything
+   inside the widget -- including, until 2026-10-07, the scrolling box
+   itself. A fresh box starts at scrollTop 0, so the chat jumped to the
+   top and was put back a frame later, four times a second: unreadable
+   while generating, and reported as the window "jittering".
+   The host is the widget's own element. ipywidgets replaces the CONTENT
+   of .widget-html-content, never the host, so a scroll offset on the
+   host is not touched by an update and there is nothing to restore. */
+.delfin-agent-chat-host {
     height: max(200px, calc(100vh - 460px));
     box-sizing: border-box;
     overflow-y: auto;
@@ -698,10 +706,16 @@ _AGENT_CSS = """\
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;
     line-height: 1.5;
+}
+/* The replaced content. Layout only -- no height, no overflow: giving it
+   either would make it a second scrollport inside the first, and the
+   inner one would be the one that gets destroyed again. */
+.delfin-agent-chat {
     display: flex;
     flex-direction: column;
 }
-.delfin-agent-chat-host { overflow-anchor: none; }
+.delfin-agent-chat-host > .widget-html-content { display: flex;
+    flex-direction: column; min-height: 100%; }
 /* Return to the newest output. Sticky rather than absolute: the chat is its
    own scrollport, so an absolutely placed control would ride away with the
    content instead of staying within reach. Hidden while the reader is
@@ -6611,7 +6625,9 @@ def create_tab(ctx):
             return window.__delfinQ ? window.__delfinQ(sel)
                                     : document.querySelector(sel);
         }
-        function chatEl() { return q('.delfin-agent-chat'); }
+        // The host, not the content: the content is replaced on every
+        // streaming update and a scroll offset on it dies with it.
+        function chatEl() { return q('.delfin-agent-chat-host'); }
         function atEnd(c) {
             return (c.scrollHeight - c.scrollTop - c.clientHeight)
                    <= CHAT_BOTTOM_TOLERANCE_PX;
@@ -6639,7 +6655,8 @@ def create_tab(ctx):
             st.timer = setTimeout(function() { st.auto = false; }, 200);
         }
         window.__delfinChatToBottom = function(el) {
-            var c = (el && el.closest) ? el.closest('.delfin-agent-chat') : null;
+            var c = (el && el.closest)
+                ? el.closest('.delfin-agent-chat-host') : null;
             if (!c) c = chatEl();
             if (!c) return;
             var st = stateFor(c);
@@ -6669,18 +6686,29 @@ def create_tab(ctx):
                 st.unseen = false;
             }
             if (st.follow) {
+                // At the end: come along with the agent. This is the half
+                // that is wanted and is unchanged.
                 setTop(c, c.scrollHeight, st);
                 st.top = c.scrollTop;
                 st.mark = c.scrollHeight;
             } else {
+                // Reading further up: WRITE NOTHING. The scrollport is the
+                // host now, and the host survives an update, so the offset
+                // is already where the reader left it -- there is nothing to
+                // restore. The restore existed only because the box used to
+                // be destroyed four times a second, and writing scrollTop at
+                // that rate is what made the text wander under the reader
+                // even when the value was right. New output lands below the
+                // viewport, unseen, and the "Newest" control says so.
                 if (c.scrollHeight > st.mark + 4) st.unseen = true;
-                setTop(c, st.top, st);
+                st.top = c.scrollTop;
             }
             paint(c, st);
         };
         // A cleared or brand-new conversation carries no offset worth keeping.
         window.__delfinChatReset = function(el) {
-            var c = (el && el.closest) ? el.closest('.delfin-agent-chat') : null;
+            var c = (el && el.closest)
+                ? el.closest('.delfin-agent-chat-host') : null;
             var st = stateFor(c);
             st.follow = true;
             st.unseen = false;
@@ -6692,7 +6720,7 @@ def create_tab(ctx):
         document.addEventListener('scroll', function(e) {
             var c = e.target;
             if (!c || !c.classList ||
-                !c.classList.contains('delfin-agent-chat')) return;
+                !c.classList.contains('delfin-agent-chat-host')) return;
             var st = stateFor(c);
             st.top = c.scrollTop;
             if (st.auto) { st.auto = false; return; }
@@ -9699,7 +9727,7 @@ def create_tab(ctx):
         "if(window.__delfinChatToBottom)window.__delfinChatToBottom(this);"
         '">\u2193 Newest</button>'
         '<img src="" onerror="'
-        "var c=this.closest('.delfin-agent-chat');"
+        "var c=this.closest('.delfin-agent-chat-host');"
         "if(c){if(window.__delfinChatSync){window.__delfinChatSync(c);}"
         "else{c.scrollTop=c.scrollHeight;}}"
         "this.remove();"
