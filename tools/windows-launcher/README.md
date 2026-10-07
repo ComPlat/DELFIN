@@ -23,12 +23,45 @@ There is one SSH authentication sequence for this connection. The server can
 still request multiple authentication factors, retries or jump-host logins.
 Closing the browser does not close SSH or stop the dashboard.
 
+## App, dashboard terminal and browser
+
+The installer builds `DELFIN.exe` locally using the Windows .NET Framework
+compiler and the included readable `Starter.cs`. The desktop/Start menu shortcuts
+open the settings app without a PowerShell console. The settings app is an
+independent main window and stays in the taskbar with the DELFIN icon while open.
+
+A separate dashboard terminal appears for native OpenSSH password/OTP and
+host-key prompts and stays visible after the browser opens. This is the only
+SSH terminal; it uses the PowerShell icon and an SSH title. The DELFIN logo
+belongs to the settings app, not a second terminal. Use Ctrl+C there to
+stop the dashboard explicitly, including with Keep ON. The optional working
+terminal is still OFF by default. Keep the DELFIN app open while using the browser.
+**Show terminal** brings back the SSH window if it was hidden.
+**Disconnect** ends all connections started by this app instance. Closing the
+DELFIN settings app ends all connections started by that instance, including a
+pending login. Keep OFF stops dashboards created by those connections; Keep ON
+leaves the server for reconnecting. Pre-existing dashboards keep their lifetime.
+The status line shows Connecting, Connected, Disconnecting or Disconnected.
+Only one settings app instance runs per Windows login; clicking the desktop
+shortcut again brings that existing window forward. The launcher permits only
+one active SSH connection. Repeated Start / Reconnect clicks do not start extra
+connections or dashboards. Open further views inside the DELFIN dashboard in
+your browser. Disconnect before changing the SSH destination.
+Closing a browser tab alone does not disconnect SSH. Authentication/startup
+failures remain visible. Enable the optional working terminal to keep the SSH
+window visible and switch tmux windows. Reinstall to update the shortcuts; unpin
+an old PowerShell-based taskbar shortcut and pin the new DELFIN shortcut.
+
 ## Taskbar shortcut
 
 The installer creates DELFIN shortcuts with the logo on the desktop and in the
 current user's Start menu. Find **DELFIN** in Start, right-click it and select
 **Pin to taskbar** (under **More** on some Windows versions).
-This PowerShell installer does not force a taskbar pin or change your taskbar layout.
+The settings window supplies Windows with DELFIN.exe as its relaunch command,
+the DELFIN icon and its own window AppUserModelID, so pinning that open window
+also targets DELFIN rather than its internal PowerShell host. Remove a previously
+pinned PowerShell entry before pinning the updated DELFIN window.
+This installer does not force a taskbar pin or change your taskbar layout.
 Updates preserve the shortcut location. Before uninstalling, right-click a pinned
 DELFIN icon and select **Unpin from taskbar**; the uninstaller removes the desktop
 and Start menu shortcuts.
@@ -212,8 +245,8 @@ RemoteCommand settings or extra forwardings. Jump hosts have their own login rul
 | Ctrl+C in the dashboard view | Explicitly stops that dashboard, regardless of Keep |
 | `exit` in the working shell | Closes that tmux working window; does not end the dashboard window |
 
-Keep the single SSH window open for browser access. Closing all app GUI windows
-alone does not close an already opened SSH terminal. Existing non-tmux dashboards
+Keep the DELFIN app open for browser access. Closing it disconnects connections
+started by that app instance, including pending logins. Existing non-tmux dashboards
 continue to depend on their original terminal; the app monitors rather than moves
 those processes. A working tmux window is only offered when the dashboard has tmux.
 Server restarts or terminated kernels may require a new session.
