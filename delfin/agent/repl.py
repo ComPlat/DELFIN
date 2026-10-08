@@ -946,6 +946,33 @@ def _fit_to_width(text: str, width: int) -> str:
     return cut + "…"
 
 
+def shell_escape(engine, command: str) -> list[str]:
+    """`!cmd` for any surface: through the agent's gate, lines for a person.
+
+    Input: the engine and the command after the `!`. Output: the lines to
+    show. Semantics: identical to the terminal's `_shell_out` -- the same
+    deny-list, secret scan, auto-allow list and approval the model's own
+    bash calls go through, because a shell escape that skipped them would
+    let someone do from the agent's prompt exactly what the agent may not.
+
+    Extracted so the dashboard runs the same code: it had no `!` at all
+    (goal 5 of the 2026-10-08 brief), and a second implementation would be
+    a second place for the gate to be forgotten. Never raises.
+    """
+    command = str(command or "").strip()
+    if not command:
+        return []
+    executor = getattr(engine, "run_gated_bash", None)
+    if not callable(executor):
+        return ["! is not available on this backend — it runs through the "
+                "same gate the agent uses, and this one has none"]
+    try:
+        out = executor(command)
+    except Exception as exc:
+        return [f"[error] {exc}"]
+    return TerminalAgent._shell_lines(out)
+
+
 class TerminalAgent:
     """Reads, runs one turn, renders it, repeats.
 
@@ -1528,11 +1555,12 @@ class TerminalAgent:
         """
         if not command:
             return
+        # One implementation for both surfaces (shell_escape); the terminal
+        # only adds its off-thread run and its colours.
         executor = getattr(self.engine, "run_gated_bash", None)
         if not callable(executor):
             self.transcript.chrome(self.transcript.theme.dim(
-                "! is not available on this backend — it runs through the "
-                "same gate the agent uses, and this one has none"))
+                shell_escape(self.engine, command)[0]))
             return
         out = self._off_thread(lambda: executor(command))
         if isinstance(out, Exception):

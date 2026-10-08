@@ -16710,6 +16710,26 @@ def create_tab(ctx):
         user_text = input_textarea.value.strip()
         if not user_text:
             return
+        # `!cmd`: the terminal's shell escape, on this surface too. It
+        # runs through the agent's own gate (deny-list, secret scan,
+        # auto-allow, approval) and shows the output to the person; it is
+        # not a message to the model. Off the UI thread, because the gate
+        # may ask the user and the command may take a while.
+        from delfin.agent.repl_commands import SHELL_PREFIX as _SHELL_PREFIX
+        if user_text.startswith(_SHELL_PREFIX) and len(user_text) > 1:
+            _cmd = user_text[len(_SHELL_PREFIX):].strip()
+            input_textarea.value = ""
+            _eng = state.get("engine")
+
+            def _run_escape():
+                from delfin.agent.repl import shell_escape as _escape
+                lines = _escape(_eng, _cmd)
+                _append_system_message(
+                    f"! {_cmd}\n" + "\n".join("  " + ln for ln in lines))
+
+            threading.Thread(target=_run_escape, daemon=True,
+                             name="dashboard-shell-escape").start()
+            return
         if not state.get("_on_its_own"):
             # Sent by somebody: after an emergency stop this is what lets
             # the session start turns on its own again (_send_on_its_own).
