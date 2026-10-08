@@ -750,6 +750,9 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
         pass
     held_by = _isolation_mechanism()
 
+    # For the "off" row only: auto already contains every mode wherever
+    # this host can, so proposing bwrap there would propose the state the
+    # host is already in.
     fix = ("set agent.bash_isolation = \"bwrap\" to contain shell writes "
            "in every permission mode")
     no_mechanism = ("install bubblewrap, or run on a kernel with Landlock "
@@ -773,18 +776,38 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
                  "detail": "explicitly off — only the write-target gate "
                            "protects paths outside the workspace",
                  "fix": fix}]
-    # "auto": isolated only in the unattended permission mode.
-    detail = ("auto — isolated in bypassPermissions only"
-              + (f", by {held_by} there" if held_by
-                 else "; nothing here can isolate, so never isolated"))
-    # The settings change is offered only where something on this host can
-    # actually hold a command. Proposing "bwrap" with no bwrap would turn
-    # a warning into a refusal of every shell command, which is a worse
-    # state than the one being fixed.
+    # "auto", the shipped default. It isolates wherever this host can
+    # actually hold a command -- in EVERY permission mode, not only the
+    # unattended one.
+    #
+    # This row said "isolated in bypassPermissions only" and offered the
+    # bwrap setting as its fix. That was true of an older resolver: auto
+    # used to wall the unattended mode and a locked scope and nothing
+    # else. `_bash_isolation_argv` changed -- an approval is given on the
+    # command TEXT, and the text is not the act, so an interpreter or a
+    # symlink walks past it whether or not somebody is watching -- and
+    # this row did not. Measured on a host with bwrap: all four of
+    # default, acceptEdits, plan and bypassPermissions come back walled,
+    # and none of them can read outside the workspace.
+    #
+    # Understating protection is not the harmless direction. It tells the
+    # user attended sessions are unguarded when they are not, and sends
+    # them to change a setting that is already in force.
+    if held_by:
+        return [{"check": "bash isolation", "status": "PASS",
+                 "detail": (f"auto — {held_by} active in every permission "
+                            "mode")}]
+    # Nothing here can hold a command. Then auto is honest about what is
+    # left: the command still runs (refusing every shell command in an
+    # attended session would be secure and useless), and what protects
+    # paths outside the workspace is the write-target gate reading the
+    # command text, plus the socket guard. Saying which is the point of
+    # the row.
     return [_row(
-        "bash isolation", WARN, detail,
-        fix if held_by else no_mechanism,
-        setting=("agent.bash_isolation", "bwrap") if held_by else None,
+        "bash isolation", WARN,
+        ("auto — nothing here can isolate a command; the write-target "
+         "gate and the socket guard are what hold"),
+        no_mechanism,
     )]
 
 

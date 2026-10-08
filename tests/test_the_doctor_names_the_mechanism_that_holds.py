@@ -54,7 +54,9 @@ def _row(ctx=None):
 def test_bubblewrap_is_named_when_it_is_what_runs(probes):
     probes(bwrap=True)
     row = _row()
-    assert row["status"] == "WARN"          # auto: only the unattended mode
+    # PASS, not WARN: under auto a host that can hold a command holds it
+    # in every permission mode. The WARN here was the older resolver's.
+    assert row["status"] == "PASS"
     assert "bwrap" in row["detail"]
 
 
