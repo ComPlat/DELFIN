@@ -3380,6 +3380,24 @@ def _is_git_push(cmd: str) -> bool:
     return bool(_GIT_PUSH_RE.search(_with_shell_bodies(cmd)))
 
 
+#: `gh pr create` publishes a branch as a pull request; `gh pr merge`
+#: lands it on the base branch. Neither was gated: both ran through the
+#: shell gate as ordinary commands in every permission mode, with no
+#: question asked (measured 2026-10-08) -- so the contributor rule
+#: "changes reach main through a pull request the maintainer accepts"
+#: held for `git push` and not for the two commands that are that rule.
+_GH_PR_CREATE_RE = re.compile(r"(?:^|[;&|]\s*)gh\s+pr\s+create\b")
+_GH_PR_MERGE_RE = re.compile(r"(?:^|[;&|]\s*)gh\s+pr\s+merge\b")
+
+
+def _is_gh_pr_create(cmd: str) -> bool:
+    return bool(_GH_PR_CREATE_RE.search(_with_shell_bodies(cmd)))
+
+
+def _is_gh_pr_merge(cmd: str) -> bool:
+    return bool(_GH_PR_MERGE_RE.search(_with_shell_bodies(cmd)))
+
+
 # -- a push to GitHub, the one way out of the process cage ---------------------
 #
 # SSH is closed inside the cage (keys, agent and control sockets are masked,
@@ -15126,6 +15144,27 @@ class _DocToolExecutor:
             # A contributor's change reaches the default branch through a
             # pull request. No grant covers that push: it is the maintainer's
             # decision, made on the PR, not the contributor's to request.
+            # Merging a pull request is the maintainer's act, on the PR.
+            # A contributor never does it from here, whatever was asked;
+            # a maintainer does it under the same one-request grant a
+            # push needs, because it publishes to the default branch.
+            if _is_gh_pr_merge(cmd):
+                if _git_role() == "contributor":
+                    _record_security_event("pr_merge_contributor", "bash",
+                                           cmd[:80], blocked=True)
+                    return ("blocked: `gh pr merge` lands a pull request on "
+                            "the default branch, and that is the maintainer's "
+                            "decision, made on the pull request. Tell the user "
+                            "the PR is ready and give them its link; do not "
+                            "merge it from here.")
+                if not (perms.push_grants or {}).get("push"):
+                    _record_security_event("pr_merge_unrequested", "bash",
+                                           cmd[:80], blocked=True)
+                    return ("blocked: `gh pr merge` publishes to the default "
+                            "branch, and the user has not asked for that since "
+                            "their last message. Say which PR you would merge "
+                            "and whether its checks are green, and let them "
+                            "say so.")
             if _is_git_push(cmd) and _git_role() == "contributor":
                 _cwd_arg = str(args.get("cwd") or "").strip()
                 _where = Path(perms.workspace)
@@ -15147,6 +15186,26 @@ class _DocToolExecutor:
                         "open the pull request. A maintainer sets "
                         "agent.git_role = maintainer.")
             _asked = perms.confirm_callback is not None
+            # Opening a pull request publishes the branch. It spends the
+            # same one-request grant a push does: the user who asked for a
+            # push asked for its PR, and nobody else did.
+            if _is_gh_pr_create(cmd) and not (perms.push_grants or {}).get("push"):
+                if mode == "bypassPermissions" or not _asked:
+                    _record_security_event("pr_create_unrequested", "bash",
+                                           cmd[:80], blocked=True)
+                    return ("blocked: `gh pr create` publishes the branch as a "
+                            "pull request, and the user has not asked for a push "
+                            "or a PR since their last message. Say what the PR "
+                            "would contain and against which base, and ask.")
+                try:
+                    ok = bool(perms.confirm_callback(
+                        "bash", {"command": cmd},
+                        f"$ {cmd}\n(opens a pull request; the user has not "
+                        "asked for one since their last message)"))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    return "blocked: the user did not approve opening the pull request."
             if (_is_git_push(cmd) and not (perms.push_grants or {}).get("push")
                     and (_asked or mode == "bypassPermissions"
                          or perms.matches_bash_auto_allow(cmd))):
