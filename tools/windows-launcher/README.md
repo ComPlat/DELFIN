@@ -14,7 +14,7 @@ All app text, terminal messages and instructions are in English.
    dashboard is reused; otherwise the app starts a new dashboard in tmux.
 3. The same SSH connection carries the browser tunnel. The browser signs in using
    DELFIN's mandatory access token. Server and Windows ports are selected automatically.
-4. If **Open working terminal** is enabled, an additional tmux window provides a
+4. If **Working shell (Ctrl+B, then N)** is enabled, an additional tmux window provides a
    working shell through the **same SSH login**. Switch between dashboard and
    working shell with **Ctrl+B, then N**. These are terminal views inside one
    Windows window, not two separately authenticated Windows SSH windows.
@@ -36,7 +36,9 @@ SSH terminal; it uses the PowerShell icon and an SSH title. The DELFIN logo
 belongs to the settings app, not a second terminal. Use Ctrl+C there to
 stop the dashboard explicitly, including with Keep ON. The optional working
 terminal is still OFF by default. Keep the DELFIN app open while using the browser.
-**Show terminal** brings back the SSH window if it was hidden.
+**Show terminal** restores the current SSH window if minimized or hidden and
+reports whether Windows could show it. It operates on the active connection
+even if another saved profile is selected.
 **Disconnect** ends all connections started by this app instance. Closing the
 DELFIN settings app ends all connections started by that instance, including a
 pending login. Keep OFF stops dashboards created by those connections; Keep ON
@@ -70,7 +72,7 @@ and Start menu shortcuts.
 
 Two options are visible without opening Advanced settings:
 
-- **Open working terminal (same SSH login)**: disabled by default for new saved
+- **Working shell (Ctrl+B, then N)**: disabled by default for new saved
   connections. Enable it to open/reuse a tmux window named `DELFIN-work`.
 - **Keep session after disconnect**: disabled by default for new saved connections.
   When off, disconnecting stops the **new dashboard started by this connection**
@@ -92,6 +94,17 @@ The server DELFIN installation must include the launcher release with
 Updating the Windows app alone does not update the server code. After the release
 is merged, update the server checkout using your normal update process
 (`git pull --ff-only` for a clean checkout on main).
+
+Automatic discovery also checks the current user's `~/software/delfin`,
+`~/software/DELFIN`, `~/delfin` and `~/DELFIN` when no usable environment was found
+in the login environment or current directory. A local `.venv`/`venv` does not
+need to be activated permanently. Source checkouts work without an editable
+package install when their environment has the required dependencies. Multiple
+usable conventional installations require an explicit location in Advanced.
+For another installation path, set **DELFIN location** to that repository or its
+Python environment; discovery does not scan the whole filesystem.
+The selected PATH, Python source path and virtual-environment variables are
+passed explicitly into tmux for the dashboard and working shell.
 
 ## Requirements
 
@@ -234,6 +247,21 @@ reports a dashboard record on another node and asks you to connect there.
 Use only trusted SSH configurations; do not add unknown ProxyCommand scripts,
 RemoteCommand settings or extra forwardings. Jump hosts have their own login rules.
 
+## Returning to a kept session
+
+Enable Keep session before connecting, then Disconnect without Ctrl+C. Later,
+start the same saved connection again, complete SSH/password/OTP authentication,
+and connect to the same login node. The browser resumes the latest live kept
+kernel authenticated to that server, even if the local tunnel port has changed.
+Keep settings do not bypass a fresh SSH login.
+
+Inside the Agent area, **Resume a saved session…** selects saved agent
+conversations/workspaces. That is distinct from restoring a whole live notebook
+kernel; the launcher chooses the newest eligible kept kernel automatically.
+The dashboard's per-session Keep switch controls whether that browser session
+survives a closed page. The launcher's Keep switch controls the server surviving
+disconnect. Stopping the server with Ctrl+C ends its kernels.
+
 ## Disconnect, reconnect and stop
 
 | Action | Result |
@@ -266,7 +294,7 @@ and updates the installation. The PowerShell commands above remain available.
 Program files are replaced, saved connections and their IDs are preserved. No uninstall is needed.
 The server installation is updated separately.
 Existing saved checkbox choices are preserved. For an existing connection,
-uncheck **Open working terminal** and save/connect to use dashboard-only mode.
+uncheck **Working shell (Ctrl+B, then N)** and save/connect to use dashboard-only mode.
 
 ## Uninstall
 
