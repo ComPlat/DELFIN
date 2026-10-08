@@ -110,6 +110,38 @@ def test_background_path_refused_when_saturated(monkeypatch, tmp_path):
 
 # --- Bounded result wait ----------------------------------------------------
 
-def test_collect_timeout_is_bounded():
+def test_collect_timeout_is_bounded(monkeypatch):
+    """Finite, and past the budget it is waiting on -- not under a literal.
+
+    The literal was 3600, which held only while the wall budget was 900.
+    When the budget was raised to 3600 for the specialist presets this
+    assertion started failing on any host where the settings could be
+    read, and PASSING where they could not: the helper falls back to 300
+    inside a bare except, so a runner with no settings file got 420 and a
+    developer machine got 3720. A test whose verdict depends on the host
+    is not a test, which is the rule this repository already carries.
+
+    So: the relationship, measured against the constant, and pinned on a
+    stubbed budget so the ambient settings file cannot decide it.
+    """
+    import delfin.agent.subagents as sa
+
+    for wall in (60.0, 900.0, 3600.0):
+        monkeypatch.setattr(
+            sa, "_subagent_limits",
+            lambda _w=wall: {"max_wall_s": _w, "max_tool_calls": 40,
+                             "max_output_tokens": 16000})
+        t = _subagent_collect_timeout()
+        # Past the child's own guard: a fully stalled stream never trips
+        # that guard, and abandoning the wait before it could fire would
+        # report a working delegate as lost.
+        assert t > wall, (wall, t)
+        # ...but bounded: the parent must not block its turn indefinitely.
+        assert t <= wall + 600, (wall, t)
+
+    # And with whatever this host actually has configured, the same
+    # relationship holds.
+    live = float(sa._subagent_limits().get("max_wall_s", 0) or 0)
     t = _subagent_collect_timeout()
-    assert 0 < t < 3600      # finite, sane upper bound
+    assert 0 < t
+    assert t > live
