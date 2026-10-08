@@ -7915,9 +7915,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "subagent_message",
             "description": (
-                "Message a running delegate (to=<sa_id>), or as a "
-                "delegate the session running you (no `to`); no args "
-                "lists them. Capped -- report at the end instead."
+                "Message a delegate (to=<sa_id>/all), or as a delegate "
+                "the session running you (no `to`); no args lists them. "
+                "Capped -- report at the end instead."
             ),
             "parameters": {
                 "type": "object",
@@ -17792,6 +17792,30 @@ class _DocToolExecutor:
         if me:
             return json.dumps(_sa.post_reply(me, text), ensure_ascii=False)
         running = _sa.read_running() or {}
+        if to.lower() in ("all", "*", "everyone"):
+            # One fact to every delegate, in one call. The alternative was
+            # a channel BETWEEN siblings, and this is the mandated form of
+            # the same thing: a delegate that learns something the others
+            # need raises it to the session, and the session decides
+            # whether it goes out. That keeps the relay visible and keeps
+            # the authority where the work was handed out -- peers
+            # coordinating without a mandate is on record in this
+            # installation's field reports, where three sessions assigned
+            # each other roles and froze interfaces nobody asked for.
+            #
+            # It is also the cheaper direction: the same sentence sent to
+            # four delegates one call at a time is four of the session's
+            # rounds, and that is measurably where rounds have gone before
+            # (71 of 541 tool calls in one afternoon were session_message).
+            if not running:
+                return json.dumps({"error": "no delegate is running."})
+            if not text:
+                return json.dumps({"error": "message is required."})
+            sent, full = [], []
+            for sa_id in running:
+                (sent if _sa.post_note(sa_id, text) else full).append(sa_id)
+            return json.dumps({"status": "sent", "to": sent,
+                               "not_delivered": full}, ensure_ascii=False)
         if not to:
             return json.dumps({
                 "delegates": [{
