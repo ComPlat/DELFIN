@@ -7811,12 +7811,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "subagent",
             "description": (
-                "Delegate a self-contained task to an isolated sub-agent that"
-                " runs its own tool loop and returns one summary. Use for "
-                "parallel research, read-only audits, or planning that must "
-                "not edit. 'explore' / 'plan' / 'code-reviewer' are "
-                "read-only; 'general-purpose' inherits the parent's FULL "
-                "permissions. Caps: " + _subagent_caps_phrase() + "."
+                "Delegate a self-contained task to an isolated sub-agent "
+                "that returns one summary. All types are read-only except "
+                "'general-purpose' (the parent's FULL permissions) and "
+                "'verifier' (runs commands). Caps: "
+                + _subagent_caps_phrase() + "."
             ),
             "parameters": {
                 "type": "object",
