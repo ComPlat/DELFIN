@@ -758,6 +758,7 @@ delfin cleanup [--dry-run] [--workspace PATH] [--scratch PATH] [--orca]
 delfin stop [--workspace PATH] [--signal INT|TERM|KILL] [--dry-run] [--cleanup] [--wait-seconds S]
 delfin co2 [--define] [--recalc] [--charge N] [--multiplicity M] [--solvent S] [--metal M] [--broken_sym B]
 delfin run_orca [file.inp] [-i FILE] [-o FILE]
+delfin review summary review_NAME.json [--csv FILE] [--no-csv]
 delfin tadf_xtb ...            # xTB/sTDA TADF screening
 delfin hyperpol_xtb ...        # xTB hyperpolarizability
 ```
@@ -1164,6 +1165,7 @@ delfin-voila --port 9000 --dark
 | **Tools** | The registered tool steps and their parameters |
 | **Ketcher** | 2D structure drawing |
 | **Reactions** | Reaction graph |
+| **Review** | Look at every frame of multi-frame XYZ files and rate it Pass/Block with categories and comments |
 | **Pipelines** | Declarative step pipelines |
 | **Settings** | Tool detection, install/update buttons, runtime configuration, agent settings |
 
@@ -1180,6 +1182,55 @@ Select an `.xyz` file; the per-file dropdown then offers:
 
 For an ORCA output file the dropdown offers **Print Mode**, **MO Plot** and
 **Print NMR** instead.
+
+### Reviewing structures
+
+The **Review** tab walks through the frames of one multi-frame XYZ file, or of
+every `*.xyz` in a folder, and lets you rate each frame by eye.
+
+1. Enter the file or folder under **Open** and press **Open**. The files are
+   listed on the left, the frames of the current file below them; rated frames
+   are marked `✓` (pass) or `✗` (block).
+2. The structure is drawn in the dashboard's 3D viewer with its file, position
+   (`frame 3/12`) and label. Move with **Prev** / **Next** or the arrow keys;
+   **Next unrated** (key `N`) jumps to the next frame without a rating.
+3. Rate with **Pass** / **Block** (keys `P` / `B`). Pick one or more categories
+   first (keys `1`–`9`; untick *Several categories* to allow only one) and type
+   a comment if you like. After a rating the next unrated frame is shown.
+   There is also a comment field for the whole file and one for the whole review.
+4. Every rating is written at once to `<folder>/review_<name>.json` (name:
+   the **Name** field, else the folder or file name). Opening the same folder
+   again resumes where you stopped. Each record holds verdict, categories,
+   comment, timestamp, file name, frame index and label, and the sha256 of the
+   file; a frame rated again keeps its earlier ratings under `history`. If a
+   file has changed since, its old ratings are kept but no longer count. When
+   the folder or its parent contains an `index.tsv` with an `id` column (the
+   file stem), that row (e.g. the SMILES) is linked to the file and shown.
+5. **Blinded** shuffles all frames of all files in a fixed order (same
+   **Seed**, same order), hides file names, labels and findings and shows only
+   `structure #k`. The JSON keeps the order and, per record, the anonymous
+   number, so every rating maps back to its file and frame.
+6. In the normal mode findings from elsewhere are shown next to a frame when a
+   JSON `{"<file>": {"<frame_index>": ["text", ...]}}` is given under
+   **Findings** (default: `findings.json` in the folder; frame indices are
+   0-based, the file may be named with or without `.xyz`).
+7. Progress (rated / total, pass and block counts) is shown on the right;
+   **Export CSV** writes `review_<name>.csv`.
+
+The categories are configurable (one per line, **Apply categories**) and are
+stored in the review file. The default list is: bond length,
+angle/hybridisation, contact/clash, coordination polyhedron,
+planarity/aromaticity, torn/broken ligand, wrong isomer, other.
+
+To evaluate a review on the command line:
+
+```bash
+delfin review summary structures/review_structures.json
+```
+
+prints rated/total, pass and block counts and the count per category (all
+ratings and blocked only), and writes the records as CSV next to the JSON
+(`--csv FILE` for another place, `--no-csv` to only print).
 
 ---
 

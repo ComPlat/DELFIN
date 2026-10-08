@@ -29,11 +29,14 @@ set -euo pipefail
 # guppy_batch expects GUPPY_BATCH_CSV pointing to a CSV/txt of SMILES; under
 # `sbatch --array=...` each task runs one row via SLURM_ARRAY_TASK_ID.
 #
-# SITE-SPECIFIC FEATURES (all off by default):
+# SITE-SPECIFIC FEATURES:
 #   DELFIN_AUTO_RESOURCES=1  Parse CONTROL.txt to derive sbatch args
 #   DELFIN_MODULES="mod1 mod2"  Modules to load (module purge + load)
 #   DELFIN_STAGE_ORCA=1      Stage ORCA + OpenMPI to node-local SSD
-#   DELFIN_STAGE_VENV=1      Run the venv from node-local disk (cached tar)
+#   DELFIN_STAGE_VENV=1      Run the venv from node-local disk (cached tar;
+#                            DEFAULT on: falls back to the venv where it is
+#                            when the local disk has no room or no tar can be
+#                            packed. DELFIN_STAGE_VENV=0 runs from HOME)
 #   DELFIN_RUNTIME_CACHE=1   Build/use runtime wheel cache
 #
 # RESOURCE PARAMETERS (via sbatch command-line overrides):
@@ -377,7 +380,7 @@ elif [ -n "$DELFIN_DIR" ] && [ -x "$DELFIN_DIR/.venv/bin/python" ]; then
     VENV_SRC="$DELFIN_DIR/.venv"
 fi
 
-if [ "${DELFIN_STAGE_VENV:-0}" = "1" ] && [ -n "$VENV_SRC" ] && [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
+if [ "${DELFIN_STAGE_VENV:-1}" = "1" ] && [ -n "$VENV_SRC" ] && [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
     VENV_TAR="${DELFIN_VENV_TAR:-}"
     if [ -z "$VENV_TAR" ]; then
         VENV_TAR="$(ensure_venv_tar "$VENV_SRC")" || VENV_TAR=""
@@ -930,6 +933,58 @@ collect_sync_results() {
     set -o pipefail 2>/dev/null || true
 }
 
+# CO2 coordination runs produce their result artifacts deep inside
+# RUN_DIR/CO2_coordination/ — the energy curve of the inverse RSS
+# dissociation scan, the OCCUPIER-optimized adduct geometry, and the
+# adduct_flow status JSON. Without an explicit copy-back they stay in the
+# job scratch and vanish with it (calc 81-105_87_sub_irss, job 7453335:
+# the scan reported status=ok in the log but relaxed_surface_scan/ never
+# appeared in the origin dir).
+#
+# This is a WHITELIST, deliberately small: only the artifacts a user
+# wants at the end. Working files (FoB job dirs, .gbw, .hess,
+# .densities, xtb_preopt/, input0.xyz, MO cubes, ...) stay in the
+# scratch and are cleaned up with it — no tmp clutter in the origin dir.
+# Missing artifacts are skipped silently: the list cannot know whether
+# this run had adduct_flow at all.
+collect_co2_sync_results() {
+    local co2_src="$RUN_DIR/CO2_coordination"
+    local co2_dst="$ORIGIN_DIR/CO2_coordination"
+
+    if [ ! -d "$co2_src" ]; then return 0; fi
+    mkdir -p "$co2_dst/relaxed_surface_scan" "$co2_dst/occupier_job" 2>/dev/null || true
+
+    # 1) flow status JSON (always written when adduct_flow ran)
+    # 2-5) inverse RSS scan results
+    # 6) OCCUPIER-optimized adduct geometry (input of the scan)
+    local artifact
+    for artifact in \
+        adduct_flow_result.json \
+        relaxed_surface_scan/scan.relaxscanact.dat \
+        relaxed_surface_scan/scan.out \
+        relaxed_surface_scan/scan_absolute.png \
+        relaxed_surface_scan/scan_relative.png \
+        occupier_job/initial.xyz \
+        ; do
+        if [ -f "$co2_src/$artifact" ]; then
+            cp -f "$co2_src/$artifact" "$co2_dst/$artifact" 2>/dev/null || true
+        fi
+    done
+
+    # 7) newest optimized geometry under any *_OCCUPIER result folder of
+    #    the OCCUPIER job (same rule as adduct_flow._find_latest_optimized_xyz
+    #    for finding the scan input).
+    local occ_dir newest_xyz
+    for occ_dir in "$co2_src"/occupier_job/*_OCCUPIER/opt; do
+        [ -d "$occ_dir" ] || continue
+        newest_xyz="$(find "$occ_dir" -maxdepth 1 -name '*.xyz' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)"
+        if [ -n "$newest_xyz" ]; then
+            mkdir -p "$co2_dst/occupier_job/$(basename "$(dirname "$occ_dir")")/opt" 2>/dev/null || true
+            cp -f "$newest_xyz" "$co2_dst/occupier_job/$(basename "$(dirname "$occ_dir")")/opt/" 2>/dev/null || true
+        fi
+    done
+}
+
 # A 60 h run syncs every 15 min, so an unconditional line per sync buries the
 # job log under hundreds of identical "Copied N result files" entries and any
 # real message with it. Collapse consecutive identical lines into a count and
@@ -970,6 +1025,12 @@ sync_results_back() {
     purge_xtb_goat_out_files
     [ "$sync_profile" = "full" ] && rescue_iso_files
     collect_sync_results "$list_file" "$sync_profile"
+    # CO2 artifacts are copied by their own whitelist, independent of the
+    # find-based list: collect_sync_results only knows top-level result
+    # patterns, and the scan/OCCUPIER artifacts sit two levels deep in
+    # CO2_coordination/. Running it on every sync makes the energy curve
+    # appear in the origin dir while the job is still running.
+    collect_co2_sync_results
 
     if [ ! -s "$list_file" ]; then
         say_once "No updated result files to copy (${sync_label})."

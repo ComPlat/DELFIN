@@ -394,6 +394,16 @@ class AgentEngine:
         DELFIN_AGENT_LITE mode (default: ``"quick"``).
     """
 
+    #: One pending follow-up note for a turn that announced work it did not
+    #: do (see _note_turn_continuation); "" when none. Class defaults so an
+    #: engine built without __init__ (tests, restored sessions) still has them.
+    pending_turn_continuation: str = ""
+    _continuation_fired: bool = False
+    #: The address `delfin-agent pause <session>` uses (the -n name, set by
+    #: the terminal). Empty: this engine cannot be paused by name.
+    pause_key: str = ""
+
+
     def __init__(
         self,
         repo_dir: Path,
@@ -2597,6 +2607,43 @@ class AgentEngine:
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
 
+        # T2 context-budget fresh start (repl hook). A long session has
+        # re-sent the whole history (>900k tokens) on every turn; compaction
+        # at 0.95 of the window does not save it. When the terminal decides
+        # (via ``fresh_context_for_turn`` in repl.py) that the current
+        # context is over the token budget, it sets ``self.start_fresh`` and
+        # hands the fresh-context block already fused into THIS turn's user
+        # message. Here we drop the accumulated history but KEEP that current
+        # user message, so the turn still runs against the exact prompt it
+        # must answer (one message = fresh block + current prompt).
+        # One-shot: the flag clears so the next turn resumes a normal (now
+        # tiny) history; it never assembles state from model text and never
+        # needs a model call.
+        if getattr(self, "start_fresh", False):
+            self.start_fresh = False
+            # Archive everything BEFORE this turn's message so the cut
+            # history stays recoverable (the session record is never
+            # silently dropped) - the same append-only store compaction
+            # uses, browsable via /session archive ls.
+            try:
+                from delfin.agent.session_store import (
+                    archive_pre_compaction_transcript)
+                archive_pre_compaction_transcript(
+                    getattr(self, "session_id", "") or "",
+                    list(self.messages[:-1]),
+                    info={"kind": "fresh_restart",
+                          "n_messages_archived": max(0, len(self.messages) - 1)},
+                )
+            except Exception:
+                pass
+            if self.messages:
+                self.messages = self.messages[-1:]
+            # Drop the stale pre-fresh input floor so the context estimate
+            # reflects the shrink at once: the next turn is then judged on
+            # its own (now small) context and is NOT a fresh restart again.
+            self._last_input_tokens = 0
+            self._trimmed_chars_since_floor = 0
+
         # Mid-conversation compaction. Fires for solo/dashboard on the
         # legacy message-count threshold, and for any role when the
         # token-budget threshold is exceeded.
@@ -2765,6 +2812,9 @@ class AgentEngine:
         # turns never touch disk. See session_store.save_turn_checkpoint.
         _ckpt_events = 0
         _ckpt_last = _turn_t0
+        # The checkpoint-write failure notice is once per TURN (a full
+        # disk would otherwise warn on every throttled write).
+        _ckpt_warned = False
         self._saw_message_start = False
         self._floor_captured_this_turn = False
         # Per-turn runaway circuit-breaker: snapshot the cost at turn start so a
@@ -2964,6 +3014,11 @@ class AgentEngine:
                         event.tool_name, event.tool_input)
                     if on_tool_use:
                         on_tool_use(event.tool_name, event.tool_input)
+                    # `delfin-agent pause <session>`: stop at the next tool
+                    # boundary through the ordinary stop path, so the turn
+                    # ends cleanly and the history stays whole. Signals do
+                    # not reach a supervised agent; this flag does.
+                    self._honour_pause()
 
                 elif event.type == "tool_result":
                     if on_tool_result and event.tool_output:
@@ -3057,6 +3112,12 @@ class AgentEngine:
                     # tool rounds — persist a cheap checkpoint (throttled,
                     # best-effort) so a SIGKILL mid-loop costs the last few
                     # rounds, not the whole turn. Cleared at turn end.
+                    # Best-effort stays right — a failed checkpoint must
+                    # never break the turn — but a failure is no longer
+                    # silent: every checkpoint would vanish for the whole
+                    # run while the turn looked perfectly guarded. The
+                    # notice is once per turn, not once per write, so a
+                    # full disk cannot spam the stream.
                     _ckpt_events += 1
                     _ckpt_now = _time.monotonic()
                     if _ckpt_events >= 10 or (_ckpt_now - _ckpt_last) >= 60.0:
@@ -3071,8 +3132,14 @@ class AgentEngine:
                                     "tool_calls": _turn_tool_calls,
                                     "ts": _time.time(),
                                 })
-                        except Exception:
-                            pass
+                        except Exception as _ckpt_exc:
+                            if not _ckpt_warned:
+                                _ckpt_warned = True
+                                _notice(
+                                    "mid-turn checkpoint could not be "
+                                    f"written ({type(_ckpt_exc).__name__}): "
+                                    "a crash in this turn now costs the "
+                                    "whole turn, not just the last rounds.")
 
                 elif event.type == "permission_denied":
                     if on_permission_denied:
@@ -3483,6 +3550,15 @@ class AgentEngine:
                     thinking_budget=thinking_budget,
                     max_tokens=max_tokens,
                 )
+            # A turn that ends by announcing work ("Let me write X …") while
+            # tasks stay open leaves the session idle until someone pokes it
+            # -- in supervised waves that happened dozens of times a day. The
+            # detector (turn_continuation) decides; this records ONE pending
+            # follow-up note for the caller. _continuation_fired is a session
+            # latch, re-armed only by clear_turn_continuation(), so this
+            # block alone can never loop; the caller additionally caps how
+            # many follow-ups run in a row.
+            self._note_turn_continuation(full_response)
         elif self._stop_requested:
             # Stop before any answer text — during thinking, or before the
             # first token. The message appended at the top of this turn has
@@ -4150,10 +4226,11 @@ class AgentEngine:
 
     def _scan_claim_grounding(
         self, text: str, turn_tools: list[str] | None,
-    ) -> tuple[list, list]:
-        """Scan a finished answer for ungrounded code-location and
-        physical-quantity claims against this session's observed evidence.
-        Returns (location_flags, quantity_flags); never raises."""
+    ) -> tuple[list, list, list]:
+        """Scan a finished answer for ungrounded code-location,
+        physical-quantity and stated-equation claims against this
+        session's observed evidence. Returns (location_flags,
+        quantity_flags, arithmetic_flags); never raises."""
         try:
             from . import verify_guard as _vg
             observed = getattr(self, "_last_observed_files", None) or set()
@@ -4164,9 +4241,10 @@ class AgentEngine:
                 text, observed_files=observed,
                 evidence_tools_used=set(turn_tools or ()),
                 numbers=_vg.observed_numbers())
-            return loc, qty
+            arith = _vg.scan_for_wrong_arithmetic(text)
+            return loc, qty, arith
         except Exception:
-            return [], []
+            return [], [], []
 
     def _enforce_claim_grounding(
         self,
@@ -4204,7 +4282,7 @@ class AgentEngine:
 
         Returns the (possibly extended) answer text."""
         from . import verify_guard as _vg
-        loc, qty = self._scan_claim_grounding(
+        loc, qty, arith = self._scan_claim_grounding(
             response_text, getattr(self, "_last_turn_tools", None))
         func = self._scan_functional_claims(response_text)
         # A figure over a column the reader could not read joins the caveat
@@ -4260,7 +4338,8 @@ class AgentEngine:
             wrong_language = _vg.scan_for_language_mismatch(
                 response_text,
                 "" if _asked.lstrip().startswith("[Verify]") else _asked)
-        if not loc and not qty and not conflicts and not wrong_language:
+        if (not loc and not qty and not arith
+                and not conflicts and not wrong_language):
             return self._append_answer_caveats(
                 response_text, functional=func, ambiguous=ambiguous,
                 on_token=on_token)
@@ -4268,7 +4347,7 @@ class AgentEngine:
             # The single correction for this user turn is spent (e.g. a
             # nested continuation re-entered here) — annotate, never loop.
             return self._append_answer_caveats(
-                response_text + _vg.grounding_caveat(loc, qty)
+                response_text + _vg.grounding_caveat(loc, qty, arith)
                 + _vg.conflicting_figure_caveat(conflicts)
                 + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
@@ -4278,6 +4357,9 @@ class AgentEngine:
                 loc, observed=getattr(self, "_last_observed_files", None)))
         if qty:
             parts.append(_vg.quantity_claim_feedback(qty))
+        if arith:
+            parts.append(_vg.arithmetic_feedback(arith)
+                         .replace("[Verify] ", "", 1))
         if conflicts:
             parts.append(_vg.conflicting_figure_feedback(conflicts)
                          .replace("[Verify] ", "", 1))
@@ -4317,7 +4399,7 @@ class AgentEngine:
             self._claim_guard_active = False
         if not correction:
             return self._append_answer_caveats(
-                response_text + _vg.grounding_caveat(loc, qty)
+                response_text + _vg.grounding_caveat(loc, qty, arith)
                 + _vg.conflicting_figure_caveat(conflicts)
                 + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
@@ -4334,7 +4416,7 @@ class AgentEngine:
             combined = response_text + "\n\n" + correction
         # Re-scan the correction: the recursive turn refreshed the
         # observed-files snapshot and _last_turn_tools.
-        loc2, qty2 = self._scan_claim_grounding(
+        loc2, qty2, arith2 = self._scan_claim_grounding(
             correction, getattr(self, "_last_turn_tools", None))
         # The correction may restate the functional claim — scan it too and
         # merge (order-stable, de-duplicated: the flags are frozen).
@@ -4343,16 +4425,16 @@ class AgentEngine:
         ambiguous = self._scan_ambiguous_column_totals(combined)
         new_files = set(
             getattr(self, "_last_observed_files", None) or ()) - observed_before
-        if loc2 or qty2:
+        if loc2 or qty2 or arith2:
             # The retry produced its own ungrounded claims.
-            caveat = _vg.grounding_caveat(loc2, qty2)
+            caveat = _vg.grounding_caveat(loc2, qty2, arith2)
         elif not new_files:
             # It read nothing. The scanners are silent because the wording
             # changed, not because anything was checked — so the ORIGINAL
             # claims are named, exactly as unverified as before. The
             # feedback offers "restate as unverified" as a way out, and
             # taking it must not be indistinguishable from verifying.
-            caveat = _vg.grounding_caveat(loc, qty)
+            caveat = _vg.grounding_caveat(loc, qty, arith)
         else:
             caveat = ""
             self._claim_guard_corrected = True
@@ -6204,6 +6286,59 @@ class AgentEngine:
         except Exception:
             return 50.0
 
+    def _open_task_count(self) -> int:
+        """Open (pending / in-progress / blocked) tasks of this session's
+        store; 0 when there is no store or it cannot be read."""
+        try:
+            from delfin.agent.agent_tasks import (
+                OPEN_STATUSES, get_store, resolve_session_scope,
+            )
+            perms = self.kit_permissions
+            if perms is None:
+                return 0
+            tasks = get_store(perms.workspace).list(
+                session_id=resolve_session_scope(
+                    getattr(perms, "task_session_id", "")))
+            return sum(1 for t in tasks or []
+                       if t.get("status") in OPEN_STATUSES)
+        except Exception:
+            return 0
+
+    def _note_turn_continuation(self, answer: str) -> None:
+        """Record one follow-up note when *answer* announces work that it did
+        not do while tasks stay open. Never raises; the latch keeps it to one
+        pending note until the caller calls clear_turn_continuation()."""
+        if not answer or self._continuation_fired:
+            return
+        try:
+            from delfin.agent.turn_continuation import should_continue
+            cont, note = should_continue(answer, self._open_task_count())
+        except Exception:
+            return
+        if cont and note:
+            self._continuation_fired = True
+            self.pending_turn_continuation = note
+
+    def _honour_pause(self) -> bool:
+        """Request a stop when ``delfin-agent pause`` flagged this session.
+        True when it did. Never raises."""
+        if not self.pause_key:
+            return False
+        try:
+            from . import session_pause as _sp
+            if not _sp.pause_gate(self.pause_key):
+                self.request_stop()
+                return True
+        except Exception:
+            pass
+        return False
+
+    def clear_turn_continuation(self) -> None:
+        """Drop the pending note and re-arm the latch. The caller calls this
+        after it has run the follow-up turn (or decided not to)."""
+        self.pending_turn_continuation = ""
+        self._continuation_fired = False
+
     def reset_cycle(
         self,
         mode: str | None = None,
@@ -6777,6 +6912,13 @@ class AgentEngine:
         # never committed. Inject the recovery note using the house
         # user-note + assistant-ack pair (same shape as the compaction
         # summary) so message alternation survives _sanitize_messages.
+        # NOT silent: this read is the only reader of a surviving crash
+        # checkpoint, and swallowing a failure here dropped the note while
+        # the session went on as if the previous turn had ended cleanly.
+        # The loss goes into the restore report (which the CLI prints on an
+        # incomplete restore); the checkpoint file is left in place when it
+        # cannot be consumed, so the evidence is not deleted unread.
+        _note_failed = ""
         try:
             from . import session_store as _ss_ckpt
             _note = _ss_ckpt.consume_crash_recovery_note(self.session_id)
@@ -6787,8 +6929,16 @@ class AgentEngine:
                     "content": "Understood. I will verify the workspace "
                                "state before continuing.",
                 })
-        except Exception:
-            pass
+        except Exception as _note_exc:
+            _note_failed = f"recovery note ({type(_note_exc).__name__})"
+        if _note_failed:
+            report = AgentEngine.RestoreReport(
+                schema_version=report.schema_version,
+                restored=report.restored,
+                missing=report.missing,
+                failed=report.failed + (_note_failed,),
+                migrations=report.migrations,
+            )
         self.last_restore_report = report
         return report
 

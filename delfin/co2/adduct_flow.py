@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+adduct_flow.py — automatic CO2 coordination chain.
+
+Orchestrates the steps that follow CO2 placement:
+
+1. Read the placement geometry (complex + CO2) produced by
+   ``place_co2_general`` in CO2_Coordinator6.
+2. Optional GFN2-xTB pre-optimization (gated behind CONTROL key
+   ``run_xtb``; off by default so tests never execute ORCA).
+3. Coordination test: metal-substrate distance vs ``coord_max_dist``.
+4. Prepare (but do NOT execute) an OCCUPIER-ready job directory.
+5. Optional automatic OCCUPIER pass (``run_occupier``).
+6. Optional automatic inverse RSS dissociation scan (``scan_dissoc``).
+7. Write ``adduct_flow_result.json`` with the outcome.
+"""
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import shutil
+import subprocess
+from typing import Any, Dict, Optional
+
+import numpy as np
+from ase.io import read
+
+from delfin.co2 import CO2_Coordinator6 as _coord
+
+
+def _read_control(coordinator_outdir: str) -> Dict[str, Any]:
+    """Read CONTROL.txt from the coordinator output directory."""
+    return _coord._minimal_read_control_file(os.path.join(coordinator_outdir, "CONTROL.txt"))
+
+
+def _xtb_keywords(control: Dict[str, Any]) -> str:
+    """Build the GFN2-xTB OPT keyword line, adding solvent if requested.
+
+    ORCA's xTB interface only implements ALPB, ddCOSMO and CPCMX; CPCM or
+    SMD with a GFN2-XTB job abort in main_input_check ("Skipping actual
+    calculation ... aborting the run" — calc 81-105_87_sub_irss, job
+    7421995). Any other solvation model is therefore remapped to ALPB.
+    """
+    config = {
+        "functional": "GFN2-XTB",
+        # reuse the coordinator's keyword builder
+        "scan_job": _coord._clean_str(control.get("scan_job"), "OPT") or "OPT",
+        "solvent": _coord._clean_str(control.get("solvent")),
+    }
+    model = _coord._clean_str(control.get("implicit_solvation_model"), "ALPB").upper()
+    if model not in ("ALPB", "DDCOSMO", "CPCMX"):
+        print(f"[adduct_flow] implicit_solvation_model={model} is not implemented "
+              "for xTB (ORCA supports ALPB/ddCOSMO/CPCMX) — using ALPB instead.")
+        model = "ALPB"
+    config["implicit_solvation_model"] = model
+    return _coord.build_orca_keywords(config, config["scan_job"])
+
+
+def _run_xtb_preopt(atoms, xyz_path: str, control: Dict[str, Any], workdir: str) -> Optional[str]:
+    """Run a GFN2-XTB OPT job via ORCA and return the optimized xyz path.
+
+    Returns None if the ORCA run fails to produce an output geometry.
+    """
+    outdir = os.path.join(workdir, "xtb_preopt")
+    os.makedirs(outdir, exist_ok=True)
+    inp = os.path.join(outdir, "adduct_xtb_opt.inp")
+    keywords = _xtb_keywords(control)
+    charge = int(control.get("charge", -2))
+    multiplicity = int(control.get("multiplicity", 1))
+    pal = int(control.get("PAL", 4))
+    maxcore = int(control.get("maxcore", 2000))
+
+    lines = [f"! {keywords}\n",
+             f"%maxcore {maxcore}\n",
+             f"%pal nprocs {pal} end\n",
+             f"* xyz {charge} {multiplicity}\n"]
+    for atom in atoms:
+        x, y, z = atom.position
+        lines.append(f"  {atom.symbol:<3} {x:>14.8f} {y:>14.8f} {z:>14.8f}\n")
+    lines.append("*\n")
+    with open(inp, "w", newline="\n") as f:
+        f.write("".join(lines))
+
+    # Keep the existing subprocess pattern from CO2_Coordinator6.
+    orca_path = shutil.which("orca")
+    if orca_path is None:
+        print("[adduct_flow][WARN] ORCA not found in $PATH — using placement geometry.")
+        return None
+    out = os.path.join(outdir, "adduct_xtb_opt.out")
+    with open(out, "w") as f:
+        subprocess.run([orca_path, os.path.basename(inp)], cwd=outdir,
+                       stdout=f, stderr=subprocess.STDOUT, check=False)
+
+    opt_path = os.path.join(outdir, "adduct_xtb_opt.xyz")
+    try:
+        atoms_opt = read(out)  # ASE reads the last frame of an ORCA output
+        from ase.io import write as ase_write
+        ase_write(opt_path, atoms_opt)
+        return opt_path
+    except Exception as exc:
+        print(f"[adduct_flow][WARN] Could not parse xTB output ({exc}) — using placement geometry.")
+        return None
+
+
+def _int_or_default(value, default: int) -> int:
+    """Cast to int, falling back to the default for blanks/placeholders."""
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip() and "[" not in value:
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    return default
+
+
+def _prepare_occupier_job(workdir: str, xyz_path: str, control: Dict[str, Any]) -> str:
+    """Write a small OCCUPIER-ready job directory (no execution)."""
+    job_dir = os.path.join(workdir, "occupier_job")
+    os.makedirs(job_dir, exist_ok=True)
+    shutil.copy(xyz_path, os.path.join(job_dir, "input.xyz"))
+
+    charge = _int_or_default(control.get("charge"), -2)
+    multiplicity = _int_or_default(control.get("multiplicity"), 1)
+    broken_sym = _coord._clean_str(control.get("broken_sym"))
+    functional = _coord._clean_str(control.get("functional"), "PBE0") or "PBE0"
+    basis = _coord._clean_str(control.get("main_basisset"), "def2-SVP") or "def2-SVP"
+    solvent = _coord._clean_str(control.get("solvent"))
+    pal = _coord._clean_str(control.get("PAL"), "4") or "4"
+    maxcore = _coord._clean_str(control.get("maxcore"), "3800") or "3800"
+
+    # OCCUPIER's preparation (copy_helpers._prepare_run_folder) reads
+    # input.txt as a BARE coordinate file: it counts coordinate lines and
+    # writes '{count}\n\n{coords}' as input0.xyz/input.xyz. A species
+    # pointer ('input.xyz\n') turns that header into
+    # "invalid literal for int() with base 10: 'input.xyz'" and the FoB
+    # jobs fail with 'No atoms parsed from XYZ file input0.xyz'
+    # (calc 81-105_87_sub_irss, job 7453274). So input.txt must hold the
+    # coordinates themselves.
+    with open(xyz_path, "r") as f:
+        xyz_lines = f.readlines()
+    # Drop the standard xyz count + comment header if present.
+    if xyz_lines and xyz_lines[0].strip().isdigit():
+        xyz_lines = xyz_lines[2:]
+    with open(os.path.join(job_dir, "input.txt"), "w", newline="\n") as f:
+        f.writelines(xyz_lines)
+
+    with open(os.path.join(job_dir, "CONTROL.txt"), "w", newline="\n") as f:
+        f.write(
+            "# OCCUPIER job for the CO2 adduct (prepared by adduct_flow, NOT executed)\n"
+            "------------------------------------\n"
+            f"charge={charge}\n"
+            f"multiplicity={multiplicity}\n"
+            f"broken_sym={broken_sym}\n"
+            "method=OCCUPIER\n"
+            f"functional={functional}\n"
+            f"basis={basis}\n"
+            f"solvent={solvent}\n"
+            f"PAL={pal}\n"
+            f"maxcore={maxcore}\n"
+            "enable_auto_recovery=yes\n"
+            "max_recovery_attempts=3\n"
+        )
+
+    with open(os.path.join(job_dir, "README.md"), "w", newline="\n") as f:
+        f.write(
+            "# OCCUPIER job (CO2 adduct)\n\n"
+            "This directory was prepared automatically by `delfin/co2/adduct_flow.py`.\n"
+            "It is NOT executed by the flow; run OCCUPIER manually on this directory.\n\n"
+            "- `input.xyz`: adduct geometry (xTB-optimized if `run_xtb=yes`, otherwise\n"
+            "  the placement geometry).\n"
+            "- `input.txt`: species pointer to `input.xyz`.\n"
+            "- `CONTROL.txt`: charge/multiplicity/broken-symmetry and level-of-theory\n"
+            "  settings forwarded from the CO2 coordinator CONTROL.txt, with\n"
+            "  `method=OCCUPIER` and auto-recovery enabled (3 attempts).\n"
+        )
+    return job_dir
+
+
+def _run_occupier_pass(job_dir: str) -> Dict[str, Any]:
+    """Execute the prepared OCCUPIER job via the DELFIN pipeline (api.run).
+
+    The job dir contains a CONTROL.txt with method=OCCUPIER and recovery
+    keys, so the pass runs in the full DELFIN style (retries, logging).
+    Returns a status dict; never raises — failures land in the result JSON.
+    """
+    out: Dict[str, Any] = {"status": None, "job_dir": job_dir}
+    try:
+        from delfin import api
+        cwd = os.getcwd()
+        os.chdir(job_dir)
+        try:
+            exit_code = api.run(control_file=os.path.join(job_dir, "CONTROL.txt"))
+        finally:
+            os.chdir(cwd)
+        out["exit_code"] = exit_code
+        if exit_code != 0:
+            out["status"] = "failed"
+            out["error"] = f"pipeline exit code {exit_code}"
+            return out
+        # Locate the optimized geometry of the preferred state: the OCCUPIER
+        # pipeline writes <base>_OCCUPIER folders; take the newest xyz inside.
+        opt = _find_latest_optimized_xyz(job_dir)
+        if opt is None:
+            out["status"] = "failed"
+            out["error"] = "no optimized geometry found after OCCUPIER pass"
+            return out
+        out["status"] = "ok"
+        out["optimized_xyz"] = opt
+    except Exception as exc:  # noqa: BLE001 — reported into the result JSON
+        out["status"] = "error"
+        out["error"] = str(exc)
+    return out
+
+
+def _find_latest_optimized_xyz(job_dir: str) -> Optional[str]:
+    """Newest *.xyz at or below any *_OCCUPIER result folder of the job dir."""
+    candidates: list = []
+    for root, _dirs, files in os.walk(job_dir):
+        rel = os.path.relpath(root, job_dir)
+        if "_OCCUPIER" not in rel:
+            continue
+        for name in files:
+            if name.endswith(".xyz"):
+                path = os.path.join(root, name)
+                candidates.append((os.path.getmtime(path), path))
+    if not candidates:
+        return None
+    return max(candidates)[1]
+
+
+def _substrate_indices(atoms, control: Dict[str, Any], coordinator_outdir: str) -> Optional[List[int]]:
+    """Indices of the substrate atoms at the tail of the placement geometry.
+
+    ``place_co2_general`` appends the substrate after the complex, so the
+    tail of the geometry IS the substrate. The tail is matched against the
+    substrate xyz file given as ``co2=`` in the CONTROL: when the last
+    n_substrate atoms have exactly the substrate's element sequence, those
+    indices are returned; otherwise None (caller falls back to searching
+    the whole geometry).
+    """
+    substrate_path = _coord._clean_str(control.get("co2")) or "co2.xyz"
+    if not os.path.isabs(substrate_path):
+        substrate_path = os.path.join(coordinator_outdir, substrate_path)
+    try:
+        substrate_atoms = _coord._read_xyz_robust(substrate_path)
+    except Exception:
+        return None
+    n_sub = len(substrate_atoms)
+    if n_sub == 0 or n_sub > len(atoms):
+        return None
+    sub_seq = [a.symbol for a in substrate_atoms]
+    tail_seq = [a.symbol for a in atoms[len(atoms) - n_sub:]]
+    if tail_seq == sub_seq:
+        return list(range(len(atoms) - n_sub, len(atoms)))
+    return None
+
+
+def run_adduct_flow(coordinator_outdir: str, workdir: Optional[str] = None) -> Dict[str, Any]:
+    """Run the automatic CO2 adduct chain.
+
+    Returns the result dict also written to ``adduct_flow_result.json``
+    in *workdir* (default: *coordinator_outdir*).
+    """
+    if workdir is None:
+        workdir = coordinator_outdir
+    control = _read_control(coordinator_outdir)
+
+    # a) placement geometry
+    start_xyz = control.get("adduct_start_xyz") or "complex_aligned_with_CO2.xyz"
+    if not os.path.isabs(start_xyz):
+        start_xyz = os.path.join(coordinator_outdir, start_xyz)
+    if not os.path.exists(start_xyz):
+        raise FileNotFoundError(f"[adduct_flow] placement geometry not found: {start_xyz}")
+    atoms = _coord._read_xyz_robust(start_xyz)
+
+    # b) optional GFN2-xTB pre-optimization (gated; default off)
+    run_xtb = _coord._is_enabled(control.get("run_xtb", False))
+    current_xyz = start_xyz
+    if run_xtb:
+        opt = _run_xtb_preopt(atoms, start_xyz, control, workdir)
+        if opt is not None:
+            current_xyz = opt
+            atoms = _coord._read_xyz_robust(current_xyz)
+    else:
+        print("[adduct_flow] run_xtb=false — skipping xTB step (dry run)")
+
+    # c) coordination test: metal vs substrate anchor atom
+    metal_idx = _coord.detect_metal_index(atoms)
+    substrate_symbol = _coord._clean_str(control.get("substrate_atom"))
+    substrate_idx_raw = control.get("substrate_atom_index")
+    allowed = _substrate_indices(atoms, control, coordinator_outdir)
+    substrate_idx = _coord._resolve_substrate_anchor(
+        atoms, metal_idx, substrate_symbol, substrate_idx_raw, source=current_xyz,
+        allowed_indices=allowed)
+    distance = float(np.linalg.norm(atoms.positions[metal_idx] - atoms.positions[substrate_idx]))
+
+    coord_max_dist = _coord._parse_float(control.get("coord_max_dist"), 3.0)
+
+    result: Dict[str, Any] = {
+        "status": None,
+        "metal_substrate_distance_A": round(distance, 3),
+        "xtb_run": run_xtb,
+        "occupier_job_path": None,
+        "timestamp": datetime.datetime.now().isoformat(),
+    }
+
+    if distance > coord_max_dist:
+        print(f"[adduct_flow] No coordination: metal-substrate distance {distance:.3f} A "
+              f"exceeds coord_max_dist {coord_max_dist:.1f} A")
+        result["status"] = "no_coordination"
+    else:
+        print(f"[adduct_flow] Coordination detected: metal-substrate distance "
+              f"{distance:.3f} A <= coord_max_dist {coord_max_dist:.1f} A")
+        # d) prepare OCCUPIER job
+        job_dir = _prepare_occupier_job(workdir, current_xyz, control)
+        result["status"] = "coordinated"
+        result["occupier_job_path"] = job_dir
+        print(f"[adduct_flow] OCCUPIER job prepared at: {job_dir}")
+
+        # e) optional automatic OCCUPIER pass (full DELFIN pipeline style,
+        #    including recovery, via delfin.api.run with method=OCCUPIER)
+        if _coord._is_enabled(control.get("run_occupier", False)):
+            print("[adduct_flow] run_occupier=true — starting OCCUPIER pass")
+            occ_result = _run_occupier_pass(job_dir)
+            result["occupier_run"] = occ_result
+            if occ_result["status"] != "ok":
+                print(f"[adduct_flow] OCCUPIER pass failed: {occ_result.get('error', 'unknown')}")
+            else:
+                result["occupier_opt_xyz"] = occ_result.get("optimized_xyz")
+
+        # f) optional automatic inverse RSS (dissociation scan from optimized adduct)
+        if _coord._is_enabled(control.get("scan_dissoc", False)):
+            print("[adduct_flow] scan_dissoc=true — starting inverse RSS dissociation scan")
+            scan_xyz = result.get("occupier_opt_xyz") or current_xyz
+            scan_atoms = _coord._read_xyz_robust(scan_xyz)
+            # Restrict the anchor search to the substrate tail, else the
+            # complex's own C ligands shadow the substrate C (calc
+            # 81-105_87_sub_irss: 9 C ligands, the substrate C was idx 42).
+            scan_allowed = _substrate_indices(scan_atoms, control, coordinator_outdir)
+            try:
+                rss_result = _coord.run_inverse_rss_scan(
+                    scan_atoms, scan_xyz, control, workdir=workdir,
+                    allowed_indices=scan_allowed)
+                result["inverse_rss"] = rss_result
+                print(f"[adduct_flow] Inverse RSS scan finished: status={rss_result.get('status')}")
+            except Exception as exc:
+                print(f"[adduct_flow][WARN] Inverse RSS scan failed: {exc}")
+                result["inverse_rss"] = {"status": "error", "error": str(exc)}
+
+    # g) result JSON
+    result_path = os.path.join(workdir, "adduct_flow_result.json")
+    with open(result_path, "w", newline="\n") as f:
+        json.dump(result, f, indent=2)
+    print(f"[adduct_flow] Result written to {result_path}: status={result['status']}")
+    return result

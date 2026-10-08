@@ -80,7 +80,27 @@ def _check_termination(content: str) -> list[Critique]:
             "SCF did not converge — the wavefunction is not valid; do NOT "
             "trust energies/properties. Investigate the method, not the "
             "convergence thresholds."))
+    elif _has_soft_scf_warning(content):
+        out.append(Critique(
+            "warn", "scf-not-fully-converged",
+            "SCF did not fully converge (soft warning in the output) — the "
+            "run may still report itself green; treat energies/properties "
+            "with caution. Loosening convergence thresholds is not the fix; "
+            "reconsider the method or SCF settings."))
     return out
+
+
+def _has_soft_scf_warning(content: str) -> bool:
+    """A soft SCF-convergence warning, in DELFIN's own wording.
+
+    Reuses the phrasing delfin/api.py:516 already classifies as an
+    SCF-convergence failure ("SCF iterations did not converge") — no new
+    vocabulary of our own. Excludes the hard failure already handled
+    above; ORCA never prints both for the same SCF block, and when it
+    does the hard error wins.
+    """
+    return ("SCF iterations did not converge" in content
+            or "The SCF procedure does not converge" in content)
 
 
 def _check_geometry(content: str, kinds: set[str]) -> list[Critique]:
@@ -90,8 +110,19 @@ def _check_geometry(content: str, kinds: set[str]) -> list[Critique]:
     converged = ("the optimization has converged" in low
                  or "optimization converged" in low or "hurray" in low)
     if converged:
-        return [Critique("ok", "geom-converged",
-                         "Geometry optimization converged.")]
+        findings = [Critique("ok", "geom-converged",
+                             "Geometry optimization converged.")]
+        # Wave-10/s1: a converged optimization WITHOUT a frequency
+        # calculation has not confirmed its structure to be a minimum.
+        # The freq check below only runs when a freq block exists, so
+        # without this the run scored a clean 'ok' on the geometry.
+        if "freq" not in kinds:
+            findings.append(Critique(
+                "warn", "opt-no-freq",
+                "Optimization converged but no frequencies were computed — "
+                "the structure is not confirmed to be a stationary point "
+                "(minimum). Run a Freq calculation on this geometry."))
+        return findings
     return [Critique(
         "warn", "geom-not-converged",
         "Optimization run detected but no convergence banner found — the "

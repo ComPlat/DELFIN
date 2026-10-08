@@ -1487,6 +1487,11 @@ def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", c
     # Suppress noisy but harmless third-party warnings in the dashboard
     os.environ.setdefault("TORCHANI_NO_WARN_EXTENSIONS", "1")
 
+    # The environment the resolver walks just changed: a cached "not
+    # found" from before this call would hide a freshly installed tool.
+    from delfin.qm_runtime import clear_resolver_cache
+    clear_resolver_cache()
+
 
 @contextmanager
 def temporary_environment(updates: dict[str, str | None]):

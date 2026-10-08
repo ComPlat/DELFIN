@@ -79,3 +79,19 @@ def test_dashboard_isomer_wrapper_passes_deterministic_flag(monkeypatch):
     assert error is None
     assert results == [("C 0.0 0.0 0.0\n", 1, "isomer")]
     assert recorded == [False]
+
+
+def test_is_smiles_string_rejects_species_pointer_filenames():
+    """A filename is not a SMILES (calc 81-105_87_sub_irss, job 7453142).
+
+    The OCCUPIER job's input.txt holds exactly one line "input.xyz". The
+    extension dot read as a SMILES fragment separator and the 'n' in the
+    stem as aromatic, so the run was judged to convert a SMILES and
+    demanded smiles_converter -- the job died before reading geometry.
+    """
+    assert sc.is_smiles_string("input.xyz") is False
+    assert sc.is_smiles_string("complex.xyz") is False
+    assert sc.is_smiles_string("species.txt") is False
+    # real SMILES are still detected
+    assert sc.is_smiles_string("C(=O)=O") is True
+    assert sc.is_smiles_string("c1ccccc1") is True

@@ -112,6 +112,16 @@ place_samples=800
 place_clearance_scale=1.0
 no_place_co2=false
 
+# Adduct flow (automatic coordination chain; see delfin/co2/adduct_flow.py)
+# adduct_flow=true: after placement, run the adduct chain (optional GFN2-xTB
+# preopt -> coordination test -> OCCUPIER job preparation) and exit.
+# run_xtb gates the xTB pre-optimization (default off: no ORCA/xTB executed).
+adduct_flow=false
+adduct_start_xyz=complex_aligned_with_CO2.xyz
+substrate_atom_index=
+coord_max_dist=3.0
+run_xtb=false
+
 # Resources
 ------------------------------------
 PAL=12
@@ -199,6 +209,14 @@ def _minimal_read_control_file(path="CONTROL.txt"):
             if "=" not in line:
                 continue
             key, val = map(str.strip, line.split("=", 1))
+            # Strip inline comments AFTER a value ("dissoc_distance=4.0 # goal").
+            # Only a '#' preceded by whitespace starts a comment: SMILES and
+            # other values use '#' without whitespace (triple bonds C#N).
+            if isinstance(val, str):
+                for sep in (" #", "\t#"):
+                    if sep in val:
+                        val = val.split(sep, 1)[0].rstrip()
+                        break
 
             # Boolean values
             if isinstance(val, str):
@@ -221,14 +239,19 @@ def _minimal_read_control_file(path="CONTROL.txt"):
 
             params[key] = val
 
-    # Explicit type coercion
+    # Explicit type coercion. Placeholder values like "[CHARGE]" (template
+    # not yet filled) must stay strings — a blank or placeholder value is
+    # skipped so the coordinator does not crash on an unfilled template.
+    def _coercible(value):
+        return isinstance(value, str) and value.strip() and "[" not in value
+
     for key in ["distance", "scan_end", "orientation_distance", "place_clearance_scale",
-                "dissoc_distance"]:
-        if key in params and isinstance(params[key], str):
+                "dissoc_distance", "coord_max_dist"]:
+        if key in params and _coercible(params[key]):
             params[key] = float(params[key])
     for key in ["scan_steps", "charge", "multiplicity", "PAL", "maxcore", "rot_step_deg",
-                "rot_range_deg", "place_samples"]:
-        if key in params and isinstance(params[key], str):
+                "rot_range_deg", "place_samples", "substrate_atom_index"]:
+        if key in params and _coercible(params[key]):
             params[key] = int(params[key])
 
     # Optional: replace /n with a line break
@@ -714,14 +737,20 @@ def detect_metal_index(atoms):
     return c[0] if len(c) == 1 else max(c, key=lambda i: atoms[i].number)
 
 def _resolve_substrate_anchor(atoms, metal_idx, substrate_symbol=None,
-                              substrate_index_raw=None, source=""):
-    """Resolve the substrate anchor atom for the dissociation scan.
+                              substrate_index_raw=None, source="",
+                              allowed_indices=None):
+    """Identify the substrate anchor atom index in an adduct geometry.
 
-    Preference: explicit ``substrate_atom_index`` (backward compatible),
-    then ``substrate_atom=<element symbol>`` (nearest atom of that element
-    to the metal). Ambiguity is loud: if several atoms of the element sit
-    within 1 A of the closest one, all candidates are reported instead of
-    silently picking one. Raises ValueError when nothing usable is set.
+    Preference: explicit ``substrate_atom_index`` (0-based, backward
+    compatible), then ``substrate_atom=<element symbol>`` (nearest atom of
+    that element to the metal). Ambiguity is loud: if several atoms of the
+    element sit within 1 A of the closest one, all candidates are reported
+    instead of silently picking one. Raises ValueError when nothing usable
+    is set.
+
+    ``allowed_indices`` restricts the element-symbol search to a subset of
+    the structure (e.g. the tail of a placement geometry). Without it the
+    closest atom of the element anywhere in the adduct is used.
     """
     raw = None if substrate_index_raw is None else str(substrate_index_raw).strip()
     if raw:
@@ -740,9 +769,11 @@ def _resolve_substrate_anchor(atoms, metal_idx, substrate_symbol=None,
         return idx
     if substrate_symbol:
         sym = substrate_symbol.strip()
+        allowed = set(allowed_indices) if allowed_indices is not None else None
         candidates = [i for i, a in enumerate(atoms)
                       if a.symbol.capitalize() == sym.capitalize()
-                      and i != metal_idx]
+                      and i != metal_idx
+                      and (allowed is None or i in allowed)]
         if not candidates:
             raise ValueError(
                 f"substrate_atom={sym}: no {sym} atom found in '{source}' "
@@ -840,12 +871,23 @@ def _co2_axis_center_indices(atoms):
     syms = atoms.get_chemical_symbols()
     c = [i for i, s in enumerate(syms) if s == "C"]
     o = [i for i, s in enumerate(syms) if s == "O"]
-    if len(c) != 1 or len(o) != 2:
-        raise ValueError("CO2 muss 1 C und 2 O enthalten.")
-    axis = atoms.positions[o[0]] - atoms.positions[o[1]]
-    axis /= np.linalg.norm(axis)
-    center = atoms.positions[c[0]]
-    return axis, center, c[0]
+    if len(c) == 1 and len(o) == 2:
+        axis = atoms.positions[o[0]] - atoms.positions[o[1]]
+        n = np.linalg.norm(axis)
+        axis = axis / n if n > 1e-9 else np.array([0.0, 0.0, 1.0])
+        center = atoms.positions[c[0]]
+        return axis, center, c[0]
+    # General substrate fallback (e.g. CO, N2, NH3)
+    pos = atoms.positions
+    center = pos.mean(axis=0) if len(pos) > 0 else np.zeros(3)
+    if len(pos) >= 2:
+        diff = pos[1] - pos[0]
+        n = np.linalg.norm(diff)
+        axis = diff / n if n > 1e-9 else np.array([0.0, 0.0, 1.0])
+    else:
+        axis = np.array([0.0, 0.0, 1.0])
+    c_idx = c[0] if c else 0
+    return axis, center, c_idx
 
 def _fibonacci_sphere(n_samples):
     """
@@ -1635,6 +1677,116 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
     print(f"[OK] Best orientation: {best_angle}°")
     return best_xyz, best_angle, best_energy
 
+
+# === Inverse RSS Runner ===
+def run_inverse_rss_scan(atoms_adduct, adduct_xyz, args, workdir=None,
+                         allowed_indices=None):
+    """Run the inverse RSS (dissociation scan) from an optimised adduct.
+
+    Calculates r0 (metal to substrate anchor) and scans outward to
+    dissoc_distance in scan_steps steps using write_orca_input_and_run.
+    Returns a dict with scan metadata (start_distance, end_distance, steps, etc.).
+    ``allowed_indices`` optionally restricts the substrate-anchor search
+    (e.g. to the substrate tail of the placement geometry — the cobalt
+    complex of calc 81-105_87_sub_irss has 9 C ligands near the metal).
+    """
+    cwd = None
+    if workdir:
+        cwd = os.getcwd()
+        os.chdir(workdir)
+    try:
+        metal_idx = detect_metal_index(atoms_adduct)
+        if metal_idx is None:
+            raise ValueError(f"No metal atom found in adduct_xyz '{adduct_xyz}'.")
+        substrate_idx_raw = args.get("substrate_atom_index")
+        substrate_symbol = _clean_str(args.get("substrate_atom"))
+        co2_c_idx = _resolve_substrate_anchor(
+            atoms_adduct, metal_idx, substrate_symbol, substrate_idx_raw,
+            source=adduct_xyz, allowed_indices=allowed_indices)
+        qm_atom_count = len(atoms_adduct)
+        co2_indices = [co2_c_idx]
+        qmmm_range = (0, qm_atom_count - 1)
+        start_distance = float(np.linalg.norm(
+            atoms_adduct.positions[metal_idx] - atoms_adduct.positions[co2_c_idx]
+        ))
+        dissoc_distance = float(args.get("dissoc_distance", 6.0))
+        scan_steps = int(args.get("scan_steps", 25))
+        print(f"[INFO] Inverse RSS: adduct r0 (M–substrate) = {start_distance:.3f} A, "
+              f"scanning outward to {dissoc_distance} A in {scan_steps} steps.")
+        if dissoc_distance <= start_distance:
+            print(f"[WARN] dissoc_distance ({dissoc_distance} A) <= r0 "
+                  f"({start_distance:.3f} A) — scan will move inward, not dissociate.")
+
+        scan_job = args.get("scan_job", "OPT")
+        scan_orca_keywords = build_orca_keywords(args, scan_job)
+        if "orca_keywords" in args:
+            custom_scan = args.get("orca_keywords")
+            if _clean_str(custom_scan):
+                scan_orca_keywords = custom_scan
+        if not scan_orca_keywords:
+            raise ValueError("Keine gültigen ORCA-Schlüsselwörter für den Distanzscan gefunden. Bitte CONTROL-Einträge prüfen.")
+
+        broken_sym_raw = args.get("broken_sym", "")
+        metal_symbol = args.get("metal")
+        if not metal_symbol or str(metal_symbol).lower() in {"auto", "[metal]"}:
+            metal_symbol = atoms_adduct[metal_idx].symbol
+        if isinstance(broken_sym_raw, str) and metal_symbol:
+            broken_sym = broken_sym_raw.replace("[METAL]", metal_symbol)
+        else:
+            broken_sym = broken_sym_raw or ""
+
+        metal_basis = _clean_str(args.get("metal_basisset", "def2-TZVP")) or "def2-TZVP"
+
+        def _int_or_default(val, default):
+            if val is None:
+                return default
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return default
+
+        charge = _int_or_default(args.get("charge"), -2)
+        multiplicity = _int_or_default(args.get("multiplicity"), 1)
+        PAL = _int_or_default(args.get("PAL"), 32)
+        maxcore = _int_or_default(args.get("maxcore"), 3800)
+
+        write_orca_input_and_run(
+            atoms_adduct,
+            adduct_xyz,
+            metal_idx,
+            co2_c_idx,
+            start_distance=start_distance,
+            end_distance=float(dissoc_distance),
+            steps=int(scan_steps),
+            orca_keywords=scan_orca_keywords,
+            broken_sym=broken_sym,
+            charge=charge,
+            multiplicity=multiplicity,
+            PAL=PAL,
+            maxcore=maxcore,
+            metal_symbol=metal_symbol,
+            metal_basis=metal_basis,
+            control_args=args,
+            qmmm_range=qmmm_range,
+            co2_indices=co2_indices,
+        )
+        scan_dat = os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat")
+        if os.path.exists(scan_dat):
+            plot_scan_result(scan_dat)
+        return {
+            "status": "ok",
+            "start_distance": start_distance,
+            "end_distance": dissoc_distance,
+            "steps": scan_steps,
+            "metal_index": metal_idx,
+            "anchor_index": co2_c_idx,
+            "scan_dir": os.path.abspath("relaxed_surface_scan"),
+        }
+    finally:
+        if cwd:
+            os.chdir(cwd)
+
+
 # === Main ===
 def main():
     args = _minimal_read_control_file()
@@ -1675,7 +1827,7 @@ def main():
         return value
 
     # Orientation at fixed distance (defaults to 5.0 Å)
-    orientation_distance = args.get("orientation_distance", 5.0)
+    orientation_distance = args.get("orientation_distance", 2.0)
     rot_step_deg = args.get("rot_step_deg", 10)     # 0,10,20,...,180
     rot_range_deg = args.get("rot_range_deg", 180)
 
@@ -1740,13 +1892,16 @@ def main():
         raise ValueError(f"adduct_source must be 'xyz' or 'manta', got {adduct_source!r}")
     manta_smiles = _clean_str(args.get("manta_smiles"))
     run_occupier_on_adduct = _is_enabled(args.get("run_occupier_on_adduct", False))
+    adduct_flow = _is_enabled(args.get("adduct_flow", False))
     if scan_dissoc:
         if adduct_source == "xyz":
-            if not adduct_xyz:
-                raise ValueError("scan_dissoc=true requires adduct_xyz (path to the pre-optimised adduct geometry).")
-            if not os.path.exists(adduct_xyz):
-                raise FileNotFoundError(f"adduct_xyz not found: {adduct_xyz}")
-        else:  # manta
+            if not adduct_flow:
+                if not adduct_xyz:
+                    raise ValueError("scan_dissoc=true requires adduct_xyz (path to the pre-optimised adduct geometry), "
+                                     "or adduct_flow=true so the automatic chain produces one.")
+                if not os.path.exists(adduct_xyz):
+                    raise FileNotFoundError(f"adduct_xyz not found: {adduct_xyz}")
+        else:  # generator (manta/...)
             if not manta_smiles:
                 raise ValueError("adduct_source=manta requires manta_smiles (SMILES of the full complex).")
             atoms_adduct, adduct_xyz = _manta_adduct_geometry(manta_smiles, adduct_xyz)
@@ -1764,61 +1919,75 @@ def main():
     # already IS the quantum-chemically optimised binding situation, so the
     # scan simply walks outward from its M–substrate distance r0 to
     # dissoc_distance. No orientation freedom, no jumps between scan points.
+    scan_completed = False
     if scan_dissoc:
-        atoms_adduct = _read_xyz_robust(adduct_xyz)  # (manta path: re-reads the file written above; cheap and keeps a single code path)
-        metal_idx = detect_metal_index(atoms_adduct)
-        if metal_idx is None:
-            raise ValueError(f"No metal atom found in adduct_xyz '{adduct_xyz}'.")
-        substrate_idx_raw = args.get("substrate_atom_index")
-        substrate_symbol = _clean_str(args.get("substrate_atom"))
-        co2_c_idx = _resolve_substrate_anchor(
-            atoms_adduct, metal_idx, substrate_symbol, substrate_idx_raw,
-            source=adduct_xyz)
-        qm_atom_count = len(atoms_adduct)
-        co2_indices = [co2_c_idx]
-        qmmm_range = (0, qm_atom_count - 1)
-        start_distance = float(np.linalg.norm(
-            atoms_adduct.positions[metal_idx] - atoms_adduct.positions[co2_c_idx]
-        ))
-        print(f"[INFO] Inverse RSS: adduct r0 (M–substrate) = {start_distance:.3f} A, "
-              f"scanning outward to {dissoc_distance} A in {scan_steps} steps.")
-        if dissoc_distance <= start_distance:
-            print(f"[WARN] dissoc_distance ({dissoc_distance} A) <= r0 "
-                  f"({start_distance:.3f} A) — scan will move inward, not dissociate.")
+        if adduct_source == "xyz" and not adduct_flow:
+            # substrate engine: direct mode scans via run_inverse_rss_scan.
+            atoms_adduct = _read_xyz_robust(adduct_xyz)
+            run_inverse_rss_scan(atoms_adduct, adduct_xyz, args)
+            scan_completed = True
+        elif adduct_source == "manta":
+            # generator engine (adduct_source=manta/...): the adduct was
+            # produced by the chosen structure generator. Re-read the written
+            # file (cheap, single code path), run the opt-in OCCUPIER pass,
+            # then the in-place dissociation scan.
+            atoms_adduct = _read_xyz_robust(adduct_xyz)
+            metal_idx = detect_metal_index(atoms_adduct)
+            if metal_idx is None:
+                raise ValueError(f"No metal atom found in adduct_xyz '{adduct_xyz}'.")
+            substrate_idx_raw = args.get("substrate_atom_index")
+            substrate_symbol = _clean_str(args.get("substrate_atom"))
+            co2_c_idx = _resolve_substrate_anchor(
+                atoms_adduct, metal_idx, substrate_symbol, substrate_idx_raw,
+                source=adduct_xyz)
+            qm_atom_count = len(atoms_adduct)
+            co2_indices = [co2_c_idx]
+            qmmm_range = (0, qm_atom_count - 1)
+            start_distance = float(np.linalg.norm(
+                atoms_adduct.positions[metal_idx] - atoms_adduct.positions[co2_c_idx]
+            ))
+            print(f"[INFO] Inverse RSS: adduct r0 (M–substrate) = {start_distance:.3f} A, "
+                  f"scanning outward to {dissoc_distance} A in {scan_steps} steps.")
+            if dissoc_distance <= start_distance:
+                print(f"[WARN] dissoc_distance ({dissoc_distance} A) <= r0 "
+                      f"({start_distance:.3f} A) — scan will move inward, not dissociate.")
 
-        # MANTA -> OCCUPIER -> scan: run the OCCUPIER input writer on the best
-        # MANTA structure so the scan starts from an occupier-prepared input
-        # (per-atom NewGTO, charge/mult, solvent, PAL/maxcore).
-        if run_occupier_on_adduct:
+            # MANTA -> OCCUPIER -> scan: run the OCCUPIER input writer on the
+            # best generated structure so the scan starts from an occupier
+            # prepared input (per-atom NewGTO, charge/mult, solvent, PAL/maxcore).
+            if run_occupier_on_adduct:
+                metal_symbol_scan = metal_symbol or atoms_adduct[metal_idx].symbol
+                occ_inp = _run_occupier_on_adduct(
+                    atoms_adduct, adduct_xyz, metal_symbol_scan,
+                    charge, multiplicity, broken_sym, args,
+                )
+                print(f"[INFO] OCCUPIER pass on the generated adduct wrote {occ_inp}.")
+
             metal_symbol_scan = metal_symbol or atoms_adduct[metal_idx].symbol
-            occ_inp = _run_occupier_on_adduct(
-                atoms_adduct, adduct_xyz, metal_symbol_scan,
-                charge, multiplicity, broken_sym, args,
+            write_orca_input_and_run(
+                atoms_adduct,
+                adduct_xyz,
+                metal_idx,
+                co2_c_idx,
+                start_distance=start_distance,
+                end_distance=float(dissoc_distance),
+                steps=int(scan_steps),
+                orca_keywords=scan_orca_keywords,
+                broken_sym=broken_sym,
+                charge=charge,
+                multiplicity=multiplicity,
+                PAL=PAL,
+                maxcore=maxcore,
+                metal_symbol=metal_symbol_scan,
+                metal_basis=metal_basis,
+                control_args=args,
+                qmmm_range=qmmm_range,
+                co2_indices=co2_indices,
             )
-            print(f"[INFO] OCCUPIER pass on the MANTA adduct wrote {occ_inp}.")
+            plot_scan_result(os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat"))
+            scan_completed = True
 
-        metal_symbol_scan = metal_symbol or atoms_adduct[metal_idx].symbol
-        write_orca_input_and_run(
-            atoms_adduct,
-            adduct_xyz,
-            metal_idx,
-            co2_c_idx,
-            start_distance=start_distance,
-            end_distance=float(dissoc_distance),
-            steps=int(scan_steps),
-            orca_keywords=scan_orca_keywords,
-            broken_sym=broken_sym,
-            charge=charge,
-            multiplicity=multiplicity,
-            PAL=PAL,
-            maxcore=maxcore,
-            metal_symbol=metal_symbol_scan,
-            metal_basis=metal_basis,
-            control_args=args,
-            qmmm_range=qmmm_range,
-            co2_indices=co2_indices,
-        )
-        plot_scan_result(os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat"))
+    if scan_completed:
         return
 
     # --- 1) Align complex ---
@@ -1848,6 +2017,18 @@ def main():
         qm_separator=qm_separator
     )
     qmmm_range = (0, qm_atom_count - 1) if qm_atom_count is not None else None
+
+    # --- 2b) Adduct flow: automatic coordination chain (optional) ---
+    # When enabled, the flow (optional GFN2-xTB preopt -> coordination test
+    # -> OCCUPIER job preparation) replaces the orientation/distance scans.
+    # The chain reads its own settings from the coordinator CONTROL.txt
+    # (adduct_start_xyz defaults to the placement geometry written above).
+    if _is_enabled(args.get("adduct_flow", False)):
+        from delfin.co2.adduct_flow import run_adduct_flow
+        control_dir = os.path.dirname(os.path.abspath("CONTROL.txt")) or "."
+        result = run_adduct_flow(control_dir, workdir=control_dir)
+        print(f"[INFO] Adduct flow finished with status: {result['status']}")
+        return
 
     # --- 3) Orientation scan at fixed distance (optional) ---
     orientation_flag = args.get("perform_orientation_scan")

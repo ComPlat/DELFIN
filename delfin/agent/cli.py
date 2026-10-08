@@ -545,62 +545,80 @@ def cmd_run(args: argparse.Namespace) -> int:
     out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096,
                     **_emit)
     sid = _save_session(engine, repo)
+
+    def _session_end_stage(name: str, fn) -> None:
+        """One best-effort session-end stage, said when it fails.
+
+        Best-effort stays right — a report write must never break the
+        answer's exit code — but a stage that fails on EVERY scheduled
+        unattended run vanished silently here: the run printed its
+        answer and the failure was indistinguishable from a stage that
+        did its job. The warning is the same shape as the save-failure
+        line above.
+        """
+        try:
+            fn()
+        except Exception as exc:
+            print(f"WARN: session-end stage {name} failed: {exc}",
+                  file=sys.stderr)
+
     # Session report: best-effort Markdown write; never breaks exit.
-    try:
+    def _report_stage(sid_, engine_):
         from .session_report import write_session_report
-        write_session_report(sid or getattr(engine, "session_id", ""))
-    except Exception:
-        pass
-    # Shared session-end stage: skill learning, same hook as the CLI
-    # chat and the dashboard. Best-effort; never breaks the run.
-    try:
+        write_session_report(sid_ or getattr(engine_, "session_id", ""))
+
+    def _learn_stage(engine_, sid_):
         from .session_end import learn_at_session_end
         learn_at_session_end(
-            _display_messages(engine),
-            session_id=str(sid or getattr(engine, "session_id", "") or ""))
-    except Exception:
-        pass
-    # Session-end stage (Paket 5): the ended session becomes searchable.
-    # Own try/except like the learning stage; never breaks the run.
-    try:
+            _display_messages(engine_),
+            session_id=str(sid_ or getattr(engine_, "session_id", "") or ""))
+
+    def _index_stage(sid_):
         from .session_end import index_at_session_end
-        index_at_session_end(
-            str(sid or getattr(engine, "session_id", "") or ""))
-    except Exception:
-        pass
+        index_at_session_end(str(sid_ or ""))
+
+    def _episode_stage(engine_, sid_, repo_, out_):
+        from .episodes import build_episode_from_state, save_episode
+        fields = build_episode_from_state(engine_.export_state(), [])
+        save_episode(
+            sid_,
+            repo_root=repo_,
+            verdict="FAIL" if out_["error"] else "PASS",
+            **fields,
+        )
+
+    def _eval_stage():
+        from .eval_loop import maybe_run_scheduled
+        maybe_run_scheduled()
+
+    _session_end_stage("report", lambda: _report_stage(sid, engine))
+    # Shared session-end stage: skill learning, same hook as the CLI
+    # chat and the dashboard. Best-effort; never breaks the run.
+    _session_end_stage("skill learning", lambda: _learn_stage(engine, sid))
+    # Session-end stage (Paket 5): the ended session becomes searchable.
+    _session_end_stage("indexing", lambda: _index_stage(sid))
 
     # Learning signal: record the outcome so provider profiles learn from
     # CLI/headless usage too — previously only dashboard cycles fed the
     # profile, so KIT/CLI sessions contributed nothing.
-    try:
-        engine.record_cycle_outcome(
+    _session_end_stage(
+        "cycle outcome",
+        lambda: engine.record_cycle_outcome(
             "FAIL" if out["error"] else "PASS",
             prompt,
             error_type=("cli_error" if out["error"] else None),
             start_time=_t0,
-        )
-    except Exception:
-        pass
+        ))
     # Episodic memory: persist one compact per-session record so a future
     # session can recall similar past work (best-effort, LLM-free) —
     # without this the saved session state is write-only.
-    try:
-        from .episodes import build_episode_from_state, save_episode
-        fields = build_episode_from_state(engine.export_state(), [])
-        save_episode(
-            sid,
-            repo_root=repo,
-            verdict="FAIL" if out["error"] else "PASS",
-            **fields,
-        )
-    except Exception:
-        pass
+    _session_end_stage(
+        "episodic memory",
+        lambda: _episode_stage(engine, sid, repo, out))
     # Close the eval loop opportunistically (opt-in, LLM-free, max 1/day).
-    try:
-        from .eval_loop import maybe_run_scheduled
-        maybe_run_scheduled()
-    except Exception:
-        pass
+    _session_end_stage(
+        "eval loop",
+        lambda: _eval_stage())
 
     if stream_json:
         # The last line closes the stream and carries the same payload the
@@ -2442,6 +2460,7 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         return 0
 
     if action == "show":
+        from . import approval_answers as _ansq
         for row in _fc.pending():
             if row.get("id") == args.request_id:
                 print(f"id      {row['id']}")
@@ -2451,7 +2470,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s"
                       f" of {int(row.get('timeout_s') or 0)}s")
                 print()
-                print(row.get("preview", ""))
+                body = _ansq.render_question(row)
+                print(body or row.get("preview", ""))
                 return 0
         from . import terminal_confirm as _tc
         for row in _tc.pending_at_terminals():
@@ -2464,7 +2484,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print("answer  here or at that session's terminal — "
                       "whichever comes first")
                 print()
-                print(row.get("preview", ""))
+                body = _ansq.render_question(row)
+                print(body or row.get("preview", ""))
                 return 0
         print(f"ERROR: nothing waiting with id {args.request_id!r}",
               file=sys.stderr)
@@ -2568,6 +2589,38 @@ def cmd_memory(args: argparse.Namespace) -> int:
           + (f", failed {done['failed']}" if done["failed"] else ""))
     print(f"retired files are in {store / 'retired'} — nothing was deleted")
     return 0
+
+
+def cmd_messages(args: argparse.Namespace) -> int:
+    """Delivery receipts for one sender, from the terminal.
+
+    Both subcommands are scoped to the caller's own ``--from`` key
+    (``status(message_id, from_key)`` / ``ls(from_key)``), the security
+    boundary the operator set: a caller that names no key, or a key that is
+    not the sender, sees nothing -- ``unknown`` covers both 'no such message'
+    and 'not yours', so a foreign message's existence is never revealed.
+    Rows and receipts carry no message body, so the CLI never prints one.
+    """
+    from . import session_messages as _msgs
+    from_key = getattr(args, "from_key", "") or ""
+    if args.messages_action == "ls":
+        rows = _msgs.ls(from_key)
+        if not rows:
+            print("(nothing to see)" if not from_key else "(no messages)")
+            return 0
+        for r in rows:
+            print(f"{r['id'][:12]:<14} "
+                  f"{str(r.get('to') or ''):<12} {r['status']}")
+        return 0
+    if args.messages_action == "status":
+        mid = getattr(args, "message_id", "") or ""
+        if not mid:
+            print("ERROR: message_id is required", file=sys.stderr)
+            return 2
+        print(_msgs.status(mid, from_key))
+        return 0
+    print("ERROR: unknown messages action", file=sys.stderr)
+    return 2
 
 
 def cmd_session(args: argparse.Namespace) -> int:
@@ -2704,6 +2757,24 @@ def _print_stop_all_check(report: dict) -> int:
               "there too.")
         return 0
     print("Result: no agent is running or scheduled.")
+    return 0
+
+
+def cmd_pause(args: argparse.Namespace) -> int:
+    """Pause one session (see ``session_pause``). It takes effect at the
+    session's next tool call; nothing else is touched."""
+    from . import session_pause
+    session_pause.pause(args.session, args.reason or "delfin-agent pause")
+    print(f"paused {args.session}: it stops at its next tool call; "
+          f"resume with: delfin-agent resume {args.session}")
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    """Lift a pause set by ``delfin-agent pause``."""
+    from . import session_pause
+    was = session_pause.resume(args.session)
+    print(f"resumed {args.session}" if was else f"{args.session} was not paused")
     return 0
 
 
@@ -3675,6 +3746,23 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Write the notebook here (default: <session_id>.ipynb)")
     sess.set_defaults(func=cmd_session)
 
+    # messages -- delivery receipts for one sender, scoped to --from
+    msgs_p = sub.add_parser("messages",
+                            help="Session-message delivery receipts")
+    msgs_sub = msgs_p.add_subparsers(dest="messages_action", required=True)
+    msgs_ls = msgs_sub.add_parser("ls",
+                                  help="List the mail the sender knows about")
+    msgs_ls.add_argument("--from", dest="from_key", default="",
+                         help="Sender key; without it nothing is shown")
+    msgs_status = msgs_sub.add_parser(
+        "status", help="Receipt for one message (queued/delivered/read/"
+                        "unknown)")
+    msgs_status.add_argument(
+        "message_id", help="The message id to ask about")
+    msgs_status.add_argument("--from", dest="from_key", default="",
+                             help="Sender key; without it status is unknown")
+    msgs_p.set_defaults(func=cmd_messages)
+
     # watchpost — read-only look-out over the user's own account
     wp = sub.add_parser(
         "watchpost",
@@ -3875,6 +3963,17 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Recorded with the stop")
     stop_all_p.set_defaults(func=cmd_stop_all)
 
+    pause_p = sub.add_parser(
+        "pause",
+        help="Pause one session by its -n name: it stops at the next tool "
+             "call, starts no new turn and is not woken until resumed")
+    pause_p.add_argument("session", help="The session's -n name")
+    pause_p.add_argument("--reason", default="", help="Recorded with the pause")
+    pause_p.set_defaults(func=cmd_pause)
+    resume_p = sub.add_parser("resume", help="Resume a paused session")
+    resume_p.add_argument("session", help="The session's -n name")
+    resume_p.set_defaults(func=cmd_resume)
+
     # doctor — aggregate prerequisite health report
     doctor = sub.add_parser(
         "doctor",
@@ -3986,6 +4085,28 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_watch.add_argument("--status", action="store_true",
                             help="Report daemon, setting and watched count "
                                  "(default)")
+
+    # T6: run a session's tests on a SLURM compute node from a node-local
+    # copy. The handler lives in delfin/agent/slurm_tests.py; it is imported
+    # on use so an import error there cannot break every other command.
+    def _cmd_test_on_slurm(args):
+        from delfin.agent.slurm_tests import cmd_test_on_slurm
+        return cmd_test_on_slurm(args)
+
+    t6 = sub.add_parser(
+        "test-on-slurm",
+        help="Render and submit a node-local SLURM job that runs the given "
+             "test paths; prints the job id",
+    )
+    t6.add_argument("repo", help="Path to the repository")
+    t6.add_argument("ref", help="Git ref to run at (copied node-local)")
+    t6.add_argument("partition", help="SLURM partition, e.g. cpu")
+    t6.add_argument("minutes", type=int, help="Job time limit in minutes")
+    t6.add_argument("tests", nargs="+",
+                    help="Test paths under tests/, e.g. tests/test_x.py")
+    t6.add_argument("--run-dir", default=".",
+                    help="Dir to write the job and collect logs")
+    t6.set_defaults(func=_cmd_test_on_slurm)
 
     return p
 

@@ -54,6 +54,13 @@ def _read_delfin_control(control_path: Path) -> Dict[str, str]:
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
+        # Strip inline comments AFTER a value ("dissoc_distance=4.0 # goal").
+        # Only a '#' preceded by whitespace starts a comment: SMILES and
+        # other values use '#' without whitespace (triple bonds C#N).
+        for sep in (" #", "\t#"):
+            if sep in value:
+                value = value.split(sep, 1)[0].rstrip()
+                break
         if key:
             result[key] = value
     return result
@@ -155,6 +162,13 @@ _CO2_DEFAULTS = {
     "run_occupier_on_adduct": "false",
     "substrate_atom": "",
     "substrate_atom_index": "",
+    # Adduct flow (automatic chain: xTB preopt -> coordination test -> OCCUPIER)
+    "adduct_flow": "false",
+    "adduct_start_xyz": "complex_aligned_with_CO2.xyz",
+    "coord_max_dist": "3.0",
+    "run_xtb": "false",
+    # Automatic OCCUPIER pass after the chain (runs the prepared job dir)
+    "run_occupier": "false",
 }
 
 # Fields that DELFIN's main CONTROL.txt may set and that should be
@@ -259,6 +273,10 @@ def _build_co2_control(
             "binding", "adduct_source", "manta_smiles", "adduct_xyz",
             "scan_dissoc", "dissoc_distance", "run_occupier_on_adduct",
             "substrate_atom", "substrate_atom_index",
+        ]),
+        ("# Adduct flow (automatic chain)", [
+            "adduct_flow", "adduct_start_xyz", "coord_max_dist", "run_xtb",
+            "run_occupier",
         ]),
         ("# Alignment (0-based indices)", ["metal", "metal_index", "align_bond_index", "neighbors"]),
         ("# CO2 placement", [

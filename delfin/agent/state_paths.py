@@ -596,6 +596,9 @@ def reset_maintenance_flag() -> None:
 #: ``(module, attribute, relative path under the redirected home)``.
 USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.bash_jobs", "_INDEX_PATH", "bash_jobs_index.json"),
+    # `delfin-agent pause <session>` flags. A test's flag would pause a real
+    # session of the same name.
+    ("delfin.agent.session_pause", "_DIR", "session_pause"),
     # A kept dashboard session announces itself so a later request can
     # find its kernel. A test that armed one wrote into the user's real
     # ~/.delfin and their next landing page then offered a session that

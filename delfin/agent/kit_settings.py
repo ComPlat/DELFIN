@@ -65,6 +65,7 @@ def _fresh_defaults() -> dict[str, Any]:
         "extra_workspace_dirs": [],
         "allow_patterns": [],
         "deny_patterns": [],
+        "write_allow_globs": [],
     }
 
 _lock = threading.Lock()
@@ -78,6 +79,9 @@ class KitSettings:
     extra_workspace_dirs: list[str] = field(default_factory=list)
     allow_patterns: list[str] = field(default_factory=list)
     deny_patterns: list[str] = field(default_factory=list)
+    #: The repo's own write scope (repo file only). Not part of to_dict, so
+    #: saving the merged view never copies it into the user's file.
+    write_allow_globs: list[str] = field(default_factory=list)
     user_path: Path = USER_SETTINGS_PATH
     repo_path: Optional[Path] = None
 
@@ -124,7 +128,8 @@ def _normalize_kit_block(block: Any) -> dict[str, Any]:
     mode = block.get("default_mode")
     if isinstance(mode, str) and mode in _VALID_MODES:
         out["default_mode"] = mode
-    for key in ("extra_workspace_dirs", "allow_patterns", "deny_patterns"):
+    for key in ("extra_workspace_dirs", "allow_patterns", "deny_patterns",
+                "write_allow_globs"):
         v = block.get(key)
         if isinstance(v, list):
             out[key] = [str(x) for x in v if isinstance(x, (str, os.PathLike))]
@@ -180,6 +185,9 @@ def _merge(user: dict[str, Any],
             if item not in merged_deny:
                 merged_deny.append(item)
     out["deny_patterns"] = merged_deny
+    # write_allow_globs only ever narrow where file tools may write, so the
+    # repo's are taken -- and only the repo's: there is no list to widen.
+    out["write_allow_globs"] = list((repo or {}).get("write_allow_globs", []))
     return out
 
 
@@ -214,6 +222,7 @@ def load(repo_dir: Optional[Path | str] = None,
         extra_workspace_dirs=merged["extra_workspace_dirs"],
         allow_patterns=merged["allow_patterns"],
         deny_patterns=merged["deny_patterns"],
+        write_allow_globs=merged["write_allow_globs"],
         user_path=user_path,
         repo_path=repo_path,
     )
