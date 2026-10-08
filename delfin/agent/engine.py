@@ -1222,8 +1222,13 @@ class AgentEngine:
             api_key = getattr(self.client, "_api_key", "") or ""
             caps = _resolve_caps(self.provider, model, base_url, api_key=api_key)
             if caps and caps.context_window > 0:
+                # Raised to what this backend has already accepted for the
+                # model: the table understates (131k against a 166k
+                # request that went through), and every protection fires
+                # at a share of this number. The cap still applies after.
+                from . import observed_window as _ow
                 self.context_window_tokens = _capped_context_window(
-                    int(caps.context_window))
+                    _ow.at_least(model, int(caps.context_window)))
                 self._active_capabilities = caps
         except Exception:
             # Keep whatever window is already set (100k default).
@@ -3204,6 +3209,13 @@ class AgentEngine:
                         if event.input_tokens and not self._floor_captured_this_turn:
                             self._floor_captured_this_turn = True
                             self._last_input_tokens = int(event.input_tokens)
+                            # An accepted request is proof of the window.
+                            try:
+                                from . import observed_window as _ow
+                                _ow.note(getattr(self.client, "model", "") or "",
+                                         int(event.input_tokens))
+                            except Exception:
+                                pass
                             # Fresh provider count -> trims applied since the
                             # previous floor are already reflected in it.
                             self._trimmed_chars_since_floor = 0
