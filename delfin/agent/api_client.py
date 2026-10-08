@@ -8169,11 +8169,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "session_message",
             "description": (
-                "List other open sessions (no `to`), message one "
-                "(to=<key>, or its exact title when only "
-                "one session has it), or all "
-                "with to=all (not as the user); status=<id> or ls for "
-                "receipts of your own."
+                "Open sessions (no `to`); message one (to=<key> or "
+                "unique exact title) or all (to=all), not as the user; "
+                "status=<id>/ls for receipts."
             ),
             "parameters": {
                 "type": "object",
