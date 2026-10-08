@@ -524,6 +524,22 @@ def _resolve_fresh_budget(context_budget, engine) -> int:
     if context_budget is None:
         context_budget = getattr(engine, "context_budget", None)
     if context_budget is None:
+        # The operator's 900k is a CEILING, not the budget. It was taken
+        # from a session that re-sent >900k tokens per turn -- the sum
+        # over every round of a turn -- and is compared here against the
+        # CURRENT context, which a model's window bounds. GLM 5.3's window
+        # is 131,072: a 900k budget on it is 6.9x the whole window and can
+        # never fire, so the fresh start was dead for every KIT model while
+        # one session paid 20.5M input tokens over 22 turns (2026-10-08).
+        #
+        # The window itself, not a fraction of it: the sliding trim (0.70
+        # -> 0.50) and compaction (0.95) run first and keep a session
+        # under it. A fresh start is for the case they could not -- a
+        # context that is still over the window after both -- which is a
+        # harder reset than either, and should not pre-empt them.
+        window = int(getattr(engine, "context_window_tokens", 0) or 0)
+        if window > 0:
+            return min(_DEFAULT_FRESH_BUDGET, window)
         return _DEFAULT_FRESH_BUDGET
     return int(context_budget or 0)
 
