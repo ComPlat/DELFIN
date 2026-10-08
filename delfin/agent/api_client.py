@@ -3593,6 +3593,28 @@ def _ends_with_a_question(text: str) -> bool:
     return (text or "").rstrip().rstrip("*_`").rstrip().endswith(("?", "？"))
 
 
+def _announces_an_action(text: str) -> bool:
+    """True when an answer ENDS by saying what it is about to do.
+
+    The last sentence, not any sentence: "I'll read the lines" in the
+    middle of a finished report is narration; at the very end, followed
+    by nothing, it is a promise the turn did not keep. Never true for an
+    answer that ends with a question -- that one is waiting on the user
+    and must not be pushed.
+    """
+    from .german import ANNOUNCES_ACTION_RE
+    tail = (text or "").rstrip().rstrip("*_`").rstrip()
+    if not tail or _ends_with_a_question(tail):
+        return False
+    # Only the last sentence or line is examined, with its Markdown
+    # emphasis taken off both ends.
+    last = tail.rsplit("\n", 1)[-1].strip().lstrip("*_`#> ").rstrip("*_`")
+    for mark in (". ", "! "):
+        if mark in last:
+            last = last.rsplit(mark, 1)[-1]
+    return bool(ANNOUNCES_ACTION_RE.search(last.strip()))
+
+
 def _pushed_refs(output: str) -> list[tuple[str, str, str]]:
     """(owner/repo, new sha, branch) for every ref a GitHub push updated."""
     repo = ""
@@ -4739,6 +4761,18 @@ _REASONING_MIN_TOKENS = 2048
 
 # Tools that WRITE to persistent memory. Counted against
 # ModelProfile.max_memory_writes_per_turn — reads are never capped.
+#
+#: One more write is allowed per this many NON-memory tool calls in the
+#: same turn. The cap exists to break a loop, and a loop does nothing
+#: else: a model that calls remember three times in a row still stops at
+#: the profile's cap, because it has earned nothing. A turn that ran
+#: forty tool calls has learned more than two things, and refusing the
+#: third threw the fact away -- measured in the field, six refusals in
+#: one session (2026-10-08), in the session that ran longest.
+#:
+#: Ten, from that session: its longest turn made 40 calls, which buys
+#: four more writes on top of the profile's two.
+_MEMORY_WRITE_EARN_EVERY = 10
 _MEMORY_WRITE_TOOLS: frozenset[str] = frozenset({"remember", "forget"})
 
 
@@ -12441,7 +12475,9 @@ class _DocToolExecutor:
                 return json.dumps({"error": err})
 
         if not full.exists():
-            return json.dumps({"error": f"File not found: {rel_path}"})
+            return json.dumps({"error": (
+                f"File not found: {rel_path}"
+                + _why_that_path_is_not_there(rel_path))})
         if full.is_dir():
             entries = sorted(p.name for p in full.iterdir())[:50]
             return json.dumps({"type": "directory", "entries": entries})
@@ -15864,7 +15900,9 @@ class _DocToolExecutor:
         if err:
             return json.dumps({"error": err})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
 
@@ -15986,7 +16024,9 @@ class _DocToolExecutor:
         if err:
             return json.dumps({"error": err})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
 
@@ -16394,7 +16434,7 @@ class _DocToolExecutor:
         # Build the concrete pattern list for this directory.
         #
         # On systems with symlinks (e.g. BwUniCluster: /home/<user>/ is a
-        # symlink to /pfs/data6/home/<user>/), the agent may issue bash
+        # symlink to /clusterfs/home/<user>/), the agent may issue bash
         # commands with EITHER path form. We register patterns for both
         # the resolved (canonical) and unresolved (as-given) directory so
         # bash auto-allow matches regardless of which form the agent picks.
@@ -17163,7 +17203,9 @@ class _DocToolExecutor:
             if err2:
                 return json.dumps({"error": err2})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
         if resolved.suffix.lower() != ".ipynb":
@@ -17229,7 +17271,9 @@ class _DocToolExecutor:
         if err:
             return json.dumps({"error": err})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
         if resolved.suffix.lower() != ".ipynb":
@@ -17881,12 +17925,19 @@ class _DocToolExecutor:
         others = _presence.open_sessions(exclude_key=me)
         if not to:
             return json.dumps({
+                # session_id as well as key. `to` accepts either, and the
+                # key is the one that changes when a session is re-opened
+                # -- so a roster with only the key hands back the address
+                # that just failed and never shows the stable one.
                 "sessions": [{
                     "key": r.get("key"), "title": r.get("title", ""),
+                    "session_id": r.get("session_id", ""),
                     "workspace": r.get("workspace", ""),
                     "branch": r.get("branch", ""),
                 } for r in others],
-                "note": ("Pass to=<key> and message to write to one."
+                "note": ("Pass to=<key> and message to write to one. A "
+                         "session's key changes when it is re-opened; "
+                         "to=<session_id> is the address that does not."
                          if others else "No other session is open."),
             }, ensure_ascii=False)
         if to.lower() in ("all", "*", "everyone"):
@@ -17937,6 +17988,7 @@ class _DocToolExecutor:
                               f"{to!r} - address one by its `key`."),
                     "sessions": [{
                         "key": r.get("key"), "title": r.get("title", ""),
+                        "session_id": r.get("session_id", ""),
                         "workspace": r.get("workspace", ""),
                         "branch": r.get("branch", ""),
                     } for r in _named],
@@ -17946,10 +17998,18 @@ class _DocToolExecutor:
             # by its TITLE, got told the key was unknown, and had to ask
             # for the roster it could have been handed (2026-09-17).
             return json.dumps({
-                "error": (f"no other open session {to!r} — address one by its "
-                          "`key` or its exact title."),
+                "error": (f"no other open session {to!r} — address one by "
+                          "its `key`, its `session_id` or its exact title. A "
+                          "key changes when a session is re-opened, so one "
+                          "that worked earlier can stop working; the "
+                          "session_id does not change."),
+                # session_id as well as key. `to` accepts either, and the
+                # key is the one that changes when a session is re-opened
+                # -- so a roster with only the key hands back the address
+                # that just failed and never shows the stable one.
                 "sessions": [{
                     "key": r.get("key"), "title": r.get("title", ""),
+                    "session_id": r.get("session_id", ""),
                     "workspace": r.get("workspace", ""),
                     "branch": r.get("branch", ""),
                 } for r in others],
@@ -20031,6 +20091,51 @@ def _handover_hint(resolved, workspace) -> str:
         return ""
 
 
+def _why_that_path_is_not_there(path_arg: str) -> str:
+    """A clause naming the mistake a missing path reads like, or "".
+
+    Input: the path as the caller wrote it. Output: a sentence to append
+    to "file not found", or "" when the path says nothing about itself.
+    Semantics: advisory only -- it never decides whether a path is
+    allowed and never looks inside one.
+
+    Two shapes, both from one afternoon's field reports:
+
+    An elision. A model that abbreviates a long path in prose will
+    sometimes send the abbreviation: `/pfs/.../ChemDarwin/README.md`
+    reached the file layer twice. "Not found" is true and useless; the
+    path is not a path.
+
+    A home directory built by hand. `/home/u12345/agent_workspace/...`
+    where the account's home is `/clusterfs/groups/team/u12345`. The guess
+    is reasonable and wrong, and the answer costs a round every time
+    because nothing in the refusal says where home actually is. Named
+    only when the account name really does appear in the path somewhere
+    other than at its own home, so an ordinary typo gets no lecture.
+
+    Never raises: a path that cannot be parsed simply says nothing.
+    """
+    try:
+        text = str(path_arg or "")
+        if not text:
+            return ""
+        parts = [seg for seg in text.replace("\\", "/").split("/")]
+        if any(seg == "..." for seg in parts):
+            return (" — the path contains a '...' segment, which reads as an "
+                    "abbreviation rather than a directory. Send the path in "
+                    "full, or list the parent and pick from what comes back.")
+        home = Path.home()
+        if (Path(text).is_absolute() and home.name
+                and home.name in parts
+                and not text.startswith(str(home))):
+            return (f" — this account's home directory is {home}. The path "
+                    f"puts '{home.name}' somewhere else, which is how a home "
+                    "path built by hand usually goes wrong here.")
+    except Exception:
+        return ""
+    return ""
+
+
 def _bash_isolation_argv(
     cmd: str,
     run_cwd,
@@ -21088,6 +21193,9 @@ class OpenAIClient(_BaseClient):
         # rounds. Read from the profile once, here, so a model switch
         # mid-session takes effect on the next turn and not mid-loop.
         _memory_writes = 0
+        # Tool calls this turn that were NOT memory writes. The cap earns
+        # headroom from them; see _MEMORY_WRITE_EARN_EVERY.
+        _work_calls = 0
         try:
             from .model_profiles import get_profile as _gp_mem
             _memory_cap = int(_gp_mem(self.model).max_memory_writes_per_turn or 0)
@@ -21575,6 +21683,9 @@ class OpenAIClient(_BaseClient):
         _AUTO_CONT_CAP = 12
         _auto_cont_count = 0
         _did_tools_since_cont = False
+        # Whether the announced-action continuation already fired this
+        # turn; see the second auto-continue trigger.
+        _announced_once = False
         # Completion events that arrive as the turn is ENDING. Both drains
         # below are exactly-once: what they hand over is gone from their
         # store, so it has to be acted on in this turn -- nothing in the
@@ -22311,15 +22422,19 @@ class OpenAIClient(_BaseClient):
                     # content look like progress.
                     if fn_name in _MEMORY_WRITE_TOOLS and _memory_cap:
                         _memory_writes += 1
-                        if _memory_writes > _memory_cap:
+                        _allowed = _memory_cap + (
+                            _work_calls // _MEMORY_WRITE_EARN_EVERY)
+                        if _memory_writes > _allowed:
                             result = json.dumps({"error": (
                                 f"memory write refused: this turn has "
-                                f"already recorded {_memory_cap} fact(s), "
-                                f"which is the limit for this model. You "
+                                f"already recorded {_allowed} fact(s), "
+                                f"which is the limit for this model after "
+                                f"{_work_calls} other tool call(s). You "
                                 f"are recording instead of answering — "
                                 f"finish the task the user asked for, and "
                                 f"remember at most what is genuinely "
-                                f"durable, once."
+                                f"durable, once. The allowance rises as "
+                                f"the turn does real work."
                             )})
                             yield StreamEvent(
                                 type="tool_result",
@@ -22333,6 +22448,12 @@ class OpenAIClient(_BaseClient):
                             })
                             _round_results.append(result)
                             continue
+                    elif fn_name not in _MEMORY_WRITE_TOOLS:
+                        # Counted BEFORE dispatch, so a call that the gate
+                        # refuses still counts as work: a turn spent being
+                        # told no has still not spent itself recording, and
+                        # the cap is about recording instead of working.
+                        _work_calls += 1
 
                     # ACTION-protocol repair: roles that drive the UI via
                     # plain-text "ACTION: /command" lines sometimes emit the
@@ -23215,6 +23336,37 @@ class OpenAIClient(_BaseClient):
             # "Soll ich git push origin main jetzt ausführen?", was sent back
             # in by the line below, and tried the push it had just asked
             # about -- which the gate refused a second time.
+            # Second trigger, from the field (2026-10-08): the model ENDS
+            # its turn by announcing what it is about to do -- "Zuerst lese
+            # ich die betroffenen Zeilen, um sauber zu editieren:" -- and
+            # does not do it. One session stopped exactly there; another
+            # spent seven consecutive turns announcing and calling nothing.
+            # Neither had open tasks, so the trigger above could not fire.
+            # An announcement is a stronger signal than an open task: the
+            # model has said the action itself. Once per turn, so a model
+            # that announces again after being sent back costs one extra
+            # round and not a loop; and never over a question.
+            _announced = (not _announced_once
+                          and _auto_cont_count < _AUTO_CONT_CAP
+                          and not self._waiting_on_watched_jobs()
+                          and _announces_an_action("".join(_text_chunks)))
+            if _announced:
+                _announced_once = True
+                _auto_cont_count += 1
+                _did_tools_since_cont = False
+                _final = "".join(_text_chunks) if _text_chunks else ""
+                if _final.strip():
+                    api_messages.append({"role": "assistant", "content": _final})
+                api_messages.append({"role": "user", "content": (
+                    "You ended your turn by announcing an action and did "
+                    "not take it. Take it NOW with the tool call you "
+                    "described, and continue until the step is done. If the "
+                    "action is risky or you are unsure the user wants it, "
+                    "ask with ask_user_question instead of announcing.")})
+                yield StreamEvent(
+                    type="notice", text="\n\n↻ announced an action → taking it\n")
+                continue
+
             if (_did_tools_since_cont and _auto_cont_count < _AUTO_CONT_CAP
                     and self._has_pending_tasks()
                     and not self._waiting_on_watched_jobs()

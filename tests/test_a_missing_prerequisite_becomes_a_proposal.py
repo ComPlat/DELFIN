@@ -231,14 +231,34 @@ def test_the_test_runner_check_passes_when_pytest_is_there():
     assert "command" not in row
 
 
-def test_isolation_offers_bwrap_only_where_something_can_hold_it():
+def test_isolation_offers_bwrap_only_where_something_can_hold_it(monkeypatch):
     """Proposing bwrap with no bwrap turns a warning into a refusal of
-    every shell command -- a worse state than the one being fixed."""
-    import inspect
+    every shell command -- a worse state than the one being fixed.
 
-    body = inspect.getsource(D._check_bash_isolation)
-    i = body.index('setting=("agent.bash_isolation", "bwrap")')
-    assert "if held_by else None" in body[i:i + 120]
+    Asserted on the ROW rather than on the source text. It used to read
+    the function's own body for `if held_by else None`, which passes for
+    a line that is there and says nothing about what the check answers;
+    `inspect.getsource` also slices the file on disk with the loaded
+    line numbers, so an edit under a running suite makes it lie.
+    """
+    from delfin.agent import api_client as A
+    import delfin.user_settings as us
+
+    for setting in ("auto", "off", "bwrap"):
+        monkeypatch.setattr(A, "_BASH_ISOLATION_OVERRIDE", "")
+        monkeypatch.setattr(
+            us, "load_settings",
+            lambda *a, _s=setting, **k: {"agent": {"bash_isolation": _s}})
+        for name in ("_bwrap_functional", "_landlock_functional",
+                     "_seatbelt_functional"):
+            monkeypatch.setattr(A, name, lambda: False)
+        monkeypatch.setattr(A.shutil, "which", lambda name: None)
+        rows = D._check_bash_isolation({})
+        assert len(rows) == 1, rows
+        proposed = rows[0].get("setting")
+        assert not proposed, (
+            f"with nothing able to hold a command, {setting!r} proposes "
+            f"{proposed!r}, which would refuse every shell command")
 
 
 def test_the_registry_includes_the_new_check():

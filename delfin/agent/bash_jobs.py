@@ -315,6 +315,10 @@ class BashJob:
     # fired, as a plain dict (limit, profile, value, ceiling, message).
     # Persisted in the registry so a reattached job still reports it.
     budget_breach: Optional[dict] = field(default=None, repr=False)
+    #: Set when the job ended but its registry record could not be
+    #: written, so a reattach would read it as still running. The
+    #: in-memory job is finished; this says the durable copy is not.
+    record_error: str = ""
 
     def poll(self) -> Optional[int]:
         rc = self.proc.poll()
@@ -382,6 +386,18 @@ class BashJob:
                 + " Re-run with narrower work, fewer parallel children, or "
                   "raise agent.process_budget.profiles.background.* in "
                   "settings if the workload legitimately needs more.")
+        if self.record_error:
+            # Said here because this is where a caller looks. The job is
+            # finished in this process and NOT finished in the registry,
+            # so a restart or another reader will disagree with this
+            # answer -- which is worth knowing before acting on it.
+            status["record_error"] = self.record_error
+            status["note"] = (
+                "finished, but the registry could not be written: "
+                + self.record_error
+                + " A reattach or a restart will read this job as still "
+                  "running. Check the workspace's .delfin directory is "
+                  "writable.")
         return status
 
 
@@ -998,6 +1014,27 @@ def _submitted_slurm_ids(stdout_path: str | Path) -> list[str]:
     return seen
 
 
+def _note_on_the_job(job, message: str) -> None:
+    """Append a line to a job's stderr log. Never raises.
+
+    Input: the job and one sentence. Output: the line, at the end of the
+    file `bash_output` reads. Semantics: the only channel left once the
+    watcher's own handles are closed and the registry cannot be written.
+
+    Opened by path rather than through the closed handle, and failing
+    silently: this runs on the path where something is already broken,
+    and a note that raises there would take the thread it is explaining.
+    """
+    try:
+        path = getattr(job, "stderr_path", None)
+        if not path:
+            return
+        with open(path, "a", encoding="utf-8", errors="replace") as fh:
+            fh.write(f"[delfin] {message}\n")
+    except Exception:
+        pass
+
+
 def _watch_submitted_jobs(workspace: str | Path, rec: dict) -> list[str]:
     """Register every cluster job this background command submitted.
 
@@ -1450,14 +1487,41 @@ class _Registry:
                 # The wrapper shell exiting is not the work finishing when
                 # the command queued a cluster job: register what it
                 # submitted so the completion is watched by someone.
-                watched = _watch_submitted_jobs(ws, {
-                    "job_id": jid, "stdout_path": str(stdout_path)})
-                _update_job_record(ws, jid,
-                                   exit_code=rc_final,
-                                   finished_at=time.time(),
-                                   watched_slurm_jobs=watched,
-                                   **({"budget_breach": job.budget_breach}
-                                      if job.budget_breach is not None else {}))
+                #
+                # Both calls are guarded, and this is the whole of the
+                # change. They were the last statements in this `finally`,
+                # so anything either of them raised left the watcher
+                # thread dead with an unhandled exception -- and the
+                # record then kept exit_code=None with no finished_at, so
+                # every reattach and every restart read the job as still
+                # RUNNING. A job that has ended and cannot say so is the
+                # one state the registry exists to rule out.
+                #
+                # Scanning for submitted cluster jobs is the less
+                # important of the two facts: where it fails the exit code
+                # is still written, with no watched list, rather than
+                # neither being written.
+                try:
+                    watched = _watch_submitted_jobs(ws, {
+                        "job_id": jid, "stdout_path": str(stdout_path)})
+                except Exception as exc:
+                    watched = []
+                    _note_on_the_job(job, f"submitted-job scan failed: {exc}")
+                try:
+                    _update_job_record(
+                        ws, jid,
+                        exit_code=rc_final,
+                        finished_at=time.time(),
+                        watched_slurm_jobs=watched,
+                        **({"budget_breach": job.budget_breach}
+                           if job.budget_breach is not None else {}))
+                except Exception as exc:
+                    # In memory this job is finished either way; what is
+                    # lost is the copy a reattach reads. Say so where the
+                    # user looks, rather than leaving a job that looks
+                    # like it never came back.
+                    job.record_error = f"the job registry could not be written: {exc}"
+                    _note_on_the_job(job, job.record_error)
 
         t = threading.Thread(target=_watch, daemon=True, name=f"bashjob-{jid}")
         t.start()

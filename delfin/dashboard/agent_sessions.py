@@ -1111,6 +1111,37 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             else:
                 rec["row"].remove_class(cls)
 
+    def _address_for(session_id: str) -> str:
+        """The key this session is known by, to a person and to a peer.
+
+        Input: the session id being resumed, or "". Output: an eight-hex
+        address. Semantics: the SAME address every time a given saved
+        conversation is opened, and a fresh one for a conversation that
+        does not have an id yet.
+
+        It was `uuid.uuid4().hex[:8]` unconditionally -- a new address per
+        TAB, not per session. A peer that had been told an address kept
+        writing to it after the session was re-opened, and was answered
+        "no other open session": observed between three sessions working
+        together, which recovered by reading the roster out of the
+        refusal and sending again, a round each time. Anything still
+        unread in the old mailbox stays there.
+
+        The head of the session id is what `cli._presence_key_for` already
+        uses for a terminal session, so the two surfaces now mean the same
+        session by the same word instead of holding two schemes for one
+        idea.
+
+        A collision with a session already open takes a random address
+        rather than two tabs sharing one inbox; eight hex digits make that
+        vanishingly rare, and being wrong in the other direction would
+        deliver one session's messages to another.
+        """
+        head = str(session_id or "").strip()[:8]
+        if head and not any(rec["key"] == head for rec in sessions):
+            return head
+        return uuid.uuid4().hex[:8]
+
     def _session_id(rec: dict) -> str:
         return str(_state(rec).get("active_session_id") or "")
 
@@ -1198,7 +1229,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             _say(f"{_MAX_OPEN} sessions are open — close one first.")
             return None
         _say("")
-        key = uuid.uuid4().hex[:8]
+        key = _address_for(sid)
         where = str(workspace or "").strip() or default_workspace(ctx)
         session_ctx = _SessionContext(
             ctx,

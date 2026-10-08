@@ -311,6 +311,35 @@ GERMAN_READ_VERB_SOURCE = "|".join(
     + [_plain(*_PLAIN_READ), GERMAN_ASKING_SOURCE]
 )
 
+#: An answer that ANNOUNCES the next action instead of taking it. The
+#: model says what it is about to do -- read the lines, correct the file,
+#: start with the test -- and ends its turn there. Observed in the field
+#: (2026-10-08): a session wrote "Zuerst lese ich die betroffenen Zeilen,
+#: um sauber zu editieren:" and stopped; another spent seven turns in a
+#: row announcing and never calling a tool. Matched on the LAST sentence
+#: only, because an announcement in the middle of a finished answer is
+#: narration, not an unkept promise.
+ANNOUNCES_ACTION_RE = re.compile(
+    r"(?i)(?:^|[.!:]\s+|\n)\s*"
+    r"(?:"
+    # German: "Zuerst lese ich …", "Ich prüfe jetzt …", "Jetzt schreibe ich …",
+    # "Als Nächstes erstelle ich …", "Dann korrigiere ich …"
+    r"(?:zuerst|zunächst|jetzt|nun|dann|als n[äa]chstes|im n[äa]chsten schritt)?\s*"
+    r"(?:lese|pr[üu]fe|schreibe|erstelle|korrigiere|[äa]ndere|bearbeite|"
+    r"f[üu]hre|starte|beginne|suche|[öo]ffne|lade|rufe|teste|messe|"
+    r"schaue|sehe)\s+ich\b"
+    r"|ich\s+(?:werde|will|m[öo]chte)\s+(?:jetzt|nun|zuerst|zun[äa]chst)?\s*\w+"
+    # subject first: "Ich prüfe jetzt …", "Ich lese zunächst …"
+    r"|ich\s+(?:lese|pr[üu]fe|schreibe|erstelle|korrigiere|[äa]ndere|bearbeite|"
+    r"f[üu]hre|starte|beginne|suche|[öo]ffne|lade|rufe|teste|messe|schaue|sehe)\b"
+    # English: "Let me read …", "I'll start by …", "Now I will …", "First, I read …"
+    r"|let me\s+\w+"
+    r"|i(?:'ll| will| am going to)\s+(?:now\s+|first\s+|start by\s+)?\w+"
+    r"|(?:first|next|now),?\s+i(?:'ll|\s+will|\s+am going to)?\s+\w+"
+    r")"
+    r"[^.!?\n]{0,160}[:.]?\s*$"
+)
+
 GERMAN_WRITE_VERB_RE = re.compile("(?i)" + GERMAN_WRITE_VERB_SOURCE)
 GERMAN_READ_VERB_RE = re.compile("(?i)" + GERMAN_READ_VERB_SOURCE)
 

@@ -2850,10 +2850,16 @@ class AgentEngine:
                 thinking_budget=thinking_budget,
                 **_stream_kwargs,
             ):
-                # ANY event, before any filtering: this stamp answers
-                # "did the transport deliver anything at all?", which is
-                # a different question from "did a token arrive?".
-                if _turn_first_event is None:
+                # ANY event FROM THE BACKEND, before any filtering: this
+                # stamp answers "did the transport deliver anything at
+                # all?", which is a different question from "did a token
+                # arrive?". The client's own "waiting" notices are not the
+                # backend: they tick every _WAIT_TICK_MAX_S while nothing
+                # has arrived, so counting them pinned first_event_ms at
+                # ~10040 on 19 of 22 turns of one session and 11 of 18 of
+                # another (2026-10-08) -- the instrument reporting its own
+                # cadence while the real first token took 9-72 s (ttft_ms).
+                if _turn_first_event is None and event.type != "waiting":
                     _turn_first_event = _time.monotonic()
 
                 if self._stop_requested and event.type != "message_delta":
@@ -4861,6 +4867,25 @@ class AgentEngine:
     # tool_result first. The full auto-compact still fires at 0.95.
     _SLIDING_WINDOW_PCT = 0.70
 
+    # Where the trim stops, which is NOT where it starts. A trim mutates
+    # earlier messages, and a mutated prefix is a cold prefix cache for
+    # everything after it. Stopping at the trigger meant shaving just
+    # enough to get back under 0.70 and doing it again next turn --
+    # every turn, forever, each one re-reading the whole history at full
+    # price.
+    #
+    # Measured in the field (three sessions, 2026-10-08): turns inside
+    # ONE turn's tool rounds reported 84-92% of their input cached, while
+    # the first round of each new turn reported 0-9% -- about the size of
+    # the system prompt and nothing more. One session paid 20.5M input
+    # tokens over 22 turns.
+    #
+    # Cutting to a low-water mark instead costs more history per cut and
+    # pays for it once per cycle rather than once per turn. The dropped
+    # middles stay retrievable (`_elide_original` /
+    # history_get('elided:...')), so the cost is a lookup, not a loss.
+    _SLIDING_WINDOW_FLOOR_PCT = 0.50
+
     def _should_slide(self) -> bool:
         """Trigger the gentler sliding-window trim BEFORE auto_compact."""
         if not self.context_window_tokens:
@@ -4973,7 +4998,11 @@ class AgentEngine:
         just shortened with an ``... [trimmed by sliding window] ...``
         middle marker so the agent still sees the head + tail).
         """
-        budget = int(self.context_window_tokens * self._SLIDING_WINDOW_PCT)
+        # Triggered at _SLIDING_WINDOW_PCT by `_should_slide`; this is
+        # where it stops. See _SLIDING_WINDOW_FLOOR_PCT for why the two
+        # are different numbers.
+        budget = int(self.context_window_tokens
+                     * self._SLIDING_WINDOW_FLOOR_PCT)
         if self._trimming_cannot_reach(budget, "sliding_window"):
             return 0
         trimmed = 0
