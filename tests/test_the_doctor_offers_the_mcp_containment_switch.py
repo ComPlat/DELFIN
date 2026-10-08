@@ -55,8 +55,10 @@ def test_a_third_party_server_is_not_offered_the_builtin_switch(mcp):
 def test_a_declared_server_is_not_loose(mcp, tmp_path):
     """A declared root has to exist: a root that is not there contains
     nothing, and the registry rightly reads such an entry as undeclared."""
+    # Declared roots sit at the top of the entry, as parse_isolation reads
+    # them -- not under an "isolation" key, which is the "off" switch.
     row = mcp({"delfin-tools": {"command": "python", "args": ["-m", "x"],
-                                "isolation": {"roots": [str(tmp_path)]}}})
+                                "roots": [str(tmp_path)]}})
     assert "without declared roots" not in row["detail"]
     assert not row.get("setting")
 

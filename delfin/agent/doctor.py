@@ -320,8 +320,12 @@ def _check_mcp(ctx: dict) -> list[dict]:
         try:
             from .mcp_isolation import builtin_isolation_enabled
             from .mcp_client import _BUILTIN_SERVERS
+            # Declared roots live at the top of the entry ("roots" /
+            # "read_roots"), and "isolation": "off" is the escape hatch;
+            # a built-in with neither is what the switch would contain.
             covered = any(n in _BUILTIN_SERVERS and not cfg.get("url")
-                          and not cfg.get("isolation")
+                          and not cfg.get("roots") and not cfg.get("read_roots")
+                          and str(cfg.get("isolation", "") or "").lower() != "off"
                           for n, cfg in configs.items())
             if covered and not builtin_isolation_enabled():
                 offer_fix = ("set agent.mcp_isolation = \"builtin\" to run "
