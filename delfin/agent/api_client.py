@@ -1956,6 +1956,31 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 if tail:
                     _add(tail[0])
                 continue
+            if (name in ("python", "python3") or name.startswith("python3.")) \
+                    and "ensurepip" in rest:
+                # `python -m ensurepip` writes pip into an environment, and
+                # it names no path on the command line -- so this scanner
+                # found no target, the write gate had nothing to refuse,
+                # and the command ran. Measured by driving the executor on
+                # 2026-10-08: of six home-directory writes, five were
+                # refused and `python3 -m ensurepip --user` returned
+                # exit 0.
+                #
+                # --user is the form that leaves the interpreter's own
+                # tree: it installs into the per-user site directory, which
+                # no workspace root covers. Asked of `site`, not written
+                # as "~/.local" -- the location is the interpreter's
+                # answer and differs per platform.
+                if "--user" in rest:
+                    try:
+                        import site as _site
+                        _add(_site.getuserbase())
+                    except Exception:
+                        _add("~/.local")
+                # Without --user it writes inside the environment's own
+                # prefix, which is either the workspace (fine) or a path
+                # the venv target rule above already covers.
+                continue
             if name in ("virtualenv", "uv") and rest:
                 tail = [a for a in rest if not a.startswith("-")]
                 if tail:
