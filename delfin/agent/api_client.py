@@ -8169,9 +8169,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "session_message",
             "description": (
-                "List other open sessions (no `to`), message one, or all "
-                "with to=all (not as the user); status=<id> or ls for "
-                "receipts of your own."
+                "Open sessions (no `to`); message one (to=<key> or "
+                "unique exact title) or all (to=all), not as the user; "
+                "status=<id>/ls for receipts."
             ),
             "parameters": {
                 "type": "object",
@@ -17788,13 +17788,42 @@ class _DocToolExecutor:
                                "not_delivered": failed}, ensure_ascii=False)
         target = next((r for r in others
                        if to in (r.get("key"), r.get("session_id"))), None)
+        # A TITLE is what the sender can actually see. The roster this tool
+        # returns carries both, and the keys are opaque eight-hex handles
+        # that appear nowhere in a conversation -- so a session asked to
+        # write to "Session A" addresses it by that name. It cost two
+        # rounds every time: the refusal handed back the roster and the
+        # model reissued the same message with the key (observed across
+        # three sessions in one afternoon, 2026-10-07).
+        #
+        # Accepted only when exactly one open session carries the name.
+        # Titles are the first line of a conversation and two sessions can
+        # easily share one; delivering to whichever matched first would put
+        # a message in the wrong inbox, which is worse than the extra
+        # round. An ambiguous name is refused BY name, with the candidates.
+        if target is None:
+            _folded = to.strip().casefold()
+            _named = [r for r in others
+                      if str(r.get("title", "")).strip().casefold() == _folded]
+            if len(_named) == 1:
+                target = _named[0]
+            elif len(_named) > 1:
+                return json.dumps({
+                    "error": (f"{len(_named)} open sessions are called "
+                              f"{to!r} - address one by its `key`."),
+                    "sessions": [{
+                        "key": r.get("key"), "title": r.get("title", ""),
+                        "workspace": r.get("workspace", ""),
+                        "branch": r.get("branch", ""),
+                    } for r in _named],
+                }, ensure_ascii=False)
         if target is None and not queueable:
             # The list, here, not a second call: a session addressed a peer
             # by its TITLE, got told the key was unknown, and had to ask
             # for the roster it could have been handed (2026-09-17).
             return json.dumps({
                 "error": (f"no other open session {to!r} — address one by its "
-                          "`key`, not by its title."),
+                          "`key` or its exact title."),
                 "sessions": [{
                     "key": r.get("key"), "title": r.get("title", ""),
                     "workspace": r.get("workspace", ""),
