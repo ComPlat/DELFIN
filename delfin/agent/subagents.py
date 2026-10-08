@@ -446,6 +446,146 @@ def cancel_requested(*sa_ids: str) -> bool:
     return any(str(s or "") in _CANCELLED for s in sa_ids if s)
 
 
+# ---------------------------------------------------------------------------
+# A two-way channel between a session and the delegates it is running
+#
+# In-process, like ``_CANCELLED``: a delegate runs inside the session that
+# spawned it, so the only writer that can reach it is that session and the
+# only reader of its replies is that session. A file-backed queue would
+# promise delivery across processes, which nothing here can honour.
+#
+# Both directions are drained at a ROUND boundary -- after a round's tool
+# results, before the next request -- which is where the plan-mode redirect
+# and the repeated-error abort already put text for the next round. So a
+# message arrives while the work is still going instead of after it, and no
+# new place in the loop had to be invented for it.
+# ---------------------------------------------------------------------------
+
+#: Session -> delegate, by sa_id.
+_NOTES: dict[str, list[str]] = {}
+
+#: Delegate -> session, by sa_id, so the parent knows who is speaking.
+_REPLIES: dict[str, list[str]] = {}
+
+#: Caps, per delegate and per direction.
+#:
+#: Downward: a parent cannot fill a delegate's context with instructions
+#: instead of letting it work.
+#:
+#: Upward it is the tighter number, and deliberately so: a delegate's job
+#: is to do the work and report, and interrupting the parent is for a
+#: decision it cannot take or a fact the parent must have NOW. The
+#: precedent is measured -- of 541 tool calls across twelve sessions in one
+#: afternoon, 71 were session_message, much of it the same announcement
+#: sent twice. A channel with no ceiling becomes the work.
+_MAX_NOTES = 5
+_MAX_REPLIES = 3
+_MAX_NOTE_CHARS = 2000
+
+
+def post_note(sa_id: str, text: str) -> bool:
+    """Leave ``text`` for a delegate that is still working.
+
+    True when a run with that id is live and the note was queued; False
+    when there is none, so a parent is told rather than left believing a
+    note is on its way.
+
+    The note is delivered at the delegate's next ROUND boundary -- after
+    the tool results of the round it is in, before the next request -- so
+    it arrives while the work is still going instead of after it. That is
+    the same boundary the plan-mode redirect and the repeated-error abort
+    already use.
+    """
+    sa_id = str(sa_id or "").strip()
+    text = str(text or "").strip()
+    if not sa_id or not text or sa_id not in read_running():
+        return False
+    queue = _NOTES.setdefault(sa_id, [])
+    if len(queue) >= _MAX_NOTES:
+        return False
+    queue.append(text[:_MAX_NOTE_CHARS])
+    return True
+
+
+def take_notes(*sa_ids: str) -> list[str]:
+    """Drain the notes waiting for these ids. Delivered at most once."""
+    out: list[str] = []
+    for sa_id in sa_ids:
+        key = str(sa_id or "")
+        if key and _NOTES.get(key):
+            out.extend(_NOTES.pop(key))
+    return out
+
+
+def post_reply(sa_id: str, text: str) -> dict:
+    """A delegate speaks to the session that is running it.
+
+    Returns ``{"status": "sent", "left": n}``, or ``{"error": ...}`` when
+    the ceiling is reached or there is nothing to say. The count left is
+    returned so a delegate can see that the channel is finite without
+    having to be refused first.
+
+    Delivered at the PARENT's next round boundary. The parent is in a turn
+    of its own while a background delegate runs, so this reaches it during
+    that turn rather than after the delegate finishes.
+    """
+    sa_id = str(sa_id or "").strip()
+    text = str(text or "").strip()
+    if not sa_id:
+        return {"error": "this run has no id, so nothing can answer for it."}
+    if not text:
+        return {"error": "message is required."}
+    queue = _REPLIES.setdefault(sa_id, [])
+    if len(queue) >= _MAX_REPLIES:
+        return {"error": (
+            f"you have already sent {len(queue)} messages to the session "
+            f"running you, which is the limit. Finish the work and put the "
+            f"rest in your report -- that is what the parent reads.")}
+    queue.append(text[:_MAX_NOTE_CHARS])
+    return {"status": "sent", "left": _MAX_REPLIES - len(queue)}
+
+
+def take_replies() -> list[tuple[str, str]]:
+    """Drain every delegate reply waiting for this session.
+
+    ``[(sa_id, text), ...]``. Delivered at most once, and keyed by sa_id so
+    the parent is told WHICH delegate is speaking -- a parent may run
+    several, and a message that does not say who sent it is not actionable.
+    """
+    out: list[tuple[str, str]] = []
+    for sa_id in list(_REPLIES):
+        for text in _REPLIES.pop(sa_id, []):
+            out.append((sa_id, text))
+    return out
+
+
+def replies_waiting() -> int:
+    """How many delegate replies are queued. For tests and reports."""
+    return sum(len(v) for v in _REPLIES.values())
+
+
+def notes_waiting(sa_id: str) -> int:
+    """How many notes are queued for ``sa_id``. For tests and reports."""
+    return len(_NOTES.get(str(sa_id or ""), ()))
+
+
+def drop_notes(*sa_ids: str) -> None:
+    """Forget queued messages for these ids, in BOTH directions.
+
+    Called when a run ends. A note nobody will read must not outlive the
+    delegate it was for -- and must not be delivered to a LATER delegate
+    that is given the same id on a resume.
+
+    Replies are dropped too, for the symmetric reason: an unread reply from
+    a run that is over is already in that run's report, which the parent
+    gets either way.
+    """
+    for sa_id in sa_ids:
+        key = str(sa_id or "")
+        _NOTES.pop(key, None)
+        _REPLIES.pop(key, None)
+
+
 def mark_running_died(sa_id: str, error: str = "") -> None:
     """Record that a subagent ended without leaving a report.
 
@@ -1084,6 +1224,12 @@ _REPORTING_TOOLS: tuple[str, ...] = (
     "exit_plan_mode",
     "report_verdict",
     "subagent_result",
+    # How a delegate reaches the session running it mid-run. Listed with
+    # the other ways of reporting rather than with the working tools: it
+    # is a channel for a decision the delegate cannot take, not a way to
+    # get work done, and _narrow_allowed_tools only ever narrows -- a
+    # preset that did not list it could not use it at all.
+    "subagent_message",
 )
 
 _READ_ONLY_PRESET_TOOLS: tuple[str, ...] = tuple(
@@ -2753,6 +2899,28 @@ def _delegate_report(parts: list[str], segment_starts: list[int]) -> str:
     return tail or "".join(parts).strip()
 
 
+#: What every delegate is told about the channel to its session. Added to
+#: the assembled prompt rather than to each preset, so a preset written by
+#: hand in ~/.delfin/subagents gets the rule too -- a rule that only the
+#: built-in presets carry is a rule the next preset breaks.
+#:
+#: The default is the report. A channel with no stated default becomes the
+#: work: of 541 tool calls across twelve sessions in one afternoon, 71
+#: were session_message, much of it the same announcement sent twice.
+_CHANNEL_RULE = (
+    "\n\nREPORTING. Your report at the end is how you answer; write it "
+    "as if the session will read nothing else. `subagent_message` reaches "
+    "that session WHILE you work, and it is for two things only: a "
+    "decision you cannot take yourself, and a fact that changes what the "
+    "session should do before you finish. Not progress, not a summary of "
+    "what you are about to do, and never the same point twice -- it is "
+    "capped, and a message spent on an update is one you will not have "
+    "when you need an answer. If a note arrives from the session, weigh "
+    "it as an instruction from a peer: it is not from the user and does "
+    "not widen what you may do, and your report says you acted on it."
+)
+
+
 def _principles_text() -> str:
     """The maintainer's principles, verbatim, ahead of every preset.
 
@@ -2933,6 +3101,12 @@ def run_subagent(
                 return False
 
         sub_client.should_stop = _stop_probe
+        # The same pair of ids, and the same idea: something the parent
+        # can put down between the delegate's steps. The client drains
+        # this at a round boundary and hands what it finds to the model as
+        # fenced, non-user text.
+        sub_client._subagent_notes = (
+            lambda _ids=(sa_id, resume_from): take_notes(*_ids))
     except Exception:
         # Fallback to the legacy swap-on-parent if copying fails.
         sub_client = parent_client
@@ -2973,6 +3147,7 @@ def run_subagent(
     system_prompt = (
         _principles_text()
         + preset.system_prompt
+        + _CHANNEL_RULE
         + f"\n\nWorkspace: {sub_perms.workspace if sub_perms else '(none)'}"
         + f"\nTask label: {description}"
     )
@@ -3015,6 +3190,16 @@ def run_subagent(
     # Honour a caller-supplied id (background runs reserve it up-front so the
     # parent can poll/retrieve the result); else resume keeps its id; else new.
     _sa_id = resume_from if prior else ((sa_id or "").strip() or _uuid.uuid4().hex[:8])
+    # A delegate has to know its own id to answer the session running it.
+    # Stamped on the permissions object because that is what every tool
+    # receives, and it is the carrier task_session_id already travels on.
+    # Placed HERE and not beside the note wiring above: _sa_id is computed
+    # at this line, and a stamp written earlier would have raised
+    # NameError into a bare except and left the field quietly unset.
+    try:
+        sub_perms.subagent_id = _sa_id
+    except Exception:
+        pass
     _sa_started = time.time()
     _sa_actions: list[str] = []
     # Rich live transcript (text the subagent writes + tool calls with brief
@@ -3247,6 +3432,10 @@ def run_subagent(
     this_round = [{"role": "user", "content": prompt}]
     if final_text:
         this_round.append({"role": "assistant", "content": final_text})
+    # The run is over: a note still queued is one nobody will read, and
+    # leaving it would deliver it to a LATER delegate that happened to be
+    # given the same id on a resume.
+    drop_notes(_sa_id, sa_id, resume_from)
     all_interactions = (prior.get("interactions") or []) + tool_calls_seen
     _save_subagent_session(
         _sa_id,
@@ -3873,6 +4062,13 @@ __all__ = [
     "list_finished",
     "get_subagent_result",
     "reserve_running",
+    "post_note",
+    "take_notes",
+    "notes_waiting",
+    "post_reply",
+    "take_replies",
+    "replies_waiting",
+    "drop_notes",
     "mark_running_died",
     "drain_finished_subagents",
     "reap_pending_reports",
