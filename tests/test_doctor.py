@@ -500,16 +500,27 @@ def test_isolation_configured_but_unusable_is_a_failure(monkeypatch):
     assert row["status"] == "FAIL" and "refused" in row["detail"]
 
 
-def test_auto_mode_says_when_it_does_not_isolate(monkeypatch):
+def test_auto_isolates_every_mode_where_the_host_can(monkeypatch):
+    """What this asserted before -- "isolated in bypassPermissions only",
+    with the bwrap setting as its fix -- was true of an older resolver.
+    `auto` walls wherever the host can hold a command, in every
+    permission mode, and a row that understates that sends the user to
+    switch on what is already on."""
     row = _isolation_row(monkeypatch, "auto", True)
-    assert row["status"] == "WARN"
-    assert "bypassPermissions only" in row["detail"]
-    assert "bash_isolation" in row["fix"]
+    assert row["status"] == "PASS"
+    assert "every permission mode" in row["detail"]
+    assert "bypassPermissions only" not in row["detail"]
+    assert not row.get("fix")
 
 
-def test_auto_without_working_bwrap_says_never_isolated(monkeypatch):
+def test_auto_without_a_mechanism_names_what_is_left(monkeypatch):
+    """Not "never isolated" -- which protection is holding is the point
+    of the row. The command still runs: refusing every shell command in
+    an attended session would be secure and useless."""
     row = _isolation_row(monkeypatch, "auto", False)
-    assert "never isolated" in row["detail"]
+    assert row["status"] == "WARN"
+    assert "nothing here can isolate" in row["detail"]
+    assert "write-target gate" in row["detail"]
 
 
 def test_isolation_off_is_reported_with_the_remaining_protection(monkeypatch):
