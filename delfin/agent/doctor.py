@@ -605,6 +605,86 @@ def _isolation_mechanism() -> str:
     return ""
 
 
+#: Pairs that must load in ONE interpreter, and the subsystem each
+#: belongs to. The first element is imported first on purpose: the point
+#: is the ORDER, because the dynamic loader resolves a shared library once
+#: per process and the first resolution wins for everything after it.
+#:
+#: pymupdf is the agent's PDF reader (office.py) and drags in libmupdf,
+#: which needs libstdc++. sqlite3 is pulled by stk via atomlite, and
+#: needs a newer C++ ABI through libicu. Where a directory on
+#: LD_LIBRARY_PATH ships an older libstdc++ than the interpreter's own
+#: libraries need, importing the first makes the second fatal -- and the
+#: optional-import fallbacks downstream turn that into a capability that
+#: is silently absent rather than an error.
+_IMPORT_ORDER_PAIRS: tuple[tuple[str, str, str], ...] = (
+    ("pymupdf", "sqlite3", "PDF reading and the structure database"),
+)
+
+
+def _check_loader_path(ctx: dict) -> list[dict]:
+    """Can the native stack load in one interpreter, in both orders.
+
+    Asked in a SUBPROCESS, with this process's environment, because the
+    loader caches LD_LIBRARY_PATH at process start: by the time any check
+    could run in-process the answer is already fixed, and importing the
+    pair here would poison the very interpreter doing the asking.
+
+    Reports the directory that won, when it can, rather than only that
+    something broke -- a row saying "an import failed" sends the reader
+    looking in Python, and the fault is three layers below it.
+
+    Universal: nothing here names ORCA or any site. It imports two
+    modules DELFIN itself needs and reports what the loader did. On a host
+    whose library order is sound, both orders succeed and the row passes.
+    """
+    import shutil as _sh
+    rows: list[dict] = []
+    py = sys.executable or _sh.which("python3") or "python3"
+    for first, second, what in _IMPORT_ORDER_PAIRS:
+        code = (f"import {first}\n"
+                f"import {second}\n"
+                "print('ok')")
+        try:
+            done = subprocess.run([py, "-c", code], capture_output=True,
+                                  text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            rows.append(_row(
+                "loader path", WARN,
+                f"could not ask the interpreter: {exc}",
+                f"run: {py} -c 'import {first}, {second}'"))
+            continue
+        if done.returncode == 0:
+            rows.append(_row("loader path", PASS,
+                             f"{first} + {second} load together"))
+            continue
+        err = (done.stderr or "").strip().splitlines()
+        detail = err[-1][:300] if err else f"{first} then {second} failed"
+        # The loader names the file it took and the version it lacked;
+        # pull the PATH out so the fix is a directory and not a guess.
+        # Matched as a path rather than by splitting on ":" -- the line
+        # opens with "ImportError:", and splitting took that as the
+        # library.
+        culprit = ""
+        for line in err:
+            if "not found" not in line:
+                continue
+            m = re.search(r"(/[^\s:]*\.so(?:\.\d+)*)", line)
+            if m:
+                culprit = m.group(1)
+                break
+        fix = (
+            "a directory on LD_LIBRARY_PATH provides an older shared "
+            "library than this interpreter's own libraries need, and the "
+            "loader takes the first match. Put the interpreter's lib "
+            "directory first, or drop that entry for Python processes")
+        if culprit:
+            fix = f"the loader took {culprit} first -- " + fix
+        rows.append(_row(
+            f"loader path ({what})", WARN, detail, fix))
+    return rows
+
+
 def _check_bash_isolation(ctx: dict) -> list[dict]:
     """Report whether shell commands run in a filesystem namespace.
 
@@ -781,6 +861,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("mcp servers", "_check_mcp"),
     ("scheduler daemon", "_check_scheduler"),
     ("git tooling", "_check_git_tooling"),
+    ("loader path", "_check_loader_path"),
     ("git remote", "_check_push"),
     ("attention inbox", "_check_attention"),
     ("attention transports", "_check_attention_transports"),
