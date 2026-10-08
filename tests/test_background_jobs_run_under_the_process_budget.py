@@ -210,3 +210,82 @@ def test_a_registry_that_cannot_be_written_still_explains_the_kill(
               "the breach to be recorded in memory anyway")
     assert job.budget_breach["limit"] == "max_processes"
     assert refused, "the write this test is about never happened"
+
+
+def test_a_registry_that_cannot_be_written_still_ends_the_job(registry,
+                                                              monkeypatch,
+                                                              tmp_path):
+    """A job that has ended must be able to say so.
+
+    The watchdog's completion write was the last statement in its
+    `finally`, unguarded. Anything it raised left the watcher thread dead
+    with an unhandled exception -- and the record then kept
+    `exit_code=None` with no `finished_at`, so every reattach and every
+    restart read a finished job as still RUNNING. That is the one state
+    the registry exists to rule out.
+
+    Asserted through the thread rather than by calling the writer: the
+    defect was where the exception went, and a direct call cannot see
+    that.
+    """
+    import threading
+
+    thread_errors: list = []
+    monkeypatch.setattr(threading, "excepthook",
+                        lambda args: thread_errors.append(args))
+
+    real = bash_jobs._update_job_record
+
+    def _refuse_the_completion(ws, jid, **fields):
+        if "exit_code" in fields:
+            raise OSError("read-only registry")
+        return real(ws, jid, **fields)
+
+    monkeypatch.setattr(bash_jobs, "_update_job_record",
+                        _refuse_the_completion)
+
+    job = registry.start("echo done", cwd=str(tmp_path),
+                         timeout_s=30, workspace=str(tmp_path))
+    _wait_for(lambda: job.poll() is not None, 25, "the job to end")
+    _wait_for(lambda: job.record_error, 10, "the failure to be recorded")
+
+    assert not thread_errors, (
+        "the watcher thread died with an unhandled exception: "
+        f"{thread_errors}")
+    status = job.status_dict()
+    assert status["record_error"], status
+    assert "still running" in status["note"], status
+    # And where a reader actually looks for the job's output.
+    assert "registry could not be written" in job.stderr_path.read_text()
+
+
+def test_a_failed_submitted_job_scan_does_not_cost_the_exit_code(
+        registry, monkeypatch, tmp_path):
+    """Two facts, and the exit code is the one that matters.
+
+    The scan for queued cluster jobs ran before the completion write and
+    was unguarded, so its failure took the exit code with it.
+    """
+    def _refuse(ws, rec):
+        raise OSError("cannot scan")
+
+    monkeypatch.setattr(bash_jobs, "_watch_submitted_jobs", _refuse)
+    job = registry.start("echo done", cwd=str(tmp_path),
+                         timeout_s=30, workspace=str(tmp_path))
+    _wait_for(lambda: job.poll() is not None, 25, "the job to end")
+
+    # Waited on the PERSISTED copy, not on job.finished_at: that is set
+    # before the record is written, and waiting on it here would be the
+    # same mistake the breach ordering was fixed for -- waiting on one
+    # copy and asserting on another.
+    def _persisted():
+        again = bash_jobs._reattach(job.job_id, workspace=str(tmp_path))
+        if again is None:
+            return None
+        got = again.status_dict()
+        return got if got.get("exit_code") is not None else None
+
+    status = _wait_for(_persisted, 10, "the exit code to reach the registry")
+    assert status.get("exit_code") == 0, status
+    assert not status.get("running"), status
+    assert "submitted-job scan failed" in job.stderr_path.read_text()
