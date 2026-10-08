@@ -306,6 +306,44 @@ def _this_host() -> str:
         return ""
 
 
+def session_lock_holder(session_id: str) -> dict | None:
+    """Who holds the writer lock for ``session_id``, without taking it.
+
+    Returns ``{"pid": int, "host": str, "ts": float, "elsewhere": bool}``
+    for a lock that :func:`acquire_session_lock` would honour, and None
+    when the lock is absent, stale, or this process's own.
+
+    The same three questions ``acquire_session_lock`` asks -- is the
+    holder someone else, is the lock fresh, is the holder alive -- are
+    asked here and nowhere else. A reader that needs to know BEFORE
+    committing to a save (a dashboard deciding whether to open a
+    conversation) previously had no way to ask, so it guessed from its own
+    in-memory list of windows and could not see a holder in another
+    process or on another node at all.
+    """
+    try:
+        info = json.loads(_lock_path(session_id).read_text(encoding="utf-8"))
+        holder = int(info.get("pid", 0) or 0)
+        ts = float(info.get("ts", 0) or 0)
+        holder_host = str(info.get("host", "") or "")
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not holder:
+        return None
+    here = _this_host()
+    elsewhere = bool(holder_host) and holder_host != here
+    if holder == os.getpid() and not elsewhere:
+        return None
+    if (time.time() - ts) >= _LOCK_MAX_AGE_S:
+        return None
+    # A pid from another login node names nothing here: age is the only
+    # judge available, and it has already been applied above.
+    if not elsewhere and not _pid_alive(holder):
+        return None
+    return {"pid": holder, "host": holder_host, "ts": ts,
+            "elsewhere": elsewhere}
+
+
 def release_session_lock(session_id: str) -> None:
     """Drop the lock if THIS process holds it. Best-effort, never raises."""
     p = _lock_path(session_id)

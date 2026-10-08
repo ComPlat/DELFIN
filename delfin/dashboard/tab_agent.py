@@ -8019,6 +8019,10 @@ def create_tab(ctx):
         # Skip if there's nothing to save yet (no chat messages).
         if not state.get("chat_messages"):
             return
+        # Bound before the try: the except clause below names it, and a
+        # failure ahead of an import inside the body would turn a refused
+        # save into a NameError.
+        from delfin.agent.session_store import SessionLockedError
         try:
             from delfin.agent.session_store import save_session
             # The exported state is forwarded WHOLESALE, as on the headless
@@ -8075,6 +8079,21 @@ def create_tab(ctx):
             except Exception:
                 pass
             _refresh_session_dropdown()
+        except SessionLockedError as exc:
+            # The one exception here that means the conversation is NOT being
+            # written. Swallowed with the rest, it let a session run for the
+            # lock's full hour while every turn was dropped, and the loss only
+            # showed on the next reload. Said once per session: the condition
+            # persists for as long as the holder does, and a line per turn
+            # would bury the chat it is warning about.
+            if not state.get("_save_lock_warned"):
+                state["_save_lock_warned"] = True
+                _append_system_message(
+                    f"⚠️ This conversation is NOT being saved: another live "
+                    f"session (pid {getattr(exc, 'holder_pid', '?')}) holds "
+                    f"the writer lock. Open it there, or use "
+                    f"\u201cNew Session\u201d here — otherwise this turn and "
+                    f"the ones after it are lost on reload.")
         except Exception:
             pass  # non-critical — don't break the chat
 
@@ -8083,9 +8102,9 @@ def create_tab(ctx):
         # One conversation, one view: two sessions holding the same one would
         # save over each other's turns.
         _elsewhere = getattr(ctx, "session_open_elsewhere", None)
+        _other = session_id != state.get("active_session_id")
         try:
-            _taken = (callable(_elsewhere)
-                      and session_id != state.get("active_session_id")
+            _taken = (callable(_elsewhere) and _other
                       and _elsewhere(session_id))
         except Exception:
             _taken = False
@@ -8094,6 +8113,26 @@ def create_tab(ctx):
                 "This conversation is already open in another session — "
                 "switch to it in the session list.")
             return
+        # The check above sees only THIS dashboard's windows. A holder in
+        # another process, or on another login node sharing this directory,
+        # was invisible to it: the conversation opened, and every save after
+        # that was refused in silence. The lock file is the one place that
+        # knows, so ask it.
+        if _other:
+            try:
+                from delfin.agent.session_store import session_lock_holder
+                _holder = session_lock_holder(session_id)
+            except Exception:
+                _holder = None
+            if _holder:
+                _where = (f" on {_holder['host']}" if _holder.get("elsewhere")
+                          else "")
+                _append_system_message(
+                    f"This conversation is held by a live session "
+                    f"(pid {_holder['pid']}{_where}) and was not opened — two "
+                    f"writers would overwrite each other's turns. Close it "
+                    f"there, or start a new session from it.")
+                return
         try:
             from delfin.agent.session_store import load_session
             data = load_session(session_id)
@@ -20507,6 +20546,19 @@ def create_tab(ctx):
         try:
             from delfin.agent import scheduler as _sched_close
             _sched_close.get_scheduler().remove_fire_listener(id(state))
+        except Exception:
+            pass
+        # Drop the writer lock. Registered with atexit below, so this is the
+        # clean close, the kernel ending and interpreter shutdown alike.
+        # Nothing on the dashboard path released it before: every session ever
+        # run left its lock behind, and for the hour until the lock went stale
+        # it refused its own resume -- on another login node, where a pid
+        # cannot be checked, by age alone.
+        try:
+            from delfin.agent.session_store import release_session_lock
+            _sid = str(state.get("active_session_id") or "")
+            if _sid:
+                release_session_lock(_sid)
         except Exception:
             pass
 
