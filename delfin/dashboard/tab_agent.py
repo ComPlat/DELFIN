@@ -8237,6 +8237,26 @@ def create_tab(ctx):
                     pass
         finally:
             state["_controls_sync_internal"] = False
+        # The suppression above exists so restoring the controls does not
+        # tear the engine down mid-restore, and its comment assumed the
+        # engine "already used" the restored profile. It does not: the
+        # engine was built earlier in this function (_ensure_engine) from
+        # the profile that was active BEFORE the restore, so the gate ran
+        # the old profile while the dropdown showed the new one -- a
+        # session reopened from plan could write, one reopened from bypass
+        # could be refused, and the KIT chip (which reads the engine) and
+        # the dropdown (which reads the widget state) disagreed on screen.
+        # Pushed here: after the controls are set, after the suppression is
+        # lifted, and without going through the observer, which would drop
+        # the engine and lose the restore.
+        try:
+            _restored_perm = str(state.get("_perm_profile") or "")
+            _chip = _PROFILE_TO_CHIP.get(_restored_perm)
+            if _chip and hasattr(engine, "set_kit_permission_mode"):
+                if engine.set_kit_permission_mode(_chip):
+                    _refresh_kit_mode_chip()
+        except Exception:
+            pass
         saved_effort = data.get("effort") or ""
         if saved_effort:
             try:

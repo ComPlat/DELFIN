@@ -1861,6 +1861,33 @@ class PromptLoader:
                 add(_name, self.LAYER_STABLE, _text)
                 injected.append(_name)
 
+        # Plan addendum: investigate first, finalise via exit_plan_mode.
+        # Triggered by the legacy "plan" mode_id OR by the "plan" permission
+        # profile -- plan is a permission now, so Perms = Plan in any mode
+        # gets the full plan experience. Session-stable, so part of the
+        # cacheable head.
+        #
+        # Injected for EVERY role, not only solo_agent. The permission
+        # applies to every role, and the gate refuses writes in all of them,
+        # but only solo was told so. A dashboard or office session in plan
+        # mode therefore had a read-only gate and no text saying why -- and
+        # after a reload its restored transcript still carried the previous
+        # turns' refusal results ("plan mode (read-only) -- '<tool>'
+        # rejected") and a plan approval naming a different mode. With
+        # nothing in the current prompt to contradict them, the model's only
+        # evidence of its own mode was the old history, which is what a
+        # field report describes as confusion about plan/bypass after a
+        # chat is reloaded.
+        #
+        # Cost is paid where it is incurred: the text is added only while
+        # the plan permission is actually active, so no role pays for it in
+        # any other profile.
+        if mode_id == "plan" or permission_mode == "plan":
+            plan_addendum = _shared("plan_mode_addendum.md")
+            if plan_addendum:
+                add("plan_mode_addendum", self.LAYER_STABLE, plan_addendum)
+                injected.append("plan_mode_addendum")
+
         relevant_playbook = self._load_relevant_playbook_context(task_text)
         repo_map_ctx = self._load_repo_map_context(task_text)
         briefing_ctx = self._load_briefing_context(task_text)
@@ -1902,17 +1929,6 @@ class PromptLoader:
             # every turn of a mode someone happened to be in. solo.md and
             # dashboard.md only tell a human what the entry means;
             # injecting those would restate the role prompt.
-
-            # Plan addendum: the agent must investigate first and finalise via
-            # exit_plan_mode. Triggered either by the legacy "plan" mode_id OR by
-            # the "plan" permission profile — plan is a permission now, so
-            # setting Perms = Plan (in any mode) gets the full plan experience.
-            # Session-stable, hence part of the cacheable head.
-            if mode_id == "plan" or permission_mode == "plan":
-                plan_addendum = _shared("plan_mode_addendum.md")
-                if plan_addendum:
-                    add("plan_mode_addendum", self.LAYER_STABLE, plan_addendum)
-                    injected.append("plan_mode_addendum")
 
             if self.is_delfin_workspace is False:
                 # User project: DELFIN's own product context neither applies
