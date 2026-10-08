@@ -67,8 +67,19 @@ def test_the_two_sets_do_not_overlap():
 
 def test_only_bounded_kinds_are_handed_over():
     """A guard on the list itself: adding a kind here is a security
-    decision, and this names the two that were argued for."""
-    assert handover._CONSENT_KINDS == {"push_unrequested", "git_role"}
+    decision, and this names the four that were argued for.
+
+    The two pull-request kinds (2026-10-08) are consent for the same
+    reason a push is: the command is unchanged and the user is entitled
+    to run it -- opening a PR publishes a branch, and a maintainer's
+    merge lands it. A CONTRIBUTOR's merge is not here: the installation's
+    role is not a merger's, and neither is its user's, so offering the
+    command would offer one GitHub refuses.
+    """
+    assert handover._CONSENT_KINDS == {
+        "push_unrequested", "git_role",
+        "pr_create_unrequested", "pr_merge_unrequested"}
+    assert "pr_merge_contributor" in handover._CONTENT_KINDS
 
 
 def test_an_empty_command_offers_nothing():

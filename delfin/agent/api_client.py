@@ -3390,6 +3390,16 @@ _GH_PR_CREATE_RE = re.compile(r"(?:^|[;&|]\s*)gh\s+pr\s+create\b")
 _GH_PR_MERGE_RE = re.compile(r"(?:^|[;&|]\s*)gh\s+pr\s+merge\b")
 
 
+def _handover_line(cmd: str, kind: str) -> str:
+    """The command offered to the user, for a refusal about consent.
+    Never raises: a refusal must stand even when the offer cannot be made."""
+    try:
+        from .handover import for_user
+        return for_user(cmd, kind=kind)
+    except Exception:
+        return ""
+
+
 def _is_gh_pr_create(cmd: str) -> bool:
     return bool(_GH_PR_CREATE_RE.search(_with_shell_bodies(cmd)))
 
@@ -15164,7 +15174,7 @@ class _DocToolExecutor:
                             "branch, and the user has not asked for that since "
                             "their last message. Say which PR you would merge "
                             "and whether its checks are green, and let them "
-                            "say so.")
+                            "say so." + _handover_line(cmd, "pr_merge_unrequested"))
             if _is_git_push(cmd) and _git_role() == "contributor":
                 _cwd_arg = str(args.get("cwd") or "").strip()
                 _where = Path(perms.workspace)
@@ -15196,7 +15206,8 @@ class _DocToolExecutor:
                     return ("blocked: `gh pr create` publishes the branch as a "
                             "pull request, and the user has not asked for a push "
                             "or a PR since their last message. Say what the PR "
-                            "would contain and against which base, and ask.")
+                            "would contain and against which base, and ask."
+                            + _handover_line(cmd, "pr_create_unrequested"))
                 try:
                     ok = bool(perms.confirm_callback(
                         "bash", {"command": cmd},
