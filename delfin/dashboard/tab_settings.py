@@ -3900,7 +3900,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 'only counts against it when it brings a <b>new</b> command, '
                 'and a round that repeats one already run this turn ends the '
                 'turn regardless, so a high number here cannot produce a '
-                'loop. Default 40.'
+                'loop. The field shows the value in force.'
                 '</div>'
             ),
             widgets.HTML(
