@@ -51,8 +51,27 @@ _PYTHON_DEPS: tuple[str, ...] = ("rdkit", "openbabel")
 _DISK_WARN_GB = 1.0
 
 
-def _row(check: str, status: str, detail: str, fix: str = "") -> dict:
-    return {"check": check, "status": status, "detail": detail, "fix": fix}
+def _row(check: str, status: str, detail: str, fix: str = "",
+         *, command: str = "", setting: tuple | None = None) -> dict:
+    """One report row.
+
+    ``fix`` is prose for a person. ``command`` and ``setting`` are the
+    machine-actionable form, and a check that has one DECLARES it rather
+    than leaving it to be parsed back out of the prose: a remedy read out
+    of a sentence is a remedy a wording change breaks, and this one is
+    offered to the user for approval and then executed.
+
+    Most prerequisites have no such form -- installing a system package,
+    logging a credential helper in, reordering a library path. Those
+    carry ``fix`` alone, and saying so is part of the answer: the agent
+    must not improvise around them.
+    """
+    row = {"check": check, "status": status, "detail": detail, "fix": fix}
+    if command:
+        row["command"] = command
+    if setting:
+        row["setting"] = list(setting)
+    return row
 
 
 def _tilde(path: Path | str) -> str:
@@ -228,6 +247,30 @@ def _check_python_deps(ctx: dict) -> list[dict]:
         else:
             out.append(_row(f"python: {mod}", PASS, "importable"))
     return out
+
+
+def _check_test_runner(ctx: dict) -> list[dict]:
+    """Can the agent run the suite in the interpreter it would use.
+
+    The one prerequisite with a remedy DELFIN can carry out, and the
+    reason the proposal mechanism exists: pytest was declared only in an
+    extra the default install does not select, `python -m pytest` with no
+    pytest writes no report, and the agent read "no report file produced"
+    as something to work around. The field reports show what it did --
+    a venv of its own, or a wrapper script in the home directory.
+
+    Asked of THIS interpreter, which is the one `run_tests` launches.
+    """
+    missing = importlib.util.find_spec("pytest") is None
+    if not missing:
+        return [_row("test runner", PASS, f"pytest available to {sys.executable}")]
+    return [_row(
+        "test runner", WARN,
+        f"pytest is not installed in {sys.executable}",
+        "install the test extra; until then the agent cannot run the suite "
+        "and must say so rather than build a runner of its own",
+        command=f"{sys.executable} -m pip install 'delfin-complat[test]'",
+    )]
 
 
 def _uncontained_mcp(configs: dict, workspace=None) -> int:
@@ -734,9 +777,15 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     detail = ("auto — isolated in bypassPermissions only"
               + (f", by {held_by} there" if held_by
                  else "; nothing here can isolate, so never isolated"))
-    return [{"check": "bash isolation", "status": "WARN",
-             "detail": detail,
-             "fix": fix if held_by else no_mechanism}]
+    # The settings change is offered only where something on this host can
+    # actually hold a command. Proposing "bwrap" with no bwrap would turn
+    # a warning into a refusal of every shell command, which is a worse
+    # state than the one being fixed.
+    return [_row(
+        "bash isolation", WARN, detail,
+        fix if held_by else no_mechanism,
+        setting=("agent.bash_isolation", "bwrap") if held_by else None,
+    )]
 
 
 def _check_document_backends(ctx: dict) -> list[dict]:
@@ -858,6 +907,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("credentials", "_check_credentials"),
     ("chemistry binaries", "_check_binaries"),
     ("python deps", "_check_python_deps"),
+    ("test runner", "_check_test_runner"),
     ("mcp servers", "_check_mcp"),
     ("scheduler daemon", "_check_scheduler"),
     ("git tooling", "_check_git_tooling"),
@@ -880,9 +930,25 @@ def _normalise(row: Any, group: str) -> dict:
     status = row.get("status", FAIL)
     if status not in (PASS, WARN, FAIL):
         status = FAIL
+    # The actionable form is carried through, VALIDATED. This function
+    # coerces whatever a check returned, including a monkeypatched one,
+    # and what it returns is offered to the user for approval -- so a
+    # command is accepted only as a plain one-line string and a setting
+    # only as a (dotted key, value) pair. Anything else is dropped and
+    # the row keeps its prose.
+    command = row.get("command")
+    if not isinstance(command, str) or "\n" in command:
+        command = ""
+    setting = row.get("setting")
+    if (isinstance(setting, (list, tuple)) and len(setting) == 2
+            and isinstance(setting[0], str) and setting[0].strip()):
+        setting = (setting[0], setting[1])
+    else:
+        setting = None
     return _row(
         str(row.get("check", group)), status,
         str(row.get("detail", "")), str(row.get("fix", "")),
+        command=command.strip(), setting=setting,
     )
 
 

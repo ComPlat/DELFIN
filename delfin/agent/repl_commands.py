@@ -286,6 +286,62 @@ def _doctor(ctx, _args: str) -> CommandResult:
         return CommandResult(output=f"doctor failed: {exc}")
 
 
+def _fix(ctx, args: str) -> CommandResult:
+    """List what the doctor proposes, show one, or carry one out.
+
+    Three forms, and the middle one is not a formality:
+
+        /fix              what is wrong, and which of it DELFIN can do
+        /fix <id>         the exact action, and how to approve it
+        /fix <id> run     carry out that exact action
+
+    `/fix <id>` never acts. A person has to see the action and then type
+    the word that runs it, so approval is given to a command rather than
+    to an idea of one -- and the action shown is compared against the
+    action performed, so a report that changed in between refuses instead
+    of running something nobody saw.
+    """
+    from . import prerequisites as _pre
+    parts = args.split()
+    try:
+        if not parts:
+            found = _pre.proposals(ctx.workspace)
+            if not found:
+                return CommandResult(output="nothing to fix: the doctor is clean")
+            doable = [p for p in found if p.kind == _pre.APPLICABLE]
+            lines = [_pre.render(p) for p in found]
+            lines.append("")
+            lines.append(
+                f"{len(doable)} of {len(found)} can be applied here; "
+                "the rest need you." if doable else
+                "None of these is something DELFIN can apply.")
+            return CommandResult(output="\n\n".join(lines))
+        pid = parts[0]
+        prop = _pre.find(pid, ctx.workspace)
+        if prop is None:
+            return CommandResult(output=(
+                f"no proposal {pid!r}; run /fix for the list"))
+        if len(parts) == 1 or parts[1] != "run":
+            return CommandResult(output=_pre.render(prop))
+        if prop.kind != _pre.APPLICABLE:
+            return CommandResult(output=(
+                f"{prop.pid}: {prop.advice}\n"
+                "This is not something DELFIN can apply."))
+        # The approval is the action the user was just shown.
+        out = _pre.apply_proposal(prop, prop.action, workspace=ctx.workspace)
+        if out.get("applied"):
+            tail = str(out.get("output", "")).strip()
+            return CommandResult(output=(
+                f"applied: {out['action']}"
+                + (f"\n{tail[-1500:]}" if tail else "")))
+        return CommandResult(output=(
+            f"not applied: {out.get('refused') or 'unknown reason'}"
+            + (f"\n{str(out.get('output',''))[-1500:]}"
+               if out.get("output") else "")))
+    except Exception as exc:
+        return CommandResult(output=f"fix failed: {exc}")
+
+
 def _init(ctx, _args: str) -> CommandResult:
     try:
         from .project_init import init_project
@@ -1678,6 +1734,9 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/effort", "setup", "Show or set reasoning effort",
                     _effort, True),
         ReplCommand("/doctor", "setup", "Check the setup", _doctor),
+        ReplCommand("/fix", "setup",
+                    "What the doctor proposes; /fix <id> run applies one",
+                    _fix),
         ReplCommand("/init", "setup", "Scaffold AGENTS.md and .delfin/", _init),
         ReplCommand("/mcp", "setup", "Configured MCP servers", _mcp),
         ReplCommand("/trust", "setup", "What this folder offers and withholds",
