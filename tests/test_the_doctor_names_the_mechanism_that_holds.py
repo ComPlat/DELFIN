@@ -114,21 +114,43 @@ def test_switching_it_off_still_says_so(probes):
 
 # -- the two doctors do not contradict each other ---------------------------
 
-def test_the_host_doctor_and_the_agent_doctor_agree(probes):
+@pytest.mark.parametrize("mechanism", ["bwrap", "landlock", "none"])
+def test_the_host_doctor_and_the_agent_doctor_agree(probes, monkeypatch,
+                                                    mechanism):
     """Both answer "what holds a command here". They are separate
-    functions in separate modules, and they had drifted: this pins the
-    one claim they must never disagree on."""
+    functions in separate modules, and they drift.
+
+    This asserted only that the agent doctor does not DENY isolation on a
+    host the host doctor calls isolated. That is a narrower question than
+    the one it is named for, and the next drift went straight through it:
+    the agent doctor called an isolated host isolated "in
+    bypassPermissions only" and warned about it, naming a mechanism all
+    the while. Both halves of the old assertion held while the two
+    doctors gave the user opposite impressions of the same machine.
+
+    So the VERDICTS are compared, in both directions and for each
+    mechanism. The wordings may differ -- they are written for different
+    readers -- but a machine cannot be fine in one report and a warning
+    in the other.
+    """
     from delfin import doctor as HD
     import delfin.agent.socket_guard as SG
 
-    probes(bwrap=False, landlock=True)
-    SG_available = getattr(SG, "available", None)
-    assert callable(SG_available)
-    host = HD.check_command_isolation()
+    probes(bwrap=(mechanism == "bwrap"), landlock=(mechanism == "landlock"))
+    # The host doctor's OK needs Landlock AND the socket guard; the agent
+    # doctor's needs only a filesystem mechanism. Supplied, so the
+    # comparison is between the two verdicts and not between two hosts.
+    monkeypatch.setattr(SG, "available", lambda: True)
 
+    host = HD.check_command_isolation()
     row = _row()
-    if host.status == HD.OK:
-        assert "nothing here can isolate" not in row["detail"], (
-            "the host doctor calls this machine isolated and the agent "
-            "doctor calls it unprotected: " + row["detail"])
-        assert "Landlock" in row["detail"] or "bwrap" in row["detail"]
+    isolated = host.status == HD.OK
+
+    assert (row["status"] == "PASS") == isolated, (
+        f"with {mechanism}, the host doctor says {host.status} and the "
+        f"agent doctor says {row['status']}: one report calls this "
+        f"machine fine and the other does not.\n"
+        f"  host:  {host.detail}\n  agent: {row['detail']}")
+    if isolated:
+        assert "nothing here can isolate" not in row["detail"], row
+        assert "Landlock" in row["detail"] or "bwrap" in row["detail"], row
