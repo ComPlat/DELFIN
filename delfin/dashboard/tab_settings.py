@@ -554,6 +554,22 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     max_tool_rounds_hint = widgets.HTML(
         value='<span style="color:#6b7280; font-size:11px;">'
               '−1 = per-model default · 0 = uncapped</span>')
+    # The OTHER per-turn limit, and the one that actually ends a dashboard
+    # turn first. Two numbers bound a turn: tool rounds (above) and ACTION
+    # rounds, the continuation loop that executes the commands the agent
+    # proposes. Only the first had a field, so a user who raised it and
+    # still saw the turn stop after a dozen steps had no way to reach the
+    # number that stopped it -- and reasonably read that as the setting not
+    # being saved. The stop note already names `agent.max_action_rounds`;
+    # now the name leads somewhere.
+    max_action_rounds_input = widgets.BoundedIntText(
+        value=40, min=0, max=1000, step=5,
+        description='Action rounds',
+        layout=widgets.Layout(width='190px', height='28px'),
+    )
+    max_action_rounds_hint = widgets.HTML(
+        value='<span style="color:#6b7280; font-size:11px;">'
+              '0 = no ceiling (the repeat guard still stops loops)</span>')
     # Which identity names the memory store (agent.memory_key). A dropdown
     # and not a text field: there are two answers, and a typed third would
     # point the agent at an empty store without saying so.
@@ -643,6 +659,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             _rounds_val = int(max_tool_rounds_input.value)
             payload['agent']['max_tool_rounds'] = (
                 None if _rounds_val < 0 else _rounds_val)
+            payload['agent']['max_action_rounds'] = int(
+                max_action_rounds_input.value)
             payload['agent']['memory_key'] = str(
                 memory_key_input.value or 'path')
             save_settings(payload, settings_path)
@@ -1241,6 +1259,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 -1 if _rounds is None else int(_rounds))
         except Exception:
             max_tool_rounds_input.value = -1
+        try:
+            max_action_rounds_input.value = int(
+                agent_payload.get('max_action_rounds', 40) or 0)
+        except Exception:
+            max_action_rounds_input.value = 40
         # An unknown value reads as the default here for the same reason it
         # does in the store: a typo must not point the agent at an empty
         # store, and it must not crash the tab either.
@@ -3517,6 +3540,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             settings_payload['agent']['subagents'] = _subs
             settings_payload['agent']['memory_key'] = str(
                 memory_key_input.value or 'path')
+            settings_payload['agent']['max_action_rounds'] = int(
+                max_action_rounds_input.value)
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
             settings_payload.setdefault('scheduling', {})
@@ -3863,6 +3888,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                          '🔁 Agent run limit (per turn)</b>'),
             widgets.HBox([max_tool_rounds_input, max_tool_rounds_hint],
                          layout=_row_layout),
+            widgets.HBox([max_action_rounds_input, max_action_rounds_hint],
+                         layout=_row_layout),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                'How many <b>continuation rounds</b> the agent gets to carry '
+                'out the commands it proposes, in one turn. This is the limit '
+                'that ends a dashboard turn <b>first</b> &mdash; the note you '
+                'see then names it (<code>agent.max_action_rounds</code>). '
+                'Raise it when the agent stops with work still to do; a round '
+                'only counts against it when it brings a <b>new</b> command, '
+                'and a round that repeats one already run this turn ends the '
+                'turn regardless, so a high number here cannot produce a '
+                'loop. Default 40.'
+                '</div>'
+            ),
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 'How many tool-call rounds the agent runs in a single turn '
