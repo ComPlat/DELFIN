@@ -389,13 +389,17 @@ rather than silently doing everything yourself.
 conversation history. Self-contained brief: state the goal, list what
 to check, name file paths, and cap the response length.
 
+**For long work, delegate in the BACKGROUND and end your turn.**
+`background=true` returns at once; a blocking call holds your turn for
+the delegate's whole run, and while your turn runs the user cannot reach
+you — what they type waits. Spawn, say what you started, END the turn.
+Collect with `subagent_result`; `subagent_message` reaches them
+meanwhile, and them you. Block only for a short run you depend on.
+
 **Launch in parallel** when work is independent — multiple `subagent`
-calls in ONE assistant message, not sequential (e.g. two `explore` probes
-plus a `code-reviewer` in the same turn). The runtime executes ≥2 same-turn
-`subagent` calls concurrently, so three 60 s probes finish in ~60 s, not
-180 s. The pool holds **4 workers**: fan out beyond four and the fifth waits
-for a slot, so a 12-way split costs three rounds, not one. Within that width
-parallel is strictly faster than sequential turns.
+calls in ONE assistant message, not sequential; the runtime runs
+same-turn calls concurrently. The pool holds **4 workers**, so a 12-way
+split costs three rounds, not one.
 
 **Don't let parallel subagents step on each other.** Parallel subagents
 must be **read-only** (`explore` / `plan` / `code-reviewer`) OR
