@@ -54,6 +54,22 @@ from delfin.user_settings import (
 )
 
 
+def _subagent_caps_now() -> str:
+    """The subagent caps in force, from the code that enforces them.
+
+    The help text under these fields used to state figures, and read
+    "300 s" after the default had moved twice. The same drift is already
+    documented in api_client._subagent_caps_phrase, which generates the
+    sentence the model reads at decision time -- so this calls that
+    function rather than becoming a third copy of the numbers.
+    """
+    try:
+        from delfin.agent.api_client import _subagent_caps_phrase
+        return _subagent_caps_phrase()
+    except Exception:
+        return "see delfin/agent/subagents.py"
+
+
 def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     """Create the dashboard Settings tab."""
     settings_path = get_settings_path()
@@ -3879,9 +3895,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 'Caps for each delegated subagent. Higher = subagents can '
-                'investigate/research longer before reporting back (more '
-                'tokens/time). Defaults: 300&nbsp;s wall · 40 tool calls · '
-                '16k output tokens. Empty/0 → default.'
+                'investigate longer before reporting back (more '
+                'tokens/time). Empty/0 → default. In force now: '
+                + html.escape(_subagent_caps_now()) + '.'
                 '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'

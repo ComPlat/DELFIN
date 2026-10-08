@@ -147,9 +147,21 @@ DEFAULT_SETTINGS = {
         # that actually binds on a slow endpoint (a build task spends ~30 s
         # per tool call there); call count and output size have not been
         # the limit in measured runs. 0 → fall back to the module default.
+        # Caps per delegated subagent. Raised 2026-10-08 from 40 calls and
+        # 900 s, because the presets became specialists and two of them
+        # cannot finish inside the old numbers: `verifier` runs the
+        # covering tests and then the same tests on the base as a control,
+        # and the full suite takes 2520 s on this installation -- a cap
+        # below the thing a preset exists to do makes the preset useless,
+        # and the run is billed for a report nobody can use. 40 calls was
+        # sized for `explore`, which uses about ten.
+        #
+        # Caps, not targets: the cost circuit-breaker and the
+        # consecutive-failure abort are unchanged, and a delegate that
+        # finishes in four calls still costs four.
         "subagents": {
-            "max_tool_calls": 40,
-            "max_wall_s": 900,
+            "max_tool_calls": 120,
+            "max_wall_s": 3600,
             "max_output_tokens": 16000,
         },
         # Dashboard ACTION rounds: a round that issues at least one NEW
@@ -814,6 +826,70 @@ def _apply_security_updates(settings):
     return updated
 
 
+#: One-time DEFAULT updates: a shipped default moved, and a file still
+#: carrying the OLD default should follow it. Recorded the same way the
+#: security updates are, so each runs once and a later choice is kept.
+#:
+#: Named apart from the security updates on purpose. Raising a cap is not
+#: a security fix, and putting it under that name would make the record
+#: say something untrue about why it happened.
+_SUBAGENT_CAPS_RAISED = "2026-10-subagent-caps"
+
+#: The values that are FINGERPRINTS of an old shipped default rather than
+#: of a decision. 300 and 900 were the wall-clock defaults at different
+#: times; 40 was the tool-call default. Anything else in the file is a
+#: number somebody chose, and is left alone.
+_OLD_SUBAGENT_DEFAULTS = {"max_wall_s": (300, 900), "max_tool_calls": (40,)}
+
+
+def _apply_default_updates(settings):
+    """Move a file that still carries an old shipped default onto the new one.
+
+    2026-10: the subagent presets became specialists, and two of them
+    cannot finish inside the old caps -- ``verifier`` runs the covering
+    tests and then the same tests on the base as a control. A file holding
+    the old default would have kept the new presets useless while the
+    shipped default said otherwise, which is the drift this codebase has
+    already paid for twice in these same numbers.
+
+    Only the exact old defaults move. A file saying 1800 chose 1800, and
+    the point of a setting is that it is respected; a migration that
+    overwrote it would be the dashboard lying about what is in force.
+    """
+    applied = list(settings.get("default_updates_applied") or [])
+    if _SUBAGENT_CAPS_RAISED in applied:
+        return settings
+    updated = dict(settings)
+    agent = dict(updated.get("agent") or {})
+    subs = dict(agent.get("subagents") or {})
+    shipped = ((DEFAULT_SETTINGS.get("agent") or {}).get("subagents") or {})
+    moved = []
+    for key, fingerprints in _OLD_SUBAGENT_DEFAULTS.items():
+        if key not in subs:
+            continue                      # absent: the default already wins
+        try:
+            current = int(subs[key])
+        except (TypeError, ValueError):
+            continue
+        target = int(shipped.get(key, current) or current)
+        if current in fingerprints and target > current:
+            subs[key] = target
+            moved.append(f"{key} {current} -> {target}")
+    if moved:
+        agent["subagents"] = subs
+        updated["agent"] = agent
+        notices = list(updated.get("security_notices") or [])
+        notices.append(
+            "Settings update: the subagent caps in this file were the old "
+            "shipped defaults and now follow the new ones ("
+            + ", ".join(moved) + "). The specialist presets need the room; "
+            "set your own numbers in ~/.delfin_settings.json and they will "
+            "not be changed again.")
+        updated["security_notices"] = notices
+    updated["default_updates_applied"] = applied + [_SUBAGENT_CAPS_RAISED]
+    return updated
+
+
 def take_security_notices(settings_path=None):
     """The security notices not shown yet, removed from the settings file."""
     path = get_settings_path(settings_path)
@@ -837,8 +913,9 @@ def load_settings(settings_path=None):
     path = get_settings_path(settings_path)
     if path.exists():
         normalized = _normalized_settings_dict(_read_json(path))
-        merged = _merge_missing_defaults(_apply_security_updates(normalized),
-                                         DEFAULT_SETTINGS)
+        merged = _merge_missing_defaults(
+            _apply_default_updates(_apply_security_updates(normalized)),
+            DEFAULT_SETTINGS)
         if merged != normalized:
             _write_json_atomic(path, merged)
         return merged

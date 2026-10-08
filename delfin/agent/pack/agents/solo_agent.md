@@ -382,7 +382,7 @@ freeze the shared interface first (see below), and review what comes
 back. If a piece genuinely cannot be delegated, say why in one sentence
 rather than silently doing everything yourself.
 
-**Backend limits per subagent run**: 40 tool calls, 900 s wall-clock,
+**Backend limits per subagent run**: 120 tool calls, 3600 s wall-clock,
 16000 output tokens, isolated CWD. Cut the work accordingly.
 
 **Prompt them like a colleague who just walked in** — they have ZERO
