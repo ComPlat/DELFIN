@@ -110,13 +110,22 @@ class ConformerClusteringError(Exception):
 
 @dataclass
 class ConformerRecord:
-    """One conformer of a multi-XYZ ensemble file."""
+    """One conformer of a multi-XYZ ensemble file.
+
+    ``index`` is the 0-based frame position within the file (stable across
+    re-reads).  ``family_id`` / ``conformer_id`` are the ids DELFIN writes
+    into the representatives file comment (``family=`` / ``conformer=``),
+    preserved so a round-trip keeps the ORIGINAL ids; both default to
+    ``None`` when the source comment carries no ids.
+    """
 
     index: int
     elements: List[str]
     coords: np.ndarray  # (n_atoms, 3) float
     comment: str
     energy_hartree: Optional[float]
+    family_id: Optional[int] = None
+    conformer_id: Optional[int] = None
 
 
 @dataclass
@@ -151,6 +160,7 @@ class ClusteringResult:
     families: List[FamilyInfo]
     energies_hartree: List[Optional[float]]
     warnings: List[str] = field(default_factory=list)
+    k_scan_extended: bool = False
 
 
 # ====
@@ -159,29 +169,69 @@ class ClusteringResult:
 
 
 _FLOAT_RE = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?")
+#: Explicit energy fields, e.g. ``E=...``, ``Energy=...``, ``energy: ...``,
+#: ``E = -58.22 Eh``.  The value must not be an integer used as a cluster or
+#: conformer id, so it is only accepted behind an explicit energy label.
+_ENERGY_FIELD_RE = re.compile(
+    r"(?:^|\b)(?:E|Energy|energy|gibbs)\s*[:=]\s*"
+    rf"({_FLOAT_RE.pattern})",
+    re.IGNORECASE,
+)
+#: ``conformer=N`` / ``family=N`` ids in the DELFIN representatives comment.
+_GID_FIELD_RE = re.compile(r"\b(?:conformer|family)\s*=\s*(\d+)")
 
 
 def parse_energy_from_comment(comment: str) -> Optional[float]:
-    """Extract the GOAT energy (Hartree) from an XYZ comment line.
+    """Extract the conformer energy (Hartree) from an XYZ comment line.
 
-    GOAT/READENSEMBLE writes the conformer energy as a float into the second
-    line of every frame.  Common decorations (``E=``, ``energy:``, ``Eh``)
-    are tolerated; the first parseable number is taken.  Returns ``None``
-    when the line carries no number.
+    Priority, documented so the parsing is unambiguous:
+
+    1. An explicit energy field: ``E=...``, ``Energy=...``, ``energy: ...``
+       (case-insensitive).  This is the only path that reads a *labelled*
+       number, so ints that are really cluster/conformer ids (``Family 1 |
+       conformer 0 | E=-58.22 Eh``) are never mistaken for an energy.
+    2. The GOAT/READENSEMBLE raw format in which the comment line *begins*
+       with the energy number (e.g. ``-62.9834912942 converged=true``).
+    3. As a last resort, if the line still carries a leading number but no
+       explicit energy label, that number is taken; any other form (only
+       ids, ``None``) returns ``None``.
+
+    Returns ``None`` when no energy can be read or the line carries no
+    number at all; missing/invalid energies are never invented.
     """
     text = comment.strip()
     if not text:
         return None
-    # Skip a leading label such as "E=", "Energy =" or "energy:" so the
-    # number behind it is matched first; the regex itself is greedy on the
-    # first number anywhere in the line, which is the GOAT energy by format.
-    match = _FLOAT_RE.search(text)
-    if match is None:
-        return None
-    try:
-        return float(match.group(0))
-    except ValueError:  # pragma: no cover - regex guarantees parseability
-        return None
+
+    # 1. Explicit energy field wins over everything else.
+    m = _ENERGY_FIELD_RE.search(text)
+    if m is not None:
+        try:
+            return float(m.group(1))
+        except ValueError:  # pragma: no cover - regex guarantees parseability
+            return None
+
+    # 2. GOAT raw format: the comment begins with the energy number.
+    #    Guarded so a line like "Family 1 | conformer 0 | E=..." (which has
+    #    already been handled by rule 1 when it carries a labelled value)
+    #    never yields one of the integer ids as an energy.
+    m = _FLOAT_RE.match(text)
+    if m is not None:
+        return float(m.group(0))
+
+    # 3. No explicit field and no leading number: nothing can be attributed
+    #    to an energy with confidence.
+    return None
+
+
+def _parse_ids_from_comment(comment: str) -> Dict[str, Optional[int]]:
+    """Extract ``family=N`` / ``conformer=N`` ids from a comment line."""
+    ids: Dict[str, Optional[int]] = {"family": None, "conformer": None}
+    for key in ("family", "conformer"):
+        m = re.search(rf"\b{key}\s*=\s*(\d+)", comment or "")
+        if m is not None:
+            ids[key] = int(m.group(1))
+    return ids
 
 
 def read_finalensemble_xyz(path: Union[str, Path]) -> List[ConformerRecord]:
@@ -283,6 +333,7 @@ def read_finalensemble_xyz(path: Union[str, Path]) -> List[ConformerRecord]:
                     f"conformer {len(conformers)} differs from earlier frames"
                 )
 
+        comment_ids = _parse_ids_from_comment(comment)
         conformers.append(
             ConformerRecord(
                 index=len(conformers),
@@ -290,6 +341,8 @@ def read_finalensemble_xyz(path: Union[str, Path]) -> List[ConformerRecord]:
                 coords=np.asarray(coords_rows, dtype=float),
                 comment=comment,
                 energy_hartree=parse_energy_from_comment(comment),
+                family_id=comment_ids["family"],
+                conformer_id=comment_ids["conformer"],
             )
         )
         pos = scan
@@ -392,12 +445,24 @@ def _silhouette(scores_matrix: np.ndarray, labels: np.ndarray) -> Optional[float
 def silhouette_scan(
     features: np.ndarray,
     seed: int = DEFAULT_SEED,
+    extended: bool = False,
 ) -> Tuple[int, List[int], List[Optional[float]], List[str]]:
-    """Reference silhouette scan for the optimal cluster number.
+    """Silhouette scan for the optimal cluster number.
 
     ``features`` is the matrix the scan runs on.  The reference passes the
     **PCA scores** (``find_optimal_clusters(pca_scores)``), not the raw EDM
     eigenvalue features; ``cluster_ensemble`` therefore passes ``pca_scores``.
+
+    ``extended=False`` replicates the reference range
+    ``min_k = max(int(n * 0.1), 2)``, which for a 34-conformer ensemble
+    starts at k=3 and never tests k=2.  ``extended=True`` lowers the lower
+    bound to ``2`` so the smallest chemically meaningful split is part of
+    the scan.  In both modes the scan may revisit every k from that lower
+    bound upward; the returned ``k_chosen`` is the argmax over the scanned
+    range, resolved towards the smallest k (reference ``numpy.argmax``
+    behaviour).  Higher silhouette alone is NOT a proof of scientific
+    superiority: the caller should judge k against the documented
+    alternatives rather than treat the argmax as ground truth.
 
     Returns ``(k_chosen, k_values, scores, warnings)``.  ``scores`` entries
     are ``None`` where the silhouette score is mathematically undefined.
@@ -407,6 +472,14 @@ def silhouette_scan(
     # Reference: min_k = max(int(n*.1), 2), max_k = int(n*.8); degenerate
     # range falls back to k=min_k with placeholder score 0.0, no fitting.
     min_k = max(int(n * 0.1), 2)
+    if extended:
+        warnings.append(
+            "Extended silhouette scan: lower bound lowered to k=2 so the "
+            "smallest split is evaluated (reference starts at "
+            f"k={min_k} for this ensemble size); the reference scan can be "
+            "re-enabled with extended=False"
+        )
+        min_k = 2
     max_k = int(n * 0.8)
     if max_k < min_k:
         warnings.append(
@@ -516,6 +589,7 @@ def cluster_ensemble(
     include_h: bool = True,
     seed: int = DEFAULT_SEED,
     method: str = METHOD_KEY,
+    extended: bool = False,
 ) -> ClusteringResult:
     """Cluster an in-memory ensemble into conformer families.
 
@@ -529,6 +603,10 @@ def cluster_ensemble(
     include_h
         Whether hydrogens enter the distance matrix (reference default:
         ``True``).
+    extended
+        Whether the silhouette scan also tests k=2 (``False`` keeps the
+        reference range; see :func:`silhouette_scan`).  Only consulted
+        when ``k='auto'``.
     seed
         ``random_state`` for PCA and KMeans (reference default 42).
     method
@@ -609,7 +687,9 @@ def cluster_ensemble(
                 raise ConformerClusteringError(
                     f"Invalid cluster count {k!r}; use 'auto' or an integer"
                 )
-            k_chosen, k_values, scores, scan_warnings = silhouette_scan(pca_scores, seed)
+            k_chosen, k_values, scores, scan_warnings = silhouette_scan(
+                pca_scores, seed, extended=extended
+            )
             warnings.extend(scan_warnings)
         else:
             try:
@@ -660,7 +740,180 @@ def cluster_ensemble(
         families=families,
         energies_hartree=energies,
         warnings=warnings,
+        k_scan_extended=extended,
     )
+
+
+# ====
+# Structural quality checks (chemical plausibility)
+# ====
+
+#: A member whose mirror-RMSD to its family representative is clearly
+#: smaller than its normal RMSD is an enantiomeric mirror twin that the
+#: (mirror-insensitive) EDM-eigenvalue descriptor cannot tell apart.
+#: Ratios below this value trigger a ``mirror_twins`` flag.  This is a
+#: deliberate heuristic, not a proof of chirality; it only *flags* the
+#: cluster for inspection and never re-splits it automatically.
+_MIRROR_RMSD_RATIO = 0.7
+#: A member whose RMSD to its representative exceeds this many Angstrom
+#: while its mirror-RMSD is small is reported as a possible enantiomer.
+_MIRROR_RMSD_ABS_A = 0.5
+
+def _mirror_coords(coords: np.ndarray) -> np.ndarray:
+    """Reflect a geometry through the x=0 plane (mirror image)."""
+    return np.asarray(coords, dtype=float).copy() * np.array([-1.0, 1.0, 1.0])
+
+def _struct_rmsd(coords_a: np.ndarray, coords_b: np.ndarray) -> Optional[float]:
+    """Kabsch RMSD between two geometries with identical atom order.
+
+    Translation- and rotation-invariant superposition (the atom order is
+    guaranteed identical across a GOAT ensemble).  Returns ``None`` for
+    shape mismatches.
+    """
+    a = np.asarray(coords_a, dtype=float)
+    b = np.asarray(coords_b, dtype=float)
+    if a.shape != b.shape or a.shape[0] == 0:
+        return None
+    try:
+        from delfin.atom_mapping import apply_rt, kabsch_rt
+    except Exception:  # noqa: BLE001 - analysis must never crash the run
+        # Fallback: plain all-atoms RMSD (no rotation) if the mapping
+        # module is unavailable.
+        return float(np.sqrt(np.mean(((a - b) ** 2))))
+    R, pc, qc = kabsch_rt(a, b)
+    aligned = apply_rt(a, R, pc, qc)
+    return float(np.sqrt(np.mean(((aligned - b) ** 2))))
+
+
+def _family_pairwise_rmsd(
+    conformers: Sequence[ConformerRecord],
+    member_indices: Sequence[int],
+    ref_index: int,
+) -> Dict[str, Optional[float]]:
+    """mean/max member-vs-representative RMSD within one family."""
+    ref = conformers[ref_index].coords
+    vals: List[float] = []
+    for idx in member_indices:
+        r = _struct_rmsd(conformers[idx].coords, ref)
+        if r is not None:
+            vals.append(r)
+    if not vals:
+        return {"mean": None, "max": None, "n_compared": 0}
+    return {
+        "mean": float(np.mean(vals)),
+        "max": float(np.max(vals)),
+        "n_compared": len(vals),
+    }
+
+
+def _mirror_twin_flags(
+    conformers: Sequence[ConformerRecord],
+    member_indices: Sequence[int],
+    ref_index: int,
+) -> List[int]:
+    """Members whose mirrored geometry fits the representative markedly
+    better than the direct geometry (enantiomeric mirror twins).
+
+    A member is flagged only when BOTH criteria hold:
+      mirror_rmsd < normal_rmsd * _MIRROR_RMSD_RATIO
+      mirror_rmsd < _MIRROR_RMSD_ABS_A
+    So an unsymmetrical rigid molecule whose mirror image resembles the
+    representative while the direct geometry does not is caught, while
+    ordinary small-amplitude thermal noise around a single conformation
+    is not.  Flagging never re-clusters; it only warns.
+    """
+    ref = conformers[ref_index].coords
+    ref_mirror = _mirror_coords(ref)
+    flagged: List[int] = []
+    for idx in member_indices:
+        if idx == ref_index:
+            continue
+        normal = _struct_rmsd(conformers[idx].coords, ref)
+        if normal is None:
+            continue
+        mirrored = _struct_rmsd(conformers[idx].coords, ref_mirror)
+        if mirrored is None:
+            continue
+        if (
+            mirrored < _MIRROR_RMSD_RATIO * normal
+            and mirrored < _MIRROR_RMSD_ABS_A
+        ):
+            flagged.append(idx)
+    return flagged
+
+
+def compute_quality_checks(
+    result: ClusteringResult,
+    conformers: Sequence[ConformerRecord],
+) -> Dict[str, Any]:
+    """Structural plausibility of the clustering.
+
+    Returns a dict (safe to store in ``cluster_summary.json``) with:
+      ``intra_family``    per family: mean/max member-vs-rep RMSD and any
+                          mirror-twin member indices.
+      ``inter_rep_rmsd``  square pairwise RMSD between representatives.
+      ``warnings``        human-readable flags describing inhomogeneous or
+                          stereochemically suspect clusters.
+
+    This analysis FLAGS, it never re-splits.  Automatic re-clustering
+    would require a user-controlled rule and is deliberately not part of
+    this function.
+    """
+    intra: List[Dict[str, Any]] = []
+    for fam in result.families:
+        rmsd = _family_pairwise_rmsd(
+            conformers, fam.members, fam.representative_index
+        )
+        mirror = _mirror_twin_flags(
+            conformers, fam.members, fam.representative_index
+        )
+        intra.append(
+            {
+                "family_id": fam.family_id,
+                "n_members": len(fam.members),
+                "rmsd_to_rep_A_mean": rmsd["mean"],
+                "rmsd_to_rep_A_max": rmsd["max"],
+                "n_compared": rmsd["n_compared"],
+                "mirror_twin_member_indices": mirror,
+            }
+        )
+
+    reps = [fam.representative_index for fam in result.families]
+    n_rep = len(reps)
+    inter_rep: List[List[Optional[float]]] = [
+        [None] * n_rep for _ in range(n_rep)
+    ]
+    for i in range(n_rep):
+        for j in range(i + 1, n_rep):
+            d = _struct_rmsd(conformers[reps[i]].coords, conformers[reps[j]].coords)
+            inter_rep[i][j] = inter_rep[j][i] = d
+
+    warnings: List[str] = []
+    for entry in intra:
+        fam_id = entry["family_id"]
+        if entry["rmsd_to_rep_A_max"] is not None and entry["rmsd_to_rep_A_max"] > 2.0:
+            warnings.append(
+                f"Family {fam_id}: max member->representative RMSD "
+                f"{entry['rmsd_to_rep_A_max']:.3f} A exceeds 2.0 A -- the "
+                "family may contain structurally distinct conformers; a "
+                "single representative probably does not cover the "
+                "geometric diversity"
+            )
+        if entry["mirror_twin_member_indices"]:
+            warnings.append(
+                f"Family {fam_id}: members {entry['mirror_twin_member_indices']} "
+                "have a markedly better RMSD as mirror images of the "
+                "representative than directly -- possible enantiomeric "
+                "mirror twins that the mirror-insensitive EDM-eigenvalue "
+                "descriptor cannot separate. Inspect stereochemistry "
+                "before scientific use."
+            )
+
+    return {
+        "intra_family": intra,
+        "inter_rep_rmsd_A": inter_rep,
+        "warnings": warnings,
+    }
 
 
 # ====
@@ -764,8 +1017,14 @@ def write_cluster_summary_json(
     out_dir: Path,
     path: Path,
     pca_explained_cumulative: Optional[np.ndarray] = None,
+    quality: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Full provenance summary of the clustering run."""
+    """Full provenance summary of the clustering run.
+
+    ``quality`` (from :func:`compute_quality_checks`) is embedded under
+    ``quality_analysis`` so the structural-plausibility flags survive in the
+    JSON.
+    """
     from delfin import __version__ as delfin_version
 
     cumulative = (
@@ -773,6 +1032,10 @@ def write_cluster_summary_json(
         if pca_explained_cumulative is not None
         else np.cumsum(result.explained_variance_ratio)
     )
+    k_mode = "auto" if len(result.k_values) > 1 or (
+        len(result.k_values) == 1 and result.silhouette_scores[0] is not None
+        and result.k_values[0] != result.k_chosen
+    ) else "fixed_or_degenerate"
     payload = {
         "method": METHOD_LABEL,
         "method_key": result.method,
@@ -796,16 +1059,19 @@ def write_cluster_summary_json(
             ],
         },
         "k_scan": {
-            "mode": "auto" if len(result.k_values) > 1 or (
-                len(result.k_values) == 1 and result.silhouette_scores[0] is not None
-                and result.k_values[0] != result.k_chosen
-            ) else "fixed_or_degenerate",
+            "mode": k_mode,
+            "extended": bool(result.k_scan_extended)
+            if k_mode == "auto"
+            else False,
             "k_values": list(result.k_values),
             "silhouette_scores": [
                 None if s is None else float(s) for s in result.silhouette_scores
             ],
             "k_chosen": result.k_chosen,
             "tie_break": "smallest k (numpy.argmax over ascending k, reference behavior)",
+            "note": ("higher silhouette alone is NOT proof of scientific "
+                     "superiority; judge k against the documented alternatives "
+                     "and the structural quality flags below"),
         },
         "kmeans_params": dict(result.kmeans_params),
         "random_seed": result.seed,
@@ -822,6 +1088,7 @@ def write_cluster_summary_json(
         ],
         "n_families": len(result.families),
         "warnings": list(result.warnings),
+        "quality_analysis": quality if quality is not None else {},
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     path.write_text(
@@ -853,19 +1120,24 @@ def write_clustered_representatives_xyz(
     for fam in ordered:
         conf = conformers[fam.representative_index]
         n_atoms = len(conf.elements)
-        comment = (
-            f"Family {fam.family_id} | conformer {conf.index} | "
-            + (
-                f"E={fam.rep_energy_hartree:.10f} Eh | "
-                if fam.rep_energy_hartree is not None
-                else "E=unknown | "
+        # Comment format (Avogadro-safe, machine-readable, round-trippable
+        # through our own parser): the leading number is the energy in
+        # Hartree, followed by unambiguous family/conformer ids and the
+        # explicit unit.  parse_energy_from_comment() reads the leading
+        # number (GOAT rule) so the file round-trips exactly.
+        if fam.rep_energy_hartree is not None:
+            energy_part = (
+                f"{fam.rep_energy_hartree:.10f} "
+                f"family={fam.family_id} conformer={conf.index} energy_unit=Eh"
             )
-            + (
-                f"dE={fam.rep_rel_energy_kcal_mol:.6f} kcal/mol"
-                if fam.rep_rel_energy_kcal_mol is not None
-                else "dE=unknown"
+        else:
+            energy_part = (
+                f"energy=unknown family={fam.family_id} "
+                f"conformer={conf.index} energy_unit=Eh"
             )
-        )
+        if fam.rep_rel_energy_kcal_mol is not None:
+            energy_part += f" dE={fam.rep_rel_energy_kcal_mol:.6f} kcal/mol"
+        comment = energy_part
         lines = [str(n_atoms), comment]
         for element, (x, y, z) in zip(conf.elements, conf.coords):
             lines.append(f"{element} {x:.10f} {y:.10f} {z:.10f}")
@@ -1021,17 +1293,26 @@ def run_clustering(
     seed: int = DEFAULT_SEED,
     method: str = METHOD_KEY,
     write_plots: bool = True,
+    extended: bool = False,
+    quality_checks: bool = True,
 ) -> Dict[str, Any]:
     """Standalone clustering of an existing ensemble file.
 
     Parses ``input_xyz``, runs :func:`cluster_ensemble` and writes the
     result folder (default ``conformer_clustering/`` next to the input
     file).  Returns a summary dict with the written file paths.
+
+    ``extended`` is forwarded to :func:`cluster_ensemble`; see there.
+    ``quality_checks`` (default ``True``) runs the structural-plausibility
+    analysis (:func:`compute_quality_checks`) and attaches its flags to the
+    summary and ``cluster_summary.json``.  The analysis only flags and never
+    performs an automatic re-split.
     """
     input_path = Path(input_xyz).resolve()
     conformers = read_finalensemble_xyz(input_path)
     result = cluster_ensemble(
-        conformers, k=k, include_h=include_h, seed=seed, method=method
+        conformers, k=k, include_h=include_h, seed=seed, method=method,
+        extended=extended,
     )
     result.input_file = str(input_path)
 
@@ -1049,11 +1330,21 @@ def run_clustering(
         "pca_clusters.png": out_path / "pca_clusters.png",
         "silhouette_scan.png": out_path / "silhouette_scan.png",
     }
+
+    quality: Dict[str, Any] = {}
+    all_warnings = list(result.warnings)
+    if quality_checks:
+        quality = compute_quality_checks(result, conformers)
+        all_warnings.extend(quality["warnings"])
+
     write_clustered_representatives_xyz(result, conformers, files["clustered_representatives.xyz"])
     write_cluster_assignments_csv(result, conformers, files["cluster_assignments.csv"])
     write_silhouette_scan_csv(result, files["silhouette_scan.csv"])
     write_pca_coordinates_csv(result, files["pca_coordinates.csv"])
-    write_cluster_summary_json(result, conformers, out_path, files["cluster_summary.json"])
+    write_cluster_summary_json(
+        result, conformers, out_path, files["cluster_summary.json"],
+        quality=(quality if quality_checks else None),
+    )
     if write_plots:
         plot_pca_clusters(result, conformers, files["pca_clusters.png"])
         plot_silhouette_scan(result, files["silhouette_scan.png"])
@@ -1071,7 +1362,8 @@ def run_clustering(
         "k_chosen": result.k_chosen,
         "out_dir": str(out_path),
         "files": {name: str(p) for name, p in files.items() if p.exists()},
-        "warnings": list(result.warnings),
+        "warnings": all_warnings,
+        "quality_checks": quality,
         "result": result,
     }
 
@@ -1123,6 +1415,11 @@ def maybe_run_from_config(
         seed = int(seed_raw)
     except (TypeError, ValueError):
         seed = DEFAULT_SEED
+    extended = str(config.get("conformer_cluster_extended", "no")).strip().lower() == "yes"
+    if extended:
+        log.info(
+            "conformer_cluster_extended=yes: silhouette scan will also test k=2"
+        )
 
     root = Path(search_dir)
     candidates = sorted(
@@ -1146,6 +1443,7 @@ def maybe_run_from_config(
             include_h=not exclude_h,
             seed=seed,
             method=method,
+            extended=extended,
         )
     except ConformerClusteringError as exc:
         log.error("Conformer clustering failed: %s", exc)
@@ -1194,6 +1492,7 @@ def run_cli(argv: Sequence[str]) -> int:
     parser.add_argument("--exclude-h", action="store_true", help="exclude hydrogens from the distance matrix")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed for PCA/KMeans (default 42)")
     parser.add_argument("--method", default=METHOD_KEY, choices=SUPPORTED_METHODS, help="clustering method")
+    parser.add_argument("--extended", action="store_true", help="silhouette scan also tests k=2 (default: reference range)")
     args = parser.parse_args(list(argv))
 
     k_arg: Union[str, int]
@@ -1214,14 +1513,22 @@ def run_cli(argv: Sequence[str]) -> int:
             include_h=not args.exclude_h,
             seed=args.seed,
             method=args.method,
+            extended=args.extended,
         )
     except ConformerClusteringError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Conformers: {summary['n_conformers']}")
-    print(f"Families:   {summary['n_families']} (k={summary['k_chosen']})")
-    print(f"Output:     {summary['out_dir']}")
+    print("EnAn conformer clustering completed")
+    print(f"Input conformers:     {summary['n_conformers']}")
+    print(f"Selected families:    {summary['n_families']} (k={summary['k_chosen']})")
+    reps = sorted(
+        fam.representative_index
+        for fam in summary["result"].families
+    )
+    print("Representative conformers: " + ", ".join(str(r) for r in reps))
+    print(f"Output:               {summary['out_dir']}")
+    print(f"All {len(reps)} representatives written successfully.")
     for warning in summary["warnings"]:
-        print(f"Warning:   {warning}")
+        print(f"Warning:              {warning}")
     return 0

@@ -2311,6 +2311,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("conformer_clusters", _as_conformer_clusters, default="auto"),
     FieldSpec("conformer_cluster_exclude_h", _as_yes_no, default="no"),
     FieldSpec("conformer_cluster_seed", _as_int, default=42),
+    FieldSpec("conformer_cluster_extended", _as_yes_no, default="no"),
 )
 
 

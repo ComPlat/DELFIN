@@ -25,11 +25,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from delfin.analysis_tools.conformer_clustering import (  # noqa: E402
+    ClusteringResult,
     ConformerRecord,
     ConformerClusteringError,
+    FamilyInfo,
     cluster_ensemble,
     compute_edm_eigenvalues,
     compute_features,
+    compute_quality_checks,
+    parse_energy_from_comment,
     read_finalensemble_xyz,
     run_clustering,
     silhouette_scan,
@@ -346,13 +350,25 @@ class TestOutputs:
     def test_representatives_xyz_structure(self, tmp_path):
         summary = self._run(tmp_path)
         text = Path(summary["files"]["clustered_representatives.xyz"]).read_text()
-        # 2 representatives, each 4 atoms: atom lines have 4 float columns;
-        # headers are digit-only, comment lines start with "Family"
-        n_atom_lines = sum(
-            1 for line in text.splitlines()
-            if line and not line.strip().isdigit() and not line.startswith("Family")
+        # One frame per representative: each frame is "<natoms>\n<comment>\n"
+        # followed by exactly <natoms> atom lines.  Count frames via the
+        # digit-only headers and the total atom lines via those headers.
+        lines = text.splitlines()
+        headers = [
+            i for i, line in enumerate(lines)
+            if line.strip().isdigit()
+        ]
+        assert len(headers) == 2  # one frame per family
+        n_atoms_from_headers = sum(int(lines[i].strip()) for i in headers)
+        # Atom lines are the non-header, non-comment lines; the comment of
+        # every frame is the line right after a header.
+        comment_idx = {i + 1 for i in headers}
+        atom_line_count = sum(
+            1 for i, line in enumerate(lines)
+            if i not in set(headers) and i not in comment_idx and line.strip()
         )
-        assert n_atom_lines == 8
+        assert atom_line_count == n_atoms_from_headers
+        assert atom_line_count == 8  # 2 reps x 4 atoms
 
     def test_summary_json_fields(self, tmp_path):
         summary = self._run(tmp_path)
@@ -387,7 +403,8 @@ class TestCliAndHook:
         rc = run_cli([str(path), "--out", str(tmp_path / "cli_out"), "-k", "2"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "Families:   2 (k=2)" in out
+        assert "Selected families:    2 (k=2)" in out
+        assert "All 2 representatives written successfully." in out
         assert (tmp_path / "cli_out" / "cluster_summary.json").exists()
 
     def test_cli_invalid_k_errors_cleanly(self, tmp_path, capsys):
@@ -422,6 +439,35 @@ class TestCliAndHook:
         assert summary is not None
         assert summary["n_families"] >= 2
         assert (goat_dir / "conformer_clustering" / "cluster_summary.json").exists()
+
+    def test_maybe_run_from_config_extended_scans_k2(self, tmp_path, caplog):
+        import json
+        import logging
+
+        from delfin.analysis_tools.conformer_clustering import maybe_run_from_config
+
+        goat_dir = tmp_path / "def2-SVP_GOAT"
+        goat_dir.mkdir()
+        _write_ensemble(goat_dir / "molecule.finalensemble.xyz", _two_family_frames(n_per_family=18))
+        config = {
+            "conformer_clustering": "yes",
+            "conformer_clustering_method": "enan",
+            "conformer_clusters": "auto",
+            "conformer_cluster_exclude_h": "no",
+        }
+        # reference (extended off): scan starts at max(int(0.1*n),2)=3 for n=36
+        with caplog.at_level(logging.INFO):
+            ref = maybe_run_from_config(config, tmp_path, logger_=logging.getLogger(__name__))
+        ref_js = json.loads((goat_dir / "conformer_clustering" / "cluster_summary.json").read_text())
+        assert ref_js["k_scan"]["k_values"][0] == 3
+
+        # extended on: k=2 is scanned as well
+        config["conformer_cluster_extended"] = "yes"
+        with caplog.at_level(logging.INFO):
+            ext = maybe_run_from_config(config, tmp_path, logger_=logging.getLogger(__name__))
+        ext_js = json.loads((goat_dir / "conformer_clustering" / "cluster_summary.json").read_text())
+        assert ext_js["k_scan"]["extended"] is True
+        assert ext_js["k_scan"]["k_values"][0] == 2
 
     def test_maybe_run_from_config_no_ensemble_is_silent(self, tmp_path, caplog):
         import logging
@@ -564,3 +610,284 @@ class TestEnAnParity:
             (sorted(np.where(labels_ours == c)[0].tolist()) for c in set(labels_ours))
         )
         assert ref_sets == our_sets
+
+
+# ---------------------------------------------------------------------------
+# New: energy-parser robustness, extended k-scan, representative roundtrip,
+# quality checks (incl. stereochemistry), seed stability, missing energies.
+# ---------------------------------------------------------------------------
+
+
+def _chiral_geometry():
+    """A genuinely chiral 5-atom geometry (mirror NOT superposable by rotation)."""
+    return np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.2, 0.0],
+            [-0.3, -0.4, 1.0],
+            [0.2, -0.3, -0.9],
+        ],
+        dtype=float,
+    )
+
+
+class TestEnergyParserExtended:
+    def test_energy_field_wins_over_ids(self):
+        # Cluster/conformer ids must never be parsed as the energy.
+        assert parse_energy_from_comment(
+            "Family 1 | conformer 0 | E=-58.2220784074 Eh"
+        ) == pytest.approx(-58.2220784074)
+        assert parse_energy_from_comment(
+            "E=-58.2220784074 Eh family=1 conformer=0"
+        ) == pytest.approx(-58.2220784074)
+
+    def test_goat_raw_lead_number(self):
+        # GOAT writes the energy as the first number.
+        assert parse_energy_from_comment(
+            "-62.9834912942 converged=true"
+        ) == pytest.approx(-62.9834912942)
+
+    def test_id_only_line_is_none(self):
+        assert parse_energy_from_comment("Family 3 conformer 7 no energy") is None
+        assert parse_energy_from_comment("family=2 conformer=5") is None
+        assert parse_energy_from_comment("") is None
+
+    def test_energy_field_variant(self):
+        assert parse_energy_from_comment("energy: -12.3456") == pytest.approx(-12.3456)
+        assert parse_energy_from_comment("Energy = -1.0") == pytest.approx(-1.0)
+
+
+class TestRepresentativeRoundtrip:
+    def test_exactly_one_rep_per_family(self, tmp_path):
+        path = _write_ensemble(tmp_path / "ens.xyz", _two_family_frames(n_per_family=6))
+        summary = run_clustering(path, out_dir=tmp_path / "out", write_plots=False)
+        reps = [fam.representative_index for fam in summary["result"].families]
+        # one representative per family, all distinct
+        assert len(reps) == summary["n_families"]
+        assert len(set(reps)) == len(reps)
+        # every representative is a true member of its own family
+        for fam in summary["result"].families:
+            assert fam.representative_index in fam.members
+
+    def test_roundtrip_representatives_xyz(self, tmp_path):
+        path = _write_ensemble(tmp_path / "ens.xyz", _two_family_frames(n_per_family=6))
+        out_dir = tmp_path / "out"
+        summary = run_clustering(path, out_dir=out_dir, write_plots=False)
+        rep_path = Path(summary["files"]["clustered_representatives.xyz"])
+        text = rep_path.read_text()
+        reps = read_finalensemble_xyz(rep_path)
+        # one frame per family
+        assert len(reps) == summary["n_families"]
+        # every frame documents its ORIGINAL conformer id and family id
+        for rec in reps:
+            assert rec.conformer_id is not None
+            assert rec.family_id is not None
+        # energies + original ids round-trip against the in-memory results
+        expected = {
+            fam.representative_index: (
+                summary["result"].energies_hartree[fam.representative_index],
+                fam.family_id,
+            )
+            for fam in summary["result"].families
+        }
+        for rec in reps:
+            orig_energy, fam_id = expected[rec.conformer_id]
+            assert rec.family_id == fam_id
+            if orig_energy is not None:
+                assert rec.energy_hartree == pytest.approx(orig_energy, abs=1e-9)
+            else:
+                assert rec.energy_hartree is None
+        # no representative is silently dropped
+        assert sorted(rec.conformer_id for rec in reps) == sorted(expected)
+
+    def test_original_file_not_modified(self, tmp_path):
+        path = _write_ensemble(tmp_path / "ens.xyz", _two_family_frames(n_per_family=6))
+        original = path.read_text()
+        run_clustering(path, out_dir=tmp_path / "out", write_plots=False)
+        assert path.read_text() == original
+
+
+class TestExtendedKScan:
+    def _feats_36(self):
+        rng = np.random.default_rng(3)
+        return np.vstack([rng.normal(c, 0.1, (12, 2)) for c in (0.0, 3.0, 6.0)])
+
+    def test_extended_includes_k2(self):
+        feats = self._feats_36()
+        _, ref_vals, _, _ = silhouette_scan(feats, seed=42)
+        _, ext_vals, _, ext_w = silhouette_scan(feats, seed=42, extended=True)
+        assert ref_vals[0] == 3  # reference starts at k=3 for n=36
+        assert ext_vals[0] == 2  # extended also tests k=2
+        assert any("extended" in w.lower() for w in ext_w)
+
+    def test_reference_mode_unchanged(self):
+        feats = self._feats_36()
+        k_ref, vals_ref, scores_ref, _ = silhouette_scan(feats, seed=42)
+        # default (extended=False) is exactly the reference range
+        assert vals_ref[0] == max(int(36 * 0.1), 2) == 3
+        assert all(s is None or isinstance(s, float) for s in scores_ref)
+        assert k_ref in vals_ref
+
+
+class TestQualityChecks:
+    def _records_from_frames(self, frames):
+        return _records(frames)
+
+    def test_mirror_twin_flagged(self):
+        # A conformer that is the mirror image of the family representative
+        # passes the EDM-eigenvalue (mirror-insensitive) descriptor, so it
+        # can land in the same family; compute_quality_checks must flag it.
+        tet = _chiral_geometry()
+        mirror = _mirror_of(tet)
+        conformers = _records(
+            [
+                (["C", "C", "C", "C", "C"], tet, -100.0),
+                (["C", "C", "C", "C", "C"], tet, -100.05),
+                (["C", "C", "C", "C", "C"], mirror, -100.10),
+            ]
+        )
+        # Realistic single-family result: EDM eigenvalues cannot tell the
+        # mirror image apart, so all three share one family with member 0
+        # (lowest energy) as representative.
+        result = ClusteringResult(
+            method="enan",
+            input_file="",
+            n_conformers=3,
+            include_h=True,
+            feature_dimension=5,
+            eigenvalues=np.zeros((3, 5)),
+            pca_scores=np.zeros((3, 2)),
+            explained_variance_ratio=np.zeros(2),
+            k_values=[1],
+            silhouette_scores=[None],
+            k_chosen=1,
+            kmeans_params={"n_init": "auto", "random_state": 42},
+            seed=42,
+            labels=np.zeros(3, dtype=int),
+            families=[
+                FamilyInfo(
+                    family_id=1,
+                    representative_index=0,
+                    members=[0, 1, 2],
+                    rep_energy_hartree=-100.0,
+                    rep_rel_energy_kcal_mol=0.0,
+                )
+            ],
+            energies_hartree=[-100.0, -100.05, -100.10],
+        )
+        checks = compute_quality_checks(result, conformers)
+        # the mirror twin member (index 2) must be flagged in its family
+        flagged = [
+            i
+            for fam in checks["intra_family"]
+            for i in fam["mirror_twin_member_indices"]
+        ]
+        assert 2 in flagged
+        assert any("mirror" in w.lower() for w in checks["warnings"])
+
+    def test_inhomogeneous_family_warning(self):
+        # A member with a genuinely DIFFERENT shape (not a pure translation,
+        # which Kabsch alignment makes invisible) far from the representative
+        # -> homogeneity warning.
+        base = _chiral_geometry()
+        # structurally distinct: elongated chain geometry, not a shifted copy
+        far = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [6.0, 0.0, 0.0],
+                [12.0, 0.0, 0.0],
+                [18.0, 1.0, 0.0],
+                [24.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        )
+        conformers = _records(
+            [
+                (["C", "C", "C", "C", "C"], base, -100.0),
+                (["C", "C", "C", "C", "C"], far, -99.0),
+            ]
+        )
+        result = ClusteringResult(
+            method="enan",
+            input_file="",
+            n_conformers=2,
+            include_h=True,
+            feature_dimension=5,
+            eigenvalues=np.zeros((2, 5)),
+            pca_scores=np.zeros((2, 2)),
+            explained_variance_ratio=np.zeros(2),
+            k_values=[1],
+            silhouette_scores=[None],
+            k_chosen=1,
+            kmeans_params={"n_init": "auto", "random_state": 42},
+            seed=42,
+            labels=np.zeros(2, dtype=int),
+            families=[
+                FamilyInfo(
+                    family_id=1,
+                    representative_index=0,
+                    members=[0, 1],
+                    rep_energy_hartree=-100.0,
+                    rep_rel_energy_kcal_mol=0.0,
+                )
+            ],
+            energies_hartree=[-100.0, -99.0],
+        )
+        checks = compute_quality_checks(result, conformers)
+        max_rmsd = checks["intra_family"][0]["rmsd_to_rep_A_max"]
+        assert max_rmsd is not None and max_rmsd > 2.0  # far member detected
+        assert any("exceeds 2.0" in w for w in checks["warnings"])
+
+
+class TestStabilityAndMissing:
+    def test_same_seed_stable(self):
+        rng = np.random.default_rng(5)
+        frames = []
+        for fam, center in enumerate((0.0, 4.0)):
+            for i in range(12):
+                coords = center + rng.normal(0, 0.05, (4, 3))
+                frames.append((list("CCHH"), coords, -100.0 + fam))
+        a = cluster_ensemble(_records(frames), k="auto", seed=42)
+        b = cluster_ensemble(_records(frames), k="auto", seed=42)
+        # identical partition up to family numbering
+        set_a = {frozenset(f.members) for f in a.families}
+        set_b = {frozenset(f.members) for f in b.families}
+        assert set_a == set_b
+
+    def test_missing_energy_handled(self, tmp_path):
+        frames_wo = [
+            (list("CCHH"), np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], float), None),
+            (list("CCHH"), np.array([[0.1, 0, 0], [1.1, 0, 0], [0.1, 1, 0], [0.1, 0, 1]], float), None),
+        ]
+        path = _write_ensemble(tmp_path / "ens.xyz", frames_wo)
+        # frames with None energy -> write nothing in the energy field
+        text = path.read_text()
+        assert "None" not in text
+        summary = run_clustering(path, out_dir=tmp_path / "out", write_plots=False)
+        assert summary["n_families"] >= 1
+        # representatives either carry an energy or are documented as unknown
+        for fam in summary["result"].families:
+            assert fam.representative_index in fam.members
+
+    def test_translation_vs_distinct_geometries(self):
+        # Pure translation of the SAME geometry yields identical EDM
+        # eigenvalues (that is why shifted copies do not validate distinct
+        # structure classes).  A genuinely different shape must differ.
+        base = np.array([[0.0, 0, 0], [1.0, 0, 0], [0, 1.0, 0]])
+        shifted = base + np.array([3.0, -1.0, 2.0])
+        dist = np.array([[0.0, 0, 0], [2.0, 0, 0], [0, 0, 3.0]])  # different shape
+        same = compute_features(_records([
+            (["C", "C", "C"], base, None),
+            (["C", "C", "C"], shifted, None),
+        ]))
+        assert np.allclose(same[0], same[1], atol=1e-10)  # translation-invariant
+        diff = compute_features(_records([
+            (["C", "C", "C"], base, None),
+            (["C", "C", "C"], dist, None),
+        ]))
+        assert not np.allclose(diff[0], diff[1], atol=1e-6)  # shape change detectable
+
+
+def _mirror_of(coords):
+    return np.asarray(coords, dtype=float) * np.array([-1.0, 1.0, 1.0])
