@@ -12505,7 +12505,7 @@ class _DocToolExecutor:
         if not full.exists():
             return json.dumps({"error": (
                 f"File not found: {rel_path}"
-                + _why_that_path_is_not_there(rel_path))})
+                + _why_that_path_is_not_there(rel_path, root))})
         if full.is_dir():
             entries = sorted(p.name for p in full.iterdir())[:50]
             return json.dumps({"type": "directory", "entries": entries})
@@ -15972,7 +15972,7 @@ class _DocToolExecutor:
         if not resolved.exists():
             return json.dumps({"error": (
                 f"file not found: {path_arg}"
-                + _why_that_path_is_not_there(path_arg))})
+                + _why_that_path_is_not_there(path_arg, getattr(perms, "workspace", None)))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
 
@@ -16096,7 +16096,7 @@ class _DocToolExecutor:
         if not resolved.exists():
             return json.dumps({"error": (
                 f"file not found: {path_arg}"
-                + _why_that_path_is_not_there(path_arg))})
+                + _why_that_path_is_not_there(path_arg, getattr(perms, "workspace", None)))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
 
@@ -17275,7 +17275,7 @@ class _DocToolExecutor:
         if not resolved.exists():
             return json.dumps({"error": (
                 f"file not found: {path_arg}"
-                + _why_that_path_is_not_there(path_arg))})
+                + _why_that_path_is_not_there(path_arg, getattr(perms, "workspace", None)))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
         if resolved.suffix.lower() != ".ipynb":
@@ -17343,7 +17343,7 @@ class _DocToolExecutor:
         if not resolved.exists():
             return json.dumps({"error": (
                 f"file not found: {path_arg}"
-                + _why_that_path_is_not_there(path_arg))})
+                + _why_that_path_is_not_there(path_arg, getattr(perms, "workspace", None)))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
         if resolved.suffix.lower() != ".ipynb":
@@ -20161,7 +20161,7 @@ def _handover_hint(resolved, workspace) -> str:
         return ""
 
 
-def _why_that_path_is_not_there(path_arg: str) -> str:
+def _why_that_path_is_not_there(path_arg: str, workspace=None) -> str:
     """A clause naming the mistake a missing path reads like, or "".
 
     Input: the path as the caller wrote it. Output: a sentence to append
@@ -20201,9 +20201,67 @@ def _why_that_path_is_not_there(path_arg: str) -> str:
             return (f" — this account's home directory is {home}. The path "
                     f"puts '{home.name}' somewhere else, which is how a home "
                     "path built by hand usually goes wrong here.")
+        elsewhere = _on_another_sessions_branch(text, workspace)
+        if elsewhere:
+            return elsewhere
     except Exception:
         return ""
     return ""
+
+
+def _on_another_sessions_branch(path_arg: str, workspace) -> str:
+    """A clause when the same relative path exists in a sibling worktree.
+
+    The third shape from the field (2026-10-08): a session built its
+    component, found `delfin/chemdarwin_interface.py` absent from its own
+    worktree, and cleanly reverted 475 lines -- the module was on another
+    session's branch. The shared handover directory carries documents;
+    code reaches a worktree through main. "File not found" was true and
+    said nothing about either.
+
+    Looks only at the SAME repository's worktrees and only for existence
+    of the same relative path, never at content: that a file exists on a
+    sibling branch is what `git branch -a` would tell anyone. Names the
+    branch and the way: that session pushes and opens a PR; this one
+    merges main. Never raises.
+    """
+    try:
+        from . import exchange as _ex
+        if not workspace or Path(path_arg).is_absolute():
+            return ""
+        room = _ex.directory_for(workspace, create=False)
+        if room is None:
+            return ""
+        owner = room.parent.parent
+        trees = owner / ".delfin" / "worktrees"
+        if not trees.is_dir():
+            return ""
+        mine = Path(workspace).resolve()
+        rel = Path(path_arg)
+        found = []
+        for tree in sorted(trees.iterdir()):
+            if not tree.is_dir() or tree.resolve() == mine:
+                continue
+            if (tree / rel).exists():
+                branch = ""
+                try:
+                    from .session_presence import repository_of
+                    branch = str(repository_of(str(tree)).get("branch") or "")
+                except Exception:
+                    branch = ""
+                found.append(f"{tree.name}" + (f" (branch {branch})" if branch else ""))
+            if len(found) >= 3:
+                break
+        if not found:
+            return ""
+        return (f" — this path exists in another session's worktree: "
+                f"{', '.join(found)}. Code reaches you through main, not "
+                "through their worktree: ask that session to push its "
+                "branch and open a pull request, then merge origin/main "
+                "here (`git merge origin/main`). Documents go through the "
+                "shared handover directory instead.")
+    except Exception:
+        return ""
 
 
 def _bash_isolation_argv(
