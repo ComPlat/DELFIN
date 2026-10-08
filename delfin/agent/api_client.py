@@ -14045,7 +14045,8 @@ class _DocToolExecutor:
             return None, (
                 f"path is outside the allowed workspace roots [{roots_str}]: "
                 f"{rel_path}."
-                + self._hint_if_it_names_the_workspace(rel_path, ws) +
+                + self._hint_if_it_names_the_workspace(rel_path, ws)
+                + _handover_hint(resolved, ws) +
                 " To work on it, ask the user to GRANT this path "
                 "to the agent (add it via --add-dir / extra_workspace_dirs), "
                 "or move the project into an allowed workspace root. Do NOT "
@@ -20054,6 +20055,42 @@ def set_bash_isolation_override(mode: str) -> None:
     _BASH_ISOLATION_OVERRIDE = str(mode or "")
 
 
+def _handover_hint(resolved, workspace) -> str:
+    """A clause naming the shared directory, when the refused path is
+    another session's worktree. Otherwise "".
+
+    This is where the need showed up. Three sessions worked on one
+    repository, each in its own worktree, and handed each other
+    FILENAMES; every handover was refused by this very message, which
+    told them to ask the user to grant the path. Granting one session
+    read access to another's worktree would hand over that session's
+    whole workspace -- the right answer is the one directory they share,
+    and the refusal is where it is useful to say so.
+
+    Only for a path under the SAME repository's worktrees: a refusal for
+    an unrelated directory has nothing to do with handing work over, and
+    a hint that fires everywhere is one nobody reads. Never raises.
+    """
+    try:
+        from . import exchange as _ex
+        room = _ex.directory_for(workspace, create=False)
+        if room is None:
+            return ""
+        here = Path(resolved)
+        if room in here.parents or here == room:
+            return ""                       # already the shared directory
+        owner = room.parent.parent          # the repository that owns it
+        worktrees = owner / ".delfin" / "worktrees"
+        if worktrees not in here.parents:
+            return ""
+        return (f" That path is in another session's worktree. The one "
+                f"place sessions on this repository can hand work over is "
+                f"{room} — ask that session to put it there (it is already "
+                f"one of your roots), rather than asking for its worktree.")
+    except Exception:
+        return ""
+
+
 def _why_that_path_is_not_there(path_arg: str) -> str:
     """A clause naming the mistake a missing path reads like, or "".
 
@@ -23685,10 +23722,11 @@ def _workspace_sandbox(
                   "plan", "default", "acceptEdits", "bypassPermissions"
               } else "default")
     )
+    from . import exchange as _exchange
     local_perms = KitToolPermissions(
         workspace=local_ws, mode=local_mode,
         confirm_callback=kit_confirm_callback,
-        extra_workspace_dirs=local_extra,
+        extra_workspace_dirs=_exchange.with_exchange(local_ws, local_extra),
         read_only_workspace_dirs=tuple(read_only_dirs or ()),
         confirm_write_dirs=tuple(confirm_write_dirs or ()),
         bash_auto_allow_patterns=tuple(_DEFAULT_BASH_AUTO_ALLOW),
@@ -23792,11 +23830,13 @@ def create_client(
             deny_patterns = deny_patterns + extra_deny
         write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
 
+        from . import exchange as _exchange
         kit_perms = KitToolPermissions(
             workspace=kit_workspace,
             mode=kit_mode,
             confirm_callback=kit_confirm_callback,
-            extra_workspace_dirs=kit_extra,
+            extra_workspace_dirs=_exchange.with_exchange(kit_workspace,
+                                                         kit_extra),
             read_only_workspace_dirs=tuple(read_only_dirs or ()),
             confirm_write_dirs=tuple(confirm_write_dirs or ()),
             bash_auto_allow_patterns=allow_patterns,
