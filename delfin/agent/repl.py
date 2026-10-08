@@ -446,6 +446,51 @@ def _context_tokens(engine) -> int:
     return max(1, total // 4)
 
 
+class _OpenTasksBlock:
+    """The session's open tasks, rendered for a fresh start.
+
+    ``TaskState`` -- the object ``fresh_context_for_turn`` was written to
+    render -- is constructed nowhere in the product: the terminal reads
+    ``getattr(self, "_task_state", None)`` and gets None, and the dashboard
+    passes nothing. So a fresh start carried the working-state block and no
+    task at all, on both surfaces, while the engine kept a task store the
+    auto-continue already consults. This renders that store, bounded, and
+    is built where the fresh start is decided so both surfaces get it.
+    """
+
+    def __init__(self, summary: dict):
+        self._summary = summary or {}
+
+    def render(self) -> str:
+        parts = []
+        for status in ("in_progress", "pending", "blocked"):
+            rows = self._summary.get(status) or []
+            for row in rows[:6]:
+                subject = str((row or {}).get("subject") or "").strip()
+                if not subject:
+                    continue
+                reason = str((row or {}).get("blocked_reason") or "").strip()
+                line = f"- [{status}] {subject[:160]}"
+                if reason:
+                    line += f" (blocked: {reason[:120]})"
+                parts.append(line)
+        if not parts:
+            return ""
+        return "Open tasks when the context was cut:\n" + "\n".join(parts)
+
+
+def open_tasks_for_fresh_start(engine) -> "_OpenTasksBlock | None":
+    """What the engine knows about its open tasks, or None. Never raises."""
+    try:
+        client = getattr(engine, "client", None)
+        summary = client._open_task_state() if client is not None else None
+    except Exception:
+        return None
+    if not isinstance(summary, dict) or summary.get("state") != "open":
+        return None
+    return _OpenTasksBlock(summary)
+
+
 def fresh_context_for_turn(
     engine,
     task_state,
@@ -475,6 +520,8 @@ def fresh_context_for_turn(
     """
     if _context_tokens(engine) <= token_budget:
         return ""
+    if task_state is None:
+        task_state = open_tasks_for_fresh_start(engine)
     try:
         core = task_state.render() if task_state is not None else ""
     except Exception:
