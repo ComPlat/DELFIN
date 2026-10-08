@@ -17890,12 +17890,19 @@ class _DocToolExecutor:
         others = _presence.open_sessions(exclude_key=me)
         if not to:
             return json.dumps({
+                # session_id as well as key. `to` accepts either, and the
+                # key is the one that changes when a session is re-opened
+                # -- so a roster with only the key hands back the address
+                # that just failed and never shows the stable one.
                 "sessions": [{
                     "key": r.get("key"), "title": r.get("title", ""),
+                    "session_id": r.get("session_id", ""),
                     "workspace": r.get("workspace", ""),
                     "branch": r.get("branch", ""),
                 } for r in others],
-                "note": ("Pass to=<key> and message to write to one."
+                "note": ("Pass to=<key> and message to write to one. A "
+                         "session's key changes when it is re-opened; "
+                         "to=<session_id> is the address that does not."
                          if others else "No other session is open."),
             }, ensure_ascii=False)
         if to.lower() in ("all", "*", "everyone"):
@@ -17946,6 +17953,7 @@ class _DocToolExecutor:
                               f"{to!r} - address one by its `key`."),
                     "sessions": [{
                         "key": r.get("key"), "title": r.get("title", ""),
+                        "session_id": r.get("session_id", ""),
                         "workspace": r.get("workspace", ""),
                         "branch": r.get("branch", ""),
                     } for r in _named],
@@ -17955,10 +17963,18 @@ class _DocToolExecutor:
             # by its TITLE, got told the key was unknown, and had to ask
             # for the roster it could have been handed (2026-09-17).
             return json.dumps({
-                "error": (f"no other open session {to!r} — address one by its "
-                          "`key` or its exact title."),
+                "error": (f"no other open session {to!r} — address one by "
+                          "its `key`, its `session_id` or its exact title. A "
+                          "key changes when a session is re-opened, so one "
+                          "that worked earlier can stop working; the "
+                          "session_id does not change."),
+                # session_id as well as key. `to` accepts either, and the
+                # key is the one that changes when a session is re-opened
+                # -- so a roster with only the key hands back the address
+                # that just failed and never shows the stable one.
                 "sessions": [{
                     "key": r.get("key"), "title": r.get("title", ""),
+                    "session_id": r.get("session_id", ""),
                     "workspace": r.get("workspace", ""),
                     "branch": r.get("branch", ""),
                 } for r in others],
