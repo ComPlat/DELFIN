@@ -307,12 +307,36 @@ def _check_mcp(ctx: dict) -> list[dict]:
     # and an ordinary choice. What is not ordinary is believing the shell's
     # sandbox covers it, and the doctor is where that belief gets checked.
     loose = _uncontained_mcp(configs, Path(workspace) if workspace else None)
+    # The switch that contains DELFIN's own servers exists
+    # (agent.mcp_isolation = "builtin"), opt-in by its author's decision
+    # until it has run against a real session. A row that only says
+    # "without declared roots" leaves the user to find the switch; this
+    # names it, as a proposal `/fix` can apply with approval -- and only
+    # where the loose servers are the built-ins the switch covers.
+    offer_fix = ""
+    offer_setting = None
     if loose:
         names += f" — {loose} without declared roots (outside the shell's isolation)"
+        try:
+            from .mcp_isolation import builtin_isolation_enabled
+            from .mcp_client import _BUILTIN_SERVERS
+            covered = any(n in _BUILTIN_SERVERS and not cfg.get("url")
+                          and not cfg.get("isolation")
+                          for n, cfg in configs.items())
+            if covered and not builtin_isolation_enabled():
+                offer_fix = ("set agent.mcp_isolation = \"builtin\" to run "
+                             "DELFIN's own servers inside derived roots (the "
+                             "workspace, the office folder and its state "
+                             "directories); a third-party server needs an "
+                             "explicit \"isolation\" entry in its config")
+                offer_setting = ("agent.mcp_isolation", "builtin")
+        except Exception:
+            pass
     if ctx.get("fast", True):
         return [_row(
             "mcp servers", PASS,
             f"{len(configs)} configured: {names} (not probed; fast mode)",
+            offer_fix, setting=offer_setting,
         )]
     # Slow path: actually start each server and list its tools. The verdict
     # comes from ``unreachable_servers``, which reads ``last_error`` after
