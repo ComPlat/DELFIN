@@ -264,38 +264,152 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _claim_lock_file(path: Path, payload: str) -> bool:
+    """Create ``path`` holding ``payload``, or report that it exists.
+
+    Returns True when THIS call created the file, False when a file was
+    already there. Never overwrites, and the file is never visible under
+    its own name while incomplete.
+
+    Written as a temp file and then ``os.link``-ed into place: link is
+    atomic and fails with FileExistsError if the target exists, so the
+    content is complete before any reader can see it. ``O_CREAT|O_EXCL``
+    alone would also be an atomic claim, but it publishes an EMPTY file
+    and fills it afterwards -- and a reader finding a lock with no pid in
+    it treats it as stale and breaks it, which would hand the lock to two
+    callers again by a different route. The fallback to O_EXCL is for a
+    filesystem without hardlinks, where that narrower window is still
+    better than no claim at all.
+
+    This is the primitive the sessions directory needs rather than
+    ``flock``: the directory is shared between login nodes over NFS,
+    where advisory locks are unreliable and exclusive create is the one
+    operation that is not.
+    """
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".claim", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        try:
+            os.link(tmp_name, str(path))
+            return True
+        except FileExistsError:
+            return False
+        except OSError:
+            try:
+                fd2 = os.open(str(path),
+                              os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                return False
+            with os.fdopen(fd2, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+            return True
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+
+
+def _read_lock(path: Path) -> tuple[int, float, str] | None:
+    """``(pid, ts, host)`` from a lock file.
+
+    None when the file is ABSENT, and ``(0, 0.0, "")`` when it is present
+    but says nothing usable (truncated, corrupt, no pid). The difference
+    decides whether the lock may be broken, so the two cannot share one
+    answer: a file that is gone is evidence of another claimer, while a
+    file nobody can own is evidence of a lock that is stale.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return (0, 0.0, "")
+    try:
+        info = json.loads(raw)
+        return (int(info.get("pid", 0) or 0),
+                float(info.get("ts", 0) or 0),
+                str(info.get("host", "") or ""))
+    except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        return (0, 0.0, "")
+
+
+#: How many times a stale lock may be broken before the attempt is given
+#: up. Each pass costs one read; contention this persistent means somebody
+#: else is claiming the same id, and refusing is the safe answer.
+_LOCK_BREAK_ATTEMPTS = 3
+
+
 def acquire_session_lock(session_id: str) -> Path:
     """Acquire or refresh the per-session single-writer lock.
 
-    The lock file holds ``{"pid": ..., "ts": ...}``. Our own pid just
-    refreshes the timestamp. A DIFFERENT pid that is still alive and
-    whose lock is younger than :data:`_LOCK_MAX_AGE_S` raises
-    :class:`SessionLockedError`. Stale locks (dead pid, or older than
-    1h) are broken silently.
+    The lock file holds ``{"pid", "ts", "host"}``. Our own pid refreshes
+    the timestamp. A DIFFERENT pid that is still alive and whose lock is
+    younger than :data:`_LOCK_MAX_AGE_S` raises
+    :class:`SessionLockedError`. Stale locks (dead pid, or older than 1h)
+    are broken silently.
+
+    The claim is ATOMIC. It used to read the file, decide, and then write
+    -- so when the lock did not exist, every concurrent caller read "no
+    holder", every one of them wrote, and every one of them returned
+    holding it. Measured on this installation with 24 processes released
+    by one barrier: 6 of 10 runs produced more than one holder (3 runs
+    with two, 3 with three). Each extra holder is a writer that believes
+    it alone may save the session, which is the clobbering this lock
+    exists to prevent.
+
+    A pid from another login node names nothing here, so a lock taken
+    elsewhere is judged by age alone -- it cannot be checked, and must
+    not be assumed dead.
     """
     d = _ensure_dir()
     p = d / f"{session_id}.lock"
     me = os.getpid()
-    holder, ts, holder_host = 0, 0.0, ""
-    try:
-        info = json.loads(p.read_text(encoding="utf-8"))
-        holder = int(info.get("pid", 0) or 0)
-        ts = float(info.get("ts", 0) or 0)
-        holder_host = str(info.get("host", "") or "")
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        pass
     here = _this_host()
-    elsewhere = bool(holder_host) and holder_host != here
-    if holder and (holder != me or elsewhere):
-        fresh = (time.time() - ts) < _LOCK_MAX_AGE_S
-        # A lock taken on another login node (they share this directory)
-        # cannot be judged by a pid, which names nothing here or a stranger;
-        # it holds until it is stale.
-        if fresh and (elsewhere or _pid_alive(holder)):
-            raise SessionLockedError(session_id, holder)
-        # Stale lock (dead pid or >1h old): break silently.
-    _atomic_write_text(p, json.dumps({"pid": me, "ts": time.time(), "host": here}))
-    return p
+
+    def _payload() -> str:
+        return json.dumps({"pid": me, "ts": time.time(), "host": here})
+
+    for _attempt in range(_LOCK_BREAK_ATTEMPTS):
+        if _claim_lock_file(p, _payload()):
+            return p
+        # Something was there. Read it and decide.
+        found = _read_lock(p)
+        if found is None:
+            # Gone between our claim and our read: somebody else is
+            # claiming the same id right now. Retry the claim WITHOUT
+            # breaking anything -- this was the residual race in the first
+            # version of this function. Treating "I could not read it" as
+            # "it is stale" let a loser unlink the winner's lock and take
+            # it, so two callers held it again by a second route. Measured:
+            # 4 of 10 runs at N=24 still produced two holders.
+            continue
+        holder, ts, holder_host = found
+        elsewhere = bool(holder_host) and holder_host != here
+        if holder == me and not elsewhere:
+            # Ours already: refreshing the timestamp is not a claim, and
+            # rewriting it in place is safe because we are the holder.
+            _atomic_write_text(p, _payload())
+            return p
+        if holder:
+            fresh = (time.time() - ts) < _LOCK_MAX_AGE_S
+            if fresh and (elsewhere or _pid_alive(holder)):
+                raise SessionLockedError(session_id, holder)
+        # Demonstrably stale: a dead pid on this host, a lock older than
+        # an hour, or a file nobody can own. Break it and claim again.
+        # Two breakers can both unlink, but only one link() then succeeds;
+        # the loser comes back, finds the winner's fresh lock, and is
+        # refused.
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+    # Out of attempts: somebody re-took it on every pass, which is a live
+    # holder by any useful definition.
+    raise SessionLockedError(session_id, (_read_lock(p) or (0, 0.0, ""))[0])
 
 
 def _this_host() -> str:
@@ -304,6 +418,44 @@ def _this_host() -> str:
         return (socket.gethostname() or "").strip()
     except Exception:
         return ""
+
+
+def session_lock_holder(session_id: str) -> dict | None:
+    """Who holds the writer lock for ``session_id``, without taking it.
+
+    Returns ``{"pid": int, "host": str, "ts": float, "elsewhere": bool}``
+    for a lock that :func:`acquire_session_lock` would honour, and None
+    when the lock is absent, stale, or this process's own.
+
+    The same three questions ``acquire_session_lock`` asks -- is the
+    holder someone else, is the lock fresh, is the holder alive -- are
+    asked here and nowhere else. A reader that needs to know BEFORE
+    committing to a save (a dashboard deciding whether to open a
+    conversation) previously had no way to ask, so it guessed from its own
+    in-memory list of windows and could not see a holder in another
+    process or on another node at all.
+    """
+    # Read through the same helper acquire_session_lock uses. A second
+    # copy of "what does this file say" is a second answer that can
+    # disagree with the first, and this function exists to agree with it.
+    found = _read_lock(_lock_path(session_id))
+    if found is None:
+        return None
+    holder, ts, holder_host = found
+    if not holder:
+        return None
+    here = _this_host()
+    elsewhere = bool(holder_host) and holder_host != here
+    if holder == os.getpid() and not elsewhere:
+        return None
+    if (time.time() - ts) >= _LOCK_MAX_AGE_S:
+        return None
+    # A pid from another login node names nothing here: age is the only
+    # judge available, and it has already been applied above.
+    if not elsewhere and not _pid_alive(holder):
+        return None
+    return {"pid": holder, "host": holder_host, "ts": ts,
+            "elsewhere": elsewhere}
 
 
 def release_session_lock(session_id: str) -> None:

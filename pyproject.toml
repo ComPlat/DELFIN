@@ -212,9 +212,15 @@ office = [
     # Reading only — writing ODF is refused rather than approximated.
     "odfpy>=1.4",
 ]
-dev = [
+# What it takes to RUN the suite, and nothing else. Separate from `dev`
+# because the agent's own test tool needs exactly this and has no use for
+# the formatters: pytest was declared only inside `dev`, which the default
+# install does not select, so the agent's `run_tests` landed in an
+# environment with no pytest. It was told "no report file produced" and
+# reached for a runner of its own -- a venv or a wrapper script in the home
+# directory. Shipping the runner removes the reason.
+test = [
     "pytest>=6.0",
-    "pytest-cov",
     # A per-TEST deadline. The slow suite contains a call that waits on a
     # thread with no timeout of its own, and without this the whole job
     # sits behind it until the runner's limit — which is why the slow
@@ -222,6 +228,16 @@ dev = [
     # It was installed in one developer's environment and declared
     # nowhere, so the same command measured different things per machine.
     "pytest-timeout",
+]
+dev = [
+    # The two from `test`, written out rather than pulled in as
+    # "delfin-complat[test]": a self-referential extra resolves against
+    # PyPI and installs the released wheel beside the editable checkout
+    # (see tests/test_packaging_selfreference.py, which asserts this).
+    # The duplication is the price of that, and it is pinned by a test.
+    "pytest>=6.0",
+    "pytest-timeout",
+    "pytest-cov",
     "black",
     "flake8",
     "ruff",

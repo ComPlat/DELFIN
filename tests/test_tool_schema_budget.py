@@ -188,7 +188,15 @@ _BASELINE_TOKENS = 11_422
 # sender's own delivery receipts (T3). Trimmed to a bare type per
 # parameter and one clause in the description first; what remains costs
 # 25 tokens, so the budget moves 9_804 -> 9_830.
-_TOKEN_BUDGET = 9_830
+# 2026-10-08: subagent_message, a two-way channel between a session and
+# the delegates it runs. A delegate could only report at the end, and a
+# session could not reach one at all, so a delegate that needed a
+# decision had to finish and be re-spawned. Trimmed first -- its own
+# description and its sibling subagent_result's, bare types for both
+# parameters -- which brought a new tool's 88 tokens down to 75, so the
+# budget moves 9_830 -> 9_905. A tool is the whole cost here: there is no
+# smaller surface that carries a direction, a roster and a cap.
+_TOKEN_BUDGET = 9_905
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -199,6 +207,7 @@ _POST_COMPACTION_TOOLS = frozenset({
     "fill_docx_template", "create_docx", "compare_tables", "sum_column",
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
     "session_message", "session_search", "skill_propose_patch",
+    "subagent_message",
 })
 
 

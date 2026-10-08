@@ -42,11 +42,17 @@ except ImportError:
     OPENBABEL_AVAILABLE = False
 
 
-# Try to import stk
+# stk is optional, but only in one sense: NOT INSTALLED. Any other import failure (a broken
+# install, or a shared-library conflict such as an older libstdc++ loaded first from another
+# program's directory on LD_LIBRARY_PATH) is raised, never swallowed: a silent fallback would make
+# the construction depend on the order in which a process happened to import its modules.
 try:
     import stk
     STK_AVAILABLE = True
-except ImportError:
+except ModuleNotFoundError as _stk_err:
+    if _stk_err.name != "stk":
+        raise
+    stk = None
     STK_AVAILABLE = False
 
 

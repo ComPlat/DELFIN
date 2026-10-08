@@ -75,7 +75,11 @@ ASSUME_YES="${DELFIN_ASSUME_YES:-0}"
 PREFIX="${DELFIN_PREFIX:-$HOME/software}"
 DELFIN_REPO="${DELFIN_REPO:-}"
 DELFIN_REPO_URL="${DELFIN_REPO_URL:-https://github.com/ComPlat/DELFIN.git}"
-DELFIN_EXTRAS="${DELFIN_EXTRAS-agent,docs}"
+# `test` is in the default set because the agent runs the suite as part
+# of ordinary work: pytest lived only in `dev`, which this default does
+# not select, so every site install produced an environment whose test
+# tool could not start. Two packages.
+DELFIN_EXTRAS="${DELFIN_EXTRAS-agent,docs,test}"
 ORCA_SOURCE="${ORCA_DIR:-${ORCA_TARBALL:-}}"
 ORCA_EXPLICIT=0
 [ -z "$ORCA_SOURCE" ] || ORCA_EXPLICIT=1

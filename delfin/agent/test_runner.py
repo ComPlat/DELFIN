@@ -40,6 +40,29 @@ _DEFAULT_TIMEOUT_S = 300
 _TAIL_LINES = 30
 
 
+def _pytest_missing_from(python: str) -> str:
+    """A sentence naming the interpreter that has no pytest, or "".
+
+    Asked of the interpreter the run will USE, which is not always this
+    one: the agent runs the suite in the project's environment while
+    DELFIN itself may live in another. Checking `importlib` here would
+    answer about the wrong interpreter.
+
+    One short subprocess, and any failure to ask counts as present -- a
+    preflight that cannot reach the interpreter must not stand in for a
+    verdict about the suite.
+    """
+    import subprocess as _sp
+    try:
+        done = _sp.run([python, "-c", "import pytest"],
+                       capture_output=True, text=True, timeout=30)
+    except (OSError, _sp.SubprocessError):
+        return ""
+    if done.returncode == 0:
+        return ""
+    return f"pytest is not installed in {python}"
+
+
 def _has_json_report() -> bool:
     """Detect pytest-json-report installation in the active interpreter."""
     try:
@@ -263,6 +286,26 @@ def run_tests(
         return {
             "status": "error", "framework": "pytest",
             "error": f"python interpreter not found: {py}",
+        }
+
+    # Is there a pytest to run, in THAT interpreter. `python -m pytest`
+    # with no pytest exits 1 and writes no report, which arrived as
+    # "no report file produced" -- a parse complaint about a run that never
+    # started. A field report describes the consequence: told that, the
+    # agent builds a runner of its own, in a venv or as a wrapper script
+    # under the home directory. Naming the real condition, with the command
+    # that fixes it, removes the reason to improvise.
+    _missing = _pytest_missing_from(py)
+    if _missing:
+        return {
+            "status": "error", "framework": "pytest",
+            "error": _missing,
+            "fix": ("install it into THAT interpreter: "
+                    f"'{py} -m pip install delfin-complat[test]'"),
+            "note": ("this is the environment, not the tests: nothing was "
+                     "run, so nothing follows about the suite. Do NOT build "
+                     "a second interpreter or a pytest wrapper of your own "
+                     "-- report this to the user instead."),
         }
 
     use_json = _has_json_report()

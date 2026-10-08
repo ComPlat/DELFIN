@@ -1362,7 +1362,21 @@ class _Registry:
             # Visible three ways: the in-memory job (bash_status), the
             # persistent registry (a reattach after a restart), and the
             # job's own stderr log (bash_output).
-            job.budget_breach = {
+            #
+            # The DURABLE copy is written first, and that order is the
+            # point. A job killed for a breach has to be able to say why,
+            # and only the registry survives a restart -- so the
+            # observable flag must never run ahead of the record. It did:
+            # the in-memory field was set, then stderr was flushed, then
+            # the record written, and a reattach inside that window read a
+            # job that was killed for no stated reason. CI caught it as a
+            # flake (2026-10-08): `status.get("budget_breach")` was None
+            # on a reattached job 2.2 s after the kill.
+            #
+            # Still set in memory even when the write fails: an
+            # explanation that reached nothing is worse than one that
+            # reached only this process.
+            record = {
                 "limit": breach.limit,
                 "profile": "background",
                 "value": breach.value,
@@ -1370,11 +1384,15 @@ class _Registry:
                 "message": breach.message,
             }
             try:
+                _update_job_record(ws, jid, budget_breach=record)
+            except Exception:
+                pass
+            job.budget_breach = record
+            try:
                 serr.write(f"[process budget] {breach.message}\n")
                 serr.flush()
             except Exception:
                 pass
-            _update_job_record(ws, jid, budget_breach=job.budget_breach)
 
         def _watch():
             nonlocal guard

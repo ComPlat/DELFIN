@@ -54,6 +54,22 @@ from delfin.user_settings import (
 )
 
 
+def _subagent_caps_now() -> str:
+    """The subagent caps in force, from the code that enforces them.
+
+    The help text under these fields used to state figures, and read
+    "300 s" after the default had moved twice. The same drift is already
+    documented in api_client._subagent_caps_phrase, which generates the
+    sentence the model reads at decision time -- so this calls that
+    function rather than becoming a third copy of the numbers.
+    """
+    try:
+        from delfin.agent.api_client import _subagent_caps_phrase
+        return _subagent_caps_phrase()
+    except Exception:
+        return "see delfin/agent/subagents.py"
+
+
 def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     """Create the dashboard Settings tab."""
     settings_path = get_settings_path()
@@ -554,6 +570,22 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     max_tool_rounds_hint = widgets.HTML(
         value='<span style="color:#6b7280; font-size:11px;">'
               '−1 = per-model default · 0 = uncapped</span>')
+    # The OTHER per-turn limit, and the one that actually ends a dashboard
+    # turn first. Two numbers bound a turn: tool rounds (above) and ACTION
+    # rounds, the continuation loop that executes the commands the agent
+    # proposes. Only the first had a field, so a user who raised it and
+    # still saw the turn stop after a dozen steps had no way to reach the
+    # number that stopped it -- and reasonably read that as the setting not
+    # being saved. The stop note already names `agent.max_action_rounds`;
+    # now the name leads somewhere.
+    max_action_rounds_input = widgets.BoundedIntText(
+        value=40, min=0, max=1000, step=5,
+        description='Action rounds',
+        layout=widgets.Layout(width='190px', height='28px'),
+    )
+    max_action_rounds_hint = widgets.HTML(
+        value='<span style="color:#6b7280; font-size:11px;">'
+              '0 = no ceiling (the repeat guard still stops loops)</span>')
     # Which identity names the memory store (agent.memory_key). A dropdown
     # and not a text field: there are two answers, and a typed third would
     # point the agent at an empty store without saying so.
@@ -643,6 +675,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             _rounds_val = int(max_tool_rounds_input.value)
             payload['agent']['max_tool_rounds'] = (
                 None if _rounds_val < 0 else _rounds_val)
+            payload['agent']['max_action_rounds'] = int(
+                max_action_rounds_input.value)
             payload['agent']['memory_key'] = str(
                 memory_key_input.value or 'path')
             save_settings(payload, settings_path)
@@ -1241,6 +1275,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 -1 if _rounds is None else int(_rounds))
         except Exception:
             max_tool_rounds_input.value = -1
+        try:
+            max_action_rounds_input.value = int(
+                agent_payload.get('max_action_rounds', 40) or 0)
+        except Exception:
+            max_action_rounds_input.value = 40
         # An unknown value reads as the default here for the same reason it
         # does in the store: a typo must not point the agent at an empty
         # store, and it must not crash the tab either.
@@ -3517,6 +3556,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             settings_payload['agent']['subagents'] = _subs
             settings_payload['agent']['memory_key'] = str(
                 memory_key_input.value or 'path')
+            settings_payload['agent']['max_action_rounds'] = int(
+                max_action_rounds_input.value)
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
             settings_payload.setdefault('scheduling', {})
@@ -3854,22 +3895,41 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 'Caps for each delegated subagent. Higher = subagents can '
-                'investigate/research longer before reporting back (more '
-                'tokens/time). Defaults: 300&nbsp;s wall · 40 tool calls · '
-                '16k output tokens. Empty/0 → default.'
+                'investigate longer before reporting back (more '
+                'tokens/time). Empty/0 → default. In force now: '
+                + html.escape(_subagent_caps_now()) + '.'
                 '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'
                          '🔁 Agent run limit (per turn)</b>'),
             widgets.HBox([max_tool_rounds_input, max_tool_rounds_hint],
                          layout=_row_layout),
+            widgets.HBox([max_action_rounds_input, max_action_rounds_hint],
+                         layout=_row_layout),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                'How many <b>continuation rounds</b> the agent gets to carry '
+                'out the commands it proposes, in one turn. This is the limit '
+                'that ends a dashboard turn <b>first</b> &mdash; the note you '
+                'see then names it (<code>agent.max_action_rounds</code>). '
+                'Raise it when the agent stops with work still to do; a round '
+                'only counts against it when it brings a <b>new</b> command, '
+                'and a round that repeats one already run this turn ends the '
+                'turn regardless, so a high number here cannot produce a '
+                'loop. The field shows the value in force.'
+                '</div>'
+            ),
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 'How many tool-call rounds the agent runs in a single turn '
-                'before pausing with a "send continue" notice. Default '
-                '500 — high enough that long multi-file tasks finish in one '
-                'turn. The cost circuit-breaker and the repeated-error abort '
-                'stay the real safety nets. 0 → uncapped.'
+                'before pausing with a "send continue" notice. '
+                '<b>−1 leaves it to the model profile</b> — that is the '
+                'default, and a KIT or otherwise smaller model may get far '
+                'fewer rounds than a frontier one, so this is where to look '
+                'when a turn stops earlier than you expect. A number here '
+                'overrides every profile; 0 → uncapped, leaving the cost '
+                'circuit-breaker and the repeated-error abort as the only '
+                'stops.'
                 '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'

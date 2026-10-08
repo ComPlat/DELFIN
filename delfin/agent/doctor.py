@@ -51,8 +51,27 @@ _PYTHON_DEPS: tuple[str, ...] = ("rdkit", "openbabel")
 _DISK_WARN_GB = 1.0
 
 
-def _row(check: str, status: str, detail: str, fix: str = "") -> dict:
-    return {"check": check, "status": status, "detail": detail, "fix": fix}
+def _row(check: str, status: str, detail: str, fix: str = "",
+         *, command: str = "", setting: tuple | None = None) -> dict:
+    """One report row.
+
+    ``fix`` is prose for a person. ``command`` and ``setting`` are the
+    machine-actionable form, and a check that has one DECLARES it rather
+    than leaving it to be parsed back out of the prose: a remedy read out
+    of a sentence is a remedy a wording change breaks, and this one is
+    offered to the user for approval and then executed.
+
+    Most prerequisites have no such form -- installing a system package,
+    logging a credential helper in, reordering a library path. Those
+    carry ``fix`` alone, and saying so is part of the answer: the agent
+    must not improvise around them.
+    """
+    row = {"check": check, "status": status, "detail": detail, "fix": fix}
+    if command:
+        row["command"] = command
+    if setting:
+        row["setting"] = list(setting)
+    return row
 
 
 def _tilde(path: Path | str) -> str:
@@ -230,6 +249,30 @@ def _check_python_deps(ctx: dict) -> list[dict]:
     return out
 
 
+def _check_test_runner(ctx: dict) -> list[dict]:
+    """Can the agent run the suite in the interpreter it would use.
+
+    The one prerequisite with a remedy DELFIN can carry out, and the
+    reason the proposal mechanism exists: pytest was declared only in an
+    extra the default install does not select, `python -m pytest` with no
+    pytest writes no report, and the agent read "no report file produced"
+    as something to work around. The field reports show what it did --
+    a venv of its own, or a wrapper script in the home directory.
+
+    Asked of THIS interpreter, which is the one `run_tests` launches.
+    """
+    missing = importlib.util.find_spec("pytest") is None
+    if not missing:
+        return [_row("test runner", PASS, f"pytest available to {sys.executable}")]
+    return [_row(
+        "test runner", WARN,
+        f"pytest is not installed in {sys.executable}",
+        "install the test extra; until then the agent cannot run the suite "
+        "and must say so rather than build a runner of its own",
+        command=f"{sys.executable} -m pip install 'delfin-complat[test]'",
+    )]
+
+
 def _uncontained_mcp(configs: dict, workspace=None) -> int:
     """How many configured servers no namespace is built around.
 
@@ -322,6 +365,96 @@ def _check_scheduler(ctx: dict) -> list[dict]:
     )]
 
 
+def _check_git_tooling(ctx: dict) -> list[dict]:
+    """git and gh: present, authenticated, and able to sign a commit.
+
+    Four questions, four rows, because they fail independently and the
+    remedy differs for each. None of them was asked anywhere in the
+    product. git's absence was noticed only as a side effect of
+    ``_check_push`` -- reported under the name "git remote", with no fix
+    string, and only on a checkout that has an origin remote. gh was never
+    probed at all, while the write gate REQUIRES the pull-request route
+    (a contributor's push to the default branch is refused and the agent
+    is told to open a PR), so the one tool the sanctioned path needs was
+    the one nothing checked. An absent or logged-out gh surfaced as bash
+    exit 127 or gh's own stderr, with nothing mapping it to an action.
+
+    Read-only throughout: ``--version``, ``config --get`` and ``gh auth
+    status`` publish nothing. WARN rather than FAIL, the module's
+    convention for a missing prerequisite, and every row carries a fix --
+    a row without one only tells the reader that something is wrong.
+    """
+    import shutil as _sh
+
+    cwd = str(ctx.get("workspace") or ".")
+    rows: list[dict] = []
+
+    git = _sh.which("git")
+    if not git:
+        # Identity cannot be asked about without the binary, and gh is a
+        # separate tool: name this one and go on.
+        rows.append(_row(
+            "git installed", WARN, "git is not on PATH",
+            "install git; the agent cannot branch, commit or push without it"))
+    else:
+        rows.append(_row("git installed", PASS, git))
+        missing = []
+        for field in ("user.name", "user.email"):
+            try:
+                done = subprocess.run(["git", "config", "--get", field],
+                                      capture_output=True, text=True,
+                                      timeout=10, cwd=cwd)
+                if done.returncode != 0 or not (done.stdout or "").strip():
+                    missing.append(field)
+            except (OSError, subprocess.SubprocessError):
+                missing.append(field)
+        if missing:
+            rows.append(_row(
+                "git identity", WARN,
+                "not configured: " + ", ".join(missing),
+                "git config --global user.name \"...\" and "
+                "git config --global user.email \"...\" -- a commit cannot "
+                "be made without them, and the failure arrives at commit "
+                "time rather than now"))
+        else:
+            rows.append(_row("git identity", PASS, "user.name and user.email set"))
+
+    gh = _sh.which("gh")
+    if not gh:
+        rows.append(_row(
+            "gh installed", WARN, "the GitHub CLI is not on PATH",
+            "install it (https://cli.github.com) -- the write gate routes "
+            "changes to the default branch through a pull request, and that "
+            "is the tool for it; without gh the agent can only hand the user "
+            "a compare URL"))
+        return rows
+
+    rows.append(_row("gh installed", PASS, gh))
+    try:
+        done = subprocess.run(["gh", "auth", "status"],
+                              capture_output=True, text=True, timeout=20,
+                              cwd=cwd)
+    except subprocess.TimeoutExpired:
+        rows.append(_row(
+            "gh authenticated", WARN, "gh auth status did not answer in 20 s",
+            "check network access to github from this host"))
+        return rows
+    except (OSError, subprocess.SubprocessError) as exc:
+        rows.append(_row("gh authenticated", WARN, f"could not ask gh: {exc}",
+                         "run 'gh auth status' by hand"))
+        return rows
+    if done.returncode == 0:
+        rows.append(_row("gh authenticated", PASS, "a login is active"))
+    else:
+        # Presence and authentication are different questions, and gh
+        # answers the second one only when asked.
+        rows.append(_row(
+            "gh authenticated", WARN, "no active GitHub login",
+            "gh auth login -- pull requests cannot be opened until this "
+            "succeeds"))
+    return rows
+
+
 def _check_push(ctx: dict) -> list[dict]:
     """Can this host reach the git remote at all.
 
@@ -344,7 +477,9 @@ def _check_push(ctx: dict) -> list[dict]:
             capture_output=True, text=True, timeout=25,
             cwd=str(ctx.get("workspace") or "."))
     except FileNotFoundError:
-        return [_row("git remote", WARN, "git is not installed")]
+        return [_row("git remote", WARN, "git is not installed",
+                     "install git; the git tooling check above says the "
+                     "same thing with the remedy")]
     except subprocess.TimeoutExpired:
         return [_row(
             "git remote", WARN,
@@ -513,6 +648,86 @@ def _isolation_mechanism() -> str:
     return ""
 
 
+#: Pairs that must load in ONE interpreter, and the subsystem each
+#: belongs to. The first element is imported first on purpose: the point
+#: is the ORDER, because the dynamic loader resolves a shared library once
+#: per process and the first resolution wins for everything after it.
+#:
+#: pymupdf is the agent's PDF reader (office.py) and drags in libmupdf,
+#: which needs libstdc++. sqlite3 is pulled by stk via atomlite, and
+#: needs a newer C++ ABI through libicu. Where a directory on
+#: LD_LIBRARY_PATH ships an older libstdc++ than the interpreter's own
+#: libraries need, importing the first makes the second fatal -- and the
+#: optional-import fallbacks downstream turn that into a capability that
+#: is silently absent rather than an error.
+_IMPORT_ORDER_PAIRS: tuple[tuple[str, str, str], ...] = (
+    ("pymupdf", "sqlite3", "PDF reading and the structure database"),
+)
+
+
+def _check_loader_path(ctx: dict) -> list[dict]:
+    """Can the native stack load in one interpreter, in both orders.
+
+    Asked in a SUBPROCESS, with this process's environment, because the
+    loader caches LD_LIBRARY_PATH at process start: by the time any check
+    could run in-process the answer is already fixed, and importing the
+    pair here would poison the very interpreter doing the asking.
+
+    Reports the directory that won, when it can, rather than only that
+    something broke -- a row saying "an import failed" sends the reader
+    looking in Python, and the fault is three layers below it.
+
+    Universal: nothing here names ORCA or any site. It imports two
+    modules DELFIN itself needs and reports what the loader did. On a host
+    whose library order is sound, both orders succeed and the row passes.
+    """
+    import shutil as _sh
+    rows: list[dict] = []
+    py = sys.executable or _sh.which("python3") or "python3"
+    for first, second, what in _IMPORT_ORDER_PAIRS:
+        code = (f"import {first}\n"
+                f"import {second}\n"
+                "print('ok')")
+        try:
+            done = subprocess.run([py, "-c", code], capture_output=True,
+                                  text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            rows.append(_row(
+                "loader path", WARN,
+                f"could not ask the interpreter: {exc}",
+                f"run: {py} -c 'import {first}, {second}'"))
+            continue
+        if done.returncode == 0:
+            rows.append(_row("loader path", PASS,
+                             f"{first} + {second} load together"))
+            continue
+        err = (done.stderr or "").strip().splitlines()
+        detail = err[-1][:300] if err else f"{first} then {second} failed"
+        # The loader names the file it took and the version it lacked;
+        # pull the PATH out so the fix is a directory and not a guess.
+        # Matched as a path rather than by splitting on ":" -- the line
+        # opens with "ImportError:", and splitting took that as the
+        # library.
+        culprit = ""
+        for line in err:
+            if "not found" not in line:
+                continue
+            m = re.search(r"(/[^\s:]*\.so(?:\.\d+)*)", line)
+            if m:
+                culprit = m.group(1)
+                break
+        fix = (
+            "a directory on LD_LIBRARY_PATH provides an older shared "
+            "library than this interpreter's own libraries need, and the "
+            "loader takes the first match. Put the interpreter's lib "
+            "directory first, or drop that entry for Python processes")
+        if culprit:
+            fix = f"the loader took {culprit} first -- " + fix
+        rows.append(_row(
+            f"loader path ({what})", WARN, detail, fix))
+    return rows
+
+
 def _check_bash_isolation(ctx: dict) -> list[dict]:
     """Report whether shell commands run in a filesystem namespace.
 
@@ -562,9 +777,15 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     detail = ("auto — isolated in bypassPermissions only"
               + (f", by {held_by} there" if held_by
                  else "; nothing here can isolate, so never isolated"))
-    return [{"check": "bash isolation", "status": "WARN",
-             "detail": detail,
-             "fix": fix if held_by else no_mechanism}]
+    # The settings change is offered only where something on this host can
+    # actually hold a command. Proposing "bwrap" with no bwrap would turn
+    # a warning into a refusal of every shell command, which is a worse
+    # state than the one being fixed.
+    return [_row(
+        "bash isolation", WARN, detail,
+        fix if held_by else no_mechanism,
+        setting=("agent.bash_isolation", "bwrap") if held_by else None,
+    )]
 
 
 def _check_document_backends(ctx: dict) -> list[dict]:
@@ -686,8 +907,11 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("credentials", "_check_credentials"),
     ("chemistry binaries", "_check_binaries"),
     ("python deps", "_check_python_deps"),
+    ("test runner", "_check_test_runner"),
     ("mcp servers", "_check_mcp"),
     ("scheduler daemon", "_check_scheduler"),
+    ("git tooling", "_check_git_tooling"),
+    ("loader path", "_check_loader_path"),
     ("git remote", "_check_push"),
     ("attention inbox", "_check_attention"),
     ("attention transports", "_check_attention_transports"),
@@ -706,9 +930,25 @@ def _normalise(row: Any, group: str) -> dict:
     status = row.get("status", FAIL)
     if status not in (PASS, WARN, FAIL):
         status = FAIL
+    # The actionable form is carried through, VALIDATED. This function
+    # coerces whatever a check returned, including a monkeypatched one,
+    # and what it returns is offered to the user for approval -- so a
+    # command is accepted only as a plain one-line string and a setting
+    # only as a (dotted key, value) pair. Anything else is dropped and
+    # the row keeps its prose.
+    command = row.get("command")
+    if not isinstance(command, str) or "\n" in command:
+        command = ""
+    setting = row.get("setting")
+    if (isinstance(setting, (list, tuple)) and len(setting) == 2
+            and isinstance(setting[0], str) and setting[0].strip()):
+        setting = (setting[0], setting[1])
+    else:
+        setting = None
     return _row(
         str(row.get("check", group)), status,
         str(row.get("detail", "")), str(row.get("fix", "")),
+        command=command.strip(), setting=setting,
     )
 
 
