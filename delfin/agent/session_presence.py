@@ -113,6 +113,55 @@ def withdraw(key: str) -> None:
         pass
 
 
+#: Rate limit for `touch`, separate from `announce`'s: a heartbeat is
+#: called once per tool call and must not write once per tool call.
+_last_touched: dict[str, float] = {}
+
+
+def touch(key: str) -> bool:
+    """Refresh the heartbeat on an existing record, changing nothing else.
+
+    Input: a presence key. Output: whether a record was refreshed.
+    Semantics: ``updated_at`` and ``pid`` are rewritten; every other
+    field stays as whoever announced it wrote it.
+
+    Creates nothing. A session announces ITSELF, with its title and its
+    workspace; a heartbeat that created a record would put a nameless
+    entry with no workspace on every peer's roster. For the same reason
+    it does not go through `announce`: that writes the whole record, and
+    a caller that does not know the title would blank it.
+
+    Why it exists: `announce` is called from the terminal's IDLE poll and
+    from the dashboard's refresh timer. A session busy in one long turn
+    does neither, so after _STALE_S it counts as not open -- and
+    `_reap` then deleted its record, after which a peer's message to it
+    was refused rather than queued. Presence has to follow the session
+    being alive, not a window being watched. Never raises.
+    """
+    key = str(key or "").strip()
+    if not key:
+        return False
+    now = time.time()
+    if now - _last_touched.get(key, 0.0) < _HEARTBEAT_S:
+        return True
+    try:
+        path = _path(key)
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(record, dict) or record.get("key") != key:
+            return False
+        record["updated_at"] = now
+        record["pid"] = os.getpid()
+        from .state_paths import write_text_atomic
+        write_text_atomic(path, json.dumps(record))
+        _last_touched[key] = now
+        # The announcer's own skip-if-unchanged cache would otherwise hold
+        # the body it last wrote and a stale timestamp beside it.
+        _last_written.pop(key, None)
+        return True
+    except Exception:
+        return False
+
+
 def _alive(record: dict, now: float) -> bool:
     if now - float(record.get("updated_at") or 0) > _STALE_S:
         return False
@@ -135,6 +184,29 @@ def _alive(record: dict, now: float) -> bool:
 _REAP_AFTER_S = 4 * _STALE_S
 
 
+def _process_is_gone(record: dict) -> bool:
+    """Whether this host's kernel for *record* provably no longer exists.
+
+    True only for a pid this host can be asked about and that is not
+    there. A pid of 0, or one the kernel refuses to answer for (another
+    user's process), is not proof of death and leaves the record alone --
+    guessing a session dead costs its peers the messages they left it.
+    """
+    try:
+        pid = int(record.get("pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except Exception:
+        return False
+    return False
+
+
 def _reap(now: float) -> int:
     """Remove records of sessions that are long gone. Never raises."""
     removed = 0
@@ -146,9 +218,20 @@ def _reap(now: float) -> int:
         try:
             record = json.loads(f.read_text(encoding="utf-8"))
             updated = float((record or {}).get("updated_at") or 0)
+            # A record is reaped here only when the PROCESS is gone --
+            # which is what the crashed-kernel case this branch was
+            # written for actually looks like. `not _alive(...)` also
+            # answers True for a session that has merely been QUIET for
+            # _STALE_S, and deleting that record cost its peers their
+            # messages: `_known_key` reads the record file to decide
+            # whether a message can be queued for a session that is
+            # closed or mid-restart, so reaping it turned "queue this
+            # for later" into "no other open session" and the message
+            # was dropped. A long-stale record is still reaped by the
+            # _REAP_AFTER_S test above; this one needs proof.
             dead_here = (isinstance(record, dict)
                          and record.get("host") == socket.gethostname()
-                         and not _alive(record, now))
+                         and _process_is_gone(record))
             if now - updated > _REAP_AFTER_S or dead_here:
                 f.unlink()
                 removed += 1

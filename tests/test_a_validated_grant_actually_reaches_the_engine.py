@@ -149,16 +149,31 @@ def test_no_flag_grants_nothing(wired, tmp_path, capsys):
 # The banner named a remedy; the remedy has to exist
 # ---------------------------------------------------------------------------
 
-def _supplied_host(monkeypatch, *, isolation: str, bwrap: bool = False):
+def _supplied_host(monkeypatch, *, isolation: str, bwrap: bool = False,
+                   cage: bool = False):
     """Everything the resolver asks about, answered by the test.
 
-    The host, because a machine with bubblewrap and one without gave
-    opposite results; the SETTING, because it used to be read from this
-    machine's own ~/.delfin/settings.json — so the test passed where
-    isolation was off, failed where it was on, and inside the suite
-    passed only because an earlier test had left the settings cache
-    holding "off". Two sessions reported it as a failure they could not
-    place (2026-09-17).
+    Input: the setting, and which of this host's four containment
+    mechanisms work. Output: the `api_client` module with every one of
+    them answered from here. Semantics: the argv the resolver returns is
+    a function of the arguments to this helper and of nothing on the
+    machine running the test.
+
+    Each parameter is here because leaving it to the host made the test
+    report the host. The HOST, because a machine with bubblewrap and one
+    without gave opposite results. The SETTING, because it used to be
+    read from this machine's own ~/.delfin/settings.json — so the test
+    passed where isolation was off, failed where it was on, and inside
+    the suite passed only because an earlier test had left the settings
+    cache holding "off"; two sessions reported it as a failure they
+    could not place (2026-09-17). And the CAGE, for the same reason one
+    layer down: `_process_cage_functional` probes bwrap once and keeps
+    the answer in a module global, so whether it had already been probed
+    -- by any earlier test in the run, with this host's real `which` --
+    decided what these tests saw. Alone they passed; in the suite two of
+    them failed (2026-10-08). The memo is pinned as well as the
+    function, so neither this file's answers nor a later file's depend
+    on the order they run in.
     """
     from delfin.agent import api_client
     import delfin.user_settings as us
@@ -172,11 +187,35 @@ def _supplied_host(monkeypatch, *, isolation: str, bwrap: bool = False):
     monkeypatch.setattr(api_client, "_bwrap_functional", lambda: bwrap)
     monkeypatch.setattr(api_client, "_landlock_functional", lambda: False)
     monkeypatch.setattr(api_client, "_seatbelt_functional", lambda: False)
+    monkeypatch.setattr(api_client, "_process_cage_functional", lambda: cage)
+    monkeypatch.setattr(api_client, "_PROCESS_CAGE_FUNCTIONAL", cage)
+    monkeypatch.delenv(api_client._PROCESS_CAGE_ENV, raising=False)
     return api_client
 
 
 def _is_a_refusal(argv) -> bool:
     return any("refused:" in str(part) for part in argv)
+
+
+def _the_filesystem_is_walled(argv) -> bool:
+    """Whether this argv confines the command to the workspace.
+
+    Not the same question as "does the word bwrap appear". bwrap builds
+    two different things here: the WALL (`--ro-bind / /` plus the
+    workspace bound writable) and the process CAGE (`--dev-bind / /`,
+    which unshares the pid namespace and shuts the session doors and
+    leaves the filesystem exactly as it is). `agent.bash_isolation` is
+    the switch for the first; DELFIN_PROCESS_CAGE is the switch for the
+    second. A test that reads argv[0] cannot tell them apart, and once
+    the cage existed, "bwrap" stopped meaning "contained".
+    """
+    parts = [str(p) for p in argv]
+    if "--ro-bind" in parts:
+        return True             # bwrap wall
+    if "--fs" in parts:         # landlock_exec wrapper: --fs 0 is no wall
+        i = parts.index("--fs")
+        return i + 1 < len(parts) and parts[i + 1] != "0"
+    return False
 
 
 def test_isolate_is_consulted_before_the_settings_file(monkeypatch, tmp_path):
@@ -194,7 +233,7 @@ def test_isolate_is_consulted_before_the_settings_file(monkeypatch, tmp_path):
 
     settled = api_client._bash_isolation_argv("echo hi", str(ws), perms)
     assert not _is_a_refusal(settled), "isolation off runs the command"
-    assert "bwrap" not in settled
+    assert not _the_filesystem_is_walled(settled)
 
     api_client.set_bash_isolation_override("bwrap")
     try:
@@ -220,19 +259,108 @@ def test_the_setting_decides_when_no_flag_was_given(monkeypatch, tmp_path):
 
     settled = api_client._bash_isolation_argv("echo hi", str(ws), perms)
     assert settled and settled[0] == "bwrap"
+    # ... and it is the wall, not the cage: argv[0] is "bwrap" for both.
+    assert _the_filesystem_is_walled(settled)
 
 
-def test_isolation_off_is_honoured_even_unattended(monkeypatch, tmp_path):
-    """"off" is the explicit escape hatch and stays one."""
+@pytest.mark.parametrize("cage", [False, True])
+def test_isolation_off_is_honoured_even_unattended(monkeypatch, tmp_path, cage):
+    """"off" is the explicit escape hatch and stays one.
+
+    Asserted on both kinds of host, because the escape hatch has to mean
+    the same thing on a machine where the process cage works as on one
+    where it does not. It is the same property either way: the command
+    runs, and nothing confines it to the workspace.
+    """
     from delfin.agent.api_client import KitToolPermissions
 
     ws = tmp_path / "project"
     ws.mkdir()
     perms = KitToolPermissions(workspace=ws, mode="bypassPermissions")
-    api_client = _supplied_host(monkeypatch, isolation="off", bwrap=True)
+    api_client = _supplied_host(monkeypatch, isolation="off", bwrap=True,
+                                cage=cage)
 
     settled = api_client._bash_isolation_argv("echo hi", str(ws), perms)
-    assert "bwrap" not in settled and not _is_a_refusal(settled)
+    assert not _the_filesystem_is_walled(settled)
+    assert not _is_a_refusal(settled)
+
+
+def test_isolation_off_leaves_the_cage_standing(monkeypatch, tmp_path):
+    """Two promises, two switches.
+
+    `bash_isolation = "off"` says "do not confine my files". It does not
+    say "let a command outlive itself", which is what the process cage
+    prevents -- and which has its own switch. A command whose filesystem
+    is deliberately open still runs with its pid namespace unshared on a
+    host that can do it.
+
+    This is the distinction the two tests above used to assert the
+    opposite of, by reading the word "bwrap".
+    """
+    from delfin.agent.api_client import KitToolPermissions
+
+    ws = tmp_path / "project"
+    ws.mkdir()
+    perms = KitToolPermissions(workspace=ws, mode="bypassPermissions")
+    api_client = _supplied_host(monkeypatch, isolation="off", bwrap=True,
+                                cage=True)
+
+    settled = api_client._bash_isolation_argv("echo hi", str(ws), perms)
+    assert settled[0] == "bwrap" and "--dev-bind" in settled, settled
+    assert "--unshare-pid" in settled, "the cage is what is left"
+    assert not _the_filesystem_is_walled(settled)
+
+    # And the cage's own switch takes it away, where the wall's did not.
+    monkeypatch.setenv(api_client._PROCESS_CAGE_ENV, "off")
+    bare = api_client._bash_isolation_argv("echo hi", str(ws), perms)
+    assert "bwrap" not in [str(p) for p in bare], bare
+    assert not _the_filesystem_is_walled(bare)
+
+
+def test_the_host_answers_nothing_these_tests_ask(monkeypatch, tmp_path):
+    """The helper pins every mechanism, memo included.
+
+    The regression that brought this test about was not a wrong answer
+    but an unpinned one: `_process_cage_functional` keeps its probe in
+    `_PROCESS_CAGE_FUNCTIONAL`, so an earlier test that had let it probe
+    the real host decided what these tests saw. Both are pinned now, and
+    this is what says so -- a leak would otherwise only show up as two
+    failures in a full run that nobody can reproduce in isolation.
+    """
+    api_client = _supplied_host(monkeypatch, isolation="off", cage=False)
+    assert api_client._process_cage_functional() is False
+    assert api_client._PROCESS_CAGE_FUNCTIONAL is False
+
+    api_client = _supplied_host(monkeypatch, isolation="off", cage=True)
+    assert api_client._process_cage_functional() is True
+    assert api_client._PROCESS_CAGE_FUNCTIONAL is True
+    # The env switch is cleared too: a host with it set in the
+    # environment would answer "no cage" for a different reason.
+    import os
+    assert api_client._PROCESS_CAGE_ENV not in os.environ
+
+
+def test_the_wall_and_the_cage_are_told_apart(monkeypatch, tmp_path):
+    """The reader this file now asserts through, pinned on real argvs.
+
+    Written out rather than trusted, because the whole repair rests on
+    it: if `_the_filesystem_is_walled` answered "bwrap in argv" the two
+    tests above would pass for the wrong reason and fail again the next
+    time the cage changed shape.
+    """
+    cage = ["bwrap", "--dev-bind", "/", "/", "--proc", "/proc",
+            "--unshare-pid", "--new-session", "/bin/bash", "-c", "echo hi"]
+    wall = ["bwrap", "--ro-bind", "/", "/", "--bind", "/ws", "/ws",
+            "--tmpfs", "/tmp", "/bin/bash", "-c", "echo hi"]
+    open_landlock = ["/usr/bin/python", "-I", "landlock_exec.py",
+                     "--fs", "0", "--net", "open", "--", "/bin/bash"]
+    walled_landlock = ["/usr/bin/python", "-I", "landlock_exec.py",
+                       "--fs", "/ws", "--net", "open", "--", "/bin/bash"]
+    assert not _the_filesystem_is_walled(cage)
+    assert _the_filesystem_is_walled(wall)
+    assert not _the_filesystem_is_walled(open_landlock)
+    assert _the_filesystem_is_walled(walled_landlock)
+    assert not _the_filesystem_is_walled(["/bin/bash", "-c", "echo hi"])
 
 
 def test_isolation_that_cannot_be_delivered_is_announced(tmp_path, capsys,

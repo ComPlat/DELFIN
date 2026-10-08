@@ -414,8 +414,17 @@ def test_gfn_ff_is_not_allowed_to_write_into_the_directory_it_is_run_from(tmp_pa
     """
     import os
 
+    # A directory of its own, not tmp_path itself: conftest's
+    # _isolate_user_state points every user-state sink at
+    # tmp_path / "user_home", so anything under the run that saves a
+    # setting or records a security event creates that directory BESIDE
+    # the working directory. Listing tmp_path therefore answered "what
+    # did GFN-FF leave" with "what the whole test wrote", and in a full
+    # run this failed with ['user_home'] while passing on its own.
+    run = tmp_path / 'run'
+    run.mkdir()
     was = os.getcwd()
-    os.chdir(tmp_path)
+    os.chdir(run)
     try:
         walk = climb.Climb(_COMPLEX, 'gfnff')
         try:
@@ -424,10 +433,15 @@ def test_gfn_ff_is_not_allowed_to_write_into_the_directory_it_is_run_from(tmp_pa
             walk.step()
         finally:
             walk.close()
-        left = sorted(p.name for p in tmp_path.iterdir())
+        left = sorted(p.name for p in run.iterdir())
     finally:
         os.chdir(was)
     assert left == [], left
+    # And the hazard the directory is for, stated rather than implied:
+    # tmp_path is shared with the user-state fallback, so a list of
+    # tmp_path is a list of what the whole test wrote.
+    assert run.parent == tmp_path
+    assert not (run / 'user_home').exists(), sorted(p.name for p in run.iterdir())
     # GFN2 has no such file and keeps the faster engine.
     quick = climb.Climb(_COMPLEX, 'gfn2')
     try:

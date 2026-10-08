@@ -4544,6 +4544,32 @@ class AgentEngine:
                  output=output, duration_ms=dur, ok=ok, error=error)
         except Exception:
             pass
+        self._keep_presence_fresh()
+
+    def _keep_presence_fresh(self) -> None:
+        """Say this session is still here, once per tool call.
+
+        `announce` is driven by the terminal's idle poll and the
+        dashboard's refresh timer, so a session working through one long
+        turn stopped saying anything -- and a session that says nothing
+        for _STALE_S is read as not open, after which `_reap` deleted its
+        record and a peer's message to it was refused instead of queued.
+        A tool call is the one thing that happens throughout a turn, and
+        `touch` rate-limits itself to the heartbeat interval, so this is
+        a dictionary lookup on all but one call a minute.
+
+        It touches rather than announces: this side knows the key but not
+        the session's title, and `announce` writes the whole record.
+        Never raises.
+        """
+        try:
+            key = str(getattr(self.kit_permissions, "presence_key", "") or "")
+            if not key:
+                return
+            from . import session_presence as _presence
+            _presence.touch(key)
+        except Exception:
+            pass
 
     def _build_user_message(
         self, text: str, images: list[str] | None,
