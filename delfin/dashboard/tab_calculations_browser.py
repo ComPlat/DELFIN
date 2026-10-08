@@ -15521,10 +15521,6 @@ def create_tab(ctx):
         # Exported so the download control can be driven in a test. It was
         # not reachable from outside, so the defect it carried -- a folder
         # selection leaving the button grey -- could only be found by hand.
-        'calc_download_btn': calc_download_btn,
-        'calc_download_status': calc_download_status,
-        'calc_update_download_btn': calc_update_download_btn,
-        'calc_on_download': calc_on_download,
         'calc_on_selection_change': calc_on_selection_change,
         '_calc_tree_size': _calc_tree_size,
         # Transfer / move
