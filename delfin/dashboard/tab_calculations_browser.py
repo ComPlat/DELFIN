@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -3156,6 +3157,16 @@ def create_tab(ctx):
     def _calc_update_explorer_action_state():
         _calc_update_copy_path_btn_state()
         _calc_clipboard_paths()
+        # Selecting a FOLDER reached no other re-evaluation: both open paths
+        # return early when the clicked entry is not a file, and the only
+        # other caller runs when the listing is rebuilt. So a folder at the
+        # explorer root left the download button grey unless a FILE had been
+        # clicked first in the same listing -- which is why it was reported
+        # as working only sporadically. This runs on every selection change,
+        # so the kind of the selected entry no longer decides whether the
+        # control is correct. (Defined later in this scope; closures are
+        # resolved when called, not when written.)
+        calc_update_download_btn()
         if _remote_archive_enabled:
             has_selection = bool(_calc_collect_selected_sources_only())
             calc_ssh_transfer_btn.disabled = (
@@ -5709,6 +5720,32 @@ def create_tab(ctx):
             return f'{n_bytes / 1024:.2f} KB'
         return f'{n_bytes} B'
 
+    def _calc_tree_size(root, *, cap=None):
+        """Total size of the regular files under ``root``, in bytes.
+
+        An upper bound on the archive a download would build: compression
+        only makes it smaller, so a tree that fits under the limit here
+        cannot exceed it once zipped. Stops counting once ``cap`` is passed
+        -- the caller only needs to know THAT the limit is exceeded, and a
+        home directory is not worth walking to the end to find out.
+
+        Symlinks are not followed and unreadable entries are skipped: this
+        runs to decide whether to refuse, and must not raise on the way.
+        """
+        cap = CALC_DOWNLOAD_MAX_BYTES if cap is None else cap
+        total = 0
+        for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+            for name in filenames:
+                try:
+                    st = os.lstat(os.path.join(dirpath, name))
+                except OSError:
+                    continue
+                if stat.S_ISREG(st.st_mode):
+                    total += st.st_size
+                    if total > cap:
+                        return total
+        return total
+
     def _calc_hide_chunk_controls():
         calc_chunk_prev_btn.disabled = True
         calc_chunk_next_btn.disabled = True
@@ -6140,13 +6177,27 @@ def create_tab(ctx):
         calc_report_btn.disabled = not bool(calc_collect_report_targets(limit=1))
 
     def calc_update_download_btn():
+        """Enable the control when something is downloadable, and when it is
+        not, say so on the control itself.
+
+        A disabled ipywidgets Button fires no click, so its handler -- and
+        every message the handler owns -- never runs. At the explorer root
+        with nothing selected there is no target, and the grey button was
+        the only thing the user got: indistinguishable from a refusal, and
+        reported as a download that is silently forbidden. There is no
+        permission rule here at all, so the tooltip states the real reason.
+        """
         target = _calc_download_target_path()
         if target is None:
             calc_download_btn.disabled = True
             calc_download_btn.description = 'Download'
+            calc_download_btn.tooltip = (
+                'Select a file or folder first — at the top level there is '
+                'nothing to download until you do.')
             return
         calc_download_btn.disabled = False
         calc_download_btn.description = 'Download ZIP' if target.is_dir() else 'Download'
+        calc_download_btn.tooltip = f'Download {target.name or str(target)}'
 
     def calc_render_content(scroll_to=None):
         if not state['file_content']:
@@ -9219,6 +9270,25 @@ def create_tab(ctx):
             mime = 'application/octet-stream'
 
             if target.is_dir():
+                # Measured BEFORE the archive is built. make_archive wrote
+                # the whole tree to a temp dir and the size limit was
+                # applied to the finished payload, so a large folder blocked
+                # the kernel for the full zip -- the browser went
+                # unresponsive with no message -- and the result was then
+                # thrown away. An estimate from the file sizes costs a walk
+                # and refuses up front. It is an upper bound: compression
+                # only makes the archive smaller, so a folder that passes
+                # here cannot fail the exact check further down.
+                _raw = _calc_tree_size(target)
+                if _raw > CALC_DOWNLOAD_MAX_BYTES:
+                    calc_download_status.value = (
+                        '<span style="color:#d32f2f;">'
+                        f'Folder too large to download '
+                        f'({_calc_format_bytes(_raw)} before compression). '
+                        f'Limit: {_calc_format_bytes(CALC_DOWNLOAD_MAX_BYTES)}. '
+                        'Download a subfolder instead.</span>'
+                    )
+                    return
                 calc_download_status.value = (
                     f'<span style="color:#1976d2;">Preparing ZIP for '
                     f'{_html.escape(target.name or str(target))}...</span>'
@@ -15397,6 +15467,15 @@ def create_tab(ctx):
         'calc_duplicate_btn': calc_duplicate_btn,
         'calc_copy_btn': calc_copy_btn,
         'calc_copy_path_btn': calc_copy_path_btn,
+        # Exported so the download control can be driven in a test. It was
+        # not reachable from outside, so the defect it carried -- a folder
+        # selection leaving the button grey -- could only be found by hand.
+        'calc_download_btn': calc_download_btn,
+        'calc_download_status': calc_download_status,
+        'calc_update_download_btn': calc_update_download_btn,
+        'calc_on_download': calc_on_download,
+        'calc_on_selection_change': calc_on_selection_change,
+        '_calc_tree_size': _calc_tree_size,
         # Transfer / move
         'calc_move_archive_btn': calc_move_archive_btn,
         'calc_back_to_calculations_btn': calc_back_to_calculations_btn,
