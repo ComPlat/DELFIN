@@ -274,18 +274,21 @@ def test_a_failed_submitted_job_scan_does_not_cost_the_exit_code(
                          timeout_s=30, workspace=str(tmp_path))
     _wait_for(lambda: job.poll() is not None, 25, "the job to end")
 
-    # Waited on the PERSISTED copy, not on job.finished_at: that is set
-    # before the record is written, and waiting on it here would be the
-    # same mistake the breach ordering was fixed for -- waiting on one
-    # copy and asserting on another.
-    def _persisted():
-        again = bash_jobs._reattach(job.job_id, workspace=str(tmp_path))
-        if again is None:
-            return None
-        got = again.status_dict()
-        return got if got.get("exit_code") is not None else None
+    # The REGISTRY RECORD, read straight from the file -- not
+    # job.finished_at, which is set before the write (waiting on one copy
+    # and asserting on another is the mistake the breach ordering was
+    # fixed for), and not a reattached object, which adds a second thing
+    # that can be absent: this timed out on CI while passing here,
+    # because what it was waiting for was `_reattach` and not the record.
+    def _record():
+        jobs = (bash_jobs._load_registry_file(tmp_path) or {}).get("jobs", {})
+        rec = jobs.get(job.job_id) or {}
+        return rec if rec.get("exit_code") is not None else None
 
-    status = _wait_for(_persisted, 10, "the exit code to reach the registry")
-    assert status.get("exit_code") == 0, status
-    assert not status.get("running"), status
+    rec = _wait_for(_record, 20, "the exit code to reach the registry")
+    assert rec.get("exit_code") == 0, rec
+    assert rec.get("finished_at"), rec
+    assert rec.get("watched_slurm_jobs") == [], (
+        "the scan failed, so there is no watched list -- but the exit "
+        f"code is written anyway: {rec}")
     assert "submitted-job scan failed" in job.stderr_path.read_text()
