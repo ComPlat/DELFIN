@@ -12441,7 +12441,9 @@ class _DocToolExecutor:
                 return json.dumps({"error": err})
 
         if not full.exists():
-            return json.dumps({"error": f"File not found: {rel_path}"})
+            return json.dumps({"error": (
+                f"File not found: {rel_path}"
+                + _why_that_path_is_not_there(rel_path))})
         if full.is_dir():
             entries = sorted(p.name for p in full.iterdir())[:50]
             return json.dumps({"type": "directory", "entries": entries})
@@ -15863,7 +15865,9 @@ class _DocToolExecutor:
         if err:
             return json.dumps({"error": err})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
 
@@ -15985,7 +15989,9 @@ class _DocToolExecutor:
         if err:
             return json.dumps({"error": err})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
 
@@ -16393,7 +16399,7 @@ class _DocToolExecutor:
         # Build the concrete pattern list for this directory.
         #
         # On systems with symlinks (e.g. BwUniCluster: /home/<user>/ is a
-        # symlink to /pfs/data6/home/<user>/), the agent may issue bash
+        # symlink to /clusterfs/home/<user>/), the agent may issue bash
         # commands with EITHER path form. We register patterns for both
         # the resolved (canonical) and unresolved (as-given) directory so
         # bash auto-allow matches regardless of which form the agent picks.
@@ -17162,7 +17168,9 @@ class _DocToolExecutor:
             if err2:
                 return json.dumps({"error": err2})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
         if resolved.suffix.lower() != ".ipynb":
@@ -17228,7 +17236,9 @@ class _DocToolExecutor:
         if err:
             return json.dumps({"error": err})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
         if resolved.suffix.lower() != ".ipynb":
@@ -19992,6 +20002,51 @@ def set_bash_isolation_override(mode: str) -> None:
     """
     global _BASH_ISOLATION_OVERRIDE
     _BASH_ISOLATION_OVERRIDE = str(mode or "")
+
+
+def _why_that_path_is_not_there(path_arg: str) -> str:
+    """A clause naming the mistake a missing path reads like, or "".
+
+    Input: the path as the caller wrote it. Output: a sentence to append
+    to "file not found", or "" when the path says nothing about itself.
+    Semantics: advisory only -- it never decides whether a path is
+    allowed and never looks inside one.
+
+    Two shapes, both from one afternoon's field reports:
+
+    An elision. A model that abbreviates a long path in prose will
+    sometimes send the abbreviation: `/pfs/.../ChemDarwin/README.md`
+    reached the file layer twice. "Not found" is true and useless; the
+    path is not a path.
+
+    A home directory built by hand. `/home/u12345/agent_workspace/...`
+    where the account's home is `/clusterfs/groups/team/u12345`. The guess
+    is reasonable and wrong, and the answer costs a round every time
+    because nothing in the refusal says where home actually is. Named
+    only when the account name really does appear in the path somewhere
+    other than at its own home, so an ordinary typo gets no lecture.
+
+    Never raises: a path that cannot be parsed simply says nothing.
+    """
+    try:
+        text = str(path_arg or "")
+        if not text:
+            return ""
+        parts = [seg for seg in text.replace("\\", "/").split("/")]
+        if any(seg == "..." for seg in parts):
+            return (" — the path contains a '...' segment, which reads as an "
+                    "abbreviation rather than a directory. Send the path in "
+                    "full, or list the parent and pick from what comes back.")
+        home = Path.home()
+        if (Path(text).is_absolute() and home.name
+                and home.name in parts
+                and not text.startswith(str(home))):
+            return (f" — this account's home directory is {home}. The path "
+                    f"puts '{home.name}' somewhere else, which is how a home "
+                    "path built by hand usually goes wrong here.")
+    except Exception:
+        return ""
+    return ""
 
 
 def _bash_isolation_argv(
