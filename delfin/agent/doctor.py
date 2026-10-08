@@ -322,6 +322,96 @@ def _check_scheduler(ctx: dict) -> list[dict]:
     )]
 
 
+def _check_git_tooling(ctx: dict) -> list[dict]:
+    """git and gh: present, authenticated, and able to sign a commit.
+
+    Four questions, four rows, because they fail independently and the
+    remedy differs for each. None of them was asked anywhere in the
+    product. git's absence was noticed only as a side effect of
+    ``_check_push`` -- reported under the name "git remote", with no fix
+    string, and only on a checkout that has an origin remote. gh was never
+    probed at all, while the write gate REQUIRES the pull-request route
+    (a contributor's push to the default branch is refused and the agent
+    is told to open a PR), so the one tool the sanctioned path needs was
+    the one nothing checked. An absent or logged-out gh surfaced as bash
+    exit 127 or gh's own stderr, with nothing mapping it to an action.
+
+    Read-only throughout: ``--version``, ``config --get`` and ``gh auth
+    status`` publish nothing. WARN rather than FAIL, the module's
+    convention for a missing prerequisite, and every row carries a fix --
+    a row without one only tells the reader that something is wrong.
+    """
+    import shutil as _sh
+
+    cwd = str(ctx.get("workspace") or ".")
+    rows: list[dict] = []
+
+    git = _sh.which("git")
+    if not git:
+        # Identity cannot be asked about without the binary, and gh is a
+        # separate tool: name this one and go on.
+        rows.append(_row(
+            "git installed", WARN, "git is not on PATH",
+            "install git; the agent cannot branch, commit or push without it"))
+    else:
+        rows.append(_row("git installed", PASS, git))
+        missing = []
+        for field in ("user.name", "user.email"):
+            try:
+                done = subprocess.run(["git", "config", "--get", field],
+                                      capture_output=True, text=True,
+                                      timeout=10, cwd=cwd)
+                if done.returncode != 0 or not (done.stdout or "").strip():
+                    missing.append(field)
+            except (OSError, subprocess.SubprocessError):
+                missing.append(field)
+        if missing:
+            rows.append(_row(
+                "git identity", WARN,
+                "not configured: " + ", ".join(missing),
+                "git config --global user.name \"...\" and "
+                "git config --global user.email \"...\" -- a commit cannot "
+                "be made without them, and the failure arrives at commit "
+                "time rather than now"))
+        else:
+            rows.append(_row("git identity", PASS, "user.name and user.email set"))
+
+    gh = _sh.which("gh")
+    if not gh:
+        rows.append(_row(
+            "gh installed", WARN, "the GitHub CLI is not on PATH",
+            "install it (https://cli.github.com) -- the write gate routes "
+            "changes to the default branch through a pull request, and that "
+            "is the tool for it; without gh the agent can only hand the user "
+            "a compare URL"))
+        return rows
+
+    rows.append(_row("gh installed", PASS, gh))
+    try:
+        done = subprocess.run(["gh", "auth", "status"],
+                              capture_output=True, text=True, timeout=20,
+                              cwd=cwd)
+    except subprocess.TimeoutExpired:
+        rows.append(_row(
+            "gh authenticated", WARN, "gh auth status did not answer in 20 s",
+            "check network access to github from this host"))
+        return rows
+    except (OSError, subprocess.SubprocessError) as exc:
+        rows.append(_row("gh authenticated", WARN, f"could not ask gh: {exc}",
+                         "run 'gh auth status' by hand"))
+        return rows
+    if done.returncode == 0:
+        rows.append(_row("gh authenticated", PASS, "a login is active"))
+    else:
+        # Presence and authentication are different questions, and gh
+        # answers the second one only when asked.
+        rows.append(_row(
+            "gh authenticated", WARN, "no active GitHub login",
+            "gh auth login -- pull requests cannot be opened until this "
+            "succeeds"))
+    return rows
+
+
 def _check_push(ctx: dict) -> list[dict]:
     """Can this host reach the git remote at all.
 
@@ -344,7 +434,9 @@ def _check_push(ctx: dict) -> list[dict]:
             capture_output=True, text=True, timeout=25,
             cwd=str(ctx.get("workspace") or "."))
     except FileNotFoundError:
-        return [_row("git remote", WARN, "git is not installed")]
+        return [_row("git remote", WARN, "git is not installed",
+                     "install git; the git tooling check above says the "
+                     "same thing with the remedy")]
     except subprocess.TimeoutExpired:
         return [_row(
             "git remote", WARN,
@@ -688,6 +780,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("python deps", "_check_python_deps"),
     ("mcp servers", "_check_mcp"),
     ("scheduler daemon", "_check_scheduler"),
+    ("git tooling", "_check_git_tooling"),
     ("git remote", "_check_push"),
     ("attention inbox", "_check_attention"),
     ("attention transports", "_check_attention_transports"),
