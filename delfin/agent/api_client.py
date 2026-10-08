@@ -3593,6 +3593,28 @@ def _ends_with_a_question(text: str) -> bool:
     return (text or "").rstrip().rstrip("*_`").rstrip().endswith(("?", "？"))
 
 
+def _announces_an_action(text: str) -> bool:
+    """True when an answer ENDS by saying what it is about to do.
+
+    The last sentence, not any sentence: "I'll read the lines" in the
+    middle of a finished report is narration; at the very end, followed
+    by nothing, it is a promise the turn did not keep. Never true for an
+    answer that ends with a question -- that one is waiting on the user
+    and must not be pushed.
+    """
+    from .german import ANNOUNCES_ACTION_RE
+    tail = (text or "").rstrip().rstrip("*_`").rstrip()
+    if not tail or _ends_with_a_question(tail):
+        return False
+    # Only the last sentence or line is examined, with its Markdown
+    # emphasis taken off both ends.
+    last = tail.rsplit("\n", 1)[-1].strip().lstrip("*_`#> ").rstrip("*_`")
+    for mark in (". ", "! "):
+        if mark in last:
+            last = last.rsplit(mark, 1)[-1]
+    return bool(ANNOUNCES_ACTION_RE.search(last.strip()))
+
+
 def _pushed_refs(output: str) -> list[tuple[str, str, str]]:
     """(owner/repo, new sha, branch) for every ref a GitHub push updated."""
     repo = ""
@@ -21624,6 +21646,9 @@ class OpenAIClient(_BaseClient):
         _AUTO_CONT_CAP = 12
         _auto_cont_count = 0
         _did_tools_since_cont = False
+        # Whether the announced-action continuation already fired this
+        # turn; see the second auto-continue trigger.
+        _announced_once = False
         # Completion events that arrive as the turn is ENDING. Both drains
         # below are exactly-once: what they hand over is gone from their
         # store, so it has to be acted on in this turn -- nothing in the
@@ -23274,6 +23299,37 @@ class OpenAIClient(_BaseClient):
             # "Soll ich git push origin main jetzt ausführen?", was sent back
             # in by the line below, and tried the push it had just asked
             # about -- which the gate refused a second time.
+            # Second trigger, from the field (2026-10-08): the model ENDS
+            # its turn by announcing what it is about to do -- "Zuerst lese
+            # ich die betroffenen Zeilen, um sauber zu editieren:" -- and
+            # does not do it. One session stopped exactly there; another
+            # spent seven consecutive turns announcing and calling nothing.
+            # Neither had open tasks, so the trigger above could not fire.
+            # An announcement is a stronger signal than an open task: the
+            # model has said the action itself. Once per turn, so a model
+            # that announces again after being sent back costs one extra
+            # round and not a loop; and never over a question.
+            _announced = (not _announced_once
+                          and _auto_cont_count < _AUTO_CONT_CAP
+                          and not self._waiting_on_watched_jobs()
+                          and _announces_an_action("".join(_text_chunks)))
+            if _announced:
+                _announced_once = True
+                _auto_cont_count += 1
+                _did_tools_since_cont = False
+                _final = "".join(_text_chunks) if _text_chunks else ""
+                if _final.strip():
+                    api_messages.append({"role": "assistant", "content": _final})
+                api_messages.append({"role": "user", "content": (
+                    "You ended your turn by announcing an action and did "
+                    "not take it. Take it NOW with the tool call you "
+                    "described, and continue until the step is done. If the "
+                    "action is risky or you are unsure the user wants it, "
+                    "ask with ask_user_question instead of announcing.")})
+                yield StreamEvent(
+                    type="notice", text="\n\n↻ announced an action → taking it\n")
+                continue
+
             if (_did_tools_since_cont and _auto_cont_count < _AUTO_CONT_CAP
                     and self._has_pending_tasks()
                     and not self._waiting_on_watched_jobs()
