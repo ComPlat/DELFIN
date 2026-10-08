@@ -5772,37 +5772,115 @@ class KitToolPermissions:
         return all(self._segment_auto_allowed(s) for s in segments)
 
     def _changes_outside_the_workspace(self, cmd: str) -> bool:
-        """chmod of a path, or pytest --basetemp, that lands outside every
-        workspace root (red team LA: `chmod 000 /etc/hosts`, `chmod 600
-        ../../f`, `pytest --basetemp=/elsewhere`). A path that cannot be
-        parsed counts as outside -- it goes to the confirm gate."""
+        r"""True when an auto-allowed command would write outside the roots.
+
+        Input: one shell command (a single segment; the caller splits).
+        Output: True to send it to the confirm gate. Semantics: every path
+        the command would CREATE or OVERWRITE is resolved and must land in
+        a writable workspace root, or in the system temp directory.
+
+        The auto-allow list contains commands whose job is to write, and
+        their containment was expressed inside the patterns themselves as
+        a blacklist of system directories -- `mkdir\b` accepted any path at
+        all, `touch\s+(?!/)` accepted every path that merely did not start
+        with a slash (`~/.local/bin/pytest` among them), and `cp`/`mv`
+        refused /etc, /usr, /bin, /lib and /var and nothing else. None of
+        them looked at a shell redirect, so `echo ... > ~/.local/bin/pytest`
+        was auto-allowed on the strength of `echo`. Measured on this
+        checkout 2026-10-08: `python3 -m venv <outside>`, `python3 -m
+        ensurepip --user`, `echo ... > <outside>/pytest`, `cp x
+        <outside>/pytest` and `mkdir -p <outside>/bin` were all
+        auto-allowed, and this predicate returned False for each.
+
+        Containment is now asked here, once, against the roots -- so the
+        patterns no longer have to carry a list of places to avoid, which
+        is the wrong shape for the question: there is no end of places that
+        are not the workspace.
+
+        The system temp directory is NOT an exception. Granting one was the
+        first version of this change and the existing suite refused it: a
+        workspace under /tmp made `chmod 600 ../../outside/file` land in
+        temp, so a metadata write that had always been refused became free.
+        The argument for the exception -- that the isolation layer replaces
+        temp with a private tmpfs -- only holds where that layer runs, and
+        on a shared machine the real /tmp carries other sessions' lock
+        files. Cost of refusing it: scratch work outside the workspace now
+        draws one confirmation. The workspace is where that work belongs.
+
+        A path that cannot be parsed counts as outside: it goes to the
+        confirm gate.
+        """
         try:
             words = shlex.split(cmd)
         except ValueError:
             return True
         if not words:
             return False
-        targets: list[str] = []
-        if words[0] == "chmod":
-            rest = [w for w in words[1:] if not w.startswith("-")]
-            targets = rest[1:]           # the first is the mode
-        elif words[0] in ("pytest", "py.test") or (
+        targets = list(self._redirect_targets(cmd))
+        prog = Path(words[0]).name
+        rest_no_flags = [w for w in words[1:] if not w.startswith("-")]
+        if prog == "chmod":
+            targets += rest_no_flags[1:]      # the first is the mode
+        elif prog in ("pytest", "py.test") or (
                 len(words) > 2 and words[1:3] == ["-m", "pytest"]):
             for i, w in enumerate(words):
                 if w.startswith("--basetemp="):
                     targets.append(w.split("=", 1)[1])
                 elif w == "--basetemp" and i + 1 < len(words):
                     targets.append(words[i + 1])
+        elif prog in ("mkdir", "touch", "tee"):
+            targets += rest_no_flags
+        elif prog in ("cp", "mv", "install", "rsync"):
+            # The destination is the last operand; the rest are sources,
+            # and a source is a read.
+            if rest_no_flags:
+                targets.append(rest_no_flags[-1])
+        elif prog == "ln":
+            # `ln -s target linkname` creates linkname. With one operand
+            # the link is made in the working directory.
+            targets.append(rest_no_flags[-1] if len(rest_no_flags) > 1 else ".")
+        elif prog in ("virtualenv", "uv") or (
+                len(words) > 2 and words[1:3] == ["-m", "venv"]):
+            # `python -m venv DIR`, `virtualenv DIR`, `uv venv DIR`.
+            _ops = [w for w in rest_no_flags if w not in ("venv", "-m")]
+            targets += _ops[1:] if prog == "uv" else _ops
+        elif prog in ("python", "python3") or prog.startswith("python3."):
+            if len(words) > 2 and words[1] == "-m" and words[2] == "ensurepip":
+                # It installs pip into an environment, and --user names the
+                # one place a workspace root never covers.
+                targets.append("~/.local")
         for t in targets:
             try:
-                p = Path(t).expanduser()
-                p = (p if p.is_absolute() else self.workspace / p).resolve(
+                q = Path(t).expanduser()
+                q = (q if q.is_absolute() else self.workspace / q).resolve(
                     strict=False)
             except Exception:
                 return True
-            if self.find_root_for(p) is None:
+            if self.find_root_for(q) is None:
                 return True
         return False
+
+    @staticmethod
+    def _redirect_targets(cmd: str) -> list[str]:
+        """File paths a shell redirect in ``cmd`` would write.
+
+        Covers ``> f``, ``>>f``, ``2> f`` and ``&> f``. Excludes the
+        descriptor forms (``2>&1``, ``>&2``), which rename a stream and
+        create no file, and ``/dev/*`` sinks, which are not the filesystem.
+        Quoted text is blanked first so a ``>`` inside an argument (``grep
+        '>' f``) is not read as a redirect.
+        """
+        blanked = _blank_quoted(cmd)
+        out: list[str] = []
+        for m in re.finditer(r"(?:\d*|&)>>?\s*([^\s;|&<>]+)", blanked):
+            # The match is taken from the blanked copy, so read the real
+            # text back at the same offsets -- a quoted path keeps its
+            # characters.
+            tok = cmd[m.start(1):m.end(1)].strip("\"'")
+            if not tok or tok.startswith("/dev/"):
+                continue
+            out.append(tok)
+        return out
 
     def _segment_auto_allowed(self, cmd: str) -> bool:
         # Command substitution ($( … ), `…`) and process substitution
