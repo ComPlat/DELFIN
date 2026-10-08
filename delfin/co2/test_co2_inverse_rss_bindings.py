@@ -439,3 +439,119 @@ def test_resolve_anchor_out_of_range_index_raises():
     with pytest.raises(ValueError, match="invalid"):
         mod._resolve_substrate_anchor(_anchor_atoms(), 0, None, "9")
 
+def test_generated_adduct_geometry_manta_delegates(tmp_path, monkeypatch):
+    """manta source must route through _manta_adduct_geometry."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    called = {}
+    def fake_manta(smiles, out_path=None):
+        called["smiles"] = smiles
+        p = out_path or "manta_adduct.xyz"
+        with open(p, "w") as f:
+            f.write("2\nbest\nNi 0 0 0\nC 0 0 2.0\n")
+        return ("atoms", p)
+    monkeypatch.setattr(mod, "_manta_adduct_geometry", fake_manta)
+    atoms, path = mod._generated_adduct_geometry("manta", "[Ni](C)")
+    assert called["smiles"] == "[Ni](C)"
+    assert os.path.basename(path) == "manta_adduct.xyz"
+
+
+@pytest.mark.parametrize("source,fn", [
+    ("quick", "smiles_to_xyz_quick"),
+    ("architector", "smiles_to_xyz_architector"),
+    ("molsimplify", "smiles_to_xyz_molsimplify"),
+    ("mace", "smiles_to_xyz_mace"),
+])
+def test_generated_adduct_geometry_external_builds_atoms(tmp_path, monkeypatch, source, fn):
+    """Each external/quick generator's XYZ body is normalised to (atoms, path)."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(f"delfin.smiles_converter.{fn}",
+                        lambda s: ("Ni 0.0 0.0 0.0\nC 0.0 0.0 2.0\n", None))
+    atoms, path = mod._generated_adduct_geometry(source, "[Ni](C)")
+    assert os.path.basename(path) == f"{source}_adduct.xyz"
+    assert len(atoms) == 2
+    with open(path) as f:
+        lines = f.read().splitlines()
+    assert lines[2].startswith("Ni")
+    assert lines[3].startswith("C")
+
+
+def test_generated_adduct_geometry_external_error_propagates(tmp_path, monkeypatch):
+    """A generator that returns an error must be loud, not silent."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("delfin.smiles_converter.smiles_to_xyz_architector",
+                        lambda s: (None, "Architector not installed"))
+    with pytest.raises(RuntimeError, match="adduct_source=architector"):
+        mod._generated_adduct_geometry("architector", "[Ni](C)")
+
+
+def test_generated_adduct_geometry_external_exception_propagates(tmp_path, monkeypatch):
+    """A raising builder (missing env) must surface as RuntimeError with source."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    def boom(s):
+        raise RuntimeError("MACE Python 3.7 env missing")
+    monkeypatch.setattr("delfin.smiles_converter.smiles_to_xyz_mace", boom)
+    with pytest.raises(RuntimeError, match="adduct_source=mace"):
+        mod._generated_adduct_geometry("mace", "[Ni](C)")
+
+
+def test_generated_adduct_geometry_external_header_tolerated(tmp_path, monkeypatch):
+    """An XYZ body with an N/comment header is stripped like the manta path."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    body = "2\nframe 1\nNi 0.0 0.0 0.0\nC 0.0 0.0 2.0\n"
+    monkeypatch.setattr("delfin.smiles_converter.smiles_to_xyz_quick",
+                        lambda s: (body, None))
+    atoms, _ = mod._generated_adduct_geometry("quick", "[Ni](C)")
+    assert len(atoms) == 2
+
+
+def test_main_adduct_source_quick_e2e(tmp_path, monkeypatch):
+    """adduct_source=quick: generator engine feeds the scan, occupier optional."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+    def fake_gen(source, smiles, out_path=None):
+        p = out_path or f"{source}_adduct.xyz"
+        with open(p, "w") as f:
+            f.write("2\nbest\nNi 0 0 0\nC 0 0 2.0\n")
+        return ("atoms", p)
+    def fake_write(atoms, xyz_path, metal_index, co2_c_index,
+                   start_distance, end_distance=1.7, steps=5, **kw):
+        captured["start"] = start_distance
+        captured["xyz"] = xyz_path
+        os.makedirs("relaxed_surface_scan", exist_ok=True)
+        with open(os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat"), "w") as f:
+            f.write("# mocked\n")
+        return "mocked.out"
+    monkeypatch.setattr(mod, "_generated_adduct_geometry", fake_gen)
+    monkeypatch.setattr(mod, "write_orca_input_and_run", fake_write)
+    monkeypatch.setattr(mod, "plot_scan_result", lambda p: None)
+    monkeypatch.setattr(mod, "_minimal_read_control_file",
+                        lambda: {"scan_dissoc": "true",
+                                 "adduct_source": "quick",
+                                 "manta_smiles": "[Ni](C)",
+                                 "dissoc_distance": "6.0",
+                                 "scan_steps": "20",
+                                 "substrate_atom_index": "1",
+                                 "PAL": "4", "maxcore": "1000",
+                                 "charge": "-2", "multiplicity": "1"})
+    mod.main()
+    assert captured["start"] == pytest.approx(2.0)
+    assert os.path.basename(captured["xyz"]) == "quick_adduct.xyz"
+
+
+def test_main_rejects_generator_source_without_smiles(tmp_path, monkeypatch):
+    """adduct_source=architector without manta_smiles must fail loudly."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mod, "_minimal_read_control_file",
+                        lambda: {"scan_dissoc": "true",
+                                 "adduct_source": "architector",
+                                 "manta_smiles": "",
+                                 "dissoc_distance": "6.0"})
+    with pytest.raises(ValueError, match="architector.*manta_smiles"):
+        mod.main()

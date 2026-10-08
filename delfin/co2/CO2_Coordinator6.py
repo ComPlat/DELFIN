@@ -676,6 +676,80 @@ def _manta_adduct_geometry(manta_smiles: str, out_path: Optional[str] = None) ->
     return atoms, path
 
 
+def _xyz_body_to_atoms(xyz_body: str, path: str):
+    """Parse a bare XYZ coordinate block (symbol x y z per line) into atoms.
+
+    Tolerates an optional ``N`` count line and comment line header (both are
+    stripped if the first non-empty line is a plain integer), matching the
+    tolerance of ``_manta_adduct_geometry``. Writes a standard XYZ file at
+    *path* and returns ``(Atoms, path)``.
+    """
+    from ase import Atoms
+
+    lines = [ln for ln in xyz_body.splitlines() if ln.strip()]
+    if len(lines) >= 2 and lines[0].strip().isdigit():
+        lines = lines[2:]  # drop count + comment header
+    if not lines:
+        raise RuntimeError("structure generator returned an empty coordinate block")
+    symbols, positions = [], []
+    for ln in lines:
+        parts = ln.split()
+        if len(parts) < 4:
+            raise RuntimeError(f"malformed XYZ coordinate line: {ln!r}")
+        symbols.append(parts[0])
+        positions.append([float(x) for x in parts[1:4]])
+    atoms = Atoms(symbols=symbols, positions=positions)
+    from ase.io import write as ase_write
+    ase_write(path, atoms, format="xyz")
+    return atoms, path
+
+
+# Generators selectable via adduct_source, all called with the full-complex
+# SMILES and returning a bare XYZ coordinate body (``(xyz, error)``) — except
+# manta, which returns ``(isomers, error)`` with isomers[0] == (block, label).
+
+def _generated_adduct_geometry(source: str, smiles: str,
+                               out_path: Optional[str] = None) -> Tuple[object, str]:
+    """Build the metal–substrate adduct through the requested structure
+    generator and return ``(atoms, xyz_path)`` of the best structure.
+
+    ``source`` is one of ``manta`` | ``quick`` | ``architector`` |
+    ``molsimplify`` | ``mace`` (the ``adduct_source`` CONTROL value).  Every
+    generator produces a structure for the full complex SMILES; manta ranks
+    isomers and picks the best, the external/quick builders return a single
+    conformer (lowest-energy frame for architector/molsimplify/mace). The
+    result is normalised to ``(atoms, path)`` so the downstream OCCUPIER and
+    scan pipeline is generator-agnostic.
+    """
+    if source == "manta":
+        return _manta_adduct_geometry(smiles, out_path)
+
+    from delfin.smiles_converter import (
+        smiles_to_xyz_quick,
+        smiles_to_xyz_architector,
+        smiles_to_xyz_molsimplify,
+        smiles_to_xyz_mace,
+    )
+    _FNS = {
+        "quick": smiles_to_xyz_quick,
+        "architector": smiles_to_xyz_architector,
+        "molsimplify": smiles_to_xyz_molsimplify,
+        "mace": smiles_to_xyz_mace,
+    }
+    fn = _FNS[source]
+    try:
+        xyz, error = fn(smiles)
+    except Exception as exc:  # builder env may be missing -> loud, not silent
+        raise RuntimeError(
+            f"adduct_source={source} failed for the complex SMILES: {exc}") from exc
+    if error:
+        raise RuntimeError(f"adduct_source={source} failed for the complex SMILES: {error}")
+    if not xyz:
+        raise RuntimeError(f"adduct_source={source} produced no structure for the complex SMILES")
+    path = out_path or f"{source}_adduct.xyz"
+    return _xyz_body_to_atoms(xyz, path)
+
+
 def _run_occupier_on_adduct(atoms, xyz_path: str, metal_symbol: Optional[str],
                             charge, multiplicity, broken_sym: Optional[str],
                             config: Dict, work_dir: Optional[str] = None):
@@ -785,15 +859,22 @@ def _resolve_substrate_anchor(atoms, metal_idx, substrate_symbol=None,
         # further away than ANCHOR_MAX_DISTANCE A from the metal is a ligand
         # atom, not the coordinated substrate — it must never be picked, and it
         # does not make the choice ambiguous either.
-        ANCHOR_MAX_DISTANCE = 2.5
-        bonded = {i: dist for i, dist in d.items() if dist <= ANCHOR_MAX_DISTANCE}
-        if not bonded:
-            listing = ", ".join(f"{i} ({d[i]:.2f} A)" for i in sorted(d, key=d.get)[:3])
-            raise ValueError(
-                f"substrate_atom={sym}: no {sym} atom within {ANCHOR_MAX_DISTANCE} A "
-                f"of the metal in '{source}' (closest: {listing}). "
-                "Set substrate_atom_index explicitly if this atom is the substrate anchor."
-            )
+        # This refinement applies only when the search is NOT already narrowed
+        # by allowed_indices (the substrate tail): a tail-restricted anchor may
+        # legitimately sit further out (up to the coordination distance), so the
+        # "bonded to the metal" cut must not fire there.
+        if allowed is not None:
+            bonded = d
+        else:
+            ANCHOR_MAX_DISTANCE = 2.5
+            bonded = {i: dist for i, dist in d.items() if dist <= ANCHOR_MAX_DISTANCE}
+            if not bonded:
+                listing = ", ".join(f"{i} ({d[i]:.2f} A)" for i in sorted(d, key=d.get)[:3])
+                raise ValueError(
+                    f"substrate_atom={sym}: no {sym} atom within {ANCHOR_MAX_DISTANCE} A "
+                    f"of the metal in '{source}' (closest: {listing}). "
+                    "Set substrate_atom_index explicitly if this atom is the substrate anchor."
+                )
         best = min(bonded, key=bonded.get)
         close = [i for i, dist in bonded.items() if dist <= bonded[best] + 1.0]
         if len(close) > 1:
@@ -1888,8 +1969,9 @@ def main():
     scan_dissoc = _is_enabled(args.get("scan_dissoc", False))
     dissoc_distance = args.get("dissoc_distance", 6.0)
     adduct_source = (_clean_str(args.get("adduct_source")) or "xyz").lower()
-    if adduct_source not in ("xyz", "manta"):
-        raise ValueError(f"adduct_source must be 'xyz' or 'manta', got {adduct_source!r}")
+    _GENERATORS = ("manta", "quick", "architector", "molsimplify", "mace")
+    if adduct_source not in ("xyz",) + _GENERATORS:
+        raise ValueError(f"adduct_source must be 'xyz' or one of {_GENERATORS}, got {adduct_source!r}")
     manta_smiles = _clean_str(args.get("manta_smiles"))
     run_occupier_on_adduct = _is_enabled(args.get("run_occupier_on_adduct", False))
     adduct_flow = _is_enabled(args.get("adduct_flow", False))
@@ -1901,11 +1983,12 @@ def main():
                                      "or adduct_flow=true so the automatic chain produces one.")
                 if not os.path.exists(adduct_xyz):
                     raise FileNotFoundError(f"adduct_xyz not found: {adduct_xyz}")
-        else:  # generator (manta/...)
+        else:  # structure generator (manta/quick/architector/molsimplify/mace)
             if not manta_smiles:
-                raise ValueError("adduct_source=manta requires manta_smiles (SMILES of the full complex).")
-            atoms_adduct, adduct_xyz = _manta_adduct_geometry(manta_smiles, adduct_xyz)
-            print(f"[INFO] MANTA adduct structure written to {adduct_xyz}.")
+                raise ValueError(f"adduct_source={adduct_source} requires manta_smiles "
+                                 "(SMILES of the full complex: metal + ligands + coordinated substrate).")
+            atoms_adduct, adduct_xyz = _generated_adduct_geometry(adduct_source, manta_smiles, adduct_xyz)
+            print(f"[INFO] {adduct_source} adduct structure written to {adduct_xyz}.")
         try:
             dissoc_distance = float(dissoc_distance)
         except (ValueError, TypeError):
@@ -1926,11 +2009,12 @@ def main():
             atoms_adduct = _read_xyz_robust(adduct_xyz)
             run_inverse_rss_scan(atoms_adduct, adduct_xyz, args)
             scan_completed = True
-        elif adduct_source == "manta":
-            # generator engine (adduct_source=manta/...): the adduct was
-            # produced by the chosen structure generator. Re-read the written
-            # file (cheap, single code path), run the opt-in OCCUPIER pass,
-            # then the in-place dissociation scan.
+        elif adduct_source != "xyz":
+            # generator engine (adduct_source=manta/quick/architector/
+            # molsimplify/mace): the adduct was produced by the chosen
+            # structure generator. Re-read the written file (cheap, single
+            # code path), run the opt-in OCCUPIER pass, then the in-place
+            # dissociation scan.
             atoms_adduct = _read_xyz_robust(adduct_xyz)
             metal_idx = detect_metal_index(atoms_adduct)
             if metal_idx is None:
