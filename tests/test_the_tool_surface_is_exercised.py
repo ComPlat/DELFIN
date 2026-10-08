@@ -131,6 +131,8 @@ _NOT_EXERCISED_HERE = {
     "history_get": "needs a populated history store",
     "apply_patch": "tests/test_apply_patch_gate.py",
     "skill": "tests covering skills",
+    "subagent_message":
+        "tests/test_a_message_reaches_a_delegate_that_is_working.py",
 }
 
 

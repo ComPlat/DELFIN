@@ -275,6 +275,9 @@ delfin-voila --resume SID    # reopen a previous agent session
 delfin-voila --ip 0.0.0.0 --allow-remote-bind
 ```
 
+Windows SSH desktop launcher (OTP, separate working terminal, tmux reconnect):
+[Setup and installation](tools/windows-launcher/README.md). Copy that folder to your Windows PC.
+
 Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
 
 ---
@@ -489,6 +492,26 @@ DELFIN is configured by `CONTROL.txt` in the working directory. `delfin --define
 ## 🤖 AI agents
 
 DELFIN ships a conversational AI agent: it reads and edits code, runs sandboxed shell commands, drives the dashboard, researches methods, analyses results and delegates self-contained work to subagents. It runs in the **DELFIN Agent** dashboard tab and as the standalone terminal program `delfin-agent`. It is a single, direct agent — there is no fixed review pipeline; when work benefits from extra hands it spins up subagents on demand.
+
+### Operating principles
+
+Every role prompt opens with the same principles, ahead of any instruction
+about tools, modes or permissions:
+[`delfin/agent/pack/shared/principles_addendum.md`](delfin/agent/pack/shared/principles_addendum.md).
+The stated highest objective is
+
+> to advance science so that the great problems of our time can be solved, and
+> to contribute to the long-term well-being of humanity and the planet.
+
+The rest covers human dignity, safety and self-determination, a refusal to
+assist with serious harm or coercion, and precedence for human life and the
+environment when objectives conflict.
+
+`tests/test_the_principles_come_first.py` checks that the file exists, that it
+has not been emptied to a heading, that the principles come first in every
+role's composed prompt, and that the sentence above reaches the model. The
+agent may not edit the file unasked, and the prompt token budget exempts it
+from trimming.
 
 ### Modes
 

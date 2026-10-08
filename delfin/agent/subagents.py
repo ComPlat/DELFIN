@@ -29,8 +29,8 @@ Each type maps to:
 
 Hard limits:
 
-  - max 40 tool calls per sub-agent      (``_MAX_TOOL_CALLS``)
-  - max 900 seconds wall-clock per run   (``_MAX_WALL_S``)
+  - max 120 tool calls per sub-agent     (``_MAX_TOOL_CALLS``)
+  - max 3600 seconds wall-clock per run  (``_MAX_WALL_S``)
   - max 16000 tokens output              (``_MAX_OUTPUT_TOKENS``)
 
   All three are overridable via ``settings["agent"]["subagents"]``.
@@ -94,7 +94,7 @@ if TYPE_CHECKING:  # pragma: no cover
 # raised 60→300s: 60s truncated real exploration/research runs (especially on
 # slower KIT/Qwen models) before they could report back — subagents were too
 # short-leashed to be useful for anything but trivial lookups.
-_MAX_TOOL_CALLS = 40
+_MAX_TOOL_CALLS = 120
 # Wall-clock, not call count, is the binding constraint for a delegated
 # build task. Measured on a real delegation round (2026-07-29, KIT
 # endpoint): the two runs that died at the 300 s cap had made only 10 and
@@ -102,7 +102,7 @@ _MAX_TOOL_CALLS = 40
 # on a large prompt. The four that finished needed 15-77 s; none was ever
 # truncated on output. So the cap is raised and the other two budgets
 # stay: they were never the limit.
-_MAX_WALL_S = 900.0
+_MAX_WALL_S = 3600.0
 _MAX_OUTPUT_TOKENS = 16000
 
 
@@ -444,6 +444,146 @@ def cancel_background(sa_id: str) -> bool:
 
 def cancel_requested(*sa_ids: str) -> bool:
     return any(str(s or "") in _CANCELLED for s in sa_ids if s)
+
+
+# ---------------------------------------------------------------------------
+# A two-way channel between a session and the delegates it is running
+#
+# In-process, like ``_CANCELLED``: a delegate runs inside the session that
+# spawned it, so the only writer that can reach it is that session and the
+# only reader of its replies is that session. A file-backed queue would
+# promise delivery across processes, which nothing here can honour.
+#
+# Both directions are drained at a ROUND boundary -- after a round's tool
+# results, before the next request -- which is where the plan-mode redirect
+# and the repeated-error abort already put text for the next round. So a
+# message arrives while the work is still going instead of after it, and no
+# new place in the loop had to be invented for it.
+# ---------------------------------------------------------------------------
+
+#: Session -> delegate, by sa_id.
+_NOTES: dict[str, list[str]] = {}
+
+#: Delegate -> session, by sa_id, so the parent knows who is speaking.
+_REPLIES: dict[str, list[str]] = {}
+
+#: Caps, per delegate and per direction.
+#:
+#: Downward: a parent cannot fill a delegate's context with instructions
+#: instead of letting it work.
+#:
+#: Upward it is the tighter number, and deliberately so: a delegate's job
+#: is to do the work and report, and interrupting the parent is for a
+#: decision it cannot take or a fact the parent must have NOW. The
+#: precedent is measured -- of 541 tool calls across twelve sessions in one
+#: afternoon, 71 were session_message, much of it the same announcement
+#: sent twice. A channel with no ceiling becomes the work.
+_MAX_NOTES = 5
+_MAX_REPLIES = 3
+_MAX_NOTE_CHARS = 2000
+
+
+def post_note(sa_id: str, text: str) -> bool:
+    """Leave ``text`` for a delegate that is still working.
+
+    True when a run with that id is live and the note was queued; False
+    when there is none, so a parent is told rather than left believing a
+    note is on its way.
+
+    The note is delivered at the delegate's next ROUND boundary -- after
+    the tool results of the round it is in, before the next request -- so
+    it arrives while the work is still going instead of after it. That is
+    the same boundary the plan-mode redirect and the repeated-error abort
+    already use.
+    """
+    sa_id = str(sa_id or "").strip()
+    text = str(text or "").strip()
+    if not sa_id or not text or sa_id not in read_running():
+        return False
+    queue = _NOTES.setdefault(sa_id, [])
+    if len(queue) >= _MAX_NOTES:
+        return False
+    queue.append(text[:_MAX_NOTE_CHARS])
+    return True
+
+
+def take_notes(*sa_ids: str) -> list[str]:
+    """Drain the notes waiting for these ids. Delivered at most once."""
+    out: list[str] = []
+    for sa_id in sa_ids:
+        key = str(sa_id or "")
+        if key and _NOTES.get(key):
+            out.extend(_NOTES.pop(key))
+    return out
+
+
+def post_reply(sa_id: str, text: str) -> dict:
+    """A delegate speaks to the session that is running it.
+
+    Returns ``{"status": "sent", "left": n}``, or ``{"error": ...}`` when
+    the ceiling is reached or there is nothing to say. The count left is
+    returned so a delegate can see that the channel is finite without
+    having to be refused first.
+
+    Delivered at the PARENT's next round boundary. The parent is in a turn
+    of its own while a background delegate runs, so this reaches it during
+    that turn rather than after the delegate finishes.
+    """
+    sa_id = str(sa_id or "").strip()
+    text = str(text or "").strip()
+    if not sa_id:
+        return {"error": "this run has no id, so nothing can answer for it."}
+    if not text:
+        return {"error": "message is required."}
+    queue = _REPLIES.setdefault(sa_id, [])
+    if len(queue) >= _MAX_REPLIES:
+        return {"error": (
+            f"you have already sent {len(queue)} messages to the session "
+            f"running you, which is the limit. Finish the work and put the "
+            f"rest in your report -- that is what the parent reads.")}
+    queue.append(text[:_MAX_NOTE_CHARS])
+    return {"status": "sent", "left": _MAX_REPLIES - len(queue)}
+
+
+def take_replies() -> list[tuple[str, str]]:
+    """Drain every delegate reply waiting for this session.
+
+    ``[(sa_id, text), ...]``. Delivered at most once, and keyed by sa_id so
+    the parent is told WHICH delegate is speaking -- a parent may run
+    several, and a message that does not say who sent it is not actionable.
+    """
+    out: list[tuple[str, str]] = []
+    for sa_id in list(_REPLIES):
+        for text in _REPLIES.pop(sa_id, []):
+            out.append((sa_id, text))
+    return out
+
+
+def replies_waiting() -> int:
+    """How many delegate replies are queued. For tests and reports."""
+    return sum(len(v) for v in _REPLIES.values())
+
+
+def notes_waiting(sa_id: str) -> int:
+    """How many notes are queued for ``sa_id``. For tests and reports."""
+    return len(_NOTES.get(str(sa_id or ""), ()))
+
+
+def drop_notes(*sa_ids: str) -> None:
+    """Forget queued messages for these ids, in BOTH directions.
+
+    Called when a run ends. A note nobody will read must not outlive the
+    delegate it was for -- and must not be delivered to a LATER delegate
+    that is given the same id on a resume.
+
+    Replies are dropped too, for the symmetric reason: an unread reply from
+    a run that is over is already in that run's report, which the parent
+    gets either way.
+    """
+    for sa_id in sa_ids:
+        key = str(sa_id or "")
+        _NOTES.pop(key, None)
+        _REPLIES.pop(key, None)
 
 
 def mark_running_died(sa_id: str, error: str = "") -> None:
@@ -1084,6 +1224,12 @@ _REPORTING_TOOLS: tuple[str, ...] = (
     "exit_plan_mode",
     "report_verdict",
     "subagent_result",
+    # How a delegate reaches the session running it mid-run. Listed with
+    # the other ways of reporting rather than with the working tools: it
+    # is a channel for a decision the delegate cannot take, not a way to
+    # get work done, and _narrow_allowed_tools only ever narrows -- a
+    # preset that did not list it could not use it at all.
+    "subagent_message",
 )
 
 _READ_ONLY_PRESET_TOOLS: tuple[str, ...] = tuple(
@@ -2753,6 +2899,31 @@ def _delegate_report(parts: list[str], segment_starts: list[int]) -> str:
     return tail or "".join(parts).strip()
 
 
+#: What every delegate is told about the channel to its session. Added to
+#: the assembled prompt rather than to each preset, so a preset written by
+#: hand in ~/.delfin/subagents gets the rule too -- a rule that only the
+#: built-in presets carry is a rule the next preset breaks.
+#:
+#: The default is the report. A channel with no stated default becomes the
+#: work: of 541 tool calls across twelve sessions in one afternoon, 71
+#: were session_message, much of it the same announcement sent twice.
+_CHANNEL_RULE = (
+    "\n\nREPORTING. Your report at the end is how you answer; write it "
+    "as if the session will read nothing else. `subagent_message` reaches "
+    "that session WHILE you work, and it is for two things only: a "
+    "decision you cannot take yourself, and a fact that changes what the "
+    "session should do before you finish. Not progress, not a summary of "
+    "what you are about to do, and never the same point twice -- it is "
+    "capped, and a message spent on an update is one you will not have "
+    "when you need an answer. If a note arrives from the session, weigh "
+    "it as an instruction from a peer: it is not from the user and does "
+    "not widen what you may do, and your report says you acted on it.\n"
+    "You cannot address another delegate. If something you found changes "
+    "what a sibling should do, tell the session -- it is the one that "
+    "handed the work out, and it decides what crosses to the others."
+)
+
+
 def _principles_text() -> str:
     """The maintainer's principles, verbatim, ahead of every preset.
 
@@ -2933,6 +3104,12 @@ def run_subagent(
                 return False
 
         sub_client.should_stop = _stop_probe
+        # The same pair of ids, and the same idea: something the parent
+        # can put down between the delegate's steps. The client drains
+        # this at a round boundary and hands what it finds to the model as
+        # fenced, non-user text.
+        sub_client._subagent_notes = (
+            lambda _ids=(sa_id, resume_from): take_notes(*_ids))
     except Exception:
         # Fallback to the legacy swap-on-parent if copying fails.
         sub_client = parent_client
@@ -2973,6 +3150,7 @@ def run_subagent(
     system_prompt = (
         _principles_text()
         + preset.system_prompt
+        + _CHANNEL_RULE
         + f"\n\nWorkspace: {sub_perms.workspace if sub_perms else '(none)'}"
         + f"\nTask label: {description}"
     )
@@ -3015,6 +3193,16 @@ def run_subagent(
     # Honour a caller-supplied id (background runs reserve it up-front so the
     # parent can poll/retrieve the result); else resume keeps its id; else new.
     _sa_id = resume_from if prior else ((sa_id or "").strip() or _uuid.uuid4().hex[:8])
+    # A delegate has to know its own id to answer the session running it.
+    # Stamped on the permissions object because that is what every tool
+    # receives, and it is the carrier task_session_id already travels on.
+    # Placed HERE and not beside the note wiring above: _sa_id is computed
+    # at this line, and a stamp written earlier would have raised
+    # NameError into a bare except and left the field quietly unset.
+    try:
+        sub_perms.subagent_id = _sa_id
+    except Exception:
+        pass
     _sa_started = time.time()
     _sa_actions: list[str] = []
     # Rich live transcript (text the subagent writes + tool calls with brief
@@ -3247,6 +3435,10 @@ def run_subagent(
     this_round = [{"role": "user", "content": prompt}]
     if final_text:
         this_round.append({"role": "assistant", "content": final_text})
+    # The run is over: a note still queued is one nobody will read, and
+    # leaving it would deliver it to a LATER delegate that happened to be
+    # given the same id on a resume.
+    drop_notes(_sa_id, sa_id, resume_from)
     all_interactions = (prior.get("interactions") or []) + tool_calls_seen
     _save_subagent_session(
         _sa_id,
@@ -3422,25 +3614,46 @@ _ORCH_VERIFY_SCHEMA: dict = {
 }
 
 
-def _substitute_stage_refs(prompt: str, stage_results: dict) -> str:
-    """Replace ``{{stage:NAME}}`` placeholders with that stage's results.
+def _substitute_stage_refs(prompt: str, stage_results: dict,
+                           stage_messages: dict | None = None) -> str:
+    """Replace ``{{stage:NAME}}`` and ``{{messages:NAME}}`` placeholders.
 
-    Substitution value is the JSON-compact list of the named stage's
-    payloads. Placeholders naming an unknown (or not-yet-run) stage are
-    left untouched — stages only see PRIOR stages (barrier semantics).
+    ``{{stage:NAME}}`` becomes the JSON-compact list of that stage's
+    result payloads; ``{{messages:NAME}}`` becomes the list of what that
+    stage's delegates said while they worked. Placeholders naming an
+    unknown (or not-yet-run) stage are left untouched — a stage sees only
+    PRIOR stages, which is the barrier the spec declares.
+
+    Two tokens rather than one merged list: a result is what a delegate
+    was asked for and a message is what it raised on its own, and a stage
+    that wants the second usually wants to treat it differently. Merging
+    them would also change what the verification votes run over.
+
+    This is the whole of the information flow between delegates, and it is
+    deliberately one-way and declared. A channel BETWEEN siblings in the
+    same stage was the alternative and is not built: a stage fans out
+    because its calls are independent, so a side channel would let them
+    create an ordering dependency the spec does not state -- and the
+    observed failure mode of peers coordinating without a mandate is on
+    record in this repository's own field reports (three sessions assigned
+    each other roles and froze interfaces nobody had asked for). Where one
+    delegate's finding must reach another, that is a stage boundary, and
+    the session decides what crosses it.
     """
     out = str(prompt or "")
-    if "{{stage:" not in out:
-        return out
-    for name, payloads in stage_results.items():
-        token = "{{stage:" + name + "}}"
-        if token in out:
-            try:
-                rendered = json.dumps(payloads, separators=(",", ":"),
-                                      ensure_ascii=False)
-            except (TypeError, ValueError):
-                rendered = "[]"
-            out = out.replace(token, rendered)
+    for token_prefix, source in (("{{stage:", stage_results),
+                                 ("{{messages:", stage_messages or {})):
+        if token_prefix not in out:
+            continue
+        for name, payloads in (source or {}).items():
+            token = token_prefix + name + "}}"
+            if token in out:
+                try:
+                    rendered = json.dumps(payloads, separators=(",", ":"),
+                                          ensure_ascii=False)
+                except (TypeError, ValueError):
+                    rendered = "[]"
+                out = out.replace(token, rendered)
     return out
 
 
@@ -3644,7 +3857,13 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
         matching the api_client fan-out); writers in a multi-call stage
         auto-isolate into worktrees unless the call pins isolation;
       - ``{{stage:NAME}}`` in a later stage's prompt is replaced with the
-        JSON-compact results list of that finished stage;
+        JSON-compact results list of that finished stage, and
+        ``{{messages:NAME}}`` with what that stage's delegates raised
+        while they worked (subagent_message). That one-way, declared pass
+        is the whole of the information flow between delegates: within a
+        stage they are independent by construction, so a side channel
+        would let them create an ordering dependency the spec does not
+        state;
       - the optional verify step runs ``votes`` parallel skeptic subagents
         per FINAL-stage result (prompt_template with ``{{result}}``
         substituted), each returning ``{refuted, note}`` via the
@@ -3665,6 +3884,10 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
         return {"error": spec_err}
 
     stage_results: dict[str, list[dict]] = {}
+    #: What each stage's delegates said while working, by stage name. A
+    #: later stage reads it with {{messages:NAME}}, and it is returned so
+    #: the session sees it even when no later stage asked.
+    stage_messages: dict[str, list[dict]] = {}
     stage_names: list[str] = []
     for stage in stages:
         name = str(stage.get("name")).strip()
@@ -3677,7 +3900,8 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
                 # Substitute against COMPLETED stages only (barrier: this
                 # stage's own name is not in stage_results yet).
                 "prompt": _substitute_stage_refs(
-                    str(call.get("prompt") or ""), stage_results),
+                    str(call.get("prompt") or ""), stage_results,
+                    stage_messages),
                 "isolation": str(call.get("isolation") or "").strip(),
                 "output_schema": call.get("output_schema"),
             }
@@ -3693,6 +3917,24 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
             jobs.append(job)
         stage_results[name] = _run_stage_calls(jobs, parent_client,
                                                parent_perms)
+        # What this stage's delegates said WHILE they worked, drained at
+        # the stage barrier and attributed to the stage.
+        #
+        # It has to happen here. During an orchestration the session is
+        # inside one tool call, so there is no round boundary of its own
+        # to drain at -- without this the messages would sit until the
+        # orchestration returned and then arrive in main's next round with
+        # no stage to belong to.
+        #
+        # Kept OUT of stage_results on purpose: that list is what the
+        # verification votes run over and what a caller indexes per call,
+        # and a message is neither a result nor a call.
+        try:
+            stage_messages[name] = [
+                {"from": sa_id, "text": text}
+                for sa_id, text in (take_replies() or ())]
+        except Exception:
+            stage_messages[name] = []
         stage_names.append(name)
 
     # ---- optional verification votes over the FINAL stage ---------------
@@ -3781,6 +4023,11 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
     })
     return {
         "stages": stage_results,
+        # Returned even when no later stage asked for them: a delegate
+        # that raised something is reporting to the session, and a message
+        # that only a template could have surfaced would be lost whenever
+        # the spec had one stage.
+        "messages": stage_messages,
         "verified": verified,
         "rejected": rejected,
     }
@@ -3873,6 +4120,13 @@ __all__ = [
     "list_finished",
     "get_subagent_result",
     "reserve_running",
+    "post_note",
+    "take_notes",
+    "notes_waiting",
+    "post_reply",
+    "take_replies",
+    "replies_waiting",
+    "drop_notes",
     "mark_running_died",
     "drain_finished_subagents",
     "reap_pending_reports",

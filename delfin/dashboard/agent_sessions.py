@@ -276,6 +276,16 @@ _SPLITTER_INIT_JS = """\
             // composer's height depends on the textarea, which the user can
             // grow, and on whether the quick-cycle button is shown. The
             // stylesheet carries an approximation for the first paint.
+            // Three guards, and each one is here because the first version
+            // without it made the window jitter visibly -- reported from a
+            // real session where the chat could not be read.
+            //
+            // The loop it closes: fit() writes the height of a CHILD of
+            // `shell`, and the observer watched `shell` itself. Every write
+            // could change the parent's measurement, which fired the
+            // observer, which wrote again.
+            var lastH = 0;
+            var pending = false;
             function fit() {
                 var send = shell.querySelector('.delfin-agent-send-row');
                 if (!send) return;          // no composer yet: keep the CSS
@@ -283,16 +293,40 @@ _SPLITTER_INIT_JS = """\
                 var bottom = send.getBoundingClientRect().bottom;
                 var h = Math.round(bottom - top);
                 if (h < 160) return;        // laid out but collapsed
+                // 1. A tolerance, not equality. Equality stops a repeat of
+                //    the SAME value but not an alternation between two that
+                //    differ by a pixel, which is what sub-pixel layout
+                //    produces and what oscillates forever.
+                if (Math.abs(h - lastH) <= 2) return;
+                lastH = h;
                 splitter.style.height = h + 'px';
+            }
+            // 2. One measurement per frame. A burst of observer callbacks
+            //    during a drag or a reflow collapses into a single write
+            //    instead of a write per callback.
+            function schedule() {
+                if (pending) return;
+                pending = true;
+                var run = function () { pending = false; fit(); };
+                if (typeof requestAnimationFrame === 'function') {
+                    requestAnimationFrame(run);
+                } else {
+                    setTimeout(run, 16);
+                }
             }
             fit();
             // The composer changes height when the textarea is dragged or a
             // long line wraps, and the window changes it too. A one-shot
             // measure was right for one layout and wrong after the first
             // resize.
-            window.addEventListener('resize', fit);
+            window.addEventListener('resize', schedule);
             try {
-                new ResizeObserver(fit).observe(shell);
+                // 3. Watch the ROW that decides the height, not the
+                //    container the splitter lives in. The row's size does
+                //    not depend on the splitter's, so writing the splitter
+                //    cannot feed back into what is being measured.
+                var watched = shell.querySelector('.delfin-agent-send-row');
+                new ResizeObserver(schedule).observe(watched || shell);
             } catch (err) { /* older browser: resize alone */ }
             return bound;
     }
@@ -646,11 +680,300 @@ def session_worktree(workspace: str) -> str:
     _exclude_locally(repo["root"], repo["common_dir"])
     info = _wt.enter_worktree(repo["root"], branch_prefix="session",
                               parent=Path(repo["root"]) / ".delfin" / "worktrees")
+    # What a release will need, written INSIDE the tree so it goes away
+    # with it. Nothing kept the WorktreeInfo: this function returned a path
+    # string and dropped the rest on the floor, so no caller COULD release
+    # the tree -- neither close_session nor the tab's shutdown had a
+    # worktree step, and every "Own worktree" session left a checkout and
+    # an orphan session/<hex> branch behind for good.
+    #
+    # pid and host are recorded so a later reader can tell a tree whose
+    # session is gone from one that is still being worked in, without
+    # judging another node's pid.
+    _write_worktree_sidecar(info)
     try:
         inside = Path(workspace).resolve().relative_to(Path(repo["root"]))
     except ValueError:
         inside = Path(".")
     return str((info.path / inside).resolve())
+
+
+#: Beside the worktree's own git metadata, not in a central registry: the
+#: record and the thing it describes are then removed by the same act, so
+#: there is no list that can outlive its entries.
+_WORKTREE_SIDECAR = ".delfin/session_worktree.json"
+
+
+def _write_worktree_sidecar(info) -> None:
+    """Record repo, branch and owner for a session worktree. Never raises."""
+    import json
+    import os
+    import socket
+    try:
+        path = Path(info.path) / _WORKTREE_SIDECAR
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "repo_dir": str(info.repo_dir),
+            "path": str(info.path),
+            "branch": str(info.branch),
+            "base_ref": str(info.base_ref),
+            "created_at": float(info.created_at),
+            "pid": os.getpid(),
+            "host": (socket.gethostname() or "").strip(),
+        }), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def read_worktree_sidecar(workspace) -> dict | None:
+    """The sidecar for the session worktree ``workspace`` is in, or None.
+
+    ``workspace`` may be a directory inside the worktree rather than its
+    root -- session_worktree returns the path at the same place inside the
+    tree as the original workspace was inside the repository -- so the
+    search walks upwards. It stops at the first sidecar found: a worktree
+    nested inside another would otherwise be released by its parent's
+    record.
+    """
+    import json
+    try:
+        here = Path(workspace).expanduser().resolve()
+    except Exception:
+        return None
+    for candidate in (here, *here.parents):
+        side = candidate / _WORKTREE_SIDECAR
+        try:
+            if side.is_file():
+                data = json.loads(side.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else None
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+#: How many trees one sweep may remove. A pass that walks a whole
+#: worktrees directory after a crash should not turn into an unbounded
+#: amount of git work at startup; what is left over is picked up by the
+#: next one.
+_SWEEP_LIMIT = 12
+
+
+def _sweep_candidates(worktrees_dir) -> list[dict]:
+    """Sidecars under ``worktrees_dir`` that THIS host wrote, newest last.
+
+    Only our own host: the sidecar records a pid, and a pid written on
+    another login node names nothing here, so a tree belonging to one
+    cannot be judged from this side. Each host reclaims its own.
+    """
+    import socket
+    here = (socket.gethostname() or "").strip()
+    out: list[dict] = []
+    try:
+        entries = sorted(Path(worktrees_dir).iterdir())
+    except OSError:
+        return out
+    for tree in entries:
+        if not tree.is_dir():
+            continue
+        side = read_worktree_sidecar(tree)
+        if not side:
+            continue
+        if str(side.get("host") or "").strip() != here:
+            continue
+        out.append(side)
+    return out
+
+
+def _worktree_is_orphaned(side: dict, *, saved_workspaces=()) -> str:
+    """"" if the tree in ``side`` may be reclaimed, else why it may not.
+
+    Three questions this function owns, and it answers none that
+    ``exit_worktree`` already answers -- uncommitted changes and running
+    background jobs are its decision, asked afterwards by the caller, so
+    there is one answer to "is this tree spare" rather than two.
+
+      * is its owning process still alive on this host
+      * is a live session working in it
+      * would a saved session be reopened into it
+
+    The third matters because a reopened session reuses its tree: the
+    session list remembers the workspace, so removing it would turn a
+    resume into a session that starts somewhere else without saying so.
+    """
+    import os
+    import socket
+    tree = str(side.get("path") or "")
+    if not tree:
+        return "the record names no path"
+    here = (socket.gethostname() or "").strip()
+    if str(side.get("host") or "").strip() != here:
+        return "it belongs to another host"
+    pid = int(side.get("pid") or 0)
+    if pid > 0:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            return f"its owning process ({pid}) may still be running"
+        else:
+            return f"its owning process ({pid}) is still running"
+    holder = _live_session_in(tree)
+    if holder:
+        return f"a live session is working in it ({holder})"
+    try:
+        root = Path(tree).resolve()
+    except Exception:
+        return "its path cannot be resolved"
+    for ws in saved_workspaces:
+        try:
+            candidate = Path(str(ws)).expanduser().resolve()
+        except Exception:
+            continue
+        if candidate == root or root in candidate.parents:
+            return "a saved session would be reopened into it"
+    return ""
+
+
+def _saved_session_workspaces() -> list[str]:
+    """Workspaces of the sessions that can still be resumed."""
+    try:
+        from delfin.agent import session_store as _store
+        return [str(row.get("workspace") or "")
+                for row in (_store.list_sessions() or ())
+                if row.get("workspace")]
+    except Exception:
+        return []
+
+
+def reclaim_orphaned_worktrees(workspace, *, limit: int = _SWEEP_LIMIT) -> dict:
+    """Remove session worktrees nobody is in. Returns a short report.
+
+    ``{"released": [paths], "kept": {path: why}}``. Never raises: this
+    runs while a dashboard is starting, and a directory that could not be
+    tidied must not stop a session from opening.
+
+    A session that crashes -- a killed kernel, a lost node -- never
+    reaches close_session, so its tree and its session/<hex> branch stay.
+    Nothing collected them: measured on this installation before the
+    sidecar existed, there was no record to collect them BY.
+
+    Five conditions, and a tree is removed only when all five hold: it
+    carries a sidecar this host wrote, its owning process is gone, no live
+    session is working in it, no saved session would be reopened into it,
+    and -- asked by exit_worktree, not here -- it has no uncommitted
+    changes and no background jobs running inside it.
+
+    Deliberately NOT a general cleaner. It touches only directories whose
+    sidecar says DELFIN created them for a session on this host, so a
+    worktree a person made by hand, and anything else that happens to sit
+    in that directory, is not its business.
+    """
+    report: dict = {"released": [], "kept": {}}
+    try:
+        from delfin.agent import session_presence as _presence
+        repo = _presence.repository_of(str(workspace or ""))
+        root = repo.get("root") or ""
+        if not root:
+            return report
+        worktrees_dir = Path(root) / ".delfin" / "worktrees"
+        if not worktrees_dir.is_dir():
+            return report
+        saved = _saved_session_workspaces()
+        for side in _sweep_candidates(worktrees_dir)[:max(0, int(limit))]:
+            tree = str(side.get("path") or "")
+            why = _worktree_is_orphaned(side, saved_workspaces=saved)
+            if why:
+                report["kept"][tree] = why
+                continue
+            out = release_session_worktree(tree)
+            if out.get("released"):
+                report["released"].append(tree)
+            else:
+                report["kept"][tree] = out.get("kept") or "git kept it"
+        # Administrative entries for trees whose directories are gone.
+        if report["released"]:
+            try:
+                from delfin.agent import worktree as _wt
+                _wt._run_git(Path(root), "worktree", "prune")
+            except Exception:
+                pass
+    except Exception:
+        return report
+    return report
+
+
+def _live_session_in(workspace) -> str:
+    """A label for the live session whose workspace is ``workspace``, or "".
+
+    Liveness is session_presence's answer, not a second one: its records
+    carry pid and host and its reader already drops the stale ones. A
+    record from another host is trusted as live -- a pid from another login
+    node names nothing here, so it cannot be checked and must not be
+    assumed dead.
+    """
+    try:
+        from delfin.agent import session_presence as _presence
+        here = Path(workspace).expanduser().resolve()
+    except Exception:
+        return ""
+    try:
+        rows = _presence.open_sessions()
+    except Exception:
+        return ""
+    for row in rows or ():
+        try:
+            if Path(str(row.get("workspace") or "")).resolve() != here:
+                continue
+        except Exception:
+            continue
+        title = str(row.get("title") or "").strip()
+        key = str(row.get("key") or "").strip()
+        host = str(row.get("host") or "").strip()
+        label = title or key or "unnamed"
+        return f"{label} on {host}" if host else label
+    return ""
+
+
+def release_session_worktree(workspace) -> dict:
+    """Release the session worktree ``workspace`` is in, if it is spare.
+
+    Returns ``{"released": bool, "kept": str}`` -- ``kept`` says why, and
+    is empty when there was nothing to release.
+
+    The decision is ``worktree.exit_worktree(keep_if_changed=True)``, which
+    already keeps a tree that has changes and one that background jobs are
+    still running inside. That is the whole rule and it is not restated
+    here: a second copy of "is this tree spare" would be a second answer
+    that can disagree with the one the subagent teardown path uses.
+
+    Never raises: closing a session must not fail because a directory
+    could not be tidied.
+    """
+    from delfin.agent import worktree as _wt
+    side = read_worktree_sidecar(workspace)
+    if not side:
+        return {"released": False, "kept": ""}
+    try:
+        info = _wt.WorktreeInfo(
+            repo_dir=Path(side["repo_dir"]),
+            path=Path(side["path"]),
+            branch=str(side.get("branch") or ""),
+            base_ref=str(side.get("base_ref") or ""),
+            created_at=float(side.get("created_at") or 0.0),
+        )
+    except (KeyError, TypeError, ValueError):
+        return {"released": False, "kept": "the worktree record is unreadable"}
+    try:
+        done = _wt.exit_worktree(info, keep_if_changed=True)
+    except Exception as exc:
+        return {"released": False, "kept": f"git refused the teardown: {exc}"}
+    if done.held_by_jobs:
+        return {"released": False,
+                "kept": "background jobs are still running in it"}
+    if done.had_changes:
+        return {"released": False, "kept": "it has uncommitted changes"}
+    return {"released": bool(done.cleaned_up), "kept": ""}
 
 
 def _short_path(path: str) -> str:
@@ -935,6 +1258,18 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             _presence.withdraw(key)
         except Exception:
             pass
+        # Release the session's own worktree if it is spare. After the
+        # shutdown above, so a background job that was holding the tree has
+        # been asked to stop first; and after withdraw, so the presence
+        # record is already gone when the decision is made. A tree with
+        # changes or with jobs still in it is kept and said so -- the
+        # decision is exit_worktree's, not this function's.
+        try:
+            _rel = release_session_worktree(rec.get("workspace") or "")
+            if _rel.get("kept"):
+                _say(f"The worktree was kept: {_rel['kept']}")
+        except Exception:
+            pass
         sessions.remove(rec)
         stage.children = tuple(r["tab"] for r in sessions)
         if not sessions:
@@ -1064,6 +1399,26 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             _say(f"Not a directory: {where}")
             return
         target = str(Path(where).expanduser()) if where else ""
+        # A directory another LIVE session is working in is refused, not
+        # silently shared. The picker is a plain filesystem listing, so a
+        # worktree belonging to a running session was offered and typeable;
+        # starting there makes repository_of() resolve the worktree as the
+        # root and nests a worktree-of-a-worktree under it. The hint
+        # already existed -- _suggest_worktree says "also working in this
+        # repository" and pre-ticks the box -- but nothing refused.
+        #
+        # Only when no fresh worktree is being made: ticking the box means
+        # a tree of one's own, which is the answer to this, not the problem.
+        _fresh = (own_worktree_box.value
+                  and own_worktree_box.layout.display != "none")
+        if target and not _fresh:
+            _holder = _live_session_in(target)
+            if _holder:
+                _say(f"{_short_path(target)} is already being worked in by "
+                     f"an open session ({_holder}). Tick \u201cOwn "
+                     f"worktree\u201d to get a checkout of your own, or "
+                     f"pick another directory.")
+                return
         if own_worktree_box.value and own_worktree_box.layout.display != "none":
             try:
                 target = session_worktree(target or default_workspace(ctx))
@@ -1165,6 +1520,24 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                 activate(rec["key"])
     view["restoring"] = False
     _persist()
+    # Reclaim session worktrees nobody is in. AFTER the open sessions are
+    # restored, so their presence records exist and a tree one of them is
+    # working in reads as live -- the saved-workspace check would catch it
+    # anyway, and two independent reasons to keep a tree is the right
+    # number for a pass that removes directories.
+    #
+    # Said out loud rather than done quietly: this removes a checkout, and
+    # a reader who sees a folder disappear should be able to find out from
+    # the session list why.
+    try:
+        _swept = reclaim_orphaned_worktrees(
+            (sessions[0]["workspace"] if sessions else "")
+            or default_workspace(ctx))
+        if _swept["released"]:
+            _say(f"Reclaimed {len(_swept['released'])} worktree(s) left by "
+                 f"sessions that are gone.")
+    except Exception:
+        pass
     _tick()
 
     return widget, {
@@ -1176,4 +1549,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         "refresh": refresh,
         "form": {"new": new_btn, "workdir": workdir_box,
                  "own_worktree": own_worktree_box, "start": start_btn},
+        # Exported so the reclamation can be driven in a test; a pass that
+        # removes directories should not be reachable only at startup.
+        "reclaim_worktrees": reclaim_orphaned_worktrees,
+        "notice": notice,
     }
