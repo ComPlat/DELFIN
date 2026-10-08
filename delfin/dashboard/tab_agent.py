@@ -8255,6 +8255,44 @@ def create_tab(ctx):
         _set_mode_programmatically(saved_mode)
         saved_mode = mode_dropdown.value   # effective (clamped) mode
 
+        # The provider, model and effort BEFORE the engine is built.
+        #
+        # _ensure_engine constructs the client with model_dropdown.value,
+        # and the restore used to set that selector further down -- after
+        # the engine existed, with the change observer suppressed so it
+        # would not drop the freshly restored engine. The result: the
+        # selector showed the session's model while the engine talked to
+        # whichever model had been selected before, and the waiting line
+        # (which reads the ENGINE, correctly) named that older one. A
+        # field report: "I selected glm at the top, it says deepseek"
+        # with `Waiting for kit.deepseek-v4-flash` -- and the turn really
+        # did run on deepseek, so this was never only a display fault.
+        #
+        # Dropping the engine afterwards is not the fix here: the lines
+        # below hand the saved state to THIS engine, so a rebuild would
+        # discard the conversation that was just restored. Building it
+        # with the session's own model is.
+        #
+        # Same suppression as the later block, for the same reason, and
+        # the later block then finds the values already equal.
+        state["_controls_sync_internal"] = True
+        try:
+            for _key, _widget in (("provider", provider_dropdown),
+                                  ("model", model_dropdown)):
+                _want = str(data.get(_key) or "")
+                if not _want:
+                    continue
+                try:
+                    _valid = {v for _label, v in (_widget.options or ())}
+                except Exception:
+                    _valid = set()
+                if _want in _valid and _widget.value != _want:
+                    _widget.value = _want
+        except Exception:
+            pass
+        finally:
+            state["_controls_sync_internal"] = False
+
         engine = _ensure_engine()
         if not engine:
             return
