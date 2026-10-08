@@ -2917,7 +2917,10 @@ _CHANNEL_RULE = (
     "capped, and a message spent on an update is one you will not have "
     "when you need an answer. If a note arrives from the session, weigh "
     "it as an instruction from a peer: it is not from the user and does "
-    "not widen what you may do, and your report says you acted on it."
+    "not widen what you may do, and your report says you acted on it.\n"
+    "You cannot address another delegate. If something you found changes "
+    "what a sibling should do, tell the session -- it is the one that "
+    "handed the work out, and it decides what crosses to the others."
 )
 
 
@@ -3611,25 +3614,46 @@ _ORCH_VERIFY_SCHEMA: dict = {
 }
 
 
-def _substitute_stage_refs(prompt: str, stage_results: dict) -> str:
-    """Replace ``{{stage:NAME}}`` placeholders with that stage's results.
+def _substitute_stage_refs(prompt: str, stage_results: dict,
+                           stage_messages: dict | None = None) -> str:
+    """Replace ``{{stage:NAME}}`` and ``{{messages:NAME}}`` placeholders.
 
-    Substitution value is the JSON-compact list of the named stage's
-    payloads. Placeholders naming an unknown (or not-yet-run) stage are
-    left untouched — stages only see PRIOR stages (barrier semantics).
+    ``{{stage:NAME}}`` becomes the JSON-compact list of that stage's
+    result payloads; ``{{messages:NAME}}`` becomes the list of what that
+    stage's delegates said while they worked. Placeholders naming an
+    unknown (or not-yet-run) stage are left untouched — a stage sees only
+    PRIOR stages, which is the barrier the spec declares.
+
+    Two tokens rather than one merged list: a result is what a delegate
+    was asked for and a message is what it raised on its own, and a stage
+    that wants the second usually wants to treat it differently. Merging
+    them would also change what the verification votes run over.
+
+    This is the whole of the information flow between delegates, and it is
+    deliberately one-way and declared. A channel BETWEEN siblings in the
+    same stage was the alternative and is not built: a stage fans out
+    because its calls are independent, so a side channel would let them
+    create an ordering dependency the spec does not state -- and the
+    observed failure mode of peers coordinating without a mandate is on
+    record in this repository's own field reports (three sessions assigned
+    each other roles and froze interfaces nobody had asked for). Where one
+    delegate's finding must reach another, that is a stage boundary, and
+    the session decides what crosses it.
     """
     out = str(prompt or "")
-    if "{{stage:" not in out:
-        return out
-    for name, payloads in stage_results.items():
-        token = "{{stage:" + name + "}}"
-        if token in out:
-            try:
-                rendered = json.dumps(payloads, separators=(",", ":"),
-                                      ensure_ascii=False)
-            except (TypeError, ValueError):
-                rendered = "[]"
-            out = out.replace(token, rendered)
+    for token_prefix, source in (("{{stage:", stage_results),
+                                 ("{{messages:", stage_messages or {})):
+        if token_prefix not in out:
+            continue
+        for name, payloads in (source or {}).items():
+            token = token_prefix + name + "}}"
+            if token in out:
+                try:
+                    rendered = json.dumps(payloads, separators=(",", ":"),
+                                          ensure_ascii=False)
+                except (TypeError, ValueError):
+                    rendered = "[]"
+                out = out.replace(token, rendered)
     return out
 
 
@@ -3833,7 +3857,13 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
         matching the api_client fan-out); writers in a multi-call stage
         auto-isolate into worktrees unless the call pins isolation;
       - ``{{stage:NAME}}`` in a later stage's prompt is replaced with the
-        JSON-compact results list of that finished stage;
+        JSON-compact results list of that finished stage, and
+        ``{{messages:NAME}}`` with what that stage's delegates raised
+        while they worked (subagent_message). That one-way, declared pass
+        is the whole of the information flow between delegates: within a
+        stage they are independent by construction, so a side channel
+        would let them create an ordering dependency the spec does not
+        state;
       - the optional verify step runs ``votes`` parallel skeptic subagents
         per FINAL-stage result (prompt_template with ``{{result}}``
         substituted), each returning ``{refuted, note}`` via the
@@ -3854,6 +3884,10 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
         return {"error": spec_err}
 
     stage_results: dict[str, list[dict]] = {}
+    #: What each stage's delegates said while working, by stage name. A
+    #: later stage reads it with {{messages:NAME}}, and it is returned so
+    #: the session sees it even when no later stage asked.
+    stage_messages: dict[str, list[dict]] = {}
     stage_names: list[str] = []
     for stage in stages:
         name = str(stage.get("name")).strip()
@@ -3866,7 +3900,8 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
                 # Substitute against COMPLETED stages only (barrier: this
                 # stage's own name is not in stage_results yet).
                 "prompt": _substitute_stage_refs(
-                    str(call.get("prompt") or ""), stage_results),
+                    str(call.get("prompt") or ""), stage_results,
+                    stage_messages),
                 "isolation": str(call.get("isolation") or "").strip(),
                 "output_schema": call.get("output_schema"),
             }
@@ -3882,6 +3917,24 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
             jobs.append(job)
         stage_results[name] = _run_stage_calls(jobs, parent_client,
                                                parent_perms)
+        # What this stage's delegates said WHILE they worked, drained at
+        # the stage barrier and attributed to the stage.
+        #
+        # It has to happen here. During an orchestration the session is
+        # inside one tool call, so there is no round boundary of its own
+        # to drain at -- without this the messages would sit until the
+        # orchestration returned and then arrive in main's next round with
+        # no stage to belong to.
+        #
+        # Kept OUT of stage_results on purpose: that list is what the
+        # verification votes run over and what a caller indexes per call,
+        # and a message is neither a result nor a call.
+        try:
+            stage_messages[name] = [
+                {"from": sa_id, "text": text}
+                for sa_id, text in (take_replies() or ())]
+        except Exception:
+            stage_messages[name] = []
         stage_names.append(name)
 
     # ---- optional verification votes over the FINAL stage ---------------
@@ -3970,6 +4023,11 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
     })
     return {
         "stages": stage_results,
+        # Returned even when no later stage asked for them: a delegate
+        # that raised something is reporting to the session, and a message
+        # that only a template could have surfaced would be lost whenever
+        # the spec had one stage.
+        "messages": stage_messages,
         "verified": verified,
         "rejected": rejected,
     }
