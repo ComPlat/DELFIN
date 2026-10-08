@@ -1242,6 +1242,7 @@ def create_tab(ctx):
         description='Download', button_style='',
         layout=widgets.Layout(width='130px', min_width='130px', height='26px'), disabled=True,
     )
+    calc_download_btn.add_class('calc-download-btn')
     calc_report_btn = widgets.Button(
         description='Report', button_style='success',
         layout=widgets.Layout(width='80px', min_width='80px', height='26px'), disabled=True,
@@ -4418,15 +4419,21 @@ def create_tab(ctx):
             return open_path
         return _calc_selected_item_path()
 
-    def _calc_download_target_path():
-        selected_path = _calc_selected_item_path()
-        if selected_path is not None:
-            return selected_path
+    def _calc_download_targets():
+        """Download targets for the current selection.
+
+        Returns a list of one or more paths: every selected item, or the
+        current folder when nothing is selected (so a plain folder download
+        keeps working). Folders the list holds are packed into a single ZIP.
+        """
+        selected_paths = _calc_selected_item_paths()
+        if selected_paths:
+            return selected_paths
         if state['current_path']:
             current_dir = _calc_dir() / state['current_path']
             if current_dir.exists():
-                return current_dir
-        return None
+                return [current_dir]
+        return []
 
     def _calc_xyz_batch_default_filename():
         selected_path = _calc_selected_item_path()
@@ -6187,8 +6194,8 @@ def create_tab(ctx):
         reported as a download that is silently forbidden. There is no
         permission rule here at all, so the tooltip states the real reason.
         """
-        target = _calc_download_target_path()
-        if target is None:
+        targets = _calc_download_targets()
+        if not targets:
             calc_download_btn.disabled = True
             calc_download_btn.description = 'Download'
             calc_download_btn.tooltip = (
@@ -6196,8 +6203,12 @@ def create_tab(ctx):
                 'nothing to download until you do.')
             return
         calc_download_btn.disabled = False
-        calc_download_btn.description = 'Download ZIP' if target.is_dir() else 'Download'
-        calc_download_btn.tooltip = f'Download {target.name or str(target)}'
+        single_file = len(targets) == 1 and not targets[0].is_dir()
+        calc_download_btn.description = 'Download' if single_file else 'Download ZIP'
+        calc_download_btn.tooltip = (
+            f'Download {targets[0].name or str(targets[0])}'
+            if len(targets) == 1
+            else f'Download {len(targets)} selected items as one ZIP')
 
     def calc_render_content(scroll_to=None):
         if not state['file_content']:
@@ -9259,8 +9270,8 @@ def create_tab(ctx):
         _run_js(js)
 
     def calc_on_download(button):
-        target = _calc_download_target_path()
-        if target is None:
+        targets = _calc_download_targets()
+        if not targets:
             calc_download_status.value = '<span style="color:#d32f2f;">No file/folder selected.</span>'
             return
 
@@ -9269,45 +9280,80 @@ def create_tab(ctx):
             filename = ''
             mime = 'application/octet-stream'
 
-            if target.is_dir():
-                # Measured BEFORE the archive is built. make_archive wrote
-                # the whole tree to a temp dir and the size limit was
-                # applied to the finished payload, so a large folder blocked
-                # the kernel for the full zip -- the browser went
-                # unresponsive with no message -- and the result was then
-                # thrown away. An estimate from the file sizes costs a walk
-                # and refuses up front. It is an upper bound: compression
-                # only makes the archive smaller, so a folder that passes
-                # here cannot fail the exact check further down.
-                _raw = _calc_tree_size(target)
-                if _raw > CALC_DOWNLOAD_MAX_BYTES:
+            # Measured BEFORE anything is built. The size limit used to be
+            # applied to the finished payload, so the archive was written to
+            # a temp dir first -- the kernel blocked for the whole zip with
+            # no message, and the result was then thrown away. The estimate
+            # walks the file sizes instead and refuses up front. It is an
+            # upper bound: compression only shrinks the archive, so a
+            # selection that passes here cannot fail the exact check below.
+            #
+            # Applied to a multi-item selection as well as to one folder:
+            # several large folders at once is the worse case, not the
+            # rarer one.
+            _raw = sum(
+                (_calc_tree_size(t) if t.is_dir() else t.stat().st_size)
+                for t in targets)
+            if _raw > CALC_DOWNLOAD_MAX_BYTES:
+                _what = (f'{targets[0].name}' if len(targets) == 1
+                         else f'{len(targets)} selected items')
+                calc_download_status.value = (
+                    '<span style="color:#d32f2f;">'
+                    f'{_what} too large to download '
+                    f'({_calc_format_bytes(_raw)} before compression). '
+                    f'Limit: {_calc_format_bytes(CALC_DOWNLOAD_MAX_BYTES)}. '
+                    'Select less, or a subfolder.</span>'
+                )
+                return
+
+            if len(targets) == 1:
+                target = targets[0]
+                if target.is_dir():
                     calc_download_status.value = (
-                        '<span style="color:#d32f2f;">'
-                        f'Folder too large to download '
-                        f'({_calc_format_bytes(_raw)} before compression). '
-                        f'Limit: {_calc_format_bytes(CALC_DOWNLOAD_MAX_BYTES)}. '
-                        'Download a subfolder instead.</span>'
+                        f'<span style="color:#1976d2;">Preparing ZIP for '
+                        f'{_html.escape(target.name or str(target))}...</span>'
                     )
-                    return
+                    with tempfile.TemporaryDirectory(prefix='delfin_download_') as tmpdir:
+                        archive_base = Path(tmpdir) / (target.name or 'folder')
+                        archive_path = Path(shutil.make_archive(
+                            str(archive_base),
+                            'zip',
+                            root_dir=str(target.parent),
+                            base_dir=target.name,
+                        ))
+                        payload = archive_path.read_bytes()
+                        filename = archive_path.name
+                        mime = 'application/zip'
+                else:
+                    payload = target.read_bytes()
+                    filename = target.name
+            else:
+                # Multiple targets: pack all selected files and folders into a
+                # single ZIP, each under its own name relative to the current
+                # directory so the archive mirrors the selection.
                 calc_download_status.value = (
                     f'<span style="color:#1976d2;">Preparing ZIP for '
-                    f'{_html.escape(target.name or str(target))}...</span>'
+                    f'{len(targets)} items...</span>'
                 )
                 with tempfile.TemporaryDirectory(prefix='delfin_download_') as tmpdir:
-                    archive_name = target.name or 'folder'
-                    archive_base = Path(tmpdir) / archive_name
-                    archive_path = Path(shutil.make_archive(
-                        str(archive_base),
-                        'zip',
-                        root_dir=str(target.parent),
-                        base_dir=target.name,
-                    ))
+                    current_dir = _calc_current_dir()
+                    archive_name = current_dir.name or 'selection'
+                    archive_path = Path(tmpdir) / f'{archive_name}.zip'
+                    with zipfile.ZipFile(archive_path, 'w',
+                                         zipfile.ZIP_DEFLATED) as archive:
+                        for target in targets:
+                            arc_base = target.name or target.stem or 'item'
+                            if target.is_dir():
+                                for path in sorted(target.rglob('*')):
+                                    arc_rel = path.relative_to(target)
+                                    archive.write(str(path), str(Path(arc_base) / arc_rel))
+                                # Explicitly add the folder entry itself.
+                                archive.write(str(target), arc_base)
+                            else:
+                                archive.write(str(target), arc_base)
                     payload = archive_path.read_bytes()
                     filename = archive_path.name
                     mime = 'application/zip'
-            else:
-                payload = target.read_bytes()
-                filename = target.name
 
             size_bytes = len(payload)
             if size_bytes > CALC_DOWNLOAD_MAX_BYTES:
@@ -14042,6 +14088,11 @@ def create_tab(ctx):
                 _setWidgetInput(root, 'calc-cmd-rename-input', nextName);
                 _clickWidgetButton(root, 'calc-cmd-rename-btn');
             }));
+            menu.appendChild(makeItem('Download ZIP', function(menuEl){
+                var root = menuEl._root;
+                if (!root) return;
+                _clickWidgetButton(root, 'calc-download-btn');
+            }));
             document.body.appendChild(menu);
             return menu;
         }
@@ -15470,10 +15521,6 @@ def create_tab(ctx):
         # Exported so the download control can be driven in a test. It was
         # not reachable from outside, so the defect it carried -- a folder
         # selection leaving the button grey -- could only be found by hand.
-        'calc_download_btn': calc_download_btn,
-        'calc_download_status': calc_download_status,
-        'calc_update_download_btn': calc_update_download_btn,
-        'calc_on_download': calc_on_download,
         'calc_on_selection_change': calc_on_selection_change,
         '_calc_tree_size': _calc_tree_size,
         # Transfer / move
@@ -15513,6 +15560,12 @@ def create_tab(ctx):
         # the browser's "this file was clicked" bridge (see calc_on_open_request)
         'calc_open_input': calc_open_input,
         'calc_update_options_dropdown': calc_update_options_dropdown,
+        # Download (exposed for tests: trigger on a synthetic click / read status)
+        'calc_on_download': calc_on_download,
+        'calc_download_btn': calc_download_btn,
+        'calc_download_status': calc_download_status,
+        'calc_download_targets': _calc_download_targets,
+        'calc_update_download_btn': calc_update_download_btn,
         # Delete (exposed for blocking only — agent must NOT click)
         'calc_delete_btn': calc_delete_btn,
         # Batch from XYZ
