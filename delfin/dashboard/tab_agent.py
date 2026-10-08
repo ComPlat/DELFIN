@@ -2588,6 +2588,48 @@ def _extract_action_commands(agent_text: str) -> list[str]:
 # with repetition caught after two occurrences, the ceiling only has to bound
 # the pathological case of an agent emitting an endless stream of DIFFERENT
 # commands. Real multi-step dashboard requests settle well below it.
+#: The finished-delegate archive row. A placeholder label rather than an
+#: empty first option: a Dropdown whose first row is blank reads as "nothing
+#: selected" and as "nothing here", and only one of those is ever true.
+_ARCHIVE_PLACEHOLDER = "🗃 Subagent archive…"
+#: How far back the archive row reaches. The store keeps more; this is how
+#: many a single dropdown stays usable with.
+_ARCHIVE_LIMIT = 40
+
+
+def archive_rows(running, finished) -> list[tuple[str, str]]:
+    """``(label, sa_id)`` rows for the finished-delegate archive, newest first.
+
+    Input: ``running`` as ``subagents.read_running()`` returns it (sa_id ->
+    entry) and ``finished`` as ``subagents.list_finished()`` returns it
+    (newest first). Output: one row per finished delegate that is not also
+    running, labelled with its outcome, type and description.
+
+    Module-level and pure so the selection rule is testable without a
+    dashboard: which runs appear, which are excluded, and in what order.
+
+    A delegate still in ``running`` is excluded because the live chip list
+    already carries it, and a row that appears in both places invites the
+    reader to open the stale copy.
+
+    Deliberately NOT filtered by the current session's start time. That
+    filter is what made a finished delegate look deleted: the saved session
+    stayed on disk and no control could reach it. Age bounds the list
+    (``_ARCHIVE_LIMIT`` at the call site), not session identity.
+    """
+    rows: list[tuple[str, str]] = []
+    for rec in finished or ():
+        sa_id = str((rec or {}).get("sa_id") or "")
+        if not sa_id or sa_id in (running or {}):
+            continue
+        label = ("✅" if not rec.get("error") else "❌") + " " + str(
+            rec.get("subagent_type", "?"))[:16]
+        desc = str(rec.get("description", ""))[:48].strip()
+        if desc:
+            label += " · " + desc
+        rows.append((label, sa_id))
+    return rows
+
 _ACTION_ROUND_CEILING_DEFAULT = 40
 # How often the same ACTION set may appear before the loop stops. 2 means the
 # first repeat ends the turn.
@@ -6131,13 +6173,38 @@ def create_tab(ctx):
     state.setdefault("_view_agent", "main")
     # Vertical list of clickable items (• Main, • Subagent …) below the message
     # box — click one to enter its chat. Shown only while subagents exist.
+    #
+    # The chips carry what is LIVE: Main plus the delegates still running. A
+    # finished delegate used to stay in this list for the rest of the session,
+    # so the list grew with every delegation and the live rows were pushed
+    # down by rows that had nothing left to report.
     agent_view_chips = widgets.VBox(
         [], layout=widgets.Layout(display="none", margin="2px 0 0 0"))
+    # Finished delegates move HERE. Still readable — the same drill-in view
+    # renders them from the saved session store — but collapsed into one row
+    # that does not grow. It reaches past this session on purpose: a run is
+    # worth studying after the session that started it has gone, and the store
+    # already keeps it (subagents._SESSIONS_DIR).
+    agent_archive_dropdown = widgets.Dropdown(
+        options=[(_ARCHIVE_PLACEHOLDER, "")], value="",
+        layout=widgets.Layout(display="none", width="auto",
+                              margin="2px 0 0 0"),
+    )
 
     def _refresh_agent_view_chips():
-        """Rebuild the chip row from running + this-session finished subagents.
-        Hidden when there are no subagents. Only rebuilds on a real change so it
-        doesn't flicker on the 1.5s live tick."""
+        """Rebuild the live chip list and the finished-delegate archive.
+
+        Chips: Main + the delegates still running. Archive dropdown: the
+        finished ones, newest first. Both are rebuilt only on a real change,
+        so neither flickers on the 1.5 s live tick.
+
+        The archive is a dropdown and not more chips because the list has no
+        upper bound in practice, while the number of things worth one click
+        does. Selecting a row enters that delegate's transcript exactly as a
+        chip does — ``_render_agent_transcript`` loads a finished run from the
+        saved session store, so the entry does not have to be from this
+        session to be readable.
+        """
         try:
             from delfin.agent.subagents import read_running, list_finished
             running = read_running()
@@ -6145,29 +6212,42 @@ def create_tab(ctx):
             for sid, sa in running.items():
                 entries.append(("🟡 " + str(sa.get("type", "?"))[:16], sid,
                                 str(sa.get("description", ""))[:48]))
-            _ss = float(state.get("_session_start_ts", 0) or 0)
-            for rec in list_finished(12):
-                sid = rec.get("sa_id")
-                if not sid or sid in running:
-                    continue
-                try:
-                    if float(rec.get("finished_at", 0) or 0) < _ss:
-                        continue
-                except Exception:
-                    pass
-                ok = not rec.get("error")
-                entries.append(
-                    ((("✅" if ok else "❌") + " " + str(rec.get("subagent_type", "?"))[:16]),
-                     sid, str(rec.get("description", ""))[:48]))
+            # No session-start cutoff. Hiding earlier runs was what made a
+            # finished delegate "disappear": the saved session was still on
+            # disk and nothing in the UI could reach it.
+            archive = archive_rows(running, list_finished(_ARCHIVE_LIMIT))
             cur = state.get("_view_agent", "main")
-            vals = [v for _, v, _ in entries]
+            # The archive ids count as valid views: a selected archive entry
+            # must not be reset to Main by the next tick.
+            vals = [v for _, v, _ in entries] + [v for _, v in archive]
             if cur not in vals:
                 cur = "main"
                 if state.get("_view_agent") != "main":
                     state["_view_agent"] = "main"
                     _refresh_chat_html()
-            # Hide the row entirely when only "Main" is present (no subagents).
-            if len(entries) <= 1:
+
+            # --- the archive dropdown ---
+            opts = [(_ARCHIVE_PLACEHOLDER, "")] + archive
+            arch_vals = {v for _, v in archive}
+            sig_a = (tuple(opts), cur in arch_vals and cur or "")
+            if state.get("_view_archive_sig") != sig_a:
+                state["_view_archive_sig"] = sig_a
+                # Reassigning options resets value and fires the observer.
+                # Without this flag the tick would re-enter the handler and
+                # pull the reader back out of whatever they had opened.
+                state["_view_archive_programmatic"] = True
+                try:
+                    agent_archive_dropdown.options = opts
+                    agent_archive_dropdown.value = (
+                        cur if cur in arch_vals else "")
+                finally:
+                    state["_view_archive_programmatic"] = False
+            agent_archive_dropdown.layout.display = "" if archive else "none"
+
+            # --- the live chips ---
+            # Shown when there is anything to switch BETWEEN: a running
+            # delegate, or an archive the reader can come back from.
+            if len(entries) <= 1 and not archive:
                 if agent_view_chips.children:
                     agent_view_chips.children = ()
                 agent_view_chips.layout.display = "none"
@@ -6194,6 +6274,19 @@ def create_tab(ctx):
             agent_view_chips.layout.display = ""
         except Exception:
             pass
+
+    def _on_archive_pick(change):
+        """Enter a finished delegate's transcript from the archive row."""
+        if state.get("_view_archive_programmatic"):
+            return
+        sid = str((change or {}).get("new") or "")
+        if not sid:
+            return
+        state["_view_agent"] = sid
+        _refresh_chat_html()
+        _refresh_agent_view_chips()
+
+    agent_archive_dropdown.observe(_on_archive_pick, names="value")
 
     # ----- Slash-command palette (discoverable command browser) -----
     palette_toggle_btn = widgets.Button(
@@ -7886,8 +7979,10 @@ def create_tab(ctx):
          # a suggestion is an offer, and the sending stays the user's.
          next_steps_box,
          # Below the message box: click • Main / • Subagent to enter its chat.
-         # Hidden entirely unless subagents exist this session.
+         # Hidden entirely while nothing but Main exists.
          agent_view_chips,
+         # Finished delegates, collapsed into one row that does not grow.
+         agent_archive_dropdown,
          # Directly under the message box, most prominent: pending permission
          # requests (Self-Mod Guard / KIT confirms) — right where you look and
          # act. The container is empty when nothing is pending, so the task
