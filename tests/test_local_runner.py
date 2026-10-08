@@ -1,5 +1,7 @@
 import importlib.util
 import signal
+
+import pytest
 import sys
 import types
 from pathlib import Path
@@ -7,6 +9,9 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1] / "delfin"
 _MODULE_PATH = _ROOT / "dashboard" / "local_runner.py"
+
+#: The three ``main`` installs; see the fixture below.
+_ENTRY_POINT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 if "delfin" not in sys.modules:
     _PKG = types.ModuleType("delfin")
@@ -151,3 +156,104 @@ def test_run_mode_censo_anmr_passes_resume_flag(monkeypatch, tmp_path):
 
     assert rc == 0
     assert "--resume" in captured["cmd"]
+
+
+@pytest.fixture(autouse=True)
+def _the_handlers_this_file_installs_do_not_outlive_it():
+    """Put SIGINT, SIGTERM and SIGHUP back after every test here.
+
+    Input: the three dispositions before the test. Output: the same three
+    after it. Semantics: nothing this file calls changes what a signal
+    does to the rest of the run.
+
+    `main` is a process entry point and installs
+    `_handle_termination` for all three, which is right for
+    `python -m delfin.dashboard.local_runner` and wrong inside pytest:
+    `monkeypatch` restores attributes, not `signal.signal`, so calling
+    `main` here left the handler installed for every test that followed.
+    Measured: after this file, `signal.getsignal` returned
+    `local_runner._handle_termination` for SIGINT, SIGTERM and SIGHUP;
+    with a control file that does not call `main`, SIG_DFL.
+
+    What it cost: the handler writes `.exit_code_<job id>` into
+    `Path.cwd()` and raises SystemExit(124). In a suite run the cwd is
+    the checkout, so one signal 11000 tests later put `.exit_code_0`
+    there and the run failed on the guard against writing into the
+    checkout -- blamed on whichever test happened to be last. Ctrl-C
+    after this file did the same instead of interrupting pytest.
+    """
+    before = {num: signal.getsignal(num) for num in _ENTRY_POINT_SIGNALS}
+    try:
+        yield
+    finally:
+        for num, handler in before.items():
+            if handler is not None:
+                signal.signal(num, handler)
+
+
+def test_main_installs_the_handlers_and_this_file_gives_them_back():
+    """The leak, asserted from both ends.
+
+    `main` must install them -- a job runner that ignores SIGTERM cannot
+    stop its child -- and this file must not pass them on. Written out
+    because the symptom was a file in the checkout and a failure
+    attributed to an unrelated test, which is not a thing anyone traces
+    back to a signal disposition.
+    """
+    seen = [signal.getsignal(num) for num in _ENTRY_POINT_SIGNALS]
+    assert all(h is not _MODULE._handle_termination for h in seen), (
+        "the fixture did not put the handlers back before this test")
+
+    # Nothing of the run itself: `main` resolves a mode and would start a
+    # real job. The handlers are installed before any of that, which is
+    # the whole point -- a runner must be stoppable from its first
+    # instruction -- so stubbing the body is enough to reach them.
+    import io
+    import contextlib
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(_MODULE, "_run_mode", lambda mode: 0)
+        monkeypatch.setattr(_MODULE, "_configure_environment", lambda: None)
+        monkeypatch.setattr(_MODULE, "_write_exit_code", lambda code: None)
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert _MODULE.main([]) == 0
+    finally:
+        monkeypatch.undo()
+    for num in _ENTRY_POINT_SIGNALS:
+        assert signal.getsignal(num) is _MODULE._handle_termination, (
+            f"main no longer installs a handler for {num}; a job runner "
+            "that cannot be told to stop leaves its child behind")
+    # Left installed on purpose: the fixture takes them away again, and
+    # test_the_handlers_do_not_reach_the_next_test is what says so.
+
+
+def test_the_handlers_do_not_reach_the_next_test():
+    """Runs after the test above and sees SIG_DFL, not the runner's handler.
+
+    The order is the assertion: pytest runs the tests in a file in the
+    order they are written, so this one is the next test, and it is the
+    one that would have seen the leak.
+    """
+    for num in _ENTRY_POINT_SIGNALS:
+        handler = signal.getsignal(num)
+        assert handler is not _MODULE._handle_termination, (
+            f"{num} still runs local_runner._handle_termination, which "
+            "writes .exit_code_* into the working directory and exits 124")
+
+
+def test_the_exit_marker_lands_where_the_reader_looks(tmp_path, monkeypatch):
+    """`_write_exit_code` writes into the process's working directory.
+
+    That is the job directory when the runner is launched the way
+    `backend_local` launches it, which is the only way it is launched --
+    and `backend_local` reads the marker as
+    `Path(job_dir) / f".exit_code_{job_id}"`. The two agree only through
+    the cwd, so the cwd is what this pins: called from somewhere else,
+    it writes somewhere else, and that is how a marker reached the
+    checkout.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DELFIN_JOB_ID", "77")
+    _MODULE._write_exit_code(3)
+    assert (tmp_path / ".exit_code_77").read_text().strip() == "3"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".exit_code_77"]
