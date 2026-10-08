@@ -4739,6 +4739,18 @@ _REASONING_MIN_TOKENS = 2048
 
 # Tools that WRITE to persistent memory. Counted against
 # ModelProfile.max_memory_writes_per_turn — reads are never capped.
+#
+#: One more write is allowed per this many NON-memory tool calls in the
+#: same turn. The cap exists to break a loop, and a loop does nothing
+#: else: a model that calls remember three times in a row still stops at
+#: the profile's cap, because it has earned nothing. A turn that ran
+#: forty tool calls has learned more than two things, and refusing the
+#: third threw the fact away -- measured in the field, six refusals in
+#: one session (2026-10-08), in the session that ran longest.
+#:
+#: Ten, from that session: its longest turn made 40 calls, which buys
+#: four more writes on top of the profile's two.
+_MEMORY_WRITE_EARN_EVERY = 10
 _MEMORY_WRITE_TOOLS: frozenset[str] = frozenset({"remember", "forget"})
 
 
@@ -21122,6 +21134,9 @@ class OpenAIClient(_BaseClient):
         # rounds. Read from the profile once, here, so a model switch
         # mid-session takes effect on the next turn and not mid-loop.
         _memory_writes = 0
+        # Tool calls this turn that were NOT memory writes. The cap earns
+        # headroom from them; see _MEMORY_WRITE_EARN_EVERY.
+        _work_calls = 0
         try:
             from .model_profiles import get_profile as _gp_mem
             _memory_cap = int(_gp_mem(self.model).max_memory_writes_per_turn or 0)
@@ -22345,15 +22360,19 @@ class OpenAIClient(_BaseClient):
                     # content look like progress.
                     if fn_name in _MEMORY_WRITE_TOOLS and _memory_cap:
                         _memory_writes += 1
-                        if _memory_writes > _memory_cap:
+                        _allowed = _memory_cap + (
+                            _work_calls // _MEMORY_WRITE_EARN_EVERY)
+                        if _memory_writes > _allowed:
                             result = json.dumps({"error": (
                                 f"memory write refused: this turn has "
-                                f"already recorded {_memory_cap} fact(s), "
-                                f"which is the limit for this model. You "
+                                f"already recorded {_allowed} fact(s), "
+                                f"which is the limit for this model after "
+                                f"{_work_calls} other tool call(s). You "
                                 f"are recording instead of answering — "
                                 f"finish the task the user asked for, and "
                                 f"remember at most what is genuinely "
-                                f"durable, once."
+                                f"durable, once. The allowance rises as "
+                                f"the turn does real work."
                             )})
                             yield StreamEvent(
                                 type="tool_result",
@@ -22367,6 +22386,12 @@ class OpenAIClient(_BaseClient):
                             })
                             _round_results.append(result)
                             continue
+                    elif fn_name not in _MEMORY_WRITE_TOOLS:
+                        # Counted BEFORE dispatch, so a call that the gate
+                        # refuses still counts as work: a turn spent being
+                        # told no has still not spent itself recording, and
+                        # the cap is about recording instead of working.
+                        _work_calls += 1
 
                     # ACTION-protocol repair: roles that drive the UI via
                     # plain-text "ACTION: /command" lines sometimes emit the
