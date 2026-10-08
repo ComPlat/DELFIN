@@ -2850,10 +2850,16 @@ class AgentEngine:
                 thinking_budget=thinking_budget,
                 **_stream_kwargs,
             ):
-                # ANY event, before any filtering: this stamp answers
-                # "did the transport deliver anything at all?", which is
-                # a different question from "did a token arrive?".
-                if _turn_first_event is None:
+                # ANY event FROM THE BACKEND, before any filtering: this
+                # stamp answers "did the transport deliver anything at
+                # all?", which is a different question from "did a token
+                # arrive?". The client's own "waiting" notices are not the
+                # backend: they tick every _WAIT_TICK_MAX_S while nothing
+                # has arrived, so counting them pinned first_event_ms at
+                # ~10040 on 19 of 22 turns of one session and 11 of 18 of
+                # another (2026-10-08) -- the instrument reporting its own
+                # cadence while the real first token took 9-72 s (ttft_ms).
+                if _turn_first_event is None and event.type != "waiting":
                     _turn_first_event = _time.monotonic()
 
                 if self._stop_requested and event.type != "message_delta":
