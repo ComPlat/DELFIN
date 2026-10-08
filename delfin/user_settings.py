@@ -157,7 +157,16 @@ DEFAULT_SETTINGS = {
         # re-issues what already ran this turn is charged against
         # action_repeat_limit, so a loop ends after the first repeat while
         # honest multi-step work runs on. 0 → ceiling disabled.
-        "max_action_rounds": 12,
+        #
+        # 40, raised from 12. The ceiling is not what stops a degenerate
+        # loop -- action_repeat_limit is, and it ends the turn on the first
+        # repeated command. The ceiling only ever binds work where every
+        # round brings NEW commands, which is honest multi-step work, and
+        # 12 of those is few. A field report describes agents stopping
+        # short of the task with steps left to take; the number it names is
+        # this one, reached while agent.max_tool_rounds was set to 500 and
+        # therefore never the limit that bit.
+        "max_action_rounds": 40,
         "action_repeat_limit": 2,
         # Auto-verification: don't let the agent finish a turn with broken code.
         # When the model stops after editing .py files, the harness verifies

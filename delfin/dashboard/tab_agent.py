@@ -2588,7 +2588,7 @@ def _extract_action_commands(agent_text: str) -> list[str]:
 # with repetition caught after two occurrences, the ceiling only has to bound
 # the pathological case of an agent emitting an endless stream of DIFFERENT
 # commands. Real multi-step dashboard requests settle well below it.
-_ACTION_ROUND_CEILING_DEFAULT = 12
+_ACTION_ROUND_CEILING_DEFAULT = 40
 # How often the same ACTION set may appear before the loop stops. 2 means the
 # first repeat ends the turn.
 _ACTION_ROUND_REPEAT_LIMIT_DEFAULT = 2
