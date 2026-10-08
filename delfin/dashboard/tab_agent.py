@@ -8737,16 +8737,28 @@ def create_tab(ctx):
                     "Bash(python -m py_compile*)", "Bash(python3 -m py_compile*)",
                 ]
 
-            # KIT-Toolbox: build/refresh the confirmation broker BEFORE the
-            # engine, so its callback is wired in at construction time. Other
-            # providers leave the panel hidden.
+            # The confirmation broker, built BEFORE the engine so its
+            # callback is wired in at construction time.
+            #
+            # For EVERY provider, not only KIT. The gates that need a
+            # human are provider-agnostic -- a document write in
+            # diff-approval mode, a read outside the workspace roots --
+            # and with no callback they refuse and say "no approval
+            # dialog is configured ... switch the mode to acceptEdits".
+            # So the absence of the dialog did not make the session
+            # safer: it made every confirmable action impossible and
+            # pointed the user at a weaker permission mode as the way
+            # out. The broker itself holds nothing KIT-specific; it
+            # queues a request and waits for a click.
+            #
+            # The panel's own KIT decorations (the directory list, the
+            # mode chip) read the engine and hide themselves when it has
+            # nothing to show, so they cost nothing on another provider.
             _kit_callback = None
-            if provider == "kit":
-                broker = _ensure_kit_broker()
-                _kit_callback = broker.callback if broker is not None else None
-                _show_kit_confirm_panel(True)
-            else:
-                _show_kit_confirm_panel(False)
+            broker = _ensure_kit_broker()
+            if broker is not None:
+                _kit_callback = broker.callback
+            _show_kit_confirm_panel(_kit_callback is not None)
 
             engine = AgentEngine(
                 repo_dir=repo_dir,
@@ -19719,9 +19731,12 @@ def create_tab(ctx):
         default = _PROVIDER_DEFAULTS.get(provider, models[0][1])
         valid_values = {v for _, v in models}
         model_dropdown.value = default if default in valid_values else models[0][1]
-        # Show/hide the KIT confirmation panel based on the new provider.
+        # The panel stays. Switching the provider does not change who has
+        # to approve a document write or a read outside the roots, and
+        # hiding the dialog here was what made those actions impossible
+        # on every provider but one.
         try:
-            _show_kit_confirm_panel(provider == "kit")
+            _show_kit_confirm_panel(True)
         except Exception:
             pass
         n_models = len(models)
@@ -20241,13 +20256,12 @@ def create_tab(ctx):
     effort_dropdown.observe(_on_effort_change, names="value")
     perm_dropdown.observe(_on_perm_change, names="value")
 
-    # Initial KIT confirm-panel visibility based on saved provider.
+    # The panel is part of the page from the start, for the same reason it
+    # is wired for every provider: an approval that has nowhere to appear
+    # is an action that cannot be taken.
     try:
-        if provider_dropdown.value == "kit":
-            _ensure_kit_broker()
-            _show_kit_confirm_panel(True)
-        else:
-            _show_kit_confirm_panel(False)
+        _ensure_kit_broker()
+        _show_kit_confirm_panel(True)
     except Exception:
         pass
 
