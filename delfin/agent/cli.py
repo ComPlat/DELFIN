@@ -2474,14 +2474,20 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print(body or row.get("preview", ""))
                 return 0
         from . import terminal_confirm as _tc
-        for row in _tc.pending_at_terminals():
+        # Every surface, not only the terminals: a dashboard window that
+        # was reloaded cannot answer its own request any more, and this
+        # is where it is answered instead.
+        for row in _tc.pending_for_supervisors():
             if row.get("id") == args.request_id:
+                where = ("that session's terminal"
+                         if _tc.surface_of(row) == _tc.TERMINAL
+                         else "that session's dashboard window")
                 print(f"id      {row['id']}")
                 print(f"session {row.get('session_key') or row.get('session_id', '')}")
                 print(f"tool    {row.get('tool', '')}")
                 print(f"command {row.get('command', '')}")
                 print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s")
-                print("answer  here or at that session's terminal — "
+                print(f"answer  here or at {where} — "
                       "whichever comes first")
                 print()
                 body = _ansq.render_question(row)
@@ -2516,7 +2522,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
     from . import terminal_confirm as _tc
     from . import approval_answers as _ans
     at_terminals = _tc.pending_at_terminals()
-    if not rows and not at_terminals:
+    in_dashboards = _tc.pending_in_dashboards()
+    if not rows and not at_terminals and not in_dashboards:
         print("(nothing waiting)")
         return 0
     width = _ls_width()
@@ -2527,9 +2534,11 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         subject = _ans.preview_line(
             row, max(10, width - len(head) - len(tail)))
         print((head + subject + tail)[:width])
-    if at_terminals:
-        print("\nWaiting at a terminal — answer here or in that session:")
-        for row in at_terminals:
+    def _group(heading: str, group_rows: list) -> None:
+        if not group_rows:
+            return
+        print(heading)
+        for row in group_rows:
             waited = int(_time.time() - float(row.get("asked_at") or 0))
             mark = " PROTECTED" if row.get("protected") else ""
             head = (f"  {row.get('id', ''):<24} "
@@ -2539,6 +2548,14 @@ def cmd_approvals(args: argparse.Namespace) -> int:
             subject = _ans.preview_line(
                 row, max(10, width - len(head) - len(tail)))
             print((head + subject + tail)[:width])
+
+    _group("\nWaiting at a terminal — answer here or in that session:",
+           at_terminals)
+    # Its own heading because it is its own fact: a dashboard window can
+    # be gone while its request stands, and then here is the only place
+    # left to answer it.
+    _group("\nWaiting in a dashboard — answer here or in that window:",
+           in_dashboards)
     return 0
 
 

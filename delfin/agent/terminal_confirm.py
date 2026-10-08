@@ -49,7 +49,19 @@ __all__ = [
 #: whoever is supervising -- and where an answer for it may be left. The
 #: room is file_confirm's, so its checks apply unchanged and the terminal
 #: still wins a race: resolve() is the single point that decides.
+#: Where a session parks a question a supervisor can answer. The name
+#: is the terminal's because the terminal was the first surface to
+#: publish here; the dashboard broker publishes into the same room, so
+#: one `delfin-agent approvals ls` sees every waiting approval and one
+#: checked reader answers them all. The path does not move: a record
+#: written by an older version is still in flight, and state_paths maps
+#: this directory by name.
 _PENDING_DIR = Path.home() / ".delfin" / "terminal_confirmations"
+
+#: Which surface asked. Read with a default of "terminal", so a record
+#: written before this field existed keeps its meaning.
+TERMINAL = "terminal"
+DASHBOARD = "dashboard"
 
 CONFIRM = "confirm"
 ASK = "ask"
@@ -126,6 +138,44 @@ def _publish_pending(req: ConfirmRequest, session_id: str,
     Written under a temporary name and moved into place, so a reader
     never sees half a question.
     """
+    return publish_waiting(
+        surface=TERMINAL,
+        session_id=session_id,
+        session_key=session_key,
+        kind=str(req.kind or ""),
+        tool=str(req.tool or ""),
+        command=req.command,
+        # Only a question's payload (its text and options) is published;
+        # other kinds may carry file contents that must stay in-process.
+        payload=dict(req.payload or {}) if req.kind == ASK else {},
+        preview=str(req.preview or ""),
+        protected=bool(req.is_protected),
+        outside_read=bool(req.is_outside_read),
+        answer_at="terminal or supervisor",
+    )
+
+
+def publish_waiting(*, surface: str, session_id: str = "",
+                    session_key: str = "", kind: str = "",
+                    tool: str = "", command=None, payload=None,
+                    preview: str = "", protected: bool = False,
+                    outside_read: bool = False,
+                    answer_at: str = "") -> "Path | None":
+    """Park a question in the room, whichever surface is asking.
+
+    Input: what the question is. Output: the path of the published
+    record, or None where the room cannot be written. Semantics: exactly
+    the record `_publish_pending` has always written, plus a ``surface``
+    field saying who is waiting.
+
+    Extracted rather than copied because the record's shape is a
+    contract with three readers -- file_confirm's checked reader, the
+    lister, and the answer writer -- and a second writer with its own
+    idea of the shape is how two of them come to disagree.
+
+    Never raises: a session must ask its question even where no
+    supervisor can be reached.
+    """
     room = _PENDING_DIR
     room.mkdir(parents=True, exist_ok=True)
     try:
@@ -134,17 +184,16 @@ def _publish_pending(req: ConfirmRequest, session_id: str,
         pass
     record = {
         "id": f"{int(time.time())}-{uuid.uuid4().hex[:8]}",
+        "surface": str(surface or TERMINAL),
         "session_id": str(session_id or ""),
         "session_key": str(session_key or ""),
-        "kind": str(req.kind or ""),
-        "tool": str(req.tool or ""),
-        "command": req.command,
-        # Only a question's payload (its text and options) is published;
-        # other kinds may carry file contents that must stay in-process.
-        "payload": dict(req.payload or {}) if req.kind == ASK else {},
-        "preview": str(req.preview or ""),
-        "protected": bool(req.is_protected),
-        "outside_read": bool(req.is_outside_read),
+        "kind": str(kind or ""),
+        "tool": str(tool or ""),
+        "command": command,
+        "payload": dict(payload or {}),
+        "preview": str(preview or ""),
+        "protected": bool(protected),
+        "outside_read": bool(outside_read),
         "asked_at": time.time(),
         "pid": os.getpid(),
         # A pid is a number the system hands out again. The start settles
@@ -152,10 +201,10 @@ def _publish_pending(req: ConfirmRequest, session_id: str,
         # extracted for exactly this class of mistake.
         "proc_start": _proc_start_of_this_process(),
         "host": socket.gethostname(),
-        # Answerable from both ends now. The terminal still wins a race:
-        # resolve() is the single point that decides, and the first
-        # answer takes it.
-        "answer_at": "terminal or supervisor",
+        # Answerable from both ends now. The asking surface still wins a
+        # race: its own resolve() is the single point that decides, and
+        # the first answer takes it.
+        "answer_at": str(answer_at or f"{surface} or supervisor"),
     }
     # The same filename file_confirm uses, so its reader, its lister and
     # its answer writer apply here unchanged -- with every careful part
@@ -217,8 +266,8 @@ def _withdraw_pending(path) -> None:
         pass
 
 
-def pending_at_terminals() -> list[dict]:
-    """Every question a terminal session is waiting on, read whole.
+def pending_for_supervisors() -> list[dict]:
+    """Every question any session is waiting on, read whole.
 
     Never raises: a supervisor's view of the world must not be the thing
     that ends the supervisor.
@@ -239,6 +288,67 @@ def pending_at_terminals() -> list[dict]:
             continue
         out.append(record)
     return out
+
+
+def surface_of(record: dict) -> str:
+    """Which surface published *record*.
+
+    "terminal" for a record with no ``surface`` field: that is what every
+    record in the room was before the field existed, and one may still be
+    in flight while this version starts reading.
+    """
+    value = str((record or {}).get("surface") or "").strip().lower()
+    return value or TERMINAL
+
+
+def pending_at_terminals() -> list[dict]:
+    """The terminal sessions' questions, which is what the name says.
+
+    Kept as its own view rather than widened in place: `cli_resume` uses
+    it to decide whether a TERMINAL session can be resumed, and
+    `approval_answers` to find the question a typed choice belongs to.
+    Handing either of them a dashboard row would be a different answer
+    under the same name.
+    """
+    return [row for row in pending_for_supervisors()
+            if surface_of(row) == TERMINAL]
+
+
+def pending_in_dashboards() -> list[dict]:
+    """The dashboard sessions' questions. The other half of the room."""
+    return [row for row in pending_for_supervisors()
+            if surface_of(row) == DASHBOARD]
+
+
+def withdraw(path) -> None:
+    """Take a published question away. Public name for one line, because
+    the surface that published a record is the one that has to retire it
+    and `kit_confirm` is not inside this module."""
+    _withdraw_pending(path)
+
+
+def answer_left_for(published) -> "tuple[bool, str] | None":
+    """The answer somebody left for the record at *published*, or None.
+
+    Input: the path `publish_waiting` returned. Output: (decision,
+    reason) or None when nothing has been answered yet. Semantics:
+    file_confirm's single checked reader decides -- not a symlink, this
+    user's, not group-writable, naming this very question, not older than
+    it -- and there is deliberately no laxer second path.
+
+    Never raises.
+    """
+    if not published:
+        return None
+    try:
+        from . import file_confirm as _fc
+        path = Path(published)
+        request_id = path.name[:-len(".request.json")]
+        answer_path = path.with_name(f"{request_id}.answer.json")
+        return _fc._read_answer(answer_path, request_id,
+                                path.stat().st_mtime)
+    except Exception:
+        return None
 
 
 def _note_outside_answer(req: ConfirmRequest, session_key: str,
@@ -286,20 +396,10 @@ def _answer_from_outside(req: ConfirmRequest) -> "tuple[bool, str] | None":
     """The answer somebody left for *req*, with a refusal reason, or None.
 
     Never raises. The reason comes from file_confirm's single checked
-    reader -- there is deliberately no laxer second path for text.
+    reader -- there is deliberately no laxer second path for text, and
+    this is one caller of the one reader rather than a second copy of it.
     """
-    published = getattr(req, "published", None)
-    if not published:
-        return None
-    try:
-        from . import file_confirm as _fc
-        path = Path(published)
-        request_id = path.name[:-len(".request.json")]
-        answer_path = path.with_name(f"{request_id}.answer.json")
-        return _fc._read_answer(answer_path, request_id,
-                                path.stat().st_mtime)
-    except Exception:
-        return None
+    return answer_left_for(getattr(req, "published", None))
 
 
 def _choice_from_outside(req: ConfirmRequest) -> "list[str] | None":
