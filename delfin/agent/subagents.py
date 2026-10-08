@@ -29,8 +29,8 @@ Each type maps to:
 
 Hard limits:
 
-  - max 40 tool calls per sub-agent      (``_MAX_TOOL_CALLS``)
-  - max 900 seconds wall-clock per run   (``_MAX_WALL_S``)
+  - max 120 tool calls per sub-agent     (``_MAX_TOOL_CALLS``)
+  - max 3600 seconds wall-clock per run  (``_MAX_WALL_S``)
   - max 16000 tokens output              (``_MAX_OUTPUT_TOKENS``)
 
   All three are overridable via ``settings["agent"]["subagents"]``.
@@ -94,7 +94,7 @@ if TYPE_CHECKING:  # pragma: no cover
 # raised 60→300s: 60s truncated real exploration/research runs (especially on
 # slower KIT/Qwen models) before they could report back — subagents were too
 # short-leashed to be useful for anything but trivial lookups.
-_MAX_TOOL_CALLS = 40
+_MAX_TOOL_CALLS = 120
 # Wall-clock, not call count, is the binding constraint for a delegated
 # build task. Measured on a real delegation round (2026-07-29, KIT
 # endpoint): the two runs that died at the 300 s cap had made only 10 and
@@ -102,7 +102,7 @@ _MAX_TOOL_CALLS = 40
 # on a large prompt. The four that finished needed 15-77 s; none was ever
 # truncated on output. So the cap is raised and the other two budgets
 # stay: they were never the limit.
-_MAX_WALL_S = 900.0
+_MAX_WALL_S = 3600.0
 _MAX_OUTPUT_TOKENS = 16000
 
 
