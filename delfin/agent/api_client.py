@@ -4927,7 +4927,7 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
 #: principles_guard.EXPECTED_DIGEST). The startup guard requires the file
 #: to match both; this file is protected, so an agent cannot move it.
 PRINCIPLES_DIGEST = (
-    "595bdd3ae230c626bc0a837160def06590c63d4936f5ee3f88ab5dc0cbe88b24"
+    "610797fc16c11c8a455141a318b0d9b7248465f340569596e6f49ca85f8a9d80"
 )
 
 _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
