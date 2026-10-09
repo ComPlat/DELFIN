@@ -59,6 +59,27 @@ _GLM_CALL_TAGS = re.compile(
 # (see _call_shape below) — ordinary JSON output must never be executed.
 _FENCED_JSON_CALL = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
+# DSML invocation block — deepseek-v4-flash writes its tool calls as literal
+# ``<invoke name="TOOL">…</invoke>`` XML in the text channel instead of
+# calling the tool (wave 13, .gate/dsml_samples.txt: ``<invoke name="bash">``
+# wrapping ``<parameter name="command" string="true">…</parameter>`` pairs).
+# The discriminator is the PAIR: an opening ``<invoke name="…">`` with a tool
+# name AND its matching ``</invoke>``.  Prose or code that merely mentions
+# the tags (an XML-documentation snippet, a bare ``<parameter>``, an
+# unmatched open from a stream cut short) is not a call — nothing ran, and
+# ending a real turn on one would be worse than the leak it guards against.
+_DSML_INVOKE = re.compile(
+    r"<invoke\s+name\s*=\s*[\"']([A-Za-z_][\w\-]*)[\"']\s*>(.*?)</invoke>",
+    re.DOTALL,
+)
+# A single argument, ``<parameter name="K" …>VALUE</parameter>``.  The ``[^>]*``
+# after the name skips the DSML type serialization (``string="true"``) and
+# any other attributes.
+_DSML_PARAM = re.compile(
+    r"<parameter\s+name\s*=\s*[\"']([\w.\-]+)[\"']\s*[^>]*>(.*?)</parameter>",
+    re.DOTALL,
+)
+
 # Harmony special-token leftovers that decode as literal words.
 #
 # A leftover sits against what it was announcing: `json_schema{"doc_id"`
@@ -77,11 +98,11 @@ _HARMONY_TOKENS = re.compile(
     r"\b(?:json_schema|json|constrain)\b(?=\s*[{\[<|])")
 
 # Reasoning-tag models (deepseek-r1, qwq, qwen3-thinking, …) emit their chain
-# of thought as <think>…</think> in the visible text channel. Strip the whole
-# block; also strip a dangling unterminated <think> (streaming can cut off
-# before </think>) so no reasoning leaks into the user-visible answer.
-_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-_THINK_DANGLING = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
+# of thought as  thinking… response in the visible text channel. Strip the whole
+# block; also strip a dangling unterminated  thinking (streaming can cut off
+# before  response) so no reasoning leaks into the user-visible answer.
+_THINK_BLOCK = re.compile(r" thinking.*? response", re.DOTALL | re.IGNORECASE)
+_THINK_DANGLING = re.compile(r" thinking.*$", re.DOTALL | re.IGNORECASE)
 
 # Scripts that do not occur in DELFIN's de/en chemistry output — a run of
 # these is glitch-token corruption, not content.  (CJK, kana, Hangul,
@@ -250,3 +271,32 @@ def parse_leaked_tool_calls(text: str) -> list[dict]:
             if shape:
                 out.append({"name": shape[0], "arguments": shape[1]})
     return out
+
+
+def leaked_tool_call(text: str) -> tuple[str, dict] | None:
+    """Return ``(tool_name, arguments)`` when ``text`` is a leaked DSML tool
+    call, else ``None``.
+
+    deepseek-v4-flash sometimes emits its tool calls as literal
+    ``<invoke name="…">…</invoke>`` markup in the text channel instead of
+    calling the tool, so the call never runs and the turn stands still.
+    Only a COMPLETE block — an opening ``<invoke name="TOOL">`` AND its
+    matching ``</invoke>`` — is treated as a leak, so prose or code that
+    merely mentions the tags (an XML snippet, a bare ``<parameter>``, an
+    unmatched open) is never mistaken for one.  Arguments are the
+    ``<parameter name="K">VALUE</parameter>`` pairs inside the block.
+
+    Returns a single ``(name, args)`` for the first complete block: the
+    caller's remedy is to ask the model once to call the tool, which only
+    makes sense for a turn dominated by one leaked call.
+    """
+    if not isinstance(text, str):
+        return None
+    m = _DSML_INVOKE.search(text)
+    if not m:
+        return None
+    name = m.group(1)
+    args: dict = {}
+    for p in _DSML_PARAM.finditer(m.group(2)):
+        args[p.group(1)] = p.group(2)
+    return name, args
