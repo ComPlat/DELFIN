@@ -66,6 +66,8 @@ def test_inside_the_workspace_nothing_is_asked(scene):
     ("Bash", {"command": "cat {far}/note.txt"}),
     ("Bash", {"command": "cd {far} && cat note.txt"}),
     ("Bash", {"command": "ls {far}"}),
+    ("Bash", {"command": "cat ../far/note.txt"}),
+    ("Bash", {"command": "python3 x.py {far}/note.txt"}),
 ])
 def test_bypass_does_not_read_outside_unasked(scene, tool, args):
     build, ws, far = scene

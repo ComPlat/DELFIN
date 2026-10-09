@@ -220,7 +220,7 @@ def decide(token: str, event: dict) -> str | None:
                 {"path": str(raw)})
     elif tool == "Bash":
         cmd = str(args.get("command") or "")
-        err = _unjson(ex._gate_bash_read_paths(cmd, perms))
+        err = _unjson(ex._gate_bash_read_paths(cmd, perms, cwd))
         if err is None:
             for target in ac._bash_write_targets(cmd):
                 p = _abs(target, cwd, state["workspace"])

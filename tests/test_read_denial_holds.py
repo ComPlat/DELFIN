@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import tempfile
+
+import pytest
 from pathlib import Path
 
 from delfin.agent.api_client import (
@@ -68,7 +70,8 @@ def test_relative_and_non_reader_commands_are_not_detected():
     assert _bash_outside_reads("cd sub && ls") == []
     assert _bash_outside_reads("cd - && ls") == []
     assert _bash_outside_reads("python3 /usr/bin/tool.py") == []
-    assert _bash_outside_reads("cat /etc/*.conf") == []      # glob, not literal
+    # A glob reads the directory it expands in.
+    assert _bash_outside_reads("cat /etc/*.conf") == ["/etc"]
 
 
 def test_a_listing_or_a_cd_outside_is_a_look_outside():
@@ -80,7 +83,7 @@ def test_a_listing_or_a_cd_outside_is_a_look_outside():
     assert _bash_outside_reads("tree /data/run") == ["/data/run"]
     assert _bash_outside_reads("cd /etc && cat hostname") == ["/etc"]
     assert _bash_outside_reads("pushd /etc; cat hostname") == ["/etc"]
-    assert _bash_outside_reads("cd && cat .bashrc") == ["~"]
+    assert _bash_outside_reads("cd && cat .bashrc")[0] == "~"
     assert _bash_outside_reads("cd /usr/lib && ls") == []
 
 
@@ -193,3 +196,51 @@ def test_a_later_grant_of_the_directory_beats_the_earlier_refusal():
     perms.add_extra_dir(outside)          # the user grants the directory
     out = ex.execute("read_file", {"path": str(target)}, perms)
     assert "SOURCE" in out
+
+
+# --- where a command really reads (2026-10-09) -----------------------------
+#
+# "Make it entirely safe": the scanner saw only absolute arguments of a list
+# of content readers. Every case below read outside the workspace without a
+# question in every mode before.
+
+def test_relative_paths_are_followed_through_cd_and_dotdot():
+    ws = "/w/ws"
+    assert _bash_outside_reads("cat ../../x", ws) == ["/w/ws/../../x"]
+    assert "/w/ws/sub/../../x" in _bash_outside_reads(
+        "cd sub && cat ../../x", ws)
+    # Without a starting directory relative paths stay uninspected.
+    assert _bash_outside_reads("cat ../../x") == []
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("cat $HOME/.bashrc", str(Path.home() / ".bashrc")),
+    ("cat /etc/*.conf", "/etc"),
+    ("wc -l < /data/x", "/data/x"),
+    ("python ana.py /data/run.out", "/data/run.out"),
+    ("cp /data/a .", "/data/a"),
+    ("git -C /other/repo log", "/other/repo"),
+    ("python x.py --input=/data/y", "/data/y"),
+    ("dd if=/data/z of=y", "/data/z"),
+])
+def test_every_program_that_names_a_path_reads_it(cmd, expected):
+    assert expected in _bash_outside_reads(cmd, "/w/ws")
+
+
+@pytest.mark.parametrize("cmd", [
+    "echo /etc/passwd", "python x.py > /out/log", "cat /proc/cpuinfo",
+    "cat /tmp/x", "nproc", "/usr/bin/env python3 run.py",
+    "ls /usr/lib", "wc -l /data/x",
+])
+def test_what_reads_nothing_outside_is_not_asked(cmd):
+    assert [t for t in _bash_outside_reads(cmd, "/w/ws")
+            if not t.startswith("/w/ws")] == []
+
+
+def test_a_link_out_of_the_workspace_is_asked_where_it_points(tmp_path):
+    ex, perms, ws, outside = _setup()
+    (outside / "far.txt").write_text("FAR\n")
+    (Path(perms.workspace) / "link").symlink_to(outside / "far.txt")
+    out = json.loads(ex.execute("bash", {"command": "cat link"}, perms))
+    assert "FAR" not in json.dumps(out)
+    assert "error" in out

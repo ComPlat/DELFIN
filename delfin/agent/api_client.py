@@ -1264,36 +1264,114 @@ def _is_system_path(word: str) -> bool:
             or (text + "/").startswith(_SYSTEM_PATH_PREFIXES))
 
 
-def _bash_outside_reads(cmd: str) -> list[str]:
-    """Absolute paths a content-dumping command would print.
+#: Programs that touch no file named on their command line: they print
+#: their arguments, look up names, or report metadata only. Every OTHER
+#: program's path arguments are reads -- `python x.py /data/run.out`,
+#: `cp /data/a .`, `git -C /other/repo log` all look outside as surely as
+#: `cat` does. wc, stat, file and the digests are here on purpose: a size
+#: or a hash is not the content, and asking about it is friction with
+#: nothing behind it.
+_BASH_NO_FILE_PROGRAMS: frozenset[str] = frozenset({
+    "echo", "printf", "true", "false", "exit", "export", "unset", "set",
+    "which", "type", "command", "hash", "alias", "sleep", "kill", "date",
+    "wc", "stat", "file", "md5sum", "sha1sum", "sha256sum", "sha512sum",
+    "test", "[", "[[", "basename", "dirname", "realpath", "readlink",
+    "mkdir", "touch", "rm", "rmdir", "chmod", "squeue", "scancel", "sacct",
+})
 
-    Only the readers above are inspected, and only their absolute
-    arguments — a conservative net around the exact circumvention that was
-    observed (three refused read_file calls, then `cat` on the same files).
+#: Read-only system information. Not user data, and asked for by every
+#: core-count check a calculation script does.
+_SYSTEM_INFO_FILES: frozenset[str] = frozenset({
+    "/proc/cpuinfo", "/proc/meminfo", "/proc/loadavg", "/proc/version",
+    "/proc/uptime", "/etc/os-release", "/etc/hostname",
+})
 
-    An inline python payload is inspected too, for the same reason and by
-    the same rule: `python3 -c "print(open('/etc/passwd').read())"` is
-    `cat /etc/passwd` with the path one level in. Before the payload could
-    be read at all this was moot -- the command was refused outright --
-    and reading it would have opened a route past this gate if the reads
-    had not been collected with the writes.
+
+def _home_expanded(word: str) -> str:
+    home = str(Path.home())
+    for spelling in ("${HOME}", "$HOME"):
+        if word.startswith(spelling):
+            return home + word[len(spelling):]
+    return word
+
+
+def _glob_root(word: str) -> str:
+    """The directory a glob reads: everything before its first wildcard
+    component. `/data/run*/x.out` reads /data."""
+    parts = word.split("/")
+    keep = []
+    for part in parts:
+        if any(c in part for c in "*?["):
+            break
+        keep.append(part)
+    root = "/".join(keep)
+    return root or ("/" if word.startswith("/") else ".")
+
+
+def _read_exempt(path: str) -> bool:
+    """System directories, pseudo-devices, scratch space, system info."""
+    text = os.path.normpath(path)
+    return (_is_system_path(text) or _is_safe_device(text)
+            or text in _SYSTEM_INFO_FILES
+            or text in _BASH_SCRATCH_EXACT
+            or (text + "/").startswith(("/tmp/", "/var/tmp/"))
+            or text.startswith("/proc/self/"))
+
+
+def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None) -> list[str]:
+    """Paths a shell command would read, for the outside-read gate.
+
+    Every path argument of every program counts, except programs that
+    touch no file (``_BASH_NO_FILE_PROGRAMS``) and exempt locations
+    (``_read_exempt``). Also counted: ``cd``/``pushd`` targets (a bare cd
+    is home), input redirections (``< file``), option values
+    (``--input=/x``), the directory a glob reads, and paths inside an
+    inline python payload.
+
+    Absolute and home paths (``~``, ``$HOME``) are returned as written.
+    With ``cwd`` -- where the command starts -- relative paths are
+    returned too, resolved against the directory the command is in at
+    that point: ``cd sub && cat ../../x`` is followed through the cd, and
+    the gate resolves symlinks, so a link that points out is caught where
+    it points. Without ``cwd`` relative paths are not inspected.
+
+    History: only the absolute arguments of a list of content readers
+    were inspected, so `cd /etc && cat hostname`, `ls ~`, `cp /x .`,
+    `cat ../../x` and `cat $HOME/.bashrc` all read outside the workspace
+    without a question in every mode (2026-10-09).
     """
     out: list[str] = []
     try:
-        # Here-documents too, and with include_expanded=True, for the
-        # same reason the write gate takes them: this path REFUSES on
-        # what it finds, so reading a body the shell may still add to can
-        # only block more. `python3 - <<'EOF' print(open('/etc/passwd')
-        # .read()) EOF` produced no read target at all before.
         srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
         srcs += _inline_payload.extract_stdin_payloads(
             cmd, include_expanded=True)
         for src in srcs:
             for tok in _inline_payload.analyze_payload(src).reads:
+                tok = _home_expanded(tok)
                 if tok.startswith("/") or tok.startswith("~"):
                     out.append(tok)
+                elif cwd is not None and ".." in Path(tok).parts:
+                    out.append(str(Path(cwd) / tok))
     except Exception:
         pass
+    here: "Path | None" = Path(cwd) if cwd is not None else None
+    previous = here
+
+    def _add(word: str) -> None:
+        word = _home_expanded(word)
+        if not word or word.startswith("$") or word.startswith("<"):
+            return
+        if any(c in word for c in "*?["):
+            word = _glob_root(word)
+        if word.startswith("/") or word.startswith("~"):
+            if not _read_exempt(os.path.expanduser(word)):
+                out.append(word)
+            return
+        if here is not None:
+            full = str(here / word)
+            if not _read_exempt(full):
+                out.append(full)
+
     try:
         import shlex
         for segment in re.split(r"[;&|]{1,2}|\n", cmd):
@@ -1309,32 +1387,61 @@ def _bash_outside_reads(cmd: str) -> list[str]:
             if not argv:
                 continue
             prog = Path(argv[0]).name
+            args = argv[1:]
             if prog in _BASH_DIR_CHANGERS:
-                if "-" in argv[1:]:
-                    continue        # `cd -`: back to where it was
-                dests = [a for a in argv[1:] if not a.startswith("-")]
-                if not dests:
-                    out.append("~")
-                elif ((dests[0].startswith("/") or dests[0].startswith("~"))
-                        and not _is_system_path(dests[0])):
-                    out.append(dests[0])
-                continue
-            if prog in _BASH_DIR_LISTERS:
-                for a in argv[1:]:
-                    if a.startswith("-") or any(c in a for c in "*?["):
-                        continue
-                    if ((a.startswith("/") or a.startswith("~"))
-                            and not _is_system_path(a)
-                            and not _is_safe_device(a)):
-                        out.append(a)
-                continue
-            if prog not in _BASH_CONTENT_READERS:
-                continue
-            for a in argv[1:]:
-                if a.startswith("-") or any(c in a for c in "*?["):
+                if "-" in args:
+                    here, previous = previous, here
                     continue
-                if a.startswith("/") or a.startswith("~"):
-                    out.append(a)
+                dests = [a for a in args if not a.startswith("-")]
+                dest = _home_expanded(dests[0]) if dests else "~"
+                if dest.startswith("$"):
+                    here = None         # unknown: stop resolving relatives
+                    continue
+                target = (Path(os.path.expanduser(dest)) if
+                          (dest.startswith("/") or dest.startswith("~"))
+                          else (here / dest if here is not None else None))
+                if target is not None and not _read_exempt(str(target)):
+                    out.append(dest if (dest.startswith("/")
+                                        or dest.startswith("~"))
+                               else str(target))
+                previous, here = here, target
+                continue
+            # Input redirection reads, whatever the program.
+            for i, a in enumerate(args):
+                if a == "<" and i + 1 < len(args):
+                    _add(args[i + 1])
+                elif a.startswith("<") and not a.startswith("<<") and len(a) > 1:
+                    _add(a[1:])
+            if prog in _BASH_NO_FILE_PROGRAMS:
+                continue
+            skip_next = False
+            for i, a in enumerate(args):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
+                    skip_next = True    # the redirection's own target
+                    continue
+                if (a.startswith("<") or a.startswith(">")
+                        or (a[:1] in "0123456789&" and ">" in a[:3])):
+                    continue
+                if a.startswith("-"):
+                    if "=" in a:
+                        _add(a.split("=", 1)[1])
+                    continue
+                if prog == "dd" and a.startswith("if="):
+                    _add(a[3:])
+                    continue
+                if "=" in a.split("/")[0]:
+                    continue
+                looks_like_path = ("/" in a or a.startswith("~")
+                                   or a.startswith("$HOME")
+                                   or a.startswith("${HOME}")
+                                   or a in (".", "..")
+                                   or prog in _BASH_CONTENT_READERS
+                                   or prog in _BASH_DIR_LISTERS)
+                if looks_like_path:
+                    _add(a)
     except Exception:
         return out
     return out
@@ -15731,7 +15838,9 @@ class _DocToolExecutor:
             # scan applied but with the WORKSPACE boundary missing. Under a
             # locked scope that is the whole promise, routed around by
             # naming a different server.
-            gate_err = self._gate_bash_read_paths(cmd, perms)
+            gate_err = self._gate_bash_read_paths(
+                cmd, perms, str(args.get("cwd") or args.get("workdir")
+                                or args.get("working_directory") or ""))
             if gate_err is not None:
                 return gate_err
             return self._gate_bash_write_targets(
@@ -16706,7 +16815,7 @@ class _DocToolExecutor:
         })
 
     def _gate_bash_read_paths(
-        self, cmd: str, perms: "KitToolPermissions"
+        self, cmd: str, perms: "KitToolPermissions", cwd: str = "",
     ) -> Optional[str]:
         """Hold a refused read against every tool, and route a shell file
         dump outside the workspace through the same confirmation as
@@ -16770,7 +16879,13 @@ class _DocToolExecutor:
                     "the tool that asked — do not reach it another way. Ask "
                     "the user what to use instead."
                 )})
-            for target in _bash_outside_reads(scan):
+            # Where the command starts, so relative paths, `..` and links
+            # are judged where they really lead.
+            base = Path(perms.workspace)
+            if cwd:
+                c = Path(str(cwd)).expanduser()
+                base = c if c.is_absolute() else base / c
+            for target in _bash_outside_reads(scan, base):
                 path = Path(target).expanduser()
                 if not path.is_absolute():
                     continue
@@ -16958,7 +17073,8 @@ class _DocToolExecutor:
         cmd = arguments.get("command", "") or ""
         description = arguments.get("description", "") or ""
 
-        gate_err = self._gate_bash_read_paths(cmd, perms)
+        gate_err = self._gate_bash_read_paths(
+            cmd, perms, str(arguments.get("cwd") or ""))
         if gate_err is not None:
             return gate_err
 
@@ -17179,7 +17295,7 @@ class _DocToolExecutor:
         cwd_arg = arguments.get("cwd", "") or ""
         timeout_s = int(arguments.get("timeout_s", 24 * 3600) or 24 * 3600)
 
-        gate_err = self._gate_bash_read_paths(cmd, perms)
+        gate_err = self._gate_bash_read_paths(cmd, perms, str(cwd_arg))
         if gate_err is not None:
             return gate_err
         gate_err = self._gate_bash_write_targets(cmd, arguments, perms)
