@@ -128,3 +128,56 @@ class TestMoleculeGuardrails:
         res = chat_media.molecule(str(good), kind="xyz", workspace_root=tmp_path)
         assert res["kind"] == "xyz"
         assert str(good) in res["text"]  # path surfaces in the fallback
+
+
+# ---------------------------------------------------------------------------
+# Adversarial + PathLike regression tests (reviewer nacht-s32 findings).
+# ---------------------------------------------------------------------------
+
+
+class TestInjectionGuards:
+    """A file whose content tries to break out of the surrounding <script>."""
+
+    MALICIOUS = '3\n</script><script>window.__v1pwned=1</script>\nO 0 0 0\nH 0 0 1\nH 0 1 0\n'
+
+    def test_xyz_comment_cannot_break_out_of_script(self):
+        res = chat_media.molecule(self.MALICIOUS, kind="xyz")
+        html = res["html"]
+        # Only the one closing tag _viewer_html itself emits may appear; the
+        # injected "</script>" must be escaped (e.g. as <\\/script>), so the
+        # malicious payload cannot terminate the script element and become
+        # executable markup.
+        assert html.count("</script>") == 1
+        # After JS-escape the payload is inert data inside a string literal,
+        # never a live element.
+        assert "<\\/script>" in html
+
+    def test_cube_comment_cannot_break_out_of_script(self):
+        cube = (
+            "cube </script><script>window.__v1pwned=1</script>\n"
+            "generated\n"
+            "1 0 0 0\n2 1 0 0\n2 0 1 0\n2 0 0 1\n"
+            "1 0 0 0 0\n0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8\n"
+        )
+        res = chat_media.molecule(cube, kind="cube")
+        assert res["html"].count("</script>") == 1
+
+
+class TestPathLike:
+    def test_accepts_pathlib_path(self, tmp_path):
+        import pathlib
+        good = tmp_path / "water.xyz"
+        good.write_text(H2O_XYZ, encoding="utf-8")
+        # A caller (the dashboard) hands a Path, not a str — must not raise.
+        res = chat_media.molecule(
+            pathlib.Path(good), kind="xyz", workspace_root=tmp_path)
+        assert res["kind"] == "xyz"
+        assert "H2" in res["text"]
+
+    def test_accepts_os_pathlike(self, tmp_path):
+        import os
+        good = tmp_path / "water.xyz"
+        good.write_text(H2O_XYZ, encoding="utf-8")
+        res = chat_media.molecule(
+            os.fspath(good), kind="xyz", workspace_root=tmp_path)
+        assert res["kind"] == "xyz"

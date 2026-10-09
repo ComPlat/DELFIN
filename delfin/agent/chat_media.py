@@ -16,6 +16,7 @@ outside ``workspace_root`` is refused, and file size is capped.
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from pathlib import Path
@@ -200,8 +201,21 @@ def _viewer_html(body: str, viewer_id: str) -> str:
     )
 
 
+def _js_json(text: str) -> str:
+    """JSON-encode text for embedding inside an HTML <script> element.
+
+    ``json.dumps`` does not escape ``</script>``, so a hostile file whose
+    content contains that sequence would terminate the surrounding ``<script>``
+    element and become executable markup (the dashboard renders tool results
+    verbatim). Escaping the slash produces ``<\\/script>`` — a valid
+    ``</script>`` for the JS parser (3Dmol sees the true content) but inert
+    for the HTML parser, so the payload can never break out.
+    """
+    return json.dumps(text).replace("</", "<\\/")
+
+
 def _xyz_body(xyz_text: str) -> str:
-    xyz_json = json.dumps(xyz_text)
+    xyz_json = _js_json(xyz_text)
     return (
         f'viewer.addModel({xyz_json}, "xyz");\n'
         'viewer.setStyle({}, {stick:{radius:0.12}, sphere:{scale:0.28}});\n'
@@ -211,10 +225,9 @@ def _xyz_body(xyz_text: str) -> str:
 
 
 def _cube_body(cube_text: str, isovalue: float) -> str:
-    cube_json = json.dumps(cube_text)
+    cube_json = _js_json(cube_text)
     iso = float(isovalue) if isovalue is not None else 0.02
     return (
-        f'viewer.addModel({{}}, "cube");\n'
         # volume rather than model: draw the isosurface at the given level.
         f'viewer.addVolumetricData({cube_json}, "cube", '
         f'{{isoval:{iso:.6f}, color:"#0026ff", opacity:0.65}});\n'
@@ -224,7 +237,7 @@ def _cube_body(cube_text: str, isovalue: float) -> str:
 
 
 def molecule(
-    path_or_xyz: str,
+    path_or_xyz: str | os.PathLike,
     *,
     kind: str | None = None,
     isovalue: float | None = None,
@@ -233,7 +246,8 @@ def molecule(
     """Build chat media for one molecule.
 
     Args:
-        path_or_xyz: a path to an XYZ/cube file, or the raw XYZ/cube text.
+        path_or_xyz: a path (str or os.PathLike) to an XYZ/cube file, or the
+            raw XYZ/cube text.
         kind: one of ``"xyz"``, ``"multixyz"``, ``"cube"``. When None it is
             detected from the file suffix / content.
         isovalue: cube isosurface level (default 0.02).
@@ -246,6 +260,10 @@ def molecule(
     """
     if kind is not None and kind not in _VALID_KINDS:
         raise ValueError(f"unknown kind {kind!r}; expected {_VALID_KINDS}")
+
+    # PathLike callers (the dashboard hands Path objects) are normalised to
+    # str before anything that does string inspection of the argument.
+    path_or_xyz = os.fspath(path_or_xyz)
 
     content: str
     suffix: str = ""
