@@ -38,8 +38,9 @@ def fresh_workspace():
 
 
 def test_task_ticker_renders_empty(fresh_workspace):
-    html = TT.render_html(fresh_workspace)
-    assert "No tasks yet" in html
+    # No tasks, no panel: an empty list renders nothing at all.
+    assert TT.render_html(fresh_workspace) == ""
+    assert TT.render_title(fresh_workspace) == ""
 
 
 def test_task_ticker_renders_tasks(fresh_workspace):
@@ -370,3 +371,20 @@ def test_tool_remote_trigger_rejects_no_event():
     )
     payload = json.loads(out)
     assert "error" in payload
+
+
+def test_task_title_counts_and_names_the_task_in_hand(fresh_workspace):
+    store = get_store(fresh_workspace)
+    first = store.create("Run tests", "")
+    t = store.create("Polish docs", "", active_form="Polishing docs")
+    store.update(t["id"], status="in_progress")
+    title = TT.render_title(fresh_workspace)
+    assert title.startswith("Tasks")
+    assert "▶ 1" in title and "☐ 1" in title
+    assert "Polishing docs" in title
+    assert "<" not in title                       # plain text, not HTML
+    body = TT.render_html(fresh_workspace, bare=True)
+    assert "Run tests" in body and "Tasks &nbsp;" not in body
+    store.update(t["id"], status="completed")
+    store.update(first["id"], status="completed")
+    assert TT.render_title(fresh_workspace) == ""  # nothing open, no line

@@ -66,8 +66,12 @@ def render_html(
     session_id: str | None = None,
     show_completed: bool = True,
     max_rows: int = 30,
+    bare: bool = False,
 ) -> str:
     """Return an HTML fragment listing tasks, ready for ipywidgets HTML.
+
+    ``bare=True`` returns the rows alone, without the framed header: the
+    body of a fold whose title already carries the counts.
 
     The session filter goes through the shared resolver: an empty id is
     UNSCOPED, the same as everywhere else. Reading it as "no session,
@@ -119,6 +123,8 @@ def render_html(
     # the chat off-screen (Jerome 2026-06-13). The summary header stays fixed
     # above the scroll area so the counts are always visible.
     scroll_open = "<div style='max-height:220px;overflow-y:auto;'>"
+    if bare:
+        return scroll_open + "".join(rows) + "</div>"
     return (
         "<div style='border-left:3px solid #444;padding:6px 10px;"
         "background:#0001;border-radius:4px;'>"
@@ -144,15 +150,17 @@ def counts(
     return len(raw) - done, done
 
 
-def render_line(
+def render_title(
     workspace: Path | str,
     *,
     session_id: str | None = None,
 ) -> str:
-    """One line for the foot of the chat: the task in hand and the counts.
+    """Plain-text title of the task fold at the foot of the chat: the
+    counts and the task in hand, e.g. ``Tasks ▶ 1 ☐ 2 ☑ 0 · Parsing``.
 
-    Empty when there are no open tasks (a finished plan says nothing
-    either), so the line costs no height unless it has something to say.
+    Plain text because a fold title is not HTML. Empty when there are no
+    open tasks (a finished plan says nothing either), so the fold costs
+    no height unless it has something to say.
     """
     store = get_store(Path(workspace))
     raw = store.list(include_deleted=False,
@@ -168,16 +176,14 @@ def render_line(
     open_count = counts["in_progress"] + counts["pending"] + counts["blocked"]
     if not open_count:
         return ""
-    parts = [f"&#9658; {counts['in_progress']}", f"&#9744; {counts['pending']}"]
+    parts = [f"\u25b6 {counts['in_progress']}", f"\u2610 {counts['pending']}"]
     if counts["blocked"]:
-        parts.append(f"&#9940; {counts['blocked']}")
-    parts.append(f"&#9745; {counts['completed']}")
-    head = "<span style='color:#6b7280'>Tasks</span> &nbsp;" + " &nbsp; ".join(parts)
+        parts.append(f"\u26d4 {counts['blocked']}")
+    parts.append(f"\u2611 {counts['completed']}")
+    title = "Tasks  " + "  ".join(parts)
     if current:
-        head += (" &nbsp;·&nbsp; <span style='color:#1d4ed8'>"
-                 + escape(current[:90]) + "</span>")
-    return "<div style='white-space:nowrap;overflow:hidden;"\
-           "text-overflow:ellipsis'>" + head + "</div>"
+        title += " \u00b7 " + current[:90]
+    return title
 
 
 def next_steps(

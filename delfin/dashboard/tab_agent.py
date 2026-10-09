@@ -754,6 +754,16 @@ _AGENT_CSS = """\
     padding: 2px 10px;
     font-size: 12px;
 }
+/* The task line: a fold whose header is the one line, compact. */
+.delfin-agent-task-strip { padding: 0 !important; }
+.delfin-agent-task-strip .jupyter-widget-Collapse-header {
+    padding: 2px 10px; border: none; background: transparent;
+    font-size: 12px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+}
+.delfin-agent-task-strip .jupyter-widget-Collapse-contents {
+    padding: 2px 10px 4px 26px; border: none; background: transparent;
+}
 .delfin-agent-chat-frame > .delfin-agent-dock { margin: 0; }
 .delfin-agent-chat-frame > .delfin-agent-dock:not(:empty) { padding: 0 6px; }
 /* The task line belongs to the newest output: while the reader is up in
@@ -772,6 +782,18 @@ _AGENT_CSS = """\
     width: min(880px, 100%); background: #fff;
     border: 1px solid #d1d5db; border-radius: 6px;
     box-shadow: 0 -4px 16px rgba(0,0,0,0.12); padding: 6px;
+}
+/* Measured 2026-10-09: the filter field and the list are width:100% plus
+   their own margin, 882px in a 878px box -- a horizontal scrollbar under
+   the list. Border-box, and the list's long rows are cut, not scrolled. */
+.delfin-agent-palette-pop { overflow-x: hidden !important; }
+.delfin-agent-palette-pop > * { box-sizing: border-box; max-width: 100%;
+    margin-left: 0 !important; margin-right: 0 !important; }
+.delfin-agent-palette-pop select { overflow-x: hidden; }
+/* An HTML widget with nothing in it is a full-width row of zero height
+   whose margins still add gaps; it takes no place until it has content. */
+.delfin-agent-root .widget-html:has(> .widget-html-content:empty) {
+    display: none !important;
 }
 .delfin-agent-palette-pop:not(:has(> .widget-select:not([style*="display: none"]))) {
     display: none !important;
@@ -7335,9 +7357,11 @@ def create_tab(ctx):
         reads "Details" on a quiet session and names the live parts on a
         busy one."""
         parts = []
-        t_open, t_done = state.get("_fold_tasks", (0, 0))
-        if t_open or t_done:
-            parts.append(f"Tasks {t_done}/{t_open + t_done}")
+        # The context fill leads: it is the one number that decides when
+        # the session compacts, and it costs six characters.
+        ctx_pct = state.get("_fold_ctx")
+        if ctx_pct is not None:
+            parts.append(f"ctx {ctx_pct:.0f}%")
         n_bg = int(state.get("_fold_background", 0) or 0)
         if n_bg:
             parts.append(f"{n_bg} running")
@@ -7392,14 +7416,18 @@ def create_tab(ctx):
             pass
 
     task_ticker_html = widgets.HTML(
-        value="", layout=widgets.Layout(margin="2px 0 4px 0"),
+        value="", layout=widgets.Layout(margin="0"),
     )
-    # One line at the foot of the chat: what is in hand and the counts.
-    # Nothing at all while there are no tasks. The full list is the
-    # ticker above, in the folded panels.
-    task_strip_html = widgets.HTML(
-        value="", layout=widgets.Layout(display="none"))
-    task_strip_html.add_class("delfin-agent-chat-foot")
+    # One line at the foot of the chat: the counts and the task in hand.
+    # It unfolds to the full list (the ticker), which therefore lives
+    # nowhere else. An Accordion rather than <details>: a refresh replaces
+    # the HTML and would close a <details> the reader had opened; the
+    # Accordion's selected_index survives it. Hidden while no task is open.
+    task_strip = widgets.Accordion(
+        children=[task_ticker_html], titles=("Tasks",), selected_index=None,
+        layout=widgets.Layout(display="none"))
+    task_strip.add_class("delfin-agent-chat-foot")
+    task_strip.add_class("delfin-agent-task-strip")
 
     def _refresh_task_ticker():
         try:
@@ -7413,18 +7441,16 @@ def create_tab(ctx):
             if ws is None:
                 ws = ctx.repo_dir or Path.cwd()
             sid = str(state.get("active_session_id", "") or "")
-            task_ticker_html.value = _tt_render(ws, session_id=sid)
-            from delfin.agent.task_ticker import render_line as _tt_line
-            line = _tt_line(ws, session_id=sid)
-            task_strip_html.value = line
-            task_strip_html.layout.display = "" if line else "none"
-            from delfin.agent.task_ticker import counts as _tt_counts
-            state["_fold_tasks"] = _tt_counts(ws, session_id=sid)
-            _refresh_fold_title()
+            from delfin.agent.task_ticker import render_title as _tt_title
+            title = _tt_title(ws, session_id=sid)
+            task_ticker_html.value = (
+                _tt_render(ws, session_id=sid, bare=True) if title else "")
+            if title and tuple(task_strip.titles) != (title,):
+                task_strip.titles = (title,)
+            task_strip.layout.display = "" if title else "none"
         except Exception:
             task_ticker_html.value = ""
-            task_strip_html.value = ""
-            task_strip_html.layout.display = "none"
+            task_strip.layout.display = "none"
 
     # Status line footer — token / mode / branch summary.
     status_line_html = widgets.HTML(
@@ -8355,7 +8381,7 @@ def create_tab(ctx):
     state["_tools_fold"] = tools_fold
     state["_security_fold"] = security_fold
     below_panels = widgets.VBox(
-        [task_ticker_html, todo_pane_html, kit_dirs_status,
+        [todo_pane_html, kit_dirs_status,
          subagent_pane_html, subagent_panel_html, background_rows_box,
          tools_fold, security_fold, context_bar_html, status_row])
     # Folded by default: the tool calls, the containment report, the task
@@ -8377,7 +8403,7 @@ def create_tab(ctx):
     # task line at the foot of the chat, not in a row of their own.
     palette_row.add_class("delfin-agent-chat-foot")
     chat_frame = widgets.VBox(
-        [chat_html, working_html, queue_html, task_strip_html, palette_row,
+        [chat_html, working_html, queue_html, task_strip, palette_row,
          plan_accept_btn, ask_user_box, approval_dock])
     chat_frame.add_class("delfin-agent-chat-frame")
     # The command palette opens OVER the chat, anchored to the top edge of
@@ -10972,6 +10998,8 @@ def create_tab(ctx):
         eng = state.get("engine")
         if not eng or not getattr(eng, "messages", None):
             context_bar_html.value = ""
+            if state.pop("_fold_ctx", None) is not None:
+                _refresh_fold_title()
             return
         try:
             tokens = int(eng._estimate_context_tokens())
@@ -10983,6 +11011,8 @@ def create_tab(ctx):
             context_bar_html.value = ""
             return
         pct = min(100.0, tokens / window * 100.0)
+        state["_fold_ctx"] = pct
+        _refresh_fold_title()
         if pct >= 80.0:
             fill = "#ef4444"
         elif pct >= 60.0:
