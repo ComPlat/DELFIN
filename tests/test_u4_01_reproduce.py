@@ -192,3 +192,23 @@ def test_a_plain_directory_is_still_offered(tmp_path, monkeypatch):
     monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
     choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
     assert str(plain) in choices
+
+
+def test_an_orphaned_worktree_is_offered_and_releasable(tmp_path, monkeypatch):
+    """A session-gone worktree STAYS offered, and is offered for release.
+
+    This is the reviewer's specificity contract: only a live-held (or
+    alive-PID) worktree is dropped from the picker; one whose session is gone
+    (dead owning pid, no live session) remains a start folder AND reports
+    ``releasable`` so the picker can offer it back -- on the SAME tree. A
+    fix that over-eagerly excluded every session worktree would fail this.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    wt = _make_session_worktree(project)  # pid -1 (no alive owner), host "somehost"
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")  # no live session
+    choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
+    assert str(wt) in choices, "a session-gone worktree stays offered"
+    state = asm.session_worktree_state(str(wt))
+    assert state["is_worktree"] is True
+    assert state["releasable"] is True, "a session-gone worktree is offered for release"
