@@ -229,7 +229,9 @@ class CLIClient(_BaseClient):
                  mcp_config: str = "",
                  allowed_tools: list[str] | None = None,
                  extra_dirs: list[str] | None = None,
-                 effort: str = ""):
+                 effort: str = "",
+                 read_only_dirs: list[str] | None = None,
+                 confirm_callback: Optional[Callable[[str, dict, str], bool]] = None):
         self.model = model or self.DEFAULT_MODEL
         self.permission_mode = permission_mode
         self.cwd = cwd or None
@@ -247,6 +249,40 @@ class CLIClient(_BaseClient):
             )
         self._proc: subprocess.Popen | None = None
         self._session_id: str = ""
+        # DELFIN's file gate in front of the CLI's own tools (cli_gate):
+        # the same read/write boundary, and the same dialog, as every
+        # other backend. One token per client; the relay carries the
+        # hook's questions to ``confirm_callback``.
+        self.read_only_dirs = list(read_only_dirs or ())
+        self.confirm_callback = confirm_callback
+        from . import cli_gate as _cli_gate
+        self._gate_token = _cli_gate.new_token()
+        self._gate_relay = None
+
+    def set_confirm_callback(self, callback) -> None:
+        """Who the gate asks. Applies to the next tool call."""
+        self.confirm_callback = callback
+        self._write_gate_state()
+        self._start_gate_relay()
+
+    def _write_gate_state(self) -> None:
+        from . import cli_gate as _cli_gate
+        _cli_gate.write_state(
+            self._gate_token,
+            workspace=str(Path(self.cwd or os.getcwd()).resolve()),
+            mode=self.permission_mode or "default",
+            can_ask=self.confirm_callback is not None,
+            extra_dirs=list(self.extra_dirs or ()),
+            read_only_dirs=self.read_only_dirs)
+
+    def _start_gate_relay(self) -> None:
+        from . import cli_gate as _cli_gate
+        if self._gate_relay is not None:
+            self._gate_relay.stop()
+            self._gate_relay = None
+        if self.confirm_callback is not None:
+            self._gate_relay = _cli_gate.Relay(
+                self._gate_token, self.confirm_callback).start()
 
     def enforced_tool_surface(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """The allow list handed to the subprocess; no deny list exists here.
@@ -284,11 +320,19 @@ class CLIClient(_BaseClient):
                 # asks less, not the one that asks nothing.
                 cmd.extend(["--permission-mode", self.permission_mode])
 
-        # DELFIN's secret deny list, in the CLI's rule syntax. The CLI runs
-        # its own tools, so DELFIN's read and write gates never see them;
-        # deny rules hold in every CLI mode, bypass included.
+        # DELFIN's secret deny list, in the CLI's rule syntax, and DELFIN's
+        # own file gate as a PreToolUse hook (cli_gate): the CLI runs its
+        # own tools, so without it they never met the boundary every other
+        # backend keeps -- under Bypass, reads and writes anywhere. Deny
+        # rules and a hook's deny both hold in every CLI mode, bypass
+        # included. No gate state, no start: an unchecked CLI is not the
+        # fallback.
+        from . import cli_gate as _cli_gate
+        self._write_gate_state()
+        self._start_gate_relay()
         cmd.extend(["--settings", json.dumps(
-            {"permissions": {"deny": _cli_secret_deny_rules()}})])
+            {"permissions": {"deny": _cli_secret_deny_rules()},
+             "hooks": _cli_gate.hook_settings(self._gate_token)})])
 
         if self.mcp_config:
             cmd.extend(["--mcp-config", self.mcp_config])
@@ -23642,6 +23686,44 @@ class OpenAIClient(_BaseClient):
 # Codex CLI backend (uses OpenAI Codex CLI binary)
 # ---------------------------------------------------------------------------
 
+_CODEX_FULL_AUTO: dict[str, bool] = {}
+
+
+def _codex_has_full_auto(codex_path: str) -> bool:
+    """Whether this codex still accepts ``--full-auto``. Asked once."""
+    if codex_path not in _CODEX_FULL_AUTO:
+        try:
+            out = subprocess.run([codex_path, "exec", "--help"],
+                                 capture_output=True, text=True, timeout=20)
+            _CODEX_FULL_AUTO[codex_path] = "--full-auto" in (out.stdout or "")
+        except Exception:
+            _CODEX_FULL_AUTO[codex_path] = False
+    return _CODEX_FULL_AUTO[codex_path]
+
+
+_CODEX_READ_GAP_ANNOUNCED = False
+
+
+def _announce_codex_reads_unchecked() -> None:
+    """Say once that the Codex backend reads outside the folder unasked.
+
+    Its sandbox confines writes, not reads, in every mode, and DELFIN's
+    read gate cannot be put in front of it safely (see the Bypass entry in
+    ``_PERM_TO_CODEX_FLAGS``). A boundary that does not hold is shown,
+    not implied.
+    """
+    global _CODEX_READ_GAP_ANNOUNCED
+    if _CODEX_READ_GAP_ANNOUNCED:
+        return
+    _CODEX_READ_GAP_ANNOUNCED = True
+    _record_security_event(
+        "isolation_missing", "codex",
+        "the Codex CLI backend can READ outside the working folder without "
+        "asking, in every mode -- its sandbox confines writes only. Use the "
+        "Claude CLI or a chat-API backend where reading outside must ask.",
+        blocked=False)
+
+
 class CodexCLIClient(_BaseClient):
     """Use the OpenAI Codex CLI (``codex exec``) for agent tasks.
 
@@ -23680,7 +23762,15 @@ class CodexCLIClient(_BaseClient):
         # that says "bypass" gets that.
         "acceptEdits":         ["--full-auto", "--sandbox", "workspace-write"],
         "auto":                ["--full-auto", "--sandbox", "workspace-write"],
-        "bypassPermissions":   ["--full-auto", "--sandbox", "danger-full-access"],
+        # Bypass skips the questions inside the working folder; it does not
+        # lift the folder (user, 2026-10-09). danger-full-access did: the
+        # whole disk, writable, no sandbox. DELFIN's own gate cannot sit in
+        # front of Codex the way it sits in front of Claude Code -- a
+        # PreToolUse hook only runs with --dangerously-bypass-hook-trust,
+        # which also runs every hook a trusted repository ships, unreviewed
+        # (measured with codex 0.160). So Codex keeps its own kernel
+        # sandbox here: writes stay in the workspace.
+        "bypassPermissions":   ["--full-auto", "--sandbox", "workspace-write"],
     }
 
     supplies_session_id = True          # emits a session_init event
@@ -23741,7 +23831,12 @@ class CodexCLIClient(_BaseClient):
         codex_flags = self._PERM_TO_CODEX_FLAGS.get(
             self.permission_mode, ["--full-auto"]
         )
+        # codex 0.160 removed --full-auto (exec never asks for approval
+        # any more) and refuses to start when given it.
+        if not _codex_has_full_auto(self.codex_path):
+            codex_flags = [f for f in codex_flags if f != "--full-auto"]
         cmd.extend(codex_flags)
+        _announce_codex_reads_unchecked()
         if self.cwd:
             cmd.extend(["-C", self.cwd])
 
@@ -23868,6 +23963,24 @@ def _map_kit_permission_mode(permission_mode: str) -> str:
     return table.get(pm, "default")
 
 
+def _persisted_read_dirs(persisted) -> tuple[Path, ...]:
+    """The saved "always allow reading here" directories that still qualify.
+
+    Re-checked on every load: a directory saved before it was a symlink to
+    $HOME, or that no longer exists, opens nothing.
+    """
+    out: list[Path] = []
+    for d in getattr(persisted, "read_dirs", None) or ():
+        try:
+            p = Path(d).expanduser().resolve()
+        except Exception:
+            continue
+        if p in out or not p.is_dir() or not _is_grantable_read_dir(p):
+            continue
+        out.append(p)
+    return tuple(out)
+
+
 def _workspace_sandbox(
     cwd: str, permission_mode: str,
     kit_confirm_callback: Optional[Callable[[str, dict, str], bool]],
@@ -23908,6 +24021,7 @@ def _workspace_sandbox(
         extra_workspace_dirs=_exchange.with_exchange(local_ws, local_extra),
         read_only_workspace_dirs=tuple(read_only_dirs or ()),
         confirm_write_dirs=tuple(confirm_write_dirs or ()),
+        session_read_dirs=_persisted_read_dirs(persisted),
         bash_auto_allow_patterns=tuple(_DEFAULT_BASH_AUTO_ALLOW),
         bash_deny_patterns=tuple(_DEFAULT_BASH_DENY_PATTERNS),
     )
@@ -24018,6 +24132,7 @@ def create_client(
                                                          kit_extra),
             read_only_workspace_dirs=tuple(read_only_dirs or ()),
             confirm_write_dirs=tuple(confirm_write_dirs or ()),
+            session_read_dirs=_persisted_read_dirs(persisted),
             bash_auto_allow_patterns=allow_patterns,
             bash_deny_patterns=deny_patterns,
             write_allow_globs=write_globs,
@@ -24089,4 +24204,6 @@ def create_client(
                      mcp_config=mcp_config,
                      allowed_tools=allowed_tools,
                      extra_dirs=extra_dirs,
-                     effort=effort)
+                     effort=effort,
+                     read_only_dirs=read_only_dirs,
+                     confirm_callback=kit_confirm_callback)

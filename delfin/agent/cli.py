@@ -1513,6 +1513,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
         _key = _presence_key_for(getattr(args, "session_name", ""), _sid)
         broker = TerminalConfirmBroker(
             persist=lambda pat: engine.persist_kit_pattern(pat, kind="allow"),
+            persist_read=lambda d: engine.add_kit_read_dir(d, persist=True),
             set_mode=engine.set_kit_permission_mode,
             # So a question waiting in this pane can be read -- and
             # answered -- from outside it, whole.

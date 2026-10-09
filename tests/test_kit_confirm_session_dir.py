@@ -67,8 +67,9 @@ def _run_request(broker, tool, args):
 def _buttons(broker, req):
     row = broker._build_request_row(req, widgets)
     hbox = row.children[-1]                     # VBox -> [..., HBox(buttons)]
-    approve, approve_persist, deny = hbox.children
-    return approve, approve_persist, deny
+    kids = list(hbox.children)
+    # No permanent button where nothing may be saved (a system dir).
+    return kids[0], (kids[1] if len(kids) == 3 else None), kids[-1]
 
 
 def test_plain_allow_hands_out_no_directory(tmp_path):
@@ -100,7 +101,8 @@ def test_dauerhaft_persists_and_does_not_double_grant(tmp_path):
 
     parent = str(f.parent.resolve())
     assert out["ok"] is True
-    assert ("extra_dir", parent) in calls          # persisted
+    assert ("read_dir", parent) in calls           # persisted, read-only
+    assert all(k != "extra_dir" for k, _ in calls)  # never writable
     assert all(k != "extra_dir_session" for k, _ in calls)   # no double grant
 
 
@@ -141,7 +143,7 @@ def test_the_dashboard_knows_no_session_directory_kind():
               if isinstance(n, ast.Compare)
               for c in n.comparators if isinstance(c, ast.Tuple)
               for e in c.elts if isinstance(e, ast.Constant)}
-    assert kinds == {"allow", "deny", "extra_dir"}
+    assert kinds == {"allow", "deny", "extra_dir", "read_dir"}
 
 
 def test_deny_grants_nothing(tmp_path):

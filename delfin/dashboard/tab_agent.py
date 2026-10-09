@@ -5846,6 +5846,18 @@ def create_tab(ctx):
     # Self-Modification Guard panel takes the user's confirmation.
     kit_dirs_status = widgets.HTML(value="")
 
+    def _read_dirs_html(eng) -> str:
+        """The directories readable outside the workspace, one line: the
+        saved "always allow reading here" grants and this session's."""
+        perms = getattr(eng, "kit_permissions", None)
+        dirs = [str(d) for d in (getattr(perms, "session_read_dirs", ()) or ())]
+        if not dirs:
+            return ""
+        return ("<br><b>Read access (no writing):</b> "
+                + " · ".join(f"<code>{_html.escape(d)}</code>" for d in dirs)
+                + " <i>(saved ones live in ~/.delfin/settings.json, "
+                  "kit.read_dirs)</i>")
+
     def _refresh_kit_dirs_status():
         eng = state.get("engine")
         if eng is None or not hasattr(eng, "list_kit_workspace_dirs"):
@@ -5875,6 +5887,7 @@ def create_tab(ctx):
             + f" &middot; allow-patterns: {allow_count}"
             + f" &middot; deny-patterns: {deny_count}"
             + " &middot; <i>outside: read-only with confirm</i>"
+            + _read_dirs_html(eng)
             + "<br><i>Tip: say <code>'also work in /path'</code> in chat "
             + "&rarr; agent persists it after one confirm click.</i></small>"
         )
@@ -6100,6 +6113,10 @@ def create_tab(ctx):
                         if not hasattr(eng, "add_kit_workspace_dir"):
                             return False, "add_kit_workspace_dir missing"
                         return eng.add_kit_workspace_dir(value, persist=True)
+                    if kind == "read_dir":
+                        if not hasattr(eng, "add_kit_read_dir"):
+                            return False, "add_kit_read_dir missing"
+                        return eng.add_kit_read_dir(value, persist=True)
                     # There is no session-only directory kind here any more.
                     # "Allow (once)" on an outside-workspace read used to
                     # come through as one and made the file's parent a
