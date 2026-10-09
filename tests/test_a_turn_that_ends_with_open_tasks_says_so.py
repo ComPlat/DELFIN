@@ -251,3 +251,37 @@ def test_the_notice_counts_everything_and_lists_a_bounded_number(workspace):
     assert "12 open task(s)" in notice
     assert "more" in notice                       # the tail is summarised
     assert len(notice.splitlines()) <= 10
+
+
+# ---------------------------------------------------------------------------
+# Said once per open set
+# ---------------------------------------------------------------------------
+
+def test_the_same_open_set_is_not_announced_twice(client, workspace):
+    store = get_store(workspace)
+    store.create("Aufstehen", session_id="sess-1")
+    assert "open task" in _text(_run(client, [_final()]))
+    second = _run(client, [_final()])
+    assert "open task" not in _text(second)
+    # The terminal reason still says the work is open.
+    assert _stop(second) == "end_turn_open_tasks"
+
+
+def test_a_changed_open_set_is_announced_again(client, workspace):
+    store = get_store(workspace)
+    t = store.create("Aufstehen", session_id="sess-1")
+    _run(client, [_final()])
+    store.update(t["id"], status="in_progress")
+    assert "open task" in _text(_run(client, [_final()]))
+    store.create("Schlafen", session_id="sess-1")
+    assert "Schlafen" in _text(_run(client, [_final()]))
+
+
+def test_a_set_that_closed_and_reopened_is_announced(client, workspace):
+    store = get_store(workspace)
+    t = store.create("Aufstehen", session_id="sess-1")
+    _run(client, [_final()])
+    store.update(t["id"], status="completed")
+    _run(client, [_final()])
+    store.update(t["id"], status="pending")
+    assert "open task" in _text(_run(client, [_final()]))
