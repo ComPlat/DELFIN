@@ -229,7 +229,7 @@ def test_every_program_that_names_a_path_reads_it(cmd, expected):
 
 @pytest.mark.parametrize("cmd", [
     "echo /etc/passwd", "python x.py > /out/log", "cat /proc/cpuinfo",
-    "cat /tmp/x", "nproc", "/usr/bin/env python3 run.py",
+    "nproc", "/usr/bin/env python3 run.py",
     "ls /usr/lib", "wc -l /data/x",
 ])
 def test_what_reads_nothing_outside_is_not_asked(cmd):
@@ -258,3 +258,8 @@ def test_quotes_and_nested_shells_are_read_as_the_shell_reads_them():
     # The command line inside sh -c / bash -c is judged too.
     assert _bash_outside_reads('bash -c "cat /etc/passwd"', "/w/ws") == ["/etc/passwd"]
     assert "/data/x" in _bash_outside_reads('sh -c "cd /data && cat x"', "/w/ws")
+
+
+def test_tmp_is_not_a_way_around_the_read_question():
+    """read_file asks for /tmp; the shell must too (CI caught the gap)."""
+    assert _bash_outside_reads("cat /tmp/x", "/w/ws") == ["/tmp/x"]

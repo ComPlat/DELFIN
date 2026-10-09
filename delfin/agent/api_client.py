@@ -1309,12 +1309,16 @@ def _glob_root(word: str) -> str:
 
 
 def _read_exempt(path: str) -> bool:
-    """System directories, pseudo-devices, scratch space, system info."""
+    """System directories, pseudo-devices, system info.
+
+    NOT /tmp: on a shared login node it holds other users' files, and
+    read_file asks there -- a shell exemption made `cat /tmp/x` the way
+    around that question (caught by CI, where test folders live in /tmp).
+    Writing scratch to /tmp stays free; reading it back asks once, and the
+    approval opens the directory for the session."""
     text = os.path.normpath(path)
     return (_is_system_path(text) or _is_safe_device(text)
             or text in _SYSTEM_INFO_FILES
-            or text in _BASH_SCRATCH_EXACT
-            or (text + "/").startswith(("/tmp/", "/var/tmp/"))
             or text.startswith("/proc/self/"))
 
 
