@@ -514,7 +514,9 @@ def _check_push(ctx: dict) -> list[dict]:
             "the remote did not answer within 25 s",
             "push from a node with outbound access, or ask the user")]
     except OSError as exc:
-        return [_row("git remote", WARN, f"could not be asked: {exc}")]
+        return [_row("git remote", WARN, f"could not be asked: {exc}",
+                     "check that git runs, then push from a node with "
+                     "outbound access, or ask the user")]
 
     rows: list[dict] = []
     # A credential helper inherited from somebody else's session can never
@@ -1069,4 +1071,35 @@ def format_doctor(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["run_doctor", "format_doctor", "PASS", "WARN", "FAIL"]
+def ready_for_push(workspace: str = ".") -> list[dict]:
+    """Can this checkout push / open a pull request, before either is tried.
+
+    The gate that guards ``git push`` / ``gh pr create`` asks this and
+    refuses, with the remedy, when any row is not PASS -- instead of
+    letting the command fail and diagnosing afterwards. Five questions,
+    five rows, because they fail independently and the remedy differs:
+    is git on PATH, is an identity set, does the remote answer, is gh on
+    PATH, is gh logged in.
+
+    Every row comes from the two doctor checks ``_check_git_tooling``
+    and ``_check_push``, so there is exactly one set of facts about this
+    checkout and a second copy cannot drift from it: the gate asks the
+    same probes the report shows. Both checks are read-only (--version,
+    config --get, git ls-remote, gh auth status) and never push. A test
+    shadows ``shutil.which`` and ``subprocess.run`` -- the doctor's own
+    no-network trick -- so no live tool and no network is touched.
+
+    Never raises: every probe is caught inside the two checks and
+    degrades to a WARN row with a fix. Every row carries prose ``fix``
+    only -- installing git or gh is a system-package change and the
+    login is the user's (``! gh auth login``), so the ``_row`` contract
+    (a check that has an actionable command DECLARES it) and the module
+    rule that an agent must not improvise around a system package both
+    say: no ``command`` on a readiness row.
+    """
+    return (_check_git_tooling({"workspace": workspace})
+            + _check_push({"workspace": workspace}))
+
+
+__all__ = ["run_doctor", "format_doctor", "ready_for_push",
+           "PASS", "WARN", "FAIL"]
