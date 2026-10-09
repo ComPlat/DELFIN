@@ -502,6 +502,26 @@ def session_python() -> str:
     return sys.executable
 
 
+def _plain_interpreter(value: str) -> Optional[str]:
+    """``value`` as a bare interpreter path, or None if it is not one.
+
+    The only thing this function lets through is a plain executable path:
+    the session venv's Python. Anything that could smuggle a pip flag in
+    with the interpreter -- a ``--user``, a ``--target``, a ``-m``, a
+    whitespace-separated extra argument -- is refused so that the command
+    builder below can never emit an install outside the session venv, no
+    matter what an override passes in.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+    if " " in value or "\t" in value:          # anything but one word
+        return None
+    if value.startswith("-"):                  # a flag, not a path
+        return None
+    return value
+
+
 def python_tools_install_command(tool: Tool, *, python: str = "") -> str:
     """The exact command that puts *tool* into the session venv.
 
@@ -511,11 +531,16 @@ def python_tools_install_command(tool: Tool, *, python: str = "") -> str:
     either would move the install outside the only place it is offered
     into.
 
+    ``python`` is only ever a bare interpreter path for testing; anything
+    that is not one is refused and the session venv stands in, so an
+    override can never become a way around the no-``--user``/no-``--target``
+    rule.
+
     Pure: no interpreter is run to build the string.
     """
     if not tool or tool.group != "py":
         return ""
-    py = python or session_python()
+    py = _plain_interpreter(python) or session_python()
     packages = " ".join(_pip_package(m) for m in (tool.modules or ()))
     return f"{py} -m pip install {packages}".strip() if packages else ""
 

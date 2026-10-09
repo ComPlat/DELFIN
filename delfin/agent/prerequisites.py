@@ -127,6 +127,43 @@ def _proposal(row: dict) -> Proposal:
     )
 
 
+def _test_runner_proposal(row: dict) -> Optional[Proposal]:
+    """A proposal for the missing test gate, from the catalog, not the row.
+
+    The doctor's test-runner row used to carry its own remedy
+    (``sys.executable -m pip install 'delfin-complat[test]'``), which is the
+    field-report vector: it targets the front-most interpreter, not the
+    session venv, and names an extra the default install does not select.
+    The remedy is DELFIN's to choose, so this builds it from the catalog --
+    the session-venv command, with target/pros/cons/undo -- and declines
+    any row command. ``install_proposal`` is thereby given a real caller: a
+    missing pytest surfaces as the full, safe proposal it was written for.
+    """
+    try:
+        from delfin import installer as _installer
+    except Exception:
+        return None
+    tool = _installer.find("pytest")
+    command = (
+        _installer.python_tools_install_command(tool)
+        if tool is not None else "")
+    if not command:
+        return None
+    check = str(row.get("check", "") or "test runner")
+    return install_proposal(
+        check=check,
+        detail=str(row.get("detail", "") or
+                   "pytest is not installed in the session interpreter"),
+        command=command,
+        target=_installer.session_python(),
+        pros=("runs every DELFIN test in the interpreter DELFIN uses",),
+        cons=("adds pytest and the test gate's packages to the session venv",),
+        undo=command.replace(" install ", " uninstall ", 1) + " --yes",
+        status=str(row.get("status", "") or "WARN"),
+        advice=str(row.get("fix", "") or ""),
+    )
+
+
 def proposals(workspace: str | Path | None = None, *,
               rows: list[dict] | None = None) -> list[Proposal]:
     """Everything the doctor reported that is not already fine.
@@ -151,7 +188,14 @@ def proposals(workspace: str | Path | None = None, *,
             continue
         if str(row.get("status", "")).upper() == "PASS":
             continue
-        prop = _proposal(row)
+        if str(row.get("check", "")).lower() == "test runner":
+            # The missing test gate is the one thing DELFIN can install,
+            # and the command is DELFIN's to choose -- route it through the
+            # catalog so it always targets the session venv.
+            routed = _test_runner_proposal(row)
+            prop = routed if routed is not None else _proposal(row)
+        else:
+            prop = _proposal(row)
         if not prop.check:
             continue
         pid = prop.pid
