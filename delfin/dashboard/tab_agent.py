@@ -18443,6 +18443,18 @@ def create_tab(ctx):
                     output = tool_output
                     _MAX_LINES = 8
                     _MAX_CHARS = 600
+                    # A DELFIN_CARD: result (V1 show_molecule / V2 make_plot)
+                    # is the shared chat-card contract: inline ONLY a card
+                    # that parses to the exact single-sandboxed-srcdoc-iframe
+                    # shape. Anything else (errors echoing a hostile path,
+                    # malformed shapes) falls through and is escaped like every
+                    # tool result.
+                    if tool_output and str(tool_output).startswith("DELFIN_CARD:"):
+                        from delfin.dashboard import chat_viewer
+                        _card = chat_viewer.parse_card_result(tool_output)
+                        if _card is not None:
+                            _append_tool_message(_card)
+                            return
                     if tool_name in ("subagent", "subagent_result", "orchestrate"):
                         output = _subagent_report_text(tool_output)
                         _MAX_LINES = 2000
