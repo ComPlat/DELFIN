@@ -723,17 +723,92 @@ _AGENT_CSS = """\
     box-sizing: border-box;
 }
 .delfin-agent-root > * { flex-shrink: 0; }
-.delfin-agent-root > .delfin-agent-chat-host {
+/* THE CHAT IS THE TAB (2026-10-09). Measured at 1920x1080 with the panels
+   filled: the chat had been squeezed to its 160px floor by the rows that
+   may not shrink. The chat frame takes the rest of the window and is
+   never below 45vh; what lives at its foot -- the one-line task strip,
+   approvals, questions -- sits INSIDE the box the reader is looking at,
+   and the transcript above it is the part that scrolls. The panels under
+   the input fold away (an accordion, closed by default). */
+.delfin-agent-root > .delfin-agent-chat-frame {
+    flex: 1 1 0 !important;
+    min-height: 45vh;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #fafafa;
+    overflow: hidden;
+}
+.delfin-agent-chat-frame > * { flex-shrink: 0; }
+.delfin-agent-chat-frame > .delfin-agent-chat-host {
     flex: 1 1 0 !important;
     height: auto !important;
-    min-height: 160px;
+    min-height: 120px;
+    border: none;
+    border-radius: 0;
 }
-/* Everything below the input: capped, scrolling in itself, so it can
-   never push the input and the approvals out of the window. */
-.delfin-agent-root > .delfin-agent-below {
-    flex: 0 1 auto;
-    max-height: 30vh;
-    overflow-y: auto;
+.delfin-agent-chat-foot {
+    border-top: 1px solid #e5e7eb;
+    background: #f3f4f6;
+    padding: 2px 10px;
+    font-size: 12px;
+}
+.delfin-agent-chat-frame > .delfin-agent-dock { margin: 0; }
+.delfin-agent-chat-frame > .delfin-agent-dock:not(:empty) { padding: 0 6px; }
+/* The task line belongs to the newest output: while the reader is up in
+   the history it would sit under text it has nothing to do with. */
+.delfin-agent-chat-frame:has(> .delfin-agent-chat-host[data-delfin-follow="0"]) > .delfin-agent-chat-foot {
+    display: none !important;
+}
+/* The palette row: a filter field while the palette is open, the next
+   steps when there are any, and otherwise nothing -- not an empty row. */
+.delfin-agent-palette-row:not(:has(> .delfin-next-steps > *)) {
+    display: none !important;
+}
+.delfin-agent-input-area { position: relative; overflow: visible !important; }
+.delfin-agent-palette-pop {
+    position: absolute !important; bottom: 100%; left: 0; z-index: 30;
+    width: min(880px, 100%); background: #fff;
+    border: 1px solid #d1d5db; border-radius: 6px;
+    box-shadow: 0 -4px 16px rgba(0,0,0,0.12); padding: 6px;
+}
+.delfin-agent-palette-pop:not(:has(> .widget-select:not([style*="display: none"]))) {
+    display: none !important;
+}
+/* The footer row of the details: the token/mode line with the usage and
+   cost run on as plain text after it -- one line, not a second box. */
+.delfin-agent-status-row { flex-flow: row wrap; align-items: baseline; gap: 0 6px;
+    border-top: 1px solid #333; margin-top: 4px; }
+.delfin-agent-status-row div[style*="border-top"] { border-top: none !important; }
+.delfin-agent-status-row .delfin-agent-status {
+    border: none; background: none; padding: 0; border-radius: 0;
+    font-family: monospace; font-size: 11px; color: #777;
+}
+.delfin-agent-status-row .delfin-agent-status::before { content: "| "; }
+/* Everything below the input, folded: capped, scrolling in itself, so it
+   can never push the input and the approvals out of the window. */
+.delfin-agent-root > .delfin-agent-below { flex: 0 0 auto; }
+/* No scroll area of its own inside the details: opened, they extend the
+   tab, and the tab is the one thing that scrolls besides the chat. Lists
+   that bring their own max-height (task list, tool trace) give it up. */
+.delfin-agent-below-body, .delfin-agent-below-body * { max-height: none !important; }
+.delfin-agent-below-body div[style*="overflow"] { overflow: visible !important; }
+.delfin-agent-subfold { margin: 2px 0; }
+/* Requests at the foot of the chat: one compact band, not a framed box. */
+.delfin-agent-chat-frame .delfin-agent-kit-confirm:empty { display: none !important; }
+.delfin-agent-chat-frame .delfin-agent-kit-confirm { margin: 0 !important; }
+.delfin-agent-chat-frame .delfin-agent-request {
+    border: none !important; border-top: 1px solid #dbeafe !important;
+    background: #f5f9ff !important; padding: 4px 10px !important;
+    margin: 0 !important;
+}
+/* A request (approval, question, plan acceptance) takes the place of the
+   task line at the foot of the chat while it is open: the reader answers
+   first and needs nothing else there. Read off the widgets' own display
+   state, so no code path that shows or hides a request has to know. */
+.delfin-agent-chat-frame:has(.delfin-agent-request:not([style*="display: none"])) > .delfin-agent-chat-foot {
+    display: none !important;
 }
 /* The replaced content. Layout only -- no height, no overflow: giving it
    either would make it a second scrollport inside the first, and the
@@ -6594,10 +6669,17 @@ def create_tab(ctx):
     next_steps_box = widgets.HBox(
         [], layout=widgets.Layout(margin="0 0 0 4px", flex_flow="row wrap",
                                   flex="1 1 auto"))
-    # In the row of the "/" button (user, 2026-10-09): what could come next
-    # sits beside the command palette instead of a row of its own.
-    palette_row.children = (palette_toggle_btn, palette_search, next_steps_box)
+    # The "/" button sits beside the box you type in; this row holds only
+    # the palette filter and what could come next, and takes no height
+    # while it has neither (see .delfin-agent-palette-row in the CSS).
+    next_steps_box.add_class("delfin-next-steps")
+    palette_row.children = (next_steps_box,)
     palette_row.layout.flex_flow = "row wrap"
+    palette_row.add_class("delfin-agent-palette-row")
+    # As tall as the Files button beside it.
+    palette_toggle_btn.layout.margin = "0 4px 0 0"
+    palette_toggle_btn.layout.height = "80px"
+    palette_toggle_btn.layout.width = "44px"
 
     def _fill_input(text: str):
         def _click(_btn):
@@ -7245,9 +7327,79 @@ def create_tab(ctx):
 
     # -- Phase 5 UI hookups -----------------------------------------------
     # Live task ticker — reflects TaskStore state, refreshed on tool result.
+    def _fold_title() -> str:
+        """The folded panels' header: what is going on in them, one line.
+
+        Built from counts the panel refreshes leave in ``state``; a panel
+        with nothing to say leaves its part out, so the closed header
+        reads "Details" on a quiet session and names the live parts on a
+        busy one."""
+        parts = []
+        t_open, t_done = state.get("_fold_tasks", (0, 0))
+        if t_open or t_done:
+            parts.append(f"Tasks {t_done}/{t_open + t_done}")
+        n_bg = int(state.get("_fold_background", 0) or 0)
+        if n_bg:
+            parts.append(f"{n_bg} running")
+        n_tools = int(state.get("_fold_tools", 0) or 0)
+        if n_tools:
+            last = str(state.get("_fold_last_tool", "") or "")
+            parts.append(f"Tool calls {n_tools}" + (f" (last: {last})" if last else ""))
+        sec_total, sec_blocked = state.get("_fold_security", (0, 0))
+        if sec_total:
+            parts.append(f"⚠ Containment {sec_blocked} blocked / "
+                         f"{sec_total - sec_blocked} flagged")
+        t_in, t_out, t_cost = state.get("_fold_tokens", (0, 0, 0.0))
+        if t_in or t_out:
+            parts.append(f"{t_in:,} in / {t_out:,} out"
+                         + (f" · {_fmt_cost(t_cost)}" if t_cost > 0 else ""))
+        return " · ".join(parts) if parts else "Details"
+
+    def _refresh_subfolds():
+        tf = state.get("_tools_fold")
+        if tf is not None:
+            n = int(state.get("_fold_tools", 0) or 0)
+            last = str(state.get("_fold_last_tool", "") or "")
+            tf.layout.display = "" if n else "none"
+            t = f"🔧 Tool calls · {n}" + (f" · last: {last}" if last else "")
+            if tuple(tf.titles) != (t,):
+                tf.titles = (t,)
+        sf = state.get("_security_fold")
+        if sf is not None:
+            total, blocked = state.get("_fold_security", (0, 0))
+            sf.layout.display = "" if total else "none"
+            t = (f"🛡 Containment · {blocked} blocked / "
+                 f"{total - blocked} flagged")
+            last = str(state.get("_fold_last_security", "") or "")
+            if last:
+                t += f" · last: {last}"
+            if tuple(sf.titles) != (t,):
+                sf.titles = (t,)
+
+    def _refresh_fold_title():
+        try:
+            _refresh_subfolds()
+        except Exception:
+            pass
+        fold = state.get("_fold_widget")
+        if fold is None:
+            return
+        try:
+            title = _fold_title()
+            if tuple(fold.titles) != (title,):
+                fold.titles = (title,)
+        except Exception:
+            pass
+
     task_ticker_html = widgets.HTML(
         value="", layout=widgets.Layout(margin="2px 0 4px 0"),
     )
+    # One line at the foot of the chat: what is in hand and the counts.
+    # Nothing at all while there are no tasks. The full list is the
+    # ticker above, in the folded panels.
+    task_strip_html = widgets.HTML(
+        value="", layout=widgets.Layout(display="none"))
+    task_strip_html.add_class("delfin-agent-chat-foot")
 
     def _refresh_task_ticker():
         try:
@@ -7260,11 +7412,19 @@ def create_tab(ctx):
                     ws = kp.workspace
             if ws is None:
                 ws = ctx.repo_dir or Path.cwd()
-            task_ticker_html.value = _tt_render(
-                ws, session_id=str(state.get("active_session_id", "") or "")
-            )
+            sid = str(state.get("active_session_id", "") or "")
+            task_ticker_html.value = _tt_render(ws, session_id=sid)
+            from delfin.agent.task_ticker import render_line as _tt_line
+            line = _tt_line(ws, session_id=sid)
+            task_strip_html.value = line
+            task_strip_html.layout.display = "" if line else "none"
+            from delfin.agent.task_ticker import counts as _tt_counts
+            state["_fold_tasks"] = _tt_counts(ws, session_id=sid)
+            _refresh_fold_title()
         except Exception:
             task_ticker_html.value = ""
+            task_strip_html.value = ""
+            task_strip_html.layout.display = "none"
 
     # Status line footer — token / mode / branch summary.
     status_line_html = widgets.HTML(
@@ -7297,6 +7457,8 @@ def create_tab(ctx):
             _ws = _agent_workspace_path()
             _items = _bgv.rows(_bgv.collect(_ws, session_id=_background_owner()))
             subagent_panel_html.value = _bgv.header_html(len(_items))
+            state["_fold_background"] = len(_items)
+            _refresh_fold_title()
             # Rows are kept by item, so a refresh updates the text and a
             # pointer resting on a × is not pulled out from under it.
             _cache = state.setdefault("_background_row_widgets", {})
@@ -7509,8 +7671,13 @@ def create_tab(ctx):
             if eng is None:
                 tool_trace_panel_html.value = ""
                 return
+            _entries = _tt.read(eng.trace_session())
             tool_trace_panel_html.value = _tt.format_panel_html(
-                _tt.read(eng.trace_session(), last_n=12))
+                _entries[-12:])
+            state["_fold_tools"] = len(_entries)
+            state["_fold_last_tool"] = (
+                str(_entries[-1].get("tool") or "") if _entries else "")
+            _refresh_fold_title()
         except Exception:
             tool_trace_panel_html.value = ""
 
@@ -7524,8 +7691,18 @@ def create_tab(ctx):
     def _refresh_security_panel():
         try:
             from delfin.agent import security_events as _se
+            _c = _se.counts()
             security_panel_html.value = (
-                _se.format_panel_html(12) if _se.counts()["total"] else "")
+                _se.format_panel_html(12) if _c["total"] else "")
+            state["_fold_security"] = (_c["total"], _c["blocked"])
+            try:
+                _last_ev = _se.recent(1)[0] if _c["total"] else None
+                state["_fold_last_security"] = (
+                    _se._KINDS.get(_last_ev.kind, ("", _last_ev.kind))[1]
+                    if _last_ev is not None else "")[:60]
+            except Exception:
+                state["_fold_last_security"] = ""
+            _refresh_fold_title()
         except Exception:
             security_panel_html.value = ""
 
@@ -8111,6 +8288,12 @@ def create_tab(ctx):
                 _refresh_subagent_panel()
             except Exception:
                 pass
+            # Tasks change without a tool result of this session: a
+            # delegate updates them, or another session sharing the list.
+            try:
+                _refresh_task_ticker()
+            except Exception:
+                pass
             finally:
                 try:
                     if not state.get("_closed"):
@@ -8143,46 +8326,87 @@ def create_tab(ctx):
     # Sessions bar covers it. Object kept (handler still wired), not shown.
     resume_last_btn.layout.display = "none"
 
+    # Not the KIT confirm container: it is shown for the whole of a KIT
+    # session, empty while nothing waits, so it would hide the task line
+    # for good. The request it carries brings its own panel.
+    for _req in (approval_row, action_confirm_row,
+                 question_row, ask_user_box, plan_accept_btn):
+        _req.add_class("delfin-agent-request")
+    kit_confirm_container.add_class("delfin-agent-kit-confirm")
     approval_dock = widgets.VBox(
         [kit_confirm_container, approval_row, action_confirm_row,
          question_row],
         layout=widgets.Layout(margin="2px 0"))
     approval_dock.add_class("delfin-agent-dock")
+    # One footer line in the details: the token/mode footer, the usage and
+    # cost, and the KIT-Mode chip side by side.
+    status_row = widgets.HBox([status_line_html, status_html, kit_mode_row])
+    status_row.add_class("delfin-agent-status-row")
+    # Tool calls and containment are long lists: each folds on its own and
+    # names its count and its latest entry while closed.
+    tools_fold = widgets.Accordion(children=[tool_trace_panel_html],
+                                   titles=("Tool calls",), selected_index=None)
+    security_fold = widgets.Accordion(children=[security_panel_html],
+                                      titles=("Containment",),
+                                      selected_index=None)
+    for _f in (tools_fold, security_fold):
+        _f.add_class("delfin-agent-subfold")
+        _f.layout.display = "none"
+    state["_tools_fold"] = tools_fold
+    state["_security_fold"] = security_fold
     below_panels = widgets.VBox(
-        [todo_pane_html,
+        [task_ticker_html, todo_pane_html, kit_dirs_status,
          subagent_pane_html, subagent_panel_html, background_rows_box,
-         status_line_html, tool_trace_panel_html, security_panel_html])
-    below_panels.add_class("delfin-agent-below")
-    agent_content = widgets.VBox(
-        [css_widget, _enter_js_output, controls_row, search_row,
-         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
-         kit_mode_row, kit_dirs_status,
-         chat_html,
-         plan_accept_btn, ask_user_box,
-         working_html, queue_html, context_bar_html,
-         # The task in hand, one line, above the input: what the agent is
-         # doing now stays in view; the full list is below with the panels.
-         task_ticker_html,
-         # The approval dock, directly above the box you type in: pending
-         # permission requests (Self-Mod Guard / KIT confirms), plan and
-         # action confirmations, questions. The tab fits the window, so
-         # this is always on screen -- it used to sit below the input and
-         # the task list, where it scrolled out of sight.
-         approval_dock,
-         palette_row, palette_select,
+         tools_fold, security_fold, context_bar_html, status_row])
+    # Folded by default: the tool calls, the containment report, the task
+    # list and the subagents are there when wanted, one click away, and
+    # take no height from the chat otherwise.
+    below_panels.add_class("delfin-agent-below-body")
+    below_fold = widgets.Accordion(
+        children=[below_panels],
+        titles=(_fold_title(),),
+        selected_index=None)
+    below_fold.add_class("delfin-agent-below")
+    state["_fold_widget"] = below_fold
+    # The chat frame: the transcript scrolls; at its foot, inside the same
+    # box, the one-line task strip, then the questions and the approval
+    # dock -- pending permission requests (Self-Mod Guard / KIT confirms),
+    # plan and action confirmations. They used to sit under the chat and
+    # the task list, where they scrolled out of sight.
+    # The suggestions are the open tasks' own subjects: they belong with the
+    # task line at the foot of the chat, not in a row of their own.
+    palette_row.add_class("delfin-agent-chat-foot")
+    chat_frame = widgets.VBox(
+        [chat_html, working_html, queue_html, task_strip_html, palette_row,
+         plan_accept_btn, ask_user_box, approval_dock])
+    chat_frame.add_class("delfin-agent-chat-frame")
+    # The command palette opens OVER the chat, anchored to the top edge of
+    # the input: opening it used to push the input down and squeeze the
+    # chat by the height of the list, and closing it moved everything back.
+    _palette_pop = widgets.VBox([palette_search, palette_select])
+    _palette_pop.add_class("delfin-agent-palette-pop")
+    _input_area = widgets.VBox(
+        [_palette_pop,
          widgets.HBox(
-             [image_upload, input_row],
+             [palette_toggle_btn, image_upload, input_row],
              layout=widgets.Layout(
                  width="100%",
                  align_items="flex-start",
                  margin="6px 0 0 0",
              ),
-         ),
+         )])
+    _input_area.add_class("delfin-agent-input-area")
+    agent_content = widgets.VBox(
+        [css_widget, _enter_js_output, controls_row, search_row,
+         cycle_inspector_html, inspector_actions_row,
+         inspector_detail_box,
+         chat_frame,
+         _input_area,
          # Then who is working (click to enter a chat), finished delegates
          # in one row, and the panels -- capped, scrolling in themselves.
          agent_view_chips,
          agent_archive_dropdown,
-         below_panels],
+         below_fold],
     )
     agent_content.add_class("delfin-agent-root")
     # Where the tab starts on the page, so its height can be "the rest of
@@ -10328,6 +10552,10 @@ def create_tab(ctx):
                 last_turn_cost_usd=float(state.get("_last_turn_cost") or 0.0),
                 last_turn_timing=str(state.get("_last_turn_timing") or ""),
             )
+            state["_fold_tokens"] = (int(s.get("input_tokens") or 0),
+                                     int(s.get("output_tokens") or 0),
+                                     float(s.get("cost_usd") or 0.0))
+            _refresh_fold_title()
         else:
             backend = _resolve_backend() if _cli_available else "api"
             status_html.value = _render_status(
@@ -21163,12 +21391,14 @@ def _render_status(
             f'<span class="gate-text">{gate_text}</span>'
         )
 
+    # Mode, backend and permission profile are what the dropdowns right
+    # above this line already show; repeating them as badges cost the chat
+    # a row. The role stays only where it says something the dropdowns do
+    # not -- the position in a pipeline of more than one role.
+    del backend_info, perm_badge
     return (
         f'<div class="delfin-agent-status">'
-        f'<span class="mode-badge">{_html.escape(_mode_label(mode))}</span>'
-        f"{role_info}"
-        f"{backend_info}"
-        f"{perm_badge}"
+        f"{role_info if role_total > 1 else ''}"
         f"{gate_info}"
         f'<span class="tokens-info">{tokens_str} · {cost_str}{_turn_str}</span>'
         f"</div>"

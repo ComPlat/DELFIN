@@ -81,10 +81,9 @@ def render_html(
     if not show_completed:
         raw = [t for t in raw if t.get("status") != "completed"]
     if not raw:
-        return (
-            "<div style='color:#888;font-size:12px;font-style:italic;'>"
-            "No tasks yet — call task_create to start a plan.</div>"
-        )
+        # Nothing: a panel announcing that there is nothing took a line
+        # from the chat on every session that had not planned anything.
+        return ""
     rows: list[str] = []
     counts: dict[str, int] = {s: 0 for s in _ORDER}
     for t in _sorted(raw)[:max_rows]:
@@ -130,6 +129,55 @@ def render_html(
         + "</div>"
         + "</div>"
     )
+
+
+def counts(
+    workspace: Path | str,
+    *,
+    session_id: str | None = None,
+) -> tuple[int, int]:
+    """(open, completed) tasks of the session, for one-line summaries."""
+    store = get_store(Path(workspace))
+    raw = store.list(include_deleted=False,
+                     session_id=resolve_session_scope(session_id))
+    done = sum(1 for t in raw if t.get("status") == "completed")
+    return len(raw) - done, done
+
+
+def render_line(
+    workspace: Path | str,
+    *,
+    session_id: str | None = None,
+) -> str:
+    """One line for the foot of the chat: the task in hand and the counts.
+
+    Empty when there are no open tasks (a finished plan says nothing
+    either), so the line costs no height unless it has something to say.
+    """
+    store = get_store(Path(workspace))
+    raw = store.list(include_deleted=False,
+                     session_id=resolve_session_scope(session_id),
+                     with_seq=True)
+    counts = {s: 0 for s in _ORDER}
+    current = ""
+    for t in _sorted(raw):
+        status = str(t.get("status", "pending"))
+        counts[status] = counts.get(status, 0) + 1
+        if status == "in_progress" and not current:
+            current = str(t.get("active_form") or t.get("subject") or "")
+    open_count = counts["in_progress"] + counts["pending"] + counts["blocked"]
+    if not open_count:
+        return ""
+    parts = [f"&#9658; {counts['in_progress']}", f"&#9744; {counts['pending']}"]
+    if counts["blocked"]:
+        parts.append(f"&#9940; {counts['blocked']}")
+    parts.append(f"&#9745; {counts['completed']}")
+    head = "<span style='color:#6b7280'>Tasks</span> &nbsp;" + " &nbsp; ".join(parts)
+    if current:
+        head += (" &nbsp;·&nbsp; <span style='color:#1d4ed8'>"
+                 + escape(current[:90]) + "</span>")
+    return "<div style='white-space:nowrap;overflow:hidden;"\
+           "text-overflow:ellipsis'>" + head + "</div>"
 
 
 def next_steps(
