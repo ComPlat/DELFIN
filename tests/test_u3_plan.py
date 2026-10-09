@@ -144,3 +144,40 @@ def test_apply_setting_with_no_prior_file_writes_fresh(tmp_path):
     # with no prior file there is nothing to back up
     assert not any(p.name.startswith("settings.json.") and p != settings
                    for p in tmp_path.iterdir())
+
+
+def test_two_setting_applies_keep_a_unique_backup_per_step(tmp_path, monkeypatch):
+    """The phase-2 invariant "settings are never overwritten or deleted"
+    must hold across two applies in the same second: each apply must move
+    its OWN dated backup, so the FIRST (the true original) survives with the
+    exact prior bytes. A second-resolved backup name lets the second apply
+    overwrite the first's backup and silently delete the original."""
+    import datetime as _dt
+
+    frozen = _dt.datetime(2026, 10, 6, 12, 0, 0)  # fixed clock, same second
+    class _FrozenClock(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr(repair, "datetime", _FrozenClock)
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"agent": {"other": 1}}))
+
+    step = repair.plan([_setting_row()])[0]
+    repair.apply(step, approved=True, user_settings_path=settings)
+    repair.apply(step, approved=True, user_settings_path=settings)
+
+    backups = sorted(p.name for p in tmp_path.iterdir()
+                     if p.name.startswith("settings.json.") and p != settings)
+    assert len(backups) == 2, (
+        f"two applies in one second must produce two distinct backups, "
+        f"got {backups}")
+    # the true original must be preserved verbatim in one of the backups
+    preserved = any(
+        json.loads((tmp_path / name).read_text()) == {"agent": {"other": 1}}
+        for name in backups)
+    assert preserved, (
+        "the true original settings must survive in a backup; "
+        f"backups: {[(n, (tmp_path / n).read_text()) for n in backups]}")

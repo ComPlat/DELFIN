@@ -110,8 +110,26 @@ def _set_nested(root: dict, dotted: str, value: Any) -> None:
 
 
 def _dated_backup_path(settings: Path) -> Path:
+    """A free dated-backup sibling for ``settings``.
+
+    The stamp is second-resolved, so two applies within the same second
+    would otherwise share one name and the second would overwrite the
+    first's backup -- silently deleting the true original, the very thing
+    the repair contract forbids. A counter suffix is appended until a
+    non-existent sibling is found, so every apply gets its own distinct
+    backup with the exact prior bytes, even at second granularity.
+    """
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return settings.with_name(f"{settings.name}.{stamp}.bak")
+    base = settings.with_name(f"{settings.name}.{stamp}.bak")
+    if not base.exists():
+        return base
+    for i in range(1, 10000):
+        candidate = settings.with_name(f"{settings.name}.{stamp}.{i}.bak")
+        if not candidate.exists():
+            return candidate
+    raise OSError(
+        f"too many dated backups for {settings.name} share the same second; "
+        "refusing to overwrite an existing backup")
 
 
 def _apply_setting(step: dict, settings: Path, on_line: Callable) -> dict:
