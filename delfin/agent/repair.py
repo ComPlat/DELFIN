@@ -236,3 +236,78 @@ def apply(step: dict, *, approved: bool = False,
     if step.get("kind") == "command":
         return _apply_command(step, on_line)
     raise ValueError(f"unknown repair step kind: {step.get('kind')!r}")
+
+
+# ---------------------------------------------------------------------------
+# Testable apply seam (shared by the dashboard /doctor repair and its tests)
+# ---------------------------------------------------------------------------
+# The dashboard's slash handler may not block the UI thread on an interactive
+# prompt, and a test must be able to inject the approval decision
+# deterministically. These three functions expose the pure, injectable core
+# of that workflow: plan the steps, apply one step under an explicit
+# approval, and drive an id->step lookup + approval gate in one call. The
+# dashboard wires `authorize` to the real confirmation broker on a worker
+# thread; tests wire it to a stub that returns whatever answer they pin.
+
+
+def doctor_repair_plan(results: list) -> list:
+    """Ordered fixable steps for a doctor report (thin alias of ``plan``).
+
+    Named so the dashboard and its tests share one obvious entry point.
+    """
+    return plan(results)
+
+
+def apply_repair_step(step: dict, *, approved: bool = False,
+                      user_settings_path: str | Path | None = None) -> dict:
+    """Apply one repair step under an explicit approval.
+
+    Refuses (``ValueError``) unless ``approved`` is true -- nothing runs
+    without a person in the loop, one approval per step. ``approved`` step
+    results go through ``apply``, which moves the settings file to a dated
+    backup before any setting write.
+    """
+    return apply(step, approved=approved,
+                 user_settings_path=user_settings_path)
+
+
+def doctor_repair_apply(step_id, *, results: list,
+                        authorize: Callable[[str, dict, str], bool],
+                        user_settings_path: str | Path | None = None) -> dict:
+    """Resolve ``step_id`` against the plan, ask the authorizer, apply.
+
+    ``authorize(tool_name, args, preview)`` is the injectable broker
+    callback (the dashboard binds it to the real ``KitConfirmBroker`` on a
+    worker thread; a test injects a stub). ``preview`` is the step's what
+    and undo.
+
+    Returns:
+      - unknown id:    ``{"ok": False, "message": "unknown step ..."}`` and
+                       ``authorize`` is never called.
+      - not approved:  ``{"ok": True, "applied": False, ...}`` -- nothing
+                       written, no backup created.
+      - approved:      ``{"ok": True, "applied": True, "result": {...}}``
+                       where ``result`` is ``apply``'s dict; a setting step
+                       carries ``backup_path`` holding the true prior bytes.
+    """
+    step = next((s for s in plan(results) if str(s.get("id")) == str(step_id)),
+                None)
+    if step is None:
+        known = ", ".join(str(s.get("id")) for s in plan(results))
+        return {
+            "ok": False,
+            "message": f"unknown step {step_id!r}"
+                       + (f"; known steps: {known}" if known else ""),
+        }
+    preview = f"{step.get('what')}\nundo: {step.get('undo')}"
+    approved = bool(authorize("repair", {"step": step_id}, preview)) \
+        if authorize else False
+    if not approved:
+        return {"ok": True, "applied": False, "step": step_id,
+                "message": "not approved; nothing changed"}
+    result = apply_repair_step(step, approved=True,
+                               user_settings_path=user_settings_path)
+    return {"ok": True, "applied": True, "step": step_id,
+            "result": result,
+            **({"backup_path": result["backup_path"]}
+               if result.get("backup_path") else {})}
