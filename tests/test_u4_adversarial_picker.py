@@ -188,3 +188,29 @@ def test_alive_pid_worktree_is_not_releasable_via_state(tmp_path, monkeypatch):
     state = asm.session_worktree_state(str(wt))
     assert state["releasable"] is False, (
         "a worktree an alive owning process owns must not be offered for release")
+
+
+def test_saved_session_worktree_is_not_releasable_via_state(tmp_path, monkeypatch):
+    """RED: the release-offer must not mark a saved-session tree releasable.
+
+    ``_worktree_is_orphaned`` protects a worktree a resumable (saved) session
+    would reopen ("a saved session would be reopened into it"), and the
+    reclaim path (reclaim_orphaned_worktrees) passes the real saved
+    workspaces. But ``session_worktree_state`` calls it with
+    ``saved_workspaces=()``, so its ``releasable`` -- which gates the
+    picker's release offer, routed to release_session_worktree ->
+    exit_worktree, which does NOT re-check saved sessions -- ignores the
+    guard. Offering AND releasing a saved-session tree breaks a future
+    resume (the session then starts elsewhere without saying so).
+    ``releasable`` must consult the saved sessions, not pass an empty list.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    wt = _worktree(project)
+    _sidecar(wt, pid=-1, host=socket.gethostname() or "somehost")  # dead pid, same host
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")  # no live holder
+    # A resumable session would reopen this very worktree:
+    monkeypatch.setattr(asm, "_saved_session_workspaces", lambda: [str(wt)])
+    state = asm.session_worktree_state(str(wt))
+    assert state["releasable"] is False, (
+        "a worktree a saved session would reopen must not be offered for release")
