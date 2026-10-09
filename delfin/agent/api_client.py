@@ -18772,8 +18772,26 @@ class _DocToolExecutor:
             base_ref=base,
             created_at=0.0,
         )
+        def _merge_gate(paths):
+            # Every file the merge would write goes through the same write
+            # gate a write_file into the TARGET would: write scope, the
+            # read-only archive, the Self-Modification Guard. A merge was
+            # git applying a diff, unchecked, file by file.
+            if perms is None:
+                return None
+            for rel in paths:
+                refusal = self._gate_write_path(
+                    str(target / rel), perms, "worktree_merge",
+                    {"path": rel})
+                if refusal is not None:
+                    _record_security_event(
+                        "worktree_merge_refused", "worktree_merge",
+                        rel[:200], blocked=True)
+                    return f"'{rel}': {refusal}"
+            return None
+
         try:
-            result = _wt.merge_worktree(info)
+            result = _wt.merge_worktree(info, gate=_merge_gate)
         except _wt.WorktreeError as exc:
             return json.dumps({"error": str(exc)})
         removed = bool(getattr(info, "cleaned_up", False))
