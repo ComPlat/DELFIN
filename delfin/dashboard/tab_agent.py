@@ -754,6 +754,20 @@ _AGENT_CSS = """\
     padding: 2px 10px;
     font-size: 12px;
 }
+/* The working line at the foot of the chat: one slim row in the frame's
+   own colours, like the task line under it -- not a dark bar with its
+   own margins and shadow wedged between the transcript and the foot.
+   The state stays readable in the left edge and the spinner colour. */
+.delfin-agent-chat-frame .delfin-agent-working {
+    margin: 0; border-radius: 0; box-shadow: none;
+    background: #eef2f7; color: #1f2937;
+    border-top: 1px solid #e5e7eb; padding: 3px 10px; font-size: 12px;
+}
+.delfin-agent-chat-frame .delfin-agent-working--gated { background: #fff7e6; }
+.delfin-agent-chat-frame .delfin-agent-working--queued { background: #f3f4f6; }
+.delfin-agent-chat-frame .delfin-agent-working--stale { background: #fdecec; }
+.delfin-agent-chat-frame .delfin-agent-working .delfin-activity-label { color: #64748b; }
+.delfin-agent-chat-frame .delfin-agent-working .delfin-activity-text { color: #1f2937; }
 /* The task line: a fold whose header is the one line, compact. */
 .delfin-agent-task-strip { padding: 0 !important; }
 .delfin-agent-task-strip .jupyter-widget-Collapse-header {
@@ -1108,14 +1122,21 @@ _AGENT_CSS = """\
 .delfin-chat-agent pre .diff-del { color: #f38ba8; }
 .delfin-chat-agent pre .diff-hdr { color: #89b4fa; font-weight: 600; }
 .delfin-agent-queue {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 10px;
-    background: #dbeafe;
-    color: #1e40af;
-    font-size: 11px;
-    font-weight: 600;
-    margin: 4px 0;
+    border-top: 1px solid #e5e7eb;
+    background: #f8fafc;
+    padding: 3px 10px;
+    font-size: 12px;
+    color: #374151;
+}
+.delfin-agent-queue-head { color: #6b7280; }
+.delfin-agent-queue-row {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    padding-left: 4px;
+}
+.delfin-agent-queue-n {
+    display: inline-block; min-width: 16px; text-align: center;
+    border-radius: 8px; background: #e5e7eb; color: #374151;
+    font-size: 11px; font-weight: 600;
 }
 .delfin-agent-status {
     font-size: 12px;
@@ -6758,6 +6779,12 @@ def create_tab(ctx):
             input_textarea.add_class("delfin-agent-input-proposed")
         else:
             input_textarea.remove_class("delfin-agent-input-proposed")
+        # Rebuilt only when the list changed: the background tick calls
+        # this every few seconds, and new buttons each time would flicker
+        # and drop a click in flight.
+        if tuple(steps) == state.get("_next_steps_shown"):
+            return
+        state["_next_steps_shown"] = tuple(steps)
         if not steps:
             next_steps_box.children = ()
             return
@@ -8339,8 +8366,10 @@ def create_tab(ctx):
                 pass
             # Tasks change without a tool result of this session: a
             # delegate updates them, or another session sharing the list.
+            # The suggestions are the same open tasks, so they follow.
             try:
                 _refresh_task_ticker()
+                _refresh_next_steps()
             except Exception:
                 pass
             finally:
@@ -11001,11 +11030,25 @@ def create_tab(ctx):
 
     def _update_queue_display():
         """Update the queue indicator."""
-        n = len(state["message_queue"])
+        # The queue at the foot of the chat: a head line, then each waiting
+        # message on one line, oldest first (the order they will be sent).
+        queue = list(state["message_queue"])
+        n = len(queue)
         if n > 0:
+            shown = queue[:4]
+            rows = "".join(
+                f'<div class="delfin-agent-queue-row">'
+                f'<span class="delfin-agent-queue-n">{i}</span> '
+                f'{_html.escape(" ".join(str(m).split())[:200])}</div>'
+                for i, m in enumerate(shown, 1))
+            if n > len(shown):
+                rows += (f'<div class="delfin-agent-queue-row">'
+                         f'… +{n - len(shown)} more</div>')
             queue_html.value = (
-                f'<span class="delfin-agent-queue">'
-                f'{n} message{"s" if n != 1 else ""} queued</span>'
+                f'<div class="delfin-agent-queue">'
+                f'<div class="delfin-agent-queue-head">⏳ {n} message'
+                f'{"s" if n != 1 else ""} queued — sent when the agent '
+                f'is done · /stop interrupts</div>{rows}</div>'
             )
         else:
             queue_html.value = ""
@@ -17410,16 +17453,13 @@ def create_tab(ctx):
                 _set_working(False)
                 # Fall through to send normally
             else:
+                # Into the queue at the foot of the chat, not the
+                # transcript: the message enters the chat once, when it is
+                # sent. It used to be shown here as a bubble AND again by
+                # the send that drained it, so every queued line appeared
+                # twice, with a system line between the two.
                 state["message_queue"].append(user_text)
                 input_textarea.value = ""
-                _append_chat_message(
-                    "user", user_text,
-                    **({"origin": "event"} if state.get("_on_its_own")
-                       else {}))
-                _append_system_message(
-                    f"\U0001f4e8 Queued — agent will receive this after finishing. "
-                    f"Type /stop to interrupt."
-                )
                 _update_queue_display()
                 return
 
@@ -17715,6 +17755,16 @@ def create_tab(ctx):
                     never fired (a turn waited 1806 s, 2026-09-11); and it
                     was rendered inside the answer, three times over."""
                     state["_last_stream_activity"] = time.monotonic()
+                    # The open-tasks notice repeats what the task line at
+                    # the foot of the chat already shows; the terminal,
+                    # which has no such line, still prints it.
+                    try:
+                        from delfin.agent.agent_tasks import (
+                            is_open_tasks_notice as _is_ot)
+                        if _is_ot(text):
+                            return
+                    except Exception:
+                        pass
                     if text and text.strip():
                         # Close the answer so far before the notice goes
                         # under it. Left open, the next token found the
