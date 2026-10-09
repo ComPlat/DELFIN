@@ -48,6 +48,11 @@ import matplotlib
 # Headless, deterministic backend — forced before pyplot is touched.
 matplotlib.use("Agg", force=True)
 
+# Deterministic SVG glyph IDs: matplotlib otherwise salts the internal path
+# IDs with a random value drawn from a per-call hashsalt, making byte-identical
+# output impossible. Pin the salt so identical specs give identical SVGs.
+matplotlib.rcParams["svg.hashsalt"] = "delfin-v2-chat-plots-deterministic"
+
 import matplotlib.pyplot as _plt  # noqa: E402  (backend set above)
 
 # Maximum output size for one figure (bytes). Mirrors the dashboard's raster
@@ -60,6 +65,18 @@ _FORMATS = frozenset({"svg", "png"})
 # Plots below read their own labels; a missing label is not an error.
 _KINDS_WITH_XY = frozenset({"line", "scatter", "bar"})
 _KINDS_WITHOLESS = frozenset({"histogram", "box"})
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    """True when ``child`` (resolved) is ``parent`` (resolved) or below it.
+
+    Guards the workspace boundary for both the written figure and any data
+    file a spec points at: nothing may escape out_dir."""
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 class SpecError(Exception):
@@ -110,10 +127,19 @@ def _require_str(spec: dict, key: str, default: str = "") -> str:
     return val
 
 
-def _resolve_values_from_file(path: str) -> list:
+def _resolve_values_from_file(path: str, root: Path) -> list:
     """Numbers or {x,y} rows from a CSV or JSON file; CSVs are sorted per
-    column assumption, JSON keeps file order."""
-    p = Path(path)
+    column assumption, JSON keeps file order.
+
+    The file must live inside ``root`` (the workspace/out_dir): an absolute
+    or ``..`` path that resolves outside it is refused — plot must never
+    read a file the workspace does not own (operator data-is-never-
+    instruction contract)."""
+    root_res = root.resolve()
+    p = (root / path if not Path(path).is_absolute() else Path(path)).resolve()
+    if not _is_within(p, root_res):
+        raise SpecError(f"data file {path!r} resolves outside the workspace "
+                        f"{root}")
     if not p.is_file():
         raise SpecError(f"data file not found: {path}")
     suffix = p.suffix.lower()
@@ -162,7 +188,7 @@ def _resolve_points(rows, kind: str):
     return [], ys
 
 
-def _resolve_series(spec: dict, kind: str):
+def _resolve_series(spec: dict, kind: str, root: Path):
     """A list of (label, xs, ys) — one series per drawn line/barset. Returns
     also the values for histogram/box and the running point count."""
     if kind in _KINDS_WITHOLESS:
@@ -172,7 +198,7 @@ def _resolve_series(spec: dict, kind: str):
         if data is None or (isinstance(data, list) and not data):
             raise SpecError(f"kind {kind!r} needs 'data' (a list of numbers)")
         if isinstance(data, dict) and "file" in data:
-            data = _resolve_values_from_file(data["file"])
+            data = _resolve_values_from_file(data["file"], root)
         try:
             values = [float(v) for v in data]
         except (TypeError, ValueError):
@@ -202,7 +228,7 @@ def _resolve_series(spec: dict, kind: str):
     if isinstance(data, list) and data:
         xs, ys = _resolve_points(data, kind)
     elif isinstance(data, dict) and "file" in data:
-        rows = _resolve_values_from_file(data["file"])
+        rows = _resolve_values_from_file(data["file"], root)
         xs, ys = _resolve_points(rows, kind)
     elif "y" in spec:
         xs = spec.get("x") or []
@@ -275,12 +301,16 @@ def _finalize(fig, ax, spec: dict, kind: str, out_dir: Path) -> PlotResult:
     filename = _require_str(spec, "filename", "").strip() or f"plot_{kind}.{fmt}"
     if not filename.lower().endswith(f".{fmt}"):
         filename = f"{filename}.{fmt}"
-    out_path = out_dir / filename
+    out_path = (out_dir / filename).resolve()
+    if not _is_within(out_path, out_dir.resolve()):
+        raise SpecError(f"filename {filename!r} resolves outside the workspace "
+                        f"{out_dir}")
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise SpecError(f"cannot create output dir {out_dir}: {exc}")
-    fig.savefig(str(out_path), format=fmt)
+    _metadata = {"Date": None} if fmt == "svg" else {}
+    fig.savefig(str(out_path), format=fmt, metadata=_metadata)
     _plt.close(fig)
     try:
         size = out_path.stat().st_size
@@ -316,8 +346,8 @@ def plot(spec: dict, *, out_dir: str = "") -> PlotResult:
     if not isinstance(spec, dict):
         raise SpecError("spec must be an object with a 'kind'")
     kind = _require_kind(spec)
-    series, n_points = _resolve_series(spec, kind)
     out_dir_path = Path(out_dir or os.getcwd())
+    series, n_points = _resolve_series(spec, kind, out_dir_path)
 
     fig, ax = _plt.subplots(figsize=(6, 4))
 
@@ -367,14 +397,12 @@ def plot(spec: dict, *, out_dir: str = "") -> PlotResult:
 
 
 def to_html(result: PlotResult) -> str:
-    """A self-contained HTML block for the dashboard chat (the shared
-    role='tool' hook at tab_agent.py:10505).
-
-    Security: the caption is html.escaped so hostile spec/data-derived text
-    cannot inject markup; the figure itself travels as a ``data:`` URI served
-    as an ``<img>``, where an embedded SVG never executes scripts. The whole
-    block is the ONLY string this returns — the dashboard interpolates it
-    verbatim, so nothing else here may be interpolated raw.
+    """The escaped card BODY — the div+figure+caption that goes inside the
+    sandboxed iframe that ``to_card`` builds. Caption is html.escaped so
+    hostile spec/data-derived text cannot inject markup; the figure travels
+    as a ``data:`` URI served as an ``<img>`` (an embedded SVG never executes
+    scripts in an image). This body alone is never inlined into the dashboard
+    raw — it must be escaped again inside ``srcdoc="..."`` (see to_card).
     """
     import base64
     import html as _html
@@ -392,4 +420,28 @@ def to_html(result: PlotResult) -> str:
         f'border-radius:4px;display:block;" alt="{cap}"/>'
         f'<div style="font-size:12px;color:#374151;margin-top:4px;">{cap}</div>'
         f'</div>'
+    )
+
+
+def to_card(result: PlotResult) -> str:
+    """The self-contained card the dashboard inlines for make_plot, behind
+    the shared ``DELFIN_CARD:`` marker (one hook with V1 show_molecule).
+
+    Security (operator contract): the figure + caption are rendered inside an
+    ``<iframe sandbox="allow-scripts" srcdoc="...">`` without
+    ``allow-same-origin``, so the card runs scripts but is isolated and cannot
+    read the dashboard. The whole body is escaped a second time inside the
+    ``srcdoc`` attribute (quotes -> &quot;, < > -> &lt; &gt;), so hostile
+    spec/data-derived text cannot terminate the attribute or emit a raw
+    </script>/</iframe> that climbs out of the sandbox into the parent.
+    """
+    import html as _html
+
+    srcdoc = _html.escape(to_html(result), quote=True)
+    return (
+        f'<iframe sandbox="allow-scripts" '
+        f'srcdoc="{srcdoc}" '
+        f'frameborder="0" style="width:100%;min-height:380px;'
+        f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+        f'</iframe>'
     )

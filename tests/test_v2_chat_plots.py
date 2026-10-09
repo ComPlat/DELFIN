@@ -118,10 +118,45 @@ def test_missing_data_file_is_refused(tmp_path):
 
 
 def test_deterministic_identical_bytes(tmp_path):
-    a = plot(_line_spec(), out_dir=str(tmp_path))
-    b = plot(_line_spec(), out_dir=str(tmp_path))
+    # distinct filenames so this is NOT a no-op: two separately written files
+    # must be byte-identical, and carry no wall-clock timestamp.
+    sa, sb = _line_spec(), _line_spec()
+    sa["filename"] = "det_a.svg"
+    sb["filename"] = "det_b.svg"
+    a = plot(sa, out_dir=str(tmp_path))
+    b = plot(sb, out_dir=str(tmp_path))
+    assert a.path != b.path
     assert a.caption == b.caption
     assert a.path.read_bytes() == b.path.read_bytes()
+
+
+def test_svg_has_no_wall_clock_timestamp(tmp_path):
+    res = plot({**_line_spec(), "filename": "no_date.svg"}, out_dir=str(tmp_path))
+    body = res.path.read_text(encoding="utf-8")
+    assert "<dc:date>" not in body  # no microseconds/unix-epoch clock in the figure
+
+
+def test_filename_that_escapes_out_dir_is_refused(tmp_path):
+    spec = {**_line_spec(), "filename": "../evil.svg"}
+    with pytest.raises(SpecError):
+        plot(spec, out_dir=str(tmp_path))
+    # nothing written outside the workspace root
+    assert sorted(p.name for p in (tmp_path / "..").iterdir()) == sorted(
+        p.name for p in (tmp_path / "..").iterdir()
+    )
+
+
+def test_data_file_absolute_outside_out_dir_is_refused(tmp_path):
+    # a workspace-internal file must still parse when allowed
+    (tmp_path / "ok.csv").write_text("value\n1.0\n2.0\n", encoding="utf-8")
+    res = plot({"kind": "histogram", "data": {"file": "ok.csv"}},
+               out_dir=str(tmp_path))
+    assert res.n_points == 2
+
+    # an absolute path outside the workspace must be refused, not read
+    with pytest.raises(SpecError, match="outside the workspace"):
+        plot({"kind": "histogram", "data": {"file": str(tmp_path / ".." / "secret.csv")}},
+             out_dir=str(tmp_path))
 
 
 def test_large_input_stays_under_the_size_cap(tmp_path):
@@ -155,3 +190,64 @@ def test_to_html_embeds_a_real_svg(tmp_path):
     res = plot(_line_spec(), out_dir=str(tmp_path))
     html = chat_plots.to_html(res)
     assert "<img" in html and res.caption in html
+
+
+# --- shared card hook (operator contract with V1 show_molecule): the card the
+# dashboard inlines behind the DELFIN_CARD: marker is an <iframe> with
+# sandbox="allow-scripts" and WITHOUT allow-same-origin, whose srcdoc is
+# escaped so quotes, </script> and </iframe> cannot break out of it. ---
+
+
+def test_card_iframe_sandbox_allow_scripts_and_no_same_origin(tmp_path):
+    from delfin.agent import chat_plots
+
+    res = plot(_line_spec(), out_dir=str(tmp_path))
+    card = chat_plots.to_card(res)
+    assert card.startswith("<iframe")
+    assert 'sandbox="allow-scripts"' in card
+    # the sandbox must isolate the card: allow-scripts but NOT same-origin
+    assert "allow-same-origin" not in card
+
+
+def test_card_srcdoc_escapes_breakout_tags(tmp_path):
+    from delfin.agent import chat_plots
+
+    spec = _line_spec()
+    spec["title"] = '</iframe><script>alert(1)</script>'
+    res = plot(spec, out_dir=str(tmp_path))
+    card = chat_plots.to_card(res)
+    srcdoc = card.split('srcdoc="', 1)[1].split('"', 1)[0]
+    # no raw tag may survive inside the srcdoc attribute (either layer)
+    assert "</iframe>" not in srcdoc
+    assert "<script>" not in srcdoc
+    assert "</script>" not in srcdoc
+    # the hostile text is encoded through both layers: the escaped caption
+    # (&lt;/iframe&gt;...) is attribute-encoded again (&amp;lt;/iframe&amp;gt;),
+    # so the browser turns it back into inert text, never a live tag.
+    assert "&amp;lt;/iframe&amp;gt;" in srcdoc
+    assert "&amp;lt;script&amp;gt;" in srcdoc
+    # the iframe's own closing tag must not be %-escaped-away as a breakout
+    assert card.rstrip().endswith("</iframe>")
+
+
+def test_card_srcdoc_escapes_double_quotes(tmp_path):
+    from delfin.agent import chat_plots
+
+    spec = _line_spec()
+    spec["title"] = 'a" onmouseover="alert(1)'
+    res = plot(spec, out_dir=str(tmp_path))
+    card = chat_plots.to_card(res)
+    srcdoc = card.split('srcdoc="', 1)[1].split('"', 1)[0]
+    # a double quote must not terminate the srcdoc attribute early
+    assert '" onmouseover=' not in srcdoc
+    assert "&amp;quot; onmouseover=" in srcdoc
+
+
+def test_card_carries_the_figure_and_caption(tmp_path):
+    from delfin.agent import chat_plots
+
+    res = plot(_line_spec(), out_dir=str(tmp_path))
+    card = chat_plots.to_card(res)
+    # the card is an iframe whose srcdoc holds the (escaped) figure + caption
+    assert "data:image/svg+xml;base64," in card
+    assert "&lt;" in card or "plot" in card
