@@ -1895,14 +1895,78 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 return
             if any(c in tok for c in "*?[]"):        # globs: not a literal path
                 return
+            # A relative target after `cd` lands where cd went. The read
+            # scanner has followed cd/pushd for a while; this one resolved
+            # `cd /x && printf y > f` to `f` -- against the gate's own cwd,
+            # inside the workspace -- so the write to /x/f was never seen.
+            # Where filesystem isolation stands that is a dead end; where
+            # only this scanner stands (the Claude CLI backend's hook) it
+            # was a way to write anywhere, the hook's own state included.
+            if here is not None and not (tok.startswith("/") or tok.startswith("~")):
+                tok = str(here / tok)
             targets.append(tok)
 
-        # Redirections: > file, >> file, 2> file, &> file (not >&1 / &2).
-        for m in re.finditer(r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)",
-                             cmd):
-            tok = m.group(1)
-            if not tok.startswith("&"):
-                _add(tok)
+        # The directory the shell is in, per segment: None until a `cd`
+        # names one. After a `cd $VAR`, a `cd` into a variable-built path or
+        # a `cd -` with no known previous, it is UNRESOLVED -- and a
+        # relative write from there is reported under a path that cannot be
+        # inside any root, so the gate refuses it. The read scanner stops
+        # inspecting relatives at that point; for writes that would be the
+        # open direction, and "could not tell where this writes" is a
+        # refusal, not a pass.
+        here = None
+        previous = None
+        moved = False
+        _UNRESOLVED = Path("/<directory this command changed into could not be resolved>")
+
+        def _follow_cd(argv: list) -> None:
+            nonlocal here, previous, moved
+            if any(a == "-" for a in argv[1:]):
+                # `cd -` goes back: to a directory this walk knew, to the
+                # start directory (None, inside) -- or, before any cd in
+                # this command, to the SHELL's $OLDPWD, which nobody here
+                # knows. Only that last one is unresolved.
+                if not moved:
+                    here, previous = _UNRESOLVED, here
+                else:
+                    here, previous = previous, here
+                return
+            moved = True
+            args = [a for a in argv[1:] if not a.startswith("-")]
+            dest = os.path.expanduser(args[0]) if args else os.path.expanduser("~")
+            if "$" in dest or "`" in dest:
+                previous, here = here, _UNRESOLVED
+                return
+            if dest.startswith("/"):
+                target = Path(dest)
+            elif here is None:
+                target = None            # relative cd from the gate's cwd: still inside
+            else:
+                target = here / dest
+            previous, here = here, target
+
+        # Redirections: > file, >> file, 2> file, &> file (not >&1 / &2) --
+        # per segment, so the directory a `cd` set applies to them.
+        _redirect = re.compile(r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)")
+        for segment in re.split(r"[;&|]{1,2}|\n", cmd):
+            seg = segment.strip()
+            if not seg:
+                continue
+            try:
+                argv0 = shlex.split(seg, comments=True)
+            except ValueError:
+                argv0 = seg.split()
+            while argv0 and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv0[0]):
+                argv0 = argv0[1:]
+            if argv0 and Path(argv0[0]).name in ("cd", "pushd"):
+                _follow_cd(argv0)
+                continue
+            for m in _redirect.finditer(seg):
+                tok = m.group(1)
+                if not tok.startswith("&"):
+                    _add(tok)
+        here = None
+        previous = None
 
         # What an inline python payload would write.
         #
@@ -1942,6 +2006,9 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 continue
             name = Path(argv[0]).name
             rest = argv[1:]
+            if name in ("cd", "pushd"):
+                _follow_cd(argv)
+                continue
 
             # `cd <dir> && ...` — the destination of the segment's writes.
             if name in ("dd",):
