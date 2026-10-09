@@ -79,3 +79,37 @@ class TestGuardrails:
     def test_unknown_kind_refused(self):
         with pytest.raises(ValueError):
             chat_viewer.render_molecule(H2O_XYZ, kind="nope")
+
+
+class TestSandboxedCard:
+    """The card must be an isolated <iframe sandbox> whose srcdoc carries the
+    3D viewer (operator security findings on the phase-3b patch)."""
+
+    def test_card_is_a_sandboxed_iframe(self):
+        html = chat_viewer.render_molecule(H2_CUBE, kind="cube")
+        assert "<iframe" in html
+        assert 'sandbox="allow-scripts"' in html
+        # No allow-same-origin: the viewer must not reach the parent dashboard.
+        assert "allow-same-origin" not in html
+
+    def test_card_renders_via_srcdoc(self):
+        html = chat_viewer.render_molecule(H2O_XYZ, kind="xyz")
+        assert "srcdoc=" in html
+
+    def test_content_cannot_break_out_of_srcdoc(self):
+        # Quotes + </script>/</iframe> in the file must be neutralised inside
+        # the srcdoc so they can't break the attribute or the iframe element.
+        cube = (
+            'cube "quoted" </script><script>x=1</script></iframe><iframe>\n'
+            "generated\n"
+            "1 0 0 0\n2 1 0 0\n2 0 1 0\n2 0 0 1\n"
+            "1 0 0 0 0\n0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8\n"
+        )
+        html = chat_viewer.render_molecule(cube, kind="cube")
+        # Only the card's own closing </iframe> may appear raw; the injected
+        # one is escaped (entity-encoded) inside srcdoc.
+        assert html.count("</iframe>") == 1
+        # No raw executable <script> outside the (escaped) srcdoc.
+        assert html.count("</script>") == 0
+        # The data still reaches the viewer (escaped, so inert).
+        assert "addVolumetricData" in html
