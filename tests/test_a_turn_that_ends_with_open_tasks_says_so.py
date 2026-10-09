@@ -285,3 +285,25 @@ def test_a_set_that_closed_and_reopened_is_announced(client, workspace):
     _run(client, [_final()])
     store.update(t["id"], status="pending")
     assert "open task" in _text(_run(client, [_final()]))
+
+
+def test_the_dashboard_can_tell_the_notice_from_other_notices(workspace):
+    from delfin.agent.agent_tasks import is_open_tasks_notice
+    get_store(workspace).create("Aufstehen", session_id="s")
+    notice = format_open_tasks_notice(open_task_summary(workspace, "s"))
+    assert is_open_tasks_notice("\n\n" + notice + "\n")
+    assert not is_open_tasks_notice("⚠ Tool-round budget reached (40 rounds)."
+                                    "\n" + notice)
+    assert not is_open_tasks_notice(
+        format_open_tasks_notice({"state": "unknown", "error": "boom"}))
+
+
+def test_the_dashboard_drops_the_notice_and_keeps_the_others():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "delfin" / "dashboard"
+           / "tab_agent.py").read_text(encoding="utf-8")
+    i = src.index("def _on_notice(text):")
+    body = src[i:src.index("def _on_wait(text):", i)]
+    assert "is_open_tasks_notice" in body
+    assert body.index("is_open_tasks_notice") < body.index(
+        "_append_system_message(")
