@@ -340,8 +340,35 @@ def test_the_help_key_explains_and_asks_again():
         kind=tc.CONFIRM, tool="read_file", args={"path": "/etc/hosts"},
         preview="[OUTSIDE-WORKSPACE READ]\n/etc/hosts")
     agent._answer(req, _Keys(["?", "n"]))
-    assert "writable" in err.getvalue().lower()
+    assert "one read at a time" in err.getvalue().lower()
     assert req.decision is False
+
+
+def test_always_read_here_saves_reading_never_writing(tmp_path):
+    """[R] on an outside read keeps the directory READABLE in every later
+    session -- through persist_read, never through the writable list."""
+    d = tmp_path / "data"
+    d.mkdir()
+    (d / "x.txt").write_text("x")
+    saved = []
+    broker = tc.TerminalConfirmBroker(
+        timeout_s=5, persist=lambda p: (_ for _ in ()).throw(AssertionError),
+        persist_read=lambda p: (saved.append(p) or (True, "ok")))
+    agent, _engine, _err = _agent(broker)
+    req = tc.ConfirmRequest(
+        kind=tc.CONFIRM, tool="read_file", args={"path": str(d / "x.txt")},
+        preview="[OUTSIDE-WORKSPACE READ]\n" + str(d / "x.txt"))
+    assert "R" in {o.key for o in tc.options_for(req)}
+    agent._answer(req, _Keys(["R"]))
+    assert saved == [str(d.resolve())]
+    assert req.decision is True
+
+
+def test_no_always_for_a_system_directory():
+    req = tc.ConfirmRequest(
+        kind=tc.CONFIRM, tool="read_file", args={"path": "/etc/hosts"},
+        preview="[OUTSIDE-WORKSPACE READ]\n/etc/hosts")
+    assert "R" not in {o.key for o in tc.options_for(req)}
 
 
 def test_a_plan_is_approved_into_a_named_posture():

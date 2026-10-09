@@ -427,10 +427,12 @@ def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
 
     Two absences are the point rather than an oversight.
 
-    An outside-workspace READ gets no "always". The only persistable form
-    of that grant is an extra workspace directory, and that is WRITABLE —
-    in this session and every future one. One keystroke on a read prompt
-    must not be able to hand over write access.
+    An outside-workspace READ gets an "always" that saves READING only:
+    the directory is read in every later session and never written. It
+    used to get none, because the only thing that could be saved was an
+    extra workspace directory, which is writable -- and one keystroke on
+    a read prompt must not hand over write access. Home, system and key
+    directories get no "always" at all.
 
     An unknown MCP tool gets no "always" either: there is no persist kind
     for one. ``allow_patterns`` are shell regexes, so an "always" here
@@ -455,6 +457,10 @@ def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
         if suggestion and suggestion != _exact_pattern(req.command):
             opts.append(Option("k", "always commands like this",
                                f"persists {suggestion}"))
+    if req.is_outside_read and read_dir_for(req):
+        opts.append(Option("R", "always read here",
+                           f"{read_dir_for(req)} readable (never writable) "
+                           "in every future session"))
     if req.is_write and not req.is_protected:
         opts.append(Option("e", "stop asking about writes this session",
                            "acceptEdits until this session ends"))
@@ -462,6 +468,15 @@ def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
     opts.append(Option("a", "abort", "deny this and end the turn"))
     opts.append(Option("?", "explain", "what each option does here"))
     return opts
+
+
+def read_dir_for(req: ConfirmRequest) -> str:
+    """The directory "always read here" would save for ``req``, or ""."""
+    try:
+        from . import kit_settings
+        return kit_settings.read_grant_dir(str(req.args.get("path", "") or ""))
+    except Exception:
+        return ""
 
 
 def _exact_pattern(command: str) -> str:
@@ -508,8 +523,9 @@ def render_request(req: ConfirmRequest, *, theme: rr.Theme | None = None,
     if req.is_outside_read:
         lines.append("│")
         lines.append(theme.dim(
-            "│  Approving reads this file and opens its directory for READS "
-            "for the rest of this session. Nothing is saved."))
+            "│  [y] reads it and opens its directory for READS for the rest "
+            "of this session; [R] keeps that for every session. Neither "
+            "grants writing."))
 
     keys = "  ".join(f"[{o.key}] {o.label}" for o in options)
     lines.append("└─ " + rr.truncate_middle(keys, max(20, width - 3)))
@@ -519,10 +535,9 @@ def render_request(req: ConfirmRequest, *, theme: rr.Theme | None = None,
 def render_help(req: ConfirmRequest, options: list[Option]) -> str:
     out = [f"  [{o.key}] {o.label}" + (f" — {o.detail}" if o.detail else "")
            for o in options]
-    if req.is_outside_read:
-        out.append("  no 'always' here: the only persistable form of this "
-                   "grant is a writable directory, now and in every future "
-                   "session.")
+    if req.is_outside_read and not read_dir_for(req):
+        out.append("  no 'always' here: a home, system or key directory is "
+                   "approved one read at a time.")
     return "\n".join(out)
 
 
@@ -531,6 +546,7 @@ class TerminalConfirmBroker:
 
     def __init__(self, *, timeout_s: float = 0.0,
                  persist: Callable[[str], tuple[bool, str]] | None = None,
+                 persist_read: Callable[[str], tuple[bool, str]] | None = None,
                  set_mode: Callable[[str], Any] | None = None,
                  on_abort: Callable[[], None] | None = None,
                  session_id: str = "", session_key: str = "",
@@ -552,6 +568,7 @@ class TerminalConfirmBroker:
         self.session_id = str(session_id or "")
         self.session_key = str(session_key or "")
         self._persist = persist
+        self._persist_read = persist_read
         self._set_mode = set_mode
         self._on_abort = on_abort
         self._lock = threading.Lock()
@@ -807,6 +824,14 @@ class TerminalConfirmBroker:
             return False, "nothing to persist through"
         try:
             return self._persist(pattern)
+        except Exception as exc:
+            return False, f"persist failed: {exc}"
+
+    def persist_read(self, directory: str) -> tuple[bool, str]:
+        if not self._persist_read:
+            return False, "nothing to persist through"
+        try:
+            return self._persist_read(directory)
         except Exception as exc:
             return False, f"persist failed: {exc}"
 

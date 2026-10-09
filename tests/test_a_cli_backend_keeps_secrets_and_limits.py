@@ -86,6 +86,10 @@ def test_codex_accepting_edits_stays_in_the_workspace(launch, monkeypatch, mode)
     assert env["OPENAI_API_KEY"] == "sk-openai-own-key-for-codex"
 
 
-def test_only_bypass_gives_codex_the_whole_disk(launch, monkeypatch):
-    cmd, _ = _codex("bypassPermissions", launch, monkeypatch)
-    assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
+def test_no_mode_gives_codex_the_whole_disk(launch, monkeypatch):
+    """Bypass skips questions inside the folder; it does not lift the
+    folder (user, 2026-10-09). Codex keeps its own write sandbox there,
+    because DELFIN's gate cannot be put in front of it safely."""
+    for mode in ("default", "acceptEdits", "bypassPermissions"):
+        cmd, _ = _codex(mode, launch, monkeypatch)
+        assert cmd[cmd.index("--sandbox") + 1] == "workspace-write", mode

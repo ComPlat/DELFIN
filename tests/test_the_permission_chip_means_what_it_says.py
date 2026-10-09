@@ -198,29 +198,63 @@ def test_a_write_outside_every_root_is_still_refused(scene):
 # them. `read_file` on the very same path DID ask. Which of the two the
 # model happened to reach for decided whether the user saw a dialog.
 #
-# Resolved toward what a permission mode means everywhere else in this
-# stack and in the reference harness: bypass skips every QUESTION and no
-# RULE. The measurement that made the line safe to draw is in
-# test_no_rule_became_a_question_when_the_question_went below — reading
-# outside was the only act on that gate that had ever been a question.
+# First resolved toward "bypass skips every question", which let a Bypass
+# session read anything the account could. Reversed by the user (2026-10-09):
+# "bypass does not mean it may walk into everything and read it -- otherwise
+# the working directory would be pointless." Bypass now skips the questions
+# about work INSIDE the roots; reading outside is asked in every rung, and
+# the MCP shell is held by the same bash read gate, so the two tools agree
+# by both asking.
 
-def test_bypass_does_not_ask_before_reading_outside(scene):
+def test_bypass_asks_before_reading_outside(scene):
     build, _ws, _arc = scene
     perms, broker = build("all_free")
     outside = Path(tempfile.mkdtemp(prefix="chip-far-")) / "note.txt"
     outside.write_text("CONTENT-OUTSIDE-EVERY-ROOT\n")
-    # read_file answers with the file, not with JSON.
+    _doc_executor.execute("read_file", {"path": str(outside)}, perms)
+    assert broker.asked, "Bypass read outside the roots without asking"
+
+
+def test_bypass_asks_before_a_shell_looks_outside(scene):
+    build, _ws, _arc = scene
+    far = Path(tempfile.mkdtemp(prefix="chip-far-sh-"))
+    (far / "note.txt").write_text("CONTENT-OUTSIDE-EVERY-ROOT\n")
+    for cmd in (f"cat {far}/note.txt", f"cd {far} && cat note.txt",
+                f"ls {far}"):
+        perms, broker = build("all_free")
+        _run("bash", {"command": cmd}, perms)
+        assert broker.asked, f"Bypass ran {cmd!r} without asking"
+
+
+def test_nobody_answering_is_not_a_refusal_in_bypass(scene):
+    """An expired dialog means "not now": the agent carries on in its
+    workspace and may ask again later. Only an explicit no closes the
+    path for the session."""
+    build, _ws, _arc = scene
+    perms, _broker = build("all_free")
+
+    class _Away(_Broker):
+        def callback(self, *args, **kwargs):
+            self.asked.append(args[0] if args else kwargs)
+            self.last_timed_out = True
+            return False
+
+    away = _Away()
+    perms.confirm_callback = away.callback
+    outside = Path(tempfile.mkdtemp(prefix="chip-away-")) / "note.txt"
+    outside.write_text("CONTENT-OUTSIDE-EVERY-ROOT\n")
     out = _doc_executor.execute("read_file", {"path": str(outside)}, perms)
-    assert broker.asked == [], "Bypass asked before an outside read"
-    assert "CONTENT-OUTSIDE-EVERY-ROOT" in out
+    assert "CONTENT-OUTSIDE-EVERY-ROOT" not in out
+    assert "TIMED OUT" in out
+    assert str(outside.resolve()) not in perms.denied_paths
 
 
 def test_the_other_rungs_still_ask_before_reading_outside(scene):
-    """Only the rung that opted out is exempt."""
+    """No rung is exempt."""
     build, _ws, _arc = scene
     outside = Path(tempfile.mkdtemp(prefix="chip-far2-")) / "note.txt"
     outside.write_text("CONTENT-OUTSIDE-EVERY-ROOT\n")
-    for profile in ("ask_all", "repo_free"):
+    for profile in ("ask_all", "repo_free", "all_free"):
         perms, broker = build(profile)
         _doc_executor.execute("read_file", {"path": str(outside)}, perms)
         assert broker.asked, f"{profile} stopped asking before an outside read"
@@ -248,12 +282,11 @@ def test_with_nobody_to_ask_bypass_grants_nothing(scene):
 
 
 def test_no_rule_became_a_question_when_the_question_went(scene):
-    """The reason lifting the read question is safe, kept measurable.
+    """Every write boundary is a refusal in every mode, Bypass included.
 
-    Every write boundary is a refusal in every mode — nobody is asked and
-    nothing is offered — so an exemption on the ASK path cannot reach
-    them. If a later change turns one of these into a prompt, this test
-    fails before the exemption silently starts covering it.
+    Nobody is asked and nothing is offered, so no change to what Bypass
+    ASKS can reach them. If a later change turns one of these into a
+    prompt, this test fails before Bypass silently starts covering it.
     """
     build, _ws, arc = scene
     outside = Path(tempfile.mkdtemp(prefix="chip-far3-"))

@@ -152,12 +152,15 @@ let intervalFn = null;
 let pendingScroll = [];
 let scrollWrites = 0;
 
-const jump = {hidden: true, textContent: '',
-              closest: (s) => (s === '.delfin-agent-chat-host' ? chat : null)};
+const jump = {closest: (s) => (s === '.delfin-agent-chat-host' ? chat : null)};
+// The control's state is read off the host (the element that survives a
+// refresh), never written to the button, so the stand-in records the marks.
 const chat = {
   scrollHeight: 1000,
   clientHeight: 400,
   _top: 0,
+  attrs: {},
+  setAttribute(k, v) { chat.attrs[k] = String(v); },
   classList: {contains: (c) => c === 'delfin-agent-chat-host'},
   querySelector: (s) => (s === '.delfin-chat-jump' ? jump : null),
   closest: (s) => (s === '.delfin-agent-chat-host' ? chat : null),
@@ -217,13 +220,15 @@ const seen = {};
 // A reader at the end is carried along by new output.
 sync();
 seen.followed_to_the_end = chat.scrollTop === end();
-seen.control_hidden_at_the_end = jump.hidden === true;
+const shown = () => chat.attrs['data-delfin-follow'] === '0';
+const unseen = () => chat.attrs['data-delfin-unseen'] === '1';
+seen.control_hidden_at_the_end = !shown();
 
 // The reader scrolls up to re-read something.
 working = {working: true};
 userScroll(100);
 seen.scrolling_up_stops_following = S().follow === false;
-seen.control_shown_when_away = jump.hidden === false;
+seen.control_shown_when_away = shown();
 
 // The agent keeps writing: the poll must leave the viewport alone.
 chat.scrollHeight = 1600;
@@ -234,7 +239,7 @@ seen.poll_left_the_viewport = chat.scrollTop === 100;
 chat.scrollHeight = 2200;
 sync();
 seen.refresh_left_the_viewport = chat.scrollTop === 100;
-seen.control_reports_new_output = /New/.test(jump.textContent);
+seen.control_reports_new_output = unseen();
 
 // Reported 2026-10-07: "ich will das in ruhe lesen koennen, nicht wandern".
 // Leaving the offset at the right NUMBER is not enough -- writing scrollTop
@@ -251,7 +256,7 @@ for (let i = 0; i < 12; i++) {
 }
 seen.reading_up_top_is_never_written_to = scrollWrites === awayBefore;
 seen.reading_up_top_stays_put = chat.scrollTop === 100;
-seen.output_below_is_still_announced = jump.hidden === false;
+seen.output_below_is_still_announced = shown();
 
 // Back at the end, following resumes and IS written -- the half the user
 // wants kept.
@@ -272,7 +277,7 @@ seen.far_above_the_end_does_not = S().follow === false;
 window.__delfinChatToBottom(jump); flush();
 seen.jump_reached_the_end = chat.scrollTop === end();
 seen.jump_resumed_following = S().follow === true;
-seen.jump_hid_the_control = jump.hidden === true;
+seen.jump_hid_the_control = !shown() && !unseen();
 
 // The script's own scroll must not read as the reader leaving.
 chat.scrollHeight = 3000;

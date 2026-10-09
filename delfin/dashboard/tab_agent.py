@@ -707,6 +707,215 @@ _AGENT_CSS = """\
     font-size: 13px;
     line-height: 1.5;
 }
+/* THE TAB FITS THE WINDOW (2026-10-09). The chat had a fixed height of
+   100vh - 460px, so every panel that appeared under it -- an approval, the
+   task list, the subagents -- made the page taller than the window: the
+   page scrolled, approvals sat below the fold where nobody saw them, and
+   the scrollbar "shrank" each time a panel came and went. Now the tab is
+   exactly as tall as the window below its own top edge (measured into
+   --delfin-agent-top), the chat takes whatever the rest leaves, and the
+   rows under it keep their height -- so the approval dock above the input
+   is always on screen. */
+.delfin-agent-root {
+    height: calc(100vh - var(--delfin-agent-top, 140px) - 6px);
+    min-height: 420px;
+    overflow-y: auto;
+    box-sizing: border-box;
+}
+.delfin-agent-root > * { flex-shrink: 0; }
+/* THE CHAT IS THE TAB (2026-10-09). Measured at 1920x1080 with the panels
+   filled: the chat had been squeezed to its 160px floor by the rows that
+   may not shrink. The chat frame takes the rest of the window and is
+   never below 45vh; what lives at its foot -- the one-line task strip,
+   approvals, questions -- sits INSIDE the box the reader is looking at,
+   and the transcript above it is the part that scrolls. The panels under
+   the input fold away (an accordion, closed by default). */
+/* With --claude-terminal the frame shares a row with the Claude Code
+   panel; the row then takes the frame's place in the tab. */
+.delfin-agent-root > .delfin-agent-chat-row {
+    flex: 1 1 0 !important;
+    min-height: 45vh;
+    display: flex; flex-direction: row; gap: 8px;
+    align-items: stretch;
+}
+.delfin-agent-chat-row > .delfin-agent-chat-frame { min-width: 0; }
+.delfin-claude-term-panel {
+    flex: 1 1 0 !important; min-width: 0;
+    display: flex; flex-direction: column;
+    border: 1px solid #333; border-radius: 6px; overflow: hidden;
+    background: #1e1e1e;
+}
+.delfin-claude-term-panel > .delfin-claude-term-head {
+    flex: 0 0 auto; color: #cbd5e1; background: #111827;
+    font-size: 12px; padding: 3px 10px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.delfin-claude-term-panel > .delfin-claude-term-host {
+    flex: 1 1 0 !important; min-height: 0;
+}
+.delfin-claude-term-host .widget-html-content,
+.delfin-claude-term-host .delfin-claude-term { height: 100%; width: 100%; }
+.delfin-claude-term { padding: 4px; box-sizing: border-box; }
+.delfin-agent-root > .delfin-agent-chat-frame,
+.delfin-agent-chat-row > .delfin-agent-chat-frame {
+    flex: 1 1 0 !important;
+    min-height: 45vh;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #fafafa;
+    overflow: hidden;
+}
+.delfin-agent-chat-frame > * { flex-shrink: 0; }
+.delfin-agent-chat-frame > .delfin-agent-chat-host {
+    flex: 1 1 0 !important;
+    height: auto !important;
+    min-height: 120px;
+    border: none;
+    border-radius: 0;
+}
+.delfin-agent-chat-foot {
+    border-top: 1px solid #e5e7eb;
+    background: #f3f4f6;
+    padding: 2px 10px;
+    font-size: 12px;
+}
+/* The working line at the foot of the chat: one slim row in the frame's
+   own colours, like the task line under it -- not a dark bar with its
+   own margins and shadow wedged between the transcript and the foot.
+   The state stays readable in the left edge and the spinner colour. */
+.delfin-agent-chat-frame .delfin-agent-working {
+    margin: 0; border-radius: 0; box-shadow: none;
+    background: #eef2f7; color: #1f2937;
+    border-top: 1px solid #e5e7eb; padding: 3px 10px; font-size: 12px;
+}
+.delfin-agent-chat-frame .delfin-agent-working--gated { background: #fff7e6; }
+.delfin-agent-chat-frame .delfin-agent-working--queued { background: #f3f4f6; }
+.delfin-agent-chat-frame .delfin-agent-working--stale { background: #fdecec; }
+.delfin-agent-chat-frame .delfin-agent-working .delfin-activity-label { color: #64748b; }
+.delfin-agent-chat-frame .delfin-agent-working .delfin-activity-text { color: #1f2937; }
+/* The task line: a fold whose header is the one line, compact. */
+.delfin-agent-task-strip { padding: 0 !important; }
+.delfin-agent-task-strip .jupyter-widget-Collapse-header {
+    padding: 2px 10px; border: none; background: transparent;
+    font-size: 12px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+}
+.delfin-agent-task-strip .jupyter-widget-Collapse-contents {
+    padding: 2px 10px 4px 26px; border: none; background: transparent;
+}
+/* A task row: reads as a line of the list, not as a button, until the
+   pointer is on it. Colour by status as the old HTML list had it. */
+.delfin-task-list .delfin-task-row {
+    background: transparent; box-shadow: none; border: none;
+    text-align: left; justify-content: flex-start;
+    font-family: monospace; font-size: 13px; line-height: 20px;
+    padding: 0 4px; margin: 0; height: auto; min-height: 20px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex-shrink: 0;
+}
+.delfin-task-list .delfin-task-row:not(:disabled):hover {
+    background: #e8f0fe; cursor: pointer;
+}
+.delfin-task-list .delfin-task-row:disabled { opacity: 1; cursor: default; }
+.delfin-task-list .delfin-task-pending { color: #6b7280; }
+.delfin-task-list .delfin-task-in_progress { color: #0a84ff; }
+.delfin-task-list .delfin-task-blocked { color: #d97706; }
+.delfin-task-list .delfin-task-completed {
+    color: #28a745; text-decoration: line-through;
+}
+.delfin-agent-chat-frame > .delfin-agent-dock { margin: 0; }
+.delfin-agent-chat-frame > .delfin-agent-dock:not(:empty) { padding: 0 6px; }
+/* The task line belongs to the newest output: while the reader is up in
+   the history it would sit under text it has nothing to do with. */
+.delfin-agent-chat-frame:has(> .delfin-agent-chat-host[data-delfin-follow="0"]) > .delfin-agent-chat-foot {
+    display: none !important;
+}
+/* The palette row: a filter field while the palette is open, the next
+   steps when there are any, and otherwise nothing -- not an empty row. */
+.delfin-agent-palette-row:not(:has(> .delfin-next-steps > *)) {
+    display: none !important;
+}
+.delfin-agent-input-area { position: relative; overflow: visible !important; }
+.delfin-agent-palette-pop {
+    position: absolute !important; bottom: 100%; left: 0; z-index: 30;
+    width: min(880px, 100%); background: #fff;
+    border: 1px solid #d1d5db; border-radius: 6px;
+    box-shadow: 0 -4px 16px rgba(0,0,0,0.12); padding: 6px;
+}
+/* Measured 2026-10-09: the filter field and the list are width:100% plus
+   their own margin, 882px in a 878px box -- a horizontal scrollbar under
+   the list. Border-box, and the list's long rows are cut, not scrolled. */
+.delfin-agent-palette-pop { overflow-x: hidden !important; }
+.delfin-agent-palette-pop > * { box-sizing: border-box; max-width: 100%;
+    margin-left: 0 !important; margin-right: 0 !important; }
+.delfin-agent-palette-pop select { overflow-x: hidden; }
+/* An HTML widget with nothing in it is a full-width row of zero height
+   whose margins still add gaps; it takes no place until it has content. */
+.delfin-agent-root .widget-html:has(> .widget-html-content:empty) {
+    display: none !important;
+}
+.delfin-agent-palette-pop:not(:has(> .widget-select:not([style*="display: none"]))) {
+    display: none !important;
+}
+/* The footer row of the details: the token/mode line with the usage and
+   cost run on as plain text after it -- one line, not a second box. */
+.delfin-agent-status-row { flex-flow: row wrap; align-items: baseline; gap: 0 6px;
+    border-top: 1px solid #333; margin-top: 4px; }
+.delfin-agent-status-row div[style*="border-top"] { border-top: none !important; }
+.delfin-agent-status-row .delfin-agent-status {
+    border: none; background: none; padding: 0; border-radius: 0;
+    font-family: monospace; font-size: 11px; color: #777;
+}
+.delfin-agent-status-row .delfin-agent-status::before { content: "| "; }
+/* Everything below the input, folded: capped, scrolling in itself, so it
+   can never push the input and the approvals out of the window. */
+.delfin-agent-root > .delfin-agent-below { flex: 0 0 auto; }
+/* No scroll area of its own inside the details: opened, they extend the
+   tab, and the tab is the one thing that scrolls besides the chat. Lists
+   that bring their own max-height (task list, tool trace) give it up. */
+.delfin-agent-below-body, .delfin-agent-below-body * { max-height: none !important; }
+.delfin-agent-below-body div[style*="overflow"] { overflow: visible !important; }
+.delfin-agent-subfold { margin: 2px 0; }
+/* Requests at the foot of the chat: one compact band, not a framed box. */
+.delfin-agent-chat-frame .delfin-agent-kit-confirm:empty { display: none !important; }
+.delfin-agent-chat-frame .delfin-agent-kit-confirm { margin: 0 !important; }
+.delfin-agent-chat-frame .delfin-agent-request {
+    border: none !important; border-top: 1px solid #dbeafe !important;
+    background: #f5f9ff !important; padding: 4px 10px !important;
+    margin: 0 !important;
+}
+/* An open request must be answerable. Measured 2026-10-09 at 1366x768: a
+   KIT confirmation's buttons sat at y=723..744 under a chat frame ending at
+   y=617, clipped by its overflow:hidden. While a request is open the
+   transcript gives way (down to 3 lines) and the dock may shrink below its
+   content, scrolling in itself, so the buttons stay inside the frame. */
+.delfin-agent-chat-frame > .delfin-agent-dock {
+    flex: 0 1 auto !important; min-height: 0; overflow-y: auto;
+}
+/* Its content keeps its height, so the overflow lands in the dock's own
+   scroll area instead of spilling out of a squeezed child. */
+.delfin-agent-chat-frame > .delfin-agent-dock > * { flex-shrink: 0 !important; }
+.delfin-agent-chat-frame:has(.delfin-agent-request:not([style*="display: none"])) > .delfin-agent-chat-host,
+.delfin-agent-chat-frame:has(.delfin-agent-kit-confirm > :not([style*="display: none"])) > .delfin-agent-chat-host {
+    /* !important: the widget carries min-height 200px inline. */
+    min-height: 60px !important;
+}
+/* A KIT confirmation takes the task line's place while it waits: it is
+   the one thing to answer. A question from the agent does not (below). */
+.delfin-agent-chat-frame:has(.delfin-agent-kit-confirm > :not([style*="display: none"])) > .delfin-agent-task-strip {
+    display: none !important;
+}
+/* A request (approval, question, plan acceptance) takes the place of the
+   suggestions at the foot of the chat while it is open. The task line
+   stays above it: a question is often about the plan, and hiding the plan
+   while it is asked left the reader without it. Read off the widgets' own
+   display state, so no code path that shows or hides a request has to
+   know. */
+.delfin-agent-chat-frame:has(.delfin-agent-request:not([style*="display: none"])) > .delfin-agent-chat-foot:not(.delfin-agent-task-strip) {
+    display: none !important;
+}
 /* The replaced content. Layout only -- no height, no overflow: giving it
    either would make it a second scrollport inside the first, and the
    inner one would be the one that gets destroyed again. */
@@ -739,7 +948,18 @@ _AGENT_CSS = """\
     box-shadow: 0 1px 4px rgba(0,0,0,0.25);
 }
 .delfin-chat-jump:hover { background: rgba(51, 65, 85, 0.96); }
+/* Whether it shows, and what it says, is read off two marks on the HOST,
+   because the host is the element that survives a refresh. The button is
+   re-inserted with every update -- four times a second while the agent
+   writes -- and the mark used to be an attribute on the button itself, so
+   a reader who had scrolled up watched the control vanish with each new
+   content and come back a tick later when the script ran. No mark on the
+   host (a page before the script has run) keeps it hidden. */
+.delfin-agent-chat-host:not([data-delfin-follow="0"]) .delfin-chat-jump,
 .delfin-chat-jump[hidden] { display: none !important; }
+.delfin-chat-jump .delfin-chat-jump-unseen { display: none; }
+.delfin-agent-chat-host[data-delfin-unseen="1"] .delfin-chat-jump .delfin-chat-jump-newest { display: none; }
+.delfin-agent-chat-host[data-delfin-unseen="1"] .delfin-chat-jump .delfin-chat-jump-unseen { display: inline; }
 /* Auto-growing message box: starts at 80px, grows with the text up to a
    cap, then scrolls — no more scrolling inside a tiny fixed field. */
 .delfin-agent-input {
@@ -762,6 +982,15 @@ _AGENT_CSS = """\
    The user need not take it, and one typed character must end the
    colour with the text. Declarative for that reason -- an input listener
    doing the same is a second copy of the condition. */
+/* "Tab" badge in the corner of the box while a suggestion waits in it
+   and nothing is typed; gone with the first character. */
+.delfin-agent-input-suggests { position: relative; }
+.delfin-agent-input-suggests:has(textarea:placeholder-shown)::after {
+    content: "Tab ⇥ take";
+    position: absolute; right: 8px; top: 6px; pointer-events: none;
+    font-size: 11px; color: #6b7280; background: #f3f4f6;
+    border: 1px solid #d1d5db; border-radius: 4px; padding: 0 5px;
+}
 .delfin-agent-input-proposed textarea:placeholder-shown::placeholder {
     color: #1976d2 !important;
     opacity: 1;
@@ -949,14 +1178,21 @@ _AGENT_CSS = """\
 .delfin-chat-agent pre .diff-del { color: #f38ba8; }
 .delfin-chat-agent pre .diff-hdr { color: #89b4fa; font-weight: 600; }
 .delfin-agent-queue {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 10px;
-    background: #dbeafe;
-    color: #1e40af;
-    font-size: 11px;
-    font-weight: 600;
-    margin: 4px 0;
+    border-top: 1px solid #e5e7eb;
+    background: #f8fafc;
+    padding: 3px 10px;
+    font-size: 12px;
+    color: #374151;
+}
+.delfin-agent-queue-head { color: #6b7280; }
+.delfin-agent-queue-row {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    padding-left: 4px;
+}
+.delfin-agent-queue-n {
+    display: inline-block; min-width: 16px; text-align: center;
+    border-radius: 8px; background: #e5e7eb; color: #374151;
+    font-size: 11px; font-weight: 600;
 }
 .delfin-agent-status {
     font-size: 12px;
@@ -1646,7 +1882,8 @@ def _perm_options_for_mode(mode: str) -> list[tuple[str, str]]:
         Plan          read only
         Ask All       asks before a file changes AND before a shell command
         Accept Edits  file changes go through, shell still asks
-        Bypass        asks nothing
+        Bypass        asks nothing about work inside the allowed folders;
+                      reading outside them still asks
 
     The stored values are historical -- ``repo_free`` is the identifier for
     the Accept Edits rung and ``all_free`` for Bypass. They are left alone
@@ -1679,7 +1916,7 @@ PROFILE_TO_CLI_PERM: dict[str, str] = {
     "plan":      "plan",                # read-only
     "ask_all":   "default",             # asks before every write and shell
     "repo_free": "acceptEdits",         # writes go through, shell asks
-    "all_free":  "bypassPermissions",   # asks nothing, as the label says
+    "all_free":  "bypassPermissions",   # asks nothing inside the folders
 }
 
 
@@ -4871,6 +5108,29 @@ _record_solo_turn_outcome = _record_turn_outcome
 # Tab creation
 # ---------------------------------------------------------------------------
 
+#: The ``shutdown`` of every tab built in this process, newest last. A
+#: kernel builds one and closes it at exit (atexit, below); a test process
+#: builds hundreds and closed none, so each left its watcher thread running
+#: for the rest of the run (measured: 8 live threads after 37 tests of four
+#: files). ``close_open_tabs`` is how a test harness ends them.
+_OPEN_TAB_SHUTDOWNS: list = []
+
+
+def close_open_tabs() -> int:
+    """Close every tab built so far in this process; return how many.
+
+    Without saving: this is for a harness ending its own tabs, not for a
+    user's session (the session list closes those, with a save)."""
+    closed = 0
+    while _OPEN_TAB_SHUTDOWNS:
+        shutdown = _OPEN_TAB_SHUTDOWNS.pop()
+        try:
+            shutdown(save=False)
+            closed += 1
+        except Exception:
+            pass
+    return closed
+
 
 def create_tab(ctx):
     """Create the DELFIN Agent tab.
@@ -5365,7 +5625,8 @@ def create_tab(ctx):
         style={"description_width": "42px"},
         tooltip=("Plan = read only · Ask All = asks before every file change "
                  "and every shell command · Accept Edits = file changes go "
-                 "through, shell still asks · Bypass = asks nothing "
+                 "through, shell still asks · Bypass = asks nothing inside "
+                 "the allowed folders; reading outside them still asks "
                  "(archive stays read-only in all of them)"),
     )
 
@@ -5504,6 +5765,128 @@ def create_tab(ctx):
         tooltip="Export this session's chemistry steps as a Jupyter notebook",
     )
 
+    # Git workflows (requested by Tilmann, 2026-10-09). Each button sends
+    # its slash command -- the same text a person could type, in the
+    # dashboard or the terminal -- and the shipped skill of that name
+    # (delfin/agent/pack/skills/) is the playbook the model follows:
+    # resolving clear conflicts itself, asking when a side's intent is
+    # unclear. Nothing here runs git; the model does, through the gates.
+    # "Push" and "PR" are the user asking for that one push.
+    _GIT_WORKFLOWS = (
+        ("merge", "⤓ Merge", "Bring the base branch into this branch "
+                             "(merge, resolve conflicts, run the tests)"),
+        ("new-branch", "⑂ Branch", "Start a new branch from the base branch"),
+        ("push", "⤒ Push", "Check, commit and push this branch"),
+        ("pr", "⇄ PR", "Push this branch and open a pull request into the "
+                       "base branch"),
+    )
+    # Which branch Merge brings in, Branch starts from and PR goes into.
+    # Not always main (user, 2026-10-09): offered from the remote branches
+    # this checkout already knows, typeable for any other.
+    # Labelled: unlabelled, the field read as a second branch switch next
+    # to the one at the top of the page, which picks the branch DELFIN
+    # itself runs on. This one only names the target of the git buttons.
+    git_base = widgets.Combobox(
+        value="origin/main", options=["origin/main"],
+        description="Base:",
+        placeholder="base branch", ensure_option=False,
+        tooltip=("Base branch for the buttons beside it: Merge brings it "
+                 "in, Branch starts from it, PR goes into it. Not the "
+                 "branch DELFIN runs on (that is the Branch switch at the "
+                 "top)."),
+        style={"description_width": "36px"},
+        layout=widgets.Layout(width="190px"))
+    _git_base_cache = {"at": 0.0, "where": ""}
+
+    def _refresh_git_base_options(where: str) -> None:
+        """Remote branches from the local refs -- no fetch, no network."""
+        now = time.monotonic()
+        if (where == _git_base_cache["where"]
+                and now - _git_base_cache["at"] < 60):
+            return
+        _git_base_cache.update(at=now, where=where)
+        try:
+            import subprocess as _sp
+            out = _sp.run(["git", "-C", where, "branch", "-r",
+                           "--format=%(refname:short)"],
+                          capture_output=True, text=True, timeout=5)
+            names = [n for n in out.stdout.split()
+                     if n and not n.endswith("/HEAD")]
+        except Exception:
+            names = []
+        if names:
+            git_base.options = sorted(set(names),
+                                      key=lambda n: (n != "origin/main", n))
+    git_buttons: dict = {}
+    for _cmd, _label, _tip in _GIT_WORKFLOWS:
+        git_buttons[_cmd] = widgets.Button(
+            description=_label, tooltip=_tip,
+            layout=widgets.Layout(width="auto", flex="0 0 auto"))
+    git_group = widgets.HBox(
+        [git_base] + list(git_buttons.values()),
+        layout=widgets.Layout(gap="4px", flex_flow="row wrap",
+                              flex="0 1 auto", align_items="center"))
+
+    def _git_button_state() -> dict:
+        """{command: reason it is unavailable, or ""} for the workspace."""
+        reasons = {cmd: "" for cmd in git_buttons}
+        try:
+            where = _agent_workspace_path()
+        except Exception:
+            where = ""
+        try:
+            from delfin.agent import session_presence as _presence
+            in_repo = bool(where) and bool(
+                _presence.repository_of(where)["root"])
+        except Exception:
+            in_repo = False
+        if in_repo:
+            _refresh_git_base_options(where)
+        if not in_repo:
+            for cmd in reasons:
+                reasons[cmd] = (f"Not a git repository: {where or '?'} -- "
+                                "these work in a session whose folder is "
+                                "a git checkout.")
+            return reasons
+        gh = shutil.which("gh") or (
+            str(Path.home() / ".local/bin/gh")
+            if (Path.home() / ".local/bin/gh").exists() else "")
+        if not gh:
+            reasons["pr"] = ("The GitHub CLI (gh) is not installed. Ask the "
+                             "agent to install it, then log in with "
+                             "`! gh auth login`.")
+        return reasons
+
+    def _refresh_git_buttons() -> None:
+        try:
+            reasons = _git_button_state()
+        except Exception:
+            return
+        for (cmd, _label, tip) in _GIT_WORKFLOWS:
+            btn = git_buttons[cmd]
+            btn.disabled = bool(reasons[cmd])
+            btn.tooltip = reasons[cmd] or tip
+
+    def _on_git_button(cmd: str) -> None:
+        reason = _git_button_state().get(cmd, "")
+        if reason:
+            _append_system_message(f"`/{cmd}` is not available: {reason}")
+            return
+        base = str(git_base.value or "").strip()
+        if base and not re.fullmatch(r"[A-Za-z0-9._/@-]+", base):
+            _append_system_message(f"`{base}` is not a branch name.")
+            return
+        args = {"merge": base,
+                "new-branch": f"from {base}" if base else "",
+                "pr": base.split("/", 1)[1] if base.startswith("origin/")
+                      else base,
+                "push": ""}[cmd]
+        input_textarea.value = f"/{cmd} {args}".strip()
+        _on_send(None)
+
+    for _cmd in git_buttons:
+        git_buttons[_cmd].on_click(lambda _b, c=_cmd: _on_git_button(c))
+
     # Bug Report: bundle conversation + run config into the (configurable)
     # archive so maintainers can reproduce a bad turn. Optional one-line
     # note describes what went wrong. Archive path comes from
@@ -5601,13 +5984,16 @@ def create_tab(ctx):
     #   Next Role (advance_btn) -> retired-pipeline vestigial, never enables
     # Their widget objects stay alive (handlers/toggles still wired), just
     # not placed in any visible row.
+    #   Export / Export as notebook -> the bug report downloads a copy of
+    #     everything when it is sent (Tilmann/user, 2026-10-09)
     for _hidden in (new_cycle_btn, advance_btn, undo_btn, commit_btn,
-                    push_btn, push_confirm_btn, push_cancel_btn):
+                    push_btn, push_confirm_btn, push_cancel_btn,
+                    export_btn, nb_export_btn):
         _hidden.layout.display = "none"
     _controls_hbox = widgets.HBox(
         [mode_dropdown, provider_dropdown, model_dropdown,
          effort_dropdown, perm_dropdown, stop_btn,
-         export_btn, nb_export_btn, bug_group, model_refresh_btn],
+         git_group, bug_group, model_refresh_btn],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
     controls_row = widgets.VBox([
@@ -5844,6 +6230,18 @@ def create_tab(ctx):
     # Self-Modification Guard panel takes the user's confirmation.
     kit_dirs_status = widgets.HTML(value="")
 
+    def _read_dirs_html(eng) -> str:
+        """The directories readable outside the workspace, one line: the
+        saved "always allow reading here" grants and this session's."""
+        perms = getattr(eng, "kit_permissions", None)
+        dirs = [str(d) for d in (getattr(perms, "session_read_dirs", ()) or ())]
+        if not dirs:
+            return ""
+        return ("<br><b>Read access (no writing):</b> "
+                + " · ".join(f"<code>{_html.escape(d)}</code>" for d in dirs)
+                + " <i>(saved ones live in ~/.delfin/settings.json, "
+                  "kit.read_dirs)</i>")
+
     def _refresh_kit_dirs_status():
         eng = state.get("engine")
         if eng is None or not hasattr(eng, "list_kit_workspace_dirs"):
@@ -5873,6 +6271,7 @@ def create_tab(ctx):
             + f" &middot; allow-patterns: {allow_count}"
             + f" &middot; deny-patterns: {deny_count}"
             + " &middot; <i>outside: read-only with confirm</i>"
+            + _read_dirs_html(eng)
             + "<br><i>Tip: say <code>'also work in /path'</code> in chat "
             + "&rarr; agent persists it after one confirm click.</i></small>"
         )
@@ -5892,7 +6291,8 @@ def create_tab(ctx):
         "acceptEdits":       ("Accept Edits", "#e8710a", "#fef7e0",
                               "Write/Edit auto · Bash confirmed"),
         "bypassPermissions": ("Bypass", "#c5221f", "#fce8e6",
-                              "Everything auto · sandbox + denylist still apply"),
+                              "Auto inside the allowed folders · reading outside "
+                              "asks · sandbox + denylist still apply"),
     }
 
     kit_mode_chip = widgets.Button(
@@ -6097,6 +6497,10 @@ def create_tab(ctx):
                         if not hasattr(eng, "add_kit_workspace_dir"):
                             return False, "add_kit_workspace_dir missing"
                         return eng.add_kit_workspace_dir(value, persist=True)
+                    if kind == "read_dir":
+                        if not hasattr(eng, "add_kit_read_dir"):
+                            return False, "add_kit_read_dir missing"
+                        return eng.add_kit_read_dir(value, persist=True)
                     # There is no session-only directory kind here any more.
                     # "Allow (once)" on an outside-workspace read used to
                     # come through as one and made the file's parent a
@@ -6178,8 +6582,11 @@ def create_tab(ctx):
     # finished delegate used to stay in this list for the rest of the session,
     # so the list grew with every delegation and the live rows were pushed
     # down by rows that had nothing left to report.
-    agent_view_chips = widgets.VBox(
-        [], layout=widgets.Layout(display="none", margin="2px 0 0 0"))
+    # Side by side, wrapping onto more rows (user, 2026-10-09): one row per
+    # subagent took a screen's worth of height with a handful running.
+    agent_view_chips = widgets.HBox(
+        [], layout=widgets.Layout(display="none", margin="2px 0 0 0",
+                                  flex_flow="row wrap", gap="4px"))
     # Finished delegates move HERE. Still readable — the same drill-in view
     # renders them from the saved session store — but collapsed into one row
     # that does not grow. It reaches past this session on purpose: a run is
@@ -6262,7 +6669,7 @@ def create_tab(ctx):
                 b = widgets.Button(
                     description="• " + lbl, tooltip=tip or lbl,
                     button_style=("primary" if sid == cur else ""),
-                    layout=widgets.Layout(width="auto", margin="0 0 2px 0"))
+                    layout=widgets.Layout(width="auto", margin="0"))
 
                 def _click(_b, _sid=sid):
                     state["_view_agent"] = _sid
@@ -6413,7 +6820,19 @@ def create_tab(ctx):
     # and not a guess about what somebody wants -- and from the same
     # helper the terminal prompt offers, so the two cannot drift.
     next_steps_box = widgets.HBox(
-        [], layout=widgets.Layout(margin="2px 0 0 4px", flex_flow="row wrap"))
+        [], layout=widgets.Layout(margin="0 0 0 4px", flex_flow="row wrap",
+                                  flex="1 1 auto"))
+    # The "/" button sits beside the box you type in; this row holds only
+    # the palette filter and what could come next, and takes no height
+    # while it has neither (see .delfin-agent-palette-row in the CSS).
+    next_steps_box.add_class("delfin-next-steps")
+    palette_row.children = (next_steps_box,)
+    palette_row.layout.flex_flow = "row wrap"
+    palette_row.add_class("delfin-agent-palette-row")
+    # As tall as the Files button beside it.
+    palette_toggle_btn.layout.margin = "0 4px 0 0"
+    palette_toggle_btn.layout.height = "80px"
+    palette_toggle_btn.layout.width = "44px"
 
     def _fill_input(text: str):
         def _click(_btn):
@@ -6433,8 +6852,10 @@ def create_tab(ctx):
                     ws = kp.workspace
             if ws is None:
                 ws = ctx.repo_dir or Path.cwd()
+            # All open subjects: the placeholder takes the first, and the
+            # offer is compared against every one of them.
             steps = _next(ws, session_id=str(
-                state.get("active_session_id", "") or ""))
+                state.get("active_session_id", "") or ""), limit=50)
         except Exception:
             steps = []
         offer = proposed_prompt(str(state.get("_last_answer_text", "") or ""))
@@ -6447,11 +6868,29 @@ def create_tab(ctx):
             input_textarea.add_class("delfin-agent-input-proposed")
         else:
             input_textarea.remove_class("delfin-agent-input-proposed")
-        if not steps:
+        # A suggestion in the box says how to take it: grey text alone
+        # read as decoration, and Tab was a key nobody knew about.
+        if input_textarea.placeholder != _INPUT_HINT:
+            input_textarea.add_class("delfin-agent-input-suggests")
+        else:
+            input_textarea.remove_class("delfin-agent-input-suggests")
+        # The buttons beside the box offer only what the task list does not:
+        # the prompt the agent marked as its offer, unless that is a task's
+        # own subject. Open tasks are clicked in the task list itself.
+        _norm = lambda t: " ".join(str(t or "").split()).casefold()
+        shown = [offer] if offer and _norm(offer) not in {
+            _norm(t) for t in steps} else []
+        # Rebuilt only when the list changed: the background tick calls
+        # this every few seconds, and new buttons each time would flicker
+        # and drop a click in flight.
+        if tuple(shown) == state.get("_next_steps_shown"):
+            return
+        state["_next_steps_shown"] = tuple(shown)
+        if not shown:
             next_steps_box.children = ()
             return
         kids = []
-        for step in steps:
+        for step in shown:
             b = widgets.Button(
                 description=step[:58],
                 tooltip=step,
@@ -6479,13 +6918,17 @@ def create_tab(ctx):
         from IPython.display import display as _ipyd, Javascript as _JS
         _ipyd(_JS(_VISIBLE_LOOKUP_JS + """
 (function() {
-    if (window.__delfinAgentKeys) return;
-    window.__delfinAgentKeys = true;
+    // Its own flag: a second keyboard script (_enter_key_init_js) sets
+    // __delfinAgentKeys too and usually runs first, and behind that shared
+    // guard this listener was never installed -- on main as well.
+    if (!window.__delfinTabTakesSuggestion) {
+    window.__delfinTabTakesSuggestion = true;
+    // Tab in an EMPTY message box takes the grey suggestion waiting there.
+    // It fills the box and stops: sending stays the user's, and an offer
+    // that submits itself is a trap. With something typed, Tab keeps its
+    // normal job and moves focus. Capture phase, so no page handler can
+    // move focus before it has looked.
     document.addEventListener('keydown', function(e) {
-        // Tab in an EMPTY message box takes the grey suggestion waiting
-        // there. It fills the box and stops: sending stays the user's, and
-        // an offer that submits itself is a trap. With something typed,
-        // Tab keeps its normal job and moves focus.
         if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             var ta = e.target;
             if (ta && ta.tagName === 'TEXTAREA' && ta.closest
@@ -6497,9 +6940,13 @@ def create_tab(ctx):
                     window.HTMLTextAreaElement.prototype, 'value').set;
                 setter.call(ta, ta.placeholder);
                 ta.dispatchEvent(new Event('input', {bubbles: true}));
-                return;
             }
         }
+    }, true);
+    }
+    if (window.__delfinAgentKeys) return;
+    window.__delfinAgentKeys = true;
+    document.addEventListener('keydown', function(e) {
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             if (e.target && e.target.tagName === 'TEXTAREA') {
                 var container = e.target.closest
@@ -6725,12 +7172,14 @@ def create_tab(ctx):
             return (c.scrollHeight - c.scrollTop - c.clientHeight)
                    <= CHAT_BOTTOM_TOLERANCE_PX;
         }
+        // Written to the host, not the button: the button is replaced
+        // with every refresh and the stylesheet reads these two marks off
+        // its parent, so the fresh copy is right in the frame it appears.
         function paint(c, st) {
             st = st || stateFor(c);
-            var b = c.querySelector('.delfin-chat-jump');
-            if (!b) return;
-            b.hidden = st.follow;
-            b.textContent = st.unseen ? '\u2193 New messages' : '\u2193 Newest';
+            if (!c || !c.setAttribute) return;
+            c.setAttribute('data-delfin-follow', st.follow ? '1' : '0');
+            c.setAttribute('data-delfin-unseen', st.unseen ? '1' : '0');
         }
         // Setting scrollTop queues a scroll event of our own making; the
         // listener must not read it as the reader moving away. Arm the flag
@@ -7059,26 +7508,141 @@ def create_tab(ctx):
 
     # -- Phase 5 UI hookups -----------------------------------------------
     # Live task ticker — reflects TaskStore state, refreshed on tool result.
-    task_ticker_html = widgets.HTML(
-        value="", layout=widgets.Layout(margin="2px 0 4px 0"),
-    )
+    def _fold_title() -> str:
+        """The folded panels' header: what is going on in them, one line.
+
+        Built from counts the panel refreshes leave in ``state``; a panel
+        with nothing to say leaves its part out, so the closed header
+        reads "Details" on a quiet session and names the live parts on a
+        busy one."""
+        parts = []
+        # The context fill leads: it is the one number that decides when
+        # the session compacts, and it costs six characters.
+        ctx_pct = state.get("_fold_ctx")
+        if ctx_pct is not None:
+            parts.append(f"ctx {ctx_pct:.0f}%")
+        n_bg = int(state.get("_fold_background", 0) or 0)
+        if n_bg:
+            parts.append(f"{n_bg} running")
+        n_tools = int(state.get("_fold_tools", 0) or 0)
+        if n_tools:
+            last = str(state.get("_fold_last_tool", "") or "")
+            parts.append(f"Tool calls {n_tools}" + (f" (last: {last})" if last else ""))
+        sec_total, sec_blocked = state.get("_fold_security", (0, 0))
+        if sec_total:
+            parts.append(f"⚠ Containment {sec_blocked} blocked / "
+                         f"{sec_total - sec_blocked} flagged")
+        t_in, t_out, t_cost = state.get("_fold_tokens", (0, 0, 0.0))
+        if t_in or t_out:
+            parts.append(f"{t_in:,} in / {t_out:,} out"
+                         + (f" · {_fmt_cost(t_cost)}" if t_cost > 0 else ""))
+        return " · ".join(parts) if parts else "Details"
+
+    def _refresh_subfolds():
+        tf = state.get("_tools_fold")
+        if tf is not None:
+            n = int(state.get("_fold_tools", 0) or 0)
+            last = str(state.get("_fold_last_tool", "") or "")
+            tf.layout.display = "" if n else "none"
+            t = f"🔧 Tool calls · {n}" + (f" · last: {last}" if last else "")
+            if tuple(tf.titles) != (t,):
+                tf.titles = (t,)
+        sf = state.get("_security_fold")
+        if sf is not None:
+            total, blocked = state.get("_fold_security", (0, 0))
+            sf.layout.display = "" if total else "none"
+            t = (f"🛡 Containment · {blocked} blocked / "
+                 f"{total - blocked} flagged")
+            last = str(state.get("_fold_last_security", "") or "")
+            if last:
+                t += f" · last: {last}"
+            if tuple(sf.titles) != (t,):
+                sf.titles = (t,)
+
+    def _refresh_fold_title():
+        try:
+            _refresh_subfolds()
+        except Exception:
+            pass
+        fold = state.get("_fold_widget")
+        if fold is None:
+            return
+        try:
+            title = _fold_title()
+            if tuple(fold.titles) != (title,):
+                fold.titles = (title,)
+        except Exception:
+            pass
+
+    # The task list: one button per task. A click on an open task puts its
+    # subject into the message box (what the suggestion buttons used to
+    # do, now on the list itself); a finished task is shown, not offered.
+    task_list_box = widgets.VBox([], layout=widgets.Layout(
+        max_height="220px", overflow_y="auto"))
+    task_list_box.add_class("delfin-task-list")
+    # One line at the foot of the chat: the counts and the task in hand.
+    # It unfolds to the full list, which therefore lives nowhere else. An
+    # Accordion rather than <details>: a refresh replaces the HTML and
+    # would close a <details> the reader had opened; the Accordion's
+    # selected_index survives it. Hidden while no task is open.
+    task_strip = widgets.Accordion(
+        children=[task_list_box], titles=("Tasks",), selected_index=None,
+        layout=widgets.Layout(display="none"))
+    task_strip.add_class("delfin-agent-chat-foot")
+    task_strip.add_class("delfin-agent-task-strip")
+
+    def _task_buttons(rows):
+        kids = []
+        for r in rows:
+            open_ = r["status"] != "completed"
+            b = widgets.Button(
+                description=f"{r['glyph']} #{r['num']} {r['label']}",
+                tooltip=(f"Put into the message box: {r['subject']}"
+                         if open_ else r["label"]),
+                disabled=not open_,
+                layout=widgets.Layout(width="100%", height="auto"))
+            b.add_class("delfin-task-row")
+            b.add_class(f"delfin-task-{r['status']}")
+            if open_:
+                b.on_click(_fill_input(r["subject"]))
+            kids.append(b)
+        return tuple(kids)
 
     def _refresh_task_ticker():
         try:
-            from delfin.agent.task_ticker import render_html as _tt_render
+            from delfin.agent.task_ticker import rows as _tt_rows
+            from delfin.agent.task_ticker import render_title as _tt_title
             eng = state.get("engine")
-            ws = None
-            if eng is not None:
-                kp = getattr(eng, "kit_permissions", None)
-                if kp is not None:
-                    ws = kp.workspace
-            if ws is None:
-                ws = ctx.repo_dir or Path.cwd()
-            task_ticker_html.value = _tt_render(
-                ws, session_id=str(state.get("active_session_id", "") or "")
-            )
+            kp = getattr(eng, "kit_permissions", None) if eng is not None else None
+            if eng is not None and kp is None:
+                # A CLI backend (the Anthropic CLI) keeps its plan in its
+                # own TodoWrite list, not in DELFIN's task store: the line
+                # shows that plan. Reading the store here showed nothing on
+                # this backend, ever.
+                from delfin.agent.task_ticker import (
+                    rows_from_todos as _tt_from_todos, title_for as _tt_for)
+                rows = _tt_from_todos(state.get("current_todos") or [])
+                title = _tt_for(rows)
+            else:
+                ws = kp.workspace if kp is not None else (
+                    ctx.repo_dir or Path.cwd())
+                sid = str(state.get("active_session_id", "") or "")
+                title = _tt_title(ws, session_id=sid)
+                rows = _tt_rows(ws, session_id=sid) if title else []
+            if not title:
+                rows = []
+            # Rebuilt only when a row changed: the background tick runs
+            # every few seconds, and new buttons would drop a click.
+            key = tuple((r["status"], r["num"], r["label"], r["subject"])
+                        for r in rows)
+            if key != state.get("_task_rows_shown"):
+                state["_task_rows_shown"] = key
+                task_list_box.children = _task_buttons(rows)
+            if title and tuple(task_strip.titles) != (title,):
+                task_strip.titles = (title,)
+            task_strip.layout.display = "" if title else "none"
         except Exception:
-            task_ticker_html.value = ""
+            task_strip.layout.display = "none"
 
     # Status line footer — token / mode / branch summary.
     status_line_html = widgets.HTML(
@@ -7111,6 +7675,8 @@ def create_tab(ctx):
             _ws = _agent_workspace_path()
             _items = _bgv.rows(_bgv.collect(_ws, session_id=_background_owner()))
             subagent_panel_html.value = _bgv.header_html(len(_items))
+            state["_fold_background"] = len(_items)
+            _refresh_fold_title()
             # Rows are kept by item, so a refresh updates the text and a
             # pointer resting on a × is not pulled out from under it.
             _cache = state.setdefault("_background_row_widgets", {})
@@ -7280,9 +7846,15 @@ def create_tab(ctx):
         if state.get("_subagent_live_thread") is not None:
             return
         state["_subagent_live_stop"] = False
+        # Waited on rather than slept: closing the tab sets it and the loop
+        # ends at once instead of after its current interval, and it never
+        # calls time.sleep -- a test that patches that process-wide counted
+        # this thread's 1.5 s as its own (CI on PR #138).
+        import threading as _threading_ev
+        _wake = _threading_ev.Event()
+        state["_subagent_live_wake"] = _wake
 
         def _loop() -> None:
-            import time as _t2
             from delfin.agent.subagents import read_running as _rr
             was_active = False
             while not state.get("_subagent_live_stop"):
@@ -7300,7 +7872,7 @@ def create_tab(ctx):
                     was_active = active
                 except Exception:
                     pass
-                _t2.sleep(interval)
+                _wake.wait(interval)
             state["_subagent_live_thread"] = None
 
         import threading as _threading
@@ -7323,8 +7895,13 @@ def create_tab(ctx):
             if eng is None:
                 tool_trace_panel_html.value = ""
                 return
+            _entries = _tt.read(eng.trace_session())
             tool_trace_panel_html.value = _tt.format_panel_html(
-                _tt.read(eng.trace_session(), last_n=12))
+                _entries[-12:])
+            state["_fold_tools"] = len(_entries)
+            state["_fold_last_tool"] = (
+                str(_entries[-1].get("tool") or "") if _entries else "")
+            _refresh_fold_title()
         except Exception:
             tool_trace_panel_html.value = ""
 
@@ -7338,8 +7915,18 @@ def create_tab(ctx):
     def _refresh_security_panel():
         try:
             from delfin.agent import security_events as _se
+            _c = _se.counts()
             security_panel_html.value = (
-                _se.format_panel_html(12) if _se.counts()["total"] else "")
+                _se.format_panel_html(12) if _c["total"] else "")
+            state["_fold_security"] = (_c["total"], _c["blocked"])
+            try:
+                _last_ev = _se.recent(1)[0] if _c["total"] else None
+                state["_fold_last_security"] = (
+                    _se._KINDS.get(_last_ev.kind, ("", _last_ev.kind))[1]
+                    if _last_ev is not None else "")[:60]
+            except Exception:
+                state["_fold_last_security"] = ""
+            _refresh_fold_title()
         except Exception:
             security_panel_html.value = ""
 
@@ -7925,6 +8512,14 @@ def create_tab(ctx):
                 _refresh_subagent_panel()
             except Exception:
                 pass
+            # Tasks change without a tool result of this session: a
+            # delegate updates them, or another session sharing the list.
+            # The suggestions are the same open tasks, so they follow.
+            try:
+                _refresh_task_ticker()
+                _refresh_next_steps()
+            except Exception:
+                pass
             finally:
                 try:
                     if not state.get("_closed"):
@@ -7957,46 +8552,146 @@ def create_tab(ctx):
     # Sessions bar covers it. Object kept (handler still wired), not shown.
     resume_last_btn.layout.display = "none"
 
-    agent_content = widgets.VBox(
-        [css_widget, _enter_js_output, controls_row, search_row,
-         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
-         kit_mode_row, kit_dirs_status,
-         chat_html,
-         plan_accept_btn, ask_user_box,
-         working_html, queue_html, context_bar_html,
-         approval_row, action_confirm_row, question_row,
-         palette_row, palette_select,
+    # Not the KIT confirm container: it is shown for the whole of a KIT
+    # session, empty while nothing waits, so it would hide the task line
+    # for good. The request it carries brings its own panel.
+    for _req in (approval_row, action_confirm_row,
+                 question_row, ask_user_box, plan_accept_btn):
+        _req.add_class("delfin-agent-request")
+    kit_confirm_container.add_class("delfin-agent-kit-confirm")
+    approval_dock = widgets.VBox(
+        [kit_confirm_container, approval_row, action_confirm_row,
+         question_row],
+        layout=widgets.Layout(margin="2px 0"))
+    approval_dock.add_class("delfin-agent-dock")
+    # One footer line in the details: the token/mode footer, the usage and
+    # cost, and the KIT-Mode chip side by side.
+    status_row = widgets.HBox([status_line_html, status_html, kit_mode_row])
+    status_row.add_class("delfin-agent-status-row")
+    # Tool calls and containment are long lists: each folds on its own and
+    # names its count and its latest entry while closed.
+    tools_fold = widgets.Accordion(children=[tool_trace_panel_html],
+                                   titles=("Tool calls",), selected_index=None)
+    security_fold = widgets.Accordion(children=[security_panel_html],
+                                      titles=("Containment",),
+                                      selected_index=None)
+    for _f in (tools_fold, security_fold):
+        _f.add_class("delfin-agent-subfold")
+        _f.layout.display = "none"
+    state["_tools_fold"] = tools_fold
+    state["_security_fold"] = security_fold
+    below_panels = widgets.VBox(
+        [kit_dirs_status,
+         subagent_pane_html, subagent_panel_html, background_rows_box,
+         tools_fold, security_fold, context_bar_html, status_row])
+    # Folded by default: the tool calls, the containment report, the task
+    # list and the subagents are there when wanted, one click away, and
+    # take no height from the chat otherwise.
+    below_panels.add_class("delfin-agent-below-body")
+    below_fold = widgets.Accordion(
+        children=[below_panels],
+        titles=(_fold_title(),),
+        selected_index=None)
+    below_fold.add_class("delfin-agent-below")
+    state["_fold_widget"] = below_fold
+    # The chat frame: the transcript scrolls; at its foot, inside the same
+    # box, the one-line task strip, then the questions and the approval
+    # dock -- pending permission requests (Self-Mod Guard / KIT confirms),
+    # plan and action confirmations. They used to sit under the chat and
+    # the task list, where they scrolled out of sight.
+    # The suggestions are the open tasks' own subjects: they belong with the
+    # task line at the foot of the chat, not in a row of their own.
+    palette_row.add_class("delfin-agent-chat-foot")
+    chat_frame = widgets.VBox(
+        [chat_html, working_html, queue_html, task_strip, palette_row,
+         plan_accept_btn, ask_user_box, approval_dock])
+    chat_frame.add_class("delfin-agent-chat-frame")
+    # The command palette opens OVER the chat, anchored to the top edge of
+    # the input: opening it used to push the input down and squeeze the
+    # chat by the height of the list, and closing it moved everything back.
+    _palette_pop = widgets.VBox([palette_search, palette_select])
+    _palette_pop.add_class("delfin-agent-palette-pop")
+    _input_area = widgets.VBox(
+        [_palette_pop,
          widgets.HBox(
-             [image_upload, input_row],
+             [palette_toggle_btn, image_upload, input_row],
              layout=widgets.Layout(
                  width="100%",
                  align_items="flex-start",
                  margin="6px 0 0 0",
              ),
-         ),
-         # Directly under the box you type in: what could come next,
-         # each one a click that fills the box rather than sends it —
-         # a suggestion is an offer, and the sending stays the user's.
-         next_steps_box,
-         # Below the message box: click • Main / • Subagent to enter its chat.
-         # Hidden entirely while nothing but Main exists.
+         )])
+    _input_area.add_class("delfin-agent-input-area")
+    # The Claude Code panel beside the chat (delfin-voila --claude-terminal
+    # only). The page script attaches it to the server's restricted
+    # terminal the first time it is shown; hiding it keeps the session.
+    _chat_area = chat_frame
+    from delfin.dashboard import claude_terminal as _claude_term
+    if _claude_term.enabled():
+        _term_cwd = os.environ.get(_claude_term.CWD_ENV, "") or "~"
+        _home = str(Path.home())
+        if _term_cwd == _home or _term_cwd.startswith(_home + os.sep):
+            _term_cwd = "~" + _term_cwd[len(_home):]
+        _term_head = widgets.HTML(
+            value=(f'<span title="{_html.escape(_term_cwd)}">Claude Code '
+                   f'&middot; {_html.escape(_term_cwd)}</span>'))
+        _term_head.add_class("delfin-claude-term-head")
+        _term_host = widgets.HTML(value='<div class="delfin-claude-term"></div>')
+        _term_host.add_class("delfin-claude-term-host")
+        claude_term_panel = widgets.VBox(
+            [_term_head, _term_host], layout=widgets.Layout(display="none"))
+        claude_term_panel.add_class("delfin-claude-term-panel")
+        claude_term_btn = widgets.Button(
+            description="Claude Code", icon="terminal",
+            tooltip=("Show the Claude Code CLI beside the chat. It keeps "
+                     "running while hidden; a reload reattaches to it."),
+            layout=widgets.Layout(width="auto", flex="0 0 auto"))
+
+        def _toggle_claude_term(_b):
+            opening = claude_term_panel.layout.display == "none"
+            claude_term_panel.layout.display = "" if opening else "none"
+            claude_term_btn.button_style = "info" if opening else ""
+
+        claude_term_btn.on_click(_toggle_claude_term)
+        git_group.children = tuple(git_group.children) + (claude_term_btn,)
+        _chat_area = widgets.HBox([chat_frame, claude_term_panel])
+        _chat_area.add_class("delfin-agent-chat-row")
+        ctx.add_init_js(_claude_term.init_js())
+    agent_content = widgets.VBox(
+        [css_widget, _enter_js_output, controls_row, search_row,
+         cycle_inspector_html, inspector_actions_row,
+         inspector_detail_box,
+         _chat_area,
+         _input_area,
+         # Then who is working (click to enter a chat), finished delegates
+         # in one row, and the panels -- capped, scrolling in themselves.
          agent_view_chips,
-         # Finished delegates, collapsed into one row that does not grow.
          agent_archive_dropdown,
-         # Directly under the message box, most prominent: pending permission
-         # requests (Self-Mod Guard / KIT confirms) — right where you look and
-         # act. The container is empty when nothing is pending, so the task
-         # list sits right below it; a request appears above the tasks the
-         # moment it's needed and collapses away again once you decide.
-         kit_confirm_container,
-         # Then the task list, then ALL subagent views co-located in one place
-         # (live Agent-calls + running/recent telemetry) so "where are the
-         # subagents" is never a question again.
-         task_ticker_html, todo_pane_html,
-         subagent_pane_html, subagent_panel_html, background_rows_box,
-         status_line_html, tool_trace_panel_html,
-         security_panel_html],
+         below_fold],
     )
+    agent_content.add_class("delfin-agent-root")
+    # Where the tab starts on the page, so its height can be "the rest of
+    # the window". Measured, not guessed: the header above it differs
+    # between Voila and Jupyter, and between the single and the session
+    # layout. Re-measured on resize and while the page settles.
+    _measure_top_js = (
+        "(function(){if(window.__delfinAgentTop)return;"
+        "window.__delfinAgentTop=1;function m(){"
+        "var rs=document.querySelectorAll('.delfin-agent-root');"
+        "for(var i=0;i<rs.length;i++){var r=rs[i];if(!r.offsetParent)continue;"
+        "var t=r.getBoundingClientRect().top+window.scrollY;"
+        "document.documentElement.style.setProperty('--delfin-agent-top',"
+        "Math.max(0,Math.round(t))+'px');return;}}"
+        "window.addEventListener('resize',m);setInterval(m,1500);m();})();")
+    try:
+        ctx.run_js(_measure_top_js, keep=True)
+    except TypeError:                    # a context without page scripts
+        try:
+            ctx.run_js(_measure_top_js)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
     if not _yaml_ok:
         missing_html = widgets.HTML(
@@ -8401,9 +9096,9 @@ def create_tab(ctx):
         sa_calls = data.get("subagent_calls") or []
         if sa_calls:
             state["subagent_calls"] = sa_calls
-        todo_payload = data.get("todo_payload") or []
-        if todo_payload:
-            state["current_todos"] = todo_payload
+        # The saved plan, an empty one included: keeping the previous
+        # session's plan when this one had none showed a foreign plan.
+        state["current_todos"] = list(data.get("todo_payload") or [])
         # last_compaction_info goes back on the engine so /context shows
         # accurate "last compaction" info after resume.
         lci = data.get("last_compaction_info")
@@ -9926,10 +10621,16 @@ def create_tab(ctx):
     # __delfinChatSync decides between following the new end and putting the
     # reader back; the fallback covers a refresh that lands before the
     # startup script has run.
+    # The button carries no state of its own: shown or not, and which of
+    # its two labels is visible, comes from the host's marks (see the
+    # stylesheet), so the copy inserted by each refresh looks exactly like
+    # the one it replaces.
     _SCROLL_TAG = (
-        '<button type="button" class="delfin-chat-jump" hidden onclick="'
+        '<button type="button" class="delfin-chat-jump" onclick="'
         "if(window.__delfinChatToBottom)window.__delfinChatToBottom(this);"
-        '">\u2193 Newest</button>'
+        '"><span class="delfin-chat-jump-newest">\u2193 Newest</span>'
+        '<span class="delfin-chat-jump-unseen">\u2193 New messages</span>'
+        '</button>'
         '<img src="" onerror="'
         "var c=this.closest('.delfin-agent-chat-host');"
         "if(c){if(window.__delfinChatSync){window.__delfinChatSync(c);}"
@@ -10066,6 +10767,10 @@ def create_tab(ctx):
 
     def _update_status():
         """Update the status bar from engine state."""
+        try:
+            _refresh_git_buttons()
+        except Exception:
+            pass
         # Live context-window usage bar (cheap, idempotent — fine to call
         # every time the status line refreshes; that already happens after
         # every send/stop/handoff/compact).
@@ -10108,6 +10813,10 @@ def create_tab(ctx):
                 last_turn_cost_usd=float(state.get("_last_turn_cost") or 0.0),
                 last_turn_timing=str(state.get("_last_turn_timing") or ""),
             )
+            state["_fold_tokens"] = (int(s.get("input_tokens") or 0),
+                                     int(s.get("output_tokens") or 0),
+                                     float(s.get("cost_usd") or 0.0))
+            _refresh_fold_title()
         else:
             backend = _resolve_backend() if _cli_available else "api"
             status_html.value = _render_status(
@@ -10504,11 +11213,25 @@ def create_tab(ctx):
 
     def _update_queue_display():
         """Update the queue indicator."""
-        n = len(state["message_queue"])
+        # The queue at the foot of the chat: a head line, then each waiting
+        # message on one line, oldest first (the order they will be sent).
+        queue = list(state["message_queue"])
+        n = len(queue)
         if n > 0:
+            shown = queue[:4]
+            rows = "".join(
+                f'<div class="delfin-agent-queue-row">'
+                f'<span class="delfin-agent-queue-n">{i}</span> '
+                f'{_html.escape(" ".join(str(m).split())[:200])}</div>'
+                for i, m in enumerate(shown, 1))
+            if n > len(shown):
+                rows += (f'<div class="delfin-agent-queue-row">'
+                         f'… +{n - len(shown)} more</div>')
             queue_html.value = (
-                f'<span class="delfin-agent-queue">'
-                f'{n} message{"s" if n != 1 else ""} queued</span>'
+                f'<div class="delfin-agent-queue">'
+                f'<div class="delfin-agent-queue-head">⏳ {n} message'
+                f'{"s" if n != 1 else ""} queued — sent when the agent '
+                f'is done · /stop interrupts</div>{rows}</div>'
             )
         else:
             queue_html.value = ""
@@ -10524,6 +11247,8 @@ def create_tab(ctx):
         eng = state.get("engine")
         if not eng or not getattr(eng, "messages", None):
             context_bar_html.value = ""
+            if state.pop("_fold_ctx", None) is not None:
+                _refresh_fold_title()
             return
         try:
             tokens = int(eng._estimate_context_tokens())
@@ -10535,6 +11260,8 @@ def create_tab(ctx):
             context_bar_html.value = ""
             return
         pct = min(100.0, tokens / window * 100.0)
+        state["_fold_ctx"] = pct
+        _refresh_fold_title()
         if pct >= 80.0:
             fill = "#ef4444"
         elif pct >= 60.0:
@@ -16524,6 +17251,52 @@ def create_tab(ctx):
         except Exception as exc:
             _append_system_message(f"Notebook export failed: {exc}")
 
+    _REPORT_DOWNLOAD_MAX = 50 * 1024 * 1024
+
+    def _download_report_copy(report_dir) -> str:
+        """Hand the user a ZIP of the report just written, in the browser.
+
+        The report directory is what the maintainers get -- already
+        redacted when it was written -- so the copy is exactly that, and
+        it is what replaced the Export buttons: one press files the
+        report AND leaves a copy with the person who pressed it. Returns
+        the line for the chat, "" when nothing was offered.
+        """
+        import base64
+        import io
+        import json as _json
+        import zipfile
+        try:
+            root = Path(report_dir)
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for f in sorted(root.rglob("*")):
+                    if f.is_file() and not f.is_symlink():
+                        zf.write(f, f"{root.name}/{f.relative_to(root)}")
+            payload = buf.getvalue()
+            if len(payload) > _REPORT_DOWNLOAD_MAX:
+                return ("\n⬇ No download: the report is "
+                        f"{len(payload) // (1024 * 1024)} MB; the copy in "
+                        "the archive is complete.")
+            name = f"{root.name}.zip"
+            js = (
+                "(function(){"
+                f"const n={_json.dumps(name)};"
+                f"const b={_json.dumps(base64.b64encode(payload).decode())};"
+                "try{const s=atob(b);const u=new Uint8Array(s.length);"
+                "for(let i=0;i<s.length;i++){u[i]=s.charCodeAt(i);}"
+                "const url=URL.createObjectURL(new Blob([u],"
+                "{type:'application/zip'}));"
+                "const a=document.createElement('a');a.href=url;a.download=n;"
+                "document.body.appendChild(a);a.click();"
+                "setTimeout(function(){URL.revokeObjectURL(url);a.remove();},"
+                "1500);}catch(e){console.error('report download failed',e);}"
+                "})();")
+            ctx.run_js(js)
+            return f"\n⬇ A copy was downloaded: `{name}`"
+        except Exception as exc:
+            return f"\n⚠️ No download ({exc}); the archive copy is complete."
+
     def _on_bug_report(button):
         """Bundle the current conversation + run config into the archive.
 
@@ -16602,8 +17375,10 @@ def create_tab(ctx):
                     )
             except Exception as exc:
                 remote_line = f"\n⚠️ Remote push skipped: {exc}"
+            download_line = _download_report_copy(report_dir)
             _append_system_message(
-                f"🐞 Bug report saved → `{short}`{remote_line}\n\n"
+                f"🐞 Bug report saved → `{short}`{remote_line}"
+                f"{download_line}\n\n"
                 f"Contains: conversation, engine messages, "
                 f"mode/provider/model/effort/perms, tokens, cost, versions."
             )
@@ -16861,16 +17636,13 @@ def create_tab(ctx):
                 _set_working(False)
                 # Fall through to send normally
             else:
+                # Into the queue at the foot of the chat, not the
+                # transcript: the message enters the chat once, when it is
+                # sent. It used to be shown here as a bubble AND again by
+                # the send that drained it, so every queued line appeared
+                # twice, with a system line between the two.
                 state["message_queue"].append(user_text)
                 input_textarea.value = ""
-                _append_chat_message(
-                    "user", user_text,
-                    **({"origin": "event"} if state.get("_on_its_own")
-                       else {}))
-                _append_system_message(
-                    f"\U0001f4e8 Queued — agent will receive this after finishing. "
-                    f"Type /stop to interrupt."
-                )
                 _update_queue_display()
                 return
 
@@ -17166,6 +17938,16 @@ def create_tab(ctx):
                     never fired (a turn waited 1806 s, 2026-09-11); and it
                     was rendered inside the answer, three times over."""
                     state["_last_stream_activity"] = time.monotonic()
+                    # The open-tasks notice repeats what the task line at
+                    # the foot of the chat already shows; the terminal,
+                    # which has no such line, still prints it.
+                    try:
+                        from delfin.agent.agent_tasks import (
+                            is_open_tasks_notice as _is_ot)
+                        if _is_ot(text):
+                            return
+                    except Exception:
+                        pass
                     if text and text.strip():
                         # Close the answer so far before the notice goes
                         # under it. Left open, the next token found the
@@ -17503,6 +18285,10 @@ def create_tab(ctx):
                         todos = parsed.get("todos") or []
                         # Persist current todo plan for inspectors / status line
                         state["current_todos"] = todos
+                        try:
+                            _refresh_task_ticker()
+                        except Exception:
+                            pass
                         # Update the persistent plan pane (visible while agent works)
                         _pane_html = _render_todo_pane_html(todos)
                         if _pane_html:
@@ -19599,6 +20385,8 @@ def create_tab(ctx):
         # first turn — task_list/panel filter by it, so old tasks don't leak in.
         _new_sid = (getattr(engine, "session_id", "") or "") if engine else ""
         state["active_session_id"] = _new_sid
+        # A new session starts without the last one's CLI plan.
+        state["current_todos"] = []
         try:
             kp = getattr(engine, "kit_permissions", None) if engine else None
             if kp is not None:
@@ -20723,6 +21511,10 @@ def create_tab(ctx):
                 pass
         _stop_job_event_watcher()
         state["_subagent_live_stop"] = True
+        try:
+            state["_subagent_live_wake"].set()
+        except Exception:
+            pass
         for key in ("_job_wake_timer", "_background_timer", "_stale_timer",
                     "_stale_kill_timer"):
             timer = state.get(key)
@@ -20757,6 +21549,7 @@ def create_tab(ctx):
     # so the exit path does not write again.
     import atexit as _atexit
     _atexit.register(_shutdown_tab, save=False)
+    _OPEN_TAB_SHUTDOWNS.append(_shutdown_tab)
     _register_process_exit_cleanup()
 
     return tab_widget, {
@@ -20896,12 +21689,14 @@ def _render_status(
             f'<span class="gate-text">{gate_text}</span>'
         )
 
+    # Mode, backend and permission profile are what the dropdowns right
+    # above this line already show; repeating them as badges cost the chat
+    # a row. The role stays only where it says something the dropdowns do
+    # not -- the position in a pipeline of more than one role.
+    del backend_info, perm_badge
     return (
         f'<div class="delfin-agent-status">'
-        f'<span class="mode-badge">{_html.escape(_mode_label(mode))}</span>'
-        f"{role_info}"
-        f"{backend_info}"
-        f"{perm_badge}"
+        f"{role_info if role_total > 1 else ''}"
         f"{gate_info}"
         f'<span class="tokens-info">{tokens_str} · {cost_str}{_turn_str}</span>'
         f"</div>"

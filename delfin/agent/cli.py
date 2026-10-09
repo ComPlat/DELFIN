@@ -1512,7 +1512,14 @@ def cmd_chat(args: argparse.Namespace) -> int:
         _sid = str(getattr(engine, "session_id", "") or "")
         _key = _presence_key_for(getattr(args, "session_name", ""), _sid)
         broker = TerminalConfirmBroker(
+            # 0 waits for an answer as long as it takes, which is right for
+            # someone at the keyboard. A session nobody watches (a wave run
+            # in tmux) passes --confirm-timeout: an unanswered question then
+            # expires as "not now" -- never as a refusal -- and the session
+            # carries on instead of standing still for hours.
+            timeout_s=float(getattr(args, "confirm_timeout", 0) or 0),
             persist=lambda pat: engine.persist_kit_pattern(pat, kind="allow"),
+            persist_read=lambda d: engine.add_kit_read_dir(d, persist=True),
             set_mode=engine.set_kit_permission_mode,
             # So a question waiting in this pane can be read -- and
             # answered -- from outside it, whole.
@@ -3434,9 +3441,16 @@ def build_parser() -> argparse.ArgumentParser:
                       choices=["", "plan", "default", "acceptEdits",
                                "bypassPermissions"],
                       help="Start in this approval posture (default: plan)")
+    chat.add_argument("--confirm-timeout", type=float, default=0.0,
+                      dest="confirm_timeout", metavar="SECONDS",
+                      help="Let an unanswered question in the terminal expire "
+                           "after SECONDS as 'not now' (never as a refusal); "
+                           "0 waits for an answer (default)")
     chat.add_argument("--unattended", action="store_true",
                       help="Required alongside --permission-mode "
-                           "bypassPermissions; nothing will be asked")
+                           "bypassPermissions; nothing inside the working "
+                           "folders will be asked, and reading outside them "
+                           "is refused unless an approval can reach you")
     chat.add_argument("--add-dir", action="append", default=[],
                       dest="add_dirs", metavar="PATH",
                       help="Also writable this session (repeatable, never "

@@ -56,7 +56,7 @@ const docListeners = {};
 let pendingScroll = [];
 
 function makeChat(id, visible) {
-  const jump = {hidden: true, textContent: ''};
+  const jump = {};
   const c = {
     _top: 0,
     scrollHeight: visible ? 1000 : 0,

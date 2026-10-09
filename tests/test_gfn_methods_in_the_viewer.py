@@ -27,6 +27,8 @@ _WATER = "3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
 #: enough and the test then runs on every machine. The fixture uses
 #: the real xtb when there is one. See conftest.xtb_on_path.
 _needs_xtb = pytest.mark.usefixtures("xtb_on_path")
+#: A test of xtb's RESULTS: a real xtb or a named skip (conftest.real_xtb).
+_needs_real_xtb = pytest.mark.usefixtures("real_xtb")
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +74,7 @@ def test_nothing_to_optimise_is_not_an_error_worth_running():
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_it_relaxes_and_says_what_it_cost():
     result = gfn.optimize_with_gfn(_WATER, "gfnff", charge=0, uhf=0)
 
@@ -96,6 +99,7 @@ def test_it_relaxes_and_says_what_it_cost():
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_the_charge_and_the_spin_reach_xtb():
     """A different charge has to give a different energy, or they were dropped."""
     neutral = gfn.optimize_with_gfn(_WATER, "gfn2", charge=0, uhf=0)
@@ -221,6 +225,7 @@ def test_dragging_keeps_a_force_field_that_lives_in_the_browser(editor):
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_result_names_the_program_that_produced_it():
     """Passing --gfn 2 and being given GFN2 are two different claims."""
     result = gfn.optimize_with_gfn(_WATER, "gfn2")
@@ -244,6 +249,7 @@ def test_the_result_names_the_program_that_produced_it():
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_each_method_reports_its_own_hamiltonian():
     assert gfn.optimize_with_gfn(_WATER, "gfnff")["hamiltonian"] == "GFN-FF"
     assert gfn.optimize_with_gfn(_WATER, "gfn1")["hamiltonian"] == "GFN1-xTB"
@@ -598,6 +604,7 @@ def test_the_atom_count_in_the_header_is_not_trusted():
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_every_atom_reaches_xtb_even_with_a_wrong_header():
     lying = "2\ntwo, it says\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
 
@@ -912,6 +919,7 @@ def test_optimise_is_a_switch_that_can_be_turned_off(editor):
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_a_run_that_is_switched_off_ends_rather_than_being_waited_out():
     import threading
     import time
@@ -1725,6 +1733,7 @@ def test_xtb_talks_to_a_file_and_not_into_a_pipe():
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_a_run_that_says_more_than_a_pipe_holds_still_ends(tmp_path):
     """The regression itself, at the size that showed it.
 
@@ -1841,6 +1850,7 @@ def test_the_grab_ends_the_run_and_the_release_starts_the_next_one(editor):
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
     """The whole of point five, driven the way the browser drives it.
 
@@ -1868,6 +1878,8 @@ def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
 
     handed: list[str] = []
     real = tab_submit._gfn.optimize_with_gfn
+    import threading as _threading
+    picked_up = _threading.Event()
 
     def recording(text, method, **kwargs):
         # The single cycle that reads GFN-FF's bonding is not an optimisation
@@ -1875,6 +1887,13 @@ def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
         # like the second.
         if kwargs.get("max_steps") != 1:
             handed.append(text)
+            # The first run is still going when the atom is picked up: that
+            # is the situation under test. Left to the clock, a fast xtb
+            # finished propane before the pick-up (the 6.7.1 release build,
+            # 5/5 on the slow-tests runner image), the switch was already
+            # off, and nothing was left to restart.
+            if len(handed) == 1:
+                picked_up.wait(10)
         return real(text, method, **kwargs)
 
     monkeypatch.setattr(tab_submit._gfn, "optimize_with_gfn", recording)
@@ -1886,6 +1905,7 @@ def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
 
     # an atom is picked up, and the page says so before the run can finish
     refs["submit_cmd_sync"].value = "gfngrab:1:"
+    picked_up.set()
     assert state.get("optimize_run") is None, "the run was not ended"
     assert state.get("optimize_interrupted") is not None
 
@@ -2019,6 +2039,7 @@ def test_holding_an_atom_where_it_is_is_not_asked_of_xtb():
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_a_pull_negotiates_and_a_fix_is_met():
     """The whole of point six, against the program itself."""
     propane = (
@@ -2787,6 +2808,7 @@ def test_a_pulled_atom_gets_as_far_as_the_force_allows(editor):
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_holding_a_value_moves_the_structure_to_it_there_and_then(editor):
     """Point of the whole thing, driven the way the buttons drive it: Hold is
     pressed, Optimise is not, and the angle is what it was asked to be."""
@@ -2976,10 +2998,12 @@ def test_a_burst_is_not_played_at_the_pace_of_a_followed_hand(player_js):
     assert "Math.max(asked,play.gap)" in step
 
 
-#: How often the watching loop reads the log -- five times a second.
-#: Named, because a test that compares against it should say what it
-#: is comparing against.
-_READ_INTERVAL_S = 0.2
+#: How often the watching loop reads the log -- taken from the code, not
+#: copied. The copy said 0.2 s (five times a second) after the loop had
+#: been made to read every 0.05 s, so a 0.1 s run that rightly handed its
+#: path over twice was reported as a defect -- once the test first ran
+#: against a real xtb (slow-tests, 2026-10-09).
+_READ_INTERVAL_S = gfn.FRAME_READ_INTERVAL
 # Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
 # result, so it belongs in slow-tests.yml rather than the fast gate.
 # #70 moved it into the gate on the claim that it never consumed xtb
@@ -2995,6 +3019,7 @@ _READ_INTERVAL_S = 0.2
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_a_run_shorter_than_the_reading_interval_still_hands_its_path_over():
     """The watching loop reads the log five times a second at most.
 
@@ -3512,6 +3537,7 @@ def test_the_bonding_is_read_before_a_hand_is_laid_on_the_molecule(editor):
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_the_whole_cycle_end_to_end(editor):
     """Drag, let go, drag again, let go, press Optimise once.
 
@@ -3760,6 +3786,7 @@ def test_a_solvent_changes_the_answer_and_the_answer_says_so(editor):
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_gfnff_takes_a_solvent_too():
     """It is the method the drag and the release use, so if it could not be
     solvated the live half of the editor would be answering a different
@@ -5502,6 +5529,7 @@ def test_no_budget_means_no_leash_at_the_grab(editor, monkeypatch):
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_budget_prices_the_geometry_the_user_made(bare_editor):
     """The follow's own energy is about a structure nobody built.
 

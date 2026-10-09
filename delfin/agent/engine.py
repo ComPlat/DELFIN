@@ -868,6 +868,12 @@ class AgentEngine:
         """
         perms = self.kit_permissions
         if perms is None:
+            # The Claude CLI backend has no permissions object, but its
+            # file gate asks through the same callback (cli_gate).
+            setter = getattr(self.client, "set_confirm_callback", None)
+            if callable(setter):
+                setter(callback)
+                return True
             return False
         perms.confirm_callback = callback
         return True
@@ -998,6 +1004,37 @@ class AgentEngine:
                 return True, f"added (in-memory only — persist failed: {exc}): {resolved}"
         self._tell_the_running_turn(_granted_dir_note(resolved))
         return True, f"added: {resolved}"
+
+    def add_kit_read_dir(self, path, *,
+                         persist: bool = True) -> tuple[bool, str]:
+        """Let the agent READ in ``path`` -- this session, and with
+        ``persist`` every later one. Never writable: what "always allow
+        reading here" on an outside-read dialog does. Returns (ok, message).
+        """
+        perms = self.kit_permissions
+        if perms is None:
+            # The Claude CLI backend: its gate reloads the saved read dirs
+            # on every call, so saving is the whole grant.
+            if persist and hasattr(self.client, "set_confirm_callback"):
+                try:
+                    from . import kit_settings as _kit_settings
+                    _kit_settings.persist_read_dir(path)
+                    return True, f"readable (no write access): {path}"
+                except Exception as exc:
+                    return False, str(exc)
+            return False, "KIT permissions are not active (provider != 'kit')."
+        try:
+            resolved = perms.add_session_read_dir(path)
+        except ValueError as exc:
+            return False, str(exc)
+        if persist:
+            try:
+                from . import kit_settings as _kit_settings
+                _kit_settings.persist_read_dir(resolved)
+            except Exception as exc:
+                return True, (f"readable this session only (saving failed: "
+                              f"{exc}): {resolved}")
+        return True, f"readable (no write access): {resolved}"
 
     def list_kit_workspace_dirs(self) -> list[str]:
         """Return all workspace roots the KIT agent may touch (as strings)."""

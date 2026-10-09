@@ -237,7 +237,7 @@ def test_the_broker_does_not_grant_a_directory_on_a_plain_allow(tmp_path):
     assert calls == []                               # no directory handed out
 
 
-def test_the_permanent_button_says_it_grants_writes(tmp_path):
+def test_the_permanent_button_says_it_grants_reading_only(tmp_path):
     widgets = pytest.importorskip("ipywidgets")
     from delfin.agent.kit_confirm import KitConfirmBroker, _ConfirmRequest
 
@@ -250,4 +250,5 @@ def test_the_permanent_button_says_it_grants_writes(tmp_path):
                           args={"path": str(f)}, preview="")
     row = broker._build_request_row(req, widgets)
     status = row.children[1].value
-    assert "WRITABLE" in status
+    assert "READ-ONLY" in status
+    assert "WRITABLE" not in status
