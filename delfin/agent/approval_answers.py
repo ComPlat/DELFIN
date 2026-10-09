@@ -131,6 +131,14 @@ def write_choice_answer(record: dict, answers: list[str], *,
     approving something.
     """
     from . import file_confirm as _fc
+    # The answer goes beside the question. A terminal session publishes its
+    # questions in its own room (terminal_confirm), not the headless one,
+    # and an answer written to the headless room never arrived: `approvals
+    # answer` failed with "no request file" for every question a terminal
+    # session asked, and the session waited for an answer that could not
+    # come (wave 14, 2026-10-09).
+    if room is None and record.get("_file"):
+        room = Path(str(record["_file"])).parent
     room = Path(room) if room else _fc.requests_dir()
     request_id = str(record.get("id") or "")
     request_path = room / f"{request_id}.request.json"
