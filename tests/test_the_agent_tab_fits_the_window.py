@@ -121,3 +121,27 @@ def test_subagent_buttons_wrap_side_by_side():
     i = src.index("agent_view_chips = widgets.")
     assert src[i:i + 200].startswith("agent_view_chips = widgets.HBox(")
     assert 'flex_flow="row wrap"' in src[i:i + 200]
+
+
+def test_an_open_request_does_not_hide_the_task_line():
+    from delfin.dashboard.tab_agent import _AGENT_CSS
+    rules = [r.split("{")[0] for r in _AGENT_CSS.split("}")
+             if ".delfin-agent-request:not(" in r.split("{")[0]
+             and ".delfin-agent-chat-foot" in r.split("{")[0]]
+    assert rules
+    assert all(":not(.delfin-agent-task-strip)" in r for r in rules)
+
+
+def test_an_open_request_makes_the_chat_give_way():
+    """The confirm buttons were clipped under the chat frame's bottom edge;
+    while a request is open the transcript may shrink and the dock scrolls
+    in itself. The chat's inline min-height must be overridden."""
+    from delfin.dashboard.tab_agent import _AGENT_CSS
+    css = " ".join(_AGENT_CSS.split())
+    assert ("> .delfin-agent-chat-host { /* !important: the widget carries "
+            "min-height 200px inline. */ min-height: 60px !important;") in css
+    assert (".delfin-agent-chat-frame > .delfin-agent-dock { flex: 0 1 auto "
+            "!important; min-height: 0; overflow-y: auto;") in css
+    # A KIT confirmation takes the task line's place; a question does not.
+    assert ("kit-confirm > :not([style*=\"display: none\"])) > "
+            ".delfin-agent-task-strip { display: none !important;") in css

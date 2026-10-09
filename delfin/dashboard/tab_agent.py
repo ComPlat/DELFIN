@@ -825,11 +825,34 @@ _AGENT_CSS = """\
     background: #f5f9ff !important; padding: 4px 10px !important;
     margin: 0 !important;
 }
+/* An open request must be answerable. Measured 2026-10-09 at 1366x768: a
+   KIT confirmation's buttons sat at y=723..744 under a chat frame ending at
+   y=617, clipped by its overflow:hidden. While a request is open the
+   transcript gives way (down to 3 lines) and the dock may shrink below its
+   content, scrolling in itself, so the buttons stay inside the frame. */
+.delfin-agent-chat-frame > .delfin-agent-dock {
+    flex: 0 1 auto !important; min-height: 0; overflow-y: auto;
+}
+/* Its content keeps its height, so the overflow lands in the dock's own
+   scroll area instead of spilling out of a squeezed child. */
+.delfin-agent-chat-frame > .delfin-agent-dock > * { flex-shrink: 0 !important; }
+.delfin-agent-chat-frame:has(.delfin-agent-request:not([style*="display: none"])) > .delfin-agent-chat-host,
+.delfin-agent-chat-frame:has(.delfin-agent-kit-confirm > :not([style*="display: none"])) > .delfin-agent-chat-host {
+    /* !important: the widget carries min-height 200px inline. */
+    min-height: 60px !important;
+}
+/* A KIT confirmation takes the task line's place while it waits: it is
+   the one thing to answer. A question from the agent does not (below). */
+.delfin-agent-chat-frame:has(.delfin-agent-kit-confirm > :not([style*="display: none"])) > .delfin-agent-task-strip {
+    display: none !important;
+}
 /* A request (approval, question, plan acceptance) takes the place of the
-   task line at the foot of the chat while it is open: the reader answers
-   first and needs nothing else there. Read off the widgets' own display
-   state, so no code path that shows or hides a request has to know. */
-.delfin-agent-chat-frame:has(.delfin-agent-request:not([style*="display: none"])) > .delfin-agent-chat-foot {
+   suggestions at the foot of the chat while it is open. The task line
+   stays above it: a question is often about the plan, and hiding the plan
+   while it is asked left the reader without it. Read off the widgets' own
+   display state, so no code path that shows or hides a request has to
+   know. */
+.delfin-agent-chat-frame:has(.delfin-agent-request:not([style*="display: none"])) > .delfin-agent-chat-foot:not(.delfin-agent-task-strip) {
     display: none !important;
 }
 /* The replaced content. Layout only -- no height, no overflow: giving it
