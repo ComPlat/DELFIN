@@ -370,6 +370,74 @@ def check_once(
 # ---------------------------------------------------------------------------
 
 _AGENT_WATCH_FILENAME = "agent_watched_jobs.json"
+# Durable completion receipts for finished agent watches (phase-2/3): one per
+# (workspace, job, session), written at terminal detection so a turn that dies
+# between check and delivery -- or a restart -- still recovers the notice.
+# Mirrors the shell half's drain/confirm claim store (bash_jobs).
+_AGENT_WATCH_COMPLETIONS_FILENAME = "agent_watch_completions.json"
+
+
+def _agent_watch_completions_path(workspace: str | Path) -> Path:
+    return (Path(workspace).expanduser() / ".delfin"
+            / _AGENT_WATCH_COMPLETIONS_FILENAME)
+
+
+def _load_watch_completions(path: Path | None = None) -> dict:
+    p = path or _default_completions_path()
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"completions": {}}
+
+
+def _default_completions_path() -> Path:
+    # A caller that never sees a workspace (daemon sweep, restart) falls back
+    # to the shared home dir the watch list uses.
+    return Path.home() / ".delfin" / _AGENT_WATCH_COMPLETIONS_FILENAME
+
+
+def _save_watch_completions(data: dict, path: Path) -> None:
+    """Atomic write (temp + os.replace), the same pattern as ``save_watched``:
+    a reader racing a plain truncate would observe an empty completion list."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2))
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _record_completion(jid: str, kind: str, record: dict, workspace) -> None:
+    """Best-effort durable receipt for a finished watch (phase-2/3 G2).
+
+    Written on terminal detection so a turn that dies between check and
+    delivery -- or a restart -- still has the notice in the persisted store;
+    ``drain_watch_completions``/``confirm_watch_completions`` hand it to the
+    owning session exactly once. Idempotent per (workspace, job_id): the
+    first writer wins. Never raises -- persistence must not break the live
+    read.
+    """
+    try:
+        cpath = _agent_watch_completions_path(workspace)
+        cdata = _load_watch_completions(cpath)
+        comp = cdata.setdefault("completions", {})
+        if jid in comp:
+            return
+        comp[jid] = {"job_id": jid, "kind": kind, **record}
+        _save_watch_completions(cdata, cpath)
+    except Exception:
+        pass
+
+
 _AGENT_WATCH_MAX_AGE_S = 7 * 24 * 3600   # prune abandoned entries (~7 days)
 # Per-user list of workspaces that hold an agent watch file, so the headless
 # daemon can find them. Without it the daemon polled ONLY its own
@@ -750,7 +818,22 @@ def check_agent_jobs(
                 entry["last_state"] = state
                 changed = True
             if state in _OK_TERMINAL_STATES or state in _FAILURE_STATES:
-                if not consume and entry.get(marker):
+                _record_completion(jid, "slurm", {
+                    "description": entry.get("description", ""),
+                    "state": state,
+                    "ok": state in _OK_TERMINAL_STATES,
+                    "exit_code": None,
+                    "signatures": (scan_error_signatures(
+                        entry.get("folder", ""))
+                        if state in _FAILURE_STATES else []),
+                    "session_id": entry.get("session_id"),
+                    "finished_at": now,
+                }, workspace)
+                # V3-1: the busy drain must not re-announce a completion the
+                # idle wake already told THIS session (it set wake_notified).
+                if (consume and session_id is not None
+                        and entry.get("wake_notified")) or (
+                        not consume and entry.get(marker)):
                     continue
                 done.append({
                     "job_id": jid,
@@ -808,7 +891,17 @@ def check_agent_jobs(
                 if ci["runs"] or waited < _CI_NO_RUN_AFTER_S:
                     continue
                 state = "NO CI RUN"
-            if not consume and entry.get(marker):
+            _record_completion(jid, "ci", {
+                "description": entry.get("description", ""),
+                "state": state, "ok": state == "SUCCESS",
+                "exit_code": None, "signatures": ci.get("failed", []),
+                "url": ci.get("url", ""),
+                "session_id": entry.get("session_id"),
+                "finished_at": now,
+            }, workspace)
+            if (consume and session_id is not None
+                    and entry.get("wake_notified")) or (
+                    not consume and entry.get(marker)):
                 continue
             done.append({
                 "job_id": jid, "kind": "ci",
@@ -832,10 +925,22 @@ def check_agent_jobs(
                 job = None
             if job is None or job.poll() is None:
                 continue        # unknown yet (age prune applies) or running
-            if not consume and entry.get(marker):
-                continue
             status = job.status_dict()
             rc = status.get("exit_code")
+            _record_completion(jid, "bash", {
+                "description": entry.get("description", ""),
+                "state": ("FINISHED (children still running)"
+                          if status.get("children_running") else "FINISHED"),
+                "ok": rc == 0 and not status.get("children_running"),
+                "exit_code": rc,
+                "signatures": [],
+                "session_id": entry.get("session_id"),
+                "finished_at": now,
+            }, workspace)
+            if (consume and session_id is not None
+                    and entry.get("wake_notified")) or (
+                    not consume and entry.get(marker)):
+                continue
             done.append({
                 "job_id": jid,
                 "kind": "bash",
@@ -1206,6 +1311,107 @@ def check_agent_workspaces_once(settings: dict | None = None) -> list[dict]:
         record_finding(finding)
         announce(finding, settings=settings)
     return reported
+
+
+# How long a just-claimed completion stays hidden from its own session's
+# re-drain. Mirrors the shell half's claimed-grace: long enough that a single
+# pass (idle peek + busy drain) does not double-return, short enough that a
+# session which claimed then died before confirming can still reclaim after
+# restart.
+_WATCH_RECLAIM_S = 30.0
+
+
+def drain_watch_completions(
+    workspace: str | Path,
+    *,
+    session_id: str | None = None,
+) -> list[dict]:
+    """Claim and return the persisted completion receipts for a session.
+
+    Phase-2/3 G2: a finished watch leaves a durable receipt (written at
+    terminal detection in :func:`check_agent_jobs`), so a turn that died
+    between check and delivery -- or a restart -- can still recover the
+    notice. Each receipt is returned exactly once per owning session: the
+    first drain claims it (``claimed_at``) and ``confirm_watch_completions``
+    permanently acks it (``confirmed_at``, pruned). A claimed-but-unconfirmed
+    receipt is reclaimable again after :data:`_WATCH_RECLAIM_S`, so a dead
+    turn does not lose the completion forever.
+
+    Mirrors the shell half's ``drain_finished_events`` / ``confirm`` claim
+    store for completions.
+    """
+    path = _agent_watch_completions_path(workspace)
+    data = _load_watch_completions(path)
+    comp = data.get("completions", {})
+    now = time.time()
+    out: list[dict] = []
+    changed = False
+    for jid, r in list(comp.items()):
+        if r.get("confirmed_at"):
+            comp.pop(jid, None)       # permanently acked -- prune
+            changed = True
+            continue
+        if session_id is not None and r.get("session_id") != session_id:
+            continue                  # not that session's work
+        claimed_at = r.get("claimed_at")
+        if claimed_at is not None and claimed_by_this(r, session_id) and (
+                now - float(claimed_at) < _WATCH_RECLAIM_S):
+            continue                  # this session just read it -- dedup
+        out.append(dict(r))
+        r["claimed_at"] = now         # claim for exactly-once per session
+        r["claimed_by"] = session_id
+        changed = True
+    if changed:
+        try:
+            _save_watch_completions(data, path)
+        except Exception:
+            pass
+    return out
+
+
+def claimed_by_this(r: dict, session_id: str | None) -> bool:
+    """Was ``r`` claimed by this reader? (``session_id=None`` = the daemon,
+    which is a single reader itself.)"""
+    mine = r.get("claimed_by")
+    if session_id is not None:
+        return mine == session_id
+    return mine == "" or mine is None  # daemon claims are its own
+
+
+def confirm_watch_completions(
+    workspace: str | Path,
+    receipts: list[dict],
+    *,
+    session_id: str | None = None,
+) -> None:
+    """Permanently ack (confirm) completion receipts that have been shown to
+    a session. Confirmed receipts are no longer returned by
+    :func:`drain_watch_completions` and are pruned from the store, so a
+    completion is delivered to its owning session exactly once across
+    restarts. Only receipts owned by ``session_id`` are confirmed (a session
+    must not ack another's work); ``session_id=None`` (the daemon) may ack
+    any."""
+    path = _agent_watch_completions_path(workspace)
+    data = _load_watch_completions(path)
+    comp = data.get("completions", {})
+    now = time.time()
+    changed = False
+    for r in receipts or []:
+        jid = r.get("job_id")
+        rec = comp.get(jid)
+        if not rec:
+            continue
+        if session_id is not None and rec.get("session_id") != session_id:
+            continue              # not this session's to ack
+        rec["confirmed_at"] = now
+        rec["claimed_at"] = None  # acked: no longer claimable
+        rec.pop("claimed_by", None)
+        changed = True
+    if changed:
+        try:
+            _save_watch_completions(data, path)
+        except Exception:
+            pass
 
 
 def run_loop(

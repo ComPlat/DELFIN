@@ -86,6 +86,7 @@ from typing import Optional
 
 from delfin.agent import proc_identity
 from delfin.agent import process_budget
+from delfin.agent import untrusted
 
 
 _DEFAULT_BG_TIMEOUT_S = 24 * 3600    # 24 h hard cap
@@ -1718,8 +1719,10 @@ def drain_finished_events(workspace: str | Path) -> list[dict]:
                     "watched_slurm_jobs": list(rec.get("watched_slurm_jobs")
                                                or []),
                     "runtime_s": round(max(0.0, finished_at - started), 3),
-                    "stdout_tail": _tail_chars(rec.get("stdout_path") or ""),
-                    "stderr_tail": _tail_chars(rec.get("stderr_path") or ""),
+                    "stdout_tail": untrusted.wrap(
+                        "bash_job:stdout", _tail_chars(rec.get("stdout_path") or "")),
+                    "stderr_tail": untrusted.wrap(
+                        "bash_job:stderr", _tail_chars(rec.get("stderr_path") or "")),
                 })
             if changed:
                 _atomic_write_json(_registry_path(workspace), data)
