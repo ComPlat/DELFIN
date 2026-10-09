@@ -592,15 +592,53 @@ def workspace_choices(ctx: Any, typed: str = "") -> list[str]:
     that start with what was typed. Hidden folders only when the typed
     name starts with a dot. Asked on every keystroke, so bounded and
     never raising.
+
+    A session-worktree directory whose own session is still live is NOT
+    offered: starting a session there would nest a worktree-of-a-worktree,
+    and the earlier attempt left the tree offered in the dropdown only to
+    refuse it on Start (agent_sessions ``_on_start``). A worktree whose
+    session is gone stays offered -- it is startable and its state reports
+    ``releasable`` so the picker can offer it back.
     """
+    def _offer(text: str) -> bool:
+        text = str(text or "").strip()
+        if not text:
+            return False
+        # A session worktree a live holder is in cannot be chosen. The
+        # exclusion follows the owning process and the live session, never a
+        # guess from the path: a tree whose owning PID is still alive is not
+        # offered even when the session has left the presence file (stale
+        # presence), and one a live session holds is refused too. A plain
+        # directory (no sidecar), or a record we cannot read, is always
+        # offered.
+        try:
+            import os as _os
+            side = read_worktree_sidecar(text)
+        except Exception:
+            return True
+        if side is None:
+            return True
+        if _live_session_in(text):
+            return False
+        pid = int(side.get("pid") or 0)
+        if pid > 0:
+            try:
+                _os.kill(pid, 0)
+                return False
+            except ProcessLookupError:
+                pass
+            except OSError:
+                return False
+        return True
+
     out: list[str] = []
     for d in (default_workspace(ctx), getattr(ctx, "agent_dir", None),
               getattr(ctx, "calc_dir", None), getattr(ctx, "repo_dir", None)):
         text = str(d or "").strip()
-        if text and text not in out:
+        if _offer(text) and text not in out:
             out.append(text)
     for text in _folders_like(typed):
-        if text not in out:
+        if _offer(text) and text not in out:
             out.append(text)
         if len(out) >= _PICKER_MAX:
             break
@@ -933,6 +971,43 @@ def _live_session_in(workspace) -> str:
         label = title or key or "unnamed"
         return f"{label} on {host}" if host else label
     return ""
+
+
+def session_worktree_state(workspace, *, hold_fn=None) -> dict:
+    """Classify a directory as a session worktree: its holding state.
+
+    Returns ``{"is_worktree": bool, "holder": str, "releasable": bool}``.
+
+      - ``is_worktree`` — the path carries a ``.delfin/session_worktree.json``
+        sidecar, so it is a session worktree on disk (or a session is started
+        inside one).
+      - ``holder`` — the label of a LIVE session working in it; empty when no
+        live session is in it (its owning session has gone, or the path is
+        not a worktree at all).
+      - ``releasable`` — a worktree whose session is gone: it may be handed
+        back through the existing ``release_session_worktree``. Releasing
+        never deletes a checkout; that decision is ``exit_worktree``'s.
+
+    ``hold_fn`` is the liveness probe (default module ``_live_session_in``).
+    It is injectable so the picker -- and tests -- can drive the held/gone
+    decision without touching the presence files. Never raises: a directory
+    that cannot be classified is simply "not a worktree".
+    """
+    if hold_fn is None:
+        hold_fn = _live_session_in
+    side = read_worktree_sidecar(workspace)
+    is_worktree = side is not None
+    holder = ""
+    if is_worktree:
+        try:
+            holder = str(hold_fn(workspace) or "")
+        except Exception:
+            holder = ""
+    return {
+        "is_worktree": is_worktree,
+        "holder": holder,
+        "releasable": is_worktree and not holder,
+    }
 
 
 def release_session_worktree(workspace) -> dict:
@@ -1395,6 +1470,22 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         """Offer a worktree inside a git repository, and pre-select it when
         another open session already works in that repository."""
         where = str(workdir_box.value or "").strip()
+        # A worktree another live session holds is not a place to start: it
+        # is itself told apart here (its holding session, by name) so the
+        # picker cannot silently offer it. Same refusal as _on_start, at the
+        # moment of choosing and not only on Start.
+        try:
+            held = session_worktree_state(where)
+        except Exception:
+            held = {"is_worktree": False, "holder": "", "releasable": False}
+        if held["is_worktree"] and held["holder"]:
+            own_worktree_box.layout.display = "none"
+            own_worktree_box.value = False
+            worktree_hint.value = (
+                "<div style='font-size:10px;color:#546e7a'>Held by a live "
+                f"session ({html.escape(held['holder'])}). Choose another "
+                "directory, or release it once that session ends.</div>")
+            return
         try:
             from delfin.agent import session_presence as _presence
             in_repo = bool(where) and bool(_presence.repository_of(where)["root"])
