@@ -730,7 +730,34 @@ _AGENT_CSS = """\
    approvals, questions -- sits INSIDE the box the reader is looking at,
    and the transcript above it is the part that scrolls. The panels under
    the input fold away (an accordion, closed by default). */
-.delfin-agent-root > .delfin-agent-chat-frame {
+/* With --claude-terminal the frame shares a row with the Claude Code
+   panel; the row then takes the frame's place in the tab. */
+.delfin-agent-root > .delfin-agent-chat-row {
+    flex: 1 1 0 !important;
+    min-height: 45vh;
+    display: flex; flex-direction: row; gap: 8px;
+    align-items: stretch;
+}
+.delfin-agent-chat-row > .delfin-agent-chat-frame { min-width: 0; }
+.delfin-claude-term-panel {
+    flex: 1 1 0 !important; min-width: 0;
+    display: flex; flex-direction: column;
+    border: 1px solid #333; border-radius: 6px; overflow: hidden;
+    background: #1e1e1e;
+}
+.delfin-claude-term-panel > .delfin-claude-term-head {
+    flex: 0 0 auto; color: #cbd5e1; background: #111827;
+    font-size: 12px; padding: 3px 10px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.delfin-claude-term-panel > .delfin-claude-term-host {
+    flex: 1 1 0 !important; min-height: 0;
+}
+.delfin-claude-term-host .widget-html-content,
+.delfin-claude-term-host .delfin-claude-term { height: 100%; width: 100%; }
+.delfin-claude-term { padding: 4px; box-sizing: border-box; }
+.delfin-agent-root > .delfin-agent-chat-frame,
+.delfin-agent-chat-row > .delfin-agent-chat-frame {
     flex: 1 1 0 !important;
     min-height: 45vh;
     display: flex;
@@ -5081,6 +5108,29 @@ _record_solo_turn_outcome = _record_turn_outcome
 # Tab creation
 # ---------------------------------------------------------------------------
 
+#: The ``shutdown`` of every tab built in this process, newest last. A
+#: kernel builds one and closes it at exit (atexit, below); a test process
+#: builds hundreds and closed none, so each left its watcher thread running
+#: for the rest of the run (measured: 8 live threads after 37 tests of four
+#: files). ``close_open_tabs`` is how a test harness ends them.
+_OPEN_TAB_SHUTDOWNS: list = []
+
+
+def close_open_tabs() -> int:
+    """Close every tab built so far in this process; return how many.
+
+    Without saving: this is for a harness ending its own tabs, not for a
+    user's session (the session list closes those, with a save)."""
+    closed = 0
+    while _OPEN_TAB_SHUTDOWNS:
+        shutdown = _OPEN_TAB_SHUTDOWNS.pop()
+        try:
+            shutdown(save=False)
+            closed += 1
+        except Exception:
+            pass
+    return closed
+
 
 def create_tab(ctx):
     """Create the DELFIN Agent tab.
@@ -7796,9 +7846,15 @@ def create_tab(ctx):
         if state.get("_subagent_live_thread") is not None:
             return
         state["_subagent_live_stop"] = False
+        # Waited on rather than slept: closing the tab sets it and the loop
+        # ends at once instead of after its current interval, and it never
+        # calls time.sleep -- a test that patches that process-wide counted
+        # this thread's 1.5 s as its own (CI on PR #138).
+        import threading as _threading_ev
+        _wake = _threading_ev.Event()
+        state["_subagent_live_wake"] = _wake
 
         def _loop() -> None:
-            import time as _t2
             from delfin.agent.subagents import read_running as _rr
             was_active = False
             while not state.get("_subagent_live_stop"):
@@ -7816,7 +7872,7 @@ def create_tab(ctx):
                     was_active = active
                 except Exception:
                     pass
-                _t2.sleep(interval)
+                _wake.wait(interval)
             state["_subagent_live_thread"] = None
 
         import threading as _threading
@@ -8566,11 +8622,46 @@ def create_tab(ctx):
              ),
          )])
     _input_area.add_class("delfin-agent-input-area")
+    # The Claude Code panel beside the chat (delfin-voila --claude-terminal
+    # only). The page script attaches it to the server's restricted
+    # terminal the first time it is shown; hiding it keeps the session.
+    _chat_area = chat_frame
+    from delfin.dashboard import claude_terminal as _claude_term
+    if _claude_term.enabled():
+        _term_cwd = os.environ.get(_claude_term.CWD_ENV, "") or "~"
+        _home = str(Path.home())
+        if _term_cwd == _home or _term_cwd.startswith(_home + os.sep):
+            _term_cwd = "~" + _term_cwd[len(_home):]
+        _term_head = widgets.HTML(
+            value=(f'<span title="{_html.escape(_term_cwd)}">Claude Code '
+                   f'&middot; {_html.escape(_term_cwd)}</span>'))
+        _term_head.add_class("delfin-claude-term-head")
+        _term_host = widgets.HTML(value='<div class="delfin-claude-term"></div>')
+        _term_host.add_class("delfin-claude-term-host")
+        claude_term_panel = widgets.VBox(
+            [_term_head, _term_host], layout=widgets.Layout(display="none"))
+        claude_term_panel.add_class("delfin-claude-term-panel")
+        claude_term_btn = widgets.Button(
+            description="Claude Code", icon="terminal",
+            tooltip=("Show the Claude Code CLI beside the chat. It keeps "
+                     "running while hidden; a reload reattaches to it."),
+            layout=widgets.Layout(width="auto", flex="0 0 auto"))
+
+        def _toggle_claude_term(_b):
+            opening = claude_term_panel.layout.display == "none"
+            claude_term_panel.layout.display = "" if opening else "none"
+            claude_term_btn.button_style = "info" if opening else ""
+
+        claude_term_btn.on_click(_toggle_claude_term)
+        git_group.children = tuple(git_group.children) + (claude_term_btn,)
+        _chat_area = widgets.HBox([chat_frame, claude_term_panel])
+        _chat_area.add_class("delfin-agent-chat-row")
+        ctx.add_init_js(_claude_term.init_js())
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
          inspector_detail_box,
-         chat_frame,
+         _chat_area,
          _input_area,
          # Then who is working (click to enter a chat), finished delegates
          # in one row, and the panels -- capped, scrolling in themselves.
@@ -21419,6 +21510,10 @@ def create_tab(ctx):
                 pass
         _stop_job_event_watcher()
         state["_subagent_live_stop"] = True
+        try:
+            state["_subagent_live_wake"].set()
+        except Exception:
+            pass
         for key in ("_job_wake_timer", "_background_timer", "_stale_timer",
                     "_stale_kill_timer"):
             timer = state.get(key)
@@ -21453,6 +21548,7 @@ def create_tab(ctx):
     # so the exit path does not write again.
     import atexit as _atexit
     _atexit.register(_shutdown_tab, save=False)
+    _OPEN_TAB_SHUTDOWNS.append(_shutdown_tab)
     _register_process_exit_cleanup()
 
     return tab_widget, {
