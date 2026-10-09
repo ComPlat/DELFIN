@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from types import SimpleNamespace
 
 from delfin.dashboard import agent_sessions as asm
@@ -52,8 +53,8 @@ def _make_session_worktree(project, name="sb") -> "object":
     side.mkdir(parents=True, exist_ok=True)
     (side / "session_worktree.json").write_text(json.dumps({
         "path": str(wt), "branch": "session/abc123", "repo_dir": str(project),
-        "base_ref": "deadbeef", "created_at": 0.0, "host": "somehost",
-        "pid": -1, "key": "k",
+        "base_ref": "deadbeef", "created_at": 0.0,
+        "host": (socket.gethostname() or "").strip(), "pid": -1, "key": "k",
     }), encoding="utf-8")
     return wt
 
@@ -212,3 +213,33 @@ def test_an_orphaned_worktree_is_offered_and_releasable(tmp_path, monkeypatch):
     state = asm.session_worktree_state(str(wt))
     assert state["is_worktree"] is True
     assert state["releasable"] is True, "a session-gone worktree is offered for release"
+
+def test_alive_owning_pid_is_not_releasable_via_state(tmp_path, monkeypatch):
+    """A worktree with an ALIVE owning process is never releasable, even when
+    its session has left the presence file.
+
+    Reviewer red (agent/s19-u4r1, test_alive_pid_worktree_is_not_releasable_
+    via_state): ``session_worktree_state().releasable`` keyed on presence alone
+    would be True here (``_live_session_in`` returns ""), while the picker
+    refuses to offer the same tree as a start folder (alive pid). Releasing
+    would disrupt a still-running DELFIN process. ``releasable`` must agree
+    with ``_worktree_is_orphaned``: dead pid + same host + no live session +
+    no saved workspace.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    wt = project / "sb"
+    wt.mkdir(parents=True, exist_ok=True)
+    side = wt / ".delfin"
+    side.mkdir(parents=True, exist_ok=True)
+    (side / "session_worktree.json").write_text(json.dumps({
+        "path": str(wt), "branch": "session/abc123", "repo_dir": str(project),
+        "base_ref": "deadbeef", "created_at": 0.0,
+        "host": (socket.gethostname() or "").strip(), "pid": os.getpid(),
+        "key": "k",
+    }), encoding="utf-8")
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")  # stale presence
+    state = asm.session_worktree_state(str(wt))
+    assert state["is_worktree"] is True
+    assert state["releasable"] is False, (
+        "an alive owning process must make a worktree non-releasable")

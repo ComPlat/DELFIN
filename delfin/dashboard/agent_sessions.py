@@ -984,9 +984,13 @@ def session_worktree_state(workspace, *, hold_fn=None) -> dict:
       - ``holder`` — the label of a LIVE session working in it; empty when no
         live session is in it (its owning session has gone, or the path is
         not a worktree at all).
-      - ``releasable`` — a worktree whose session is gone: it may be handed
-        back through the existing ``release_session_worktree``. Releasing
-        never deletes a checkout; that decision is ``exit_worktree``'s.
+      - ``releasable`` — a worktree spare enough to hand back: it is a
+        session worktree and ``_worktree_is_orphaned`` says it may be
+        reclaimed (owning process dead on this host, no live session, no
+        saved session that would reopen it). Releasing never deletes a
+        checkout; that decision is ``exit_worktree``'s. A worktree whose
+        owning process is still alive is never releasable, even when its
+        session has left the presence file.
 
     ``hold_fn`` is the liveness probe (default module ``_live_session_in``).
     It is injectable so the picker -- and tests -- can drive the held/gone
@@ -998,15 +1002,24 @@ def session_worktree_state(workspace, *, hold_fn=None) -> dict:
     side = read_worktree_sidecar(workspace)
     is_worktree = side is not None
     holder = ""
+    releasable = False
     if is_worktree:
         try:
             holder = str(hold_fn(workspace) or "")
         except Exception:
             holder = ""
+        # Releasing must agree with the orphan check: an alive owning process
+        # is not releasable even when the session has gone from the presence
+        # file. ``_worktree_is_orphaned`` owns "is this tree spare" (dead pid
+        # + same host + no live session + no saved workspace).
+        try:
+            releasable = _worktree_is_orphaned(side, saved_workspaces=()) == ""
+        except Exception:
+            releasable = False
     return {
         "is_worktree": is_worktree,
         "holder": holder,
-        "releasable": is_worktree and not holder,
+        "releasable": releasable,
     }
 
 
