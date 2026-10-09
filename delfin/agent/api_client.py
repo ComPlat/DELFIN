@@ -229,7 +229,9 @@ class CLIClient(_BaseClient):
                  mcp_config: str = "",
                  allowed_tools: list[str] | None = None,
                  extra_dirs: list[str] | None = None,
-                 effort: str = ""):
+                 effort: str = "",
+                 read_only_dirs: list[str] | None = None,
+                 confirm_callback: Optional[Callable[[str, dict, str], bool]] = None):
         self.model = model or self.DEFAULT_MODEL
         self.permission_mode = permission_mode
         self.cwd = cwd or None
@@ -247,6 +249,40 @@ class CLIClient(_BaseClient):
             )
         self._proc: subprocess.Popen | None = None
         self._session_id: str = ""
+        # DELFIN's file gate in front of the CLI's own tools (cli_gate):
+        # the same read/write boundary, and the same dialog, as every
+        # other backend. One token per client; the relay carries the
+        # hook's questions to ``confirm_callback``.
+        self.read_only_dirs = list(read_only_dirs or ())
+        self.confirm_callback = confirm_callback
+        from . import cli_gate as _cli_gate
+        self._gate_token = _cli_gate.new_token()
+        self._gate_relay = None
+
+    def set_confirm_callback(self, callback) -> None:
+        """Who the gate asks. Applies to the next tool call."""
+        self.confirm_callback = callback
+        self._write_gate_state()
+        self._start_gate_relay()
+
+    def _write_gate_state(self) -> None:
+        from . import cli_gate as _cli_gate
+        _cli_gate.write_state(
+            self._gate_token,
+            workspace=str(Path(self.cwd or os.getcwd()).resolve()),
+            mode=self.permission_mode or "default",
+            can_ask=self.confirm_callback is not None,
+            extra_dirs=list(self.extra_dirs or ()),
+            read_only_dirs=self.read_only_dirs)
+
+    def _start_gate_relay(self) -> None:
+        from . import cli_gate as _cli_gate
+        if self._gate_relay is not None:
+            self._gate_relay.stop()
+            self._gate_relay = None
+        if self.confirm_callback is not None:
+            self._gate_relay = _cli_gate.Relay(
+                self._gate_token, self.confirm_callback).start()
 
     def enforced_tool_surface(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """The allow list handed to the subprocess; no deny list exists here.
@@ -284,11 +320,19 @@ class CLIClient(_BaseClient):
                 # asks less, not the one that asks nothing.
                 cmd.extend(["--permission-mode", self.permission_mode])
 
-        # DELFIN's secret deny list, in the CLI's rule syntax. The CLI runs
-        # its own tools, so DELFIN's read and write gates never see them;
-        # deny rules hold in every CLI mode, bypass included.
+        # DELFIN's secret deny list, in the CLI's rule syntax, and DELFIN's
+        # own file gate as a PreToolUse hook (cli_gate): the CLI runs its
+        # own tools, so without it they never met the boundary every other
+        # backend keeps -- under Bypass, reads and writes anywhere. Deny
+        # rules and a hook's deny both hold in every CLI mode, bypass
+        # included. No gate state, no start: an unchecked CLI is not the
+        # fallback.
+        from . import cli_gate as _cli_gate
+        self._write_gate_state()
+        self._start_gate_relay()
         cmd.extend(["--settings", json.dumps(
-            {"permissions": {"deny": _cli_secret_deny_rules()}})])
+            {"permissions": {"deny": _cli_secret_deny_rules()},
+             "hooks": _cli_gate.hook_settings(self._gate_token)})])
 
         if self.mcp_config:
             cmd.extend(["--mcp-config", self.mcp_config])
@@ -1200,57 +1244,260 @@ def _bash_reads_denied_path(cmd: str, denied: set,
     return ""
 
 
-def _bash_outside_reads(cmd: str) -> list[str]:
-    """Absolute paths a content-dumping command would print.
+# Commands that print what a DIRECTORY holds: its names, and with `find`
+# or `tree` everything below it. Not content readers, but a listing of a
+# folder outside the workspace is still a look outside it -- `ls /home/x`
+# and `find ~ -name '*.log'` reached past a read_file the user would have
+# been asked about. Absolute and `~` arguments only, like the readers.
+_BASH_DIR_LISTERS: frozenset[str] = frozenset({"ls", "find", "tree"})
 
-    Only the readers above are inspected, and only their absolute
-    arguments — a conservative net around the exact circumvention that was
-    observed (three refused read_file calls, then `cat` on the same files).
+# `cd X && cat file` reads X/file by a relative name, which the reader
+# check above never sees. The directory changed into is the thing to ask
+# about. A bare `cd` goes home.
+_BASH_DIR_CHANGERS: frozenset[str] = frozenset({"cd", "pushd"})
 
-    An inline python payload is inspected too, for the same reason and by
-    the same rule: `python3 -c "print(open('/etc/passwd').read())"` is
-    `cat /etc/passwd` with the path one level in. Before the payload could
-    be read at all this was moot -- the command was refused outright --
-    and reading it would have opened a route past this gate if the reads
-    had not been collected with the writes.
+
+def _is_system_path(word: str) -> bool:
+    """True for interpreter, binary and library directories (no user data)."""
+    text = os.path.normpath(os.path.expanduser(word))
+    return (text in _SYSTEM_DIRS
+            or (text + "/").startswith(_SYSTEM_PATH_PREFIXES))
+
+
+#: Programs that touch no file named on their command line: they print
+#: their arguments, look up names, or report metadata only. Every OTHER
+#: program's path arguments are reads -- `python x.py /data/run.out`,
+#: `cp /data/a .`, `git -C /other/repo log` all look outside as surely as
+#: `cat` does. wc, stat, file and the digests are here on purpose: a size
+#: or a hash is not the content, and asking about it is friction with
+#: nothing behind it.
+_BASH_NO_FILE_PROGRAMS: frozenset[str] = frozenset({
+    "echo", "printf", "true", "false", "exit", "export", "unset", "set",
+    "which", "type", "command", "hash", "alias", "sleep", "kill", "date",
+    "wc", "stat", "file", "md5sum", "sha1sum", "sha256sum", "sha512sum",
+    "test", "[", "[[", "basename", "dirname", "realpath", "readlink",
+    "mkdir", "touch", "rm", "rmdir", "chmod", "squeue", "scancel", "sacct",
+})
+
+#: Read-only system information. Not user data, and asked for by every
+#: core-count check a calculation script does.
+_SYSTEM_INFO_FILES: frozenset[str] = frozenset({
+    "/proc/cpuinfo", "/proc/meminfo", "/proc/loadavg", "/proc/version",
+    "/proc/uptime", "/etc/os-release", "/etc/hostname",
+})
+
+
+def _home_expanded(word: str) -> str:
+    home = str(Path.home())
+    for spelling in ("${HOME}", "$HOME"):
+        if word.startswith(spelling):
+            return home + word[len(spelling):]
+    return word
+
+
+def _glob_root(word: str) -> str:
+    """The directory a glob reads: everything before its first wildcard
+    component. `/data/run*/x.out` reads /data."""
+    parts = word.split("/")
+    keep = []
+    for part in parts:
+        if any(c in part for c in "*?["):
+            break
+        keep.append(part)
+    root = "/".join(keep)
+    return root or ("/" if word.startswith("/") else ".")
+
+
+def _read_exempt(path: str) -> bool:
+    """System directories, pseudo-devices, system info.
+
+    NOT /tmp: on a shared login node it holds other users' files, and
+    read_file asks there -- a shell exemption made `cat /tmp/x` the way
+    around that question (caught by CI, where test folders live in /tmp).
+    Writing scratch to /tmp stays free; reading it back asks once, and the
+    approval opens the directory for the session."""
+    text = os.path.normpath(path)
+    return (_is_system_path(text) or _is_safe_device(text)
+            or text in _SYSTEM_INFO_FILES
+            or text.startswith("/proc/self/"))
+
+
+def _shell_segments(cmd: str) -> list[str]:
+    """``cmd`` split at ``;``, ``&``, ``|`` and newlines OUTSIDE quotes.
+
+    Splitting inside quotes cut `sh -c "a; b"` into pieces with a stray
+    quote each, and the stray quote then became part of a "path"."""
+    out: list[str] = []
+    cur: list[str] = []
+    quote = ""
+    i = 0
+    text = cmd or ""
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(text):
+                cur.append(ch + text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            cur.append(ch)
+        elif ch in "'\"":
+            quote = ch
+            cur.append(ch)
+        elif ch == "\\" and i + 1 < len(text):
+            cur.append(ch + text[i + 1])
+            i += 2
+            continue
+        elif ch == "&" and ((i > 0 and text[i - 1] in "<>")
+                            or (i + 1 < len(text) and text[i + 1] == ">")):
+            cur.append(ch)          # 2>&1, &>file: a redirection, not a split
+        elif ch in ";&|\n":
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    out.append("".join(cur))
+    return [seg for seg in out if seg.strip()]
+
+
+_SHELL_PROGRAMS: frozenset[str] = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+
+
+def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
+                        _depth: int = 0) -> list[str]:
+    """Paths a shell command would read, for the outside-read gate.
+
+    Every path argument of every program counts, except programs that
+    touch no file (``_BASH_NO_FILE_PROGRAMS``) and exempt locations
+    (``_read_exempt``). Also counted: ``cd``/``pushd`` targets (a bare cd
+    is home), input redirections (``< file``), option values
+    (``--input=/x``), the directory a glob reads, and paths inside an
+    inline python payload.
+
+    Absolute and home paths (``~``, ``$HOME``) are returned as written.
+    With ``cwd`` -- where the command starts -- relative paths are
+    returned too, resolved against the directory the command is in at
+    that point: ``cd sub && cat ../../x`` is followed through the cd, and
+    the gate resolves symlinks, so a link that points out is caught where
+    it points. Without ``cwd`` relative paths are not inspected.
+
+    History: only the absolute arguments of a list of content readers
+    were inspected, so `cd /etc && cat hostname`, `ls ~`, `cp /x .`,
+    `cat ../../x` and `cat $HOME/.bashrc` all read outside the workspace
+    without a question in every mode (2026-10-09).
     """
     out: list[str] = []
     try:
-        # Here-documents too, and with include_expanded=True, for the
-        # same reason the write gate takes them: this path REFUSES on
-        # what it finds, so reading a body the shell may still add to can
-        # only block more. `python3 - <<'EOF' print(open('/etc/passwd')
-        # .read()) EOF` produced no read target at all before.
         srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
         srcs += _inline_payload.extract_stdin_payloads(
             cmd, include_expanded=True)
         for src in srcs:
             for tok in _inline_payload.analyze_payload(src).reads:
+                tok = _home_expanded(tok)
                 if tok.startswith("/") or tok.startswith("~"):
                     out.append(tok)
+                elif cwd is not None and ".." in Path(tok).parts:
+                    out.append(str(Path(cwd) / tok))
     except Exception:
         pass
+    here: "Path | None" = Path(cwd) if cwd is not None else None
+    previous = here
+
+    def _add(word: str) -> None:
+        word = _home_expanded(word)
+        if not word or word.startswith("$") or word.startswith("<"):
+            return
+        if any(c in word for c in "*?["):
+            word = _glob_root(word)
+        if word.startswith("/") or word.startswith("~"):
+            if not _read_exempt(os.path.expanduser(word)):
+                out.append(word)
+            return
+        if here is not None:
+            full = str(here / word)
+            if not _read_exempt(full):
+                out.append(full)
+
     try:
         import shlex
-        for segment in re.split(r"[;&|]{1,2}|\n", cmd):
+        for segment in _shell_segments(cmd):
             segment = segment.strip()
             if not segment:
                 continue
             try:
                 argv = shlex.split(segment, comments=True)
             except ValueError:
-                argv = segment.split()
+                argv = [w.strip("\"'") for w in segment.split()]
             while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
                 argv = argv[1:]
             if not argv:
                 continue
-            if Path(argv[0]).name not in _BASH_CONTENT_READERS:
+            prog = Path(argv[0]).name
+            args = argv[1:]
+            # `sh -c "…"` runs a whole command line: judge that line too,
+            # from where this one is at that point.
+            if prog in _SHELL_PROGRAMS and "-c" in args and _depth < 3:
+                i = args.index("-c")
+                if i + 1 < len(args):
+                    out.extend(_bash_outside_reads(
+                        args[i + 1], here, _depth + 1))
                 continue
-            for a in argv[1:]:
-                if a.startswith("-") or any(c in a for c in "*?["):
+            if prog in _BASH_DIR_CHANGERS:
+                if "-" in args:
+                    here, previous = previous, here
                     continue
-                if a.startswith("/") or a.startswith("~"):
-                    out.append(a)
+                dests = [a for a in args if not a.startswith("-")]
+                dest = _home_expanded(dests[0]) if dests else "~"
+                if dest.startswith("$"):
+                    here = None         # unknown: stop resolving relatives
+                    continue
+                target = (Path(os.path.expanduser(dest)) if
+                          (dest.startswith("/") or dest.startswith("~"))
+                          else (here / dest if here is not None else None))
+                if target is not None and not _read_exempt(str(target)):
+                    out.append(dest if (dest.startswith("/")
+                                        or dest.startswith("~"))
+                               else str(target))
+                previous, here = here, target
+                continue
+            # Input redirection reads, whatever the program.
+            for i, a in enumerate(args):
+                if a == "<" and i + 1 < len(args):
+                    _add(args[i + 1])
+                elif a.startswith("<") and not a.startswith("<<") and len(a) > 1:
+                    _add(a[1:])
+            if prog in _BASH_NO_FILE_PROGRAMS:
+                continue
+            skip_next = False
+            for i, a in enumerate(args):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
+                    skip_next = True    # the redirection's own target
+                    continue
+                if (a.startswith("<") or a.startswith(">")
+                        or (a[:1] in "0123456789&" and ">" in a[:3])):
+                    continue
+                if a.startswith("-"):
+                    if "=" in a:
+                        _add(a.split("=", 1)[1])
+                    continue
+                if prog == "dd" and a.startswith("if="):
+                    _add(a[3:])
+                    continue
+                if "=" in a.split("/")[0]:
+                    continue
+                looks_like_path = ("/" in a or a.startswith("~")
+                                   or a.startswith("$HOME")
+                                   or a.startswith("${HOME}")
+                                   or a in (".", "..")
+                                   or prog in _BASH_CONTENT_READERS
+                                   or prog in _BASH_DIR_LISTERS)
+                if looks_like_path:
+                    _add(a)
     except Exception:
         return out
     return out
@@ -14602,44 +14849,55 @@ class _DocToolExecutor:
                 "remember_permission(kind='extra_dir', ...) to read it."
             )
 
-        # There IS someone, and they said not to ask. Exempt, for the same
-        # reason the egress gate above is and by the same rule: a profile
-        # that promises nothing is asked stops meaning anything the first
-        # time a gate asks anyway.
+        # Bypass is NOT exempt. It used to be: "a profile that promises
+        # nothing is asked" let every read outside the roots through
+        # silently, so a Bypass session could read anything on the
+        # cluster its account could -- and the working directory, the one
+        # boundary the user drew, meant nothing for reading. Bypass is a
+        # statement about the work INSIDE that boundary ("do not ask me
+        # about each edit or command in my folders"), not a key to the
+        # rest of the filesystem. Reaching outside is a different act and
+        # stays a question in every mode, the way it is in Claude Code.
         #
-        # The line is prompt versus rule, not read versus write. Measured
-        # across the whole surface before drawing it: reading outside the
-        # roots is the ONLY act on this gate that was ever a question —
-        # writing outside, writing into the archive and writing to /etc
-        # are refusals in every mode, asked of nobody. So lifting the
-        # question here cannot loosen a single write.
+        # Nobody answering is not a refusal: the dialog expires, the model
+        # is told the user is away and carries on inside the workspace
+        # (see the timeout branch below). Only an explicit "no" closes the
+        # path for the session, and with no dialog at all it is refused
+        # above.
         #
-        # It also ends a split that the model, not the user, was resolving:
-        # `read_file` on an outside path asked while the same file reached
-        # through an MCP shell did not, because MCP arguments belong to the
-        # server and no path check runs on them. Which of the two the model
-        # happened to pick decided whether the user saw a dialog.
-        if getattr(perms, "mode", "") == "bypassPermissions":
-            _record_security_event(
-                "outside_read_bypass", "read", str(resolved), blocked=False)
-            return None
         # Say what the click actually does. The old wording promised "only
         # this single read" while the approval added the file's PARENT to
         # the writable workspace roots — so approving a read of a file in
         # $HOME made $HOME writable for the session. The grant is now
         # read-only (see ``add_session_read_dir``) and described as it is.
-        _grantable = _is_grantable_read_dir(resolved.parent)
+        #
+        # A DIRECTORY target -- `ls`, `find`, or a `cd` the command then
+        # reads relative to -- opens that directory itself, not its parent:
+        # approving `cd /data/run1` must not open all of /data.
+        try:
+            _is_dir = resolved.is_dir()
+        except OSError:
+            _is_dir = False
+        _grant_dir = resolved if _is_dir else resolved.parent
+        _grantable = _is_grantable_read_dir(_grant_dir)
+        _what = "directory" if _is_dir else "file"
         preview = (
             "[OUTSIDE-WORKSPACE READ]\n"
-            f"The agent wants to read a file outside the allowed roots:\n"
+            f"The agent wants to read a {_what} outside the allowed roots:\n"
             f"  {resolved}\n\n"
-            + ("Approving allows READING this file and other files in\n"
-               f"  {resolved.parent}\n"
+            + (("Approving allows READING this file and other files in\n"
+                if not _is_dir else
+                "Approving allows READING the files in\n")
+               + f"  {_grant_dir}\n"
                "for the rest of this session. It grants NO write access "
                "there, and nothing is saved — a later session asks again."
                if _grantable else
-               "Approving allows READING this one file. Its directory is a "
-               "system, home or key directory and is not opened.")
+               ("Approving allows READING this one file. Its directory is a "
+                "system, home or key directory and is not opened."
+                if not _is_dir else
+                "Approving allows this one command to read in it. It is a "
+                "system, home or key directory and is not opened for the "
+                "session."))
         )
         try:
             ok = bool(perms.confirm_callback(
@@ -14677,7 +14935,7 @@ class _DocToolExecutor:
         # for. Best-effort — a refused grant leaves the approved read intact.
         if _grantable:
             try:
-                _granted = perms.add_session_read_dir(resolved.parent)
+                _granted = perms.add_session_read_dir(_grant_dir)
                 _record_security_event(
                     "read_grant", "read_file", str(_granted), blocked=False)
             except Exception:
@@ -15703,7 +15961,9 @@ class _DocToolExecutor:
             # scan applied but with the WORKSPACE boundary missing. Under a
             # locked scope that is the whole promise, routed around by
             # naming a different server.
-            gate_err = self._gate_bash_read_paths(cmd, perms)
+            gate_err = self._gate_bash_read_paths(
+                cmd, perms, str(args.get("cwd") or args.get("workdir")
+                                or args.get("working_directory") or ""))
             if gate_err is not None:
                 return gate_err
             return self._gate_bash_write_targets(
@@ -16678,7 +16938,7 @@ class _DocToolExecutor:
         })
 
     def _gate_bash_read_paths(
-        self, cmd: str, perms: "KitToolPermissions"
+        self, cmd: str, perms: "KitToolPermissions", cwd: str = "",
     ) -> Optional[str]:
         """Hold a refused read against every tool, and route a shell file
         dump outside the workspace through the same confirmation as
@@ -16742,7 +17002,13 @@ class _DocToolExecutor:
                     "the tool that asked — do not reach it another way. Ask "
                     "the user what to use instead."
                 )})
-            for target in _bash_outside_reads(scan):
+            # Where the command starts, so relative paths, `..` and links
+            # are judged where they really lead.
+            base = Path(perms.workspace)
+            if cwd:
+                c = Path(str(cwd)).expanduser()
+                base = c if c.is_absolute() else base / c
+            for target in _bash_outside_reads(scan, base):
                 path = Path(target).expanduser()
                 if not path.is_absolute():
                     continue
@@ -16930,7 +17196,8 @@ class _DocToolExecutor:
         cmd = arguments.get("command", "") or ""
         description = arguments.get("description", "") or ""
 
-        gate_err = self._gate_bash_read_paths(cmd, perms)
+        gate_err = self._gate_bash_read_paths(
+            cmd, perms, str(arguments.get("cwd") or ""))
         if gate_err is not None:
             return gate_err
 
@@ -17151,7 +17418,7 @@ class _DocToolExecutor:
         cwd_arg = arguments.get("cwd", "") or ""
         timeout_s = int(arguments.get("timeout_s", 24 * 3600) or 24 * 3600)
 
-        gate_err = self._gate_bash_read_paths(cmd, perms)
+        gate_err = self._gate_bash_read_paths(cmd, perms, str(cwd_arg))
         if gate_err is not None:
             return gate_err
         gate_err = self._gate_bash_write_targets(cmd, arguments, perms)
@@ -20491,8 +20758,13 @@ def _bash_isolation_argv(
         roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
     except Exception:
         roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
+    # --bind-try: a root that does not exist yet is skipped, not fatal. The
+    # repository's handover directory (exchange.with_exchange) is a root
+    # from the start but is created on first write -- and a plain --bind of
+    # it made bwrap refuse to start, so EVERY shell command of the session
+    # failed with "Can't find source path …/.delfin/handover" (2026-10-09).
     for r in roots + [str(Path(p).resolve()) for p in extra_write]:
-        args += ["--bind", r, r]
+        args += ["--bind-try", r, r]
     git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
     for r in git_roots:
         try:
@@ -23658,6 +23930,44 @@ class OpenAIClient(_BaseClient):
 # Codex CLI backend (uses OpenAI Codex CLI binary)
 # ---------------------------------------------------------------------------
 
+_CODEX_FULL_AUTO: dict[str, bool] = {}
+
+
+def _codex_has_full_auto(codex_path: str) -> bool:
+    """Whether this codex still accepts ``--full-auto``. Asked once."""
+    if codex_path not in _CODEX_FULL_AUTO:
+        try:
+            out = subprocess.run([codex_path, "exec", "--help"],
+                                 capture_output=True, text=True, timeout=20)
+            _CODEX_FULL_AUTO[codex_path] = "--full-auto" in (out.stdout or "")
+        except Exception:
+            _CODEX_FULL_AUTO[codex_path] = False
+    return _CODEX_FULL_AUTO[codex_path]
+
+
+_CODEX_READ_GAP_ANNOUNCED = False
+
+
+def _announce_codex_reads_unchecked() -> None:
+    """Say once that the Codex backend reads outside the folder unasked.
+
+    Its sandbox confines writes, not reads, in every mode, and DELFIN's
+    read gate cannot be put in front of it safely (see the Bypass entry in
+    ``_PERM_TO_CODEX_FLAGS``). A boundary that does not hold is shown,
+    not implied.
+    """
+    global _CODEX_READ_GAP_ANNOUNCED
+    if _CODEX_READ_GAP_ANNOUNCED:
+        return
+    _CODEX_READ_GAP_ANNOUNCED = True
+    _record_security_event(
+        "isolation_missing", "codex",
+        "the Codex CLI backend can READ outside the working folder without "
+        "asking, in every mode -- its sandbox confines writes only. Use the "
+        "Claude CLI or a chat-API backend where reading outside must ask.",
+        blocked=False)
+
+
 class CodexCLIClient(_BaseClient):
     """Use the OpenAI Codex CLI (``codex exec``) for agent tasks.
 
@@ -23696,7 +24006,15 @@ class CodexCLIClient(_BaseClient):
         # that says "bypass" gets that.
         "acceptEdits":         ["--full-auto", "--sandbox", "workspace-write"],
         "auto":                ["--full-auto", "--sandbox", "workspace-write"],
-        "bypassPermissions":   ["--full-auto", "--sandbox", "danger-full-access"],
+        # Bypass skips the questions inside the working folder; it does not
+        # lift the folder (user, 2026-10-09). danger-full-access did: the
+        # whole disk, writable, no sandbox. DELFIN's own gate cannot sit in
+        # front of Codex the way it sits in front of Claude Code -- a
+        # PreToolUse hook only runs with --dangerously-bypass-hook-trust,
+        # which also runs every hook a trusted repository ships, unreviewed
+        # (measured with codex 0.160). So Codex keeps its own kernel
+        # sandbox here: writes stay in the workspace.
+        "bypassPermissions":   ["--full-auto", "--sandbox", "workspace-write"],
     }
 
     supplies_session_id = True          # emits a session_init event
@@ -23757,7 +24075,12 @@ class CodexCLIClient(_BaseClient):
         codex_flags = self._PERM_TO_CODEX_FLAGS.get(
             self.permission_mode, ["--full-auto"]
         )
+        # codex 0.160 removed --full-auto (exec never asks for approval
+        # any more) and refuses to start when given it.
+        if not _codex_has_full_auto(self.codex_path):
+            codex_flags = [f for f in codex_flags if f != "--full-auto"]
         cmd.extend(codex_flags)
+        _announce_codex_reads_unchecked()
         if self.cwd:
             cmd.extend(["-C", self.cwd])
 
@@ -23884,6 +24207,24 @@ def _map_kit_permission_mode(permission_mode: str) -> str:
     return table.get(pm, "default")
 
 
+def _persisted_read_dirs(persisted) -> tuple[Path, ...]:
+    """The saved "always allow reading here" directories that still qualify.
+
+    Re-checked on every load: a directory saved before it was a symlink to
+    $HOME, or that no longer exists, opens nothing.
+    """
+    out: list[Path] = []
+    for d in getattr(persisted, "read_dirs", None) or ():
+        try:
+            p = Path(d).expanduser().resolve()
+        except Exception:
+            continue
+        if p in out or not p.is_dir() or not _is_grantable_read_dir(p):
+            continue
+        out.append(p)
+    return tuple(out)
+
+
 def _workspace_sandbox(
     cwd: str, permission_mode: str,
     kit_confirm_callback: Optional[Callable[[str, dict, str], bool]],
@@ -23924,6 +24265,7 @@ def _workspace_sandbox(
         extra_workspace_dirs=_exchange.with_exchange(local_ws, local_extra),
         read_only_workspace_dirs=tuple(read_only_dirs or ()),
         confirm_write_dirs=tuple(confirm_write_dirs or ()),
+        session_read_dirs=_persisted_read_dirs(persisted),
         bash_auto_allow_patterns=tuple(_DEFAULT_BASH_AUTO_ALLOW),
         bash_deny_patterns=tuple(_DEFAULT_BASH_DENY_PATTERNS),
     )
@@ -24034,6 +24376,7 @@ def create_client(
                                                          kit_extra),
             read_only_workspace_dirs=tuple(read_only_dirs or ()),
             confirm_write_dirs=tuple(confirm_write_dirs or ()),
+            session_read_dirs=_persisted_read_dirs(persisted),
             bash_auto_allow_patterns=allow_patterns,
             bash_deny_patterns=deny_patterns,
             write_allow_globs=write_globs,
@@ -24105,4 +24448,6 @@ def create_client(
                      mcp_config=mcp_config,
                      allowed_tools=allowed_tools,
                      extra_dirs=extra_dirs,
-                     effort=effort)
+                     effort=effort,
+                     read_only_dirs=read_only_dirs,
+                     confirm_callback=kit_confirm_callback)

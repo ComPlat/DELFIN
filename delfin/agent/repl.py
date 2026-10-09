@@ -1779,6 +1779,13 @@ class TerminalAgent:
                 self.transcript.chrome(self.transcript.theme.cyan(f"  {msg}"))
                 self._apply(req, self._allow(req))
                 return
+            if key == "R":
+                ok, msg = self.broker.persist_read(tc.read_dir_for(req))
+                self.transcript.chrome(
+                    self.transcript.theme.cyan(f"  {msg}") if ok
+                    else self.transcript.theme.red(f"  {msg}"))
+                self._apply(req, self._allow(req))
+                return
             if key in ("A", "k"):
                 pattern = (self.broker.exact_pattern(req.command) if key == "A"
                            else suggestion)

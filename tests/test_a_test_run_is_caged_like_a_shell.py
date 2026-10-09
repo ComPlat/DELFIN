@@ -52,7 +52,7 @@ def test_a_bwrap_wrap_binds_the_extra_directory_after_the_fresh_tmp(tmp_path, mo
     out = A._bash_isolation_argv("true", tmp_path, perms, extra_write=(report,))
     rd = str(report.resolve())
     i = out.index(rd)
-    assert out[i - 1] == "--bind" and i > out.index("--tmpfs")
+    assert out[i - 1] in ("--bind", "--bind-try") and i > out.index("--tmpfs")
 
 
 @pytest.mark.skipif(not A._bwrap_functional(), reason="bubblewrap does not work here")
@@ -72,3 +72,15 @@ def test_a_real_run_in_the_cage_still_reports_its_result(tmp_path, monkeypatch, 
         {"target": "test_env.py", "timeout_s": 120}, perms))
     assert out["status"] == "ok", out
     assert out["summary"].get("passed") == 2, out
+
+
+def test_a_root_that_does_not_exist_yet_does_not_stop_the_sandbox(tmp_path):
+    """The repository's handover directory is a root from the start but is
+    created on first write. A plain --bind of it made bwrap refuse to start,
+    so every shell command of the session failed (2026-10-09)."""
+    from pathlib import Path
+
+    from delfin.agent import api_client as ac
+    src = Path(ac.__file__).read_text()
+    i = src.index("for r in roots + [str(Path(p).resolve()) for p in extra_write]:")
+    assert '"--bind-try", r, r' in src[i:i + 200]

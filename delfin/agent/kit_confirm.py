@@ -352,8 +352,8 @@ class KitConfirmBroker:
         # Persist only fires when the user APPROVED — a deny + persist
         # combination is meaningless for our supported kinds.
         if persist_cb and persist_pat and req.decision:
-            if persist_kind == "extra_dir":
-                cb_kind = "extra_dir"
+            if persist_kind in ("extra_dir", "read_dir"):
+                cb_kind = persist_kind
             else:
                 cb_kind = "allow"
             try:
@@ -612,17 +612,22 @@ class KitConfirmBroker:
                 )
         elif tool == "read_file":
             # An outside-workspace read. "Allow (once)" opens the directory
-            # for READS only, and the read gate does that itself. The
-            # PERMANENT button is a different act: it makes the directory a
-            # writable workspace root in this and every later session, which
-            # is why the row below spells that out.
-            from pathlib import Path
-            try:
-                parent = str(Path(path_arg).expanduser().resolve().parent)
-                persist_pat = parent
-                persist_kind = "extra_dir"
-            except Exception:
-                persist_disabled_reason = "Path could not be resolved."
+            # for READS for this session, and the read gate does that
+            # itself. The PERMANENT button saves the same read-only grant
+            # for every later session. It used to save an extra workspace
+            # dir instead -- WRITABLE, in every later session -- so the
+            # one click that meant "stop asking me about reading here"
+            # handed over write access.
+            from . import kit_settings as _ks
+            persist_pat = _ks.read_grant_dir(path_arg)
+            if persist_pat:
+                persist_kind = "read_dir"
+            else:
+                persist_disabled_reason = (
+                    "This is a home, system or key directory (or no "
+                    "directory at all); reading there is approved one "
+                    "request at a time. To work in it, add it under "
+                    "'Erlaubte Verzeichnisse'.")
         elif tool in ("remember_permission", "remember_permission_bundle"):
             # The click IS the persistence — no separate permanent option.
             persist_disabled_reason = (
@@ -676,6 +681,8 @@ class KitConfirmBroker:
             kind_label = (
                 "bash allow-pattern" if persist_kind == "allow_pattern"
                 else "WRITABLE workspace directory" if persist_kind == "extra_dir"
+                else "READ-ONLY directory, no write access"
+                if persist_kind == "read_dir"
                 else persist_kind
             )
             persist_status = widgets.HTML(value=(
@@ -708,8 +715,9 @@ class KitConfirmBroker:
             button_style="info",
             tooltip=(
                 f"Allow the action AND write the rule to {target_path} "
-                "(applies in future sessions without asking again). For a "
-                "file access this makes the directory WRITABLE."
+                "(applies in future sessions without asking again). For an "
+                "outside read it allows READING in that directory in every "
+                "session — never writing."
             ),
             disabled=(not persist_pat or self._persist_callback is None),
         )
