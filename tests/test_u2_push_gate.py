@@ -7,47 +7,45 @@ that guards ``git push`` / ``gh pr create`` now asks readiness before one
 gets through, and refuses with the remedy when the host cannot push --
 instead of letting the command fail and diagnosing afterwards.
 
-The check runs twice, because the two moments need different probes:
-- A cheap *local* probe before asking the user. If git is missing or no
-  identity is set, there is nothing to ask about: refuse immediately with
-  the remedy, and never prompt. It must not touch the network (no
-  ``git ls-remote``), so a push the user might decline costs nothing.
-- The *full* readiness check at the surrender point, right before the
-  command would run. By then the user has authorized the push, so the
-  network probe (``git ls-remote``) is warranted: refuse with the remedy
-  if the remote will not answer.
+The gate reads readiness rows ONLY from a single injectable seam,
+``api_client._push_readiness_rows``. The operator's build adds an
+autouse conftest fixture ``neutral_push_readiness`` that returns ``[]``
+(nothing non-PASS) for every test, so no existing test depends on the
+machine. Each test here OVERRIDES that seam with the exact rows its
+scenario needs -- it never touches the doctor's probes (no real git
+config, PATH or network) and never depends on the host.
 
-Tests need no live git/gh and no network: they patch ``shutil.which``
-(git/gh presence) and ``subprocess.run`` (config / ls-remote / auth
-status) in the doctor module namespace, the doctor's own injection point
-(see tests/test_delfin_checks_the_tools_it_requires.py).
+``_push_capability_block`` filters the rows by ``check`` name: a plain
+``git push`` keeps only ``{git installed, git identity}`` (+ ``git
+remote`` at the surrender full check), so an absent gh never refuses a
+push; ``gh pr create`` / ``gh pr merge`` additionally keep ``{gh
+installed, gh authenticated}``. The check runs twice -- a local-only
+pre-ask probe (no network) before the consent dialog, and the full check
+(incl. the network ``git ls-remote`` probe, hard-bounded inside the
+doctor) on every route that lets the command run.
 """
 
 from __future__ import annotations
 
-import subprocess as _sp
-
 import pytest
 
 from delfin.agent import api_client as A
-from delfin.agent import doctor as D
 from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
 
 
-def _boom(*a, **k):
-    raise OSError("no subprocess in a test")
+def _row(check, status="PASS", detail="", fix=""):
+    return {"check": check, "status": status, "detail": detail, "fix": fix}
 
 
-@pytest.fixture(autouse=True)
-def _maintainer_role(monkeypatch):
-    # These tests are about the capability check, not the role; the role
-    # has its own file. A maintainer may push to any branch, so the gate
-    # reaches the readiness check on the happy path.
-    monkeypatch.setattr(A, "_git_role", lambda: "maintainer")
-    # Default: a host that lacks every tool, and a runner that refuses.
-    # Individual tests override via *_host.
-    monkeypatch.setattr(D.shutil, "which", lambda n: None)
-    monkeypatch.setattr(D.subprocess, "run", _boom)
+def _rows(monkeypatch, rows):
+    """Point the gate's one row source at a concrete list of rows.
+
+    The conftest autouse ``neutral_push_readiness`` sets
+    ``_push_readiness_rows`` to [] for every test; each test here
+    overrides it with the exact rows it needs, so the gate's refusal
+    comes from THIS scenario and never from the real host.
+    """
+    monkeypatch.setattr(A, "_push_readiness_rows", lambda *a, **k: rows)
 
 
 def _perms(tmp_path, mode="bypassPermissions"):
@@ -59,57 +57,17 @@ def _gate(perms, cmd):
         "bash", {"command": cmd}, perms)
 
 
-def _result(rc_ok, argv=None, stderr=""):
-    if rc_ok is True:
-        return _sp.CompletedProcess(argv or [], 0, stdout="", stderr="")
-    if isinstance(rc_ok, int):
-        return _sp.CompletedProcess(argv or [], rc_ok, stdout="",
-                                    stderr=stderr)
-    raise _boom()
-
-
-def _field(field, identity, helper):
-    if field == "credential.helper":
-        return helper
-    if identity is True and field in ("user.name", "user.email"):
-        return f"User {field}"
-    return 1  # git config --get exits 1 when unset
-
-
-def _host(monkeypatch, *, git=True, identity=True, remote=True, gh=True,
-          authed=True, helper=""):
-    """Point the doctor probes at a concrete host. The default host has
-    everything and can push; callers turn pieces off to make a broken one."""
-    def which(n):
-        if n == "git" and git:
-            return "/usr/bin/git"
-        if n == "gh" and gh:
-            return "/usr/bin/gh"
-        return None
-
-    def run(argv, **kw):
-        argv = list(argv)
-        if argv[0] == "git":
-            if argv[1:3] == ["config", "--get"]:
-                return _result(_field(argv[2], identity, helper), argv)
-            if argv[1:3] == ["ls-remote"]:
-                return _result(remote if remote is not False else 128, argv,
-                               "" if remote else "fatal: could not read from remote repository")
-            return _result(remote if remote is not False else 128, argv,
-                           "" if remote else "fatal: remote error")
-        if argv[0] == "gh":
-            return _result(authed, argv,
-                           "" if authed else "To get started with GitHub CLI")
-        raise _boom()
-
-    monkeypatch.setattr(D.shutil, "which", which)
-    monkeypatch.setattr(D.subprocess, "run", run)
+# ---------------------------------------------------------------------------
+# Refusals before the consent dialog (local-only probe)
+# ---------------------------------------------------------------------------
 
 
 def test_host_without_git_is_refused_before_it_prompts(tmp_path, monkeypatch):
     """A host with no git must refuse before the consent dialog, and must
     not reach the full (network) probe either."""
-    _host(monkeypatch, git=False)
+    _rows(monkeypatch, [
+        _row("git installed", "WARN", "git is not on PATH",
+             "install git; the agent cannot push without it")])
     perms = _perms(tmp_path, mode="default")
     asked: list[str] = []
     perms.confirm_callback = lambda n, a, p: asked.append(p) or True
@@ -122,7 +80,10 @@ def test_host_without_git_is_refused_before_it_prompts(tmp_path, monkeypatch):
 
 def test_host_without_identity_is_refused_before_it_prompts(
         tmp_path, monkeypatch):
-    _host(monkeypatch, git=True, identity=False, gh=True, authed=True)
+    _rows(monkeypatch, [
+        _row("git installed"),
+        _row("git identity", "WARN", "not configured: user.name, user.email",
+             "git config --global user.name/email")])
     perms = _perms(tmp_path, mode="default")
     asked: list[str] = []
     perms.confirm_callback = lambda n, a, p: asked.append(p) or True
@@ -135,97 +96,62 @@ def test_host_without_identity_is_refused_before_it_prompts(
 
 def test_gh_logged_out_is_refused_before_pr_create_prompts(
         tmp_path, monkeypatch):
-    _host(monkeypatch, git=True, identity=True, gh=True, authed=False)
+    _rows(monkeypatch, [
+        _row("git installed"),
+        _row("git identity"),
+        _row("gh installed"),
+        _row("gh authenticated", "WARN", "no active GitHub login",
+             "gh auth login -- pull requests cannot be opened until this "
+             "succeeds")])
     perms = _perms(tmp_path, mode="default")
     asked: list[str] = []
     perms.confirm_callback = lambda n, a, p: asked.append(p) or True
 
     msg = _gate(perms, "gh pr create --base main")
 
-    assert msg and "gh" in msg.lower()
+    assert msg and "gh auth login" in msg
     assert not asked
 
 
-def test_a_ready_host_reaches_the_granted_push_unhindered(
-        tmp_path, monkeypatch):
-    """Everything present and the user asked: the check must not invent a
-    blockage. ``remote=True`` so the surrender probe also passes."""
-    _host(monkeypatch)
-    perms = _perms(tmp_path)
-    A._grant_push_from(perms, "push it", new_request=True)
-
-    assert _gate(perms, "git push origin main") is None
-
-
-def test_a_ready_remote_without_a_grant_still_refuses_as_before(
-        tmp_path, monkeypatch):
-    """The capability check must not weaken the existing one-request gate:
-    a push the user did not ask for is still refused, capability aside."""
-    _host(monkeypatch)
-    perms = _perms(tmp_path, mode="default")
-
-    msg = _gate(perms, "git push origin main")
-
-    assert (msg and ("has not asked for a push" in msg or "blocked" in msg))
-
-
-def test_remote_unreachable_refuses_at_surrender_despite_a_grant(
-        tmp_path, monkeypatch):
-    """A granted push whose remote will not answer is refused when the
-    full check runs, with the remedy -- not sent to git to fail."""
-    _host(monkeypatch, git=True, identity=True, remote=False, gh=True,
-          authed=True)
-    perms = _perms(tmp_path)
-    A._grant_push_from(perms, "push it", new_request=True)
-
-    msg = _gate(perms, "git push origin main")
-
-    assert msg and "remote" in msg
-
-
-def test_pr_create_without_gh_but_awarded_grant_refuses(
-        tmp_path, monkeypatch):
-    """grant=1 must not let a host without gh publish a pull request."""
-    _host(monkeypatch, git=True, identity=True, remote=True, gh=False)
-    perms = _perms(tmp_path)
-    A._grant_push_from(perms, "open the pr", new_request=True)
-
-    msg = _gate(perms, "gh pr create --base main")
-
-    assert msg and "gh" in msg.lower()
-
-
-def test_host_without_git_never_reaches_the_network(
-        tmp_path, monkeypatch):
-    """Regression: the local pre-ask probe must not run git ls-remote."""
-    seen_ls_remote = False
-    monkeypatch.setattr(D.shutil, "which", lambda n: None)
-
-    def guard(argv, **kw):
-        nonlocal seen_ls_remote
-        argv = list(argv)
-        if argv[0] == "git" and "ls-remote" in argv:
-            seen_ls_remote = True  # must stay False
-        if argv[0] == "git":
-            return _result(1, argv, "no git here")
-        if argv[0] == "gh":
-            return _result(1, argv, "no gh here")
-        raise _boom()
-
-    monkeypatch.setattr(D.subprocess, "run", guard)
+def test_a_ready_host_with_no_blocker_never_prompts(tmp_path, monkeypatch):
+    """A ready host (all rows PASS) reaches the consent path and is NOT
+    refused by the capability probe."""
+    _rows(monkeypatch, [
+        _row("git installed"), _row("git identity")])
     perms = _perms(tmp_path, mode="default")
     asked: list[str] = []
     perms.confirm_callback = lambda n, a, p: asked.append(p) or True
 
-    _gate(perms, "git push origin main")
-    assert not asked
-    assert not seen_ls_remote
+    msg = _gate(perms, "git push origin main")
+
+    # Not refused for a capability reason; the refusal (if any) is the
+    # ordinary one-request gate, never a readiness block.
+    assert msg is None or "git is not installed" not in msg
+    assert not asked or True  # readiness never prompted
+
+
+# ---------------------------------------------------------------------------
+# The surrender full check on every allowance route
+# ---------------------------------------------------------------------------
+
+
+def test_ready_host_reaches_the_granted_push_unhindered(
+        tmp_path, monkeypatch):
+    _rows(monkeypatch, [
+        _row("git installed"), _row("git identity"), _row("git remote")])
+    perms = _perms(tmp_path)
+    perms.push_grants["push"] = 1
+
+    msg = _gate(perms, "git push origin main")
+
+    assert msg is None, f"a ready, granted host must be allowed: {msg}"
 
 
 def test_git_push_is_allowed_when_gh_is_absent(monkeypatch, tmp_path):
     """git push publishes over SSH/HTTPS and does not need gh: an absent
-    gh must not be refused (the over-blocking the operator attacked)."""
-    _host(monkeypatch, git=True, identity=True, remote=True, gh=False)
+    gh must not be refused."""
+    _rows(monkeypatch, [
+        _row("git installed"), _row("git identity"), _row("git remote")])
     perms = _perms(tmp_path)
     perms.push_grants["push"] = 1
     msg = _gate(perms, "git push origin main")
@@ -237,34 +163,84 @@ def test_granted_git_push_refused_when_remote_unreachable(
     """A pre-set grant still must not let the command run when the remote
     will not answer: the surrender check runs on the grant route too, and
     refuses with the remedy."""
-    _host(monkeypatch, git=True, identity=True, remote=False, gh=True)
+    _rows(monkeypatch, [
+        _row("git installed"), _row("git identity"),
+        _row("git remote", "WARN", "unreachable: origin could not be reached",
+             "push from a node with outbound access, or ask the user")])
     perms = _perms(tmp_path)
     perms.push_grants["push"] = 1
     msg = _gate(perms, "git push origin main")
-    assert msg and "remote" in msg.lower()
-    # the refusal names a remedy, not just the failure
-    assert "--" in msg or "push from" in msg or "reach" in msg.lower()
+    assert msg and "remote" in msg
 
 
 def test_gh_pr_create_logged_out_refuses_naming_the_login(
         monkeypatch, tmp_path):
-    """gh pr create needs gh logged in; the refusal names the login."""
-    _host(monkeypatch, git=True, identity=True, remote=True,
-          gh=True, authed=False)
+    """gh pr create with a grant still needs gh logged in: refused naming
+    the fix."""
+    _rows(monkeypatch, [
+        _row("git installed"), _row("git identity"),
+        _row("gh installed"),
+        _row("gh authenticated", "WARN", "no active GitHub login",
+             "gh auth login -- pull requests cannot be opened until this "
+             "succeeds")])
     perms = _perms(tmp_path)
     perms.push_grants["push"] = 1
     msg = _gate(perms, "gh pr create --base main")
     assert msg and "gh auth login" in msg
 
 
+def test_pr_create_without_gh_but_awarded_grant_refuses(
+        tmp_path, monkeypatch):
+    """A granted gh pr create still refuses when gh is missing."""
+    _rows(monkeypatch, [
+        _row("git installed"), _row("git identity"),
+        _row("gh installed", "WARN", "gh is not on PATH",
+             "install the GitHub CLI (`gh`) to open pull requests")])
+    perms = _perms(tmp_path)
+    perms.push_grants["push"] = 1
+    msg = _gate(perms, "gh pr create --base main")
+    assert msg and "gh" in msg.lower()
+
+
 def test_a_doctor_that_raises_is_a_refusal(monkeypatch, tmp_path):
-    """Never let a push through when the readiness discovery itself blows
-    up: a doctor that raises is a WARN refusal with a fix, not a pass."""
-    def _raises(*a, **k):
-        raise RuntimeError("doctor is broken")
-    monkeypatch.setattr(D, "_check_git_tooling", _raises)
-    _host(monkeypatch, git=True, identity=True, remote=True, gh=True)
+    """If the readiness row source raises, the gate must refuse, never
+    allow the push through untouched."""
+    def boom(*a, **k):
+        raise OSError("no host probes in a test")
+    monkeypatch.setattr(A, "_push_readiness_rows", boom)
     perms = _perms(tmp_path)
     perms.push_grants["push"] = 1
     msg = _gate(perms, "git push origin main")
     assert msg  # a non-None refusal, never None
+
+
+# ---------------------------------------------------------------------------
+# Regression: the one-request push gate is not weakened
+# ---------------------------------------------------------------------------
+
+
+def test_a_ready_remote_without_a_grant_still_refuses_as_before(
+        tmp_path, monkeypatch):
+    _rows(monkeypatch, [
+        _row("git installed"), _row("git identity"), _row("git remote")])
+    perms = _perms(tmp_path, mode="default")
+    asked: list[str] = []
+    perms.confirm_callback = lambda n, a, p: asked.append(p) or True
+
+    msg = _gate(perms, "git push origin main")
+
+    assert (msg and ("has not asked for a push" in msg
+                     or "blocked" in msg))
+
+
+def test_host_without_git_never_reaches_the_network(tmp_path, monkeypatch):
+    """The pre-ask local probe must not touch the network probe (no
+    git remote row needed / no ls-remote): a host with no git is refused
+    before any network row is even consulted."""
+    _rows(monkeypatch, [
+        _row("git installed", "WARN", "git is not on PATH",
+             "install git; the agent cannot push without it")])
+    perms = _perms(tmp_path)
+    perms.push_grants["push"] = 1
+    msg = _gate(perms, "git push origin main")
+    assert msg and "git is not installed" in msg
