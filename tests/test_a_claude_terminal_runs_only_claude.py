@@ -102,3 +102,93 @@ def test_a_taken_name_is_not_reused(spawned, configured):
     first, _ = mgr.new_named_terminal(name="abc")
     second, _ = mgr.new_named_terminal(name="abc")
     assert first == "abc" and second != "abc"
+
+
+# -- the launcher --------------------------------------------------------------
+
+def _launch(monkeypatch, tmp_path, extra):
+    from delfin import cli_voila
+    from delfin.agent import process_guard
+
+    monkeypatch.setattr(process_guard, "protect",
+                        lambda *a: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    root = tmp_path / "home"
+    root.mkdir(exist_ok=True)
+    nb = tmp_path / "delfin_dashboard.ipynb"
+    nb.write_text('{"cells":[]}', encoding="utf-8")
+    captured = {}
+
+    class _Proc:
+        def wait(self):
+            return 0
+
+    def _popen(cmd, env=None, **kw):
+        captured["cmd"], captured["env"] = cmd, env
+        return _Proc()
+
+    monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
+    monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(nb))
+    monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
+    monkeypatch.setattr(cli_voila, "_get_voila_static_root", lambda: "/tmp/v")
+    monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
+    monkeypatch.setattr(cli_voila, "_wait_for_port",
+                        lambda host, port, timeout=10.0: False)
+    monkeypatch.setattr(cli_voila.subprocess, "Popen", _popen)
+    monkeypatch.setattr(cli_voila.subprocess, "run",
+                        lambda cmd, env, check: (captured.update(
+                            cmd=cmd, env=env), type("R", (), {
+                                "returncode": 0})())[1])
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root))
+    code = 0
+    try:
+        cli_voila.main(["--no-browser", "--port", "9001"] + extra)
+    except SystemExit as exc:
+        code = exc.code
+    return code, captured
+
+
+def _fake_claude(monkeypatch, tmp_path):
+    exe = tmp_path / "bin" / "claude"
+    exe.parent.mkdir(exist_ok=True)
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{exe.parent}:/usr/bin:/bin")
+    return exe
+
+
+def test_without_the_flag_there_are_no_terminals(monkeypatch, tmp_path):
+    _fake_claude(monkeypatch, tmp_path)
+    code, cap = _launch(monkeypatch, tmp_path, [])
+    assert code == 0
+    assert "--ServerApp.terminals_enabled=False" in cap["cmd"]
+    ext = next(a for a in cap["cmd"] if "jpserver_extensions" in a)
+    assert "'jupyter_server_terminals': False" in ext
+    assert CT.ARGV_ENV not in cap["env"]
+
+
+def test_the_flag_wires_the_restricted_manager(monkeypatch, tmp_path):
+    exe = _fake_claude(monkeypatch, tmp_path)
+    code, cap = _launch(monkeypatch, tmp_path, ["--claude-terminal"])
+    assert code == 0
+    assert "--ServerApp.terminals_enabled=True" in cap["cmd"]
+    assert ("--TerminalsExtensionApp.terminal_manager_class="
+            "delfin.dashboard.claude_terminal.ClaudeOnlyTerminalManager"
+            ) in cap["cmd"]
+    assert json.loads(cap["env"][CT.ARGV_ENV]) == [str(exe)]
+    assert cap["env"][CT.ENABLED_ENV] == "1"
+
+
+def test_the_flag_is_refused_off_loopback(monkeypatch, tmp_path):
+    _fake_claude(monkeypatch, tmp_path)
+    code, _ = _launch(monkeypatch, tmp_path, [
+        "--claude-terminal", "--ip", "0.0.0.0", "--allow-remote-bind"])
+    assert code == 2
+
+
+def test_the_flag_is_refused_without_the_cli(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
+    code, _ = _launch(monkeypatch, tmp_path, ["--claude-terminal"])
+    assert code == 2
