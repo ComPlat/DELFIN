@@ -17781,10 +17781,11 @@ def create_tab(ctx):
 
                 # Store original user task for handoff messages
                 original_task = user_text
-                # S1 — Per-turn live state goes into the SYSTEM prompt via
-                # engine.set_live_state(), not into the user message body.
-                # That keeps engine.messages history small and cache-friendly:
-                # old turns no longer carry their stale dashboard state.
+                # Per-turn live state goes through engine.set_live_state(),
+                # not into the user message body. The engine sends it at the
+                # end of the turn's user message with its steering blocks;
+                # it used to put it in the system prompt, which cost the
+                # endpoint's prefix cache for the whole history every turn.
                 _live_state_text = ""
                 if mode_dropdown.value == "dashboard":
                     try:
