@@ -445,3 +445,57 @@ def to_card(result: PlotResult) -> str:
         f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
         f'</iframe>'
     )
+
+
+# --------------------------------------------------------------------------
+# the make_plot tool result (shared DELFIN_CARD: contract with package V1)
+
+
+#: Marker every chat-card tool result starts with. When the shared V1 emit
+#: point (delfin.dashboard.chat_viewer.tool_result) is present we delegate to
+#: it so the marker + keys live in ONE place across both packages; this is the
+#: conforming local fallback for branches where chat_viewer is not merged yet.
+CARD_MARKER = "DELFIN_CARD:"
+
+
+def _emit_card(html_card: str, text: str) -> str:
+    """Prefer the shared V1+V2 emit point, fall back to a conforming local one.
+
+    chat_viewer.tool_result is the single emit point (V1 builder, one hook for
+    both packages). It is only reachable once V1's dashboard module is merged
+    to main — which has not happened on this branch — so we import it lazily
+    and keep a byte-identical local emit for the interim, so make_plot works
+    on the current base without a hard dependency on an unmerged module.
+    """
+    try:
+        from delfin.dashboard import chat_viewer as _cv
+        return _cv.tool_result(html_card, text)
+    except (ImportError, AttributeError):
+        payload = json.dumps({
+            "escape": "html",
+            "html": html_card,
+            "text": text,
+        })
+        return CARD_MARKER + payload
+
+
+def make_plot(spec: dict, *, out_dir: str = "") -> str:
+    """Render ``spec`` and return the shared ``DELFIN_CARD:`` tool result.
+
+    The single tool entry point for package V2: draws the figure (see
+    :func:`plot`), wraps it as the sandboxed iframe card (see :func:`to_card`)
+    and returns the one string the dashboard's role="tool" hook inlines and a
+    terminal shows as its plain ``text`` line — ``DELFIN_CARD:`` followed by
+    ``{"escape":"html","html":<iframe card>,"text":<plain path + caption>}``.
+
+    The model-facing ``text`` is deliberately plain (no HTML): the dashboard
+    renders the escaped card from ``html`` (an isolated sandboxed iframe);
+    the model receives only ``text`` — the workspace path and one-line
+    caption — per the operator's data-is-never-instruction rule. A malformed
+    spec raises :class:`SpecError` exactly as :func:`plot` does, before
+    anything is written.
+    """
+    result = plot(spec, out_dir=out_dir)
+    html_card = to_card(result)
+    text = f"Wrote {result.path} — {result.caption}"
+    return _emit_card(html_card, text)
