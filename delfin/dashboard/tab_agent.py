@@ -5108,6 +5108,29 @@ _record_solo_turn_outcome = _record_turn_outcome
 # Tab creation
 # ---------------------------------------------------------------------------
 
+#: The ``shutdown`` of every tab built in this process, newest last. A
+#: kernel builds one and closes it at exit (atexit, below); a test process
+#: builds hundreds and closed none, so each left its watcher thread running
+#: for the rest of the run (measured: 8 live threads after 37 tests of four
+#: files). ``close_open_tabs`` is how a test harness ends them.
+_OPEN_TAB_SHUTDOWNS: list = []
+
+
+def close_open_tabs() -> int:
+    """Close every tab built so far in this process; return how many.
+
+    Without saving: this is for a harness ending its own tabs, not for a
+    user's session (the session list closes those, with a save)."""
+    closed = 0
+    while _OPEN_TAB_SHUTDOWNS:
+        shutdown = _OPEN_TAB_SHUTDOWNS.pop()
+        try:
+            shutdown(save=False)
+            closed += 1
+        except Exception:
+            pass
+    return closed
+
 
 def create_tab(ctx):
     """Create the DELFIN Agent tab.
@@ -7823,9 +7846,15 @@ def create_tab(ctx):
         if state.get("_subagent_live_thread") is not None:
             return
         state["_subagent_live_stop"] = False
+        # Waited on rather than slept: closing the tab sets it and the loop
+        # ends at once instead of after its current interval, and it never
+        # calls time.sleep -- a test that patches that process-wide counted
+        # this thread's 1.5 s as its own (CI on PR #138).
+        import threading as _threading_ev
+        _wake = _threading_ev.Event()
+        state["_subagent_live_wake"] = _wake
 
         def _loop() -> None:
-            import time as _t2
             from delfin.agent.subagents import read_running as _rr
             was_active = False
             while not state.get("_subagent_live_stop"):
@@ -7843,7 +7872,7 @@ def create_tab(ctx):
                     was_active = active
                 except Exception:
                     pass
-                _t2.sleep(interval)
+                _wake.wait(interval)
             state["_subagent_live_thread"] = None
 
         import threading as _threading
@@ -21481,6 +21510,10 @@ def create_tab(ctx):
                 pass
         _stop_job_event_watcher()
         state["_subagent_live_stop"] = True
+        try:
+            state["_subagent_live_wake"].set()
+        except Exception:
+            pass
         for key in ("_job_wake_timer", "_background_timer", "_stale_timer",
                     "_stale_kill_timer"):
             timer = state.get(key)
@@ -21515,6 +21548,7 @@ def create_tab(ctx):
     # so the exit path does not write again.
     import atexit as _atexit
     _atexit.register(_shutdown_tab, save=False)
+    _OPEN_TAB_SHUTDOWNS.append(_shutdown_tab)
     _register_process_exit_cleanup()
 
     return tab_widget, {

@@ -688,6 +688,24 @@ def xtb_on_path(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _a_tab_built_in_a_test_is_closed_after_it():
+    """Every Agent tab a test built is closed when the test ends.
+
+    A tab starts a watcher thread and, once an engine is wired, timer
+    chains; in a kernel they end at exit. In the suite they never ended:
+    8 watcher threads were alive after 37 tests of four files, each
+    looping for the rest of the run, and one of them was counted by a
+    neighbouring test that patches time.sleep (CI on PR #138). Looked up
+    in sys.modules so a test that never builds a tab pays nothing.
+    """
+    yield
+    import sys as _sys
+    tab_agent = _sys.modules.get("delfin.dashboard.tab_agent")
+    if tab_agent is not None and hasattr(tab_agent, "close_open_tabs"):
+        tab_agent.close_open_tabs()
+
+
+@pytest.fixture(autouse=True)
 def _reset_workspace_trust_caches():
     """Trust state is process-global: a parsed store and a record of which
     refusals have already been reported. Both would otherwise leak from one
