@@ -2979,20 +2979,71 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     return 0
 
 
+def _doctor_repair(results: list) -> int:
+    """The `--repair` ask-loop: one approval per fixable step, in order.
+
+    Refuses to repair at all unless stdin is a terminal -- a piped or
+    scripted call must never click through an approval the user did not
+    give. Every step carries what it changes and how to undo it; the user
+    approves each before it runs, and a declined step changes nothing.
+    Returns the doctor's non-zero-exit convention for repair failures.
+    """
+    from . import repair as _repair
+
+    steps = _repair.plan(results)
+    if not steps:
+        print("Nothing machine-actionable to repair "
+              "(the failing checks need a human fix).")
+        return 0
+    if not sys.stdin.isatty():
+        print("Repair needs a terminal to ask about each step; refusing. "
+              "Run `doctor --repair` in a terminal to approve repairs one "
+              "at a time.", file=sys.stderr)
+        return 1
+    failed = False
+    for step in steps:
+        print(f"[{step['id']}] {step['what']}")
+        print(f"    undo: {step['undo']}")
+        try:
+            answer = input("Apply this repair step? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            print("Aborted; no further steps were applied.", file=sys.stderr)
+            return 1
+        if answer not in ("y", "yes"):
+            print("Skipped.")
+            continue
+        outcome = _repair.apply(step, approved=True)
+        if outcome.get("ok"):
+            print(f"Applied ({outcome.get('status', 'ok')}); "
+                  f"undo: {outcome.get('undo', '')}")
+        else:
+            failed = True
+            status = outcome.get("status", "failed")
+            print(f"Failed to apply: {status}", file=sys.stderr)
+    return 1 if failed else 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """One-surface prerequisite report: docs index, credentials,
     binaries, Python deps, MCP servers, scheduler, attention inbox,
     benchmark ground truth, memory store, disk space.
 
     Exit code 1 when any check FAILs (warnings alone exit 0), so the
-    command is scriptable as a pre-flight gate.
+    command is scriptable as a pre-flight gate. With `--repair`, prompts
+    in a terminal about each fixable step and applies those approved; the
+    exit code is the repair's own (0 = nothing to repair or all steps
+    applied/skipped, 1 = refusal or a failed step).
     """
     from . import doctor as _doc
 
     workspace = getattr(args, "workspace", "") or None
     results = _doc.run_doctor(workspace)
+    if not getattr(args, "repair", False):
+        print(_doc.format_doctor(results))
+        return 1 if any(r.get("status") == "FAIL" for r in results) else 0
     print(_doc.format_doctor(results))
-    return 1 if any(r.get("status") == "FAIL" for r in results) else 0
+    return _doctor_repair(results)
 
 
 def _load_limits() -> dict:
@@ -4003,6 +4054,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--workspace", default="",
                         help="Workspace directory (default: current dir)")
+    doctor.add_argument("--repair", action="store_true",
+                        help="Ask about, and apply with approval, every "
+                             "step that fixes a WARN/FAIL; refuses when stdin "
+                             "is not a terminal")
     doctor.set_defaults(func=cmd_doctor)
 
     # report — what one session actually did, from the recorded sources
