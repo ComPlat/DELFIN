@@ -1318,7 +1318,51 @@ def _read_exempt(path: str) -> bool:
             or text.startswith("/proc/self/"))
 
 
-def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None) -> list[str]:
+def _shell_segments(cmd: str) -> list[str]:
+    """``cmd`` split at ``;``, ``&``, ``|`` and newlines OUTSIDE quotes.
+
+    Splitting inside quotes cut `sh -c "a; b"` into pieces with a stray
+    quote each, and the stray quote then became part of a "path"."""
+    out: list[str] = []
+    cur: list[str] = []
+    quote = ""
+    i = 0
+    text = cmd or ""
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(text):
+                cur.append(ch + text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            cur.append(ch)
+        elif ch in "'\"":
+            quote = ch
+            cur.append(ch)
+        elif ch == "\\" and i + 1 < len(text):
+            cur.append(ch + text[i + 1])
+            i += 2
+            continue
+        elif ch == "&" and ((i > 0 and text[i - 1] in "<>")
+                            or (i + 1 < len(text) and text[i + 1] == ">")):
+            cur.append(ch)          # 2>&1, &>file: a redirection, not a split
+        elif ch in ";&|\n":
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    out.append("".join(cur))
+    return [seg for seg in out if seg.strip()]
+
+
+_SHELL_PROGRAMS: frozenset[str] = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+
+
+def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
+                        _depth: int = 0) -> list[str]:
     """Paths a shell command would read, for the outside-read gate.
 
     Every path argument of every program counts, except programs that
@@ -1374,20 +1418,28 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None) -> list[str]:
 
     try:
         import shlex
-        for segment in re.split(r"[;&|]{1,2}|\n", cmd):
+        for segment in _shell_segments(cmd):
             segment = segment.strip()
             if not segment:
                 continue
             try:
                 argv = shlex.split(segment, comments=True)
             except ValueError:
-                argv = segment.split()
+                argv = [w.strip("\"'") for w in segment.split()]
             while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
                 argv = argv[1:]
             if not argv:
                 continue
             prog = Path(argv[0]).name
             args = argv[1:]
+            # `sh -c "…"` runs a whole command line: judge that line too,
+            # from where this one is at that point.
+            if prog in _SHELL_PROGRAMS and "-c" in args and _depth < 3:
+                i = args.index("-c")
+                if i + 1 < len(args):
+                    out.extend(_bash_outside_reads(
+                        args[i + 1], here, _depth + 1))
+                continue
             if prog in _BASH_DIR_CHANGERS:
                 if "-" in args:
                     here, previous = previous, here
@@ -20635,8 +20687,13 @@ def _bash_isolation_argv(
         roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
     except Exception:
         roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
+    # --bind-try: a root that does not exist yet is skipped, not fatal. The
+    # repository's handover directory (exchange.with_exchange) is a root
+    # from the start but is created on first write -- and a plain --bind of
+    # it made bwrap refuse to start, so EVERY shell command of the session
+    # failed with "Can't find source path …/.delfin/handover" (2026-10-09).
     for r in roots + [str(Path(p).resolve()) for p in extra_write]:
-        args += ["--bind", r, r]
+        args += ["--bind-try", r, r]
     git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
     for r in git_roots:
         try:

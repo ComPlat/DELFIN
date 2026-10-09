@@ -244,3 +244,17 @@ def test_a_link_out_of_the_workspace_is_asked_where_it_points(tmp_path):
     out = json.loads(ex.execute("bash", {"command": "cat link"}, perms))
     assert "FAR" not in json.dumps(out)
     assert "error" in out
+
+
+def test_quotes_and_nested_shells_are_read_as_the_shell_reads_them():
+    from delfin.agent.api_client import _shell_segments
+    # A ';' inside quotes does not end the command.
+    assert _shell_segments('sh -c "echo x; exit 1"') == ['sh -c "echo x; exit 1"']
+    assert _shell_segments("make 2>&1 | tail -3") == ["make 2>&1 ", " tail -3"]
+    # No stray quote becomes part of a path.
+    assert _bash_outside_reads(
+        'GIT_SSH_COMMAND="ssh -F /dev/null" sh -c "echo x >&2; exit 128"',
+        "/w/ws") == []
+    # The command line inside sh -c / bash -c is judged too.
+    assert _bash_outside_reads('bash -c "cat /etc/passwd"', "/w/ws") == ["/etc/passwd"]
+    assert "/data/x" in _bash_outside_reads('sh -c "cd /data && cat x"', "/w/ws")
