@@ -145,3 +145,31 @@ def test_an_open_request_makes_the_chat_give_way():
     # A KIT confirmation takes the task line's place; a question does not.
     assert ("kit-confirm > :not([style*=\"display: none\"])) > "
             ".delfin-agent-task-strip { display: none !important;") in css
+
+
+def test_open_tasks_are_clicked_in_the_list_and_suggestions_offer_the_rest():
+    from pathlib import Path
+    src = Path(__file__).resolve().parents[1].joinpath(
+        "delfin", "dashboard", "tab_agent.py").read_text()
+    i = src.index("def _task_buttons(rows):")
+    body = src[i:src.index("def _refresh_task_ticker", i)]
+    assert 'b.on_click(_fill_input(r["subject"]))' in body
+    assert "disabled=not open_" in body
+    # The buttons beside the box: only the agent's offer, never a task.
+    j = src.index("def _refresh_next_steps")
+    nxt = src[j:src.index("def _", j + 30)]
+    assert "shown = [offer] if offer and _norm(offer) not in" in nxt
+    assert "for step in shown:" in nxt
+
+
+def test_tab_takes_the_suggestion_behind_its_own_guard():
+    """Two keyboard scripts share __delfinAgentKeys; the one that ran
+    second returned early, so the Tab listener was never installed."""
+    from pathlib import Path
+    src = Path(__file__).resolve().parents[1].joinpath(
+        "delfin", "dashboard", "tab_agent.py").read_text()
+    i = src.index("window.__delfinTabTakesSuggestion = true;")
+    guard = src.index("if (window.__delfinAgentKeys) return;", i - 2000)
+    assert i < guard, "the Tab listener must be installed before the guard"
+    assert "document.addEventListener('keydown'" in src[i:guard]
+    assert ", true);" in src[i:guard]

@@ -388,3 +388,16 @@ def test_task_title_counts_and_names_the_task_in_hand(fresh_workspace):
     store.update(t["id"], status="completed")
     store.update(first["id"], status="completed")
     assert TT.render_title(fresh_workspace) == ""  # nothing open, no line
+
+
+def test_task_rows_carry_what_a_click_needs(fresh_workspace):
+    store = get_store(fresh_workspace)
+    a = store.create("Run tests", "")
+    b = store.create("Polish docs", "", active_form="Polishing docs")
+    store.update(b["id"], status="in_progress")
+    store.update(a["id"], status="completed")
+    rows = TT.rows(fresh_workspace)
+    assert [r["status"] for r in rows] == ["in_progress", "completed"]
+    assert rows[0]["label"] == "Polishing docs"      # what the row shows
+    assert rows[0]["subject"] == "Polish docs"       # what a click sends
+    assert rows[0]["glyph"] == "▶" and rows[1]["glyph"] == "☑"

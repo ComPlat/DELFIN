@@ -778,6 +778,26 @@ _AGENT_CSS = """\
 .delfin-agent-task-strip .jupyter-widget-Collapse-contents {
     padding: 2px 10px 4px 26px; border: none; background: transparent;
 }
+/* A task row: reads as a line of the list, not as a button, until the
+   pointer is on it. Colour by status as the old HTML list had it. */
+.delfin-task-list .delfin-task-row {
+    background: transparent; box-shadow: none; border: none;
+    text-align: left; justify-content: flex-start;
+    font-family: monospace; font-size: 13px; line-height: 20px;
+    padding: 0 4px; margin: 0; height: auto; min-height: 20px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex-shrink: 0;
+}
+.delfin-task-list .delfin-task-row:not(:disabled):hover {
+    background: #e8f0fe; cursor: pointer;
+}
+.delfin-task-list .delfin-task-row:disabled { opacity: 1; cursor: default; }
+.delfin-task-list .delfin-task-pending { color: #6b7280; }
+.delfin-task-list .delfin-task-in_progress { color: #0a84ff; }
+.delfin-task-list .delfin-task-blocked { color: #d97706; }
+.delfin-task-list .delfin-task-completed {
+    color: #28a745; text-decoration: line-through;
+}
 .delfin-agent-chat-frame > .delfin-agent-dock { margin: 0; }
 .delfin-agent-chat-frame > .delfin-agent-dock:not(:empty) { padding: 0 6px; }
 /* The task line belongs to the newest output: while the reader is up in
@@ -935,6 +955,15 @@ _AGENT_CSS = """\
    The user need not take it, and one typed character must end the
    colour with the text. Declarative for that reason -- an input listener
    doing the same is a second copy of the condition. */
+/* "Tab" badge in the corner of the box while a suggestion waits in it
+   and nothing is typed; gone with the first character. */
+.delfin-agent-input-suggests { position: relative; }
+.delfin-agent-input-suggests:has(textarea:placeholder-shown)::after {
+    content: "Tab ⇥ take";
+    position: absolute; right: 8px; top: 6px; pointer-events: none;
+    font-size: 11px; color: #6b7280; background: #f3f4f6;
+    border: 1px solid #d1d5db; border-radius: 4px; padding: 0 5px;
+}
 .delfin-agent-input-proposed textarea:placeholder-shown::placeholder {
     color: #1976d2 !important;
     opacity: 1;
@@ -6765,8 +6794,10 @@ def create_tab(ctx):
                     ws = kp.workspace
             if ws is None:
                 ws = ctx.repo_dir or Path.cwd()
+            # All open subjects: the placeholder takes the first, and the
+            # offer is compared against every one of them.
             steps = _next(ws, session_id=str(
-                state.get("active_session_id", "") or ""))
+                state.get("active_session_id", "") or ""), limit=50)
         except Exception:
             steps = []
         offer = proposed_prompt(str(state.get("_last_answer_text", "") or ""))
@@ -6779,17 +6810,29 @@ def create_tab(ctx):
             input_textarea.add_class("delfin-agent-input-proposed")
         else:
             input_textarea.remove_class("delfin-agent-input-proposed")
+        # A suggestion in the box says how to take it: grey text alone
+        # read as decoration, and Tab was a key nobody knew about.
+        if input_textarea.placeholder != _INPUT_HINT:
+            input_textarea.add_class("delfin-agent-input-suggests")
+        else:
+            input_textarea.remove_class("delfin-agent-input-suggests")
+        # The buttons beside the box offer only what the task list does not:
+        # the prompt the agent marked as its offer, unless that is a task's
+        # own subject. Open tasks are clicked in the task list itself.
+        _norm = lambda t: " ".join(str(t or "").split()).casefold()
+        shown = [offer] if offer and _norm(offer) not in {
+            _norm(t) for t in steps} else []
         # Rebuilt only when the list changed: the background tick calls
         # this every few seconds, and new buttons each time would flicker
         # and drop a click in flight.
-        if tuple(steps) == state.get("_next_steps_shown"):
+        if tuple(shown) == state.get("_next_steps_shown"):
             return
-        state["_next_steps_shown"] = tuple(steps)
-        if not steps:
+        state["_next_steps_shown"] = tuple(shown)
+        if not shown:
             next_steps_box.children = ()
             return
         kids = []
-        for step in steps:
+        for step in shown:
             b = widgets.Button(
                 description=step[:58],
                 tooltip=step,
@@ -6817,13 +6860,17 @@ def create_tab(ctx):
         from IPython.display import display as _ipyd, Javascript as _JS
         _ipyd(_JS(_VISIBLE_LOOKUP_JS + """
 (function() {
-    if (window.__delfinAgentKeys) return;
-    window.__delfinAgentKeys = true;
+    // Its own flag: a second keyboard script (_enter_key_init_js) sets
+    // __delfinAgentKeys too and usually runs first, and behind that shared
+    // guard this listener was never installed -- on main as well.
+    if (!window.__delfinTabTakesSuggestion) {
+    window.__delfinTabTakesSuggestion = true;
+    // Tab in an EMPTY message box takes the grey suggestion waiting there.
+    // It fills the box and stops: sending stays the user's, and an offer
+    // that submits itself is a trap. With something typed, Tab keeps its
+    // normal job and moves focus. Capture phase, so no page handler can
+    // move focus before it has looked.
     document.addEventListener('keydown', function(e) {
-        // Tab in an EMPTY message box takes the grey suggestion waiting
-        // there. It fills the box and stops: sending stays the user's, and
-        // an offer that submits itself is a trap. With something typed,
-        // Tab keeps its normal job and moves focus.
         if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             var ta = e.target;
             if (ta && ta.tagName === 'TEXTAREA' && ta.closest
@@ -6835,9 +6882,13 @@ def create_tab(ctx):
                     window.HTMLTextAreaElement.prototype, 'value').set;
                 setter.call(ta, ta.placeholder);
                 ta.dispatchEvent(new Event('input', {bubbles: true}));
-                return;
             }
         }
+    }, true);
+    }
+    if (window.__delfinAgentKeys) return;
+    window.__delfinAgentKeys = true;
+    document.addEventListener('keydown', function(e) {
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             if (e.target && e.target.tagName === 'TEXTAREA') {
                 var container = e.target.closest
@@ -7465,23 +7516,44 @@ def create_tab(ctx):
         except Exception:
             pass
 
-    task_ticker_html = widgets.HTML(
-        value="", layout=widgets.Layout(margin="0"),
-    )
+    # The task list: one button per task. A click on an open task puts its
+    # subject into the message box (what the suggestion buttons used to
+    # do, now on the list itself); a finished task is shown, not offered.
+    task_list_box = widgets.VBox([], layout=widgets.Layout(
+        max_height="220px", overflow_y="auto"))
+    task_list_box.add_class("delfin-task-list")
     # One line at the foot of the chat: the counts and the task in hand.
-    # It unfolds to the full list (the ticker), which therefore lives
-    # nowhere else. An Accordion rather than <details>: a refresh replaces
-    # the HTML and would close a <details> the reader had opened; the
-    # Accordion's selected_index survives it. Hidden while no task is open.
+    # It unfolds to the full list, which therefore lives nowhere else. An
+    # Accordion rather than <details>: a refresh replaces the HTML and
+    # would close a <details> the reader had opened; the Accordion's
+    # selected_index survives it. Hidden while no task is open.
     task_strip = widgets.Accordion(
-        children=[task_ticker_html], titles=("Tasks",), selected_index=None,
+        children=[task_list_box], titles=("Tasks",), selected_index=None,
         layout=widgets.Layout(display="none"))
     task_strip.add_class("delfin-agent-chat-foot")
     task_strip.add_class("delfin-agent-task-strip")
 
+    def _task_buttons(rows):
+        kids = []
+        for r in rows:
+            open_ = r["status"] != "completed"
+            b = widgets.Button(
+                description=f"{r['glyph']} #{r['num']} {r['label']}",
+                tooltip=(f"Put into the message box: {r['subject']}"
+                         if open_ else r["label"]),
+                disabled=not open_,
+                layout=widgets.Layout(width="100%", height="auto"))
+            b.add_class("delfin-task-row")
+            b.add_class(f"delfin-task-{r['status']}")
+            if open_:
+                b.on_click(_fill_input(r["subject"]))
+            kids.append(b)
+        return tuple(kids)
+
     def _refresh_task_ticker():
         try:
-            from delfin.agent.task_ticker import render_html as _tt_render
+            from delfin.agent.task_ticker import rows as _tt_rows
+            from delfin.agent.task_ticker import render_title as _tt_title
             eng = state.get("engine")
             ws = None
             if eng is not None:
@@ -7491,15 +7563,19 @@ def create_tab(ctx):
             if ws is None:
                 ws = ctx.repo_dir or Path.cwd()
             sid = str(state.get("active_session_id", "") or "")
-            from delfin.agent.task_ticker import render_title as _tt_title
             title = _tt_title(ws, session_id=sid)
-            task_ticker_html.value = (
-                _tt_render(ws, session_id=sid, bare=True) if title else "")
+            rows = _tt_rows(ws, session_id=sid) if title else []
+            # Rebuilt only when a row changed: the background tick runs
+            # every few seconds, and new buttons would drop a click.
+            key = tuple((r["status"], r["num"], r["label"], r["subject"])
+                        for r in rows)
+            if key != state.get("_task_rows_shown"):
+                state["_task_rows_shown"] = key
+                task_list_box.children = _task_buttons(rows)
             if title and tuple(task_strip.titles) != (title,):
                 task_strip.titles = (title,)
             task_strip.layout.display = "" if title else "none"
         except Exception:
-            task_ticker_html.value = ""
             task_strip.layout.display = "none"
 
     # Status line footer — token / mode / branch summary.

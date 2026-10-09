@@ -75,11 +75,13 @@ def test_the_role_is_never_compared_to_the_origin():
 
 
 def test_every_send_site_marks_a_self_started_turn():
-    """Four places append what was sent. A wake-up can arrive through any
-    of them, so a site that forgets the mark shows a bubble again."""
+    """Three places append what was sent (a queued message no longer
+    does: it enters the chat once, through the send that drains it). A
+    wake-up can arrive through any of them, so a site that forgets the
+    mark shows a bubble again."""
     src = inspect.getsource(T)
     appends = src.count('_append_chat_message(\n')
     marked = src.count('"origin": "event"')
-    assert marked >= 4, (
+    assert marked >= 3, (
         f"only {marked} send sites mark a self-started turn")
     assert appends >= marked

@@ -150,6 +150,51 @@ def counts(
     return len(raw) - done, done
 
 
+_PLAIN_GLYPHS = {
+    "pending": "\u2610", "in_progress": "\u25b6", "blocked": "\u26d4",
+    "completed": "\u2611", "deleted": "\u2613",
+}
+
+
+def rows(
+    workspace: Path | str,
+    *,
+    session_id: str | None = None,
+    max_rows: int = 30,
+) -> list[dict]:
+    """The task list as data, in display order, for a surface that builds
+    its own rows (the dashboard's clickable task list).
+
+    Each row: ``status``, ``glyph`` (plain text), ``num`` (the session
+    number the user reads), ``label`` (what the row shows: the active form
+    while in progress, the blocking reason appended) and ``subject`` (what
+    a click puts into the message box).
+    """
+    store = get_store(Path(workspace))
+    raw = store.list(include_deleted=False,
+                     session_id=resolve_session_scope(session_id),
+                     with_seq=True)
+    out: list[dict] = []
+    for t in _sorted(raw)[:max_rows]:
+        status = str(t.get("status", "pending"))
+        subject = str(t.get("subject", ""))
+        active = str(t.get("active_form", ""))
+        label = active if status == "in_progress" and active else subject
+        if status == "blocked":
+            reason = str(t.get("blocked_reason", ""))[:60]
+            label += f" \u2014 waiting on {reason}" if reason else ""
+        elif status == "completed" and t.get("verified") == "unmet":
+            label += " (unverified)"
+        out.append({
+            "status": status,
+            "glyph": _PLAIN_GLYPHS.get(status, _PLAIN_GLYPHS["pending"]),
+            "num": t.get("seq") if t.get("seq") is not None else t.get("id"),
+            "label": label,
+            "subject": subject,
+        })
+    return out
+
+
 def render_title(
     workspace: Path | str,
     *,
