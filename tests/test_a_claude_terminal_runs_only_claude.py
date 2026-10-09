@@ -192,3 +192,89 @@ def test_the_flag_is_refused_without_the_cli(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
     code, _ = _launch(monkeypatch, tmp_path, ["--claude-terminal"])
     assert code == 2
+
+
+# -- the tab -------------------------------------------------------------------
+
+def _tab(tmp_path):
+    from delfin.agent import scheduler as S
+    from delfin.dashboard import tab_agent
+    from delfin.dashboard.context import DashboardContext
+
+    S._GLOBAL = S.Scheduler(path=tmp_path / "cron.json")
+    for name in ("calc", "archive", "office"):
+        (tmp_path / name).mkdir(exist_ok=True)
+    ctx = DashboardContext(calc_dir=tmp_path / "calc",
+                           archive_dir=tmp_path / "archive",
+                           office_dir=tmp_path / "office")
+    ctx.run_js = lambda script, **kw: None
+    scripts = []
+    ctx.add_init_js = lambda js: scripts.append(js)
+    tab = tab_agent.create_tab(ctx)
+    return (tab[0] if isinstance(tab, tuple) else tab), scripts
+
+
+def _walk(n):
+    st = [n]
+    while st:
+        x = st.pop()
+        yield x
+        st.extend(getattr(x, "children", ()) or ())
+
+
+def test_without_the_flag_the_tab_is_unchanged(tmp_path, monkeypatch):
+    monkeypatch.delenv(CT.ENABLED_ENV, raising=False)
+    root, scripts = _tab(tmp_path)
+    classes = [set(c._dom_classes) for c in root.children]
+    assert any("delfin-agent-chat-frame" in c for c in classes)
+    assert not any("delfin-agent-chat-row" in c for c in classes)
+    assert not any(getattr(w, "description", "") == "Claude Code"
+                   for w in _walk(root))
+    assert not any("__delfinClaudeTerm" in s for s in scripts)
+
+
+def test_with_the_flag_the_panel_sits_beside_the_chat(tmp_path, monkeypatch):
+    monkeypatch.setenv(CT.ENABLED_ENV, "1")
+    monkeypatch.setenv(CT.CWD_ENV, str(tmp_path))
+    root, scripts = _tab(tmp_path)
+    row = next(c for c in root.children
+               if "delfin-agent-chat-row" in c._dom_classes)
+    frame, panel = row.children
+    assert "delfin-agent-chat-frame" in frame._dom_classes
+    assert "delfin-claude-term-panel" in panel._dom_classes
+    assert panel.layout.display == "none"            # closed until asked
+    btn = next(w for w in _walk(root)
+               if getattr(w, "description", "") == "Claude Code")
+    btn.click()
+    assert panel.layout.display == ""
+    btn.click()
+    assert panel.layout.display == "none"
+    js = next(s for s in scripts if "__delfinClaudeTerm" in s)
+    # Pinned and hash-checked; the page never names a command.
+    assert CT.XTERM_JS_SRI in js and CT.XTERM_FIT_SRI in js
+    assert "shell_command" not in js and "extra_env" not in js
+
+
+def test_the_module_loads_without_the_terminals_package(monkeypatch):
+    """tab_agent imports it on every dashboard; a missing optional package
+    must not take the Agent tab with it."""
+    import builtins
+    import importlib
+
+    real = builtins.__import__
+
+    def _no_terminals(name, *a, **k):
+        if name.startswith("jupyter_server_terminals"):
+            raise ImportError(name)
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _no_terminals)
+    mod = importlib.reload(CT)
+    try:
+        assert mod.enabled() in (True, False)
+        assert "__delfinClaudeTerm" in mod.init_js()
+        with pytest.raises(RuntimeError):
+            mod.ClaudeOnlyTerminalManager()
+    finally:
+        monkeypatch.setattr(builtins, "__import__", real)
+        importlib.reload(CT)
