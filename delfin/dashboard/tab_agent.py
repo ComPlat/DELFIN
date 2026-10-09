@@ -767,7 +767,18 @@ _AGENT_CSS = """\
     box-shadow: 0 1px 4px rgba(0,0,0,0.25);
 }
 .delfin-chat-jump:hover { background: rgba(51, 65, 85, 0.96); }
+/* Whether it shows, and what it says, is read off two marks on the HOST,
+   because the host is the element that survives a refresh. The button is
+   re-inserted with every update -- four times a second while the agent
+   writes -- and the mark used to be an attribute on the button itself, so
+   a reader who had scrolled up watched the control vanish with each new
+   content and come back a tick later when the script ran. No mark on the
+   host (a page before the script has run) keeps it hidden. */
+.delfin-agent-chat-host:not([data-delfin-follow="0"]) .delfin-chat-jump,
 .delfin-chat-jump[hidden] { display: none !important; }
+.delfin-chat-jump .delfin-chat-jump-unseen { display: none; }
+.delfin-agent-chat-host[data-delfin-unseen="1"] .delfin-chat-jump .delfin-chat-jump-newest { display: none; }
+.delfin-agent-chat-host[data-delfin-unseen="1"] .delfin-chat-jump .delfin-chat-jump-unseen { display: inline; }
 /* Auto-growing message box: starts at 80px, grows with the text up to a
    cap, then scrolls — no more scrolling inside a tiny fixed field. */
 .delfin-agent-input {
@@ -6898,12 +6909,14 @@ def create_tab(ctx):
             return (c.scrollHeight - c.scrollTop - c.clientHeight)
                    <= CHAT_BOTTOM_TOLERANCE_PX;
         }
+        // Written to the host, not the button: the button is replaced
+        // with every refresh and the stylesheet reads these two marks off
+        // its parent, so the fresh copy is right in the frame it appears.
         function paint(c, st) {
             st = st || stateFor(c);
-            var b = c.querySelector('.delfin-chat-jump');
-            if (!b) return;
-            b.hidden = st.follow;
-            b.textContent = st.unseen ? '\u2193 New messages' : '\u2193 Newest';
+            if (!c || !c.setAttribute) return;
+            c.setAttribute('data-delfin-follow', st.follow ? '1' : '0');
+            c.setAttribute('data-delfin-unseen', st.unseen ? '1' : '0');
         }
         // Setting scrollTop queues a scroll event of our own making; the
         // listener must not read it as the reader moving away. Arm the flag
@@ -10123,10 +10136,16 @@ def create_tab(ctx):
     # __delfinChatSync decides between following the new end and putting the
     # reader back; the fallback covers a refresh that lands before the
     # startup script has run.
+    # The button carries no state of its own: shown or not, and which of
+    # its two labels is visible, comes from the host's marks (see the
+    # stylesheet), so the copy inserted by each refresh looks exactly like
+    # the one it replaces.
     _SCROLL_TAG = (
-        '<button type="button" class="delfin-chat-jump" hidden onclick="'
+        '<button type="button" class="delfin-chat-jump" onclick="'
         "if(window.__delfinChatToBottom)window.__delfinChatToBottom(this);"
-        '">\u2193 Newest</button>'
+        '"><span class="delfin-chat-jump-newest">\u2193 Newest</span>'
+        '<span class="delfin-chat-jump-unseen">\u2193 New messages</span>'
+        '</button>'
         '<img src="" onerror="'
         "var c=this.closest('.delfin-agent-chat-host');"
         "if(c){if(window.__delfinChatSync){window.__delfinChatSync(c);}"
