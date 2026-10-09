@@ -142,3 +142,25 @@ def render_molecule_tool_result(
         workspace_root=workspace_root,
     )
     return tool_result(_card_html(media, title), media["text"])
+
+
+def parse_card_result(result: str) -> "str | None":
+    """Return the inline html card from a ``DELFIN_CARD:`` result, else None.
+
+    This is the reader half of the shared V1+V2 contract. Only a result that
+    starts exactly with :data:`CARD_MARKER` AND parses to
+    ``{"escape":"html","html":<str>, ...}`` is accepted; an error output
+    (JSON that echoes a hostile path), a non-card shape, or malformed content
+    returns None so the caller escapes the output rather than inlining it.
+    """
+    if not result.startswith(CARD_MARKER):
+        return None
+    try:
+        payload = json.loads(result[len(CARD_MARKER):])
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("escape") != "html" or not isinstance(payload.get("html"), str):
+        return None
+    return payload["html"]

@@ -137,3 +137,29 @@ class TestCardContract:
         assert "allow-same-origin" not in payload["html"]
         assert "<" not in payload["text"]
         assert "addVolumetricData" in payload["html"]
+
+
+class TestParseCardResult:
+    """The reader half of the shared contract: only a real card is inlined."""
+
+    def test_roundtrip_extracts_the_card(self):
+        out = chat_viewer.render_molecule_tool_result(H2_CUBE, kind="cube")
+        card = chat_viewer.parse_card_result(out)
+        assert card is not None
+        assert "<iframe" in card
+        assert 'sandbox="allow-scripts"' in card
+
+    def test_non_marker_returns_none(self):
+        # An error (which may echo a hostile path) is never a card.
+        assert chat_viewer.parse_card_result('{"error": "boom"}') is None
+        evil = '<img src=x onerror="window.__pwned=1">'
+        err = json.dumps({"error": evil})
+        assert chat_viewer.parse_card_result(err) is None
+
+    def test_malformed_or_wrong_shape_returns_none(self):
+        assert chat_viewer.parse_card_result("DELFIN_CARD:not-json") is None
+        assert chat_viewer.parse_card_result("DELFIN_CARD:{}") is None
+        assert chat_viewer.parse_card_result(
+            'DELFIN_CARD:{"escape":"text","html":"<img>"}') is None
+        assert chat_viewer.parse_card_result(
+            'DELFIN_CARD:{"escape":"html","text":"x"}') is None
