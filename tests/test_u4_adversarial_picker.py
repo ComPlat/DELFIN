@@ -166,3 +166,25 @@ def test_held_worktree_is_not_orphaned(tmp_path, monkeypatch):
         "Session Y on kitzbuhel" if str(ws) == str(wt) else ""))
     reason = asm._worktree_is_orphaned(asm.read_worktree_sidecar(wt))
     assert reason, "a live-held worktree must not be reported releasable"
+
+
+def test_alive_pid_worktree_is_not_releasable_via_state(tmp_path, monkeypatch):
+    """RED: the release-offer classifier must not mark a live-pid tree releasable.
+
+    ``_worktree_is_orphaned`` blocks a live owning pid, but the phase-2
+    release-offer classifier ``session_worktree_state`` decides ``releasable``
+    from session-presence alone (``_live_session_in``). With stale presence
+    (session gone from the presence file) but an alive owning pid, it reports
+    ``releasable=True`` -- inviting the user to release a worktree a running
+    DELFIN process still owns. ``releasable`` must also be False while the
+    owning pid is alive (the same liveness the offer side and
+    ``_worktree_is_orphaned`` use). Uses os.getpid() so it is deterministic.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    wt = _worktree(project)
+    _sidecar(wt, pid=os.getpid(), host=socket.gethostname() or "somehost")
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
+    state = asm.session_worktree_state(str(wt))
+    assert state["releasable"] is False, (
+        "a worktree an alive owning process owns must not be offered for release")
