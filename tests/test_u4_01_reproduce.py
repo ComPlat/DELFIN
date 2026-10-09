@@ -18,10 +18,11 @@
      dashboard: ``_resolve_max_tool_rounds`` (api_client.py:9497, per-turn
      round cap; precedence settings -> model profile -> 500) and
      ``_subagent_limits`` (subagents.py:109; ``max_tool_calls`` default 120
-     for subagents). Called directly to pin current defaults/precedence. No
-     dashboard settings-save path writes these fields (the controller save
-     blocks in tab_agent.py persist mode/provider/model/effort only), which
-     is the "value not saved reliably" half of #72/#87.
+     for subagents). Called directly to pin current defaults/precedence.
+     Review (QR) confirmed item 3 HOLDS on main: the dashboard writes both
+     fields and save/load round-trips, so there is no "not saved" defect
+     left -- only the two pins below, recorded so a regression that takes a
+     default too low again is caught.
 
 The picker assertions in the first group are the reproduction for phase 2:
 they are red now (the held worktree is offered, unbounded) and flip green
@@ -30,6 +31,7 @@ after the fix.
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 
 from delfin.dashboard import agent_sessions as asm
@@ -153,3 +155,40 @@ def test_subagent_default_tool_call_cap(tmp_path, monkeypatch):
     from delfin.agent.subagents import _subagent_limits
     limits = _subagent_limits()
     assert limits["max_tool_calls"] >= 120
+def test_a_worktree_with_alive_owning_pid_is_not_offered(tmp_path, monkeypatch):
+    """RED: a worktree whose owning process is still alive is not offered,
+    even when its session has left the presence file (stale presence).
+
+    This is the reviewer's adversarial case: judging by presence alone would
+    offer it (`_live_session_in` says ""). The exclusion must consult the
+    sidecar's owning pid. The sidecar is written with the current process's
+    pid, which is definitely alive, and ``_live_session_in`` is forced to ""
+    (session gone) -- yet the tree must not appear as a start folder.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    wt = project / "sb"
+    wt.mkdir(parents=True, exist_ok=True)
+    side = wt / ".delfin"
+    side.mkdir(parents=True, exist_ok=True)
+    (side / "session_worktree.json").write_text(json.dumps({
+        "path": str(wt), "branch": "session/abc123", "repo_dir": str(project),
+        "base_ref": "deadbeef", "created_at": 0.0, "host": "somehost",
+        "pid": os.getpid(), "key": "k",
+    }), encoding="utf-8")
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
+    choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
+    assert str(wt) not in choices, (
+        "a worktree whose owning process is alive must not be a start folder")
+
+
+def test_a_plain_directory_is_still_offered(tmp_path, monkeypatch):
+    """Green (specificity): excluding a held worktree must not sweep up plain
+    directories -- a normal folder in the tree stays a valid start folder."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    plain = project / "plain"
+    plain.mkdir()
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
+    choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
+    assert str(plain) in choices
