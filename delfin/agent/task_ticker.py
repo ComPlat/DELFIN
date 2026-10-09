@@ -195,29 +195,47 @@ def rows(
     return out
 
 
-def render_title(
-    workspace: Path | str,
-    *,
-    session_id: str | None = None,
-) -> str:
-    """Plain-text title of the task fold at the foot of the chat: the
-    counts and the task in hand, e.g. ``Tasks ▶ 1 ☐ 2 ☑ 0 · Parsing``.
+def rows_from_todos(todos: Iterable[dict]) -> list[dict]:
+    """The same rows as :func:`rows`, from a TodoWrite payload.
 
-    Plain text because a fold title is not HTML. Empty when there are no
-    open tasks (a finished plan says nothing either), so the fold costs
-    no height unless it has something to say.
+    A CLI backend (the Anthropic CLI) keeps its plan in its own TodoWrite
+    list, not in this task store; the dashboard's task line reads it
+    through here so the line shows the plan whichever backend runs.
+    Entries: ``content``, ``status``, ``activeForm``.
     """
-    store = get_store(Path(workspace))
-    raw = store.list(include_deleted=False,
-                     session_id=resolve_session_scope(session_id),
-                     with_seq=True)
+    order = {s: i for i, s in enumerate(_ORDER)}
+    items = []
+    for n, t in enumerate(todos or (), 1):
+        if not isinstance(t, dict):
+            continue
+        status = str(t.get("status") or "pending")
+        if status not in _PLAIN_GLYPHS:
+            status = "pending"
+        subject = " ".join(str(t.get("content") or "").split())
+        if not subject:
+            continue
+        active = " ".join(str(t.get("activeForm") or "").split())
+        items.append((order.get(status, 0), n, {
+            "status": status,
+            "glyph": _PLAIN_GLYPHS[status],
+            "num": n,
+            "label": active if status == "in_progress" and active else subject,
+            "subject": subject,
+        }))
+    return [r for _, _, r in sorted(items, key=lambda x: (x[0], x[1]))]
+
+
+def title_for(rows_: list[dict]) -> str:
+    """Plain-text title of the task fold for *rows_*: the counts and the
+    task in hand, e.g. ``Tasks  ▶ 1  ☐ 2  ☑ 0 · Parsing``. Empty when no
+    row is open, so the fold costs no height unless it has something to
+    say."""
     counts = {s: 0 for s in _ORDER}
     current = ""
-    for t in _sorted(raw):
-        status = str(t.get("status", "pending"))
-        counts[status] = counts.get(status, 0) + 1
-        if status == "in_progress" and not current:
-            current = str(t.get("active_form") or t.get("subject") or "")
+    for r in rows_ or ():
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+        if r["status"] == "in_progress" and not current:
+            current = r["label"]
     open_count = counts["in_progress"] + counts["pending"] + counts["blocked"]
     if not open_count:
         return ""
@@ -229,6 +247,16 @@ def render_title(
     if current:
         title += " \u00b7 " + current[:90]
     return title
+
+
+def render_title(
+    workspace: Path | str,
+    *,
+    session_id: str | None = None,
+) -> str:
+    """:func:`title_for` over the session's tasks in the store. Plain text
+    because a fold title is not HTML."""
+    return title_for(rows(workspace, session_id=session_id, max_rows=10_000))
 
 
 def next_steps(
