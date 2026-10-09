@@ -120,7 +120,7 @@ def test_a_queued_message_is_visible_to_the_user():
 
     src = inspect.getsource(T)
     i = src.index("def _update_queue_display")
-    assert "queued" in src[i:i + 400]
+    assert "queued" in src[i:src.index("def _refresh_context_bar", i)]
 
 
 # ---------------------------------------------------------------------------
@@ -137,3 +137,19 @@ def test_the_pool_width_is_still_stated():
 def test_parallel_delegation_is_still_one_message():
     text = _role_prompt()
     assert "ONE assistant message" in text
+
+
+def test_a_queued_message_enters_the_chat_once_when_it_is_sent():
+    """Queued: listed at the foot of the chat with its text, not put in the
+    transcript -- the send that drains the queue shows it there, and doing
+    both showed every queued line twice."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "delfin" / "dashboard"
+           / "tab_agent.py").read_text(encoding="utf-8")
+    i = src.index('state["message_queue"].append(user_text)')
+    branch = src[i:src.index("return", i)]
+    assert "_append_chat_message" not in branch
+    assert "_update_queue_display()" in branch
+    j = src.index("def _update_queue_display")
+    body = src[j:src.index("def _refresh_context_bar", j)]
+    assert "delfin-agent-queue-row" in body and "_html.escape(" in body

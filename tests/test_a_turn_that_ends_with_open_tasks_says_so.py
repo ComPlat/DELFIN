@@ -251,3 +251,59 @@ def test_the_notice_counts_everything_and_lists_a_bounded_number(workspace):
     assert "12 open task(s)" in notice
     assert "more" in notice                       # the tail is summarised
     assert len(notice.splitlines()) <= 10
+
+
+# ---------------------------------------------------------------------------
+# Said once per open set
+# ---------------------------------------------------------------------------
+
+def test_the_same_open_set_is_not_announced_twice(client, workspace):
+    store = get_store(workspace)
+    store.create("Aufstehen", session_id="sess-1")
+    assert "open task" in _text(_run(client, [_final()]))
+    second = _run(client, [_final()])
+    assert "open task" not in _text(second)
+    # The terminal reason still says the work is open.
+    assert _stop(second) == "end_turn_open_tasks"
+
+
+def test_a_changed_open_set_is_announced_again(client, workspace):
+    store = get_store(workspace)
+    t = store.create("Aufstehen", session_id="sess-1")
+    _run(client, [_final()])
+    store.update(t["id"], status="in_progress")
+    assert "open task" in _text(_run(client, [_final()]))
+    store.create("Schlafen", session_id="sess-1")
+    assert "Schlafen" in _text(_run(client, [_final()]))
+
+
+def test_a_set_that_closed_and_reopened_is_announced(client, workspace):
+    store = get_store(workspace)
+    t = store.create("Aufstehen", session_id="sess-1")
+    _run(client, [_final()])
+    store.update(t["id"], status="completed")
+    _run(client, [_final()])
+    store.update(t["id"], status="pending")
+    assert "open task" in _text(_run(client, [_final()]))
+
+
+def test_the_dashboard_can_tell_the_notice_from_other_notices(workspace):
+    from delfin.agent.agent_tasks import is_open_tasks_notice
+    get_store(workspace).create("Aufstehen", session_id="s")
+    notice = format_open_tasks_notice(open_task_summary(workspace, "s"))
+    assert is_open_tasks_notice("\n\n" + notice + "\n")
+    assert not is_open_tasks_notice("⚠ Tool-round budget reached (40 rounds)."
+                                    "\n" + notice)
+    assert not is_open_tasks_notice(
+        format_open_tasks_notice({"state": "unknown", "error": "boom"}))
+
+
+def test_the_dashboard_drops_the_notice_and_keeps_the_others():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "delfin" / "dashboard"
+           / "tab_agent.py").read_text(encoding="utf-8")
+    i = src.index("def _on_notice(text):")
+    body = src[i:src.index("def _on_wait(text):", i)]
+    assert "is_open_tasks_notice" in body
+    assert body.index("is_open_tasks_notice") < body.index(
+        "_append_system_message(")

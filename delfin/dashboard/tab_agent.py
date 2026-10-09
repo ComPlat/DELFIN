@@ -723,17 +723,171 @@ _AGENT_CSS = """\
     box-sizing: border-box;
 }
 .delfin-agent-root > * { flex-shrink: 0; }
-.delfin-agent-root > .delfin-agent-chat-host {
+/* THE CHAT IS THE TAB (2026-10-09). Measured at 1920x1080 with the panels
+   filled: the chat had been squeezed to its 160px floor by the rows that
+   may not shrink. The chat frame takes the rest of the window and is
+   never below 45vh; what lives at its foot -- the one-line task strip,
+   approvals, questions -- sits INSIDE the box the reader is looking at,
+   and the transcript above it is the part that scrolls. The panels under
+   the input fold away (an accordion, closed by default). */
+.delfin-agent-root > .delfin-agent-chat-frame {
+    flex: 1 1 0 !important;
+    min-height: 45vh;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #fafafa;
+    overflow: hidden;
+}
+.delfin-agent-chat-frame > * { flex-shrink: 0; }
+.delfin-agent-chat-frame > .delfin-agent-chat-host {
     flex: 1 1 0 !important;
     height: auto !important;
-    min-height: 160px;
+    min-height: 120px;
+    border: none;
+    border-radius: 0;
 }
-/* Everything below the input: capped, scrolling in itself, so it can
-   never push the input and the approvals out of the window. */
-.delfin-agent-root > .delfin-agent-below {
-    flex: 0 1 auto;
-    max-height: 30vh;
-    overflow-y: auto;
+.delfin-agent-chat-foot {
+    border-top: 1px solid #e5e7eb;
+    background: #f3f4f6;
+    padding: 2px 10px;
+    font-size: 12px;
+}
+/* The working line at the foot of the chat: one slim row in the frame's
+   own colours, like the task line under it -- not a dark bar with its
+   own margins and shadow wedged between the transcript and the foot.
+   The state stays readable in the left edge and the spinner colour. */
+.delfin-agent-chat-frame .delfin-agent-working {
+    margin: 0; border-radius: 0; box-shadow: none;
+    background: #eef2f7; color: #1f2937;
+    border-top: 1px solid #e5e7eb; padding: 3px 10px; font-size: 12px;
+}
+.delfin-agent-chat-frame .delfin-agent-working--gated { background: #fff7e6; }
+.delfin-agent-chat-frame .delfin-agent-working--queued { background: #f3f4f6; }
+.delfin-agent-chat-frame .delfin-agent-working--stale { background: #fdecec; }
+.delfin-agent-chat-frame .delfin-agent-working .delfin-activity-label { color: #64748b; }
+.delfin-agent-chat-frame .delfin-agent-working .delfin-activity-text { color: #1f2937; }
+/* The task line: a fold whose header is the one line, compact. */
+.delfin-agent-task-strip { padding: 0 !important; }
+.delfin-agent-task-strip .jupyter-widget-Collapse-header {
+    padding: 2px 10px; border: none; background: transparent;
+    font-size: 12px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+}
+.delfin-agent-task-strip .jupyter-widget-Collapse-contents {
+    padding: 2px 10px 4px 26px; border: none; background: transparent;
+}
+/* A task row: reads as a line of the list, not as a button, until the
+   pointer is on it. Colour by status as the old HTML list had it. */
+.delfin-task-list .delfin-task-row {
+    background: transparent; box-shadow: none; border: none;
+    text-align: left; justify-content: flex-start;
+    font-family: monospace; font-size: 13px; line-height: 20px;
+    padding: 0 4px; margin: 0; height: auto; min-height: 20px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex-shrink: 0;
+}
+.delfin-task-list .delfin-task-row:not(:disabled):hover {
+    background: #e8f0fe; cursor: pointer;
+}
+.delfin-task-list .delfin-task-row:disabled { opacity: 1; cursor: default; }
+.delfin-task-list .delfin-task-pending { color: #6b7280; }
+.delfin-task-list .delfin-task-in_progress { color: #0a84ff; }
+.delfin-task-list .delfin-task-blocked { color: #d97706; }
+.delfin-task-list .delfin-task-completed {
+    color: #28a745; text-decoration: line-through;
+}
+.delfin-agent-chat-frame > .delfin-agent-dock { margin: 0; }
+.delfin-agent-chat-frame > .delfin-agent-dock:not(:empty) { padding: 0 6px; }
+/* The task line belongs to the newest output: while the reader is up in
+   the history it would sit under text it has nothing to do with. */
+.delfin-agent-chat-frame:has(> .delfin-agent-chat-host[data-delfin-follow="0"]) > .delfin-agent-chat-foot {
+    display: none !important;
+}
+/* The palette row: a filter field while the palette is open, the next
+   steps when there are any, and otherwise nothing -- not an empty row. */
+.delfin-agent-palette-row:not(:has(> .delfin-next-steps > *)) {
+    display: none !important;
+}
+.delfin-agent-input-area { position: relative; overflow: visible !important; }
+.delfin-agent-palette-pop {
+    position: absolute !important; bottom: 100%; left: 0; z-index: 30;
+    width: min(880px, 100%); background: #fff;
+    border: 1px solid #d1d5db; border-radius: 6px;
+    box-shadow: 0 -4px 16px rgba(0,0,0,0.12); padding: 6px;
+}
+/* Measured 2026-10-09: the filter field and the list are width:100% plus
+   their own margin, 882px in a 878px box -- a horizontal scrollbar under
+   the list. Border-box, and the list's long rows are cut, not scrolled. */
+.delfin-agent-palette-pop { overflow-x: hidden !important; }
+.delfin-agent-palette-pop > * { box-sizing: border-box; max-width: 100%;
+    margin-left: 0 !important; margin-right: 0 !important; }
+.delfin-agent-palette-pop select { overflow-x: hidden; }
+/* An HTML widget with nothing in it is a full-width row of zero height
+   whose margins still add gaps; it takes no place until it has content. */
+.delfin-agent-root .widget-html:has(> .widget-html-content:empty) {
+    display: none !important;
+}
+.delfin-agent-palette-pop:not(:has(> .widget-select:not([style*="display: none"]))) {
+    display: none !important;
+}
+/* The footer row of the details: the token/mode line with the usage and
+   cost run on as plain text after it -- one line, not a second box. */
+.delfin-agent-status-row { flex-flow: row wrap; align-items: baseline; gap: 0 6px;
+    border-top: 1px solid #333; margin-top: 4px; }
+.delfin-agent-status-row div[style*="border-top"] { border-top: none !important; }
+.delfin-agent-status-row .delfin-agent-status {
+    border: none; background: none; padding: 0; border-radius: 0;
+    font-family: monospace; font-size: 11px; color: #777;
+}
+.delfin-agent-status-row .delfin-agent-status::before { content: "| "; }
+/* Everything below the input, folded: capped, scrolling in itself, so it
+   can never push the input and the approvals out of the window. */
+.delfin-agent-root > .delfin-agent-below { flex: 0 0 auto; }
+/* No scroll area of its own inside the details: opened, they extend the
+   tab, and the tab is the one thing that scrolls besides the chat. Lists
+   that bring their own max-height (task list, tool trace) give it up. */
+.delfin-agent-below-body, .delfin-agent-below-body * { max-height: none !important; }
+.delfin-agent-below-body div[style*="overflow"] { overflow: visible !important; }
+.delfin-agent-subfold { margin: 2px 0; }
+/* Requests at the foot of the chat: one compact band, not a framed box. */
+.delfin-agent-chat-frame .delfin-agent-kit-confirm:empty { display: none !important; }
+.delfin-agent-chat-frame .delfin-agent-kit-confirm { margin: 0 !important; }
+.delfin-agent-chat-frame .delfin-agent-request {
+    border: none !important; border-top: 1px solid #dbeafe !important;
+    background: #f5f9ff !important; padding: 4px 10px !important;
+    margin: 0 !important;
+}
+/* An open request must be answerable. Measured 2026-10-09 at 1366x768: a
+   KIT confirmation's buttons sat at y=723..744 under a chat frame ending at
+   y=617, clipped by its overflow:hidden. While a request is open the
+   transcript gives way (down to 3 lines) and the dock may shrink below its
+   content, scrolling in itself, so the buttons stay inside the frame. */
+.delfin-agent-chat-frame > .delfin-agent-dock {
+    flex: 0 1 auto !important; min-height: 0; overflow-y: auto;
+}
+/* Its content keeps its height, so the overflow lands in the dock's own
+   scroll area instead of spilling out of a squeezed child. */
+.delfin-agent-chat-frame > .delfin-agent-dock > * { flex-shrink: 0 !important; }
+.delfin-agent-chat-frame:has(.delfin-agent-request:not([style*="display: none"])) > .delfin-agent-chat-host,
+.delfin-agent-chat-frame:has(.delfin-agent-kit-confirm > :not([style*="display: none"])) > .delfin-agent-chat-host {
+    /* !important: the widget carries min-height 200px inline. */
+    min-height: 60px !important;
+}
+/* A KIT confirmation takes the task line's place while it waits: it is
+   the one thing to answer. A question from the agent does not (below). */
+.delfin-agent-chat-frame:has(.delfin-agent-kit-confirm > :not([style*="display: none"])) > .delfin-agent-task-strip {
+    display: none !important;
+}
+/* A request (approval, question, plan acceptance) takes the place of the
+   suggestions at the foot of the chat while it is open. The task line
+   stays above it: a question is often about the plan, and hiding the plan
+   while it is asked left the reader without it. Read off the widgets' own
+   display state, so no code path that shows or hides a request has to
+   know. */
+.delfin-agent-chat-frame:has(.delfin-agent-request:not([style*="display: none"])) > .delfin-agent-chat-foot:not(.delfin-agent-task-strip) {
+    display: none !important;
 }
 /* The replaced content. Layout only -- no height, no overflow: giving it
    either would make it a second scrollport inside the first, and the
@@ -801,6 +955,15 @@ _AGENT_CSS = """\
    The user need not take it, and one typed character must end the
    colour with the text. Declarative for that reason -- an input listener
    doing the same is a second copy of the condition. */
+/* "Tab" badge in the corner of the box while a suggestion waits in it
+   and nothing is typed; gone with the first character. */
+.delfin-agent-input-suggests { position: relative; }
+.delfin-agent-input-suggests:has(textarea:placeholder-shown)::after {
+    content: "Tab ⇥ take";
+    position: absolute; right: 8px; top: 6px; pointer-events: none;
+    font-size: 11px; color: #6b7280; background: #f3f4f6;
+    border: 1px solid #d1d5db; border-radius: 4px; padding: 0 5px;
+}
 .delfin-agent-input-proposed textarea:placeholder-shown::placeholder {
     color: #1976d2 !important;
     opacity: 1;
@@ -988,14 +1151,21 @@ _AGENT_CSS = """\
 .delfin-chat-agent pre .diff-del { color: #f38ba8; }
 .delfin-chat-agent pre .diff-hdr { color: #89b4fa; font-weight: 600; }
 .delfin-agent-queue {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 10px;
-    background: #dbeafe;
-    color: #1e40af;
-    font-size: 11px;
-    font-weight: 600;
-    margin: 4px 0;
+    border-top: 1px solid #e5e7eb;
+    background: #f8fafc;
+    padding: 3px 10px;
+    font-size: 12px;
+    color: #374151;
+}
+.delfin-agent-queue-head { color: #6b7280; }
+.delfin-agent-queue-row {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    padding-left: 4px;
+}
+.delfin-agent-queue-n {
+    display: inline-block; min-width: 16px; text-align: center;
+    border-radius: 8px; background: #e5e7eb; color: #374151;
+    font-size: 11px; font-weight: 600;
 }
 .delfin-agent-status {
     font-size: 12px;
@@ -5563,11 +5733,19 @@ def create_tab(ctx):
     # Which branch Merge brings in, Branch starts from and PR goes into.
     # Not always main (user, 2026-10-09): offered from the remote branches
     # this checkout already knows, typeable for any other.
+    # Labelled: unlabelled, the field read as a second branch switch next
+    # to the one at the top of the page, which picks the branch DELFIN
+    # itself runs on. This one only names the target of the git buttons.
     git_base = widgets.Combobox(
         value="origin/main", options=["origin/main"],
+        description="Base:",
         placeholder="base branch", ensure_option=False,
-        tooltip="Base branch for Merge, Branch and PR",
-        layout=widgets.Layout(width="150px"))
+        tooltip=("Base branch for the buttons beside it: Merge brings it "
+                 "in, Branch starts from it, PR goes into it. Not the "
+                 "branch DELFIN runs on (that is the Branch switch at the "
+                 "top)."),
+        style={"description_width": "36px"},
+        layout=widgets.Layout(width="190px"))
     _git_base_cache = {"at": 0.0, "where": ""}
 
     def _refresh_git_base_options(where: str) -> None:
@@ -6594,10 +6772,17 @@ def create_tab(ctx):
     next_steps_box = widgets.HBox(
         [], layout=widgets.Layout(margin="0 0 0 4px", flex_flow="row wrap",
                                   flex="1 1 auto"))
-    # In the row of the "/" button (user, 2026-10-09): what could come next
-    # sits beside the command palette instead of a row of its own.
-    palette_row.children = (palette_toggle_btn, palette_search, next_steps_box)
+    # The "/" button sits beside the box you type in; this row holds only
+    # the palette filter and what could come next, and takes no height
+    # while it has neither (see .delfin-agent-palette-row in the CSS).
+    next_steps_box.add_class("delfin-next-steps")
+    palette_row.children = (next_steps_box,)
     palette_row.layout.flex_flow = "row wrap"
+    palette_row.add_class("delfin-agent-palette-row")
+    # As tall as the Files button beside it.
+    palette_toggle_btn.layout.margin = "0 4px 0 0"
+    palette_toggle_btn.layout.height = "80px"
+    palette_toggle_btn.layout.width = "44px"
 
     def _fill_input(text: str):
         def _click(_btn):
@@ -6617,8 +6802,10 @@ def create_tab(ctx):
                     ws = kp.workspace
             if ws is None:
                 ws = ctx.repo_dir or Path.cwd()
+            # All open subjects: the placeholder takes the first, and the
+            # offer is compared against every one of them.
             steps = _next(ws, session_id=str(
-                state.get("active_session_id", "") or ""))
+                state.get("active_session_id", "") or ""), limit=50)
         except Exception:
             steps = []
         offer = proposed_prompt(str(state.get("_last_answer_text", "") or ""))
@@ -6631,11 +6818,29 @@ def create_tab(ctx):
             input_textarea.add_class("delfin-agent-input-proposed")
         else:
             input_textarea.remove_class("delfin-agent-input-proposed")
-        if not steps:
+        # A suggestion in the box says how to take it: grey text alone
+        # read as decoration, and Tab was a key nobody knew about.
+        if input_textarea.placeholder != _INPUT_HINT:
+            input_textarea.add_class("delfin-agent-input-suggests")
+        else:
+            input_textarea.remove_class("delfin-agent-input-suggests")
+        # The buttons beside the box offer only what the task list does not:
+        # the prompt the agent marked as its offer, unless that is a task's
+        # own subject. Open tasks are clicked in the task list itself.
+        _norm = lambda t: " ".join(str(t or "").split()).casefold()
+        shown = [offer] if offer and _norm(offer) not in {
+            _norm(t) for t in steps} else []
+        # Rebuilt only when the list changed: the background tick calls
+        # this every few seconds, and new buttons each time would flicker
+        # and drop a click in flight.
+        if tuple(shown) == state.get("_next_steps_shown"):
+            return
+        state["_next_steps_shown"] = tuple(shown)
+        if not shown:
             next_steps_box.children = ()
             return
         kids = []
-        for step in steps:
+        for step in shown:
             b = widgets.Button(
                 description=step[:58],
                 tooltip=step,
@@ -6663,13 +6868,17 @@ def create_tab(ctx):
         from IPython.display import display as _ipyd, Javascript as _JS
         _ipyd(_JS(_VISIBLE_LOOKUP_JS + """
 (function() {
-    if (window.__delfinAgentKeys) return;
-    window.__delfinAgentKeys = true;
+    // Its own flag: a second keyboard script (_enter_key_init_js) sets
+    // __delfinAgentKeys too and usually runs first, and behind that shared
+    // guard this listener was never installed -- on main as well.
+    if (!window.__delfinTabTakesSuggestion) {
+    window.__delfinTabTakesSuggestion = true;
+    // Tab in an EMPTY message box takes the grey suggestion waiting there.
+    // It fills the box and stops: sending stays the user's, and an offer
+    // that submits itself is a trap. With something typed, Tab keeps its
+    // normal job and moves focus. Capture phase, so no page handler can
+    // move focus before it has looked.
     document.addEventListener('keydown', function(e) {
-        // Tab in an EMPTY message box takes the grey suggestion waiting
-        // there. It fills the box and stops: sending stays the user's, and
-        // an offer that submits itself is a trap. With something typed,
-        // Tab keeps its normal job and moves focus.
         if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             var ta = e.target;
             if (ta && ta.tagName === 'TEXTAREA' && ta.closest
@@ -6681,9 +6890,13 @@ def create_tab(ctx):
                     window.HTMLTextAreaElement.prototype, 'value').set;
                 setter.call(ta, ta.placeholder);
                 ta.dispatchEvent(new Event('input', {bubbles: true}));
-                return;
             }
         }
+    }, true);
+    }
+    if (window.__delfinAgentKeys) return;
+    window.__delfinAgentKeys = true;
+    document.addEventListener('keydown', function(e) {
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             if (e.target && e.target.tagName === 'TEXTAREA') {
                 var container = e.target.closest
@@ -7245,13 +7458,110 @@ def create_tab(ctx):
 
     # -- Phase 5 UI hookups -----------------------------------------------
     # Live task ticker — reflects TaskStore state, refreshed on tool result.
-    task_ticker_html = widgets.HTML(
-        value="", layout=widgets.Layout(margin="2px 0 4px 0"),
-    )
+    def _fold_title() -> str:
+        """The folded panels' header: what is going on in them, one line.
+
+        Built from counts the panel refreshes leave in ``state``; a panel
+        with nothing to say leaves its part out, so the closed header
+        reads "Details" on a quiet session and names the live parts on a
+        busy one."""
+        parts = []
+        # The context fill leads: it is the one number that decides when
+        # the session compacts, and it costs six characters.
+        ctx_pct = state.get("_fold_ctx")
+        if ctx_pct is not None:
+            parts.append(f"ctx {ctx_pct:.0f}%")
+        n_bg = int(state.get("_fold_background", 0) or 0)
+        if n_bg:
+            parts.append(f"{n_bg} running")
+        n_tools = int(state.get("_fold_tools", 0) or 0)
+        if n_tools:
+            last = str(state.get("_fold_last_tool", "") or "")
+            parts.append(f"Tool calls {n_tools}" + (f" (last: {last})" if last else ""))
+        sec_total, sec_blocked = state.get("_fold_security", (0, 0))
+        if sec_total:
+            parts.append(f"⚠ Containment {sec_blocked} blocked / "
+                         f"{sec_total - sec_blocked} flagged")
+        t_in, t_out, t_cost = state.get("_fold_tokens", (0, 0, 0.0))
+        if t_in or t_out:
+            parts.append(f"{t_in:,} in / {t_out:,} out"
+                         + (f" · {_fmt_cost(t_cost)}" if t_cost > 0 else ""))
+        return " · ".join(parts) if parts else "Details"
+
+    def _refresh_subfolds():
+        tf = state.get("_tools_fold")
+        if tf is not None:
+            n = int(state.get("_fold_tools", 0) or 0)
+            last = str(state.get("_fold_last_tool", "") or "")
+            tf.layout.display = "" if n else "none"
+            t = f"🔧 Tool calls · {n}" + (f" · last: {last}" if last else "")
+            if tuple(tf.titles) != (t,):
+                tf.titles = (t,)
+        sf = state.get("_security_fold")
+        if sf is not None:
+            total, blocked = state.get("_fold_security", (0, 0))
+            sf.layout.display = "" if total else "none"
+            t = (f"🛡 Containment · {blocked} blocked / "
+                 f"{total - blocked} flagged")
+            last = str(state.get("_fold_last_security", "") or "")
+            if last:
+                t += f" · last: {last}"
+            if tuple(sf.titles) != (t,):
+                sf.titles = (t,)
+
+    def _refresh_fold_title():
+        try:
+            _refresh_subfolds()
+        except Exception:
+            pass
+        fold = state.get("_fold_widget")
+        if fold is None:
+            return
+        try:
+            title = _fold_title()
+            if tuple(fold.titles) != (title,):
+                fold.titles = (title,)
+        except Exception:
+            pass
+
+    # The task list: one button per task. A click on an open task puts its
+    # subject into the message box (what the suggestion buttons used to
+    # do, now on the list itself); a finished task is shown, not offered.
+    task_list_box = widgets.VBox([], layout=widgets.Layout(
+        max_height="220px", overflow_y="auto"))
+    task_list_box.add_class("delfin-task-list")
+    # One line at the foot of the chat: the counts and the task in hand.
+    # It unfolds to the full list, which therefore lives nowhere else. An
+    # Accordion rather than <details>: a refresh replaces the HTML and
+    # would close a <details> the reader had opened; the Accordion's
+    # selected_index survives it. Hidden while no task is open.
+    task_strip = widgets.Accordion(
+        children=[task_list_box], titles=("Tasks",), selected_index=None,
+        layout=widgets.Layout(display="none"))
+    task_strip.add_class("delfin-agent-chat-foot")
+    task_strip.add_class("delfin-agent-task-strip")
+
+    def _task_buttons(rows):
+        kids = []
+        for r in rows:
+            open_ = r["status"] != "completed"
+            b = widgets.Button(
+                description=f"{r['glyph']} #{r['num']} {r['label']}",
+                tooltip=(f"Put into the message box: {r['subject']}"
+                         if open_ else r["label"]),
+                disabled=not open_,
+                layout=widgets.Layout(width="100%", height="auto"))
+            b.add_class("delfin-task-row")
+            b.add_class(f"delfin-task-{r['status']}")
+            if open_:
+                b.on_click(_fill_input(r["subject"]))
+            kids.append(b)
+        return tuple(kids)
 
     def _refresh_task_ticker():
         try:
-            from delfin.agent.task_ticker import render_html as _tt_render
+            from delfin.agent.task_ticker import rows as _tt_rows
+            from delfin.agent.task_ticker import render_title as _tt_title
             eng = state.get("engine")
             ws = None
             if eng is not None:
@@ -7260,11 +7570,21 @@ def create_tab(ctx):
                     ws = kp.workspace
             if ws is None:
                 ws = ctx.repo_dir or Path.cwd()
-            task_ticker_html.value = _tt_render(
-                ws, session_id=str(state.get("active_session_id", "") or "")
-            )
+            sid = str(state.get("active_session_id", "") or "")
+            title = _tt_title(ws, session_id=sid)
+            rows = _tt_rows(ws, session_id=sid) if title else []
+            # Rebuilt only when a row changed: the background tick runs
+            # every few seconds, and new buttons would drop a click.
+            key = tuple((r["status"], r["num"], r["label"], r["subject"])
+                        for r in rows)
+            if key != state.get("_task_rows_shown"):
+                state["_task_rows_shown"] = key
+                task_list_box.children = _task_buttons(rows)
+            if title and tuple(task_strip.titles) != (title,):
+                task_strip.titles = (title,)
+            task_strip.layout.display = "" if title else "none"
         except Exception:
-            task_ticker_html.value = ""
+            task_strip.layout.display = "none"
 
     # Status line footer — token / mode / branch summary.
     status_line_html = widgets.HTML(
@@ -7297,6 +7617,8 @@ def create_tab(ctx):
             _ws = _agent_workspace_path()
             _items = _bgv.rows(_bgv.collect(_ws, session_id=_background_owner()))
             subagent_panel_html.value = _bgv.header_html(len(_items))
+            state["_fold_background"] = len(_items)
+            _refresh_fold_title()
             # Rows are kept by item, so a refresh updates the text and a
             # pointer resting on a × is not pulled out from under it.
             _cache = state.setdefault("_background_row_widgets", {})
@@ -7509,8 +7831,13 @@ def create_tab(ctx):
             if eng is None:
                 tool_trace_panel_html.value = ""
                 return
+            _entries = _tt.read(eng.trace_session())
             tool_trace_panel_html.value = _tt.format_panel_html(
-                _tt.read(eng.trace_session(), last_n=12))
+                _entries[-12:])
+            state["_fold_tools"] = len(_entries)
+            state["_fold_last_tool"] = (
+                str(_entries[-1].get("tool") or "") if _entries else "")
+            _refresh_fold_title()
         except Exception:
             tool_trace_panel_html.value = ""
 
@@ -7524,8 +7851,18 @@ def create_tab(ctx):
     def _refresh_security_panel():
         try:
             from delfin.agent import security_events as _se
+            _c = _se.counts()
             security_panel_html.value = (
-                _se.format_panel_html(12) if _se.counts()["total"] else "")
+                _se.format_panel_html(12) if _c["total"] else "")
+            state["_fold_security"] = (_c["total"], _c["blocked"])
+            try:
+                _last_ev = _se.recent(1)[0] if _c["total"] else None
+                state["_fold_last_security"] = (
+                    _se._KINDS.get(_last_ev.kind, ("", _last_ev.kind))[1]
+                    if _last_ev is not None else "")[:60]
+            except Exception:
+                state["_fold_last_security"] = ""
+            _refresh_fold_title()
         except Exception:
             security_panel_html.value = ""
 
@@ -8111,6 +8448,14 @@ def create_tab(ctx):
                 _refresh_subagent_panel()
             except Exception:
                 pass
+            # Tasks change without a tool result of this session: a
+            # delegate updates them, or another session sharing the list.
+            # The suggestions are the same open tasks, so they follow.
+            try:
+                _refresh_task_ticker()
+                _refresh_next_steps()
+            except Exception:
+                pass
             finally:
                 try:
                     if not state.get("_closed"):
@@ -8143,46 +8488,87 @@ def create_tab(ctx):
     # Sessions bar covers it. Object kept (handler still wired), not shown.
     resume_last_btn.layout.display = "none"
 
+    # Not the KIT confirm container: it is shown for the whole of a KIT
+    # session, empty while nothing waits, so it would hide the task line
+    # for good. The request it carries brings its own panel.
+    for _req in (approval_row, action_confirm_row,
+                 question_row, ask_user_box, plan_accept_btn):
+        _req.add_class("delfin-agent-request")
+    kit_confirm_container.add_class("delfin-agent-kit-confirm")
     approval_dock = widgets.VBox(
         [kit_confirm_container, approval_row, action_confirm_row,
          question_row],
         layout=widgets.Layout(margin="2px 0"))
     approval_dock.add_class("delfin-agent-dock")
+    # One footer line in the details: the token/mode footer, the usage and
+    # cost, and the KIT-Mode chip side by side.
+    status_row = widgets.HBox([status_line_html, status_html, kit_mode_row])
+    status_row.add_class("delfin-agent-status-row")
+    # Tool calls and containment are long lists: each folds on its own and
+    # names its count and its latest entry while closed.
+    tools_fold = widgets.Accordion(children=[tool_trace_panel_html],
+                                   titles=("Tool calls",), selected_index=None)
+    security_fold = widgets.Accordion(children=[security_panel_html],
+                                      titles=("Containment",),
+                                      selected_index=None)
+    for _f in (tools_fold, security_fold):
+        _f.add_class("delfin-agent-subfold")
+        _f.layout.display = "none"
+    state["_tools_fold"] = tools_fold
+    state["_security_fold"] = security_fold
     below_panels = widgets.VBox(
-        [todo_pane_html,
+        [todo_pane_html, kit_dirs_status,
          subagent_pane_html, subagent_panel_html, background_rows_box,
-         status_line_html, tool_trace_panel_html, security_panel_html])
-    below_panels.add_class("delfin-agent-below")
-    agent_content = widgets.VBox(
-        [css_widget, _enter_js_output, controls_row, search_row,
-         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
-         kit_mode_row, kit_dirs_status,
-         chat_html,
-         plan_accept_btn, ask_user_box,
-         working_html, queue_html, context_bar_html,
-         # The task in hand, one line, above the input: what the agent is
-         # doing now stays in view; the full list is below with the panels.
-         task_ticker_html,
-         # The approval dock, directly above the box you type in: pending
-         # permission requests (Self-Mod Guard / KIT confirms), plan and
-         # action confirmations, questions. The tab fits the window, so
-         # this is always on screen -- it used to sit below the input and
-         # the task list, where it scrolled out of sight.
-         approval_dock,
-         palette_row, palette_select,
+         tools_fold, security_fold, context_bar_html, status_row])
+    # Folded by default: the tool calls, the containment report, the task
+    # list and the subagents are there when wanted, one click away, and
+    # take no height from the chat otherwise.
+    below_panels.add_class("delfin-agent-below-body")
+    below_fold = widgets.Accordion(
+        children=[below_panels],
+        titles=(_fold_title(),),
+        selected_index=None)
+    below_fold.add_class("delfin-agent-below")
+    state["_fold_widget"] = below_fold
+    # The chat frame: the transcript scrolls; at its foot, inside the same
+    # box, the one-line task strip, then the questions and the approval
+    # dock -- pending permission requests (Self-Mod Guard / KIT confirms),
+    # plan and action confirmations. They used to sit under the chat and
+    # the task list, where they scrolled out of sight.
+    # The suggestions are the open tasks' own subjects: they belong with the
+    # task line at the foot of the chat, not in a row of their own.
+    palette_row.add_class("delfin-agent-chat-foot")
+    chat_frame = widgets.VBox(
+        [chat_html, working_html, queue_html, task_strip, palette_row,
+         plan_accept_btn, ask_user_box, approval_dock])
+    chat_frame.add_class("delfin-agent-chat-frame")
+    # The command palette opens OVER the chat, anchored to the top edge of
+    # the input: opening it used to push the input down and squeeze the
+    # chat by the height of the list, and closing it moved everything back.
+    _palette_pop = widgets.VBox([palette_search, palette_select])
+    _palette_pop.add_class("delfin-agent-palette-pop")
+    _input_area = widgets.VBox(
+        [_palette_pop,
          widgets.HBox(
-             [image_upload, input_row],
+             [palette_toggle_btn, image_upload, input_row],
              layout=widgets.Layout(
                  width="100%",
                  align_items="flex-start",
                  margin="6px 0 0 0",
              ),
-         ),
+         )])
+    _input_area.add_class("delfin-agent-input-area")
+    agent_content = widgets.VBox(
+        [css_widget, _enter_js_output, controls_row, search_row,
+         cycle_inspector_html, inspector_actions_row,
+         inspector_detail_box,
+         chat_frame,
+         _input_area,
          # Then who is working (click to enter a chat), finished delegates
          # in one row, and the panels -- capped, scrolling in themselves.
          agent_view_chips,
          agent_archive_dropdown,
-         below_panels],
+         below_fold],
     )
     agent_content.add_class("delfin-agent-root")
     # Where the tab starts on the page, so its height can be "the rest of
@@ -10328,6 +10714,10 @@ def create_tab(ctx):
                 last_turn_cost_usd=float(state.get("_last_turn_cost") or 0.0),
                 last_turn_timing=str(state.get("_last_turn_timing") or ""),
             )
+            state["_fold_tokens"] = (int(s.get("input_tokens") or 0),
+                                     int(s.get("output_tokens") or 0),
+                                     float(s.get("cost_usd") or 0.0))
+            _refresh_fold_title()
         else:
             backend = _resolve_backend() if _cli_available else "api"
             status_html.value = _render_status(
@@ -10724,11 +11114,25 @@ def create_tab(ctx):
 
     def _update_queue_display():
         """Update the queue indicator."""
-        n = len(state["message_queue"])
+        # The queue at the foot of the chat: a head line, then each waiting
+        # message on one line, oldest first (the order they will be sent).
+        queue = list(state["message_queue"])
+        n = len(queue)
         if n > 0:
+            shown = queue[:4]
+            rows = "".join(
+                f'<div class="delfin-agent-queue-row">'
+                f'<span class="delfin-agent-queue-n">{i}</span> '
+                f'{_html.escape(" ".join(str(m).split())[:200])}</div>'
+                for i, m in enumerate(shown, 1))
+            if n > len(shown):
+                rows += (f'<div class="delfin-agent-queue-row">'
+                         f'… +{n - len(shown)} more</div>')
             queue_html.value = (
-                f'<span class="delfin-agent-queue">'
-                f'{n} message{"s" if n != 1 else ""} queued</span>'
+                f'<div class="delfin-agent-queue">'
+                f'<div class="delfin-agent-queue-head">⏳ {n} message'
+                f'{"s" if n != 1 else ""} queued — sent when the agent '
+                f'is done · /stop interrupts</div>{rows}</div>'
             )
         else:
             queue_html.value = ""
@@ -10744,6 +11148,8 @@ def create_tab(ctx):
         eng = state.get("engine")
         if not eng or not getattr(eng, "messages", None):
             context_bar_html.value = ""
+            if state.pop("_fold_ctx", None) is not None:
+                _refresh_fold_title()
             return
         try:
             tokens = int(eng._estimate_context_tokens())
@@ -10755,6 +11161,8 @@ def create_tab(ctx):
             context_bar_html.value = ""
             return
         pct = min(100.0, tokens / window * 100.0)
+        state["_fold_ctx"] = pct
+        _refresh_fold_title()
         if pct >= 80.0:
             fill = "#ef4444"
         elif pct >= 60.0:
@@ -17129,16 +17537,13 @@ def create_tab(ctx):
                 _set_working(False)
                 # Fall through to send normally
             else:
+                # Into the queue at the foot of the chat, not the
+                # transcript: the message enters the chat once, when it is
+                # sent. It used to be shown here as a bubble AND again by
+                # the send that drained it, so every queued line appeared
+                # twice, with a system line between the two.
                 state["message_queue"].append(user_text)
                 input_textarea.value = ""
-                _append_chat_message(
-                    "user", user_text,
-                    **({"origin": "event"} if state.get("_on_its_own")
-                       else {}))
-                _append_system_message(
-                    f"\U0001f4e8 Queued — agent will receive this after finishing. "
-                    f"Type /stop to interrupt."
-                )
                 _update_queue_display()
                 return
 
@@ -17434,6 +17839,16 @@ def create_tab(ctx):
                     never fired (a turn waited 1806 s, 2026-09-11); and it
                     was rendered inside the answer, three times over."""
                     state["_last_stream_activity"] = time.monotonic()
+                    # The open-tasks notice repeats what the task line at
+                    # the foot of the chat already shows; the terminal,
+                    # which has no such line, still prints it.
+                    try:
+                        from delfin.agent.agent_tasks import (
+                            is_open_tasks_notice as _is_ot)
+                        if _is_ot(text):
+                            return
+                    except Exception:
+                        pass
                     if text and text.strip():
                         # Close the answer so far before the notice goes
                         # under it. Left open, the next token found the
@@ -21163,12 +21578,14 @@ def _render_status(
             f'<span class="gate-text">{gate_text}</span>'
         )
 
+    # Mode, backend and permission profile are what the dropdowns right
+    # above this line already show; repeating them as badges cost the chat
+    # a row. The role stays only where it says something the dropdowns do
+    # not -- the position in a pipeline of more than one role.
+    del backend_info, perm_badge
     return (
         f'<div class="delfin-agent-status">'
-        f'<span class="mode-badge">{_html.escape(_mode_label(mode))}</span>'
-        f"{role_info}"
-        f"{backend_info}"
-        f"{perm_badge}"
+        f"{role_info if role_total > 1 else ''}"
         f"{gate_info}"
         f'<span class="tokens-info">{tokens_str} · {cost_str}{_turn_str}</span>'
         f"</div>"
