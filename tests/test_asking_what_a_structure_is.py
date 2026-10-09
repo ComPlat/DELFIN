@@ -50,6 +50,8 @@ from editor_source import EDITOR_SOURCE
 #: enough and the test then runs on every machine. The fixture uses
 #: the real xtb when there is one. See conftest.xtb_on_path.
 _needs_xtb = pytest.mark.usefixtures("xtb_on_path")
+#: A test of xtb's RESULTS: a real xtb or a named skip (conftest.real_xtb).
+_needs_real_xtb = pytest.mark.usefixtures("real_xtb")
 
 #: Hand-built, every C-H at 1.0897 A and nothing relaxed. Its RMS gradient is
 #: 2.6e-3 Hartree per Bohr, twenty-six times what an optimiser converges on.
@@ -124,6 +126,7 @@ def test_the_solvent_refusals_measured_for_gfn1_still_hold():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_gfn1_runs_and_says_it_was_gfn1():
     """Asking for a Hamiltonian and being given it are two different claims.
 
@@ -232,6 +235,7 @@ def test_the_entropy_is_the_difference_of_the_two_totals():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_one_press_brings_back_the_shape_and_the_cost_together():
     """A Hessian is what a free energy costs; the rest is in the same block.
 
@@ -268,6 +272,7 @@ def test_one_press_brings_back_the_shape_and_the_cost_together():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_temperature_changes_the_free_energy_and_not_the_modes():
     """The box on the toolbar reaches the answer, or it is decoration."""
     cold = gfn.optimize_with_gfn(_METHANE_AS_BUILT, "gfn2", timeout=None,

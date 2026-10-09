@@ -687,6 +687,34 @@ def xtb_on_path(monkeypatch):
     yield _XTB_STUB_DIR / "xtb"
 
 
+@pytest.fixture
+def real_xtb(xtb_on_path):
+    """A working xtb, or a named skip -- for a test that checks xtb's RESULTS.
+
+    The stand-in from ``xtb_on_path`` serves tests that only need xtb to be
+    there; it computes nothing. A test that reads a geometry, an energy or a
+    path out of a real run cannot be served by it. Measured 2026-10-09: the
+    nightly slow-tests run on main failed 47 tests in four files with "xtb
+    stopped without writing a geometry" -- every one of them had been given
+    the stand-in since 9478fc2a, whose measurement covered the fast suite
+    only. In CI they now get a real xtb (slow-tests.yml); on a machine with
+    none they skip with the reason instead of failing.
+
+    Found the way the code under test finds it (``find_xtb``: PATH, DELFIN's
+    tool directories, XTBHOME), and the stand-in is ruled out by its path:
+    it answers ``--version`` like the real program, on purpose.
+    """
+    from delfin.dashboard.gfn_optimize import find_xtb, judge_xtb
+
+    where = find_xtb()
+    stub = str(_XTB_STUB_DIR)
+    if (not where or str(Path(where).resolve()).startswith(stub)
+            or not judge_xtb(where).get("ok")):
+        pytest.skip("needs a working xtb: this test checks xtb's results, "
+                    "which the test stand-in cannot give")
+    return where
+
+
 @pytest.fixture(autouse=True)
 def _a_tab_built_in_a_test_is_closed_after_it():
     """Every Agent tab a test built is closed when the test ends.
