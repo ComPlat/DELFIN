@@ -5506,6 +5506,120 @@ def create_tab(ctx):
         tooltip="Export this session's chemistry steps as a Jupyter notebook",
     )
 
+    # Git workflows (requested by Tilmann, 2026-10-09). Each button sends
+    # its slash command -- the same text a person could type, in the
+    # dashboard or the terminal -- and the shipped skill of that name
+    # (delfin/agent/pack/skills/) is the playbook the model follows:
+    # resolving clear conflicts itself, asking when a side's intent is
+    # unclear. Nothing here runs git; the model does, through the gates.
+    # "Push" and "PR" are the user asking for that one push.
+    _GIT_WORKFLOWS = (
+        ("merge", "⤓ Merge", "Bring the base branch into this branch "
+                             "(merge, resolve conflicts, run the tests)"),
+        ("new-branch", "⑂ Branch", "Start a new branch from the base branch"),
+        ("push", "⤒ Push", "Check, commit and push this branch"),
+        ("pr", "⇄ PR", "Push this branch and open a pull request into the "
+                       "base branch"),
+    )
+    # Which branch Merge brings in, Branch starts from and PR goes into.
+    # Not always main (user, 2026-10-09): offered from the remote branches
+    # this checkout already knows, typeable for any other.
+    git_base = widgets.Combobox(
+        value="origin/main", options=["origin/main"],
+        placeholder="base branch", ensure_option=False,
+        tooltip="Base branch for Merge, Branch and PR",
+        layout=widgets.Layout(width="150px"))
+    _git_base_cache = {"at": 0.0, "where": ""}
+
+    def _refresh_git_base_options(where: str) -> None:
+        """Remote branches from the local refs -- no fetch, no network."""
+        now = time.monotonic()
+        if (where == _git_base_cache["where"]
+                and now - _git_base_cache["at"] < 60):
+            return
+        _git_base_cache.update(at=now, where=where)
+        try:
+            import subprocess as _sp
+            out = _sp.run(["git", "-C", where, "branch", "-r",
+                           "--format=%(refname:short)"],
+                          capture_output=True, text=True, timeout=5)
+            names = [n for n in out.stdout.split()
+                     if n and not n.endswith("/HEAD")]
+        except Exception:
+            names = []
+        if names:
+            git_base.options = sorted(set(names),
+                                      key=lambda n: (n != "origin/main", n))
+    git_buttons: dict = {}
+    for _cmd, _label, _tip in _GIT_WORKFLOWS:
+        git_buttons[_cmd] = widgets.Button(
+            description=_label, tooltip=_tip,
+            layout=widgets.Layout(width="auto", flex="0 0 auto"))
+    git_group = widgets.HBox(
+        [git_base] + list(git_buttons.values()),
+        layout=widgets.Layout(gap="4px", flex_flow="row wrap",
+                              flex="0 1 auto", align_items="center"))
+
+    def _git_button_state() -> dict:
+        """{command: reason it is unavailable, or ""} for the workspace."""
+        reasons = {cmd: "" for cmd in git_buttons}
+        try:
+            where = _agent_workspace_path()
+        except Exception:
+            where = ""
+        try:
+            from delfin.agent import session_presence as _presence
+            in_repo = bool(where) and bool(
+                _presence.repository_of(where)["root"])
+        except Exception:
+            in_repo = False
+        if in_repo:
+            _refresh_git_base_options(where)
+        if not in_repo:
+            for cmd in reasons:
+                reasons[cmd] = (f"Not a git repository: {where or '?'} -- "
+                                "these work in a session whose folder is "
+                                "a git checkout.")
+            return reasons
+        gh = shutil.which("gh") or (
+            str(Path.home() / ".local/bin/gh")
+            if (Path.home() / ".local/bin/gh").exists() else "")
+        if not gh:
+            reasons["pr"] = ("The GitHub CLI (gh) is not installed. Ask the "
+                             "agent to install it, then log in with "
+                             "`! gh auth login`.")
+        return reasons
+
+    def _refresh_git_buttons() -> None:
+        try:
+            reasons = _git_button_state()
+        except Exception:
+            return
+        for (cmd, _label, tip) in _GIT_WORKFLOWS:
+            btn = git_buttons[cmd]
+            btn.disabled = bool(reasons[cmd])
+            btn.tooltip = reasons[cmd] or tip
+
+    def _on_git_button(cmd: str) -> None:
+        reason = _git_button_state().get(cmd, "")
+        if reason:
+            _append_system_message(f"`/{cmd}` is not available: {reason}")
+            return
+        base = str(git_base.value or "").strip()
+        if base and not re.fullmatch(r"[A-Za-z0-9._/@-]+", base):
+            _append_system_message(f"`{base}` is not a branch name.")
+            return
+        args = {"merge": base,
+                "new-branch": f"from {base}" if base else "",
+                "pr": base.split("/", 1)[1] if base.startswith("origin/")
+                      else base,
+                "push": ""}[cmd]
+        input_textarea.value = f"/{cmd} {args}".strip()
+        _on_send(None)
+
+    for _cmd in git_buttons:
+        git_buttons[_cmd].on_click(lambda _b, c=_cmd: _on_git_button(c))
+
     # Bug Report: bundle conversation + run config into the (configurable)
     # archive so maintainers can reproduce a bad turn. Optional one-line
     # note describes what went wrong. Archive path comes from
@@ -5603,13 +5717,16 @@ def create_tab(ctx):
     #   Next Role (advance_btn) -> retired-pipeline vestigial, never enables
     # Their widget objects stay alive (handlers/toggles still wired), just
     # not placed in any visible row.
+    #   Export / Export as notebook -> the bug report downloads a copy of
+    #     everything when it is sent (Tilmann/user, 2026-10-09)
     for _hidden in (new_cycle_btn, advance_btn, undo_btn, commit_btn,
-                    push_btn, push_confirm_btn, push_cancel_btn):
+                    push_btn, push_confirm_btn, push_cancel_btn,
+                    export_btn, nb_export_btn):
         _hidden.layout.display = "none"
     _controls_hbox = widgets.HBox(
         [mode_dropdown, provider_dropdown, model_dropdown,
          effort_dropdown, perm_dropdown, stop_btn,
-         export_btn, nb_export_btn, bug_group, model_refresh_btn],
+         git_group, bug_group, model_refresh_btn],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
     controls_row = widgets.VBox([
@@ -10086,6 +10203,10 @@ def create_tab(ctx):
 
     def _update_status():
         """Update the status bar from engine state."""
+        try:
+            _refresh_git_buttons()
+        except Exception:
+            pass
         # Live context-window usage bar (cheap, idempotent — fine to call
         # every time the status line refreshes; that already happens after
         # every send/stop/handoff/compact).
@@ -16544,6 +16665,52 @@ def create_tab(ctx):
         except Exception as exc:
             _append_system_message(f"Notebook export failed: {exc}")
 
+    _REPORT_DOWNLOAD_MAX = 50 * 1024 * 1024
+
+    def _download_report_copy(report_dir) -> str:
+        """Hand the user a ZIP of the report just written, in the browser.
+
+        The report directory is what the maintainers get -- already
+        redacted when it was written -- so the copy is exactly that, and
+        it is what replaced the Export buttons: one press files the
+        report AND leaves a copy with the person who pressed it. Returns
+        the line for the chat, "" when nothing was offered.
+        """
+        import base64
+        import io
+        import json as _json
+        import zipfile
+        try:
+            root = Path(report_dir)
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for f in sorted(root.rglob("*")):
+                    if f.is_file() and not f.is_symlink():
+                        zf.write(f, f"{root.name}/{f.relative_to(root)}")
+            payload = buf.getvalue()
+            if len(payload) > _REPORT_DOWNLOAD_MAX:
+                return ("\n⬇ No download: the report is "
+                        f"{len(payload) // (1024 * 1024)} MB; the copy in "
+                        "the archive is complete.")
+            name = f"{root.name}.zip"
+            js = (
+                "(function(){"
+                f"const n={_json.dumps(name)};"
+                f"const b={_json.dumps(base64.b64encode(payload).decode())};"
+                "try{const s=atob(b);const u=new Uint8Array(s.length);"
+                "for(let i=0;i<s.length;i++){u[i]=s.charCodeAt(i);}"
+                "const url=URL.createObjectURL(new Blob([u],"
+                "{type:'application/zip'}));"
+                "const a=document.createElement('a');a.href=url;a.download=n;"
+                "document.body.appendChild(a);a.click();"
+                "setTimeout(function(){URL.revokeObjectURL(url);a.remove();},"
+                "1500);}catch(e){console.error('report download failed',e);}"
+                "})();")
+            ctx.run_js(js)
+            return f"\n⬇ A copy was downloaded: `{name}`"
+        except Exception as exc:
+            return f"\n⚠️ No download ({exc}); the archive copy is complete."
+
     def _on_bug_report(button):
         """Bundle the current conversation + run config into the archive.
 
@@ -16622,8 +16789,10 @@ def create_tab(ctx):
                     )
             except Exception as exc:
                 remote_line = f"\n⚠️ Remote push skipped: {exc}"
+            download_line = _download_report_copy(report_dir)
             _append_system_message(
-                f"🐞 Bug report saved → `{short}`{remote_line}\n\n"
+                f"🐞 Bug report saved → `{short}`{remote_line}"
+                f"{download_line}\n\n"
                 f"Contains: conversation, engine messages, "
                 f"mode/provider/model/effort/perms, tokens, cost, versions."
             )
