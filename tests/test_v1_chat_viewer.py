@@ -163,3 +163,47 @@ class TestParseCardResult:
             'DELFIN_CARD:{"escape":"text","html":"<img>"}') is None
         assert chat_viewer.parse_card_result(
             'DELFIN_CARD:{"escape":"html","text":"x"}') is None
+    def test_nonce_fence_guard(self):
+        # A wrapped result is not a card: the nonce fence means the input no
+        # longer starts with the bare DELFIN_CARD: marker, so it must NOT be
+        # inlined — parse_card_result returns None.
+        wrapped = "BEGIN external>\nDELFIN_CARD:{}"
+        assert chat_viewer.parse_card_result(wrapped) is None
+
+
+class TestStrictCardSecurity:
+    """Operator Finding-2 attack cases: parse_card_result must REJECT any html
+    that is not the exact single-sandboxed-srcdoc-iframe card, even when the
+    marker and {escape:"html", html:<str>} shape are present. Full pads of the
+    operator's attack set — these were red on the loose parser and are green
+    here. Builds a syntactically-valid card JSON whose html is attacker-shaped
+    but wrapped in the DELFIN_CARD: marker."""
+
+    def _card(self, html: str) -> str:
+        return chat_viewer.CARD_MARKER + json.dumps(
+            {"escape": "html", "html": html, "text": "x"})
+
+    def test_selective_html_with_onload_and_src(self):
+        # onload/src iframe: the escaped viewer may carry src= inside srcdoc,
+        # but a REAL src= or on*= attribute on the iframe itself must reject.
+        evil = ('<iframe sandbox="allow-scripts" src="//evil" '
+                'srcdoc="<script>alert(1)</script>" onload="pwn()"></iframe>')
+        assert chat_viewer.parse_card_result(self._card(evil)) is None
+
+    def test_allow_same_origin_card_refused(self):
+        evil = '<iframe sandbox="allow-scripts allow-same-origin" srcdoc="a"></iframe>'
+        assert chat_viewer.parse_card_result(self._card(evil)) is None
+
+    def test_non_sandboxed_card_refused(self):
+        evil = '<iframe srcdoc="<script>alert(1)</script>"></iframe>'
+        assert chat_viewer.parse_card_result(self._card(evil)) is None
+
+    def test_extra_content_besides_iframe_refused(self):
+        # A sibling <script> outside the escaped srcdoc is an injection vector.
+        evil = '<iframe sandbox="allow-scripts" srcdoc="a"></iframe><script>alert(1)</script>'
+        assert chat_viewer.parse_card_result(self._card(evil)) is None
+
+    def test_two_iframes_refused(self):
+        evil = ('<iframe sandbox="allow-scripts" srcdoc="a"></iframe>'
+                '<iframe sandbox="allow-scripts" srcdoc="b"></iframe>')
+        assert chat_viewer.parse_card_result(self._card(evil)) is None
