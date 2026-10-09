@@ -707,6 +707,34 @@ _AGENT_CSS = """\
     font-size: 13px;
     line-height: 1.5;
 }
+/* THE TAB FITS THE WINDOW (2026-10-09). The chat had a fixed height of
+   100vh - 460px, so every panel that appeared under it -- an approval, the
+   task list, the subagents -- made the page taller than the window: the
+   page scrolled, approvals sat below the fold where nobody saw them, and
+   the scrollbar "shrank" each time a panel came and went. Now the tab is
+   exactly as tall as the window below its own top edge (measured into
+   --delfin-agent-top), the chat takes whatever the rest leaves, and the
+   rows under it keep their height -- so the approval dock above the input
+   is always on screen. */
+.delfin-agent-root {
+    height: calc(100vh - var(--delfin-agent-top, 140px) - 6px);
+    min-height: 420px;
+    overflow-y: auto;
+    box-sizing: border-box;
+}
+.delfin-agent-root > * { flex-shrink: 0; }
+.delfin-agent-root > .delfin-agent-chat-host {
+    flex: 1 1 0 !important;
+    height: auto !important;
+    min-height: 160px;
+}
+/* Everything below the input: capped, scrolling in itself, so it can
+   never push the input and the approvals out of the window. */
+.delfin-agent-root > .delfin-agent-below {
+    flex: 0 1 auto;
+    max-height: 30vh;
+    overflow-y: auto;
+}
 /* The replaced content. Layout only -- no height, no overflow: giving it
    either would make it a second scrollport inside the first, and the
    inner one would be the one that gets destroyed again. */
@@ -6315,8 +6343,11 @@ def create_tab(ctx):
     # finished delegate used to stay in this list for the rest of the session,
     # so the list grew with every delegation and the live rows were pushed
     # down by rows that had nothing left to report.
-    agent_view_chips = widgets.VBox(
-        [], layout=widgets.Layout(display="none", margin="2px 0 0 0"))
+    # Side by side, wrapping onto more rows (user, 2026-10-09): one row per
+    # subagent took a screen's worth of height with a handful running.
+    agent_view_chips = widgets.HBox(
+        [], layout=widgets.Layout(display="none", margin="2px 0 0 0",
+                                  flex_flow="row wrap", gap="4px"))
     # Finished delegates move HERE. Still readable — the same drill-in view
     # renders them from the saved session store — but collapsed into one row
     # that does not grow. It reaches past this session on purpose: a run is
@@ -6399,7 +6430,7 @@ def create_tab(ctx):
                 b = widgets.Button(
                     description="• " + lbl, tooltip=tip or lbl,
                     button_style=("primary" if sid == cur else ""),
-                    layout=widgets.Layout(width="auto", margin="0 0 2px 0"))
+                    layout=widgets.Layout(width="auto", margin="0"))
 
                 def _click(_b, _sid=sid):
                     state["_view_agent"] = _sid
@@ -6550,7 +6581,12 @@ def create_tab(ctx):
     # and not a guess about what somebody wants -- and from the same
     # helper the terminal prompt offers, so the two cannot drift.
     next_steps_box = widgets.HBox(
-        [], layout=widgets.Layout(margin="2px 0 0 4px", flex_flow="row wrap"))
+        [], layout=widgets.Layout(margin="0 0 0 4px", flex_flow="row wrap",
+                                  flex="1 1 auto"))
+    # In the row of the "/" button (user, 2026-10-09): what could come next
+    # sits beside the command palette instead of a row of its own.
+    palette_row.children = (palette_toggle_btn, palette_search, next_steps_box)
+    palette_row.layout.flex_flow = "row wrap"
 
     def _fill_input(text: str):
         def _click(_btn):
@@ -8094,6 +8130,16 @@ def create_tab(ctx):
     # Sessions bar covers it. Object kept (handler still wired), not shown.
     resume_last_btn.layout.display = "none"
 
+    approval_dock = widgets.VBox(
+        [kit_confirm_container, approval_row, action_confirm_row,
+         question_row],
+        layout=widgets.Layout(margin="2px 0"))
+    approval_dock.add_class("delfin-agent-dock")
+    below_panels = widgets.VBox(
+        [todo_pane_html,
+         subagent_pane_html, subagent_panel_html, background_rows_box,
+         status_line_html, tool_trace_panel_html, security_panel_html])
+    below_panels.add_class("delfin-agent-below")
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
@@ -8101,7 +8147,15 @@ def create_tab(ctx):
          chat_html,
          plan_accept_btn, ask_user_box,
          working_html, queue_html, context_bar_html,
-         approval_row, action_confirm_row, question_row,
+         # The task in hand, one line, above the input: what the agent is
+         # doing now stays in view; the full list is below with the panels.
+         task_ticker_html,
+         # The approval dock, directly above the box you type in: pending
+         # permission requests (Self-Mod Guard / KIT confirms), plan and
+         # action confirmations, questions. The tab fits the window, so
+         # this is always on screen -- it used to sit below the input and
+         # the task list, where it scrolled out of sight.
+         approval_dock,
          palette_row, palette_select,
          widgets.HBox(
              [image_upload, input_row],
@@ -8111,29 +8165,35 @@ def create_tab(ctx):
                  margin="6px 0 0 0",
              ),
          ),
-         # Directly under the box you type in: what could come next,
-         # each one a click that fills the box rather than sends it —
-         # a suggestion is an offer, and the sending stays the user's.
-         next_steps_box,
-         # Below the message box: click • Main / • Subagent to enter its chat.
-         # Hidden entirely while nothing but Main exists.
+         # Then who is working (click to enter a chat), finished delegates
+         # in one row, and the panels -- capped, scrolling in themselves.
          agent_view_chips,
-         # Finished delegates, collapsed into one row that does not grow.
          agent_archive_dropdown,
-         # Directly under the message box, most prominent: pending permission
-         # requests (Self-Mod Guard / KIT confirms) — right where you look and
-         # act. The container is empty when nothing is pending, so the task
-         # list sits right below it; a request appears above the tasks the
-         # moment it's needed and collapses away again once you decide.
-         kit_confirm_container,
-         # Then the task list, then ALL subagent views co-located in one place
-         # (live Agent-calls + running/recent telemetry) so "where are the
-         # subagents" is never a question again.
-         task_ticker_html, todo_pane_html,
-         subagent_pane_html, subagent_panel_html, background_rows_box,
-         status_line_html, tool_trace_panel_html,
-         security_panel_html],
+         below_panels],
     )
+    agent_content.add_class("delfin-agent-root")
+    # Where the tab starts on the page, so its height can be "the rest of
+    # the window". Measured, not guessed: the header above it differs
+    # between Voila and Jupyter, and between the single and the session
+    # layout. Re-measured on resize and while the page settles.
+    _measure_top_js = (
+        "(function(){if(window.__delfinAgentTop)return;"
+        "window.__delfinAgentTop=1;function m(){"
+        "var rs=document.querySelectorAll('.delfin-agent-root');"
+        "for(var i=0;i<rs.length;i++){var r=rs[i];if(!r.offsetParent)continue;"
+        "var t=r.getBoundingClientRect().top+window.scrollY;"
+        "document.documentElement.style.setProperty('--delfin-agent-top',"
+        "Math.max(0,Math.round(t))+'px');return;}}"
+        "window.addEventListener('resize',m);setInterval(m,1500);m();})();")
+    try:
+        ctx.run_js(_measure_top_js, keep=True)
+    except TypeError:                    # a context without page scripts
+        try:
+            ctx.run_js(_measure_top_js)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
     if not _yaml_ok:
         missing_html = widgets.HTML(
