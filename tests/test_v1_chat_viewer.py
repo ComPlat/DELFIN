@@ -5,6 +5,8 @@ Tests the dashboard-side HTML card builder (the string the shared
 red control for this phase is that ``delfin.dashboard.chat_viewer`` did not
 exist on the phase-2 commit: every case fails on ``import`` there.
 """
+import json
+
 import pytest
 
 from delfin.dashboard import chat_viewer
@@ -113,3 +115,25 @@ class TestSandboxedCard:
         assert html.count("</script>") == 0
         # The data still reaches the viewer (escaped, so inert).
         assert "addVolumetricData" in html
+
+
+class TestCardContract:
+    """The shared V1+V2 tool-result contract (DELFIN_CARD: marker + JSON)."""
+
+    def test_tool_result_marker_and_keys(self):
+        out = chat_viewer.tool_result("<iframe>card</iframe>", "some text")
+        assert out.startswith(chat_viewer.CARD_MARKER)
+        payload = json.loads(out[len(chat_viewer.CARD_MARKER):])
+        assert payload["escape"] == "html"
+        assert payload["html"] == "<iframe>card</iframe>"
+        assert payload["text"] == "some text"
+
+    def test_render_molecule_tool_result_contract(self):
+        out = chat_viewer.render_molecule_tool_result(H2_CUBE, kind="cube")
+        assert out.startswith(chat_viewer.CARD_MARKER)
+        payload = json.loads(out[len(chat_viewer.CARD_MARKER):])
+        # The card is the sandboxed iframe; the terminal line is plain text.
+        assert 'sandbox="allow-scripts"' in payload["html"]
+        assert "allow-same-origin" not in payload["html"]
+        assert "<" not in payload["text"]
+        assert "addVolumetricData" in payload["html"]
