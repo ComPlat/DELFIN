@@ -63,9 +63,25 @@ def test_content_readers_with_absolute_paths_are_detected():
 
 def test_relative_and_non_reader_commands_are_not_detected():
     assert _bash_outside_reads("cat README.md") == []
-    assert _bash_outside_reads("ls -la /etc") == []          # not a dump
+    assert _bash_outside_reads("ls -la /usr/bin") == []      # system dir
+    assert _bash_outside_reads("ls -la") == []
+    assert _bash_outside_reads("cd sub && ls") == []
+    assert _bash_outside_reads("cd - && ls") == []
     assert _bash_outside_reads("python3 /usr/bin/tool.py") == []
     assert _bash_outside_reads("cat /etc/*.conf") == []      # glob, not literal
+
+
+def test_a_listing_or_a_cd_outside_is_a_look_outside():
+    # Bypass does not open the filesystem: the working directory is the
+    # boundary for reading too, so a listing of another folder, or a cd
+    # the command then reads relative to, asks like a cat would.
+    assert _bash_outside_reads("ls -la /etc") == ["/etc"]
+    assert _bash_outside_reads("find ~ -name x 2>/dev/null") == ["~"]
+    assert _bash_outside_reads("tree /data/run") == ["/data/run"]
+    assert _bash_outside_reads("cd /etc && cat hostname") == ["/etc"]
+    assert _bash_outside_reads("pushd /etc; cat hostname") == ["/etc"]
+    assert _bash_outside_reads("cd && cat .bashrc") == ["~"]
+    assert _bash_outside_reads("cd /usr/lib && ls") == []
 
 
 # --- executor --------------------------------------------------------------

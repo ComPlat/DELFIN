@@ -1200,6 +1200,26 @@ def _bash_reads_denied_path(cmd: str, denied: set,
     return ""
 
 
+# Commands that print what a DIRECTORY holds: its names, and with `find`
+# or `tree` everything below it. Not content readers, but a listing of a
+# folder outside the workspace is still a look outside it -- `ls /home/x`
+# and `find ~ -name '*.log'` reached past a read_file the user would have
+# been asked about. Absolute and `~` arguments only, like the readers.
+_BASH_DIR_LISTERS: frozenset[str] = frozenset({"ls", "find", "tree"})
+
+# `cd X && cat file` reads X/file by a relative name, which the reader
+# check above never sees. The directory changed into is the thing to ask
+# about. A bare `cd` goes home.
+_BASH_DIR_CHANGERS: frozenset[str] = frozenset({"cd", "pushd"})
+
+
+def _is_system_path(word: str) -> bool:
+    """True for interpreter, binary and library directories (no user data)."""
+    text = os.path.normpath(os.path.expanduser(word))
+    return (text in _SYSTEM_DIRS
+            or (text + "/").startswith(_SYSTEM_PATH_PREFIXES))
+
+
 def _bash_outside_reads(cmd: str) -> list[str]:
     """Absolute paths a content-dumping command would print.
 
@@ -1244,7 +1264,27 @@ def _bash_outside_reads(cmd: str) -> list[str]:
                 argv = argv[1:]
             if not argv:
                 continue
-            if Path(argv[0]).name not in _BASH_CONTENT_READERS:
+            prog = Path(argv[0]).name
+            if prog in _BASH_DIR_CHANGERS:
+                if "-" in argv[1:]:
+                    continue        # `cd -`: back to where it was
+                dests = [a for a in argv[1:] if not a.startswith("-")]
+                if not dests:
+                    out.append("~")
+                elif ((dests[0].startswith("/") or dests[0].startswith("~"))
+                        and not _is_system_path(dests[0])):
+                    out.append(dests[0])
+                continue
+            if prog in _BASH_DIR_LISTERS:
+                for a in argv[1:]:
+                    if a.startswith("-") or any(c in a for c in "*?["):
+                        continue
+                    if ((a.startswith("/") or a.startswith("~"))
+                            and not _is_system_path(a)
+                            and not _is_safe_device(a)):
+                        out.append(a)
+                continue
+            if prog not in _BASH_CONTENT_READERS:
                 continue
             for a in argv[1:]:
                 if a.startswith("-") or any(c in a for c in "*?["):
@@ -14535,44 +14575,55 @@ class _DocToolExecutor:
                 "remember_permission(kind='extra_dir', ...) to read it."
             )
 
-        # There IS someone, and they said not to ask. Exempt, for the same
-        # reason the egress gate above is and by the same rule: a profile
-        # that promises nothing is asked stops meaning anything the first
-        # time a gate asks anyway.
+        # Bypass is NOT exempt. It used to be: "a profile that promises
+        # nothing is asked" let every read outside the roots through
+        # silently, so a Bypass session could read anything on the
+        # cluster its account could -- and the working directory, the one
+        # boundary the user drew, meant nothing for reading. Bypass is a
+        # statement about the work INSIDE that boundary ("do not ask me
+        # about each edit or command in my folders"), not a key to the
+        # rest of the filesystem. Reaching outside is a different act and
+        # stays a question in every mode, the way it is in Claude Code.
         #
-        # The line is prompt versus rule, not read versus write. Measured
-        # across the whole surface before drawing it: reading outside the
-        # roots is the ONLY act on this gate that was ever a question —
-        # writing outside, writing into the archive and writing to /etc
-        # are refusals in every mode, asked of nobody. So lifting the
-        # question here cannot loosen a single write.
+        # Nobody answering is not a refusal: the dialog expires, the model
+        # is told the user is away and carries on inside the workspace
+        # (see the timeout branch below). Only an explicit "no" closes the
+        # path for the session, and with no dialog at all it is refused
+        # above.
         #
-        # It also ends a split that the model, not the user, was resolving:
-        # `read_file` on an outside path asked while the same file reached
-        # through an MCP shell did not, because MCP arguments belong to the
-        # server and no path check runs on them. Which of the two the model
-        # happened to pick decided whether the user saw a dialog.
-        if getattr(perms, "mode", "") == "bypassPermissions":
-            _record_security_event(
-                "outside_read_bypass", "read", str(resolved), blocked=False)
-            return None
         # Say what the click actually does. The old wording promised "only
         # this single read" while the approval added the file's PARENT to
         # the writable workspace roots — so approving a read of a file in
         # $HOME made $HOME writable for the session. The grant is now
         # read-only (see ``add_session_read_dir``) and described as it is.
-        _grantable = _is_grantable_read_dir(resolved.parent)
+        #
+        # A DIRECTORY target -- `ls`, `find`, or a `cd` the command then
+        # reads relative to -- opens that directory itself, not its parent:
+        # approving `cd /data/run1` must not open all of /data.
+        try:
+            _is_dir = resolved.is_dir()
+        except OSError:
+            _is_dir = False
+        _grant_dir = resolved if _is_dir else resolved.parent
+        _grantable = _is_grantable_read_dir(_grant_dir)
+        _what = "directory" if _is_dir else "file"
         preview = (
             "[OUTSIDE-WORKSPACE READ]\n"
-            f"The agent wants to read a file outside the allowed roots:\n"
+            f"The agent wants to read a {_what} outside the allowed roots:\n"
             f"  {resolved}\n\n"
-            + ("Approving allows READING this file and other files in\n"
-               f"  {resolved.parent}\n"
+            + (("Approving allows READING this file and other files in\n"
+                if not _is_dir else
+                "Approving allows READING the files in\n")
+               + f"  {_grant_dir}\n"
                "for the rest of this session. It grants NO write access "
                "there, and nothing is saved — a later session asks again."
                if _grantable else
-               "Approving allows READING this one file. Its directory is a "
-               "system, home or key directory and is not opened.")
+               ("Approving allows READING this one file. Its directory is a "
+                "system, home or key directory and is not opened."
+                if not _is_dir else
+                "Approving allows this one command to read in it. It is a "
+                "system, home or key directory and is not opened for the "
+                "session."))
         )
         try:
             ok = bool(perms.confirm_callback(
@@ -14610,7 +14661,7 @@ class _DocToolExecutor:
         # for. Best-effort — a refused grant leaves the approved read intact.
         if _grantable:
             try:
-                _granted = perms.add_session_read_dir(resolved.parent)
+                _granted = perms.add_session_read_dir(_grant_dir)
                 _record_security_event(
                     "read_grant", "read_file", str(_granted), blocked=False)
             except Exception:

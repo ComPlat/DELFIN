@@ -1646,7 +1646,8 @@ def _perm_options_for_mode(mode: str) -> list[tuple[str, str]]:
         Plan          read only
         Ask All       asks before a file changes AND before a shell command
         Accept Edits  file changes go through, shell still asks
-        Bypass        asks nothing
+        Bypass        asks nothing about work inside the allowed folders;
+                      reading outside them still asks
 
     The stored values are historical -- ``repo_free`` is the identifier for
     the Accept Edits rung and ``all_free`` for Bypass. They are left alone
@@ -1679,7 +1680,7 @@ PROFILE_TO_CLI_PERM: dict[str, str] = {
     "plan":      "plan",                # read-only
     "ask_all":   "default",             # asks before every write and shell
     "repo_free": "acceptEdits",         # writes go through, shell asks
-    "all_free":  "bypassPermissions",   # asks nothing, as the label says
+    "all_free":  "bypassPermissions",   # asks nothing inside the folders
 }
 
 
@@ -5365,7 +5366,8 @@ def create_tab(ctx):
         style={"description_width": "42px"},
         tooltip=("Plan = read only · Ask All = asks before every file change "
                  "and every shell command · Accept Edits = file changes go "
-                 "through, shell still asks · Bypass = asks nothing "
+                 "through, shell still asks · Bypass = asks nothing inside "
+                 "the allowed folders; reading outside them still asks "
                  "(archive stays read-only in all of them)"),
     )
 
@@ -5892,7 +5894,8 @@ def create_tab(ctx):
         "acceptEdits":       ("Accept Edits", "#e8710a", "#fef7e0",
                               "Write/Edit auto · Bash confirmed"),
         "bypassPermissions": ("Bypass", "#c5221f", "#fce8e6",
-                              "Everything auto · sandbox + denylist still apply"),
+                              "Auto inside the allowed folders · reading outside "
+                              "asks · sandbox + denylist still apply"),
     }
 
     kit_mode_chip = widgets.Button(
