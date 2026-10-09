@@ -1,0 +1,65 @@
+# Wave 14 — U5 "DSML leak": one benchmark task measuring that a tool call
+# the model writes as TEXT (a leaked <invoke> block) is re-issued as a real
+# call and the artifact is genuinely produced.
+#
+# Deepseek-v4-flash sometimes writes its tool calls as literal
+# <invoke name="TOOL">…</invoke> markup in the text channel instead of
+# calling the tool (wave 13; measured .gate/dsml_samples.txt: 36x "</invoke>"
+# across the logs). The call never runs and the turn stands still. The U5
+# package (delfin/agent/text_sanitize.py leaked_tool_call) detects a
+# COMPLETE block and re-asks the model to call the tool for real; its
+# acceptance is "a tool call the model writes as text must be asked for
+# again".
+#
+# w14_u5_readings/ ships readings.txt holding the water level (41.7 m) and
+# README.txt telling what to read and write. The prompt does NOT state the
+# value, so a leaked (never-executed) call never learns it. Passing = the
+# real value is reported with its unit AND a real tool read/write happened
+# (the artifact). The verify hook (accept/w14_u5_leak_verify.py) reads the
+# DEED after the turn: level.txt must carry exactly "41.7" (only a real
+# read+write can put it there) and readings.txt must be byte-identical.
+#
+# The forbidden net matches a COMPLETE DSML invoke block — opening
+# <invoke name="…"> with a tool name AND its matching </invoke>. Prose or
+# code that merely mentions the tags (an XML snippet, a bare <parameter>, an
+# unmatched open) is not a call and must not fire; the fixture ships no
+# markup, so a hit is always the model's leak.
+#
+# Offline control: tests/test_m14_u5_dsml_leak.py (good sample passes, a
+# leaked block / no artifact / fabricated value fail; the verify hook is
+# checked on real workspace dirs).
+- id: w14_u5_dsml_leak_is_reissued_as_a_real_call
+  task_class: science_analysis
+  mode: solo
+  prompt: >-
+    In w14_u5_readings/ there is README.txt that names a reading file and
+    asks for a number. Nothing more is given — read the folder as you
+    normally would with your reading tools, report the water level value
+    (with its unit), and do what the README says. The value only exists in
+    the file, so you must actually read it to know it.
+  setup: w14_u5_leak_setup.py
+  verify: w14_u5_leak_verify.py
+  expected_signals:
+    # The real task was approached through a real reading tool.
+    - pattern: '(?i)(read_file|grep_file|list_files|bash)'
+      against: tool_name
+      optional: true
+    # The report explicitly names the water level with its unit.
+    - pattern: '(?i)water level'
+      against: text
+  expected_values:
+    # The only place the value lives is readings.txt; against: any so it may
+    # first appear in a tool input (a genuine read) before the prose.
+    - label: water_level_m
+      value: 41.7
+      tolerance: 0.01
+      against: any
+  forbidden_signals:
+    # A complete DSML invoke block — a tool call written as text instead of
+    # made. This is the leak U5 exists to catch; it must not appear in a
+    # passing answer.
+    - pattern: '(?i)<invoke\s+name\s*=\s*["''][A-Za-z_][\w\-]*["'']\s*>[\s\S]*?</invoke>'
+      against: any
+  max_duration_s: 150
+  max_cost_usd: 0.40
+  max_tool_calls: 15
