@@ -66,8 +66,12 @@ def render_html(
     session_id: str | None = None,
     show_completed: bool = True,
     max_rows: int = 30,
+    bare: bool = False,
 ) -> str:
     """Return an HTML fragment listing tasks, ready for ipywidgets HTML.
+
+    ``bare=True`` returns the rows alone, without the framed header: the
+    body of a fold whose title already carries the counts.
 
     The session filter goes through the shared resolver: an empty id is
     UNSCOPED, the same as everywhere else. Reading it as "no session,
@@ -81,10 +85,9 @@ def render_html(
     if not show_completed:
         raw = [t for t in raw if t.get("status") != "completed"]
     if not raw:
-        return (
-            "<div style='color:#888;font-size:12px;font-style:italic;'>"
-            "No tasks yet — call task_create to start a plan.</div>"
-        )
+        # Nothing: a panel announcing that there is nothing took a line
+        # from the chat on every session that had not planned anything.
+        return ""
     rows: list[str] = []
     counts: dict[str, int] = {s: 0 for s in _ORDER}
     for t in _sorted(raw)[:max_rows]:
@@ -120,6 +123,8 @@ def render_html(
     # the chat off-screen (Jerome 2026-06-13). The summary header stays fixed
     # above the scroll area so the counts are always visible.
     scroll_open = "<div style='max-height:220px;overflow-y:auto;'>"
+    if bare:
+        return scroll_open + "".join(rows) + "</div>"
     return (
         "<div style='border-left:3px solid #444;padding:6px 10px;"
         "background:#0001;border-radius:4px;'>"
@@ -130,6 +135,100 @@ def render_html(
         + "</div>"
         + "</div>"
     )
+
+
+def counts(
+    workspace: Path | str,
+    *,
+    session_id: str | None = None,
+) -> tuple[int, int]:
+    """(open, completed) tasks of the session, for one-line summaries."""
+    store = get_store(Path(workspace))
+    raw = store.list(include_deleted=False,
+                     session_id=resolve_session_scope(session_id))
+    done = sum(1 for t in raw if t.get("status") == "completed")
+    return len(raw) - done, done
+
+
+_PLAIN_GLYPHS = {
+    "pending": "\u2610", "in_progress": "\u25b6", "blocked": "\u26d4",
+    "completed": "\u2611", "deleted": "\u2613",
+}
+
+
+def rows(
+    workspace: Path | str,
+    *,
+    session_id: str | None = None,
+    max_rows: int = 30,
+) -> list[dict]:
+    """The task list as data, in display order, for a surface that builds
+    its own rows (the dashboard's clickable task list).
+
+    Each row: ``status``, ``glyph`` (plain text), ``num`` (the session
+    number the user reads), ``label`` (what the row shows: the active form
+    while in progress, the blocking reason appended) and ``subject`` (what
+    a click puts into the message box).
+    """
+    store = get_store(Path(workspace))
+    raw = store.list(include_deleted=False,
+                     session_id=resolve_session_scope(session_id),
+                     with_seq=True)
+    out: list[dict] = []
+    for t in _sorted(raw)[:max_rows]:
+        status = str(t.get("status", "pending"))
+        subject = str(t.get("subject", ""))
+        active = str(t.get("active_form", ""))
+        label = active if status == "in_progress" and active else subject
+        if status == "blocked":
+            reason = str(t.get("blocked_reason", ""))[:60]
+            label += f" \u2014 waiting on {reason}" if reason else ""
+        elif status == "completed" and t.get("verified") == "unmet":
+            label += " (unverified)"
+        out.append({
+            "status": status,
+            "glyph": _PLAIN_GLYPHS.get(status, _PLAIN_GLYPHS["pending"]),
+            "num": t.get("seq") if t.get("seq") is not None else t.get("id"),
+            "label": label,
+            "subject": subject,
+        })
+    return out
+
+
+def render_title(
+    workspace: Path | str,
+    *,
+    session_id: str | None = None,
+) -> str:
+    """Plain-text title of the task fold at the foot of the chat: the
+    counts and the task in hand, e.g. ``Tasks ▶ 1 ☐ 2 ☑ 0 · Parsing``.
+
+    Plain text because a fold title is not HTML. Empty when there are no
+    open tasks (a finished plan says nothing either), so the fold costs
+    no height unless it has something to say.
+    """
+    store = get_store(Path(workspace))
+    raw = store.list(include_deleted=False,
+                     session_id=resolve_session_scope(session_id),
+                     with_seq=True)
+    counts = {s: 0 for s in _ORDER}
+    current = ""
+    for t in _sorted(raw):
+        status = str(t.get("status", "pending"))
+        counts[status] = counts.get(status, 0) + 1
+        if status == "in_progress" and not current:
+            current = str(t.get("active_form") or t.get("subject") or "")
+    open_count = counts["in_progress"] + counts["pending"] + counts["blocked"]
+    if not open_count:
+        return ""
+    parts = [f"\u25b6 {counts['in_progress']}", f"\u2610 {counts['pending']}"]
+    if counts["blocked"]:
+        parts.append(f"\u26d4 {counts['blocked']}")
+    parts.append(f"\u2611 {counts['completed']}")
+    title = "Tasks  " + "  ".join(parts)
+    if current:
+        title += " \u00b7 " + current[:90]
+    return title
 
 
 def next_steps(
