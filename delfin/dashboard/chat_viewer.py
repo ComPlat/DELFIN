@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import html as _html
 import json
+import re
 
 from delfin.agent import chat_media
 
@@ -144,14 +145,53 @@ def render_molecule_tool_result(
     return tool_result(_card_html(media, title), media["text"])
 
 
-def parse_card_result(result: str) -> "str | None":
-    """Return the inline html card from a ``DELFIN_CARD:`` result, else None.
+def _is_safe_inline_card(html: str) -> bool:
+    """Defence-in-depth gate on the inline card html (operator finding #2).
 
-    This is the reader half of the shared V1+V2 contract. Only a result that
-    starts exactly with :data:`CARD_MARKER` AND parses to
-    ``{"escape":"html","html":<str>, ...}`` is accepted; an error output
-    (JSON that echoes a hostile path), a non-card shape, or malformed content
-    returns None so the caller escapes the output rather than inlining it.
+    Accepts ONLY the handler-built card shape: exactly one
+    ``<iframe sandbox="allow-scripts" srcdoc="...">`` with no ``src=``, no
+    ``on*`` event handlers and no ``allow-same-origin`` on that iframe, and no
+    injection-capable tag (script/img/svg/object/embed/...) anywhere OUTSIDE
+    the fully attribute-escaped ``srcdoc``. The file content lives only inside
+    ``srcdoc``, escaped, so nothing here can break out of the iframe. Every
+    other shape is rejected so tab_agent never inlines attacker-shaped html.
+    """
+    if html.count("<iframe") != 1:
+        return False
+    _m = re.search(r"<iframe\b([^>]*)>", html)
+    if not _m:
+        return False
+    if 'sandbox="allow-scripts"' not in _m.group(1):
+        return False
+    # Strip the srcdoc attribute before inspecting the iframe's own
+    # attributes: its escaped value legitimately contains "src=" for the
+    # embedded 3Dmol script and must not trip the bans below. Only a real
+    # attribute ON the iframe itself (allow-same-origin, src=, on*=) is
+    # grounds for rejection.
+    _attrs_plain = re.sub(r'srcdoc="[^"]*"', "", _m.group(1))
+    if "allow-same-origin" in _attrs_plain:
+        return False
+    # The iframe must carry ONLY srcdoc + style/title — never src or a JS
+    # event handler attribute.
+    if re.search(r"\b(?:src|on[a-z]+)\s*=", _attrs_plain):
+        return False
+    # Drop the escaped srcdoc (quotes are &quot;, so it contains no literal
+    # "</"), then reject any remaining injection-capable tag in the wrapper.
+    # The single validated iframe (count==1 + per-attribute checks above) is
+    # the only <iframe> left and is already proven safe.
+    _stripped = re.sub(r"srcdoc=\"[^\"]*\"", "", html)
+    for _tag in ("<script", "<img", "<svg", "<object", "<embed",
+                 "<link", "<meta", "<form", "<style"):
+        if _tag in _stripped:
+            return False
+    return True
+
+
+def _card_payload(result: str) -> "dict | None":
+    """The parsed, validated contract object for a ``DELFIN_CARD:`` result.
+
+    ``None`` when the result is not a card (error output that echoes a hostile
+    path, a non-card shape, or malformed content).
     """
     if not result.startswith(CARD_MARKER):
         return None
@@ -163,4 +203,39 @@ def parse_card_result(result: str) -> "str | None":
         return None
     if payload.get("escape") != "html" or not isinstance(payload.get("html"), str):
         return None
-    return payload["html"]
+    if not _is_safe_inline_card(payload["html"]):
+        return None
+    return payload
+
+
+def parse_card_result(result: str) -> "str | None":
+    """Return the inline html card from a ``DELFIN_CARD:`` result, else None.
+
+    This is the reader half of the shared V1+V2 contract. Only a result that
+    starts exactly with :data:`CARD_MARKER`, parses to
+    ``{"escape":"html","html":<str>, ...}`` AND whose ``html`` is the exact
+    single-sandboxed-iframe card shape (see :func:`_is_safe_inline_card`) is
+    accepted; an error output (JSON that echoes a hostile path), a non-card
+    shape, or malformed content returns None so the caller escapes the output
+    rather than inlining it.
+    """
+    payload = _card_payload(result)
+    return payload["html"] if payload is not None else None
+
+
+def card_model_text(result: str) -> "str | None":
+    """The short model-facing summary of a card result, or None.
+
+    The model's tool-result context must NEVER receive the embedding html or
+    raw file content (operator finding #1): only the one-line plain text
+    summary (formula, atom count, format, path) built by chat_media from
+    parsed data. For a result that is not a valid card this returns None so
+    the caller keeps its existing (escaped) fallback behaviour.
+    """
+    payload = _card_payload(result)
+    if payload is None:
+        return None
+    text = payload.get("text")
+    if not isinstance(text, str):
+        return None
+    return text
