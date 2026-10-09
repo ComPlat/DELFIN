@@ -7563,16 +7563,24 @@ def create_tab(ctx):
             from delfin.agent.task_ticker import rows as _tt_rows
             from delfin.agent.task_ticker import render_title as _tt_title
             eng = state.get("engine")
-            ws = None
-            if eng is not None:
-                kp = getattr(eng, "kit_permissions", None)
-                if kp is not None:
-                    ws = kp.workspace
-            if ws is None:
-                ws = ctx.repo_dir or Path.cwd()
-            sid = str(state.get("active_session_id", "") or "")
-            title = _tt_title(ws, session_id=sid)
-            rows = _tt_rows(ws, session_id=sid) if title else []
+            kp = getattr(eng, "kit_permissions", None) if eng is not None else None
+            if eng is not None and kp is None:
+                # A CLI backend (the Anthropic CLI) keeps its plan in its
+                # own TodoWrite list, not in DELFIN's task store: the line
+                # shows that plan. Reading the store here showed nothing on
+                # this backend, ever.
+                from delfin.agent.task_ticker import (
+                    rows_from_todos as _tt_from_todos, title_for as _tt_for)
+                rows = _tt_from_todos(state.get("current_todos") or [])
+                title = _tt_for(rows)
+            else:
+                ws = kp.workspace if kp is not None else (
+                    ctx.repo_dir or Path.cwd())
+                sid = str(state.get("active_session_id", "") or "")
+                title = _tt_title(ws, session_id=sid)
+                rows = _tt_rows(ws, session_id=sid) if title else []
+            if not title:
+                rows = []
             # Rebuilt only when a row changed: the background tick runs
             # every few seconds, and new buttons would drop a click.
             key = tuple((r["status"], r["num"], r["label"], r["subject"])
@@ -8517,7 +8525,7 @@ def create_tab(ctx):
     state["_tools_fold"] = tools_fold
     state["_security_fold"] = security_fold
     below_panels = widgets.VBox(
-        [todo_pane_html, kit_dirs_status,
+        [kit_dirs_status,
          subagent_pane_html, subagent_panel_html, background_rows_box,
          tools_fold, security_fold, context_bar_html, status_row])
     # Folded by default: the tool calls, the containment report, the task
@@ -8997,9 +9005,9 @@ def create_tab(ctx):
         sa_calls = data.get("subagent_calls") or []
         if sa_calls:
             state["subagent_calls"] = sa_calls
-        todo_payload = data.get("todo_payload") or []
-        if todo_payload:
-            state["current_todos"] = todo_payload
+        # The saved plan, an empty one included: keeping the previous
+        # session's plan when this one had none showed a foreign plan.
+        state["current_todos"] = list(data.get("todo_payload") or [])
         # last_compaction_info goes back on the engine so /context shows
         # accurate "last compaction" info after resume.
         lci = data.get("last_compaction_info")
@@ -18186,6 +18194,10 @@ def create_tab(ctx):
                         todos = parsed.get("todos") or []
                         # Persist current todo plan for inspectors / status line
                         state["current_todos"] = todos
+                        try:
+                            _refresh_task_ticker()
+                        except Exception:
+                            pass
                         # Update the persistent plan pane (visible while agent works)
                         _pane_html = _render_todo_pane_html(todos)
                         if _pane_html:
@@ -20281,6 +20293,8 @@ def create_tab(ctx):
         # first turn — task_list/panel filter by it, so old tasks don't leak in.
         _new_sid = (getattr(engine, "session_id", "") or "") if engine else ""
         state["active_session_id"] = _new_sid
+        # A new session starts without the last one's CLI plan.
+        state["current_todos"] = []
         try:
             kp = getattr(engine, "kit_permissions", None) if engine else None
             if kp is not None:
