@@ -105,6 +105,28 @@ def test_an_unheld_worktree_is_still_offered(tmp_path, monkeypatch):
     assert str(project / "sb_a") not in choices, "only the held one is dropped"
 
 
+def test_alive_pid_worktree_is_not_offered_even_with_stale_presence(
+        tmp_path, monkeypatch):
+    """RED: a worktree whose owning process is alive must not be offered.
+
+    A fix that keys the picker exclusion on session-presence alone
+    (``_live_session_in``) misses a tree whose session vanished from the
+    presence file but whose owning pid is still alive: stale presence would
+    let the busy tree be offered as a start folder. The exclusion must
+    consult the worktree sidecar's owning pid, not presence only.
+    Uses os.getpid() so the check is deterministic on this machine.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    wt = _worktree(project)
+    _sidecar(wt, pid=os.getpid(), host=socket.gethostname() or "somehost")
+    # Session gone from the presence file: liveness-by-presence says "".
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
+    choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
+    assert str(wt) not in choices, (
+        "a worktree an alive owning process holds must not be offered")
+
+
 # ---------------------------------------------------------------------------
 # Release safety: never release an alive / other-host / live-session tree
 # ---------------------------------------------------------------------------
