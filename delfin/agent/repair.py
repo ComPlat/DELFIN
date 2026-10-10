@@ -58,8 +58,8 @@ def _step(row: dict, seq: int) -> dict:
         key, value = str(setting[0]), str(setting[1])
         what = (f"{row['check']}: set {key} = {value!r} in the user settings "
                 f"file (the whole file is backed up to a dated name first)")
-        undo = (f"restore the prior settings from the dated backup named in "
-                f"the apply result")
+        undo = ("restore the prior settings from the dated backup named in "
+                "the apply result")
         return {
             "id": seq, "check": str(row.get("check", "")),
             "kind": "setting", "what": what, "undo": undo,
@@ -269,6 +269,23 @@ def apply_repair_step(step: dict, *, approved: bool = False,
     """
     return apply(step, approved=approved,
                  user_settings_path=user_settings_path)
+
+
+def doctor_repair_preview(steps: list, step_id) -> str:
+    """The what/undo text of the step whose id is ``step_id``, or "".
+
+    ``step_id`` arrives as typed text (``"0"``) while ``plan`` numbers its
+    steps with ints, so ids are compared as strings -- the same rule
+    ``doctor_repair_apply`` uses to resolve the step it applies.
+    """
+    return "\n".join(
+        f"{s.get('what', '')}\nundo: {s.get('undo', '')}"
+        for s in steps or [] if str(s.get("id")) == str(step_id).strip())
+
+
+def doctor_repair_known_ids(steps: list) -> str:
+    """Comma-separated step ids for a "no such step" reply ("none" if empty)."""
+    return ", ".join(str(s.get("id")) for s in steps or []) or "none"
 
 
 def doctor_repair_apply(step_id, *, results: list,

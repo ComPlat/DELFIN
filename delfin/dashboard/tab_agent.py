@@ -14255,7 +14255,9 @@ def create_tab(ctx):
                 from delfin.agent.doctor import format_doctor, run_doctor
                 from delfin.agent.repair import (
                     doctor_repair_apply,
+                    doctor_repair_known_ids,
                     doctor_repair_plan,
+                    doctor_repair_preview,
                 )
                 results = run_doctor(ctx.repo_dir or ".")
                 _arg = cmd[len("/doctor"):].strip()
@@ -14264,14 +14266,11 @@ def create_tab(ctx):
                     _sub = _arg[len("repair"):].strip()
                     if _sub.startswith("apply "):
                         _sid = _sub[len("apply "):].strip()
-                        _preview = "\n".join(
-                            f"{s.get('what', '')}\nundo: {s.get('undo', '')}"
-                            for s in _steps if s.get("id") == _sid
-                        )
+                        _preview = doctor_repair_preview(_steps, _sid)
                         if not _preview:
                             _append_system_message(
                                 f"No repair step with id {_sid!r}; "
-                                f"known: {', '.join(s.get('id', '') for s in _steps) or 'none'}"
+                                f"known: {doctor_repair_known_ids(_steps)}"
                             )
                             return True
                         _append_system_message(
