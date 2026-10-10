@@ -31,13 +31,26 @@ _BACKTICK_CMD = re.compile(r"`([^`]+)`")
 
 
 def _gate_bin() -> str:
-    """Absolute path of the session's sanctioned test runner, derived at
-    runtime from this module's own location (``<delfin-root>/.delfin/
-    gate-tools/gate``), never hardcoded: the checkout lives under a user
-    home, and a home path must not ship in code.
+    """Absolute path of the session's sanctioned test runner at the MAIN
+    DELFIN checkout: ``<repo>/.delfin/gate-tools/gate``.
+
+    The module runs from a git worktree in production (``<repo>/.delfin/
+    worktrees/<name>/delfin/agent/refusal_hints.py``), whose own ``.delfin``
+    has no ``gate-tools`` — the gate lives only at the main repo root. Walk up
+    from this module to the first ancestor whose ``.delfin/gate-tools/gate``
+    exists, which lands on the main checkout in both the main-tree and
+    worktree cases. Ever derived at runtime, never hardcoded: the checkout
+    lives under a user home, and a home path must not ship in source.
     """
-    root = Path(__file__).resolve().parents[2]
-    return str(root / ".delfin" / "gate-tools" / "gate")
+    cur = Path(__file__).resolve().parent  # .../delfin/agent
+    for _ in range(16):
+        gate = cur / ".delfin" / "gate-tools" / "gate"
+        if gate.is_file():
+            return str(gate)
+        if cur.parent == cur:  # reached the filesystem root, stop
+            break
+        cur = cur.parent
+    return str(cur / ".delfin" / "gate-tools" / "gate")
 
 
 def _concrete(command: str, *, drop_first: bool = True) -> str:
@@ -106,10 +119,11 @@ def _hint_read_before_write(command: str) -> str:
 
 
 def _hint_pytest(command: str) -> str:
-    """Answer the '-m pytest' refusal with the gate tool, never ``python -m
-    pytest``: the operator refuses pytest outside the gate, so suggesting it
-    would send the model straight into another refusal."""
-    m = re.search(r"-m\s+(?:pytest|py\.test)\b(.*)$", command)
+    """Answer the pytest refusal (bare ``pytest X`` or ``python -m pytest X``)
+    with the gate tool, never ``python -m pytest``: the operator refuses
+    pytest outside the gate, so suggesting it would send the model straight
+    into another refusal."""
+    m = re.search(r"(?:-m\s+)?(?:pytest|py\.test)\b(.*)$", command)
     targets = [
         t for t in (m.group(1) or "").split() if not t.startswith("-") and t
     ] if m else []
@@ -220,7 +234,7 @@ def suggest(command: str, reason: str = "") -> str:
     if re.search(r"\brm\s+", cmd):
         return _hint_delete(cmd)
 
-    if re.search(r"-m\s+(?:pytest|py\.test)\b", joined):
+    if re.search(r"(?:^|[;&|]\s*|-m\s+)(?:pytest|py\.test)\b", joined):
         return _hint_pytest(cmd)
 
     if re.search(r"\|\|", cmd):

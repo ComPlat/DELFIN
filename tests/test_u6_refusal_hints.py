@@ -101,6 +101,8 @@ def test_delete_names_mv_to_scratch(perms, refused, reason):
 @pytest.mark.parametrize("refused,reason", [
     ("python -m pytest tests/test_u6_x.py", "'-m\\s+pytest\\b'"),
     ("python -m pytest -q tests/foo tests/bar", "'-m\\s+pytest\\b'"),
+    ("pytest tests/test_a.py", "pytest outside the gate"),
+    ("x; pytest tests/test_b.py", "pytest outside the gate"),
 ])
 def test_pytest_names_gate_legal_form(perms, refused, reason):
     out = refusal_hints.suggest(refused, reason)
@@ -205,12 +207,18 @@ def test_module_source_has_no_hardcoded_home_literal():
     assert ".delfin" in src and "gate-tools" in src
 
 
-def test_gate_runner_resolves_to_an_absolute_gate_path():
-    """_gate_bin yields an absolute ``…/gate-tools/gate`` invocation, the
-    shape the operator's gate auto-allows — never a relative or bare name."""
+def test_gate_runner_resolves_to_an_existing_absolute_gate():
+    """_gate_bin yields an absolute ``<main-repo>/.delfin/gate-tools/gate``
+    that actually EXISTS on disk — the shape the operator's gate auto-allows.
+    This is the worktree ORIGIN bug (s24): from a linked worktree the module's
+    own parent resolves to the worktree's `.delfin`, which has no gate-tools;
+    the resolver must land on the MAIN checkout's gate or every pytest hint is
+    a "No such file or directory" dead end. Never relative, never a bare name,
+    never the module's own worktree parent."""
     gate = refusal_hints._gate_bin()
     assert gate.endswith(".delfin/gate-tools/gate")
     assert gate.startswith("/")
+    assert Path(gate).is_file(), f"gate binary does not exist: {gate!r}"
 
 
 # --- compound read shapes get a plain allowed form --------------------------
