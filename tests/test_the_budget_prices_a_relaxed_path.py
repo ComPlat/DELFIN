@@ -42,6 +42,8 @@ from editor_source import EDITOR_SOURCE
 #: enough and the test then runs on every machine. The fixture uses
 #: the real xtb when there is one. See conftest.xtb_on_path.
 _needs_xtb = pytest.mark.usefixtures("xtb_on_path")
+#: A test of xtb's RESULTS: a real xtb or a named skip (conftest.real_xtb).
+_needs_real_xtb = pytest.mark.usefixtures("real_xtb")
 
 #: Ethane, so that a drag has a bond to stretch and hydrogens to brush past.
 _ETHANE = """8
@@ -995,6 +997,7 @@ def test_the_cores_can_still_be_said_outright(monkeypatch):
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_hydrogen_pulled_off_a_ring_stays_far_too_expensive():
     """The relaxation must not be able to undo the drag.
 
@@ -1608,6 +1611,7 @@ def test_an_angle_is_only_armed_to_an_angle_three_atoms_can_have():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_anchor_belongs_to_the_whole_question_and_not_only_the_method():
     """The charge, the multiplicity and the solvent move an energy too.
 
@@ -1925,6 +1929,7 @@ def test_a_push_ramps_geometrically_and_prices_what_it_falls_through():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_force_below_the_bond_settles_and_one_above_it_breaks():
     """Which is the whole reason a push is a force rather than a value.
 
@@ -2098,6 +2103,7 @@ def test_a_drag_that_is_only_a_drag_does_not_pay_the_budgets_cycles():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_restraints_own_energy_is_arithmetic_not_a_second_calculation():
     """xtb reports the total *including* what the restraint contributes, and a
     push is meant to leave a real one behind -- that residue is the force.
@@ -2441,6 +2447,7 @@ def _forming(text):
 # _needs_xtb above: these were skipped before, so their cost is new.
 @pytest.mark.slow
 @_needs_xtb
+@_needs_real_xtb
 def test_a_scan_hands_back_the_minimum_it_crossed_into_not_the_one_it_left():
     """"The scan walked 1 of 20 points. Highest +0.0 kcal/mol."
 
@@ -2553,6 +2560,7 @@ def test_the_walk_comes_back_to_the_bottom_of_the_descent():
 # _needs_xtb above: these were skipped before, so their cost is new.
 @pytest.mark.slow
 @_needs_xtb
+@_needs_real_xtb
 def test_a_walk_that_never_settles_says_so_rather_than_pretending():
     """Anti-butane, driven a whole turn of the C-C-C-C torsion.
 
@@ -2596,6 +2604,7 @@ def test_a_walk_that_never_settles_says_so_rather_than_pretending():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_torsion_restraint_is_periodic_and_not_a_spring():
     """Which is why the hand could not turn anything.
 
@@ -2707,6 +2716,7 @@ def test_the_hardest_the_hand_can_pull_is_the_number_it_is_set_to():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_room_temperature_can_turn_a_molecule_into_its_own_conformers():
     """The thing the budget must never forbid.
 
@@ -2834,6 +2844,7 @@ def test_without_a_temperature_the_hand_has_no_ceiling():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_room_temperature_holds_an_aryl_bromide_and_nothing_else_does():
     """The two halves of the same setting, on the same bond.
 
@@ -3026,6 +3037,7 @@ def test_the_topology_watch_is_the_one_a_conformer_search_uses():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_free_energy_is_a_hessian_and_is_asked_for_never_assumed():
     """The ceiling is a free energy of activation and what is priced against
     it is an electronic one, which is an approximation and is meant as one.
@@ -3065,6 +3077,7 @@ def test_a_free_energy_is_a_hessian_and_is_asked_for_never_assumed():
 # _needs_xtb above: these were skipped before, so their cost is new.
 @pytest.mark.slow
 @_needs_xtb
+@_needs_real_xtb
 def test_the_scan_can_be_priced_with_free_energies():
     """At the three places they are both affordable and meaningful: where the
     walk started, the highest point it crossed, and the minimum it came to.
@@ -3130,6 +3143,7 @@ def test_the_free_energy_is_taken_where_it_means_something():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_xtb_finds_its_own_way_between_the_two_ends_of_a_scan():
     """A scan drives a coordinate somebody chose; the path finder is given two
     structures and finds its own way between them.
@@ -3269,6 +3283,7 @@ def test_the_path_is_offered_once_there_is_something_to_walk_between():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_whether_an_estimated_transition_state_is_one():
     """"Estimated transition state" is a phrase; one imaginary frequency is a
     fact.
@@ -3372,6 +3387,7 @@ H           -0.75352744687051       -2.57766461891954       -1.39744649395505
 # _needs_xtb above: these were skipped before, so their cost is new.
 @pytest.mark.slow
 @_needs_xtb
+@_needs_real_xtb
 def test_a_scan_of_a_double_bond_smears_the_twist_and_reaches_the_real_trans():
     """A dihedral scan made as realistic as a relaxed scan can be.
 
@@ -3430,6 +3446,7 @@ def test_a_scan_of_a_double_bond_smears_the_twist_and_reaches_the_real_trans():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_two_structures_are_a_path_without_a_scan():
     """A great many questions arrive as two structures the user already has,
     and a cis/trans isomerisation is the plainest of them.
@@ -3552,6 +3569,7 @@ def test_the_method_says_when_it_has_stopped_being_able_to_answer():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_gap_is_read_from_the_run_that_was_going_to_happen_anyway():
     """No extra calculation for it: every xtb run prints it."""
     got = gfn.optimize_with_gfn(_ETHANE, "gfn2", timeout=300, optimise=False)
@@ -3626,6 +3644,7 @@ def test_the_path_says_it_where_the_barrier_is_reported():
 # _needs_xtb above: these were skipped before, so their cost is new.
 @pytest.mark.slow
 @_needs_xtb
+@_needs_real_xtb
 def test_a_scan_says_when_the_method_has_run_out_of_depth():
     """A walk runs into such a region without anyone choosing to.
 
@@ -3671,6 +3690,7 @@ def test_a_scan_says_when_the_method_has_run_out_of_depth():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_geometry_that_survives_a_drag_is_one_the_temperature_can_reach():
     """The ceiling is about what is *kept*, and it was about nothing at all.
 
@@ -3730,6 +3750,7 @@ def test_the_geometry_that_survives_a_drag_is_one_the_temperature_can_reach():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_placing_hand_is_not_measured_and_does_not_pretend_to_be():
     """The same drag under the other hand, and it is not refused at all.
 
@@ -3786,6 +3807,7 @@ def test_the_placing_hand_is_not_measured_and_does_not_pretend_to_be():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_same_drag_goes_through_at_a_temperature_that_can_pay_for_it():
     """A ceiling that refuses everything is not a ceiling either.
 
@@ -3854,6 +3876,7 @@ def test_the_same_drag_goes_through_at_a_temperature_that_can_pay_for_it():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_turn_the_temperature_allows_is_not_refused_for_a_body_slide():
     """A held value is an internal coordinate, so the molecule may sit where
     it likes.
@@ -3909,6 +3932,7 @@ def test_a_turn_the_temperature_allows_is_not_refused_for_a_body_slide():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_scan_hands_back_a_structure_the_temperature_can_reach():
     """The walk is reported whole; what is left in the box is not.
 
@@ -3964,6 +3988,7 @@ def test_a_scan_hands_back_a_structure_the_temperature_can_reach():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_settle_that_goes_downhill_is_not_refused():
     """The release answers to the ceiling too, and must not block the ordinary
     case.
@@ -4300,6 +4325,7 @@ def test_the_placing_hand_keeps_everything_that_still_works():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_release_draws_what_the_wall_kept():
     """The box was right and the picture was the cursor's.
 
@@ -4369,6 +4395,7 @@ def test_the_release_draws_what_the_wall_kept():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_placing_hand_is_not_stopped_by_a_budget_that_is_not_running():
     """The switch keeps its value when the hand changes; the wall must not.
 
@@ -4643,6 +4670,7 @@ def test_a_new_anchor_is_a_new_path():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_wall_prices_the_path_a_real_drag_took():
     """The whole of it, against xtb, on a rotation that really is hindered.
 
@@ -4711,6 +4739,7 @@ def test_the_wall_prices_the_path_a_real_drag_took():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_drag_that_stays_cheap_is_never_taken_back():
     """The other half of the pair, and the one that would be easy to break.
 
@@ -5310,6 +5339,7 @@ def test_the_window_the_ceiling_is_quoted_over_stays_an_hour():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_free_energy_parts_company_where_the_pieces_change():
     """Why the budget prices an electronic energy against a free ceiling, in
     numbers rather than as an assurance.

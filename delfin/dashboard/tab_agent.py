@@ -730,7 +730,34 @@ _AGENT_CSS = """\
    approvals, questions -- sits INSIDE the box the reader is looking at,
    and the transcript above it is the part that scrolls. The panels under
    the input fold away (an accordion, closed by default). */
-.delfin-agent-root > .delfin-agent-chat-frame {
+/* With --claude-terminal the frame shares a row with the Claude Code
+   panel; the row then takes the frame's place in the tab. */
+.delfin-agent-root > .delfin-agent-chat-row {
+    flex: 1 1 0 !important;
+    min-height: 45vh;
+    display: flex; flex-direction: row; gap: 8px;
+    align-items: stretch;
+}
+.delfin-agent-chat-row > .delfin-agent-chat-frame { min-width: 0; }
+.delfin-claude-term-panel {
+    flex: 1 1 0 !important; min-width: 0;
+    display: flex; flex-direction: column;
+    border: 1px solid #333; border-radius: 6px; overflow: hidden;
+    background: #1e1e1e;
+}
+.delfin-claude-term-panel > .delfin-claude-term-head {
+    flex: 0 0 auto; color: #cbd5e1; background: #111827;
+    font-size: 12px; padding: 3px 10px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.delfin-claude-term-panel > .delfin-claude-term-host {
+    flex: 1 1 0 !important; min-height: 0;
+}
+.delfin-claude-term-host .widget-html-content,
+.delfin-claude-term-host .delfin-claude-term { height: 100%; width: 100%; }
+.delfin-claude-term { padding: 4px; box-sizing: border-box; }
+.delfin-agent-root > .delfin-agent-chat-frame,
+.delfin-agent-chat-row > .delfin-agent-chat-frame {
     flex: 1 1 0 !important;
     min-height: 45vh;
     display: flex;
@@ -5081,6 +5108,29 @@ _record_solo_turn_outcome = _record_turn_outcome
 # Tab creation
 # ---------------------------------------------------------------------------
 
+#: The ``shutdown`` of every tab built in this process, newest last. A
+#: kernel builds one and closes it at exit (atexit, below); a test process
+#: builds hundreds and closed none, so each left its watcher thread running
+#: for the rest of the run (measured: 8 live threads after 37 tests of four
+#: files). ``close_open_tabs`` is how a test harness ends them.
+_OPEN_TAB_SHUTDOWNS: list = []
+
+
+def close_open_tabs() -> int:
+    """Close every tab built so far in this process; return how many.
+
+    Without saving: this is for a harness ending its own tabs, not for a
+    user's session (the session list closes those, with a save)."""
+    closed = 0
+    while _OPEN_TAB_SHUTDOWNS:
+        shutdown = _OPEN_TAB_SHUTDOWNS.pop()
+        try:
+            shutdown(save=False)
+            closed += 1
+        except Exception:
+            pass
+    return closed
+
 
 def create_tab(ctx):
     """Create the DELFIN Agent tab.
@@ -7563,16 +7613,24 @@ def create_tab(ctx):
             from delfin.agent.task_ticker import rows as _tt_rows
             from delfin.agent.task_ticker import render_title as _tt_title
             eng = state.get("engine")
-            ws = None
-            if eng is not None:
-                kp = getattr(eng, "kit_permissions", None)
-                if kp is not None:
-                    ws = kp.workspace
-            if ws is None:
-                ws = ctx.repo_dir or Path.cwd()
-            sid = str(state.get("active_session_id", "") or "")
-            title = _tt_title(ws, session_id=sid)
-            rows = _tt_rows(ws, session_id=sid) if title else []
+            kp = getattr(eng, "kit_permissions", None) if eng is not None else None
+            if eng is not None and kp is None:
+                # A CLI backend (the Anthropic CLI) keeps its plan in its
+                # own TodoWrite list, not in DELFIN's task store: the line
+                # shows that plan. Reading the store here showed nothing on
+                # this backend, ever.
+                from delfin.agent.task_ticker import (
+                    rows_from_todos as _tt_from_todos, title_for as _tt_for)
+                rows = _tt_from_todos(state.get("current_todos") or [])
+                title = _tt_for(rows)
+            else:
+                ws = kp.workspace if kp is not None else (
+                    ctx.repo_dir or Path.cwd())
+                sid = str(state.get("active_session_id", "") or "")
+                title = _tt_title(ws, session_id=sid)
+                rows = _tt_rows(ws, session_id=sid) if title else []
+            if not title:
+                rows = []
             # Rebuilt only when a row changed: the background tick runs
             # every few seconds, and new buttons would drop a click.
             key = tuple((r["status"], r["num"], r["label"], r["subject"])
@@ -7788,9 +7846,15 @@ def create_tab(ctx):
         if state.get("_subagent_live_thread") is not None:
             return
         state["_subagent_live_stop"] = False
+        # Waited on rather than slept: closing the tab sets it and the loop
+        # ends at once instead of after its current interval, and it never
+        # calls time.sleep -- a test that patches that process-wide counted
+        # this thread's 1.5 s as its own (CI on PR #138).
+        import threading as _threading_ev
+        _wake = _threading_ev.Event()
+        state["_subagent_live_wake"] = _wake
 
         def _loop() -> None:
-            import time as _t2
             from delfin.agent.subagents import read_running as _rr
             was_active = False
             while not state.get("_subagent_live_stop"):
@@ -7808,7 +7872,7 @@ def create_tab(ctx):
                     was_active = active
                 except Exception:
                     pass
-                _t2.sleep(interval)
+                _wake.wait(interval)
             state["_subagent_live_thread"] = None
 
         import threading as _threading
@@ -8517,7 +8581,7 @@ def create_tab(ctx):
     state["_tools_fold"] = tools_fold
     state["_security_fold"] = security_fold
     below_panels = widgets.VBox(
-        [todo_pane_html, kit_dirs_status,
+        [kit_dirs_status,
          subagent_pane_html, subagent_panel_html, background_rows_box,
          tools_fold, security_fold, context_bar_html, status_row])
     # Folded by default: the tool calls, the containment report, the task
@@ -8558,11 +8622,46 @@ def create_tab(ctx):
              ),
          )])
     _input_area.add_class("delfin-agent-input-area")
+    # The Claude Code panel beside the chat (delfin-voila --claude-terminal
+    # only). The page script attaches it to the server's restricted
+    # terminal the first time it is shown; hiding it keeps the session.
+    _chat_area = chat_frame
+    from delfin.dashboard import claude_terminal as _claude_term
+    if _claude_term.enabled():
+        _term_cwd = os.environ.get(_claude_term.CWD_ENV, "") or "~"
+        _home = str(Path.home())
+        if _term_cwd == _home or _term_cwd.startswith(_home + os.sep):
+            _term_cwd = "~" + _term_cwd[len(_home):]
+        _term_head = widgets.HTML(
+            value=(f'<span title="{_html.escape(_term_cwd)}">Claude Code '
+                   f'&middot; {_html.escape(_term_cwd)}</span>'))
+        _term_head.add_class("delfin-claude-term-head")
+        _term_host = widgets.HTML(value='<div class="delfin-claude-term"></div>')
+        _term_host.add_class("delfin-claude-term-host")
+        claude_term_panel = widgets.VBox(
+            [_term_head, _term_host], layout=widgets.Layout(display="none"))
+        claude_term_panel.add_class("delfin-claude-term-panel")
+        claude_term_btn = widgets.Button(
+            description="Claude Code", icon="terminal",
+            tooltip=("Show the Claude Code CLI beside the chat. It keeps "
+                     "running while hidden; a reload reattaches to it."),
+            layout=widgets.Layout(width="auto", flex="0 0 auto"))
+
+        def _toggle_claude_term(_b):
+            opening = claude_term_panel.layout.display == "none"
+            claude_term_panel.layout.display = "" if opening else "none"
+            claude_term_btn.button_style = "info" if opening else ""
+
+        claude_term_btn.on_click(_toggle_claude_term)
+        git_group.children = tuple(git_group.children) + (claude_term_btn,)
+        _chat_area = widgets.HBox([chat_frame, claude_term_panel])
+        _chat_area.add_class("delfin-agent-chat-row")
+        ctx.add_init_js(_claude_term.init_js())
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
          inspector_detail_box,
-         chat_frame,
+         _chat_area,
          _input_area,
          # Then who is working (click to enter a chat), finished delegates
          # in one row, and the panels -- capped, scrolling in themselves.
@@ -8997,9 +9096,9 @@ def create_tab(ctx):
         sa_calls = data.get("subagent_calls") or []
         if sa_calls:
             state["subagent_calls"] = sa_calls
-        todo_payload = data.get("todo_payload") or []
-        if todo_payload:
-            state["current_todos"] = todo_payload
+        # The saved plan, an empty one included: keeping the previous
+        # session's plan when this one had none showed a foreign plan.
+        state["current_todos"] = list(data.get("todo_payload") or [])
         # last_compaction_info goes back on the engine so /context shows
         # accurate "last compaction" info after resume.
         lci = data.get("last_compaction_info")
@@ -14156,7 +14255,9 @@ def create_tab(ctx):
                 from delfin.agent.doctor import format_doctor, run_doctor
                 from delfin.agent.repair import (
                     doctor_repair_apply,
+                    doctor_repair_known_ids,
                     doctor_repair_plan,
+                    doctor_repair_preview,
                 )
                 results = run_doctor(ctx.repo_dir or ".")
                 _arg = cmd[len("/doctor"):].strip()
@@ -14165,14 +14266,11 @@ def create_tab(ctx):
                     _sub = _arg[len("repair"):].strip()
                     if _sub.startswith("apply "):
                         _sid = _sub[len("apply "):].strip()
-                        _preview = "\n".join(
-                            f"{s.get('what', '')}\nundo: {s.get('undo', '')}"
-                            for s in _steps if s.get("id") == _sid
-                        )
+                        _preview = doctor_repair_preview(_steps, _sid)
                         if not _preview:
                             _append_system_message(
                                 f"No repair step with id {_sid!r}; "
-                                f"known: {', '.join(s.get('id', '') for s in _steps) or 'none'}"
+                                f"known: {doctor_repair_known_ids(_steps)}"
                             )
                             return True
                         _append_system_message(
@@ -18262,6 +18360,10 @@ def create_tab(ctx):
                         todos = parsed.get("todos") or []
                         # Persist current todo plan for inspectors / status line
                         state["current_todos"] = todos
+                        try:
+                            _refresh_task_ticker()
+                        except Exception:
+                            pass
                         # Update the persistent plan pane (visible while agent works)
                         _pane_html = _render_todo_pane_html(todos)
                         if _pane_html:
@@ -18540,10 +18642,11 @@ def create_tab(ctx):
 
                 # Store original user task for handoff messages
                 original_task = user_text
-                # S1 — Per-turn live state goes into the SYSTEM prompt via
-                # engine.set_live_state(), not into the user message body.
-                # That keeps engine.messages history small and cache-friendly:
-                # old turns no longer carry their stale dashboard state.
+                # Per-turn live state goes through engine.set_live_state(),
+                # not into the user message body. The engine sends it at the
+                # end of the turn's user message with its steering blocks;
+                # it used to put it in the system prompt, which cost the
+                # endpoint's prefix cache for the whole history every turn.
                 _live_state_text = ""
                 if mode_dropdown.value == "dashboard":
                     try:
@@ -20357,6 +20460,8 @@ def create_tab(ctx):
         # first turn — task_list/panel filter by it, so old tasks don't leak in.
         _new_sid = (getattr(engine, "session_id", "") or "") if engine else ""
         state["active_session_id"] = _new_sid
+        # A new session starts without the last one's CLI plan.
+        state["current_todos"] = []
         try:
             kp = getattr(engine, "kit_permissions", None) if engine else None
             if kp is not None:
@@ -21481,6 +21586,10 @@ def create_tab(ctx):
                 pass
         _stop_job_event_watcher()
         state["_subagent_live_stop"] = True
+        try:
+            state["_subagent_live_wake"].set()
+        except Exception:
+            pass
         for key in ("_job_wake_timer", "_background_timer", "_stale_timer",
                     "_stale_kill_timer"):
             timer = state.get(key)
@@ -21515,6 +21624,7 @@ def create_tab(ctx):
     # so the exit path does not write again.
     import atexit as _atexit
     _atexit.register(_shutdown_tab, save=False)
+    _OPEN_TAB_SHUTDOWNS.append(_shutdown_tab)
     _register_process_exit_cleanup()
 
     return tab_widget, {

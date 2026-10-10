@@ -3714,6 +3714,145 @@ def _handover_line(cmd: str, kind: str) -> str:
         return ""
 
 
+def _push_readiness_rows(workspace, *, local_only=False, remote=None,
+                         requires_gh=True):
+    """The gate's one source of readiness rows; tests replace it.
+
+    The ONLY place the command gate learns whether this checkout can push.
+    Lazy-imports the doctor so api_client never forces a chemistry
+    environment at import time. Tests neutralise it via a conftest autouse
+    fixture (returns []) so no existing test depends on the host, and the
+    push/pr gate tests override it with exact fake rows.
+
+    ``workspace`` is the directory the command runs git in
+    (``_push_probe_target``). local_only asks the doctor's local check
+    only; otherwise ready_for_push adds the ``git ls-remote`` probe of
+    ``remote``, hard-bounded inside the doctor. That probe is skipped when
+    ``workspace`` is not inside a git repository: the gate then could not
+    tell which repository the command pushes from, and a probe of the
+    wrong one is a refusal of a push that would succeed. ``requires_gh``
+    False leaves out ``gh auth status``, a network call of up to 20 s.
+    """
+    from . import doctor as _doc
+    if not local_only and not _git_out(workspace, "rev-parse", "--git-dir"):
+        local_only = True
+    if local_only:
+        return _doc._check_git_tooling({"workspace": workspace,
+                                        "skip_gh": not requires_gh})
+    return _doc.ready_for_push(workspace, remote=remote, gh=requires_gh)
+
+
+#: ``git push`` options that take their value as the next word, so that
+#: word is not the remote.
+_PUSH_VALUE_OPTS = frozenset({"-o", "--push-option", "--receive-pack",
+                              "--exec", "--repo"})
+_LEADING_CD_RE = re.compile(r"^\s*cd\s+(\S+)\s*&&")
+
+
+def _push_probe_target(cmd: str, args: Any, workspace: Any):
+    """(directory, remote) of the first push or PR command in ``cmd``.
+
+    The directory starts at the workspace and follows the tool's ``cwd``
+    argument, a leading ``cd <dir> &&`` and every ``git -C <dir>``, in
+    that order -- the same way the shell and git resolve them. The remote
+    is the first positional word after ``git push`` (a remote name or a
+    URL), ``--repo=<r>`` when given, else None (the doctor's origin).
+    Never raises; a command it cannot parse yields the workspace and None.
+    """
+    import shlex
+
+    where = Path(workspace)
+    remote = None
+    try:
+        cwd_arg = str((args or {}).get("cwd") or "").strip()
+        if cwd_arg:
+            where = where / Path(cwd_arg).expanduser()
+        text = _with_shell_bodies(cmd)
+        m = _GIT_PUSH_RE.search(text)
+        start = m.start() if m else 0
+        for alt in (_GH_PR_CREATE_RE, _GH_PR_MERGE_RE):
+            g = alt.search(text)
+            if g and (m is None or g.start() < start):
+                m, start = g, g.start()
+        line_start = text.rfind("\n", 0, start) + 1
+        cd = _LEADING_CD_RE.match(text[line_start:start])
+        if cd:
+            where = where / Path(cd.group(1)).expanduser()
+        if m is None or m.re is not _GIT_PUSH_RE:
+            return where, None
+        for d in re.findall(r"\s-C\s+(\S+)", m.group(0)):
+            where = where / Path(shlex.split(d)[0]).expanduser()
+        rest = re.split(r"[;&|\n]", text[m.end():], maxsplit=1)[0]
+        words = shlex.split(rest)
+        i = 0
+        while i < len(words):
+            w = words[i]
+            if w.startswith("--repo="):
+                return where, w.split("=", 1)[1] or None
+            if w in _PUSH_VALUE_OPTS:
+                if w == "--repo" and i + 1 < len(words):
+                    return where, words[i + 1]
+                i += 2
+                continue
+            if not w.startswith("-"):
+                return where, w
+            i += 1
+    except Exception:
+        pass
+    return where, remote
+
+
+def _push_capability_block(perms, cmd, args=None, *, local_only=False):
+    """First readiness row that forbids this push/pr on this host, or None.
+
+    The known facts about whether this checkout can push come from the
+    doctor, and this is the single place the gate consults them -- via
+    `_push_readiness_rows` (the one replaceable source), so the refusal
+    and the /doctor report tell the same story.
+
+    Which rows count depends on the command. Every one needs git on PATH.
+    ``gh pr create`` / ``gh pr merge`` also need gh installed and logged
+    in; a plain ``git push`` publishes over SSH/HTTPS and does not, so an
+    absent gh never refuses it. No row about the commit identity counts:
+    neither a push nor a pull request makes a commit, and a host whose
+    commits carry ``-c user.name=...`` or GIT_AUTHOR_* pushes fine with
+    nothing configured (measured: the identity row refused such a push).
+
+    ``local_only`` skips the network probe (``git ls-remote``): it is the
+    cheap pre-ask check, so a host that cannot even run git never prompts.
+    The full check runs at the surrender point, against the directory and
+    remote the command names (``_push_probe_target``); a hang there is a
+    WARN row -- a refusal, never a pass.
+
+    Every returned row carries prose ``fix``; callers render it so the
+    refusal names the remedy. Never raises: a probe that explodes becomes
+    a WARN refuse-row.
+    """
+    requires_gh = _is_gh_pr_create(cmd) or _is_gh_pr_merge(cmd)
+    try:
+        where, remote = _push_probe_target(cmd, args, perms.workspace)
+        rows = _push_readiness_rows(where, local_only=local_only,
+                                    remote=remote, requires_gh=requires_gh)
+    except Exception as exc:
+        # No `_row` helper in api_client -- return the row contract dict.
+        return {"check": "readiness", "status": "WARN",
+                "detail": f"could not ask the doctor ({exc})",
+                "fix": "run the doctor and fix what it reports, then retry"}
+    keep = {"git installed"}
+    if requires_gh:
+        keep |= {"gh installed", "gh authenticated"}
+    if not local_only:
+        keep |= {"git remote"}
+    for r in rows:
+        if r.get("check") in keep and r.get("status") != "PASS":
+            return r
+    return None
+
+
+def _push_block_text(row) -> str:
+    return f"blocked: {row['check']}: {row['detail']} -- {row['fix']}"
+
+
 def _is_gh_pr_create(cmd: str) -> bool:
     return bool(_GH_PR_CREATE_RE.search(_with_shell_bodies(cmd)))
 
@@ -15531,6 +15670,17 @@ class _DocToolExecutor:
             # A contributor never does it from here, whatever was asked;
             # a maintainer does it under the same one-request grant a
             # push needs, because it publishes to the default branch.
+            # Before anything asks the user, ask readiness: a host that
+            # cannot run the command at all (no git; for pr create/merge
+            # no gh or no gh login) has nothing to consent to, so refuse
+            # with the remedy and never prompt. No git ls-remote here.
+            _publishes = (_is_gh_pr_merge(cmd) or _is_git_push(cmd)
+                          or _is_gh_pr_create(cmd))
+            if _publishes:
+                row = _push_capability_block(perms, cmd, args,
+                                             local_only=True)
+                if row is not None:
+                    return _push_block_text(row)
             if _is_gh_pr_merge(cmd):
                 if _git_role() == "contributor":
                     _record_security_event("pr_merge_contributor", "bash",
@@ -15628,7 +15778,23 @@ class _DocToolExecutor:
                     return ("the user did not approve this push. Do not retry "
                             "it or reach the remote another way.")
                 perms.push_grants["push"] = 1
+                # A granted push must still confirm the host can actually
+                # publish before the command runs. Full check (network
+                # included, hard-bounded inside the doctor): non-PASS
+                # refuses with the remedy rather than letting git fail.
+                row = _push_capability_block(perms, cmd, args)
+                if row is not None:
+                    return _push_block_text(row)
                 return None
+            if _publishes:
+                # Every remaining route a push/pr can run on (a pre-set
+                # grant, a pr create that already confirmed, pr merge
+                # with a grant, bypass, auto-allow) must pass the same
+                # full check right before it is allowed -- a grant here
+                # is a grant to publish, not a waiver of reachability.
+                row = _push_capability_block(perms, cmd, args)
+                if row is not None:
+                    return _push_block_text(row)
             if mode == "bypassPermissions":
                 # Bypass: only the deny-list still applies; everything else
                 # runs unattended. Use this only inside trusted workflows.
@@ -18772,8 +18938,26 @@ class _DocToolExecutor:
             base_ref=base,
             created_at=0.0,
         )
+        def _merge_gate(paths):
+            # Every file the merge would write goes through the same write
+            # gate a write_file into the TARGET would: write scope, the
+            # read-only archive, the Self-Modification Guard. A merge was
+            # git applying a diff, unchecked, file by file.
+            if perms is None:
+                return None
+            for rel in paths:
+                refusal = self._gate_write_path(
+                    str(target / rel), perms, "worktree_merge",
+                    {"path": rel})
+                if refusal is not None:
+                    _record_security_event(
+                        "worktree_merge_refused", "worktree_merge",
+                        rel[:200], blocked=True)
+                    return f"'{rel}': {refusal}"
+            return None
+
         try:
-            result = _wt.merge_worktree(info)
+            result = _wt.merge_worktree(info, gate=_merge_gate)
         except _wt.WorktreeError as exc:
             return json.dumps({"error": str(exc)})
         removed = bool(getattr(info, "cleaned_up", False))
@@ -21245,6 +21429,11 @@ class OpenAIClient(_BaseClient):
         # moves the other way (2 -> 11), so this is sent by CAPABILITY, never
         # by default.
         self.effort = (effort or "").strip().lower()
+        # One-shot DSML re-request latch (U5 phase 3): per run, at most one
+        # corrective re-request notice is emitted for a leaked
+        # <invoke name=...>...</invoke> tool call written as text, so a
+        # re-request that leaks again is never forwarded a second time.
+        self._dsml_rerequest = False
         self.model = model or self.DEFAULT_MODEL
         # Provider identity ("openai"|"kit"|"ollama"). Used to gate
         # provider-specific request shaping (Ollama num_ctx, reasoning_effort
@@ -21656,6 +21845,9 @@ class OpenAIClient(_BaseClient):
         # the call gets the parameter's default — which reads as the
         # lowest effort on a reasoning model. Nobody chose that.
         self._turn_thinking_budget = int(thinking_budget or 0)
+        # The DSML re-request notice is latched per call: one notice per
+        # request, re-armed on the next (the engine bounds the re-request).
+        self._dsml_rerequest = False
         # Mid-session memory nudge (package 7): the one-per-user-turn cap
         # is reset HERE, at the entry of the public turn method — not
         # derived from any turn counter, which would be a guess about
@@ -22760,6 +22952,31 @@ class OpenAIClient(_BaseClient):
                               f"executing {len(_recovered)} tool call(s) "
                               f"({_names}) now]\n"),
                     )
+                elif not self._dsml_rerequest:
+                    # DSML leak (U5 phase 3): deepseek-v4-flash writes a tool
+                    # call as literal ``<invoke name=...>...</invoke>`` text
+                    # instead of calling the tool, so it runs as nothing. A
+                    # COMPLETE block is a re-request case, NOT a silent
+                    # redispatch like the Harmony JSON above: emit a
+                    # corrective notice exactly once telling the model to
+                    # call the tool, latched per run so a re-request that
+                    # leaks AGAIN is never forwarded a second time (loop).
+                    _dsml_leaked = None
+                    try:
+                        from delfin.agent.text_sanitize import (
+                            leaked_tool_call_dominates,
+                        )
+                        _dsml_leaked = leaked_tool_call_dominates(_joined)
+                    except Exception:
+                        _dsml_leaked = None
+                    if _dsml_leaked:
+                        self._dsml_rerequest = True
+                        yield StreamEvent(
+                            type="notice",
+                            text=(f"\n\n⚠️ a call to {_dsml_leaked[0]} "
+                                  f"was written as text instead of calling "
+                                  f"the tool; it did not run.\n"),
+                        )
 
             # If model made tool calls, execute them locally and loop
             if finish_reason == "tool_calls" and _tool_calls:
