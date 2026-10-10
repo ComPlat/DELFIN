@@ -109,14 +109,35 @@ class TestErrorsAreEscaped:
         assert not out.startswith(_MARKER)  # an error, not a card
         assert "error" in out
 
-    def test_html_path_in_error_is_never_inlined(self, tmp_path):
-        # A hostile path echoed by an error must NOT come back as a card that
-        # tab_agent inlines: the error output is escaped JSON, never HTML.
+    def test_hostile_path_never_inlined(self, tmp_path):
+        # A hostile path echoed by an error must NOT become a card tab_agent
+        # inlines. The dispatch returns escaped JSON; parse_card_result returns
+        # None for it, so the chat hook escapes it like any other tool output
+        # (never inlined, never executes).
         evil = '<img src=x onerror="window.__pwned=1">'
         ex = _DocToolExecutor()
         out = ex._dispatch("show_molecule", {"path": evil}, _perms(tmp_path))
-        assert not out.startswith(_MARKER)
-        assert "<img" not in out  # escaped: no raw HTML executable
+        assert not out.startswith(_MARKER)  # never a card
+        assert chat_viewer.parse_card_result(out) is None  # never inlined
+
+    def test_molecule_in_non_repo_workspace_is_accepted(self, tmp_path):
+        # Operator-fix regression: the containment root is the readable root the
+        # file lies in (the session workspace), not the DELFIN checkout -- a
+        # molecule in a user's own folder must be accepted, not refused.
+        cube = tmp_path / "mole.cube"
+        cube.write_text(H2_CUBE, encoding="utf-8")
+        ex = _DocToolExecutor()
+        out = ex._dispatch("show_molecule", {"path": str(cube)}, _perms(tmp_path))
+        assert out.startswith(_MARKER)  # accepted and rendered as a card
+
+    def test_relative_path_resolves_against_the_workspace(self, tmp_path):
+        # Operator-fix regression: a relative path resolves against
+        # perms.workspace, like every other file tool.
+        cube = tmp_path / "mole.cube"
+        cube.write_text(H2_CUBE, encoding="utf-8")
+        ex = _DocToolExecutor()
+        out = ex._dispatch("show_molecule", {"path": "mole.cube"}, _perms(tmp_path))
+        assert out.startswith(_MARKER)
 
 
 class TestTerminalFallback:
@@ -132,11 +153,38 @@ class TestTerminalFallback:
 
 
 @pytest.mark.parametrize(
-    "kind, expected",
-    [("xyz", "XYZ"), ("cube", "cube"), ("pdb", "pdb")],
+    "kind, content",
+    [
+        (
+            "xyz",
+            "2\nwater\nO  0.000000  0.000000  0.000000\n"
+            "H  0.000000  0.000000  0.957200\n",
+        ),
+        ("cube", H2_CUBE),
+    ],
 )
-def test_kind_is_validated(kind, expected):
+def test_kind_is_validated(tmp_path, kind, content):
+    # A real existing file of each SUPPORTED kind passes the read gate first,
+    # so the dispatch validates the format rather than refusing on a path
+    # error. (The committed version used workspace "ws" that does not exist:
+    # the read gate rightly refused before kind-validation was reached.)
+    f = tmp_path / ("x." + kind)
+    f.write_text(content, encoding="utf-8")
     ex = _DocToolExecutor()
-    out = ex._dispatch("show_molecule", {"path": "x." + kind}, _perms("ws"))
-    assert not out.startswith(_MARKER)
-    assert expected in out.lower()
+    out = ex._dispatch("show_molecule", {"path": str(f)}, _perms(tmp_path))
+    assert out.startswith(_MARKER)  # each supported kind is recognised
+
+
+def test_unsupported_kind_is_refused(tmp_path):
+    # PDB is NOT a supported kind for show_molecule (the handler parses XYZ and
+    # cube only); a .pdb file must be refused as a card, never inlined.
+    pdb = tmp_path / "x.pdb"
+    pdb.write_text(
+        "ATOM      1  O   HOH A   1       0.000   0.000   0.000  1.00"
+        "  0.00           O\nEND\n",
+        encoding="utf-8",
+    )
+    ex = _DocToolExecutor()
+    out = ex._dispatch("show_molecule", {"path": str(pdb)}, _perms(tmp_path))
+    assert not out.startswith(_MARKER)  # not a card
+    assert "error" in out  # refused loudly
