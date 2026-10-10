@@ -302,11 +302,6 @@ def leaked_tool_call(text: str) -> tuple[str, dict] | None:
     return name, args
 
 
-# Leftover (text outside the matched <invoke>…) threshold for DOMINATION.
-# The real leaked answers (wave 13, .gate/dsml_samples.txt) are the bare
-# <invoke>…</invoke> block and nothing else — empty leftover.  Prose that
-# merely CITIES a complete block ("For example: <invoke …>…</invoke> which
-# runs a search.") leaves a real sentence outside, well over this bound, so
 def leaked_tool_call_dominates(text: str) -> tuple[str, dict] | None:
     """``(name, args)`` when *text* IS one leaked DSML call, else ``None``.
 

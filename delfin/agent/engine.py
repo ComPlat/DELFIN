@@ -4652,9 +4652,8 @@ class AgentEngine:
         if self._dsml_leak_spent:
             # A nested continuation (or a re-request that leaked) is already
             # here: annotate and never re-request a second time.
-            _caveat = (f"\n\n⚠️ your call to <tool>{tool_name}</tool> was "
-                       f"written as text and I did not re-ask again — call "
-                       f"the tool yourself, do not type it.\n")
+            _caveat = (f"\n\n⚠️ the call to {tool_name} was written as "
+                       f"text again after one re-request; it did not run.\n")
             try:
                 if on_token:
                     on_token(_caveat)
@@ -4700,8 +4699,8 @@ class AgentEngine:
             self._dsml_guard_active = False
         if not correction:
             return response_text + (
-                f"\n\n⚠️ your call to <tool>{tool_name}</tool> was written as "
-                f"text and the re-request produced nothing.\n")
+                f"\n\n⚠️ the call to {tool_name} was written as text and "
+                f"the re-request produced nothing; it did not run.\n")
         return correction
 
     def trace_session(self) -> str:

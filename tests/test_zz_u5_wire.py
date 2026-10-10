@@ -54,7 +54,8 @@ def test_a_complete_dsml_block_is_not_silently_redispatched():
 
 
 def test_the_corrective_notice_says_written_as_text():
-    """The single re-request tells the model it wrote its call as text."""
+    """The one-time notice tells the reader the call was written as text
+    and did not run."""
     src = _stream_message_src()
     assert "written as text" in src.lower()
 

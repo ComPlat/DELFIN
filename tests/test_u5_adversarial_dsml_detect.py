@@ -16,7 +16,7 @@ contract. A red one that stays red after the fix is a finding.
 """
 from __future__ import annotations
 
-from delfin.agent.text_sanitize import parse_leaked_tool_calls, sanitize_agent_text
+from delfin.agent.text_sanitize import sanitize_agent_text
 
 try:
     from delfin.agent.text_sanitize import leaked_tool_call
