@@ -28,21 +28,10 @@ _BACKTICK = re.compile(r"`([^`]+)`")
 
 
 def _gate_legal(perms: KitToolPermissions, cmd: str) -> bool:
-    """True when the concrete command passes the gate in the OPERATIONAL
-    sense.
-
-    The code gate (``matches_bash_deny`` / ``_auto_allow``) approximates the
-    real gate but for the test runner it under-matches in one direction: the
-    gate tool is keyed for auto-allow on its absolute ``gate-tools/gate`` path,
-    which the code-level auto-allower does not recognise. A ``…/gate-tools/gate``
-    invocation is therefore treated as legal here (it is the sanctioned
-    runner, and the wiring appends the suggestion only so the model can run
-    tests), while everything else must still clear deny and auto-allow.
-    """
+    """True when the concrete command passes the gate: not denied, and
+    auto-allowed rather than asked again."""
     if perms.matches_bash_deny(cmd):
         return False
-    if re.match(r"^\S*/gate-tools/gate\b", cmd.lstrip()):
-        return True                          # the sanctioned test runner
     auto = perms.matches_bash_auto_allow(cmd)
     if auto is False:               # neither denied nor auto-allowed -> re-ask
         return False
