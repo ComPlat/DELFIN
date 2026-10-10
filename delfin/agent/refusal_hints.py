@@ -24,9 +24,20 @@ gate would refuse again is a bug.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 #: Shell commands found in suggestions (a backticked runnable form).
 _BACKTICK_CMD = re.compile(r"`([^`]+)`")
+
+
+def _gate_bin() -> str:
+    """Absolute path of the session's sanctioned test runner, derived at
+    runtime from this module's own location (``<delfin-root>/.delfin/
+    gate-tools/gate``), never hardcoded: the checkout lives under a user
+    home, and a home path must not ship in code.
+    """
+    root = Path(__file__).resolve().parents[2]
+    return str(root / ".delfin" / "gate-tools" / "gate")
 
 
 def _concrete(command: str, *, drop_first: bool = True) -> str:
@@ -43,8 +54,15 @@ def _concrete(command: str, *, drop_first: bool = True) -> str:
 
 def _first_operand(command: str) -> str:
     """The first bare path-like operand past the program and any flags."""
-    words = command.split()
-    words = [w for w in words if w not in ("&&", "||", "|", ";")]
+    # Split not only on whitespace but also on the joiners (in case they are
+    # glued to a token, e.g. ``cat file||echo x``) so the operand is a clean
+    # file path, never ``file||echo``.
+    words = [
+        part
+        for tok in command.split()
+        for part in re.split(r"\s*\|\|\s*|\s*&&\s*|\s*;\s*", tok)
+        if part not in ("&&", "||", "|", ";", "")
+    ]
     rest = words[1:]                      # past the program itself
     for tok in rest:
         if not tok.startswith("-"):
@@ -88,18 +106,29 @@ def _hint_read_before_write(command: str) -> str:
 
 
 def _hint_pytest(command: str) -> str:
-    m = re.search(r"-m\s+(?:pytest|py\.test)\b(?:\s+(\S[^\n]*))?$", command)
-    target = (m.group(1) or "").strip() if m and m.group(1) else ""
+    """Answer the '-m pytest' refusal with the gate tool, never ``python -m
+    pytest``: the operator refuses pytest outside the gate, so suggesting it
+    would send the model straight into another refusal."""
+    m = re.search(r"-m\s+(?:pytest|py\.test)\b(.*)$", command)
+    targets = [
+        t for t in (m.group(1) or "").split() if not t.startswith("-") and t
+    ] if m else []
+    target = targets[0] if targets else ""
+    joiner = (
+        " and the '||' or-joiner with it"
+        if re.search(r"\|\|", command)
+        else ""
+    )
+    head = (
+        "pytest outside the gate is refused" + joiner
+        + "; the session's tests run through the gate tool, not by invoking "
+        "pytest on the command line. "
+    )
     if target:
-        return (
-            "run the tests on that target through the gate — the gate-legal "
-            f"form is `python -m pytest {target}` (the parts around it, like "
-            "a compound or an or-fallback, are what was refused)."
-        )
+        return head + f"From the worktree root run `{_gate_bin()} {target}`."
     return (
-        "run the tests through the gate — `python -m pytest <target>` is the "
-        "gate-legal form (the parts around it, like a compound or an "
-        "or-fallback, are what was refused)."
+        head + "From the worktree root run the gate with a tests/*.py file, "
+        f"e.g. `{_gate_bin()} tests/test_a.py`."
     )
 
 
@@ -144,6 +173,28 @@ def _hint_scheduler(_command: str) -> str:
     )
 
 
+def _hint_stderr(command: str) -> str:
+    """A command carrying a stderr redirect the gate refuses; the redirect
+    adds nothing for reading the output, so the plain read is the allowed
+    form."""
+    reduced = re.sub(r"\s*2(?:>&?\d*|>/[^\s|&;]+)\s*", " ", command)
+    reduced = re.sub(r"\s+", " ", reduced).strip()
+    return (
+        "the stderr redirect is what the gate refused — it adds nothing for "
+        f"reading the output. Run `{reduced}` instead."
+    )
+
+
+def _hint_semicolon_chain(_command: str) -> str:
+    """A ';'-joined chain of read steps, often with echo separators; each
+    side is allowed on its own, so split the chain into separate calls."""
+    return (
+        "the ';'-joined chain is what the gate refused, not any one step. "
+        "Run the two sides as two separate bash calls; a separator echo is "
+        "unnecessary — read each command's own output."
+    )
+
+
 # --- public API ------------------------------------------------------------
 
 
@@ -160,6 +211,7 @@ def suggest(command: str, reason: str = "") -> str:
         return ""
 
     cmd = command.strip()
+    reason = reason or ""   # reason may be None from a bare call
     joined = f"{cmd}\n{reason}"
 
     # Harmful shapes first: a write that destroys has no safe fallback, and a
@@ -168,16 +220,24 @@ def suggest(command: str, reason: str = "") -> str:
     if re.search(r"\brm\s+", cmd):
         return _hint_delete(cmd)
 
-    if re.search(r"\|\|", cmd):
-        return _hint_double_pipe(cmd)
-
     if re.search(r"-m\s+(?:pytest|py\.test)\b", joined):
         return _hint_pytest(cmd)
+
+    if re.search(r"\|\|", cmd):
+        return _hint_double_pipe(cmd)
 
     if re.search(r"\bgit\s+fetch\b", joined) or "fetch" in reason.lower():
         return _hint_remote_fetch(cmd)
     if re.search(r"\b(?:squeue|sbatch|scontrol)\b", joined):
         return _hint_scheduler(cmd)
+
+    # Read-only compound shapes with a plain allowed form: drop the stderr
+    # redirect, or split a ';'-chain into separate calls.
+    if re.search(r"\s*2(?:>&?\d*|>/[^\s|&;]+)\s*", cmd):
+        return _hint_stderr(cmd)
+
+    if re.search(r"\s*;\s*", cmd):
+        return _hint_semicolon_chain(cmd)
 
     # Writes that must not be silent.
     low = joined.lower()
