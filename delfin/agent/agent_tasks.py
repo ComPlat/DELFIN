@@ -482,6 +482,19 @@ def _task_label(t: dict) -> str:
             else f"task #{t.get('id')}")
 
 
+OPEN_TASKS_NOTICE_HEAD = "\u26a0 This turn ended with "
+
+
+def is_open_tasks_notice(text: str) -> bool:
+    """True for the stand-alone end-of-turn open-tasks notice.
+
+    A surface that shows the open tasks itself (the dashboard's task line)
+    drops it; the terminal, which has no such line, keeps it. The
+    tool-round-budget notice that carries the list as its tail starts
+    differently and is not matched: it says something else first."""
+    return str(text or "").lstrip().startswith(OPEN_TASKS_NOTICE_HEAD)
+
+
 def format_open_tasks_notice(summary: dict) -> str:
     """One user-visible block for a turn that is ending on open work.
 
@@ -506,7 +519,7 @@ def format_open_tasks_notice(summary: dict) -> str:
         n_open = int(counts.get("in_progress", 0)) + int(counts.get("pending", 0))
         n_blocked = int(counts.get("blocked", 0))
         lines = [
-            f"⚠ This turn ended with {n_open} open task(s)"
+            f"{OPEN_TASKS_NOTICE_HEAD}{n_open} open task(s)"
             + (f" and {n_blocked} blocked" if n_blocked else "")
             + " — not everything on the list is done:"
         ]

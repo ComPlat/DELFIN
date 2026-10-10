@@ -637,6 +637,19 @@ class AgentEngine:
         self._claim_guard_active: bool = False
         self._claim_guard_spent: bool = False
         self._claim_guard_corrected: bool = False
+        # One-shot DSML re-request latch (U5 phase 3): a final answer that
+        # IS a leaked <invoke name=...>...</invoke> call written as text is
+        # re-requested (asked to call the tool) at most once per turn; if
+        # the correction leaks again the answer is annotated, never looped.
+        self._dsml_leak_spent: bool = False
+        # Reentrancy guard for the DSML re-request's nested ``stream_response``
+        # call (U5 phase 3): that nested call is a fresh user turn to the
+        # engine, so WITHOUT this flag the fresh-turn re-arm block below would
+        # clear ``_dsml_leak_spent`` and the correction would re-request over
+        # and over (1478 stream calls on the never-loops test).  Set True only
+        # around the nested call, reset in ``finally``; while it is set, no
+        # re-arm and no second DSML check happens.
+        self._dsml_guard_active: bool = False
         self._last_observed_files: set[str] = set()
         self._last_turn_tools: list[str] = []
         self._observed_ledger_available: bool = False
@@ -2248,11 +2261,9 @@ class AgentEngine:
         if error_ctx:
             memory_context = f"{memory_context}\n\n{error_ctx}" if memory_context else error_ctx
 
-        # Solo only: prepend a live context-status snapshot so the agent
-        # self-monitors window-usage and can delegate to subagents before
-        # compaction fires (no value for other roles — they run in
-        # pipeline mode with their own context budgets).
-        live_state = self._live_state
+        # The dashboard's per-turn snapshot (set_live_state). Volatile,
+        # so it travels with the steering blocks below, not in the prompt.
+        dashboard_state = self._live_state
         # The session's language, decided by the first message and stated
         # BEFORE the model writes its first word. Every other attempt at
         # this corrected afterwards: the end-of-turn guard replaces a
@@ -2261,10 +2272,10 @@ class AgentEngine:
         # Neither can stop the draft, and a user filming the session sees
         # the draft. An instruction in the prompt is the only version of
         # this rule that acts before there is anything to correct.
+        # Fixed for the session, so it is the one live-state piece that
+        # may stay in the system prompt without costing the prefix cache.
         _lang_block = self._session_language_block()
-        if _lang_block:
-            live_state = (f"{_lang_block}\n\n{live_state}" if live_state
-                          else _lang_block)
+        live_state = _lang_block or ""
         # office_agent joins the interactive roles. It was left out when this
         # gate was written and never revisited, so the mode that works on
         # real records ran on prompt text alone -- on the model this project
@@ -2290,9 +2301,26 @@ class AgentEngine:
         self._steering_delivered = dict(pairs)
         self._steering_refreshes = 0
         extra_blocks: list[str] = [text for _, text in pairs]
-        if extra_blocks:
-            joined = "\n\n".join(extra_blocks)
-            live_state = f"{joined}\n\n{live_state}" if live_state else joined
+        # Whatever changes from one turn to the next leaves the system
+        # prompt here. The endpoint caches the longest common prefix of
+        # system prompt and messages, and the system prompt comes first,
+        # so one changed line in it -- the usage counter in the context
+        # status moves every turn -- made the first request of every turn
+        # cold for the whole history behind it. Measured on a live engine:
+        # two plain turns diverged at 60,503 of 61,425 prompt characters,
+        # inside this block; three cluster sessions read 3.5M, 2.8M and
+        # 10.2M input tokens for 10, 8 and 5 turns. The blocks ride at the
+        # END of the turn's user message now (_attach_turn_tail), where a
+        # change invalidates nothing before it, and the message keeps its
+        # tail as a private key so every later request repeats the bytes
+        # the endpoint already holds.
+        volatile = extra_blocks + ([dashboard_state] if dashboard_state else [])
+        if volatile and not self._attach_turn_tail("\n\n".join(volatile)):
+            # A prompt built with no user message to carry the tail (a
+            # build outside a turn): the system prompt is the only place.
+            live_state = "\n\n".join(
+                part for part in ("\n\n".join(extra_blocks), _lang_block,
+                                  dashboard_state) if part)
 
         try:
             _perm_mode = getattr(self.kit_permissions, "mode", "") or ""
@@ -2485,9 +2513,15 @@ class AgentEngine:
         # drop the very evidence ledgers the retry is judged against.
         _is_guard_feedback = str(
             user_message or "").lstrip().startswith("[Verify]")
-        if not self._claim_guard_active and not _is_guard_feedback:
+        if (not self._claim_guard_active and not self._dsml_guard_active
+                and not _is_guard_feedback):
             self._claim_guard_corrected = False
             self._claim_guard_spent = False
+            # A fresh REAL user turn re-arms the DSML one-shot re-request:
+            # the latch is per TURN.  The DSML correction's nested call is
+            # not a fresh turn (see _dsml_guard_active), so while it is
+            # running this block is skipped and the latch stays spent.
+            self._dsml_leak_spent = False
             # The ambiguity ledger is per TURN: the question is whether
             # THIS answer totals a column THIS turn was told it could not
             # read. Carrying it across turns would caveat a later, unrelated
@@ -3747,6 +3781,41 @@ class AgentEngine:
             except Exception:
                 pass
 
+        # DSML leak re-request (U5 phase 3): a final answer that IS a leaked
+        # <invoke name=...>...</invoke> tool call written as text never ran —
+        # it is not an answer. Ask exactly once (latch _dsml_leak_spent); a
+        # corrected answer that leaks AGAIN falls through to the normal
+        # return and is annotated, never a second re-request (no loop).
+        if (full_response and not _empty_turn and not self._stop_requested
+                and not self._claim_guard_active and not self._dsml_guard_active):
+            _dsml_name = None
+            try:
+                # DOMINATES, not merely contains: the re-request fires only
+                # when the answer IS the leaked call (text outside the block
+                # is empty or trivially short).  Instructive prose that
+                # quotes a complete <invoke> block is a real answer and is
+                # never re-requested.
+                from delfin.agent.text_sanitize import leaked_tool_call_dominates
+                _dsml_name, _dsml_args = (
+                    leaked_tool_call_dominates(full_response) or (None, {}))
+            except Exception:
+                _dsml_name = None
+            if _dsml_name and not self._dsml_leak_spent and not self._dsml_guard_active:
+                full_response = self._enforce_dsml_rerun(
+                    full_response, _dsml_name, _dsml_args,
+                    memory_context=memory_context,
+                    on_token=on_token,
+                    on_tool_use=on_tool_use,
+                    on_tool_result=on_tool_result,
+                    on_permission_denied=on_permission_denied,
+                    on_thinking=on_thinking,
+                    thinking_budget=thinking_budget,
+                    max_tokens=max_tokens,
+                    on_notice=on_notice,
+                    on_tool_result_meta=on_tool_result_meta,
+                    on_wait=on_wait,
+                )
+
         # A turn that announced an action while plan mode refused its calls
         # says so in the ANSWER, not only in a notice that scrolls past.
         # Reports 20261005-135825 / 20261005-140408: four turns of "Let me
@@ -4549,6 +4618,91 @@ class AgentEngine:
             combined + note, functional=func, ambiguous=ambiguous,
             on_token=on_token, scan_source=combined)
 
+    def _enforce_dsml_rerun(
+        self,
+        response_text: str,
+        tool_name: str,
+        tool_args: dict,
+        *,
+        memory_context: str = "",
+        on_token: Callable[[str], None] | None = None,
+        on_tool_use: Callable[[str, str], None] | None = None,
+        on_tool_result: Callable[[str, str], None] | None = None,
+        on_permission_denied: Callable[[str], None] | None = None,
+        on_thinking: Callable[[str], None] | None = None,
+        thinking_budget: int = 0,
+        max_tokens: int = 0,
+        on_notice: Callable[[str], None] | None = None,
+        on_tool_result_meta: Callable[[str, dict], None] | None = None,
+        on_wait: Callable[[str], None] | None = None,
+    ) -> str:
+        """Re-request once when the whole answer is a leaked DSML tool call.
+
+        Deepseek-v4-flash sometimes writes a tool call as literal
+        ``<invoke name=...>...</invoke>`` XML in the text channel instead of
+        calling the tool, so the call never ran and the turn would end
+        standing still. The answer is not the answer — ask the model exactly
+        once to call the tool instead of typing it.
+
+        One retry only: ``_dsml_leak_spent`` is set before the nested call,
+        so a corrected answer that leaks AGAIN (or a nested continuation
+        re-entering the guard) falls through to the normal return with a
+        visible caveat naming the leaked tool — never a loop.
+        """
+        if self._dsml_leak_spent:
+            # A nested continuation (or a re-request that leaked) is already
+            # here: annotate and never re-request a second time.
+            _caveat = (f"\n\n⚠️ the call to {tool_name} was written as "
+                       f"text again after one re-request; it did not run.\n")
+            try:
+                if on_token:
+                    on_token(_caveat)
+            except Exception:
+                pass
+            return response_text + _caveat
+
+        self._dsml_leak_spent = True
+        _feedback = (
+            f"The text you just wrote is a tool call to "
+            f"<tool>{tool_name}</tool> expressed as literal markup, so it "
+            f"never ran. Call the tool (do not type its tags). Say what it "
+            f"returned, or make your answer plain text."
+        )
+        self._dsml_guard_active = True
+        try:
+            try:
+                if on_token:
+                    on_token("\n\n")
+            except Exception:
+                pass
+            try:
+                correction = self.stream_response(
+                    user_message=_feedback,
+                    memory_context=memory_context,
+                    on_token=on_token,
+                    on_tool_use=on_tool_use,
+                    on_tool_result=on_tool_result,
+                    on_permission_denied=on_permission_denied,
+                    on_thinking=on_thinking,
+                    thinking_budget=thinking_budget,
+                    max_tokens=max_tokens,
+                    on_notice=on_notice,
+                    on_tool_result_meta=on_tool_result_meta,
+                    on_wait=on_wait,
+                )
+            except Exception:
+                correction = ""
+        finally:
+            # The nested call is over: a REAL next user turn may re-arm and
+            # ask again.  While the flag is set no re-arm and no second
+            # DSML check ran, so one correction never spawns another.
+            self._dsml_guard_active = False
+        if not correction:
+            return response_text + (
+                f"\n\n⚠️ the call to {tool_name} was written as text and "
+                f"the re-request produced nothing; it did not run.\n")
+        return correction
+
     def trace_session(self) -> str:
         """Stable key for this engine's tool-call trace — the backend session
         id when present, else a per-engine uuid (so OpenAI/KIT/Ollama turns,
@@ -4787,6 +4941,60 @@ class AgentEngine:
             if isinstance(m, dict) and m.get("_pinned")
         ]
 
+    def _attach_turn_tail(self, text: str) -> bool:
+        """Hang the turn's volatile blocks on the message that starts it.
+
+        Stored under ``_steer`` on the newest user message, never in its
+        ``content``: the stored text stays what the user wrote (the module
+        triggers, the language matchers and the transcript all read it),
+        and the wire view appends the tail when the request is built.
+        False when there is no user message to carry it, which is a prompt
+        built outside a turn; the caller then falls back to the system
+        prompt. A message that already has a tail keeps it: a rebuild
+        within the turn must not change bytes the endpoint has cached, and
+        what moved since the turn started is the mid-turn refresh's job.
+        """
+        msgs = self.messages
+        last = msgs[-1] if msgs else None
+        if not isinstance(last, dict) or last.get("role") != "user":
+            return False
+        if "_steer" not in last:
+            last["_steer"] = text
+        return True
+
+    @staticmethod
+    def _with_turn_tail(content: Any, tail: str) -> Any:
+        """``content`` with the tail appended, in the content's own shape."""
+        if isinstance(content, list):
+            return list(content) + [{"type": "text", "text": tail}]
+        base = "" if content is None else str(content)
+        return f"{base}\n\n{tail}" if base else tail
+
+    def _drop_stale_steering_tails(self) -> int:
+        """Remove the tails of every message but the newest user message;
+        chars dropped.
+
+        Each turn's tail stays in its message so later requests repeat the
+        cached bytes, and that costs a few hundred characters per turn
+        until something rewrites the history anyway. The trims and the
+        compaction are that something: once they touch the prefix the
+        cache is cold regardless, so the stale tails go in the same stroke
+        and their size is credited against the provider's input floor like
+        any other trimmed text.
+        """
+        dropped = 0
+        keep = next((i for i in range(len(self.messages) - 1, -1, -1)
+                     if isinstance(self.messages[i], dict)
+                     and self.messages[i].get("role") == "user"), -1)
+        for i, m in enumerate(self.messages):
+            if i != keep and isinstance(m, dict) and m.get("_steer"):
+                dropped += len(str(m["_steer"]))
+                del m["_steer"]
+        if dropped:
+            self._trimmed_chars_since_floor = (
+                getattr(self, "_trimmed_chars_since_floor", 0) + dropped)
+        return dropped
+
     def _wire_messages(self) -> list[dict[str, Any]]:
         """The message list as sent to the backend.
 
@@ -4797,6 +5005,9 @@ class AgentEngine:
         common case — preserves list identity for backends that bind the
         live list); otherwise a shallow per-message copy with private keys
         stripped (same length and indices, so ``live:<i>`` refs stay valid).
+        A ``_steer`` key is the turn's steering tail (_attach_turn_tail):
+        rendered at the end of that message's content, the same bytes on
+        every request that carries the message.
         """
         msgs = self.messages
         if not any(
@@ -4807,8 +5018,13 @@ class AgentEngine:
         out: list[dict[str, Any]] = []
         for m in msgs:
             if isinstance(m, dict) and any(str(k).startswith("_") for k in m):
-                out.append({k: v for k, v in m.items()
-                            if not str(k).startswith("_")})
+                row = {k: v for k, v in m.items()
+                       if not str(k).startswith("_")}
+                tail = m.get("_steer")
+                if tail:
+                    row["content"] = self._with_turn_tail(
+                        row.get("content"), str(tail))
+                out.append(row)
             else:
                 out.append(m)
         return out
@@ -4873,6 +5089,8 @@ class AgentEngine:
         total_chars = 0
         for m in self.messages:
             content = m.get("content", "")
+            # The steering tail is sent with the message (see _wire_messages).
+            total_chars += len(str(m.get("_steer") or ""))
             if isinstance(content, str):
                 total_chars += len(content)
             elif isinstance(content, list):
@@ -5343,6 +5561,11 @@ class AgentEngine:
         # so the cliff at 95% is much rarer. Cheap — no LLM call.
         try:
             if self._should_slide():
+                # The prefix is about to be rewritten, so the cache is
+                # lost either way: the stale steering tails go first, and
+                # may on their own bring the history back under the line.
+                self._drop_stale_steering_tails()
+            if self._should_slide():
                 _trimmed = self._shorten_oldest_non_goal_messages()
                 if _trimmed:
                     # Record the trim event into last_compaction_info so
@@ -5378,6 +5601,7 @@ class AgentEngine:
             return
         if len(self.messages) <= self._KEEP_RECENT:
             return
+        self._drop_stale_steering_tails()
 
         old_msgs = self.messages[:-self._KEEP_RECENT]
         recent = self.messages[-self._KEEP_RECENT:]
@@ -6020,10 +6244,12 @@ class AgentEngine:
     def set_live_state(self, text: str) -> None:
         """Update the per-turn live-state snippet.
 
-        The string is appended to the system prompt (cache-friendly,
-        regenerated only when needed) instead of being baked into the
-        user message body — so old turns in ``self.messages`` don't
-        carry stale dashboard state forever.
+        Sent at the end of the turn's user message with the steering
+        blocks (see _attach_turn_tail), not in the system prompt: a
+        system prompt that changes per turn invalidates the endpoint's
+        cache for the whole history behind it, while a tail on the newest
+        message invalidates nothing. Old turns carry their tail until a
+        trim rewrites the history (_drop_stale_steering_tails).
         """
         self._live_state = text or ""
 

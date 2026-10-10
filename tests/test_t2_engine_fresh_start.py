@@ -108,7 +108,13 @@ def test_the_turn_after_a_fresh_start_is_not_fresh_again(tmp_path, monkeypatch):
     engine.stream_response(user_message="next prompt")
     sent = list(client.last_messages or [])
     assert len(sent) == 3, [m["role"] for m in sent]
-    assert sent[-1]["content"] == "next prompt"
+    # The turn's steering rides at the end of the newest user message on
+    # the wire (the system prompt stays the same bytes every turn), so the
+    # sent message STARTS with what the user wrote; the stored one is
+    # exactly that.
+    assert sent[-1]["content"].startswith("next prompt")
+    stored = [m for m in engine.messages if m.get("role") == "user"]
+    assert stored[-1]["content"] == "next prompt"
 
 
 def test_without_the_flag_history_is_sent_whole(tmp_path):

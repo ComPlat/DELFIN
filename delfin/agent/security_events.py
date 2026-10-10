@@ -57,6 +57,7 @@ _KINDS = {
     # so the panel is the only place it is ever visible — which is exactly
     # why the rung records instead of asking, rather than doing neither.
     "outside_read_bypass": ("👁", "Read outside the roots (Bypass)"),
+    "worktree_merge_refused": ("⛔", "Worktree merge refused (a file it writes is not allowed)"),
     "approval_timeout": ("⌛", "Approval window expired"),
     "isolation":      ("🔒", "Filesystem isolation active"),
     "isolation_missing": ("⚠", "Filesystem isolation NOT active"),
