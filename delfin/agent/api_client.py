@@ -4694,7 +4694,7 @@ _NETWORK_TOOLS: frozenset[str] = frozenset({
 # dispatched without ever consulting the gate.
 _GATED_TOOLS: frozenset[str] = frozenset({
     "write_file", "edit_file", "multi_edit", "bash", "bash_background",
-    "run_tests",
+    "run_tests", "make_plot",
 }) | _NETWORK_TOOLS
 
 # What may run with NO permissions object. Such a caller has no workspace,
@@ -4807,6 +4807,7 @@ _PLAN_READONLY_MCP_TOOLS: frozenset[str] = (
 # test_the_deny_list_only_names_real_tools says so.
 _WRITE_TOOL_NAMES: frozenset[str] = frozenset({
     "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
+    "make_plot",
 })
 
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
@@ -8007,6 +8008,34 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "make_plot",
+            "description": (
+                "Render a declarative plot spec into the workspace and return "
+                "a DELFIN_CARD: card result (package V2). Selects the plot "
+                "variables by 'kind' (line, bar, bar_by_method, hist, "
+                "scatter, box), builds the figure from the x/y/title/etc. "
+                "spec and returns the shared sandboxed card. Requires "
+                "permissions (a workspace to write the figure into)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "spec": {
+                        "type": "object",
+                        "description": (
+                            "Declarative plot spec. Must have a 'kind'. "
+                            "See chat_plots kinds for the allowed variables "
+                            "per kind."
+                        ),
+                    },
+                },
+                "required": ["spec"],
             },
         },
     },
@@ -12555,6 +12584,9 @@ class _DocToolExecutor:
         # probes only; credential values never appear in the output).
         if name == "check_environment":
             return self._execute_check_environment(arguments, permissions)
+
+        if name == "make_plot":
+            return self._execute_make_plot(arguments, permissions)
 
         # Web tools — outbound HTTP, no filesystem side-effects. The
         # web_tools module enforces its own URL deny-list (localhost /
@@ -18772,8 +18804,26 @@ class _DocToolExecutor:
             base_ref=base,
             created_at=0.0,
         )
+        def _merge_gate(paths):
+            # Every file the merge would write goes through the same write
+            # gate a write_file into the TARGET would: write scope, the
+            # read-only archive, the Self-Modification Guard. A merge was
+            # git applying a diff, unchecked, file by file.
+            if perms is None:
+                return None
+            for rel in paths:
+                refusal = self._gate_write_path(
+                    str(target / rel), perms, "worktree_merge",
+                    {"path": rel})
+                if refusal is not None:
+                    _record_security_event(
+                        "worktree_merge_refused", "worktree_merge",
+                        rel[:200], blocked=True)
+                    return f"'{rel}': {refusal}"
+            return None
+
         try:
-            result = _wt.merge_worktree(info)
+            result = _wt.merge_worktree(info, gate=_merge_gate)
         except _wt.WorktreeError as exc:
             return json.dumps({"error": str(exc)})
         removed = bool(getattr(info, "cleaned_up", False))
@@ -19818,6 +19868,90 @@ class _DocToolExecutor:
             max_chars=_as_int(arguments.get("max_chars"), 4000),
         )
         return json.dumps(rec, indent=2, ensure_ascii=False)
+
+    def _execute_make_plot(self, arguments: dict, permissions) -> str:
+        """Render a declarative plot spec into the workspace and return the
+        shared DELFIN_CARD: card result (package V2).
+
+        Security (all enforced BEFORE any write lands):
+          - requires permissions with a writable workspace;
+          - plan mode (read-only) is refused;
+          - the final output path is run through ``_gate_write_path`` (write
+            scope / write_allow_globs, the read-only archive, the self-mod
+            guard), so a refused filename leaves the target untouched — the
+            gated path and the path make_plot actually writes are the same
+            (both use chat_plots.resolve_out_path);
+          - a ``file:`` data reference is read through a caller-supplied
+            reader that first runs ``_check_read_access``, so the secret-deny
+            list (``.ssh/``, ``.env``, ``*.key``, ...) applies even though
+            the workspace-root check would admit the path;
+          - the model-facing ``text`` field of the card is wrapped with
+            ``_wrap_untrusted``; the sandboxed ``html`` never reaches the
+            model, and the ``DELFIN_CARD:`` marker stays at byte 0 (the
+            dashboard hook does not strip an untrusted fence and must not
+            learn to).
+        """
+        spec = arguments.get("spec")
+        if not isinstance(spec, dict):
+            return json.dumps({
+                "error": "make_plot: spec must be an object with a 'kind'"
+            })
+        if not permissions:
+            return json.dumps({"error": (
+                "make_plot requires permissions (a workspace to write the "
+                "figure into)."
+            )})
+        ws = getattr(permissions, "workspace", None)
+        if not ws:
+            return json.dumps({"error": (
+                "make_plot requires a workspace to write the figure into."
+            )})
+        if effective_mode(permissions) == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — 'make_plot' rejected. Describe the "
+                "intended change and call exit_plan_mode."
+            )})
+        try:
+            from . import chat_plots as _cp
+        except Exception as exc:  # pragma: no cover
+            return json.dumps({"error": f"make_plot failed: {exc}"})
+        try:
+            out_path = _cp.resolve_out_path(spec, Path(ws))
+        except _cp.SpecError as exc:
+            return json.dumps({"error": f"make_plot: {exc}"})
+        refuse = self._gate_write_path(
+            str(out_path), permissions, "make_plot", arguments)
+        if refuse is not None:
+            return json.dumps({"error": refuse})
+
+        def _reader(p: Path) -> str:
+            err = self._check_read_access(permissions, p, "make_plot")
+            if err is not None:
+                # Re-raises cleanly through chat_plots' resolver as SpecError.
+                raise _cp.SpecError(f"data file {p} refused: {err}")
+            with p.open(encoding="utf-8") as fh:
+                return fh.read()
+
+        try:
+            card = _cp.make_plot(spec, out_dir=str(ws), reader=_reader)
+        except _cp.SpecError as exc:
+            return json.dumps({"error": f"make_plot: {exc}"})
+        except Exception as exc:  # surface a malformed spec clearly
+            return json.dumps({"error": f"make_plot failed: {exc}"})
+        # Finding #3: the model-facing text field is untrusted content; wrap it
+        # so a file-derived caption/path cannot pass as an instruction. The
+        # DELFIN_CARD: marker stays at byte 0 (dashboard hook does not strip a
+        # fence), and the sandboxed html is never shown to the model.
+        try:
+            prefix, sep, payload = card.partition(_cp.CARD_MARKER)
+            if sep:
+                obj = json.loads(payload)
+                if isinstance(obj, dict) and isinstance(obj.get("text"), str):
+                    obj["text"] = _wrap_untrusted(obj["text"])
+                return _cp.CARD_MARKER + json.dumps(obj, ensure_ascii=False)
+        except (ValueError, TypeError, json.JSONDecodeError):
+            pass
+        return card
 
     def _execute_web_search(self, arguments: dict) -> str:
         query = (arguments.get("query", "") or "").strip()
