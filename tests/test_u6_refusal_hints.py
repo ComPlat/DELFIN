@@ -104,14 +104,20 @@ def test_delete_names_mv_to_scratch(perms, refused, reason):
     ("pytest tests/test_a.py", "pytest outside the gate"),
     ("x; pytest tests/test_b.py", "pytest outside the gate"),
 ])
-def test_pytest_names_gate_legal_form(perms, refused, reason):
+def test_pytest_refusal_is_generic_with_no_runner_path(perms, refused, reason):
+    """pytest is refused by the installation's deny list; the hint must stay
+    generic. It never names a concrete test-runner command (no built-in allow
+    list is guaranteed -- the operator build/CI has no gate-tools file), never
+    ships ``python -m pytest``, and never mentions an infrastructure path."""
     out = refusal_hints.suggest(refused, reason)
     assert out
     assert "python -m pytest" not in out
-    cmds = _BACKTICK.findall(out)
-    assert cmds, "must name a concrete runnable form"
-    for c in cmds:
-        assert _gate_legal(perms, c)
+    assert "gate-tools" not in out
+    assert ".delfin" not in out
+    assert _BACKTICK.findall(out) == [], (
+        "must not name a concrete command; tests are run how THIS install runs "
+        "them, which the agent asks about"
+    )
 
 
 # --- read-before-write and write-scope -------------------------------------
@@ -194,31 +200,18 @@ def test_suggested_commands_all_pass_the_real_gate(perms, refused, reason):
 # --- the gate runner is derived, never a hardcoded home literal ------------
 
 def test_module_source_has_no_hardcoded_home_literal():
-    """The suggested gate command is a runtime-derived path (the checkout
-    legitimately lives under a home); what must never ship in source is a
-    hardcoded account name or home-path literal. If one is ever pasted in,
-    this fails.
-    """
+    """What must never ship in source is a hardcoded account name or
+    home-path literal (the checkout legitimately lives under a home; the
+    module must not know the machine it runs on). If one is ever pasted in,
+    this fails."""
     src = Path(refusal_hints.__file__).read_text()
     for bad in ["/pfs/", "/home/", "/users/", "ka_ew7404", "ka_ibcs"]:
         assert bad not in src, f"hardcoded home literal in module: {bad!r}"
-    # The runner must be derived through _gate_bin, not a string constant.
-    assert "_gate_bin()" in src
-    assert ".delfin" in src and "gate-tools" in src
+    # The module must not know any infrastructure-specific test-runner path.
+    assert "gate-tools" not in src
 
 
-def test_gate_runner_resolves_to_an_existing_absolute_gate():
-    """_gate_bin yields an absolute ``<main-repo>/.delfin/gate-tools/gate``
-    that actually EXISTS on disk — the shape the operator's gate auto-allows.
-    This is the worktree ORIGIN bug (s24): from a linked worktree the module's
-    own parent resolves to the worktree's `.delfin`, which has no gate-tools;
-    the resolver must land on the MAIN checkout's gate or every pytest hint is
-    a "No such file or directory" dead end. Never relative, never a bare name,
-    never the module's own worktree parent."""
-    gate = refusal_hints._gate_bin()
-    assert gate.endswith(".delfin/gate-tools/gate")
-    assert gate.startswith("/")
-    assert Path(gate).is_file(), f"gate binary does not exist: {gate!r}"
+
 
 
 # --- compound read shapes get a plain allowed form --------------------------
