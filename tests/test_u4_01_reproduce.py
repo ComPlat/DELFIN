@@ -243,3 +243,39 @@ def test_alive_owning_pid_is_not_releasable_via_state(tmp_path, monkeypatch):
     assert state["is_worktree"] is True
     assert state["releasable"] is False, (
         "an alive owning process must make a worktree non-releasable")
+
+def test_saved_session_worktree_is_not_releasable_via_state(tmp_path, monkeypatch):
+    """A worktree a saved session would reopen is NOT releasable.
+
+    Reviewer red (9dd400e7): releasable passed saved_workspaces=(), which
+    makes the "no saved session would reopen it" clause inert, so a tree a
+    saved session would reopen was offered AND released, while the reclaim
+    sweep (which passes the real saved workspaces) protected it. releasable
+    must agree with the reclaim answer.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    wt = _make_session_worktree(project)
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")        # no live session
+    monkeypatch.setattr(asm, "_saved_session_workspaces", lambda: [str(wt)])
+    state = asm.session_worktree_state(str(wt))
+    assert state["is_worktree"] is True
+    assert state["releasable"] is False, (
+        "a worktree a saved session would reopen must not be releasable")
+
+
+def test_orphaned_worktree_with_saved_session_elsewhere_is_releasable(
+        tmp_path, monkeypatch):
+    """A session-gone worktree whose saved session is NOT in it stays
+    releasable — the negative half, so the saved-session clause does not
+    over-exclude (no false positive)."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    wt = _make_session_worktree(project)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
+    monkeypatch.setattr(asm, "_saved_session_workspaces", lambda: [str(elsewhere)])
+    state = asm.session_worktree_state(str(wt))
+    assert state["releasable"] is True, (
+        "a tree whose saved session is elsewhere stays releasable")

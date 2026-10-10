@@ -1010,10 +1010,13 @@ def session_worktree_state(workspace, *, hold_fn=None) -> dict:
             holder = ""
         # Releasing must agree with the orphan check: an alive owning process
         # is not releasable even when the session has gone from the presence
-        # file. ``_worktree_is_orphaned`` owns "is this tree spare" (dead pid
-        # + same host + no live session + no saved workspace).
+        # file, and a worktree a SAVED session would reopen is not releasable
+        # either (the same saved-workspaces the reclaim sweep passes, so the
+        # spare answer never disagrees with the release path). ``_worktree_is_
+        # orphaned`` owns all of this.
         try:
-            releasable = _worktree_is_orphaned(side, saved_workspaces=()) == ""
+            releasable = (_worktree_is_orphaned(
+                side, saved_workspaces=_saved_session_workspaces()) == "")
         except Exception:
             releasable = False
     return {
