@@ -300,3 +300,39 @@ def leaked_tool_call(text: str) -> tuple[str, dict] | None:
     for p in _DSML_PARAM.finditer(m.group(2)):
         args[p.group(1)] = p.group(2)
     return name, args
+
+
+# Leftover (text outside the matched <invoke>…) threshold for DOMINATION.
+# The real leaked answers (wave 13, .gate/dsml_samples.txt) are the bare
+# <invoke>…</invoke> block and nothing else — empty leftover.  Prose that
+# merely CITIES a complete block ("For example: <invoke …>…</invoke> which
+# runs a search.") leaves a real sentence outside, well over this bound, so
+# it is never mistaken for the leak itself.  30 is comfortably above any
+# conceivable "trivially short" wrapper ("Done." / a trailing backtick)
+# and far below the shortest explanatory sentence.
+_DOMINATED_LEFT_LIMIT = 30
+
+
+def leaked_tool_call_dominates(text: str) -> tuple[str, dict] | None:
+    """``(name, args)`` when *text* IS one leaked DSML call, else ``None``.
+
+    ``leaked_tool_call`` answers "does this text CONTAIN a complete block
+    anywhere".  This answers the wiring question the engine guard needs: is
+    the answer ITSELF the leaked call — i.e. is everything outside the block
+    empty or trivially short?  The re-request remedy only makes sense for a
+    turn that is nothing but the leaked call; prose that happens to quote a
+    full block is a real answer and must never be cut short or re-requested
+    (prose's leftover is a full sentence, well over ``_DOMINATED_LEFT_LIMIT``).
+    """
+    if not isinstance(text, str):
+        return None
+    leftover = _DSML_INVOKE.sub("", text).strip()
+    if len(leftover) > _DOMINATED_LEFT_LIMIT:
+        return None
+    m = _DSML_INVOKE.search(text)
+    if not m:
+        return None
+    args: dict = {}
+    for p in _DSML_PARAM.finditer(m.group(2)):
+        args[p.group(1)] = p.group(2)
+    return m.group(1), args

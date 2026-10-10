@@ -144,3 +144,61 @@ def test_no_rerequest_for_clean_text(agent_tree):
     out = eng.stream_response("hello")
     assert client.stream_message.call_count == 1  # no re-request for prose
     assert NORMAL_ANSWER in out
+
+
+# --- Prose that merely SHOWS a complete block is a real answer, not a leak ---
+
+PROSE_SHOWING_BLOCK = (
+    "To read a file you would call <invoke name=\"read_file\">"
+    "<parameter name=\"path\">delfin/agent/foo.py</parameter>"
+    "</invoke> which opens it. Here is what it contains instead."
+)
+
+
+def test_instructive_dsml_prose_does_not_trigger_rerequest(agent_tree):
+    """Instructive prose that quotes a complete <invoke> block is a normal
+    answer and is streamed once — the re-request fires only when the answer
+    IS the leaked call, never when a block merely appears inside prose."""
+    client = MagicMock()
+    client.model = "deepseek-v4-flash"
+
+    def stream(system, messages, max_tokens=4096, session_id="",
+               thinking_budget=0, **kw):
+        yield _delta(PROSE_SHOWING_BLOCK)
+
+    client.stream_message = MagicMock(side_effect=stream)
+    eng = _engine(client, agent_tree)
+    out = eng.stream_response("how do I read a file?")
+    assert client.stream_message.call_count == 1  # no re-request for prose
+    assert PROSE_SHOWING_BLOCK in out
+
+
+def test_three_consecutive_turns_each_get_at_most_one_rerequest(agent_tree):
+    """The latch re-arms per REAL user turn: three turns, each leaking once,
+    each get exactly one re-request (2 model calls per turn, 6 in total) —
+    never a second re-request within a turn."""
+    client = MagicMock()
+    client.model = "deepseek-v4-flash"
+    calls = {"n": 0}
+
+    def stream(system, messages, max_tokens=4096, session_id="",
+               thinking_budget=0, **kw):
+        calls["n"] += 1
+        last_user = ""
+        for m in messages or []:
+            if m.get("role") == "user":
+                last_user = str(m.get("content", ""))
+        if "expressed as literal markup" in last_user:
+            yield _delta(NORMAL_ANSWER)   # the re-request is answered
+        else:
+            yield _delta(LEAKED_BASH)     # the real turn leaks once
+
+    client.stream_message = MagicMock(side_effect=stream)
+    eng = _engine(client, agent_tree)
+    for _ in range(3):
+        eng.stream_response("list commits")
+    # 3 real turns; each leaks once and is answered by exactly one re-request.
+    assert calls["n"] == 6, (
+        f"expected 2 model calls per turn over 3 re-armed turns (6), "
+        f"got {calls['n']}"
+    )
