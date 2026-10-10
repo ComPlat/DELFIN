@@ -2788,6 +2788,18 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"worktree\s+list|"
     r"shortlog|reflog|fetch|pull(?!\s+--rebase\s+--force)|"
     r"switch(?![^;|&]*--discard-changes)|"
+    # Read-only plumbing from _GIT_READ_ONLY_SUBCOMMANDS (api_client.py:1034)
+    # that a session uses to orient itself in the tree (where two branches
+    # diverged, what a commit's parents are), absent from the alternation, so
+    # an all-read compound (git log --oneline main -1; echo ---;
+    # git merge-base HEAD X) went to the confirm gate for one read-only part.
+    # Allow-list only; write forms (merge, checkout, add, --output, -c) stay
+    # behind the write gates. Each is classified read-only by _git_reads_only.
+    r"merge-base|rev-list|for-each-ref|name-rev|count-objects|check-ignore|"
+    # grep -O/--open-files-in-pager runs a program of the caller's choice
+    # on the matches, so that form stays behind the confirm gate.
+    r"cat-file|whatchanged|version|"
+    r"grep(?![^;|&]*(?:\s-O|--open-files-in-pager))|"
     # NOTE: 'push' is deliberately NOT here. Pushing publishes to a remote — an
     # outward-facing, hard-to-undo action (it can hit a shared/protected branch
     # like main). Per this list's own policy ("Anything that pushes to remote …
@@ -15442,8 +15454,18 @@ class _DocToolExecutor:
             if denied:
                 _record_security_event("deny_pattern", "bash",
                                        f"{cmd[:80]} → {denied}")
+                _suggestion = ""
+                try:
+                    from . import refusal_hints as _refusal_hints
+                    _suggestion = _refusal_hints.suggest(cmd, denied)
+                except Exception:
+                    _suggestion = ""
+                _hint = _denied_command_hint(denied)
+                if _suggestion:
+                    _hint = (_hint + " " + _suggestion if _hint
+                             else " " + _suggestion)
                 return (f"command rejected by deny-pattern {denied!r}: "
-                        f"refusing to run.{_denied_command_hint(denied)}")
+                        f"refusing to run.{_hint}")
             # A walk over a whole file system (find/du/tree/rg, grep -r,
             # ls -R rooted at the home, an ancestor of it or a mount point)
             # is refused in every mode, before anything is asked -- the
