@@ -173,3 +173,39 @@ def test_property_complete_blocks_always_trigger():
         got = leaked_tool_call(text)
         assert got is not None
         assert got[0] == tool
+
+
+# --- leaked_tool_call_dominates: the answer IS the call, not just contains it ---
+
+from delfin.agent.text_sanitize import leaked_tool_call_dominates
+
+_BLOCK = (
+    '<invoke name="read_file">'
+    '<parameter name="path">delfin/agent/foo.py</parameter>'
+    '</invoke>'
+)
+
+
+def test_dominates_accepts_the_bare_call():
+    # The whole answer is the block and nothing else -> dominates.
+    assert leaked_tool_call_dominates(_BLOCK) is not None
+
+
+def test_dominates_rejects_short_prose_wrapper():
+    # A one-word aside around the block ("ok <block>", "<block> done",
+    # "Maybe: <block>") is prose, not the bare call: the answer must BE the
+    # call, so any non-whitespace text outside the block defeats domination.
+    assert leaked_tool_call_dominates("Done. " + _BLOCK) is None
+    assert leaked_tool_call_dominates("ok " + _BLOCK) is None
+    assert leaked_tool_call_dominates(_BLOCK + " thanks") is None
+    assert leaked_tool_call_dominates("Maybe: " + _BLOCK) is None
+
+
+def test_dominates_rejects_prose_citing_a_block():
+    # Prose that quotes the block leaves real words outside -> NOT dominated,
+    # so the engine never re-requests a real answer just for showing markup.
+    for prose in (
+        "To read a file you would call " + _BLOCK + " which opens it.",
+        "Example: " + _BLOCK + " runs the tool. Here is the real text.",
+    ):
+        assert leaked_tool_call_dominates(prose) is None, prose
