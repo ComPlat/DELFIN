@@ -74,7 +74,9 @@ def test_host_without_git_is_refused_before_it_prompts(tmp_path, monkeypatch):
 
     msg = _gate(perms, "git push origin main")
 
-    assert msg and "git is not installed" in msg
+    # The refusal renders the doctor row: "git installed: git is not on
+    # PATH -- install git ...". Assert on the remedy, not the phrase.
+    assert msg and "install git" in msg
     assert not asked, "a host that cannot push must not prompt"
 
 
@@ -139,6 +141,9 @@ def test_ready_host_reaches_the_granted_push_unhindered(
         tmp_path, monkeypatch):
     _rows(monkeypatch, [
         _row("git installed"), _row("git identity"), _row("git remote")])
+    # A maintainer may push to the default branch, so this test reaches the
+    # readiness gate instead of the contributor default-branch rule.
+    monkeypatch.setattr(A, "_git_role", lambda: "maintainer")
     perms = _perms(tmp_path)
     perms.push_grants["push"] = 1
 
@@ -152,6 +157,7 @@ def test_git_push_is_allowed_when_gh_is_absent(monkeypatch, tmp_path):
     gh must not be refused."""
     _rows(monkeypatch, [
         _row("git installed"), _row("git identity"), _row("git remote")])
+    monkeypatch.setattr(A, "_git_role", lambda: "maintainer")
     perms = _perms(tmp_path)
     perms.push_grants["push"] = 1
     msg = _gate(perms, "git push origin main")
@@ -167,6 +173,7 @@ def test_granted_git_push_refused_when_remote_unreachable(
         _row("git installed"), _row("git identity"),
         _row("git remote", "WARN", "unreachable: origin could not be reached",
              "push from a node with outbound access, or ask the user")])
+    monkeypatch.setattr(A, "_git_role", lambda: "maintainer")
     perms = _perms(tmp_path)
     perms.push_grants["push"] = 1
     msg = _gate(perms, "git push origin main")
@@ -243,4 +250,4 @@ def test_host_without_git_never_reaches_the_network(tmp_path, monkeypatch):
     perms = _perms(tmp_path)
     perms.push_grants["push"] = 1
     msg = _gate(perms, "git push origin main")
-    assert msg and "git is not installed" in msg
+    assert msg and "install git" in msg
