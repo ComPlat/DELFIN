@@ -754,6 +754,29 @@ def check_agent_jobs(
     def _kind(jid: str, entry: dict) -> str:
         return entry.get("kind") or ("slurm" if jid.isdigit() else "bash")
 
+    def _takes(entry: dict) -> bool:
+        # A consuming read retires the entry unless it is unscoped and the
+        # entry has an owner: the owning session is still owed it.
+        return consume and (session_id is not None
+                            or not entry.get("session_id"))
+
+    def _already_told(jid: str, entry: dict) -> bool:
+        """True when this reader must not report a terminal entry again.
+
+        The owner's consuming read skips what the idle wake already told
+        it (``wake_notified``) and retires the entry in the same step;
+        leaving it would keep a finished job in the file, polled on every
+        tick, until the seven-day prune. Every read that does not retire
+        the entry -- a peek, or an unscoped consuming read of an owned
+        entry -- reports it once under ``marker``; without that, the
+        unscoped read reported the same finished job on every turn."""
+        nonlocal changed
+        if consume and session_id is not None and entry.get("wake_notified"):
+            jobs.pop(jid, None)
+            changed = True
+            return True
+        return not _takes(entry) and bool(entry.get(marker))
+
     slurm_ids = [j for j, e in jobs.items() if _kind(j, e or {}) == "slurm"]
     states = (query_job_states_detailed(slurm_ids, run_fn)
               if slurm_ids else {})
@@ -829,11 +852,7 @@ def check_agent_jobs(
                     "session_id": entry.get("session_id"),
                     "finished_at": now,
                 }, workspace)
-                # V3-1: the busy drain must not re-announce a completion the
-                # idle wake already told THIS session (it set wake_notified).
-                if (consume and session_id is not None
-                        and entry.get("wake_notified")) or (
-                        not consume and entry.get(marker)):
+                if _already_told(jid, entry):
                     continue
                 done.append({
                     "job_id": jid,
@@ -845,8 +864,7 @@ def check_agent_jobs(
                     "signatures": (scan_error_signatures(entry.get("folder", ""))
                                    if state in _FAILURE_STATES else []),
                 })
-                if consume and (session_id is not None
-                                or not entry.get("session_id")):
+                if _takes(entry):
                     jobs.pop(jid)
                 else:
                     entry[marker] = True
@@ -900,9 +918,7 @@ def check_agent_jobs(
                 "session_id": entry.get("session_id"),
                 "finished_at": now,
             }, workspace)
-            if (consume and session_id is not None
-                    and entry.get("wake_notified")) or (
-                    not consume and entry.get(marker)):
+            if _already_told(jid, entry):
                 continue
             done.append({
                 "job_id": jid, "kind": "ci",
@@ -911,8 +927,7 @@ def check_agent_jobs(
                 "exit_code": None, "signatures": ci.get("failed", []),
                 "url": ci.get("url", ""),
             })
-            if consume and (session_id is not None
-                            or not entry.get("session_id")):
+            if _takes(entry):
                 jobs.pop(jid)
             else:
                 entry[marker] = True
@@ -939,9 +954,7 @@ def check_agent_jobs(
                 "session_id": entry.get("session_id"),
                 "finished_at": now,
             }, workspace)
-            if (consume and session_id is not None
-                    and entry.get("wake_notified")) or (
-                    not consume and entry.get(marker)):
+            if _already_told(jid, entry):
                 continue
             done.append({
                 "job_id": jid,
@@ -953,8 +966,7 @@ def check_agent_jobs(
                 "exit_code": rc,
                 "signatures": [],
             })
-            if consume and (session_id is not None
-                            or not entry.get("session_id")):
+            if _takes(entry):
                 jobs.pop(jid)
             else:
                 entry[marker] = True
