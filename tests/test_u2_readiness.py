@@ -52,13 +52,16 @@ def _fake_run(*, git=True, identity=True, remote=True, has_origin=True,
             if not identity:
                 return subprocess.CompletedProcess(argv, 1, "", "")
             return subprocess.CompletedProcess(argv, 0, f"{field} set\n", "")
-        if argv[:5] == ["git", "ls-remote", "--exit-code", "origin", "HEAD"]:
-            if not remote:
-                err = "fatal: could not read from remote repository"
-                return subprocess.CompletedProcess(argv, 128, "", err)
+        if argv[:3] == ["git", "remote", "get-url"]:
             if not has_origin:
-                err = "fatal: 'origin' does not appear to be a git repository"
+                err = "error: No such remote 'origin'"
                 return subprocess.CompletedProcess(argv, 2, "", err)
+            return subprocess.CompletedProcess(
+                argv, 0, "git@github.com:o/r.git\n", "")
+        if "ls-remote" in argv:
+            if not remote:
+                err = "fatal: Could not read from remote repository."
+                return subprocess.CompletedProcess(argv, 128, "", err)
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[:2] == ["git", "remote"]:
             return subprocess.CompletedProcess(argv, 0, "origin\n", "")
