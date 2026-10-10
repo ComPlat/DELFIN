@@ -3193,9 +3193,10 @@ _DENY_HINTS: tuple[tuple[str, str], ...] = (
     ("branch", " A branch you no longer need is the user's to delete; say "
                "which one and why in your answer."),
     ("sh|bash|zsh", " Running a fetched script executes remote code the "
-               "gates never see. If you need a tool or a package, DELFIN's "
-               "catalog installs it into the SESSION VENV (the proposal) — "
-               "never fetch-and-run. Do not add a `curl|sh` allow-pattern."),
+               "gates never see. A package belongs in the SESSION VENV "
+               "(`<session python> -m pip install`); a missing tool is "
+               "DELFIN's proposal for the user to approve with /fix. Do "
+               "not add a `curl|sh` allow-pattern."),
     ("reset", " To undo work in the tree, revert the specific files or "
               "commit first; a hard reset throws away what was not saved."),
     ("clean", " Say which files you mean and remove them one by one, or ask "
@@ -3227,91 +3228,46 @@ def _denied_command_hint(pattern: str) -> str:
 
 
 def _refuse_unsafe_install(cmd: str, session_python: str) -> str:
-    """Refuse an install that targets outside the session venv, or "".
+    """The refusal hint for an install outside the session venv, or "".
 
-    The field report (Tilmann): with no pytest in the interpreter the agent
-    "cheated one into the home directory" with ``pip install --user``. A plain
-    ``pip install --user`` is not on the deny list and is not auto-allowed, so
-    in ``default`` mode it was merely ASKED (a human had to catch it) and in
-    ``bypassPermissions`` or under an auto-allow pattern it RAN — the
-    field-report vector, unchanged. This is a deny-tier check that fires in
-    every mode (the deny list is checked before the bypass return), so it is a
-    refusal, not a prompt.
-
-    It refuses:
-      * ``pip``/``pip3``/``uv pip`` ``install`` that carries ``--user``,
-        ``--target`` or ``--prefix`` — every one of those writes outside the
-        session venv, which is never the sanctioned proposal.
-      * a bare ``PIP_USER=1 <interp> -m pip install`` (env-var form of --user).
-      * ``python -m pip install`` through an interpreter that is not the
-        session venv (``session_python()``) — an install into a random
-        interpreter the sandbox does not own.
-      * ``conda``/``mamba`` ``install`` into ``base`` (the base env is a
-        shared, system-owned environment, not the session venv).
-
-    The session venv's OWN install — ``<session_python> -m pip install`` with
-    no user/target/prefix flag — is deliberately NOT refused: that is the
-    sanctioned path (``python_tools_install_command``), and the approved
-    proposal runs it. Message names the proposal so the model does not invent
-    a way around.
+    Input: a bash command and the session interpreter ('' when unknown,
+    which refuses every ``python -m pip install``). Output: the reason and
+    the sanctioned route, or "". The rule is
+    :func:`delfin.agent.sandbox.unsafe_install_refusal`, shared with the
+    dashboard's approval runner so the two paths cannot drift. It runs in
+    the deny tier of the gate, before the bypass return, so it refuses in
+    every permission mode; an ask would leave a ``pip install --user`` to
+    whoever reads the prompt, and bypass or an auto-allow pattern would run
+    it. The session venv's own install (``python_tools_install_command``,
+    what an approved proposal runs) is not refused.
     """
-    if not cmd or not cmd.strip():
+    from .sandbox import unsafe_install_refusal as _rule
+    reason = _rule(cmd or "", session_python)
+    if not reason:
         return ""
-    # (1) pip / uv pip install with a write-outside-venv flag.
-    # --target/--prefix/--root/-t/--system/--break-system-packages all write
-    # outside the venv as well; ``--user`` is only the field-report form.
-    _UNSAFE_FLAG = (r"(?:--user\b|--target\b|--prefix\b|--root\b|--system\b"
-                    r"|--break-system-packages\b|(?<!\S)-t\b)")
-    _PIP = r"(?:pip|pip3(?:\.\d+)?|uv\s+pip)"
-    if re.search(rf"\b{_PIP}\s+install\b[^|;&]*{_UNSAFE_FLAG}", cmd):
-        return _UNSAFE_INSTALL_HINT
-    # The env-var forms of the same flags, with or without ``-m``.
-    if re.search(r"\bPIP_(?:USER|TARGET|PREFIX)\s*=", cmd) and re.search(
-            rf"\b{_PIP}\s+install\b", cmd):
-        return _UNSAFE_INSTALL_HINT
-    # (2) python -m pip install through a non-session interpreter.
-    m = re.search(r"(\S*python\S*)\s+-m\s+pip\s+install\b", cmd)
-    if m:
-        interp = m.group(1)
-        # The bare `pip install` is refused above only when it has a flag;
-        # here `python -m pip install` without a flag is refused UNLESS the
-        # interpreter is the session venv's.
-        if session_python and interp != session_python:
-            return _UNSAFE_INSTALL_HINT
-    # (3) conda / mamba install into base.
-    if re.search(r"\b(?:conda|mamba)\s+install\b[^|;]*(?:-n\s+base\b|--name\s+base\b)",
-                 cmd):
-        return _UNSAFE_INSTALL_HINT
-    return ""
+    return f" ({reason})." + _UNSAFE_INSTALL_HINT.format(
+        py=session_python or "<session venv python>")
 
 
+#: Names the two routes the model can actually take. The first cut named
+#: python_tools_install_command / apply_proposal, which are functions, not
+#: tools: a refusal that points at nothing callable invites a workaround.
 _UNSAFE_INSTALL_HINT = (
-    " The proposal installs into the SESSION VENV: use the catalog's "
-    "install (python_tools_install_command / apply_proposal), which targets "
-    "session_python() with no --user/--target/--prefix. Do not pip install "
-    "--user, into another interpreter, or into conda base, and do not add an "
-    "allow-pattern that lets one of these run."
+    " Packages belong in the SESSION VENV: run `{py} -m pip install "
+    "<package>` with no --user/--target/--prefix, or name the missing "
+    "package in your answer so the user can approve DELFIN's proposal "
+    "with /fix. Do not add an allow-pattern that lets this command run."
 )
 
 
 def _session_python_for_gate() -> str:
-    """The session interpreter, or '' if the checker cannot be imported.
+    """The session interpreter, or '' if the installer cannot be imported.
 
-    The deny-tier install refusal compares the interpreter a ``python -m pip``
-    command names against the session venv's interpreter. Importing here (and
-    only here), lazily, keeps the import out of the hot gate path and mirrors
-    how prerequisites.py reaches the catalog. A '' answer on import failure
-    means "cannot prove it is the session venv", which makes the refusal
-    stricter, not looser.
+    '' means the session venv cannot be identified, and
+    :func:`_refuse_unsafe_install` then refuses every interpreter.
     """
-    try:
-        from delfin import installer as _inst
-    except Exception:
-        return ""
-    try:
-        return _inst.session_python()
-    except Exception:
-        return ""
+    from .sandbox import _session_python
+    return _session_python()
 
 
 def _prose_blanked(cmd: str) -> str:
@@ -15536,20 +15492,15 @@ class _DocToolExecutor:
                                        f"{cmd[:80]} → {denied}")
                 return (f"command rejected by deny-pattern {denied!r}: "
                         f"refusing to run.{_denied_command_hint(denied)}")
-            # Deny-tier refusal of installs that target OUTSIDE the session
-            # venv: pip --user/--target/--prefix, PIP_USER=1, pip through a
-            # non-session interpreter, or conda/mamba into base. This is the
-            # phase-3 field-report vector ("cheat a package into the home
-            # dir"); it must refuse in EVERY mode (before the bypass return),
-            # which is why it is here in the deny tier, not as a confirm-ask
-            # or an auto-allow hint. The session venv's own install (the
-            # approved proposal) is deliberately allowed -- see the function.
-            _unsafe = _refuse_unsafe_install(cmd, _session_python_for_gate())
+            # Installs outside the session venv (pip --user/--target/
+            # --prefix and their spellings, another interpreter's pip,
+            # pipx, conda base) are refused here, in the deny tier, so the
+            # refusal holds in every mode; see _refuse_unsafe_install.
+            _unsafe = _refuse_unsafe_install(_prose_blanked(cmd),
+                                            _session_python_for_gate())
             if _unsafe:
                 _record_security_event("unsafe_install", "bash", cmd[:80])
-                return (
-                    f"command rejected: unsafe install target.{_unsafe}"
-                )
+                return f"command rejected: unsafe install target{_unsafe}"
             # A walk over a whole file system (find/du/tree/rg, grep -r,
             # ls -R rooted at the home, an ancestor of it or a mount point)
             # is refused in every mode, before anything is asked -- the

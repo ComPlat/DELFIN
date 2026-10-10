@@ -51,6 +51,8 @@ OUTSIDE = [
     "true;pip install --user somepkg",
     "bash -c 'pip install --user somepkg'",
     "env -i PATH=/usr/bin pip install --user somepkg",
+    'echo "$(pip install --user somepkg)"',
+    "echo `pip install --user somepkg`",
 ]
 
 
@@ -76,6 +78,9 @@ def _inside() -> list[str]:
         f"{py} -m pip uninstall pytest pytest-timeout --yes",
         "pip install -r requirements.txt",
         "pip install -e .",
+        # Text that names an outside install without running one.
+        'git commit -m "Refuse pip install --user in every mode"',
+        "grep -n 'pip install --user' delfin/agent/sandbox.py",
     ]
 
 
