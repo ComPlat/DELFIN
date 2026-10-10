@@ -196,7 +196,11 @@ _BASELINE_TOKENS = 11_422
 # parameters -- which brought a new tool's 88 tokens down to 75, so the
 # budget moves 9_830 -> 9_905. A tool is the whole cost here: there is no
 # smaller surface that carries a direction, a roster and a cap.
-_TOKEN_BUDGET = 9_905
+# 2026-10-11 (V2): make_plot, a plot rendered from a declarative spec and
+# shown in the chat. Trimmed first -- one-line description naming the
+# kinds, a bare type for the spec -- which leaves 71 tokens, so the budget
+# moves 9_905 -> 9_976.
+_TOKEN_BUDGET = 9_976
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -207,7 +211,7 @@ _POST_COMPACTION_TOOLS = frozenset({
     "fill_docx_template", "create_docx", "compare_tables", "sum_column",
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
     "session_message", "session_search", "skill_propose_patch",
-    "subagent_message",
+    "subagent_message", "make_plot",
 })
 
 

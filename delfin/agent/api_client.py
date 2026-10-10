@@ -8016,24 +8016,14 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "make_plot",
             "description": (
-                "Render a declarative plot spec into the workspace and return "
-                "a DELFIN_CARD: card result (package V2). Selects the plot "
-                "variables by 'kind' (line, bar, bar_by_method, hist, "
-                "scatter, box), builds the figure from the x/y/title/etc. "
-                "spec and returns the shared sandboxed card. Requires "
-                "permissions (a workspace to write the figure into)."
+                "Plot into the workspace and show it in the chat. spec: "
+                "{kind: line|bar|bar_by_method|hist|scatter|box, x, y, "
+                "title, ...}."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "spec": {
-                        "type": "object",
-                        "description": (
-                            "Declarative plot spec. Must have a 'kind'. "
-                            "See chat_plots kinds for the allowed variables "
-                            "per kind."
-                        ),
-                    },
+                    "spec": {"type": "object"},
                 },
                 "required": ["spec"],
             },
