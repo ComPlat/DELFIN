@@ -1485,6 +1485,7 @@ class AgentEngine:
             # The sweep, not the single-folder drain: a job belongs to the
             # workspace it was started in, which is not always the one the
             # session is in now.
+            from delfin.agent import untrusted
             from delfin.agent.bash_jobs import drain_all_finished_events
             for ev in drain_all_finished_events(ws) or []:
                 rc = ev.get("exit_code")
@@ -1494,9 +1495,19 @@ class AgentEngine:
                     state = "killed at its wall-clock cap"
                 elif ev.get("children_running"):
                     state = f"{state}, children still running"
-                tail = (ev.get("stderr_tail") if rc not in (0, None)
-                        else ev.get("stdout_tail")) or ""
-                tail = " ".join(str(tail).split())[:200]
+                stream = "stderr" if rc not in (0, None) else "stdout"
+                tail = str(ev.get(f"{stream}_tail") or "")
+                # The drain hands the tail over fenced. Cutting the fenced
+                # string at 200 characters kept only the fence's own
+                # instruction line, so the cut is made on the text and the
+                # fence is put back around what is left.
+                try:
+                    tail = untrusted.unwrap(tail)
+                except ValueError:
+                    pass
+                tail = " ".join(tail.split())[:200]
+                if tail:
+                    tail = untrusted.wrap(f"bash_job:{stream}", tail)
                 submitted = ev.get("watched_slurm_jobs") or []
                 events.append(
                     f"- bash job {ev.get('job_id')} [{state}, "
