@@ -447,6 +447,12 @@ def _check_git_tooling(ctx: dict) -> list[dict]:
         else:
             rows.append(_row("git identity", PASS, "user.name and user.email set"))
 
+    if ctx.get("skip_gh"):
+        # The push gate asks for git alone: a plain ``git push`` needs no
+        # gh, and ``gh auth status`` validates the token over the network
+        # (up to 20 s) for rows the caller would discard.
+        return rows
+
     gh = _sh.which("gh")
     if not gh:
         rows.append(_row(
@@ -483,6 +489,37 @@ def _check_git_tooling(ctx: dict) -> list[dict]:
     return rows
 
 
+def _remote_url(workspace: str, remote: str) -> str | None:
+    """The push URL ``remote`` names in ``workspace``, or None.
+
+    A configured remote name resolves through ``git remote get-url
+    --push`` (pushurl and insteadOf applied; reads configuration, runs
+    nothing). Anything else is taken as the URL itself, the way
+    ``git push <url>`` takes it; a relative local path is made absolute
+    against ``workspace`` because the probe runs elsewhere. None: the
+    word is neither a configured remote nor a URL or path.
+    """
+    try:
+        done = subprocess.run(["git", "remote", "get-url", "--push", remote],
+                              capture_output=True, text=True, timeout=10,
+                              cwd=workspace, stdin=subprocess.DEVNULL)
+        if done.returncode == 0 and done.stdout.strip():
+            remote = done.stdout.strip()
+        elif not any(c in remote for c in ":/\\") and remote != ".":
+            # A bare word that is not a configured remote: git would fail
+            # with "does not appear to be a git repository".
+            return None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if "://" in remote:
+        return remote
+    colon, slash = remote.find(":"), remote.find("/")
+    if colon > 0 and (slash < 0 or colon < slash):
+        return remote  # scp-like host:path
+    path = Path(remote).expanduser()
+    return str(path if path.is_absolute() else (Path(workspace) / path))
+
+
 def _check_push(ctx: dict) -> list[dict]:
     """Can this host reach the git remote at all.
 
@@ -497,13 +534,41 @@ def _check_push(ctx: dict) -> list[dict]:
     This does not push and does not make pushing easier. It says, before
     the work, whether the last step will be the user's.
     """
+    import tempfile
+
     from .push_diagnosis import diagnose
 
+    workspace = str(ctx.get("workspace") or ".")
+    remote = str(ctx.get("remote") or "origin")
+    url = _remote_url(workspace, remote)
+    if url is None:
+        return [_row("git remote", WARN,
+                     f"this checkout has no remote named '{remote}'",
+                     f"git remote add {remote} <url>, or push to a remote "
+                     "that exists (git remote -v lists them)")]
+    # The probe runs in this process, outside any sandbox the agent's own
+    # commands run in, and the checkout's .git/config is a file the agent
+    # can edit: remote.<name>.uploadpack, core.sshCommand and a local
+    # credential.helper are commands git would run for ls-remote (a
+    # probe in the checkout executed an uploadpack written there). So the
+    # URL is read from the checkout and asked from an empty directory
+    # with discovery stopped above it -- only the user's global and
+    # system configuration apply. No controlling terminal and no prompt:
+    # a passphrase or password question becomes a failure, not a hang
+    # that takes the user's terminal.
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR",
+                        "GIT_INDEX_FILE", "GIT_CONFIG_PARAMETERS",
+                        "GIT_CONFIG_COUNT")}
+    env["GIT_TERMINAL_PROMPT"] = "0"
     try:
-        done = subprocess.run(
-            ["git", "ls-remote", "--exit-code", "origin", "HEAD"],
-            capture_output=True, text=True, timeout=25,
-            cwd=str(ctx.get("workspace") or "."))
+        with tempfile.TemporaryDirectory(prefix="delfin-ls-remote-") as away:
+            env["GIT_CEILING_DIRECTORIES"] = str(Path(away).parent)
+            done = subprocess.run(
+                ["git", "-c", "protocol.ext.allow=never",
+                 "ls-remote", "--exit-code", url, "HEAD"],
+                capture_output=True, text=True, timeout=25, cwd=away,
+                env=env, stdin=subprocess.DEVNULL, start_new_session=True)
     except FileNotFoundError:
         return [_row("git remote", WARN, "git is not installed",
                      "install git; the git tooling check above says the "
@@ -514,7 +579,9 @@ def _check_push(ctx: dict) -> list[dict]:
             "the remote did not answer within 25 s",
             "push from a node with outbound access, or ask the user")]
     except OSError as exc:
-        return [_row("git remote", WARN, f"could not be asked: {exc}")]
+        return [_row("git remote", WARN, f"could not be asked: {exc}",
+                     "check that git runs, then push from a node with "
+                     "outbound access, or ask the user")]
 
     rows: list[dict] = []
     # A credential helper inherited from somebody else's session can never
@@ -542,15 +609,24 @@ def _check_push(ctx: dict) -> list[dict]:
 
     if done.returncode == 0:
         return rows + [_row("git remote", PASS, "reachable, and it answers")]
+    if done.returncode == 2:
+        # --exit-code: the remote answered and has no HEAD -- an empty
+        # repository before its first push. Reachable, not a failure.
+        return rows + [_row("git remote", PASS,
+                            "reachable, and it has no branches yet")]
 
     text = (done.stderr or "") + "\n" + (done.stdout or "")
+    said = " ".join(text.split())[:160]
     found = diagnose(text)
     if found is None:
         return rows + [_row(
-            "git remote", WARN,
-            "unreachable: " + " ".join(text.split())[:120],
+            "git remote", WARN, "unreachable: " + said,
             "read the message; a push from here will fail the same way")]
-    return rows + [_row("git remote", WARN, found.cause, found.remedy)]
+    # git's own words go with the cause: a remedy that says "read the line
+    # git printed" is read where that line is not shown (the push gate's
+    # refusal, the report). git strips credentials from URLs it prints.
+    return rows + [_row("git remote", WARN, f"{found.cause} (git: {said})",
+                        found.remedy)]
 
 
 def _check_attention(ctx: dict) -> list[dict]:
@@ -1069,4 +1145,40 @@ def format_doctor(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["run_doctor", "format_doctor", "PASS", "WARN", "FAIL"]
+def ready_for_push(workspace: str = ".", *, remote: str | None = None,
+                   gh: bool = True) -> list[dict]:
+    """Can this checkout push / open a pull request, before either is tried.
+
+    The gate that guards ``git push`` / ``gh pr create`` asks this and
+    refuses, with the remedy, when any row is not PASS -- instead of
+    letting the command fail and diagnosing afterwards. Five questions,
+    five rows, because they fail independently and the remedy differs:
+    is git on PATH, is an identity set, does the remote answer, is gh on
+    PATH, is gh logged in.
+
+    Every row comes from the two doctor checks ``_check_git_tooling``
+    and ``_check_push``, so there is exactly one set of facts about this
+    checkout and a second copy cannot drift from it: the gate asks the
+    same probes the report shows. Both checks are read-only (--version,
+    config --get, git ls-remote, gh auth status) and never push. A test
+    shadows ``shutil.which`` and ``subprocess.run`` -- the doctor's own
+    no-network trick -- so no live tool and no network is touched.
+
+    Never raises: every probe is caught inside the two checks and
+    degrades to a WARN row with a fix. Every row carries prose ``fix``
+    only -- installing git or gh is a system-package change and the
+    login is the user's (``! gh auth login``), so the ``_row`` contract
+    (a check that has an actionable command DECLARES it) and the module
+    rule that an agent must not improvise around a system package both
+    say: no ``command`` on a readiness row.
+
+    ``remote`` is the remote the push names (a name or a URL; None means
+    origin). ``gh=False`` leaves out the two gh rows and their network
+    call, for a ``git push`` that does not use gh.
+    """
+    ctx = {"workspace": workspace, "remote": remote, "skip_gh": not gh}
+    return _check_git_tooling(ctx) + _check_push(ctx)
+
+
+__all__ = ["run_doctor", "format_doctor", "ready_for_push",
+           "PASS", "WARN", "FAIL"]
