@@ -79,3 +79,34 @@ def test_an_allowed_change_still_merges(repo):
     out = _merge(r, wt, write_allow_globs=("allowed/*",))
     assert out.get("applied") is True, out
     assert (r / "allowed" / "a.txt").read_text() == "a2\n"
+
+
+def test_a_rename_out_of_a_name_with_a_space_is_not_merged(tmp_path):
+    """The gate is given the real names: split on whitespace, "a b/c"
+    renamed to "b/d" was checked as "a" and "b/c", both inside a scope of
+    ("a", "b/*"), and the merge deleted "a b/c" outside it."""
+    r = tmp_path / "repo"
+    (r / "a b").mkdir(parents=True)
+    (r / "b").mkdir()
+    (r / "a b" / "c").write_text("outside the scope\n")
+    (r / "a").write_text("allowed\n")
+    (r / "b" / "keep").write_text("k\n")
+    _git(r, "init", "-q")
+    _git(r, "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
+    _git(r, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base")
+    wt = tmp_path / "wt"
+    _git(r, "worktree", "add", "-q", "-b", "side", str(wt))
+    _git(wt, "mv", "a b/c", "b/d")
+    out = _merge(r, wt, write_allow_globs=("a", "b/*"))
+    assert out.get("applied") is not True, out
+    assert (r / "a b" / "c").exists()
+
+
+def test_a_non_ascii_name_inside_the_scope_still_merges(repo):
+    """Without -z git quotes such a name ("allowed/caf\\303\\251.txt") and
+    the gate refused a file it would have allowed."""
+    r, wt = repo
+    (wt / "allowed" / "café.txt").write_text("new\n")
+    out = _merge(r, wt, write_allow_globs=("allowed/*",))
+    assert out.get("applied") is True, out
+    assert (r / "allowed" / "café.txt").read_text() == "new\n"

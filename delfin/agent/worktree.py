@@ -394,13 +394,20 @@ def merge_worktree(
         return MergeResult(True, False, [], "no changes to merge")
     files = _changed_files(wt, info.base_ref)
     if gate is not None:
+        # NUL-separated and unquoted (-z): the gate must see the names git
+        # will write. Split on whitespace, a rename of "a b/c" (outside the
+        # scope) to "b/d" was checked as "a" and "b/c" -- both allowed by a
+        # scope of ("a", "b/*") -- and the merge deleted "a b/c" (measured on
+        # #143's code). Without -z git also quotes non-ASCII names, which
+        # the gate cannot match. --no-renames lists both sides of a rename.
         try:
-            touched = _run_git(wt, "diff", "--cached", "--name-only",
-                               "--no-renames", info.base_ref).split()
+            touched = [name for name in _run_git(
+                wt, "diff", "--cached", "--name-only", "--no-renames", "-z",
+                info.base_ref).split("\0") if name]
         except WorktreeError as exc:
             return MergeResult(False, False, files,
                                f"could not list the changed files: {exc}")
-        refusal = gate(sorted(set(touched) | set(files)))
+        refusal = gate(sorted(set(touched)))
         if refusal:
             return MergeResult(
                 False, False, files,
