@@ -15,7 +15,7 @@ the catalog via ``install_proposal()`` -- not from the doctor row's command.
 What is asserted here is that a missing-pytest row routed through
 ``proposals()`` surfaces the session-venv command with target/pros/cons/undo,
 and that the safe command builder cannot be made to emit ``--user`` /
-``--target`` through its interpreter override (a phase-3 gate will refuse
+``--target`` through its interpreter override (the bash gate refuses
 ``pip install --user`` outright; this builder must never put one in).
 
 Universal: nothing is installed or run; the rows are supplied directly and

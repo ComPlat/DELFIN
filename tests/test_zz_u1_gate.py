@@ -1,15 +1,11 @@
-"""U1 phase 3: the gate refuses the agent's own install vectors and names the
-session-venv proposal instead of leaving the model to invent a workaround.
+"""The bash gate refuses an install outside the session venv and names it.
 
-RED control — each command is refused today, but the refusal does NOT name the
-session-venv proposal (the operator's requirement). The patch adds (a) a
-`_DENY_HINTS` entry for fetch-and-run and (b) hint-chain branches for
-`pip install --user` / pip through a non-session-venv interpreter, so the
-refusal says where the package belongs: the SESSION VENV, never --user, never a
-fetched script.
-
-This test asserts the proposal is named; until the patch lands it is RED
-(green after the operator builds + applies .gate/u1_gate.patch).
+Input: the field-report install vectors and ``curl | bash``, driven through
+``_doc_executor._run_permission_gate``. Output: an error that names the
+session venv, so the refusal points at the sanctioned route rather than
+leaving the model to invent a way around. The install vectors are also run
+under default, acceptEdits and bypassPermissions: the rule sits in the
+deny tier and must refuse in each.
 """
 
 from __future__ import annotations
@@ -22,11 +18,7 @@ from delfin.agent.api_client import KitToolPermissions, _doc_executor
 def _refusal(cmd: str, tmp_path) -> str:
     ws = tmp_path / "ws"
     ws.mkdir(exist_ok=True)
-    # Head-less CLI path (no confirm_callback): a command off the auto-allow
-    # list is refused with the "not on the auto-allow list" message, which runs
-    # the hint chain where the phase-3 branch sets the session-venv hint. A
-    # refusing confirm_callback would instead return "user denied" BEFORE the
-    # hint chain and never reach the patched branch.
+    # Head-less path (no confirm_callback), default mode.
     perms = KitToolPermissions(workspace=str(ws), mode="default")
     err = _doc_executor._run_permission_gate(
         "bash", {"command": cmd}, perms

@@ -130,10 +130,9 @@ TOOLS: Tuple[Tool, ...] = (
          aliases=("epic-mace",), own_env="mace"),
     Tool("plotly", "ai", "plotly", switch="INSTALL_PLOTLY", modules=("plotly",)),
     # Python packages DELFIN needs to do its own work, installed with pip
-    # into the session venv -- never --user / ~/.local. pytest is the one
-    # the field report shows the agent "cheating into the home directory"
-    # when it is missing; being in this group is what makes it OFFERED
-    # rather than worked around.
+    # into the session venv -- never --user / ~/.local. A missing pytest
+    # was installed with ``pip install --user`` in a field session; being
+    # in this group is what makes it offered as a proposal instead.
     Tool("pytest", "py", "pytest", modules=TEST_GATE_MODULES,
          size="small; it runs every DELFIN test"),
     # The structure editor, fetched into DELFIN's published directory.

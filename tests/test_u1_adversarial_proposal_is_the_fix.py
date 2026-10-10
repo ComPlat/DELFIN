@@ -56,7 +56,7 @@ def test_the_real_proposal_offers_the_session_venv_not_the_test_extra(monkeypatc
 
 def test_the_real_proposal_targets_session_python_and_nowhere_else(monkeypatch):
     """target must name the session interpreter, not a home dir; the proposal
-    a user sees must not point at ~/.local (the field-report cheat)."""
+    a user sees must not point at ~/.local (the field-report install)."""
     prop = _real_proposal_for_missing_pytest(monkeypatch)
     assert prop.target, "the real proposal must carry where the install goes"
     assert "/.local" not in prop.target, prop.target
@@ -83,7 +83,7 @@ def test_the_install_command_cannot_gain_a_user_or_target_flag(monkeypatch):
     """python_tools_install_command()'s contract (its own docstring) is 'no
     --user and no --target, so the only place pytest is ever offered is the
     session venv'. That must hold whatever the python= override is given --
-    phase 3's gate will reject pip install --user, and if this builder is
+    the bash gate rejects pip install --user, and if this builder is
     trusted to never emit one, an override must not be a way around it."""
     for bad in ("/usr/bin/python --user",
                 "/x/python --target /home/me",

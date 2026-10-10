@@ -1,7 +1,7 @@
 """The test gate's needs are part of the catalog's default install path.
 
-Field report: pytest is not part of the install, so when it is missing the
-agent "cheats one into the home directory" with a ``pip install --user``.
+Field report: pytest was not part of the install, and with it missing a
+session installed one with ``pip install --user`` into the home directory.
 This package's answer is that DELFIN notices what it needs and OFFERS to
 install it into a SAFE location (the session venv), never into the home
 directory -- and only with the user's approval.
