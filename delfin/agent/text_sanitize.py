@@ -307,30 +307,25 @@ def leaked_tool_call(text: str) -> tuple[str, dict] | None:
 # <invoke>…</invoke> block and nothing else — empty leftover.  Prose that
 # merely CITIES a complete block ("For example: <invoke …>…</invoke> which
 # runs a search.") leaves a real sentence outside, well over this bound, so
-# it is never mistaken for the leak itself.  30 is comfortably above any
-# conceivable "trivially short" wrapper ("Done." / a trailing backtick)
-# and far below the shortest explanatory sentence.
-_DOMINATED_LEFT_LIMIT = 30
-
-
 def leaked_tool_call_dominates(text: str) -> tuple[str, dict] | None:
     """``(name, args)`` when *text* IS one leaked DSML call, else ``None``.
 
-    ``leaked_tool_call`` answers "does this text CONTAIN a complete block
-    anywhere".  This answers the wiring question the engine guard needs: is
-    the answer ITSELF the leaked call — i.e. is everything outside the block
-    empty or trivially short?  The re-request remedy only makes sense for a
-    turn that is nothing but the leaked call; prose that happens to quote a
-    full block is a real answer and must never be cut short or re-requested
-    (prose's leftover is a full sentence, well over ``_DOMINATED_LEFT_LIMIT``).
+    The re-request remedy only makes sense for a turn that is NOTHING but the
+    leaked call: the model wrote the tool call as text and nothing else, so
+    nothing ran and the turn should ask again.  Prose that quotes a full block
+    is a real answer and must never be cut short or re-requested — and a
+    one-word aside ("ok <block>", "<block> done", "Maybe: <block>") is still
+    prose.  No length bound can tell a bare call from a short wrapper, so the
+    rule is strict: after removing every complete block, any non-whitespace
+    text outside the block makes the answer prose (``None``), never the call.
     """
     if not isinstance(text, str):
         return None
-    leftover = _DSML_INVOKE.sub("", text).strip()
-    if len(leftover) > _DOMINATED_LEFT_LIMIT:
-        return None
     m = _DSML_INVOKE.search(text)
     if not m:
+        return None
+    leftover = _DSML_INVOKE.sub("", text).strip()
+    if leftover:
         return None
     args: dict = {}
     for p in _DSML_PARAM.finditer(m.group(2)):

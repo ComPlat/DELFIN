@@ -191,10 +191,14 @@ def test_dominates_accepts_the_bare_call():
     assert leaked_tool_call_dominates(_BLOCK) is not None
 
 
-def test_dominates_accepts_trivial_wrapper():
-    # A trivially short lead/trail ("Done.") still means *the call*.
-    assert leaked_tool_call_dominates("Done. " + _BLOCK) is not None
-    assert leaked_tool_call_dominates(_BLOCK + " thanks") is not None
+def test_dominates_rejects_short_prose_wrapper():
+    # A one-word aside around the block ("ok <block>", "<block> done",
+    # "Maybe: <block>") is prose, not the bare call: the answer must BE the
+    # call, so any non-whitespace text outside the block defeats domination.
+    assert leaked_tool_call_dominates("Done. " + _BLOCK) is None
+    assert leaked_tool_call_dominates("ok " + _BLOCK) is None
+    assert leaked_tool_call_dominates(_BLOCK + " thanks") is None
+    assert leaked_tool_call_dominates("Maybe: " + _BLOCK) is None
 
 
 def test_dominates_rejects_prose_citing_a_block():

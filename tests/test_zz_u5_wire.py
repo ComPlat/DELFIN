@@ -26,16 +26,16 @@ def _stream_message_src() -> str:
 
 
 def test_the_dispatch_invokes_leaked_tool_call():
-    """The dispatch calls ``leaked_tool_call(...)`` (a real call, not the
-    adjacent Harmony ``parse_leaked_tool_calls`` reuse)."""
+    """The dispatch calls ``leaked_tool_call_dominates(...)`` (a real call, not
+    the adjacent Harmony ``parse_leaked_tool_calls`` reuse)."""
     src = _stream_message_src()
-    # text_sanitize.leaked_tool_call exists (phase 2)…
-    assert hasattr(text_sanitize, "leaked_tool_call")
+    # text_sanitize.leaked_tool_call_dominates exists (phase 3)…
+    assert hasattr(text_sanitize, "leaked_tool_call_dominates")
     # …and the dispatch actually calls it.
-    assert "leaked_tool_call(" in src
-    # The bare name already matches inside ``parse_leaked_tool_calls``; the
+    assert "leaked_tool_call_dominates(" in src
+    # The bare name would match inside ``parse_leaked_tool_calls``; the
     # distinctive evidence is the OPEN PAREN of a real call site.
-    assert src.count("leaked_tool_call(") >= 1
+    assert src.count("leaked_tool_call_dominates(") >= 1
 
 
 def test_a_complete_dsml_block_is_not_silently_redispatched():
