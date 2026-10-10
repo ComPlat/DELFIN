@@ -6685,6 +6685,33 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "show_molecule",
+            "description": (
+                "Show a molecule (XYZ, multi-frame XYZ, or Gaussian cube) "
+                "as a rotatable 3D viewer in the chat. Pass the path to an "
+                ".xyz/.cube file. For a cube, isovalue sets the isosurface "
+                "level (default 0.02)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path (relative or absolute) to the "
+                            "XYZ/cube file inside the workspace.",
+                    },
+                    "isovalue": {
+                        "type": "number",
+                        "description": "Cube isosurface level (default 0.02).",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remember",
             "description": (
                 "Save a DURABLE fact to persistent project memory; it is "
@@ -10293,7 +10320,7 @@ def _clear_green_targets(red_files: set, ran: str) -> None:
 # file. Their targets feed the observed-files ledger consumed by the
 # code-claim citation check (verify_guard.scan_for_ungrounded_code_claims).
 _OBSERVATION_TOOLS = frozenset({
-    "read_file", "grep_file", "notebook_read", "view_image",
+    "read_file", "grep_file", "notebook_read", "view_image", "show_molecule",
     # A file the agent just WROTE is grounded evidence too: its content
     # came from the agent itself, so describing it is not a guess. Without
     # these, an answer about freshly created work products is flagged as
@@ -12598,6 +12625,8 @@ class _DocToolExecutor:
             return self._execute_sum_column(arguments, permissions)
         elif name == "view_image":
             return self._execute_view_image(arguments, permissions)
+        elif name == "show_molecule":
+            return self._execute_show_molecule(arguments, permissions)
         elif name == "forget":
             return self._execute_forget(arguments, permissions)
         elif name == "publish_report":
@@ -14045,6 +14074,59 @@ class _DocToolExecutor:
             "note": ("The image is shown to you in the next message — look at "
                      "it and describe / use what you SEE."),
         })
+
+    def _execute_show_molecule(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        """Show a molecule file (XYZ / multi-frame XYZ / cube) as chat media.
+
+        Returns the shared `DELFIN_CARD:` + {"escape","html","text"} contract
+        string (the html is a sandboxed iframe card the tab_agent hook inlines;
+        text is the plain terminal fallback). An error returns plain
+        {"error": ...} JSON — never the marker, never html.
+        """
+        path = self._get_path_arg(arguments)
+        isovalue = arguments.get("isovalue")
+        # Read gate: secret-deny globs always refuse; inside-workspace paths
+        # are allowed; anything else needs explicit confirmation. A refused or
+        # missing read returns a plain error, not a card.
+        if not path:
+            return json.dumps({"error": "show_molecule: 'path' is required"})
+        full = Path(path).expanduser()
+        # A relative path is the session's, like every other file tool's.
+        if not full.is_absolute() and perms is not None:
+            full = Path(perms.workspace) / full
+        rel_path = str(full)
+        # The root is the readable root the file lies in -- the session's
+        # workspace, a granted read dir, the calc/archive roots -- the same
+        # one the read gate below judges by. The DELFIN checkout (the old
+        # _repo_root) refused every molecule in a user's own folders.
+        root = None
+        try:
+            root = perms.find_readable_root_for(full.expanduser().resolve()) if perms else None
+        except Exception:
+            root = None
+        if root is None:
+            root = self._repo_root()
+        if root:
+            try:
+                rel_path = str(full.resolve().relative_to(root.resolve()))
+            except ValueError:
+                pass
+        perms = perms or self._permissions
+        err = self._check_read_access(perms, full, label=rel_path)
+        if err:
+            return json.dumps({"error": err or "read refused"})
+        try:
+            from delfin.dashboard import chat_viewer
+            return chat_viewer.render_molecule_tool_result(
+                str(full),
+                isovalue=isovalue if isinstance(isovalue, (int, float)) else None,
+                workspace_root=str(root) if root else None,
+                title=rel_path,
+            )
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
 
     def _execute_publish_report(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
@@ -23308,6 +23390,16 @@ class OpenAIClient(_BaseClient):
                     _thrash_note = _thrash_check(_thrash_state, fn_name, fn_args)
                     if _thrash_note:
                         context_result = _thrash_note + "\n\n" + context_result
+                    # Operator finding #1: a DELFIN_CARD: result must never
+                    # feed its html / raw file content to the model context.
+                    # Split here — the model gets ONLY the short `text`
+                    # summary, wrapped as untrusted; the html card stays in
+                    # the tool-result event the dashboard hook inlines.
+                    if str(result).startswith("DELFIN_CARD:"):
+                        from delfin.dashboard import chat_viewer as _cv
+                        _cv_text = _cv.card_model_text(str(result))
+                        if _cv_text is not None:
+                            context_result = _wrap_untrusted(_cv_text)
                     api_messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
