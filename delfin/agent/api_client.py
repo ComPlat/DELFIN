@@ -3227,7 +3227,8 @@ def _denied_command_hint(pattern: str) -> str:
     return ""
 
 
-def _refuse_unsafe_install(cmd: str, session_python: str) -> str:
+def _refuse_unsafe_install(cmd: str, session_python: str,
+                           workspace: Optional[str] = None) -> str:
     """The refusal hint for an install outside the session venv, or "".
 
     Input: a bash command and the session interpreter ('' when unknown,
@@ -3242,7 +3243,7 @@ def _refuse_unsafe_install(cmd: str, session_python: str) -> str:
     what an approved proposal runs) is not refused.
     """
     from .sandbox import unsafe_install_refusal as _rule
-    reason = _rule(cmd or "", session_python)
+    reason = _rule(cmd or "", session_python, workspace=workspace)
     if not reason:
         return ""
     return f" ({reason})." + _UNSAFE_INSTALL_HINT.format(
@@ -15497,7 +15498,8 @@ class _DocToolExecutor:
             # pipx, conda base) are refused here, in the deny tier, so the
             # refusal holds in every mode; see _refuse_unsafe_install.
             _unsafe = _refuse_unsafe_install(_prose_blanked(cmd),
-                                            _session_python_for_gate())
+                                            _session_python_for_gate(),
+                                            str(perms.workspace))
             if _unsafe:
                 _record_security_event("unsafe_install", "bash", cmd[:80])
                 return f"command rejected: unsafe install target{_unsafe}"

@@ -100,3 +100,16 @@ def test_the_catalog_command_passes_the_gate(tmp_path):
 def test_without_a_known_session_interpreter_python_m_pip_is_refused():
     from delfin.agent.api_client import _refuse_unsafe_install
     assert _refuse_unsafe_install("/venv/bin/python -m pip install x", "")
+
+
+@pytest.mark.parametrize("cmd", [
+    ".venv-demo/bin/pip install -r requirements.txt",
+    ".venv/bin/python -m pip install somepkg",
+])
+def test_a_venv_inside_the_workspace_is_not_refused(cmd, tmp_path):
+    assert "unsafe install" not in _gate(cmd, tmp_path), cmd
+
+
+def test_a_workspace_venv_is_still_held_to_the_options(tmp_path):
+    err = _gate(".venv/bin/pip install --user somepkg", tmp_path)
+    assert "unsafe install" in err, err

@@ -292,6 +292,26 @@ def _same_env_dir(path: str, session_python: str) -> bool:
         return False
 
 
+def _in_workspace(path: str, workspace: Optional[str]) -> bool:
+    """Whether the executable *path* lies inside *workspace*.
+
+    A venv the session made in its workspace (``.venv/bin/pip``) installs
+    into the workspace, which is where the session may write; the
+    workspace-local venv tools are auto-allowed for that reason. A
+    relative path is read from the workspace.
+    """
+    if not workspace or "/" not in path:
+        return False
+    try:
+        root = Path(os.path.realpath(workspace))
+        p = Path(os.path.expanduser(path))
+        if not p.is_absolute():
+            p = root / p
+        return Path(os.path.realpath(p.parent)).is_relative_to(root)
+    except Exception:
+        return False
+
+
 def _is_session_python(path: str, session_python: str) -> bool:
     if not session_python:
         return False
@@ -408,7 +428,7 @@ def _python_module(rest: list[str]) -> tuple[str, list[str]]:
 
 
 def _segment_refusal(argv: list[str], session_python: str, raw: str,
-                     depth: int) -> Optional[str]:
+                     depth: int, workspace: Optional[str]) -> Optional[str]:
     env_names: set = set()
     argv = _strip_prefix(argv, env_names)
     if not argv:
@@ -421,23 +441,27 @@ def _segment_refusal(argv: list[str], session_python: str, raw: str,
         # The payload of `sh -c` is a command line of its own.
         at = rest.index("-c") + 1
         return unsafe_install_refusal(rest[at] if at < len(rest) else "",
-                                      session_python, _depth=depth + 1)
+                                      session_python, workspace=workspace,
+                                      _depth=depth + 1)
     if base == "eval" and depth < 3:
         return unsafe_install_refusal(" ".join(rest), session_python,
-                                      _depth=depth + 1)
+                                      workspace=workspace, _depth=depth + 1)
 
     pip_args: Optional[list[str]] = None
     uv = False
     if _PIP_NAME_RE.fullmatch(base):
         if "/" in head and "install" in rest \
-                and not _same_env_dir(head, session_python):
+                and not _same_env_dir(head, session_python) \
+                and not _in_workspace(head, workspace):
             return f"{head} is another interpreter's pip, not the session venv's"
         pip_args = rest
     elif _PYTHON_NAME_RE.fullmatch(base):
         module, margs = _python_module(rest)
         if module != "pip":
             return None
-        if "install" in margs and not _is_session_python(head, session_python):
+        if "install" in margs and not _is_session_python(head, session_python) \
+                and not (_PYTHON_NAME_RE.fullmatch(base)
+                         and _in_workspace(head, workspace)):
             return f"{head} -m pip installs into {head}, not into the session venv"
         pip_args = margs
     elif base == "uv" and rest[:1] == ["pip"]:
@@ -461,6 +485,7 @@ def _segment_refusal(argv: list[str], session_python: str, raw: str,
 
 
 def unsafe_install_refusal(cmd: str, session_python: str, *,
+                           workspace: Optional[str] = None,
                            _depth: int = 0) -> Optional[str]:
     """Why *cmd* installs Python packages outside the session venv, or None.
 
@@ -482,8 +507,10 @@ def unsafe_install_refusal(cmd: str, session_python: str, *,
       * ``<python> -m pip install`` (interpreter options before ``-m``
         and ``-mpip`` included) unless *python* is the session interpreter
         or a ``python*`` in its bin directory, and ``/path/to/pip install``
-        from another bin directory. A bare ``pip`` is the one on PATH and
-        is judged by its options only;
+        from another bin directory. Both are allowed for an interpreter
+        inside *workspace* (a venv the session made there writes only the
+        workspace). A bare ``pip`` is the one on PATH and is judged by its
+        options only;
       * ``pipx install|inject`` and ``uv tool install`` (both write the
         home directory) and conda/mamba/micromamba install into ``base``.
 
@@ -496,11 +523,12 @@ def unsafe_install_refusal(cmd: str, session_python: str, *,
     if _depth < 3:
         for m in _SUBSTITUTION_RE.finditer(cmd):
             reason = unsafe_install_refusal(m.group(1) or m.group(2) or "",
-                                            session_python, _depth=_depth + 1)
+                                            session_python, workspace=workspace,
+                                            _depth=_depth + 1)
             if reason:
                 return reason
     for seg in _segments(cmd):
-        reason = _segment_refusal(seg, session_python, cmd, _depth)
+        reason = _segment_refusal(seg, session_python, cmd, _depth, workspace)
         if reason:
             return reason
     return None
