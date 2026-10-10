@@ -14070,55 +14070,49 @@ class _DocToolExecutor:
     def _execute_show_molecule(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
-        """Show a molecule file (XYZ / multi-frame XYZ / cube) as chat media.
+        """Show a molecule file (XYZ, multi-frame XYZ, cube) in the chat.
 
-        Returns the shared `DELFIN_CARD:` + {"escape","html","text"} contract
-        string (the html is a sandboxed iframe card the tab_agent hook inlines;
-        text is the plain terminal fallback). An error returns plain
-        {"error": ...} JSON — never the marker, never html.
+        Input: ``path`` (relative paths are the session workspace's) and an
+        optional cube ``isovalue``. Output: the ``DELFIN_CARD:`` result of
+        :func:`delfin.dashboard.chat_viewer.render_molecule_tool_result`
+        (resolved path, title, plain summary; no markup), or a plain
+        ``{"error": ...}`` JSON. The file passes ``_check_read_access``
+        exactly like ``read_file``; the resolved path is what is read, so a
+        symlink or ``..`` is judged by its target.
         """
+        perms = perms or self._permissions
         path = self._get_path_arg(arguments)
-        isovalue = arguments.get("isovalue")
-        # Read gate: secret-deny globs always refuse; inside-workspace paths
-        # are allowed; anything else needs explicit confirmation. A refused or
-        # missing read returns a plain error, not a card.
         if not path:
             return json.dumps({"error": "show_molecule: 'path' is required"})
         full = Path(path).expanduser()
-        # A relative path is the session's, like every other file tool's.
         if not full.is_absolute() and perms is not None:
             full = Path(perms.workspace) / full
-        rel_path = str(full)
-        # The root is the readable root the file lies in -- the session's
-        # workspace, a granted read dir, the calc/archive roots -- the same
-        # one the read gate below judges by. The DELFIN checkout (the old
-        # _repo_root) refused every molecule in a user's own folders.
+        # The label is relative to the readable root the file lies in (the
+        # session workspace, a granted read dir, the calc/archive roots).
         root = None
         try:
-            root = perms.find_readable_root_for(full.expanduser().resolve()) if perms else None
+            root = (perms.find_readable_root_for(full.resolve())
+                    if perms is not None else None)
         except Exception:
             root = None
-        if root is None:
-            root = self._repo_root()
-        if root:
+        label = str(full)
+        if root is not None:
             try:
-                rel_path = str(full.resolve().relative_to(root.resolve()))
+                label = str(full.resolve().relative_to(Path(root).resolve()))
             except ValueError:
                 pass
-        perms = perms or self._permissions
-        err = self._check_read_access(perms, full, label=rel_path)
+        err = self._check_read_access(perms, full, label=label)
         if err:
-            return json.dumps({"error": err or "read refused"})
+            return json.dumps({"error": err})
         try:
             from delfin.dashboard import chat_viewer
             return chat_viewer.render_molecule_tool_result(
-                str(full),
-                isovalue=isovalue if isinstance(isovalue, (int, float)) else None,
-                workspace_root=str(root) if root else None,
-                title=rel_path,
+                str(full.resolve()),
+                isovalue=arguments.get("isovalue"),
+                title=label,
             )
-        except ValueError as exc:
-            return json.dumps({"error": str(exc)})
+        except (ValueError, OSError) as exc:
+            return json.dumps({"error": f"show_molecule: {exc}"})
 
     def _execute_publish_report(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
@@ -23382,12 +23376,13 @@ class OpenAIClient(_BaseClient):
                     _thrash_note = _thrash_check(_thrash_state, fn_name, fn_args)
                     if _thrash_note:
                         context_result = _thrash_note + "\n\n" + context_result
-                    # Operator finding #1: a DELFIN_CARD: result must never
-                    # feed its html / raw file content to the model context.
-                    # Split here — the model gets ONLY the short `text`
-                    # summary, wrapped as untrusted; the html card stays in
-                    # the tool-result event the dashboard hook inlines.
-                    if str(result).startswith("DELFIN_CARD:"):
+                    # A show_molecule card reaches the model as its plain
+                    # summary line only, wrapped as untrusted; the path and
+                    # title stay in the tool-result event the dashboard
+                    # draws from. Keyed on the tool name: the same prefix
+                    # in another tool's output is that tool's text.
+                    if (fn_name == "show_molecule"
+                            and str(result).startswith("DELFIN_CARD:")):
                         from delfin.dashboard import chat_viewer as _cv
                         _cv_text = _cv.card_model_text(str(result))
                         if _cv_text is not None:
