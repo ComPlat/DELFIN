@@ -21676,6 +21676,9 @@ class OpenAIClient(_BaseClient):
         # What this turn was told to think with. Recorded on the client so
         # a delegate spawned from inside the turn can inherit it: the
         # budget is a per-CALL argument, and a sub-agent that cannot see
+        # The DSML re-request notice is latched per call: one notice per
+        # request, re-armed on the next (the engine bounds the re-request).
+        self._dsml_rerequest = False
         # the call gets the parameter's default — which reads as the
         # lowest effort on a reasoning model. Nobody chose that.
         self._turn_thinking_budget = int(thinking_budget or 0)

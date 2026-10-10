@@ -98,11 +98,11 @@ _HARMONY_TOKENS = re.compile(
     r"\b(?:json_schema|json|constrain)\b(?=\s*[{\[<|])")
 
 # Reasoning-tag models (deepseek-r1, qwq, qwen3-thinking, …) emit their chain
-# of thought as  thinking… response in the visible text channel. Strip the whole
-# block; also strip a dangling unterminated  thinking (streaming can cut off
-# before  response) so no reasoning leaks into the user-visible answer.
-_THINK_BLOCK = re.compile(r" thinking.*? response", re.DOTALL | re.IGNORECASE)
-_THINK_DANGLING = re.compile(r" thinking.*$", re.DOTALL | re.IGNORECASE)
+# of thought as <think>…</think> in the visible text channel. Strip the whole
+# block; also strip a dangling unterminated <think> (streaming can cut off
+# before </think>) so no reasoning leaks into the user-visible answer.
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_DANGLING = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
 
 # Scripts that do not occur in DELFIN's de/en chemistry output — a run of
 # these is glitch-token corruption, not content.  (CJK, kana, Hangul,
