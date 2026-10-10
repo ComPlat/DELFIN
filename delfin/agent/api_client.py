@@ -3714,6 +3714,71 @@ def _handover_line(cmd: str, kind: str) -> str:
         return ""
 
 
+def _push_readiness_rows(workspace, *, local_only=False):
+    """The gate's one source of readiness rows; injectable, never reads the host.
+
+    The ONLY place the command gate learns whether this checkout can push.
+    Lazy-imports the doctor so api_client never forces a chemistry
+    environment at import time. Tests neutralise it via a conftest autouse
+    fixture (returns []) so no existing test depends on the host, and the
+    push/pr gate tests override it with exact fake rows.
+
+    local_only asks the doctor's local check (git/gh presence, identity,
+    gh auth -- no network); otherwise ready_for_push, which adds the
+    network git ls-remote probe, hard-bounded inside the doctor.
+    """
+    from . import doctor as _doc
+    if local_only:
+        return _doc._check_git_tooling({"workspace": workspace})
+    return _doc.ready_for_push(workspace)
+
+
+def _push_capability_block(workspace, *, requires_gh=False, local_only=False):
+    """First readiness row that forbids a push/pr on this host, or None.
+
+    The known facts about whether this checkout can push come from the
+    doctor (phase 2), and this is the single place the gate consults
+    them -- via `_push_readiness_rows` (the one injectable source), so
+    the refusal and the /doctor report tell the same story.
+
+    ``requires_gh`` is True only for the two commands that *publish* a
+    pull request (``gh pr create`` / ``gh pr merge``): they need the
+    GitHub CLI installed and logged in. A plain ``git push`` publishes
+    over SSH/HTTPS and needs git + an identity + a reachable remote, not
+    gh -- so the gh rows never count for it, and a user pushing without
+    gh on PATH is allowed, not refused.
+
+    ``local_only`` skips the network probe (``git ls-remote``): it is the
+    cheap pre-ask check, so a host that cannot even run git locally never
+    prompts and never touches the network. The full check runs at the
+    surrender point, where the network call is bounded by a hard timeout
+    inside the doctor (``git ls-remote`` runs under ``subprocess.run``
+    with timeouts=25) and a hang becomes a WARN row -- a refusal, never a
+    pass: pushing from a stalled node is worse than refusing until the
+    node answers.
+
+    Every returned row carries prose ``fix``; callers render it so the
+    refusal names the remedy (``gh auth login``, ``git switch -c``, …).
+    Never raises: a probe that explodes becomes a WARN refuse-row.
+    """
+    try:
+        rows = _push_readiness_rows(workspace, local_only=local_only)
+    except Exception as exc:
+        # No `_row` helper in api_client -- return the row contract dict.
+        return {"check": "readiness", "status": "WARN",
+                "detail": f"could not ask the doctor ({exc})",
+                "fix": "run the doctor and fix what it reports, then retry"}
+    keep = {"git installed", "git identity"}
+    if requires_gh:
+        keep |= {"gh installed", "gh authenticated"}
+    if not local_only:
+        keep |= {"git remote"}
+    for r in rows:
+        if r.get("check") in keep and r.get("status") != "PASS":
+            return r
+    return None
+
+
 def _is_gh_pr_create(cmd: str) -> bool:
     return bool(_GH_PR_CREATE_RE.search(_with_shell_bodies(cmd)))
 
@@ -15531,6 +15596,22 @@ class _DocToolExecutor:
             # A contributor never does it from here, whatever was asked;
             # a maintainer does it under the same one-request grant a
             # push needs, because it publishes to the default branch.
+            # Before anything asks the user, ask readiness: a host that
+            # cannot even run git locally (no git, no identity) has
+            # nothing to consent to, so refuse with the remedy and never
+            # prompt, and never spend a network probe on a push the local
+            # machine cannot make. The cheap probe is local-only (no
+            # git ls-remote); pr create/merge additionally need gh, so
+            # requires_gh is passed for them.
+            if (_is_gh_pr_merge(cmd) or _is_git_push(cmd)
+                    or _is_gh_pr_create(cmd)):
+                row = _push_capability_block(
+                    perms.workspace, local_only=True,
+                    requires_gh=(_is_gh_pr_create(cmd)
+                                 or _is_gh_pr_merge(cmd)))
+                if row is not None:
+                    return (f"blocked: {row['check']}: {row['detail']} "
+                            f"-- {row['fix']}")
             if _is_gh_pr_merge(cmd):
                 if _git_role() == "contributor":
                     _record_security_event("pr_merge_contributor", "bash",
@@ -15628,7 +15709,29 @@ class _DocToolExecutor:
                     return ("the user did not approve this push. Do not retry "
                             "it or reach the remote another way.")
                 perms.push_grants["push"] = 1
+                # A granted push must still confirm the host can actually
+                # publish before the command runs. Full check (network
+                # included, hard-bounded inside the doctor): non-PASS
+                # refuses with the remedy rather than letting git fail.
+                row = _push_capability_block(perms.workspace)
+                if row is not None:
+                    return (f"blocked: {row['check']}: {row['detail']} "
+                            f"-- {row['fix']}")
                 return None
+            if (_is_gh_pr_merge(cmd) or _is_git_push(cmd)
+                    or _is_gh_pr_create(cmd)):
+                # Every remaining route a push/pr can run on (a pre-set
+                # grant, a pr create that already confirmed, pr merge
+                # with a grant, bypass, auto-allow) must pass the same
+                # full check right before it is allowed -- a grant here
+                # is a grant to publish, not a waiver of reachability.
+                row = _push_capability_block(
+                    perms.workspace,
+                    requires_gh=(_is_gh_pr_create(cmd)
+                                 or _is_gh_pr_merge(cmd)))
+                if row is not None:
+                    return (f"blocked: {row['check']}: {row['detail']} "
+                            f"-- {row['fix']}")
             if mode == "bypassPermissions":
                 # Bypass: only the deny-list still applies; everything else
                 # runs unattended. Use this only inside trusted workflows.
