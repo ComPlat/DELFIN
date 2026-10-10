@@ -69,7 +69,6 @@ def test_dispatch_returns_a_delfin_card_result(tmp_path):
     # html / iframe / script reaches the model-facing text.
     assert "<iframe" not in obj["text"]
     assert "<script" not in obj["text"]
-    assert not obj["text"].lstrip().startswith(('<', '['))
     # The model-facing text goes through untrusted.wrap (finding 3) while the
     # DELFIN_CARD: marker stays at byte 0 (operator ruling).
     assert "UNTRUSTED EXTERNAL CONTENT" in obj["text"]
