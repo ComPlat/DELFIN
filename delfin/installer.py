@@ -27,6 +27,7 @@ installer can read the list with any Python before DELFIN's venv exists::
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -367,10 +368,10 @@ def _install_python_tools(tools: List[Tool], *, on_line=None,
                           timeout: Optional[float] = None) -> Tuple[bool, List[str]]:
     """Install ``py``-group tools with pip, into the session venv only.
 
-    These are Python packages DELFIN needs to do its own work. The command
-    is exactly the one :func:`python_tools_install_command` offers, so the
-    thing a proposal shows and the thing an install runs are the same
-    string -- the same no-``--user``, session-venv rule holds for both.
+    These are Python packages DELFIN needs to do its own work. The argv is
+    :func:`python_tools_install_argv`, of which the command a proposal shows
+    is the quoted form, so the shown and the run install are the same --
+    the same no-``--user``, session-venv rule holds for both.
     """
     lines: List[str] = []
 
@@ -384,13 +385,13 @@ def _install_python_tools(tools: List[Tool], *, on_line=None,
 
     ok = True
     for tool in tools:
-        command = python_tools_install_command(tool)
-        if not command:
+        argv = python_tools_install_argv(tool)
+        if not argv:
             say(f"{tool.name}: no install command (not a py-group tool?)")
             ok = False
             continue
         say(f"installing {tool.name}")
-        done = subprocess.run(command.split(), capture_output=True,
+        done = subprocess.run(argv, capture_output=True,
                               text=True, timeout=timeout or 1800.0)
         if done.returncode != 0:
             ok = False
@@ -537,11 +538,24 @@ def python_tools_install_command(tool: Tool, *, python: str = "") -> str:
 
     Pure: no interpreter is run to build the string.
     """
+    return " ".join(shlex.quote(a)
+                    for a in python_tools_install_argv(tool, python=python))
+
+
+def python_tools_install_argv(tool: Tool, *, python: str = "") -> List[str]:
+    """:func:`python_tools_install_command` as an argv list, [] if none.
+
+    What :func:`_install_python_tools` runs. Kept as a list so an
+    interpreter path with a space stays one argument; the string form
+    quotes it, which the bash gate reads back to the same path.
+    """
     if not tool or tool.group != "py":
-        return ""
+        return []
+    packages = [_pip_package(m) for m in (tool.modules or ())]
+    if not packages:
+        return []
     py = _plain_interpreter(python) or session_python()
-    packages = " ".join(_pip_package(m) for m in (tool.modules or ()))
-    return f"{py} -m pip install {packages}".strip() if packages else ""
+    return [py, "-m", "pip", "install", *packages]
 
 
 def _pip_package(module: str) -> str:
