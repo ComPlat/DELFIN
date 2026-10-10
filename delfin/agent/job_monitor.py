@@ -845,7 +845,8 @@ def check_agent_jobs(
                     "signatures": (scan_error_signatures(entry.get("folder", ""))
                                    if state in _FAILURE_STATES else []),
                 })
-                if consume:
+                if consume and (session_id is not None
+                                or not entry.get("session_id")):
                     jobs.pop(jid)
                 else:
                     entry[marker] = True
@@ -910,7 +911,8 @@ def check_agent_jobs(
                 "exit_code": None, "signatures": ci.get("failed", []),
                 "url": ci.get("url", ""),
             })
-            if consume:
+            if consume and (session_id is not None
+                            or not entry.get("session_id")):
                 jobs.pop(jid)
             else:
                 entry[marker] = True
@@ -951,7 +953,8 @@ def check_agent_jobs(
                 "exit_code": rc,
                 "signatures": [],
             })
-            if consume:
+            if consume and (session_id is not None
+                            or not entry.get("session_id")):
                 jobs.pop(jid)
             else:
                 entry[marker] = True
