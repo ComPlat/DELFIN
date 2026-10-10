@@ -6687,23 +6687,15 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "show_molecule",
             "description": (
-                "Show a molecule (XYZ, multi-frame XYZ, or Gaussian cube) "
-                "as a rotatable 3D viewer in the chat. Pass the path to an "
-                ".xyz/.cube file. For a cube, isovalue sets the isosurface "
-                "level (default 0.02)."
+                "Show an .xyz (multi-frame too) or .cube file as a rotatable "
+                "3D viewer in the chat; isovalue is the cube's isosurface "
+                "(default 0.02)."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path (relative or absolute) to the "
-                            "XYZ/cube file inside the workspace.",
-                    },
-                    "isovalue": {
-                        "type": "number",
-                        "description": "Cube isosurface level (default 0.02).",
-                    },
+                    "path": {"type": "string"},
+                    "isovalue": {"type": "number"},
                 },
                 "required": ["path"],
             },

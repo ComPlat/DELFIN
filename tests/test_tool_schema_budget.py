@@ -196,7 +196,11 @@ _BASELINE_TOKENS = 11_422
 # parameters -- which brought a new tool's 88 tokens down to 75, so the
 # budget moves 9_830 -> 9_905. A tool is the whole cost here: there is no
 # smaller surface that carries a direction, a roster and a cap.
-_TOKEN_BUDGET = 9_905
+# 2026-10-10: show_molecule, an .xyz/.cube file as a 3D viewer in the
+# chat (wave 14c, V1). Trimmed first -- one-sentence description, bare
+# types for both parameters -- which brought it from 135 tokens to 85, so
+# the budget moves 9_905 -> 9_990.
+_TOKEN_BUDGET = 9_990
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -207,7 +211,7 @@ _POST_COMPACTION_TOOLS = frozenset({
     "fill_docx_template", "create_docx", "compare_tables", "sum_column",
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
     "session_message", "session_search", "skill_propose_patch",
-    "subagent_message",
+    "subagent_message", "show_molecule",
 })
 
 
