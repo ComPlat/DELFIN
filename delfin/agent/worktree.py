@@ -361,6 +361,7 @@ def merge_worktree(
     *,
     target_repo: Path | str | None = None,
     cleanup: bool = True,
+    gate=None,
 ) -> MergeResult:
     """Bring a worktree's changes (vs its ``base_ref``) into the target repo's
     working tree — but ONLY if they apply cleanly. Never forces, never leaves a
@@ -370,6 +371,14 @@ def merge_worktree(
     Completes the fan-out-writers → review (``diff_summary``) → merge flow.
     ``target_repo`` defaults to ``info.repo_dir`` (the source). Changes land in
     the working tree *uncommitted* so the parent can review and commit them.
+
+    ``gate(paths)`` -- every path the merge would add, change, delete or
+    rename (both names), relative to the target -- returns a refusal string
+    or None. It runs BEFORE anything is applied; a refusal leaves the target
+    untouched. Without it the merge was a way around the write gate: a file
+    the session may not write (a protected one, one outside its write scope)
+    was edited in the worktree and applied back by git, file by file
+    unchecked (found running wave 14, 2026-10-09).
     """
     repo = Path(target_repo).resolve() if target_repo else info.repo_dir
     wt = info.final_path or info.path
@@ -384,6 +393,18 @@ def merge_worktree(
     if not patch.strip():
         return MergeResult(True, False, [], "no changes to merge")
     files = _changed_files(wt, info.base_ref)
+    if gate is not None:
+        try:
+            touched = _run_git(wt, "diff", "--cached", "--name-only",
+                               "--no-renames", info.base_ref).split()
+        except WorktreeError as exc:
+            return MergeResult(False, False, files,
+                               f"could not list the changed files: {exc}")
+        refusal = gate(sorted(set(touched) | set(files)))
+        if refusal:
+            return MergeResult(
+                False, False, files,
+                f"merge refused, nothing applied to {repo}: {refusal}"[:800])
     ok, err = _git_apply(repo, patch, check=True)
     if not ok:
         return MergeResult(

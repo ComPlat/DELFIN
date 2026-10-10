@@ -27,6 +27,7 @@ injected.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -338,8 +339,16 @@ def test_waiting_backs_off_instead_of_polling_at_twenty_hertz(
     monkeypatch.setattr(rt, "_WAIT_POLL_MAX_S", 0.08)
     sleeps: list[float] = []
     real_sleep = time.sleep
+    me = threading.get_ident()
 
+    # time.sleep is patched process-wide, so a background thread of another
+    # test still running in this process sleeps through it too. Measured in
+    # CI (PR #138): its 1.5 s landed in this list and failed the ceiling
+    # check. Only this thread's waits are the wait under test; other threads
+    # keep their real sleep instead of being turned into a spin.
     def _sleep(seconds):
+        if threading.get_ident() != me:
+            return real_sleep(seconds)
         sleeps.append(seconds)
         real_sleep(0)
 

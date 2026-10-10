@@ -9142,6 +9142,19 @@ def _open_tasks_notice(state: dict) -> str:
         return ""
 
 
+def _open_tasks_key(state: dict) -> tuple:
+    """Identity of an open-task set: (id, status) of every listed task
+    plus the counts, so a change below the listed cap still counts."""
+    st = state or {}
+    rows = tuple(
+        (str(t.get("id", "")), status)
+        for status in ("in_progress", "pending", "blocked")
+        for t in (st.get(status) or []))
+    counts = tuple(sorted((str(k), int(v or 0))
+                          for k, v in (st.get("counts") or {}).items()))
+    return rows + counts
+
+
 def check_completion_claim(
     subject: str,
     description: str = "",
@@ -18759,8 +18772,26 @@ class _DocToolExecutor:
             base_ref=base,
             created_at=0.0,
         )
+        def _merge_gate(paths):
+            # Every file the merge would write goes through the same write
+            # gate a write_file into the TARGET would: write scope, the
+            # read-only archive, the Self-Modification Guard. A merge was
+            # git applying a diff, unchecked, file by file.
+            if perms is None:
+                return None
+            for rel in paths:
+                refusal = self._gate_write_path(
+                    str(target / rel), perms, "worktree_merge",
+                    {"path": rel})
+                if refusal is not None:
+                    _record_security_event(
+                        "worktree_merge_refused", "worktree_merge",
+                        rel[:200], blocked=True)
+                    return f"'{rel}': {refusal}"
+            return None
+
         try:
-            result = _wt.merge_worktree(info)
+            result = _wt.merge_worktree(info, gate=_merge_gate)
         except _wt.WorktreeError as exc:
             return json.dumps({"error": str(exc)})
         removed = bool(getattr(info, "cleaned_up", False))
@@ -23874,6 +23905,18 @@ class OpenAIClient(_BaseClient):
             # it, in the stream, so the headless run prints it too.
             _end_state = self._open_task_state()
             _end_notice = _open_tasks_notice(_end_state)
+            # Said once per open set: the same list at the end of every
+            # turn of a long plan is noise the reader learns to skip, and
+            # the task line at the foot of the chat shows it anyway. A
+            # changed set (a task added, started, finished) is said again;
+            # an unreadable ledger is always said.
+            if _end_notice and str(_end_state.get("state", "")) == "open":
+                _key = _open_tasks_key(_end_state)
+                if _key == getattr(self, "_announced_open_tasks", None):
+                    _end_notice = ""
+                self._announced_open_tasks = _key
+            else:
+                self._announced_open_tasks = None
             if _end_notice:
                 yield StreamEvent(type="notice",
                                   text="\n\n" + _end_notice + "\n")

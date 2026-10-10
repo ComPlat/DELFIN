@@ -49,6 +49,8 @@ _WATER = "3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
 #: enough and the test then runs on every machine. The fixture uses
 #: the real xtb when there is one. See conftest.xtb_on_path.
 _needs_xtb = pytest.mark.usefixtures("xtb_on_path")
+#: A test of xtb's RESULTS: a real xtb or a named skip (conftest.real_xtb).
+_needs_real_xtb = pytest.mark.usefixtures("real_xtb")
 _needs_mopac = pytest.mark.skipif(mopac.find_mopac() is None,
                                   reason="MOPAC not installed")
 
@@ -213,6 +215,7 @@ def test_nothing_in_the_editor_decides_anything_on_a_bond_order():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_every_gfn_answer_carries_its_charges_without_being_asked():
     """One call, no extra flags, and the numbers are in the result.
 
@@ -244,6 +247,7 @@ def test_every_gfn_answer_carries_its_charges_without_being_asked():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_the_hamiltonians_carry_bond_orders_and_the_force_field_does_not():
     orders = gfn.optimize_with_gfn(_WATER, "gfn2", timeout=120.0)["bonds"]
     assert orders is not None and len(orders) == 2
