@@ -65,7 +65,11 @@ def test_dispatch_returns_a_delfin_card_result(tmp_path):
     assert obj["html"].startswith("<iframe")
     assert 'sandbox="allow-scripts"' in obj["html"]
     assert "allow-same-origin" not in obj["html"]
-    assert "<" not in obj["text"]
+    # The untrusted fence itself contains '<src:'; assert instead that no
+    # html / iframe / script reaches the model-facing text.
+    assert "<iframe" not in obj["text"]
+    assert "<script" not in obj["text"]
+    assert not obj["text"].lstrip().startswith(('<', '['))
     # The model-facing text goes through untrusted.wrap (finding 3) while the
     # DELFIN_CARD: marker stays at byte 0 (operator ruling).
     assert "UNTRUSTED EXTERNAL CONTENT" in obj["text"]
@@ -110,18 +114,20 @@ def test_plan_mode_is_refused(tmp_path):
     assert not list(tmp_path.glob("*.svg")), "plan mode must not write"
 
 
-def test_data_file_dotenv_is_refused_by_secret_deny(tmp_path):
+def test_data_file_secret_path_is_refused_by_read_gate(tmp_path):
     from delfin.agent.api_client import _DocToolExecutor
     ws = tmp_path / "ws"
     ws.mkdir()
-    (ws / ".env").write_text("x=1", encoding="utf-8")
-    spec = {"kind": "line", "data": {"file": ".env"},
-            "title": "t", "filename": "from_env.svg"}
+    dd = ws / ".ssh"
+    dd.mkdir()
+    (dd / "data.csv").write_text("x,y\n1,2", encoding="utf-8")
+    spec = {"kind": "line", "data": {"file": ".ssh/data.csv"},
+            "title": "t", "filename": "from_secret.svg"}
     out = _DocToolExecutor()._dispatch("make_plot", {"spec": spec},
                                        _perms(str(ws)))
     assert not out.startswith("DELFIN_CARD:")
-    assert "refused" in out.lower()
-    assert not (ws / "from_env.svg").exists()
+    assert "read denied" in out.lower() or "denied" in out.lower()
+    assert not (ws / "from_secret.svg").exists()
 
 
 def test_filename_outside_write_globs_is_refused(tmp_path):
@@ -129,11 +135,11 @@ def test_filename_outside_write_globs_is_refused(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     spec = _spec()
-    spec["filename"] = "out.png"  # globs only allow *.svg
+    spec["filename"] = "x.svg"  # a .svg, but globs only allow allowed/*
     out = _DocToolExecutor()._dispatch("make_plot", {"spec": spec},
-                                       _perms_glob(str(ws), ("*.svg",)))
+                                       _perms_glob(str(ws), ("allowed/*",)))
     assert not out.startswith("DELFIN_CARD:")
-    assert not (ws / "out.png").exists()
+    assert not (ws / "x.svg").exists(), "refused by the write gate"
 
 
 def test_existing_allowed_file_written_only_with_gate_ok(tmp_path):
