@@ -69,7 +69,7 @@ def gate(tmp_path, monkeypatch):
             monkeypatch.setattr(A, "_push_readiness_rows", _boom)
         elif fake_rows is not None:
             monkeypatch.setattr(A, "_push_readiness_rows",
-                                lambda workspace=".", local_only=False:
+                                lambda workspace=".", local_only=False, **_:
                                 fake_rows)
 
         def _run(cmd):

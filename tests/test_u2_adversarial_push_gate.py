@@ -1,14 +1,14 @@
 """Adversarial guard for U2 phase-3, defect 1 — the split-by-command contract.
 
 The corrected phase-3 gate (operator finding, patch NOT built) must split
-readiness by command: `git push` needs git installed + identity (+ the
-remote at surrender); `gh pr create` / `gh pr merge` additionally need gh
-installed + gh authenticated. A `git push` over SSH/HTTPS needs NO gh, so
-the gate must let it through when git/identity/remote are ready even if gh
-is not on PATH or not logged in.
+readiness by command: `git push` needs git installed (+ the remote at
+surrender; no identity, a push makes no commit); `gh pr create` /
+`gh pr merge` additionally need gh installed + gh authenticated. A
+`git push` over SSH/HTTPS needs NO gh, so the gate must let it through
+when git/remote are ready even if gh is not on PATH or not logged in.
 
 The gate gets its readiness rows from exactly one place —
-`api_client._push_readiness_rows(workspace, *, local_only) -> list[dict]`
+`api_client._push_readiness_rows(workspace, *, local_only, ...) -> list[dict]`
 (the corrected patch; `_push_capability_block` calls it, never doctor
 directly). U2 tests rebind that seam with
 `monkeypatch.setattr(api_client, "_push_readiness_rows", fake)`, setting
@@ -73,7 +73,7 @@ def _bind_readiness(monkeypatch, gh_ok):
     """
     rows = _rows(gh_ok=gh_ok)
     monkeypatch.setattr(A, "_push_readiness_rows",
-                        lambda workspace=".", local_only=False: rows)
+                        lambda workspace=".", local_only=False, **_: rows)
 
 
 @pytest.fixture

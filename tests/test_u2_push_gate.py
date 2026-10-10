@@ -16,18 +16,16 @@ scenario needs -- it never touches the doctor's probes (no real git
 config, PATH or network) and never depends on the host.
 
 ``_push_capability_block`` filters the rows by ``check`` name: a plain
-``git push`` keeps only ``{git installed, git identity}`` (+ ``git
-remote`` at the surrender full check), so an absent gh never refuses a
-push; ``gh pr create`` / ``gh pr merge`` additionally keep ``{gh
-installed, gh authenticated}``. The check runs twice -- a local-only
+``git push`` keeps only ``{git installed}`` (+ ``git remote`` at the
+surrender full check; a push makes no commit, so no identity row), so
+an absent gh never refuses a push; ``gh pr create`` / ``gh pr merge``
+additionally keep ``{gh installed, gh authenticated}``. The check runs twice -- a local-only
 pre-ask probe (no network) before the consent dialog, and the full check
 (incl. the network ``git ls-remote`` probe, hard-bounded inside the
 doctor) on every route that lets the command run.
 """
 
 from __future__ import annotations
-
-import pytest
 
 from delfin.agent import api_client as A
 from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
@@ -80,8 +78,13 @@ def test_host_without_git_is_refused_before_it_prompts(tmp_path, monkeypatch):
     assert not asked, "a host that cannot push must not prompt"
 
 
-def test_host_without_identity_is_refused_before_it_prompts(
+def test_host_without_identity_is_not_refused_a_push(
         tmp_path, monkeypatch):
+    """A push makes no commit: an unset identity is no reason to refuse.
+
+    Commits made with ``git -c user.name=...`` or GIT_AUTHOR_* push from a
+    host with nothing configured; refusing them is a refusal of a push
+    that would succeed."""
     _rows(monkeypatch, [
         _row("git installed"),
         _row("git identity", "WARN", "not configured: user.name, user.email",
@@ -90,10 +93,10 @@ def test_host_without_identity_is_refused_before_it_prompts(
     asked: list[str] = []
     perms.confirm_callback = lambda n, a, p: asked.append(p) or True
 
-    msg = _gate(perms, "git push origin main")
+    msg = _gate(perms, "git push origin feature")
 
-    assert msg and "identity" in msg.lower()
-    assert not asked
+    assert not (msg and "identity" in msg.lower()), msg
+    assert asked, "the push reaches the consent dialog"
 
 
 def test_gh_logged_out_is_refused_before_pr_create_prompts(
