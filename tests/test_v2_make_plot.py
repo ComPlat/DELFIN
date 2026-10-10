@@ -98,8 +98,9 @@ def test_make_plot_prefers_the_shared_v1_chat_viewer_emit_point(
         tmp_path, monkeypatch):
     """When the shared emit point (chat_viewer.tool_result) is importable,
     make_plot delegates to it — ONE emit path for V1+V2, not a second one."""
-    import sys
     import types
+
+    import delfin.dashboard
 
     calls = {}
     fake = types.ModuleType("delfin.dashboard.chat_viewer")
@@ -111,7 +112,13 @@ def test_make_plot_prefers_the_shared_v1_chat_viewer_emit_point(
         )
 
     fake.tool_result = tool_result
-    monkeypatch.setitem(sys.modules, "delfin.dashboard.chat_viewer", fake)
+    # Once V1 is merged, the real chat_viewer is a BOUND ATTRIBUTE of the
+    # delfin.dashboard package, so _emit_card's `from delfin.dashboard import
+    # chat_viewer` resolves to that attribute and never reads sys.modules.
+    # Patch the package attribute itself (raising=False also covers the
+    # pre-merge case where it is not yet bound) so the delegation is actually
+    # observed on the merged head.
+    monkeypatch.setattr(delfin.dashboard, "chat_viewer", fake, raising=False)
     out = cp.make_plot(_spec(), out_dir=str(tmp_path))
     assert calls, "make_plot did not delegate to chat_viewer.tool_result"
     assert calls["text"].startswith("Wrote "), calls["text"]
