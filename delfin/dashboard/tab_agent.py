@@ -2390,7 +2390,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Session", "/pending", "List staged diffs awaiting approval (diff-approval mode)", False),
     ("Session", "/approve", "Apply a staged diff (/approve <id|all>)", True),
     ("Session", "/reject", "Discard a staged diff (/reject <id|all>)", True),
-    ("Diagnostics", "/doctor", "Check prerequisites: docs index, keys, binaries, MCP, scheduler, disk", False),
+    ("Diagnostics", "/doctor", "Check prerequisites; /doctor repair shows the fixable steps and applies each on approval", False),
     ("Attention", "/attention", "Parked questions/events awaiting you (attention inbox)", False),
     ("Attention", "/attention answer", "Answer a parked item (/attention answer <id> <text>)", True),
     ("Attention", "/attention dismiss", "Dismiss a parked item (/attention dismiss <id|all>)", True),
@@ -14250,11 +14250,86 @@ def create_tab(ctx):
                 + (f" — {res['reason']}" if res.get("reason") else ""))
             return True
 
-        if cmd == "/doctor":
+        if cmd == "/doctor" or cmd.startswith("/doctor "):
             try:
                 from delfin.agent.doctor import format_doctor, run_doctor
+                from delfin.agent.repair import (
+                    doctor_repair_apply,
+                    doctor_repair_known_ids,
+                    doctor_repair_plan,
+                    doctor_repair_preview,
+                )
                 results = run_doctor(ctx.repo_dir or ".")
-                _append_system_message(format_doctor(results))
+                _arg = cmd[len("/doctor"):].strip()
+                if _arg == "repair" or _arg.startswith("repair "):
+                    _steps = doctor_repair_plan(results)
+                    _sub = _arg[len("repair"):].strip()
+                    if _sub.startswith("apply "):
+                        _sid = _sub[len("apply "):].strip()
+                        _preview = doctor_repair_preview(_steps, _sid)
+                        if not _preview:
+                            _append_system_message(
+                                f"No repair step with id {_sid!r}; "
+                                f"known: {doctor_repair_known_ids(_steps)}"
+                            )
+                            return True
+                        _append_system_message(
+                            f"Requesting approval to apply repair step {_sid}:\n{_preview}"
+                        )
+                        _broker = _ensure_kit_broker()
+                        if _broker is None:
+                            _append_system_message(
+                                "No confirmation broker available; use `delfin doctor "
+                                "--repair` in a terminal."
+                            )
+                            return True
+
+                        def _ask_and_apply():
+                            try:
+                                def _authorize(tool_name, args, preview):
+                                    return _broker.callback(tool_name, args, preview)
+                                _res = doctor_repair_apply(
+                                    _sid,
+                                    results=results,
+                                    authorize=_authorize,
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                _append_system_message(f"Repair apply failed: {exc}")
+                                return
+                            if _res.get("ok") is False:
+                                _append_system_message(_res["message"])
+                                return
+                            if not _res.get("applied"):
+                                _append_system_message(
+                                    f"Repair step {_sid} not approved; nothing changed."
+                                )
+                                return
+                            _bp = _res.get("backup_path")
+                            _tail = f" (original backed up at {_bp})" if _bp else ""
+                            _append_system_message(
+                                f"Applied repair step {_sid}{_tail}"
+                            )
+                        import threading as _repair_thread_mod
+                        _repair_thread_mod.Thread(
+                            target=_ask_and_apply, daemon=True,
+                            name="u3-repair-apply",
+                        ).start()
+                    else:
+                        if not _steps:
+                            _append_system_message(
+                                "Nothing machine-actionable to repair; the failing "
+                                "checks need a human fix."
+                            )
+                        else:
+                            _plan = "\n".join(
+                                f"[{s.get('id')}] {s.get('what')}\n"
+                                f"  undo: {s.get('undo')}\n"
+                                f"  apply: /doctor repair apply {s.get('id')}"
+                                for s in _steps
+                            )
+                            _append_system_message("Repair plan:\n" + _plan)
+                else:
+                    _append_system_message(format_doctor(results))
             except Exception as exc:
                 _append_system_message(f"Doctor failed: {exc}")
             return True
@@ -18567,10 +18642,11 @@ def create_tab(ctx):
 
                 # Store original user task for handoff messages
                 original_task = user_text
-                # S1 — Per-turn live state goes into the SYSTEM prompt via
-                # engine.set_live_state(), not into the user message body.
-                # That keeps engine.messages history small and cache-friendly:
-                # old turns no longer carry their stale dashboard state.
+                # Per-turn live state goes through engine.set_live_state(),
+                # not into the user message body. The engine sends it at the
+                # end of the turn's user message with its steering blocks;
+                # it used to put it in the system prompt, which cost the
+                # endpoint's prefix cache for the whole history every turn.
                 _live_state_text = ""
                 if mode_dropdown.value == "dashboard":
                     try:
