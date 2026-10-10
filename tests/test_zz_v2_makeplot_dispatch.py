@@ -1,13 +1,18 @@
-"""make_plot dispatch probe — protected api_client wiring (package V2, phase 3).
+"""make_plot dispatch probe — protected api_client wiring (package V2, phase 3)
+with the operator-required gate assertions.
 
 RED CONTROL for .gate/v2_make_plot.patch. make_plot is NOT yet registered in
 api_client (protection: compiled by the operator). These dispatch cases fail
 now ("unknown tool") and go green once the operator builds the patch which:
   - registers make_plot in _DOC_TOOLS_OPENAI,
   - adds _DocToolExecutor._execute_make_plot,
-  - routes name == "make_plot" in _dispatch.
-The executor delegates to delfin.agent.chat_plots.make_plot(spec, out_dir=ws)
-and returns the shared DELFIN_CARD: result; errors are JSON {"error": ...}.
+  - routes name == "make_plot" in _dispatch,
+  - adds make_plot to _GATED_TOOLS + _WRITE_TOOL_NAMES,
+  - gates the write (plan mode + _gate_write_path), the read (secret-deny via
+    _check_read_access) and wraps the model-facing text with untrusted.wrap.
+Assertions are in BOTH directions: fires when it should (card + fenced text +
+marker at byte 0) and does NOT fire when it should not (plan mode, .env data
+file, glob-denied filename, bad spec, no permissions).
 """
 
 from __future__ import annotations
@@ -21,6 +26,15 @@ from delfin.agent.api_client import KitToolPermissions
 
 def _perms(ws):
     return KitToolPermissions(workspace=ws, mode="default")
+
+
+def _perms_plan(ws):
+    return KitToolPermissions(workspace=ws, mode="plan")
+
+
+def _perms_glob(ws, globs):
+    return KitToolPermissions(workspace=ws, mode="default",
+                              write_allow_globs=globs)
 
 
 def _spec():
@@ -52,6 +66,10 @@ def test_dispatch_returns_a_delfin_card_result(tmp_path):
     assert 'sandbox="allow-scripts"' in obj["html"]
     assert "allow-same-origin" not in obj["html"]
     assert "<" not in obj["text"]
+    # The model-facing text goes through untrusted.wrap (finding 3) while the
+    # DELFIN_CARD: marker stays at byte 0 (operator ruling).
+    assert "UNTRUSTED EXTERNAL CONTENT" in obj["text"]
+    assert "END UNTRUSTED EXTERNAL CONTENT" in obj["text"]
 
 
 def test_dispatch_writes_only_inside_the_workspace(tmp_path):
@@ -81,3 +99,50 @@ def test_requires_permissions():
     ex = _DocToolExecutor()
     out = ex._dispatch("make_plot", {"spec": _spec()}, None)
     assert "workspace" in out.lower() or "permission" in out.lower()
+
+
+def test_plan_mode_is_refused(tmp_path):
+    from delfin.agent.api_client import _DocToolExecutor
+    out = _DocToolExecutor()._dispatch("make_plot", {"spec": _spec()},
+                                       _perms_plan(str(tmp_path)))
+    assert not out.startswith("DELFIN_CARD:")
+    assert "plan" in out.lower()
+    assert not list(tmp_path.glob("*.svg")), "plan mode must not write"
+
+
+def test_data_file_dotenv_is_refused_by_secret_deny(tmp_path):
+    from delfin.agent.api_client import _DocToolExecutor
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / ".env").write_text("x=1", encoding="utf-8")
+    spec = {"kind": "line", "data": {"file": ".env"},
+            "title": "t", "filename": "from_env.svg"}
+    out = _DocToolExecutor()._dispatch("make_plot", {"spec": spec},
+                                       _perms(str(ws)))
+    assert not out.startswith("DELFIN_CARD:")
+    assert "refused" in out.lower()
+    assert not (ws / "from_env.svg").exists()
+
+
+def test_filename_outside_write_globs_is_refused(tmp_path):
+    from delfin.agent.api_client import _DocToolExecutor
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    spec = _spec()
+    spec["filename"] = "out.png"  # globs only allow *.svg
+    out = _DocToolExecutor()._dispatch("make_plot", {"spec": spec},
+                                       _perms_glob(str(ws), ("*.svg",)))
+    assert not out.startswith("DELFIN_CARD:")
+    assert not (ws / "out.png").exists()
+
+
+def test_existing_allowed_file_written_only_with_gate_ok(tmp_path):
+    from delfin.agent.api_client import _DocToolExecutor
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    spec = _spec()
+    spec["filename"] = "plot.svg"
+    out = _DocToolExecutor()._dispatch("make_plot", {"spec": spec},
+                                       _perms(str(ws)))
+    assert out.startswith("DELFIN_CARD:")  # gate allowed it
+    assert (ws / "plot.svg").exists()

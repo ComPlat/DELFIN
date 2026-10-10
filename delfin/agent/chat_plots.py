@@ -38,6 +38,7 @@ Spec (all keys optional except ``kind`` and the data source):
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 from dataclasses import dataclass
@@ -127,14 +128,18 @@ def _require_str(spec: dict, key: str, default: str = "") -> str:
     return val
 
 
-def _resolve_values_from_file(path: str, root: Path) -> list:
+def _resolve_values_from_file(path: str, root: Path, reader=None) -> list:
     """Numbers or {x,y} rows from a CSV or JSON file; CSVs are sorted per
     column assumption, JSON keeps file order.
 
     The file must live inside ``root`` (the workspace/out_dir): an absolute
     or ``..`` path that resolves outside it is refused — plot must never
     read a file the workspace does not own (operator data-is-never-
-    instruction contract)."""
+    instruction contract). When ``reader`` is supplied it is called with the
+    resolved :class:`~pathlib.Path` and must return the file text — the
+    dispatch layer passes a reader that first runs the sandbox secret-deny
+    + read-access gate, so an ``.env``/``.ssh``/``*.key`` data file is
+    refused here even though the workspace-root check would admit it."""
     root_res = root.resolve()
     p = (root / path if not Path(path).is_absolute() else Path(path)).resolve()
     if not _is_within(p, root_res):
@@ -142,11 +147,14 @@ def _resolve_values_from_file(path: str, root: Path) -> list:
                         f"{root}")
     if not p.is_file():
         raise SpecError(f"data file not found: {path}")
+    if reader is None:
+        def reader(p):
+            with p.open(encoding="utf-8") as fh:
+                return fh.read()
     suffix = p.suffix.lower()
     try:
         if suffix == ".csv":
-            with p.open(newline="", encoding="utf-8") as fh:
-                rows = list(csv.DictReader(fh))
+            rows = list(csv.DictReader(io.StringIO(reader(p))))
             if not rows:
                 raise SpecError(f"data file has no rows: {path}")
             if "x" in rows[0] and "y" in rows[0]:
@@ -158,8 +166,7 @@ def _resolve_values_from_file(path: str, root: Path) -> list:
                 f"{sorted(rows[0].keys())}"
             )
         if suffix == ".json":
-            with p.open(encoding="utf-8") as fh:
-                return json.load(fh)
+            return json.loads(reader(p))
     except SpecError:
         raise
     except Exception as exc:  # csv/type errors -> a clear spec error
@@ -188,7 +195,7 @@ def _resolve_points(rows, kind: str):
     return [], ys
 
 
-def _resolve_series(spec: dict, kind: str, root: Path):
+def _resolve_series(spec: dict, kind: str, root: Path, reader=None):
     """A list of (label, xs, ys) — one series per drawn line/barset. Returns
     also the values for histogram/box and the running point count."""
     if kind in _KINDS_WITHOLESS:
@@ -198,7 +205,7 @@ def _resolve_series(spec: dict, kind: str, root: Path):
         if data is None or (isinstance(data, list) and not data):
             raise SpecError(f"kind {kind!r} needs 'data' (a list of numbers)")
         if isinstance(data, dict) and "file" in data:
-            data = _resolve_values_from_file(data["file"], root)
+            data = _resolve_values_from_file(data["file"], root, reader)
         try:
             values = [float(v) for v in data]
         except (TypeError, ValueError):
@@ -228,7 +235,7 @@ def _resolve_series(spec: dict, kind: str, root: Path):
     if isinstance(data, list) and data:
         xs, ys = _resolve_points(data, kind)
     elif isinstance(data, dict) and "file" in data:
-        rows = _resolve_values_from_file(data["file"], root)
+        rows = _resolve_values_from_file(data["file"], root, reader)
         xs, ys = _resolve_points(rows, kind)
     elif "y" in spec:
         xs = spec.get("x") or []
@@ -284,6 +291,26 @@ def _caption(spec: dict, kind: str, n_points: int) -> str:
 # figure builders (one per kind)
 
 
+def resolve_out_path(spec: dict, out_dir: Path) -> Path:
+    """The exact file a :func:`plot` of ``spec`` will write under ``out_dir``
+    -- the single source of truth for the output filename, shared by the
+    renderer and by the dispatch executor so it can sandbox-gate the path
+    before anything is written. Refuses a name that resolves outside
+    ``out_dir`` (the workspace)."""
+    fmt = _require_str(spec, "format", "svg").lower()
+    if fmt not in _FORMATS:
+        raise SpecError(f"format must be png or svg, got {fmt!r}")
+    kind = _require_kind(spec)
+    filename = _require_str(spec, "filename", "").strip() or f"plot_{kind}.{fmt}"
+    if not filename.lower().endswith(f".{fmt}"):
+        filename = f"{filename}.{fmt}"
+    out_path = (out_dir / filename).resolve()
+    if not _is_within(out_path, out_dir.resolve()):
+        raise SpecError(f"filename {filename!r} resolves outside the workspace "
+                        f"{out_dir}")
+    return out_path
+
+
 def _finalize(fig, ax, spec: dict, kind: str, out_dir: Path) -> PlotResult:
     fmt = _require_str(spec, "format", "svg").lower()
     if fmt not in _FORMATS:
@@ -298,13 +325,8 @@ def _finalize(fig, ax, spec: dict, kind: str, out_dir: Path) -> PlotResult:
         ax.set_ylabel(f"{ylabel} ({units})" if units else ylabel)
     if title:
         ax.set_title(title)
-    filename = _require_str(spec, "filename", "").strip() or f"plot_{kind}.{fmt}"
-    if not filename.lower().endswith(f".{fmt}"):
-        filename = f"{filename}.{fmt}"
-    out_path = (out_dir / filename).resolve()
-    if not _is_within(out_path, out_dir.resolve()):
-        raise SpecError(f"filename {filename!r} resolves outside the workspace "
-                        f"{out_dir}")
+    out_path = resolve_out_path(spec, out_dir)
+    filename = out_path.name
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -336,18 +358,21 @@ def _finalize(fig, ax, spec: dict, kind: str, out_dir: Path) -> PlotResult:
     )
 
 
-def plot(spec: dict, *, out_dir: str = "") -> PlotResult:
+def plot(spec: dict, *, out_dir: str = "", reader=None) -> PlotResult:
     """Render ``spec`` to a figure under ``out_dir`` (default: cwd).
 
     Returns a :class:`PlotResult`; raises :class:`SpecError` for any
     malformed or unsupported spec. ``out_dir`` is the only write this
-    function performs and it is checked to be inside it.
+    function performs and it is checked to be inside it. ``reader`` (a
+    callable taking a resolved :class:`~pathlib.Path` and returning its
+    text) is passed through to the data-file resolver; when None the file
+    is read directly.
     """
     if not isinstance(spec, dict):
         raise SpecError("spec must be an object with a 'kind'")
     kind = _require_kind(spec)
     out_dir_path = Path(out_dir or os.getcwd())
-    series, n_points = _resolve_series(spec, kind, out_dir_path)
+    series, n_points = _resolve_series(spec, kind, out_dir_path, reader)
 
     fig, ax = _plt.subplots(figsize=(6, 4))
 
@@ -479,7 +504,7 @@ def _emit_card(html_card: str, text: str) -> str:
         return CARD_MARKER + payload
 
 
-def make_plot(spec: dict, *, out_dir: str = "") -> str:
+def make_plot(spec: dict, *, out_dir: str = "", reader=None) -> str:
     """Render ``spec`` and return the shared ``DELFIN_CARD:`` tool result.
 
     The single tool entry point for package V2: draws the figure (see
@@ -495,7 +520,7 @@ def make_plot(spec: dict, *, out_dir: str = "") -> str:
     spec raises :class:`SpecError` exactly as :func:`plot` does, before
     anything is written.
     """
-    result = plot(spec, out_dir=out_dir)
+    result = plot(spec, out_dir=out_dir, reader=reader)
     html_card = to_card(result)
     text = f"Wrote {result.path} — {result.caption}"
     return _emit_card(html_card, text)
