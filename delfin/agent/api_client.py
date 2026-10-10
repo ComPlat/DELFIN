@@ -21263,6 +21263,11 @@ class OpenAIClient(_BaseClient):
         # moves the other way (2 -> 11), so this is sent by CAPABILITY, never
         # by default.
         self.effort = (effort or "").strip().lower()
+        # One-shot DSML re-request latch (U5 phase 3): per run, at most one
+        # corrective re-request notice is emitted for a leaked
+        # <invoke name=...>...</invoke> tool call written as text, so a
+        # re-request that leaks again is never forwarded a second time.
+        self._dsml_rerequest = False
         self.model = model or self.DEFAULT_MODEL
         # Provider identity ("openai"|"kit"|"ollama"). Used to gate
         # provider-specific request shaping (Ollama num_ctx, reasoning_effort
@@ -22778,6 +22783,31 @@ class OpenAIClient(_BaseClient):
                               f"executing {len(_recovered)} tool call(s) "
                               f"({_names}) now]\n"),
                     )
+                elif not self._dsml_rerequest:
+                    # DSML leak (U5 phase 3): deepseek-v4-flash writes a tool
+                    # call as literal ``<invoke name=...>...</invoke>`` text
+                    # instead of calling the tool, so it runs as nothing. A
+                    # COMPLETE block is a re-request case, NOT a silent
+                    # redispatch like the Harmony JSON above: emit a
+                    # corrective notice exactly once telling the model to
+                    # call the tool, latched per run so a re-request that
+                    # leaks AGAIN is never forwarded a second time (loop).
+                    _dsml_leaked = None
+                    try:
+                        from delfin.agent.text_sanitize import (
+                            leaked_tool_call_dominates,
+                        )
+                        _dsml_leaked = leaked_tool_call_dominates(_joined)
+                    except Exception:
+                        _dsml_leaked = None
+                    if _dsml_leaked:
+                        self._dsml_rerequest = True
+                        yield StreamEvent(
+                            type="notice",
+                            text=(f"\n\n⚠️ your call to {_dsml_leaked[0]} was "
+                                  f"written as text instead of calling the "
+                                  f"tool; call it, do not type it.\n"),
+                        )
 
             # If model made tool calls, execute them locally and loop
             if finish_reason == "tool_calls" and _tool_calls:

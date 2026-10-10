@@ -637,6 +637,19 @@ class AgentEngine:
         self._claim_guard_active: bool = False
         self._claim_guard_spent: bool = False
         self._claim_guard_corrected: bool = False
+        # One-shot DSML re-request latch (U5 phase 3): a final answer that
+        # IS a leaked <invoke name=...>...</invoke> call written as text is
+        # re-requested (asked to call the tool) at most once per turn; if
+        # the correction leaks again the answer is annotated, never looped.
+        self._dsml_leak_spent: bool = False
+        # Reentrancy guard for the DSML re-request's nested ``stream_response``
+        # call (U5 phase 3): that nested call is a fresh user turn to the
+        # engine, so WITHOUT this flag the fresh-turn re-arm block below would
+        # clear ``_dsml_leak_spent`` and the correction would re-request over
+        # and over (1478 stream calls on the never-loops test).  Set True only
+        # around the nested call, reset in ``finally``; while it is set, no
+        # re-arm and no second DSML check happens.
+        self._dsml_guard_active: bool = False
         self._last_observed_files: set[str] = set()
         self._last_turn_tools: list[str] = []
         self._observed_ledger_available: bool = False
@@ -2485,9 +2498,15 @@ class AgentEngine:
         # drop the very evidence ledgers the retry is judged against.
         _is_guard_feedback = str(
             user_message or "").lstrip().startswith("[Verify]")
-        if not self._claim_guard_active and not _is_guard_feedback:
+        if (not self._claim_guard_active and not self._dsml_guard_active
+                and not _is_guard_feedback):
             self._claim_guard_corrected = False
             self._claim_guard_spent = False
+            # A fresh REAL user turn re-arms the DSML one-shot re-request:
+            # the latch is per TURN.  The DSML correction's nested call is
+            # not a fresh turn (see _dsml_guard_active), so while it is
+            # running this block is skipped and the latch stays spent.
+            self._dsml_leak_spent = False
             # The ambiguity ledger is per TURN: the question is whether
             # THIS answer totals a column THIS turn was told it could not
             # read. Carrying it across turns would caveat a later, unrelated
@@ -3747,6 +3766,41 @@ class AgentEngine:
             except Exception:
                 pass
 
+        # DSML leak re-request (U5 phase 3): a final answer that IS a leaked
+        # <invoke name=...>...</invoke> tool call written as text never ran —
+        # it is not an answer. Ask exactly once (latch _dsml_leak_spent); a
+        # corrected answer that leaks AGAIN falls through to the normal
+        # return and is annotated, never a second re-request (no loop).
+        if (full_response and not _empty_turn and not self._stop_requested
+                and not self._claim_guard_active and not self._dsml_guard_active):
+            _dsml_name = None
+            try:
+                # DOMINATES, not merely contains: the re-request fires only
+                # when the answer IS the leaked call (text outside the block
+                # is empty or trivially short).  Instructive prose that
+                # quotes a complete <invoke> block is a real answer and is
+                # never re-requested.
+                from delfin.agent.text_sanitize import leaked_tool_call_dominates
+                _dsml_name, _dsml_args = (
+                    leaked_tool_call_dominates(full_response) or (None, {}))
+            except Exception:
+                _dsml_name = None
+            if _dsml_name and not self._dsml_leak_spent and not self._dsml_guard_active:
+                full_response = self._enforce_dsml_rerun(
+                    full_response, _dsml_name, _dsml_args,
+                    memory_context=memory_context,
+                    on_token=on_token,
+                    on_tool_use=on_tool_use,
+                    on_tool_result=on_tool_result,
+                    on_permission_denied=on_permission_denied,
+                    on_thinking=on_thinking,
+                    thinking_budget=thinking_budget,
+                    max_tokens=max_tokens,
+                    on_notice=on_notice,
+                    on_tool_result_meta=on_tool_result_meta,
+                    on_wait=on_wait,
+                )
+
         # A turn that announced an action while plan mode refused its calls
         # says so in the ANSWER, not only in a notice that scrolls past.
         # Reports 20261005-135825 / 20261005-140408: four turns of "Let me
@@ -4548,6 +4602,92 @@ class AgentEngine:
         return self._append_answer_caveats(
             combined + note, functional=func, ambiguous=ambiguous,
             on_token=on_token, scan_source=combined)
+
+    def _enforce_dsml_rerun(
+        self,
+        response_text: str,
+        tool_name: str,
+        tool_args: dict,
+        *,
+        memory_context: str = "",
+        on_token: Callable[[str], None] | None = None,
+        on_tool_use: Callable[[str, str], None] | None = None,
+        on_tool_result: Callable[[str, str], None] | None = None,
+        on_permission_denied: Callable[[str], None] | None = None,
+        on_thinking: Callable[[str], None] | None = None,
+        thinking_budget: int = 0,
+        max_tokens: int = 0,
+        on_notice: Callable[[str], None] | None = None,
+        on_tool_result_meta: Callable[[str, dict], None] | None = None,
+        on_wait: Callable[[str], None] | None = None,
+    ) -> str:
+        """Re-request once when the whole answer is a leaked DSML tool call.
+
+        Deepseek-v4-flash sometimes writes a tool call as literal
+        ``<invoke name=...>...</invoke>`` XML in the text channel instead of
+        calling the tool, so the call never ran and the turn would end
+        standing still. The answer is not the answer — ask the model exactly
+        once to call the tool instead of typing it.
+
+        One retry only: ``_dsml_leak_spent`` is set before the nested call,
+        so a corrected answer that leaks AGAIN (or a nested continuation
+        re-entering the guard) falls through to the normal return with a
+        visible caveat naming the leaked tool — never a loop.
+        """
+        if self._dsml_leak_spent:
+            # A nested continuation (or a re-request that leaked) is already
+            # here: annotate and never re-request a second time.
+            _caveat = (f"\n\n⚠️ your call to <tool>{tool_name}</tool> was "
+                       f"written as text and I did not re-ask again — call "
+                       f"the tool yourself, do not type it.\n")
+            try:
+                if on_token:
+                    on_token(_caveat)
+            except Exception:
+                pass
+            return response_text + _caveat
+
+        self._dsml_leak_spent = True
+        _feedback = (
+            f"The text you just wrote is a tool call to "
+            f"<tool>{tool_name}</tool> expressed as literal markup, so it "
+            f"never ran. Call the tool (do not type its tags). Say what it "
+            f"returned, or make your answer plain text."
+        )
+        self._dsml_guard_active = True
+        try:
+            try:
+                if on_token:
+                    on_token("\n\n")
+            except Exception:
+                pass
+            try:
+                correction = self.stream_response(
+                    user_message=_feedback,
+                    memory_context=memory_context,
+                    on_token=on_token,
+                    on_tool_use=on_tool_use,
+                    on_tool_result=on_tool_result,
+                    on_permission_denied=on_permission_denied,
+                    on_thinking=on_thinking,
+                    thinking_budget=thinking_budget,
+                    max_tokens=max_tokens,
+                    on_notice=on_notice,
+                    on_tool_result_meta=on_tool_result_meta,
+                    on_wait=on_wait,
+                )
+            except Exception:
+                correction = ""
+        finally:
+            # The nested call is over: a REAL next user turn may re-arm and
+            # ask again.  While the flag is set no re-arm and no second
+            # DSML check ran, so one correction never spawns another.
+            self._dsml_guard_active = False
+        if not correction:
+            return response_text + (
+                f"\n\n⚠️ your call to <tool>{tool_name}</tool> was written as "
+                f"text and the re-request produced nothing.\n")
+        return correction
 
     def trace_session(self) -> str:
         """Stable key for this engine's tool-call trace — the backend session
