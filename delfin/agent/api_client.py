@@ -9142,6 +9142,19 @@ def _open_tasks_notice(state: dict) -> str:
         return ""
 
 
+def _open_tasks_key(state: dict) -> tuple:
+    """Identity of an open-task set: (id, status) of every listed task
+    plus the counts, so a change below the listed cap still counts."""
+    st = state or {}
+    rows = tuple(
+        (str(t.get("id", "")), status)
+        for status in ("in_progress", "pending", "blocked")
+        for t in (st.get(status) or []))
+    counts = tuple(sorted((str(k), int(v or 0))
+                          for k, v in (st.get("counts") or {}).items()))
+    return rows + counts
+
+
 def check_completion_claim(
     subject: str,
     description: str = "",
@@ -18759,8 +18772,26 @@ class _DocToolExecutor:
             base_ref=base,
             created_at=0.0,
         )
+        def _merge_gate(paths):
+            # Every file the merge would write goes through the same write
+            # gate a write_file into the TARGET would: write scope, the
+            # read-only archive, the Self-Modification Guard. A merge was
+            # git applying a diff, unchecked, file by file.
+            if perms is None:
+                return None
+            for rel in paths:
+                refusal = self._gate_write_path(
+                    str(target / rel), perms, "worktree_merge",
+                    {"path": rel})
+                if refusal is not None:
+                    _record_security_event(
+                        "worktree_merge_refused", "worktree_merge",
+                        rel[:200], blocked=True)
+                    return f"'{rel}': {refusal}"
+            return None
+
         try:
-            result = _wt.merge_worktree(info)
+            result = _wt.merge_worktree(info, gate=_merge_gate)
         except _wt.WorktreeError as exc:
             return json.dumps({"error": str(exc)})
         removed = bool(getattr(info, "cleaned_up", False))
@@ -21232,6 +21263,11 @@ class OpenAIClient(_BaseClient):
         # moves the other way (2 -> 11), so this is sent by CAPABILITY, never
         # by default.
         self.effort = (effort or "").strip().lower()
+        # One-shot DSML re-request latch (U5 phase 3): per run, at most one
+        # corrective re-request notice is emitted for a leaked
+        # <invoke name=...>...</invoke> tool call written as text, so a
+        # re-request that leaks again is never forwarded a second time.
+        self._dsml_rerequest = False
         self.model = model or self.DEFAULT_MODEL
         # Provider identity ("openai"|"kit"|"ollama"). Used to gate
         # provider-specific request shaping (Ollama num_ctx, reasoning_effort
@@ -21643,6 +21679,9 @@ class OpenAIClient(_BaseClient):
         # the call gets the parameter's default — which reads as the
         # lowest effort on a reasoning model. Nobody chose that.
         self._turn_thinking_budget = int(thinking_budget or 0)
+        # The DSML re-request notice is latched per call: one notice per
+        # request, re-armed on the next (the engine bounds the re-request).
+        self._dsml_rerequest = False
         # Mid-session memory nudge (package 7): the one-per-user-turn cap
         # is reset HERE, at the entry of the public turn method — not
         # derived from any turn counter, which would be a guess about
@@ -22747,6 +22786,31 @@ class OpenAIClient(_BaseClient):
                               f"executing {len(_recovered)} tool call(s) "
                               f"({_names}) now]\n"),
                     )
+                elif not self._dsml_rerequest:
+                    # DSML leak (U5 phase 3): deepseek-v4-flash writes a tool
+                    # call as literal ``<invoke name=...>...</invoke>`` text
+                    # instead of calling the tool, so it runs as nothing. A
+                    # COMPLETE block is a re-request case, NOT a silent
+                    # redispatch like the Harmony JSON above: emit a
+                    # corrective notice exactly once telling the model to
+                    # call the tool, latched per run so a re-request that
+                    # leaks AGAIN is never forwarded a second time (loop).
+                    _dsml_leaked = None
+                    try:
+                        from delfin.agent.text_sanitize import (
+                            leaked_tool_call_dominates,
+                        )
+                        _dsml_leaked = leaked_tool_call_dominates(_joined)
+                    except Exception:
+                        _dsml_leaked = None
+                    if _dsml_leaked:
+                        self._dsml_rerequest = True
+                        yield StreamEvent(
+                            type="notice",
+                            text=(f"\n\n⚠️ a call to {_dsml_leaked[0]} "
+                                  f"was written as text instead of calling "
+                                  f"the tool; it did not run.\n"),
+                        )
 
             # If model made tool calls, execute them locally and loop
             if finish_reason == "tool_calls" and _tool_calls:
@@ -23874,6 +23938,18 @@ class OpenAIClient(_BaseClient):
             # it, in the stream, so the headless run prints it too.
             _end_state = self._open_task_state()
             _end_notice = _open_tasks_notice(_end_state)
+            # Said once per open set: the same list at the end of every
+            # turn of a long plan is noise the reader learns to skip, and
+            # the task line at the foot of the chat shows it anyway. A
+            # changed set (a task added, started, finished) is said again;
+            # an unreadable ledger is always said.
+            if _end_notice and str(_end_state.get("state", "")) == "open":
+                _key = _open_tasks_key(_end_state)
+                if _key == getattr(self, "_announced_open_tasks", None):
+                    _end_notice = ""
+                self._announced_open_tasks = _key
+            else:
+                self._announced_open_tasks = None
             if _end_notice:
                 yield StreamEvent(type="notice",
                                   text="\n\n" + _end_notice + "\n")
