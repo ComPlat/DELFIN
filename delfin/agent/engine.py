@@ -2781,17 +2781,6 @@ class AgentEngine:
         # in the message list, since the API takes it as a separate arg.
         self.last_system_prompt = system_prompt
         self._system_prompt_chars = len(system_prompt or "")
-        # The in-turn whole-request guard (api_client._compact_between_rounds)
-        # books the system prompt against the planning window; the engine is
-        # where the prompt is built and kept, so mirror the size on the client
-        # it handed the API -- otherwise the guard reads getattr(client,
-        # "_system_prompt_chars", 0) and always sees 0 (finding 2).
-        try:
-            _client = getattr(self, "client", None)
-            if _client is not None:
-                _client._system_prompt_chars = len(system_prompt or "")
-        except Exception:
-            pass
 
         # Say what the silence is, once per session, for a model whose
         # first turn is slow. GLM answered "Hallo" in 190s and was

@@ -13,10 +13,10 @@ and GREEN once the fixed patch is built:
      the whole request in chars against the window's char capacity and gives
      ``compact`` a real tool-char budget that lies under the current tool
      chars, so it provably fires.
-  2. ``system_chars`` was always 0: the client read ``_system_prompt_chars``
-     off itself, but the attribute lives on the ENGINE. The fix propagates the
-     size from the engine onto the client; the guard then counts the system
-     prompt in the whole-request total.
+  2. ``system_chars`` is counted in the whole-request total when the rows
+     carry no system/developer row. The client loop carries the prompt as
+     row 0 and passes no ``system_chars`` (see
+     test_u11_whole_request_is_counted_once.py).
   3. The floor throttle forbade any floor above the static table window from
      being learned, so ``131072 -> 166379`` (the exact case observed_window.py
      exists to capture) was never recorded. The fix LEARNS the floor

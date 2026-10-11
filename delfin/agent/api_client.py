@@ -11031,22 +11031,24 @@ def _planning_window_for_turn(self, caps) -> int:
 def _compact_between_rounds(api_messages: list, budget_chars: int,
                             turn_rows_base: int, session_id: str,
                             planning_window: int = 0,
-                            system_chars: int = 0) -> str:
+                            system_chars: int = 0,
+                            schema_chars: int = 0) -> str:
     """Compact older rounds of the running turn in place when the tool
     output is still over budget after the elision; returns a one-line
     notice when it did, "" otherwise. Never raises: a failed compaction
     leaves the turn exactly as it was.
 
-    ``planning_window`` (tokens) and ``system_chars`` let the same function
-    also guard the WHOLE request: assistant reasoning can push a turn over the
-    window while its tool output sits far under the tool budget, and neither
-    the elider nor the in-turn compactor (which only measure tool content)
-    would touch it. The guard runs unit-consistently in CHARS throughout
-    (operator finding 1): the whole request is measured as its raw char total
-    and compared against the window's char capacity; when it exceeds it, the
-    tool-only compactor is given a real tool-char budget (room after the
-    non-tool share), which provably lies under the current tool chars, so
-    ``compact`` MUST summarise old rounds instead of no-op'ing.
+    ``planning_window`` (tokens) also guards the WHOLE request: assistant
+    text and tool-call arguments can push a turn over the window while its
+    tool output sits far under the tool budget. The request is summed in
+    chars (``_CHARS_PER_TOKEN`` per token): every row's content and
+    tool-call arguments, ``schema_chars`` (the advertised tool schemas,
+    sent outside the rows) and ``system_chars`` -- the latter only when no
+    system/developer row is in ``api_messages``, since the client carries
+    the prompt as row 0 and would otherwise count it twice. Above
+    ``_WHOLE_REQUEST_COMPACT_PCT`` of the window the tool-only compactor is
+    given ``budget - non_tool`` (at least 1) as its tool-char budget, which
+    lies under the current tool chars, so it summarises old rounds.
     """
     try:
         from . import in_turn_compaction as _itc
@@ -11076,19 +11078,22 @@ def _compact_between_rounds(api_messages: list, budget_chars: int,
         _note = ""
     try:
         if planning_window > 0:
-            # Whole-request guard, unit-consistent in CHARS (operator finding 1).
-            # The tool compactor above only measures tool output; assistant
-            # reasoning can push the whole request over the window while tool
-            # output sits far under the tool budget. Measure the WHOLE request
-            # (tool + assistant + system) in raw chars against the window's char
-            # capacity, and when it exceeds it, give the tool-only compactor a
-            # real tool-char budget (room left after the non-tool share). That
-            # budget provably lies UNDER the current tool chars (whole > budget
-            # means tool > budget - non_tool), so compact must summarise old
-            # rounds instead of no-op'ing on a token-sized budget.
             from . import in_turn_compaction as _itc2
-            whole = sum(len(str(m.get("content") or "")) for m in api_messages)
-            whole += int(system_chars or 0)
+            whole = 0
+            has_system_row = False
+            for m in api_messages:
+                whole += len(str(m.get("content") or ""))
+                for tc in m.get("tool_calls") or []:
+                    try:
+                        whole += len(str(
+                            (tc.get("function") or {}).get("arguments") or ""))
+                    except Exception:
+                        pass
+                if m.get("role") in ("system", "developer"):
+                    has_system_row = True
+            if not has_system_row:
+                whole += int(system_chars or 0)
+            whole += int(schema_chars or 0)
             capacity = int(int(planning_window) * _CHARS_PER_TOKEN)
             budget = int(capacity * _WHOLE_REQUEST_COMPACT_PCT)
             if whole > budget:
@@ -22733,6 +22738,15 @@ class OpenAIClient(_BaseClient):
         _caps_model = self.model
         _tool_budget = _tool_context_char_budget(
             _caps, model=str(_caps_model or ""))
+        # The tool schemas ride on every request outside api_messages; the
+        # whole-request guard books them. Measured once per turn: 41 244
+        # chars for 69 tools (~10 k tokens, 7.9 % of a 131 072 window).
+        try:
+            _schema_chars = (len(json.dumps(advertised_tools))
+                             if (has_doc_tools or has_calc_tools or has_coding)
+                             else 0)
+        except Exception:
+            _schema_chars = 0
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
             # A Stop the user pressed while a tool was running. The engine
@@ -22849,8 +22863,7 @@ class OpenAIClient(_BaseClient):
                 int(getattr(self, "_turn_rows_base", 0) or 0),
                 str(getattr(self, "session_id", "") or ""),
                 planning_window=(_planning_window_for_turn(self, _caps)),
-                system_chars=int(
-                    getattr(self, "_system_prompt_chars", 0) or 0))
+                schema_chars=_schema_chars)
             if _in_turn_note:
                 yield StreamEvent(type="notice", text=_in_turn_note)
             # Output backstop: stop cleanly if this turn's total generated
