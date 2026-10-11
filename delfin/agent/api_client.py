@@ -11128,6 +11128,37 @@ def _compact_between_rounds(api_messages: list, budget_chars: int,
     return _note or ""
 
 
+def _append_pending_jobs_to_summary(api_messages: list,
+                                    pending_jobs_note: str) -> None:
+    """Fold ``pending_jobs_note`` into the compaction summary the model sees.
+
+    Phase-3 "nothing forgotten": a mid-turn compaction splices a summary
+    message into ``api_messages``, replacing the older rounds. The model gets
+    that summary as part of its next request, so outstanding background /
+    watched jobs named on it are NOT forgotten across the compaction. A notice
+    StreamEvent would only reach the user (engine.py -- "shown to the user and
+    to nothing else"); splicing into the summary is what puts the text in the
+    model context (operator finding 4). Appends the note as a trailing line of
+    the summary message; does nothing when the note is empty or no summary is
+    present. Never raises."""
+    if not pending_jobs_note:
+        return
+    header = "[Conversation summary"
+    try:
+        from . import in_turn_compaction as _itc
+        header = _itc._SUMMARY_HEADER
+    except Exception:
+        pass
+    for i in range(len(api_messages) - 1, -1, -1):
+        m = api_messages[i]
+        c = str((m or {}).get("content") or "")
+        if c.startswith(header):
+            # Once per summary: a later round must not stack the same note.
+            if pending_jobs_note.strip() not in c:
+                api_messages[i]["content"] = c + "\n" + pending_jobs_note
+            return
+
+
 def _elide_old_tool_results(
     api_messages: list[dict],
     *,
@@ -22055,6 +22086,55 @@ class OpenAIClient(_BaseClient):
         except Exception:
             return False
 
+    def _pending_jobs_note(self) -> str:
+        """One-line note naming the background/watched jobs still out.
+
+        Phase-3 "nothing forgotten" (protected half): a mid-turn compaction
+        replaces older rounds with a summary, and the compacted context must
+        still know which jobs are outstanding so the agent does not forget to
+        check them with ``bash_output`` / ``watch_job``. The note rides into
+        the COMPACTED SUMMARY inside ``api_messages`` (the model context) via
+        ``_append_pending_jobs_to_summary`` -- a notice StreamEvent alone never
+        reaches the model (operator finding 4). Best-effort: returns "" when
+        nothing is pending or the state cannot be read.
+        """
+        try:
+            from . import job_monitor as _jm
+            ws = getattr(self._permissions, "workspace", None)
+            if not ws:
+                return ""
+            jobs = _jm.load_watched(_jm._agent_watch_path(ws)).get("jobs") or {}
+            sid = str(getattr(self._permissions, "task_session_id", "") or "")
+            from . import bash_jobs as _bj
+            out: list[str] = []
+            for jid, entry in jobs.items():
+                if sid and str((entry or {}).get("session_id") or "") != sid:
+                    continue
+                # This line goes into the model's context as part of the
+                # summary: an id or a kind is a short token, nothing else.
+                jid = re.sub(r"[^A-Za-z0-9_.:\-]", "", str(jid))[:40]
+                kind = re.sub(
+                    r"[^A-Za-z0-9_\-]", "",
+                    str((entry or {}).get("kind") or "job"))[:20] or "job"
+                if not jid:
+                    continue
+                if kind != "bash":
+                    out.append(f"{kind} job {jid}")
+                    continue
+                try:
+                    job = _bj.get_registry().get(jid, ws)
+                except Exception:
+                    job = None
+                if job is not None and job.poll() is None:
+                    out.append(f"bash job {jid}")
+            if not out:
+                return ""
+            return (f"\n\u2699 STILL PENDING \u2014 background/watched job(s) still "
+                    f"running: {', '.join(sorted(out))}. Check them with "
+                    f"bash_output / watch_job before ending the turn.")
+        except Exception:
+            return ""
+
     def _attach_subagent_runner(
         self, permissions: Optional["KitToolPermissions"],
     ) -> None:
@@ -22865,6 +22945,11 @@ class OpenAIClient(_BaseClient):
                 planning_window=(_planning_window_for_turn(self, _caps)),
                 schema_chars=_schema_chars)
             if _in_turn_note:
+                # The notice below reaches the user and nothing else. What is
+                # still running goes into the summary message, which the
+                # model does read (U11 phase 3: nothing forgotten).
+                _append_pending_jobs_to_summary(
+                    api_messages, self._pending_jobs_note())
                 yield StreamEvent(type="notice", text=_in_turn_note)
             # Output backstop: stop cleanly if this turn's total generated
             # tokens crossed the (very high) per-turn ceiling. Text emitted so
