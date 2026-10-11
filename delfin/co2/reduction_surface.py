@@ -539,6 +539,7 @@ def run_reduction_surface(coordinator_outdir: str,
 
     prev_station_name: Optional[str] = None
     prev_station_xyz: Optional[str] = None
+    water_preopt_xyz: Optional[str] = None
 
     for i, station in enumerate(STATIONS):
         name = station["name"]
@@ -573,6 +574,33 @@ def run_reduction_surface(coordinator_outdir: str,
                 surgery = _apply_station_surgery(current_atoms, i,
                                                  substrate_start, anchor_idx)
                 current_atoms = surgery
+                if i == len(STATIONS) - 1:
+                    # SPLIT BEFORE OPT on the last station: the intact
+                    # water motif on the substrate O is NOT a GFN2
+                    # minimum — two real-geometry runs (charge +2 and +1)
+                    # both had xTB pull the protons off the substrate
+                    # (0 bound H after opt, nearest H at 5.2+ A). The
+                    # water that leaves has already left at this station;
+                    # the physics is the SEPARATED product (complex+CO,
+                    # free H2O), so optimize the pieces separately.
+                    body, water = _split_water(
+                        current_atoms, substrate_start, anchor_idx=anchor_idx)
+                    if water is not None:
+                        current_atoms = body  # opt runs on the body only
+                        body_xyz = os.path.join(st_dir, "station_co_body.xyz")
+                        _write_xyz(body_xyz, body,
+                                   comment="complex+CO body after H2O release")
+                        entry["body_xyz"] = body_xyz
+                        water_preopt_xyz = os.path.join(
+                            st_dir, "station_h2o_preopt.xyz")
+                        _write_xyz(water_preopt_xyz, water,
+                                   comment="leaving water (before opt)")
+                        if not run_xtb:
+                            # dry run: the pre-split water IS the final file
+                            _write_xyz(os.path.join(st_dir, "station_h2o.xyz"),
+                                       water, comment="leaving water")
+                            entry["water_xyz"] = os.path.join(
+                                st_dir, "station_h2o.xyz")
             station_xyz = os.path.join(st_dir, f"station_{name}.xyz")
             _write_xyz(station_xyz, current_atoms,
                        comment=f"station {name} (charge {charge})")
@@ -593,6 +621,30 @@ def run_reduction_surface(coordinator_outdir: str,
                     out_path = os.path.join(st_dir, "xtb_preopt",
                                             "adduct_xtb_opt.out")
                     entry["energy_eh_xtb"] = _orca_output_energy(out_path)
+                    # split-before-opt station: optimize the water separately
+                    # and sum the energies — the profile point is the
+                    # separated product, complex+CO + free H2O
+                    if water_preopt_xyz is not None:
+                        water_opt = _flow._run_xtb_preopt(
+                            _read_xyz(water_preopt_xyz), water_preopt_xyz,
+                            xtb_control, st_dir, tag="h2o")
+                        if water_opt is not None:
+                            w_path = os.path.join(st_dir, "xtb_preopt",
+                                                  f"h2o_xtb_opt.out")
+                            entry["water_energy_eh_xtb"] = (
+                                _orca_output_energy(w_path))
+                            e_body = entry["energy_eh_xtb"]
+                            e_water = entry["water_energy_eh_xtb"]
+                            if e_body is not None and e_water is not None:
+                                entry["energy_eh_xtb"] = e_body + e_water
+                        else:
+                            print(f"[reduction_surface][WARN] water xTB opt "
+                                  f"failed — station energy is body-only.")
+                        _write_xyz(os.path.join(st_dir, "station_h2o.xyz"),
+                                   _read_xyz(water_opt) if water_opt
+                                   else _read_xyz(water_preopt_xyz),
+                                   comment="leaving water")
+                        entry["water_xyz"] = os.path.join(st_dir, "station_h2o.xyz")
                 else:
                     entry["status"] = "xtb_failed"
                     print(f"[reduction_surface][WARN] xTB preopt failed at "
@@ -624,21 +676,6 @@ def run_reduction_surface(coordinator_outdir: str,
         result["stations"] = station_results
         prev_station_name = name
         prev_station_xyz = station_xyz
-
-        # last station: split off the leaving H2O for the product endpoint
-        if i == len(STATIONS) - 1:
-            body, water = _split_water(
-                current_atoms,
-                _substrate_tail_start(current_atoms, control,
-                                      coordinator_outdir),
-                anchor_idx=anchor_idx)
-            body_xyz = os.path.join(st_dir, "station_co_body.xyz")
-            _write_xyz(body_xyz, body, comment="complex+CO body after H2O release")
-            entry["body_xyz"] = body_xyz
-            if water is not None:
-                water_xyz = os.path.join(st_dir, "station_h2o.xyz")
-                _write_xyz(water_xyz, water, comment="leaving water")
-                entry["water_xyz"] = water_xyz
 
     # energies: parse from the xTB preopt ORCA outputs (electronic energies)
     # ORCA-level energies come from the OCCUPIER passes when those ran;
