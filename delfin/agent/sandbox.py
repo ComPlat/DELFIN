@@ -246,6 +246,303 @@ def tree_walk_refusal(cmd: str, cwd=None) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Installs that write outside the session venv
+
+#: pip / uv long options that move an install out of the interpreter's own
+#: environment. pip parses with optparse, which accepts any unambiguous
+#: prefix (``--targ`` is ``--target``), so a token is matched as a prefix
+#: of these names, not only as the full name.
+_OUTSIDE_LONG = ("user", "target", "prefix", "root", "system",
+                 "break-system-packages", "python")
+#: Full option names that are a prefix of one above and mean something else.
+_OUTSIDE_LONG_EXACT_SAFE = frozenset({"pre"})
+#: Short options whose value follows in the same token (``-rreq.txt``): the
+#: rest of a cluster after one of these is a value, not more options.
+_SHORT_WITH_VALUE = frozenset("rceif")
+#: Environment forms of the same options.
+_OUTSIDE_ENV_NAMES = frozenset({"PIP_USER", "PIP_TARGET", "PIP_PREFIX",
+                                "PIP_ROOT", "PIP_PYTHON", "UV_PYTHON",
+                                "UV_SYSTEM_PYTHON"})
+_OUTSIDE_ENV_RE = re.compile(
+    r"\b(?:" + "|".join(sorted(_OUTSIDE_ENV_NAMES)) + r")\s*=")
+#: A command substitution inside a word (``"$(pip ...)"``, backticks): the
+#: tokenizer keeps it inside the quoted token, so it is read separately.
+_SUBSTITUTION_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+_PIP_NAME_RE = re.compile(r"pip(?:3(?:\.\d+)?)?")
+_PYTHON_NAME_RE = re.compile(r"python(?:3(?:\.\d+)?)?")
+_WRAPPERS = frozenset({"nice", "ionice", "nohup", "time", "timeout", "command",
+                       "exec", "stdbuf", "sudo", "doas"})
+_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+
+
+def _same_env_dir(path: str, session_python: str) -> bool:
+    """Whether *path* is an executable in the session interpreter's bin dir.
+
+    The directory is compared resolved, the file name is not: a venv's
+    ``python`` is a symlink to the base interpreter, so resolving it would
+    make the system Python equal to the session venv.
+    """
+    if not session_python or "/" not in path:
+        return False
+    try:
+        return (os.path.realpath(os.path.dirname(os.path.abspath(path)))
+                == os.path.realpath(os.path.dirname(session_python)))
+    except Exception:
+        return False
+
+
+def _in_workspace(path: str, workspace: Optional[str]) -> bool:
+    """Whether the executable *path* lies inside *workspace*.
+
+    A venv the session made in its workspace (``.venv/bin/pip``) installs
+    into the workspace, which is where the session may write; the
+    workspace-local venv tools are auto-allowed for that reason. A
+    relative path is read from the workspace.
+    """
+    if not workspace or "/" not in path:
+        return False
+    try:
+        root = Path(os.path.realpath(workspace))
+        p = Path(os.path.expanduser(path))
+        if not p.is_absolute():
+            p = root / p
+        return Path(os.path.realpath(p.parent)).is_relative_to(root)
+    except Exception:
+        return False
+
+
+def _is_session_python(path: str, session_python: str) -> bool:
+    if not session_python:
+        return False
+    if path == session_python:
+        return True
+    return (_PYTHON_NAME_RE.fullmatch(os.path.basename(path)) is not None
+            and _same_env_dir(path, session_python))
+
+
+def _segments(cmd: str) -> list[list[str]]:
+    """*cmd* as argv lists, split at shell operators, quotes removed."""
+    try:
+        lex = shlex.shlex(cmd, posix=True, punctuation_chars="();<>|&`")
+        lex.whitespace_split = True
+        toks = list(lex)
+    except ValueError:
+        toks = [t for t in re.split(r"(\s+|[;&|()])", cmd) if t.strip()]
+    out: list[list[str]] = [[]]
+    for t in toks:
+        if t and all(c in ";&|()<>`" for c in t):
+            out.append([])
+        else:
+            out[-1].append(t)
+    return [seg for seg in out if seg]
+
+
+def _strip_prefix(argv: list[str], env_names: set) -> list[str]:
+    """argv without leading assignments and wrappers (``env``, ``nice`` ...)."""
+    while argv:
+        head = argv[0]
+        if "=" in head and head.split("=", 1)[0].isidentifier():
+            env_names.add(head.split("=", 1)[0])
+            argv = argv[1:]
+            continue
+        base = os.path.basename(head)
+        if base == "env" or base in _WRAPPERS:
+            argv = argv[1:]
+            while argv and (argv[0].startswith("-")
+                            or re.fullmatch(r"\d+[smhd]?", argv[0])):
+                opt = argv[0]
+                argv = argv[1:]
+                if base == "env" and opt in ("-u", "--unset", "-C",
+                                             "--chdir") and argv:
+                    argv = argv[1:]
+            continue
+        return argv
+    return argv
+
+
+def _pip_args_refusal(args: list[str], session_python: str, *,
+                      uv: bool) -> Optional[str]:
+    """Why these pip / uv-pip arguments install outside the session venv."""
+    if "config" in args and "set" in args:
+        at = args.index("set") + 1
+        key = args[at] if at < len(args) else ""
+        if key.rsplit(".", 1)[-1].replace("_", "-") in _OUTSIDE_LONG:
+            return f"pip config set {key} makes every later install leave the venv"
+        return None
+    if "install" not in args and not (uv and "sync" in args):
+        return None
+    for i, tok in enumerate(args):
+        if tok == "--":
+            break
+        nxt = args[i + 1] if i + 1 < len(args) else ""
+        if tok.startswith("--") and len(tok) > 2:
+            name, eq, value = tok[2:].partition("=")
+            if not eq:
+                value = nxt
+            for opt in _OUTSIDE_LONG:
+                if name == opt or (len(name) >= 3 and opt.startswith(name)
+                                   and name not in _OUTSIDE_LONG_EXACT_SAFE):
+                    if opt == "python" and _is_session_python(value, session_python):
+                        break
+                    return f"--{opt} installs outside the session venv"
+        elif tok.startswith("-") and len(tok) > 1:
+            for j, ch in enumerate(tok[1:], start=1):
+                if ch == "t":
+                    return "-t (--target) installs outside the session venv"
+                if uv and ch == "p":
+                    if _is_session_python(tok[j + 1:] or nxt, session_python):
+                        break
+                    return "-p (--python) installs into another interpreter"
+                if ch in _SHORT_WITH_VALUE:
+                    break
+    return None
+
+
+def _python_module(rest: list[str]) -> tuple[str, list[str]]:
+    """The ``-m`` module of a python argv and the arguments after it.
+
+    Interpreter options may precede ``-m`` (``-I -m pip``), be clustered
+    with it (``-Im pip``) or carry the module in the same token (``-mpip``).
+    """
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if not tok.startswith("-") or tok == "-" or tok.startswith("--"):
+            return "", []
+        for j, ch in enumerate(tok[1:], start=1):
+            if ch == "m":
+                if tok[j + 1:]:
+                    return tok[j + 1:], rest[i + 1:]
+                if i + 1 < len(rest):
+                    return rest[i + 1], rest[i + 2:]
+                return "", []
+            if ch == "c":
+                return "", []
+            if ch in "XW":
+                if not tok[j + 1:]:
+                    i += 1          # the value is the next token
+                break
+        i += 1
+    return "", []
+
+
+def _segment_refusal(argv: list[str], session_python: str, raw: str,
+                     depth: int, workspace: Optional[str]) -> Optional[str]:
+    env_names: set = set()
+    argv = _strip_prefix(argv, env_names)
+    if not argv:
+        return None
+    head = argv[0]
+    base = os.path.basename(head)
+    rest = argv[1:]
+
+    if base in _SHELLS and "-c" in rest and depth < 3:
+        # The payload of `sh -c` is a command line of its own.
+        at = rest.index("-c") + 1
+        return unsafe_install_refusal(rest[at] if at < len(rest) else "",
+                                      session_python, workspace=workspace,
+                                      _depth=depth + 1)
+    if base == "eval" and depth < 3:
+        return unsafe_install_refusal(" ".join(rest), session_python,
+                                      workspace=workspace, _depth=depth + 1)
+
+    pip_args: Optional[list[str]] = None
+    uv = False
+    if _PIP_NAME_RE.fullmatch(base):
+        if "/" in head and "install" in rest \
+                and not _same_env_dir(head, session_python) \
+                and not _in_workspace(head, workspace):
+            return f"{head} is another interpreter's pip, not the session venv's"
+        pip_args = rest
+    elif _PYTHON_NAME_RE.fullmatch(base):
+        module, margs = _python_module(rest)
+        if module != "pip":
+            return None
+        if "install" in margs and not _is_session_python(head, session_python) \
+                and not (_PYTHON_NAME_RE.fullmatch(base)
+                         and _in_workspace(head, workspace)):
+            return f"{head} -m pip installs into {head}, not into the session venv"
+        pip_args = margs
+    elif base == "uv" and rest[:1] == ["pip"]:
+        pip_args, uv = rest[1:], True
+    elif base == "uv" and rest[:2] == ["tool", "install"]:
+        return "uv tool install puts the package into the home directory"
+    elif base == "pipx" and rest[:1] and rest[0] in ("install", "inject"):
+        return f"pipx {rest[0]} puts the package into the home directory"
+    elif base in ("conda", "mamba", "micromamba") and "install" in rest:
+        for i, tok in enumerate(rest):
+            if (tok in ("-n", "--name") and rest[i + 1:i + 2] == ["base"]) \
+                    or tok in ("-nbase", "--name=base"):
+                return f"{base} install into base changes the shared environment"
+        return None
+    if pip_args is None:
+        return None
+    if ("install" in pip_args or (uv and "sync" in pip_args)) and (
+            env_names & _OUTSIDE_ENV_NAMES or _OUTSIDE_ENV_RE.search(raw)):
+        return "a PIP_/UV_ variable moves the install outside the session venv"
+    return _pip_args_refusal(pip_args, session_python, uv=uv)
+
+
+def unsafe_install_refusal(cmd: str, session_python: str, *,
+                           workspace: Optional[str] = None,
+                           _depth: int = 0) -> Optional[str]:
+    """Why *cmd* installs Python packages outside the session venv, or None.
+
+    *session_python* is the interpreter DELFIN installs into
+    (:func:`delfin.installer.session_python`); '' means it is unknown, and
+    then every ``python -m pip install`` and every pip named by path is
+    refused. Read per shell segment after quote removal, with leading
+    assignments and wrappers (``env``, ``nice``, ``sudo`` ...) dropped and
+    ``sh -c`` / ``eval`` payloads read as commands. Refused:
+
+      * pip / ``uv pip`` install or sync with ``--user``, ``--target``,
+        ``--prefix``, ``--root``, ``--system``, ``--break-system-packages``
+        or ``--python`` naming another interpreter, each also as an
+        unambiguous prefix (optparse resolves ``--targ``), and ``-t`` /
+        uv ``-p`` also inside a short-option cluster (``-qt``);
+      * the same through ``PIP_USER``/``PIP_TARGET``/``PIP_PREFIX``/
+        ``PIP_ROOT``/``PIP_PYTHON``/``UV_PYTHON``/``UV_SYSTEM_PYTHON``,
+        and ``pip config set <scope>.user|target|prefix|root|python``;
+      * ``<python> -m pip install`` (interpreter options before ``-m``
+        and ``-mpip`` included) unless *python* is the session interpreter
+        or a ``python*`` in its bin directory, and ``/path/to/pip install``
+        from another bin directory. Both are allowed for an interpreter
+        inside *workspace* (a venv the session made there writes only the
+        workspace). A bare ``pip`` is the one on PATH and is judged by its
+        options only;
+      * ``pipx install|inject`` and ``uv tool install`` (both write the
+        home directory) and conda/mamba/micromamba install into ``base``.
+
+    Not covered: a Python program that calls pip itself (``python -c``, a
+    script file). The command text does not show that act; the write roots
+    of the OS sandbox are what stop it.
+    """
+    if not cmd or not cmd.strip():
+        return None
+    if _depth < 3:
+        for m in _SUBSTITUTION_RE.finditer(cmd):
+            reason = unsafe_install_refusal(m.group(1) or m.group(2) or "",
+                                            session_python, workspace=workspace,
+                                            _depth=_depth + 1)
+            if reason:
+                return reason
+    for seg in _segments(cmd):
+        reason = _segment_refusal(seg, session_python, cmd, _depth, workspace)
+        if reason:
+            return reason
+    return None
+
+
+def _session_python() -> str:
+    """:func:`delfin.installer.session_python`, or '' when it cannot load."""
+    try:
+        from delfin import installer as _installer
+        return _installer.session_python()
+    except Exception:
+        return ""
+
+
 @dataclass
 class AllowResult:
     allowed: bool
@@ -270,6 +567,11 @@ def is_allowed(cmd: str) -> AllowResult:
     for needle in _DENY_SUBSTRINGS:
         if needle in haystack:
             return AllowResult(False, f"matched deny pattern: {needle.strip()!r}")
+
+    # The same install rule as the gate of the API and terminal sessions.
+    install = unsafe_install_refusal(cmd_stripped, _session_python())
+    if install:
+        return AllowResult(False, f"unsafe install target: {install}")
 
     # Pipeline-aware first-token check
     try:

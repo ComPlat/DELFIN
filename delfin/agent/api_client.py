@@ -3192,6 +3192,11 @@ _DENY_HINTS: tuple[tuple[str, str], ...] = (
                  "cannot make: call worktree_remove with the path."),
     ("branch", " A branch you no longer need is the user's to delete; say "
                "which one and why in your answer."),
+    ("sh|bash|zsh", " Running a fetched script executes remote code the "
+               "gates never see. A package belongs in the SESSION VENV "
+               "(`<session python> -m pip install`); a missing tool is "
+               "DELFIN's proposal for the user to approve with /fix. Do "
+               "not add a `curl|sh` allow-pattern."),
     ("reset", " To undo work in the tree, revert the specific files or "
               "commit first; a hard reset throws away what was not saved."),
     ("clean", " Say which files you mean and remove them one by one, or ask "
@@ -3220,6 +3225,50 @@ def _denied_command_hint(pattern: str) -> str:
         if needle in text:
             return hint
     return ""
+
+
+def _refuse_unsafe_install(cmd: str, session_python: str,
+                           workspace: Optional[str] = None) -> str:
+    """The refusal hint for an install outside the session venv, or "".
+
+    Input: a bash command and the session interpreter ('' when unknown,
+    which refuses every ``python -m pip install``). Output: the reason and
+    the sanctioned route, or "". The rule is
+    :func:`delfin.agent.sandbox.unsafe_install_refusal`, shared with the
+    dashboard's approval runner so the two paths cannot drift. It runs in
+    the deny tier of the gate, before the bypass return, so it refuses in
+    every permission mode; an ask would leave a ``pip install --user`` to
+    whoever reads the prompt, and bypass or an auto-allow pattern would run
+    it. The session venv's own install (``python_tools_install_command``,
+    what an approved proposal runs) is not refused.
+    """
+    from .sandbox import unsafe_install_refusal as _rule
+    reason = _rule(cmd or "", session_python, workspace=workspace)
+    if not reason:
+        return ""
+    return f" ({reason})." + _UNSAFE_INSTALL_HINT.format(
+        py=session_python or "<session venv python>")
+
+
+#: Names the two routes the model can actually take. The first cut named
+#: python_tools_install_command / apply_proposal, which are functions, not
+#: tools: a refusal that points at nothing callable invites a workaround.
+_UNSAFE_INSTALL_HINT = (
+    " Packages belong in the SESSION VENV: run `{py} -m pip install "
+    "<package>` with no --user/--target/--prefix, or name the missing "
+    "package in your answer so the user can approve DELFIN's proposal "
+    "with /fix. Do not add an allow-pattern that lets this command run."
+)
+
+
+def _session_python_for_gate() -> str:
+    """The session interpreter, or '' if the installer cannot be imported.
+
+    '' means the session venv cannot be identified, and
+    :func:`_refuse_unsafe_install` then refuses every interpreter.
+    """
+    from .sandbox import _session_python
+    return _session_python()
 
 
 def _prose_blanked(cmd: str) -> str:
@@ -15583,6 +15632,16 @@ class _DocToolExecutor:
                                        f"{cmd[:80]} → {denied}")
                 return (f"command rejected by deny-pattern {denied!r}: "
                         f"refusing to run.{_denied_command_hint(denied)}")
+            # Installs outside the session venv (pip --user/--target/
+            # --prefix and their spellings, another interpreter's pip,
+            # pipx, conda base) are refused here, in the deny tier, so the
+            # refusal holds in every mode; see _refuse_unsafe_install.
+            _unsafe = _refuse_unsafe_install(_prose_blanked(cmd),
+                                            _session_python_for_gate(),
+                                            str(perms.workspace))
+            if _unsafe:
+                _record_security_event("unsafe_install", "bash", cmd[:80])
+                return f"command rejected: unsafe install target{_unsafe}"
             # A walk over a whole file system (find/du/tree/rg, grep -r,
             # ls -R rooted at the home, an ancestor of it or a mount point)
             # is refused in every mode, before anything is asked -- the
