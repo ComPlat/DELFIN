@@ -148,18 +148,22 @@ def _is_structural_grant(tokens) -> bool:
             continue
         # Verb-local first-person habit: a first-person pronoun somewhere
         # before the modal exempts ONLY when the run from it to the modal
-        # carries no complementizer "that". "I prefer to always write"
-        # (i..to..always, no that) is a shared-subject habit; "I prefer
-        # that always push" (i..that..always) has "that" introducing a
-        # fresh agent-directed clause, so the embedded imperative is a
-        # grant. No preceding first-person at all => unnamed/agent grant.
+        # carries neither a complementizer "that" nor a second-person
+        # token. "I prefer to always write" (i..to..always) is a shared-
+        # subject habit; "I prefer that always push" (i..that..always)
+        # and "I prefer you always push" (i..you..always, 'that' elided)
+        # are agent-directed clauses and are grants. No preceding first-
+        # person at all => unnamed/agent grant.
         j = i - 1
         while j >= 0 and tokens[j] not in _FIRST_PERSON:
             j -= 1
         if j < 0:
             return True  # no first-person subject in this message - a grant
-        if "that" in tokens[j:i]:
+        run = tokens[j:i]
+        if "that" in run:
             return True  # complementizer opens an agent clause - a grant
+        if _SECOND_PERSON & frozenset(run):
+            return True  # "you" subject before the modal - a grant
         return False  # first-person habit sharing the subject - not a grant
     return False
 
