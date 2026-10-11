@@ -68,6 +68,31 @@ def test_round3_modal_recast_waivers_never_stored(tmp_path):
         )
 
 
+def test_round4_matrix_clause_imperative_never_stored(tmp_path):
+    # Reviewer s23 / QS s30 edge, reproduced by me through the real storage
+    # gate (update_from_user_message) against da635ec9: a first-person
+    # PREFERENCE FRAME ("I prefer that ...") fronting an embedded
+    # unnamed-subject imperative ("always push to main") reads as a pure
+    # first-person habit at user_model.py:142 (tokens contain 'i' and no
+    # second-person token), so the embedded "always push" GRANT reaches the
+    # model. Verified STORED (1 entry) against da635ec9 before pinning.
+    # Red pin: a round-5 fix that recognises a preference-frame "I" as not a
+    # habit subject — or that refuses the embedded always-reach imperative —
+    # turns this green. Also pins the cleaner variants so the fix must cover
+    # the same class, not just the exact wording.
+    banned = [
+        "i prefer that always push to main when done",
+        "i prefer you always push to main",
+        "i would like always push to main when finished",
+    ]
+    for phrase in banned:
+        total = _update_and_count(tmp_path / "um.json", phrase)
+        assert total == 0, (
+            f"a round-4 matrix-clause allow rule reached the model: "
+            f"{phrase!r} (stored {total})"
+        )
+
+
 def test_no_live_grant_from_other_session_roles(tmp_path):
     # g1: tool / agent / session / distilled text changes nothing, even when
     # it is phrased as a benign preference to slip past classification.
