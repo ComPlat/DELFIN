@@ -197,6 +197,50 @@ def _substrate_oxygen_indices(atoms: Atoms, substrate_start: int) -> List[int]:
     return [i for i in range(substrate_start, len(atoms)) if atoms[i].symbol == "O"]
 
 
+def _pick_anchor_oxygen(atoms: Atoms, substrate_start: int,
+                        metal_idx: int) -> int:
+    """Choose the ANCHOR oxygen: the substrate O that every protonation
+    targets and that leaves as H2O.
+
+    From the PLACEMENT geometry (before any optimization) the
+    metal-distance heuristic is unambiguous: the distal O (farthest from
+    the metal) leaves as water, the proximal O and the C stay bound as
+    the CO ligand. The choice is then tracked by index across stations.
+    """
+    o_candidates = [i for i in range(substrate_start, len(atoms))
+                    if atoms[i].symbol == "O"]
+    if not o_candidates:
+        raise ValueError("no substrate oxygen found for anchor selection")
+    return max(o_candidates,
+               key=lambda i: float(np.linalg.norm(
+                   atoms.positions[i] - atoms.positions[metal_idx])))
+
+
+def _track_atom_index(anchor_idx: int, current_atoms: Atoms,
+                      prev_atoms: Atoms, prev_anchor_idx: int,
+                      substrate_start: int) -> int:
+    """Remap the anchor index after a surgery reordered the tail.
+
+    The anchor O is never MOVED by a surgery (only hydrogens are), so
+    its identity survives; but its POSITION shifts when a hydrogen is
+    moved into the tail before it. Remap via the element sequence:
+    inside the substrate block, match the anchor's element and its
+    order among the substrate O's before and after the surgery.
+    """
+    cur_symbols = current_atoms.get_chemical_symbols()
+    prev_o = [i for i in range(substrate_start, len(prev_atoms))
+              if prev_atoms[i].symbol == "O"]
+    try:
+        rank = prev_o.index(prev_anchor_idx)
+    except ValueError:
+        return anchor_idx
+    cur_o = [i for i in range(substrate_start, len(cur_symbols))
+             if cur_symbols[i] == "O"]
+    if rank < len(cur_o):
+        return cur_o[rank]
+    return anchor_idx
+
+
 def _substrate_h_indices(atoms: Atoms, substrate_start: int) -> List[int]:
     """Indices of hydrogens appended into the substrate tail block.
 
@@ -243,25 +287,30 @@ def _add_hydrogen_to_tail(atoms: Atoms, anchor_idx: int, donor_idx: int,
     return out
 
 
-def _split_water(atoms: Atoms, substrate_start: int) -> Tuple[Atoms, Optional[Atoms]]:
+def _split_water(atoms: Atoms, substrate_start: int,
+                 anchor_idx: Optional[int] = None) -> Tuple[Atoms, Optional[Atoms]]:
     """Split the last station into the complex+CO body and the leaving H2O.
 
-    The H2O consists of ALL substrate-tail hydrogens and the substrate
-    oxygen farthest from the metal (the twice-protonated O, which leaves as
-    water). Everything else (the metal, the ligands, and the remaining
+    The H2O consists of ALL substrate-tail hydrogens and the ANCHOR
+    oxygen (the twice-protonated O, tracked by index across stations;
+    falls back to the metal-farthest substrate O when no anchor is
+    given). Everything else (the metal, the ligands, and the remaining
     substrate C+O, i.e. the bound CO) is the body.
     """
     body = atoms.copy()
     hs = _substrate_h_indices(atoms, substrate_start)
-    # The leaving oxygen is the substrate O farthest from the metal anchor
-    # (the metal index is 0 by coordinator convention).
-    metal_idx = _coord.detect_metal_index(atoms)
     o_candidates = _substrate_oxygen_indices(atoms, substrate_start)
     if not o_candidates:
         return body, None
-    o_leave = max(o_candidates,
-                  key=lambda i: float(np.linalg.norm(
-                      atoms.positions[i] - atoms.positions[metal_idx])))
+    if anchor_idx is not None and anchor_idx in o_candidates:
+        o_leave = anchor_idx
+    else:
+        # Fallback: the metal-farthest substrate O (metal index 0 by
+        # coordinator convention).
+        metal_idx = _coord.detect_metal_index(atoms)
+        o_leave = max(o_candidates,
+                      key=lambda i: float(np.linalg.norm(
+                          atoms.positions[i] - atoms.positions[metal_idx])))
     water_indices = sorted(set(hs) | {o_leave})
     if len(hs) < 2:
         print("[reduction_surface][WARN] fewer than 2 substrate hydrogens at the "
@@ -448,6 +497,16 @@ def run_reduction_surface(coordinator_outdir: str,
         print(f"[reduction_surface][WARN] metal at index {metal_idx} (expected 0) — "
               "the H2O split assumes the coordinator's metal-first layout.")
 
+    # The ANCHOR oxygen — the substrate O every protonation targets and the
+    # H2O split removes — is chosen ONCE from the placement geometry (where
+    # the metal-distance heuristic is unambiguous) and then TRACKED BY
+    # INDEX: every surgery reorders the tail (the added proton moves into
+    # it), so a fixed index goes stale; _track_atom_index remaps it through
+    # each reorder. Re-guessing per station is not an option: after xTB
+    # preopt both substrate O can sit at identical metal distances (2.67 vs
+    # 2.67 A on the real 81-105_87 co2h geometry) and the guess flips.
+    anchor_idx = _pick_anchor_oxygen(atoms, substrate_start, metal_idx)
+
     station_results: List[Dict[str, Any]] = []
     current_atoms = atoms
     current_xyz = os.path.join(surf_dir, "station_co2_input.xyz")
@@ -484,7 +543,11 @@ def run_reduction_surface(coordinator_outdir: str,
                 # wrong atom — measured on the real 81-105_87 geometry.
                 substrate_start = _substrate_tail_start(
                     current_atoms, control, coordinator_outdir)
-                surgery = _apply_station_surgery(current_atoms, i, substrate_start)
+                anchor_idx = _track_atom_index(anchor_idx, current_atoms,
+                                               atoms, anchor_idx,
+                                               substrate_start)
+                surgery = _apply_station_surgery(current_atoms, i,
+                                                 substrate_start, anchor_idx)
                 current_atoms = surgery
             station_xyz = os.path.join(st_dir, f"station_{name}.xyz")
             _write_xyz(station_xyz, current_atoms,
@@ -543,7 +606,8 @@ def run_reduction_surface(coordinator_outdir: str,
             body, water = _split_water(
                 current_atoms,
                 _substrate_tail_start(current_atoms, control,
-                                      coordinator_outdir))
+                                      coordinator_outdir),
+                anchor_idx=anchor_idx)
             body_xyz = os.path.join(st_dir, "station_co_body.xyz")
             _write_xyz(body_xyz, body, comment="complex+CO body after H2O release")
             entry["body_xyz"] = body_xyz
@@ -584,13 +648,15 @@ def run_reduction_surface(coordinator_outdir: str,
 
 
 def _apply_station_surgery(atoms: Atoms, station_idx: int,
-                           substrate_start: int) -> Atoms:
+                           substrate_start: int,
+                           anchor_idx: Optional[int] = None) -> Atoms:
     """Produce the next station's geometry from the current one.
 
-    co2  -> co2h : add one H at the DISTAL substrate O (farthest from the
-                   metal — the one that later leaves as H2O; the proximal
-                   O and the C stay bound as the CO ligand)
-    co2h -> co2h2: add a second H at the SAME oxygen (H2O leaves as water)
+    co2  -> co2h : add one H at the ANCHOR oxygen (the one that later
+                   leaves as H2O; the other O and the C stay bound as the
+                   CO ligand)
+    co2h -> co2h2: add a second H at the SAME anchor oxygen (H2O leaves
+                   as water)
     co2h2 -> co  : no surgery — the H2O split happens after this station
 
     The added hydrogen is moved INTO the substrate tail, so the tail stays
@@ -598,24 +664,18 @@ def _apply_station_surgery(atoms: Atoms, station_idx: int,
     same heavy-atom correspondence.
     """
     if station_idx in (1, 2):
-        metal_idx = _coord.detect_metal_index(atoms)
-        # Always the distal O: the SAME oxygen every station protonates is
-        # the one _split_water removes as H2O. (Protonating the proximal,
-        # metal-bound O would leave a hydroxamate, not a CO ligand.)
-        anchor = max(
-            (i for i in range(substrate_start, len(atoms))
-             if atoms[i].symbol == "O"),
-            key=lambda i: float(np.linalg.norm(
-                atoms.positions[i] - atoms.positions[metal_idx])))
-        if station_idx == 2:
-            # the first proton is already bound to this O (< 1.2 A) and is
-            # skipped by the bonding-distance check inside the donor search;
-            # a tail-index exclusion would also remove legitimate donor
-            # hydrogens that already live in the tail block.
-            donor = _nearest_free_hydrogen_index(atoms, anchor)
-        else:
-            donor = _nearest_free_hydrogen_index(atoms, anchor)
-        return _add_hydrogen_to_tail(atoms, anchor, donor, substrate_start)
+        if anchor_idx is None:
+            raise ValueError("anchor oxygen index not tracked")
+        # Always the SAME oxygen every station protonates is the one
+        # _split_water removes as H2O — tracked by INDEX across stations,
+        # not re-guessed per station: after xTB preopt both substrate O can
+        # sit at identical metal distances (measured 2.67 A vs 2.67 A on the
+        # real 81-105_87 co2h geometry), so a per-station max()/min() pick
+        # can flip and put the two protons on DIFFERENT oxygens (two OH
+        # groups — no water precursor). Protonating the proximal, metal-
+        # bound O would leave a hydroxamate, not a CO ligand.
+        donor = _nearest_free_hydrogen_index(atoms, anchor_idx)
+        return _add_hydrogen_to_tail(atoms, anchor_idx, donor, substrate_start)
     return atoms.copy()
 
 

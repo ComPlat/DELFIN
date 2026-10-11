@@ -85,7 +85,10 @@ class TestSurgery:
 
     def test_co2h_adds_one_h_at_distal_substrate_oxygen(self):
         atoms = self._atoms()
-        out = rs._apply_station_surgery(atoms, 1, self.SUBSTRATE_START)
+        anchor = rs._pick_anchor_oxygen(atoms, self.SUBSTRATE_START, 0)
+        assert anchor == 5  # the distal O (farthest from the metal at idx 0)
+        out = rs._apply_station_surgery(atoms, 1, self.SUBSTRATE_START,
+                                        anchor_idx=anchor)
         assert len(out) == len(atoms)  # re-bound, not appended
         symbols = out.get_chemical_symbols()
         # tail keeps the O,C,O block, the donor H follows AFTER it
@@ -102,9 +105,12 @@ class TestSurgery:
 
     def test_co2h2_adds_second_h_at_same_oxygen(self):
         atoms = self._atoms()
-        step1 = rs._apply_station_surgery(atoms, 1, self.SUBSTRATE_START)
+        anchor = rs._pick_anchor_oxygen(atoms, self.SUBSTRATE_START, 0)
+        step1 = rs._apply_station_surgery(atoms, 1, self.SUBSTRATE_START,
+                                          anchor_idx=anchor)
         # substrate start re-detected like the chain does (tail shifts)
-        out = rs._apply_station_surgery(step1, 2, self.SUBSTRATE_START - 1)
+        out = rs._apply_station_surgery(step1, 2, self.SUBSTRATE_START - 1,
+                                        anchor_idx=anchor)
         symbols = out.get_chemical_symbols()
         # tail is O, C, O + two substrate H at the end
         assert symbols[3:6] == ["O", "C", "O"]
@@ -118,8 +124,10 @@ class TestSurgery:
 
     def test_surgery_without_hydrogen_raises(self):
         atoms = self._atoms(with_h=False)
+        anchor = rs._pick_anchor_oxygen(atoms, self.SUBSTRATE_START, 0)
         with pytest.raises(ValueError, match="no (unbound hydrogen donor|hydrogen)"):
-            rs._apply_station_surgery(atoms, 1, self.SUBSTRATE_START)
+            rs._apply_station_surgery(atoms, 1, self.SUBSTRATE_START,
+                                      anchor_idx=anchor)
 
 
 class TestSplitWater:
@@ -195,10 +203,10 @@ class TestRunChain:
         # break the second station's surgery
         orig = rs._apply_station_surgery
 
-        def boom(atoms, idx, start):
+        def boom(atoms, idx, start, anchor_idx=None):
             if idx == 2:
                 raise ValueError("no hydrogen found")
-            return orig(atoms, idx, start)
+            return orig(atoms, idx, start, anchor_idx=anchor_idx)
         monkeypatch.setattr(rs, "_apply_station_surgery", boom)
         result = rs.run_reduction_surface(str(d), workdir=str(d))
         assert result["status"] == "incomplete"
