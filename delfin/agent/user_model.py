@@ -67,7 +67,7 @@ def estimate_tokens(text: str) -> int:
 # "may"/"can"/"always" precedes it), then the path layer.
 _ALLOW_WORDS = (
     "allow", "allowed", "grants", "grant", "granted", "permission",
-    "permit", "always allows", "do not ask", "without asking",
+    "permit", "always allows",
 )
 # Matched against the camelCase-split, lowercased form, so "acceptEdits"
 # and "accept edits" are the same token stream and no mode name hides
@@ -78,23 +78,50 @@ _MODE_WORDS = (
     "default mode", "mode to", "set the mode",
 )
 _GLOBAL_GRANT_WORDS = ("global:", "scope:", "every workspace", "widen")
-# A downgraded action verb is permission-shaped only when an allowance
-# modal pushes it: "always push to main", "may write there", "can run git".
-# A bare "I want to write" is not. Word insertion ("always push" vs the
-# adjacent "always allows") is exactly what this layer catches.
-_ALLOW_MODAL_VERB_RE = re.compile(
-    r"\b(?:always|may|can|please)\s+(?:push|write|run|commit|execute)\b"
+# The following guards are STRUCTURAL, not phrase lists: they look at
+# whether a WAIVER / negation token and a command verb are both present,
+# so a novel rephrasing (word insertion, a different modal, a different
+# possessive) cannot sneak an allow rule past by inventing wording the
+# deny list does not name. A plain "I want you to ask first" (wanting to
+# be asked) matches no waiver token and stays storable.
+_WAIVER_TOKENS = frozenset(
+    {"without", "never", "not", "skip", "no longer", "don't"}
 )
-# Confirmation waivers, singular or plural, article or article-less:
-# "skip the confirmation", "skip all confirmations", "skip confirmations".
-_SKIP_CONFIRM_RE = re.compile(
-    r"\bskip\s+(?:all|any|the|your)?\s*confirmations?\b"
+# Ask / confirmation tokens -- the thing being waived, however worded.
+_ASK_TOKENS = frozenset(
+    {"ask", "asking", "asked", "confirmation", "confirm", "confirmations",
+     "confirming"}
 )
+# Strong reach verbs: an allowance/waiver surfaces reach only when one of
+# these lets the agent act on the user's resources.
+_REACH_TOKENS = frozenset(
+    {"push", "write", "merge", "commit", "delete", "overwrite", "deploy",
+     "transfer", "execute", "approve", "run", "install", "modify"}
+)
+# The always-modal: "always <reach-verb>" is the tested strong grant form
+# ("always push", "always merge"); a capability statement like "I can run"
+# is left alone.
+_ALWAYS_MODAL = frozenset({"always"})
 # Absolute path, POSIX or Windows, or a home-relative path.
 _PATH_RE = re.compile(
     r"(?:/(?:[^/\s]+/)*[^/\s]+|~/[^\s]+|[A-Za-z]:\\[^\s]+|"
     r"\.\.(?:/[^/\s]+)*)"
 )
+
+
+def _is_structural_grant(tokens: frozenset) -> bool:
+    """Structural allow-rule detector over the token set of a message.
+
+    Returns True when the message waives asking/confirmation (a waiver or
+    negation token co-occurs with an ask/confirmation token), or grants an
+    always-reach command ("always" co-occurs with a strong reach verb).
+    Token-based so rephrasing cannot split an adjacent phrase.
+    """
+    if tokens & _WAIVER_TOKENS and tokens & _ASK_TOKENS:
+        return True
+    if tokens & _ALWAYS_MODAL and tokens & _REACH_TOKENS:
+        return True
+    return False
 
 
 def _case_and_camel_normalize(text: str) -> str:
@@ -118,9 +145,8 @@ def is_permission_like(text: str) -> bool:
     for word in _ALLOW_WORDS + _MODE_WORDS + _GLOBAL_GRANT_WORDS:
         if word in norm:
             return True
-    if _ALLOW_MODAL_VERB_RE.search(norm) is not None:
-        return True
-    if _SKIP_CONFIRM_RE.search(norm) is not None:
+    tokens = frozenset(norm.split())
+    if _is_structural_grant(tokens):
         return True
     if _PATH_RE.search(text or "") is not None:
         return True

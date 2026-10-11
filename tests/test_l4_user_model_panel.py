@@ -34,13 +34,17 @@ def test_panel_lists_stored_rows(tmp_path):
 
 def test_panel_render_is_html_safe(tmp_path):
     path = _populate(tmp_path)
-    # Store a value that would break an unescaped <tag> in the panel.
+    # Store a value that would otherwise let an unescaped <tag> reach the
+    # panel. Open-tag form (no "/"): a closing "</b>" would be refused by
+    # the permission guard's path layer before any rendering happens,
+    # making the test vacuous.
     m = user_model.UserModel(path=path)
     m.update_from_user_message(
-        "I want answers like <b>bold</b>", source_role="user"
+        "I prefer <bold> formatting in answers", source_role="user"
     )
     out = user_model_panel.render(path)
-    assert "<b>bold</b>" not in out  # raw tag must not reach the panel
+    assert "<bold>" not in out  # raw open tag must not reach the panel
+    assert "&lt;bold&gt;" in out  # the escape actually happened
 
 
 def test_panel_empty_when_nothing_stored(tmp_path):
