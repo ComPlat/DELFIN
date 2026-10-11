@@ -22026,6 +22026,9 @@ class OpenAIClient(_BaseClient):
         import threading as _threading
         self._steer_lock = _threading.Lock()
         self._steer_msgs: list[str] = []
+        # Callbacks run when the queued steers are put into a request (see
+        # push_steer's ``on_delivered``); discarded with them on a stop.
+        self._steer_hooks: list = []
         # Facts about the RUN itself, not things the user said —
         # see push_run_note. Shares the steer lock; both are tiny.
         self._run_notes: list[str] = []
@@ -22085,13 +22088,24 @@ class OpenAIClient(_BaseClient):
             self._run_notes.clear()
             return out
 
-    def push_steer(self, text: str) -> None:
+    def push_steer(self, text: str, *, on_delivered=None) -> None:
         """Queue a user message for MID-LOOP injection (thread-safe). Picked up
-        between tool rounds by ``stream_message`` and fed to the model."""
+        between tool rounds by ``stream_message`` and fed to the model.
+
+        ``on_delivered`` (no arguments) runs when the text is drained into
+        the model's request, never when it is drained by a stop, which hands
+        it back as not delivered. Queueing is not delivery: a session
+        message marked read at push time was marked read for a turn that
+        stopped before its next round."""
         t = (text or "").strip()
         if t:
             with self._steer_lock:
                 self._steer_msgs.append(t)
+                if on_delivered is not None:
+                    hooks = getattr(self, "_steer_hooks", None)
+                    if hooks is None:
+                        hooks = self._steer_hooks = []
+                    hooks.append(on_delivered)
 
     def _turn_cost_cap(self) -> float:
         """This turn's spending ceiling in USD, or 0.0 for no ceiling.
@@ -22190,13 +22204,26 @@ class OpenAIClient(_BaseClient):
             return notes
         return notes
 
-    def _drain_steer(self) -> list[str]:
+    def _drain_steer(self, *, delivered: bool = True) -> list[str]:
+        """Every queued steer, removed from the queue. ``delivered=True``
+        (the drains that append them to the request) runs their
+        ``on_delivered`` callbacks; ``delivered=False`` (the stop) drops
+        the callbacks unrun."""
         with self._steer_lock:
+            hooks = list(getattr(self, "_steer_hooks", None) or ())
+            if hooks:
+                self._steer_hooks.clear()
             if not self._steer_msgs:
                 return []
             out = self._steer_msgs[:]
             self._steer_msgs.clear()
-            return out
+        if delivered:
+            for hook in hooks:
+                try:
+                    hook()
+                except Exception:
+                    pass
+        return out
 
     def _open_task_state(self) -> dict:
         """Tri-state summary of this session's open tasks.
@@ -22987,7 +23014,7 @@ class OpenAIClient(_BaseClient):
                 # permissions had changed. It stays queued instead: the
                 # next turn drains it on its first round, or on its way
                 # out if that turn calls no tool.
-                _undelivered = self._drain_steer()
+                _undelivered = self._drain_steer(delivered=False)
                 _lost = ""
                 if _undelivered:
                     _lost = (" Not delivered, because the turn stopped "
