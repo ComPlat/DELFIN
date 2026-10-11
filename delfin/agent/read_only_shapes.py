@@ -362,8 +362,9 @@ def _git_switch_pr(argv, workspace: str) -> bool:
     name = branch[3:]
     if not name or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" for c in name):
         return False
-    # no leading dash and no empty/traversal component for the name itself
-    if name.startswith("-") or ".." in name:
+    # no leading dash, no path-special lone token and no traversal component
+    # for the name itself: a bare "." or ".." is a path special, not a branch
+    if name.startswith("-") or name in (".", "..") or ".." in name:
         return False
     if origin_ref != "origin/main":
         return False

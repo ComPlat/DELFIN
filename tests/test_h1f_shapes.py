@@ -170,6 +170,16 @@ def test_git_switch_pr_name_with_dotdot_does_not_fire():
     assert matches("git switch -c pr/../evil origin/main", WORKSPACE) == ""
 
 
+def test_git_switch_pr_bare_dotdot_does_not_fire():
+    # reviewer-s28 probe spelling: a lone ".." name is a path special
+    assert matches("git switch -c pr/.. origin/main", WORKSPACE) == ""
+
+
+def test_git_switch_pr_bare_dot_does_not_fire():
+    # reviewer-s28 probe spelling: a lone "." name is a path special
+    assert matches("git switch -c pr/. origin/main", WORKSPACE) == ""
+
+
 def test_git_switch_pr_name_with_inner_dotdot_does_not_fire():
     assert matches("git switch -c pr/a..b origin/main", WORKSPACE) == ""
 
