@@ -154,16 +154,24 @@ def _is_structural_grant(tokens) -> bool:
         # and "I prefer you always push" (i..you..always, 'that' elided)
         # are agent-directed clauses and are grants. No preceding first-
         # person at all => unnamed/agent grant.
+        # The checks below scan the FULL left context before the modal,
+        # not just the run up to the nearest first-person: a compound
+        # subject like "you and I" hides the "you" behind the adjacent
+        # "i" ("I prefer you and I always push"), and a complementizer
+        # ("that you and I always push") hides both. Any second-person
+        # token or "that" anywhere before the modal means the reach
+        # clause is agent-directed, so it is a grant.
+        left = tokens[:i]
+        if "that" in left:
+            return True  # complementizer opens an agent clause - a grant
+        if _SECOND_PERSON & frozenset(left):
+            return True  # a "you" subject before the modal - a grant
         j = i - 1
         while j >= 0 and tokens[j] not in _FIRST_PERSON:
             j -= 1
         if j < 0:
             return True  # no first-person subject in this message - a grant
         run = tokens[j:i]
-        if "that" in run:
-            return True  # complementizer opens an agent clause - a grant
-        if _SECOND_PERSON & frozenset(run):
-            return True  # "you" subject before the modal - a grant
         # A run longer than the bare pronoun must carry the shared-subject
         # infinitive marker "to" to be a habit ("i prefer to always write").
         # A bare matrix-frame run ("i would like always push", would like) has
