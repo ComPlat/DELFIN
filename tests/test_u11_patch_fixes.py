@@ -85,7 +85,10 @@ def test_whole_request_guard_fires_when_assistant_dominates_even_with_tiny_tool(
     note = api_client._compact_between_rounds(
         msgs, 200_000, 0, "s", planning_window=_WINDOW, system_chars=0)
     assert note, "whole-request guard must fire on an assistant-heavy turn"
-    assert "compacted" in note.lower()
+    # The whole-request branch reports "summarised" (its note names the window
+    # crossing, not the tool compactor's wording) -- assert on that, which is
+    # what the fix actually returns.
+    assert "summarised" in note.lower()
 
 
 def test_whole_request_guard_counts_the_system_prompt_in_chars():

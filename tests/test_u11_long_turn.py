@@ -123,4 +123,4 @@ def test_the_whole_request_guard_covers_assistant_heavy_turns(floors):
         msgs, 100_000, 0, "s",
         planning_window=131_072, system_chars=0)
     assert note != ""                            # RED: no whole-request guard today
-    assert "compacted" in note
+    assert "summarised" in note                  # the whole-request branch wording
