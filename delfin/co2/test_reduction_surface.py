@@ -83,7 +83,7 @@ class TestSurgery:
         return Atoms([l.split()[0] for l in lines],
                      positions=[[float(x) for x in l.split()[1:4]] for l in lines])
 
-    def test_co2h_adds_one_h_at_nearest_substrate_oxygen(self):
+    def test_co2h_adds_one_h_at_distal_substrate_oxygen(self):
         atoms = self._atoms()
         out = rs._apply_station_surgery(atoms, 1, self.SUBSTRATE_START)
         assert len(out) == len(atoms)  # re-bound, not appended
@@ -91,22 +91,28 @@ class TestSurgery:
         # tail keeps the O,C,O block, the donor H follows AFTER it
         assert symbols[3:6] == ["O", "C", "O"]
         assert symbols[6] == "H"
-        # and sits at ~1.0 A from the anchored O (the substrate O nearest
-        # the metal, index 3)
-        d = np.linalg.norm(out.positions[6] - out.positions[3])
+        # and sits at ~1.0 A from the DISTAL O (idx 5, farthest from the
+        # metal) — the one that later leaves as H2O. Protonating the
+        # proximal O (idx 3) would leave a hydroxamate, not a CO ligand.
+        d = np.linalg.norm(out.positions[6] - out.positions[5])
         assert d == pytest.approx(1.00, abs=0.05)
+        # the proximal O (idx 3) stays un-protonated
+        d_prox = np.linalg.norm(out.positions[6] - out.positions[3])
+        assert d_prox > 1.5
 
     def test_co2h2_adds_second_h_at_same_oxygen(self):
         atoms = self._atoms()
         step1 = rs._apply_station_surgery(atoms, 1, self.SUBSTRATE_START)
-        out = rs._apply_station_surgery(step1, 2, self.SUBSTRATE_START)
+        # substrate start re-detected like the chain does (tail shifts)
+        out = rs._apply_station_surgery(step1, 2, self.SUBSTRATE_START - 1)
         symbols = out.get_chemical_symbols()
         # tail is O, C, O + two substrate H at the end
         assert symbols[3:6] == ["O", "C", "O"]
         assert symbols[6] == "H" and symbols[7] == "H"
-        # BOTH hydrogens sit at the SAME oxygen — the anchored one (idx 3)
-        d1 = np.linalg.norm(out.positions[6] - out.positions[3])
-        d2 = np.linalg.norm(out.positions[7] - out.positions[3])
+        # BOTH hydrogens sit at the SAME distal oxygen — the anchored one
+        # is idx 3, the distal one idx 5
+        d1 = np.linalg.norm(out.positions[6] - out.positions[5])
+        d2 = np.linalg.norm(out.positions[7] - out.positions[5])
         assert d1 == pytest.approx(1.00, abs=0.05)
         assert d2 == pytest.approx(1.00, abs=0.05)
 

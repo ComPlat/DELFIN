@@ -476,7 +476,14 @@ def run_reduction_surface(coordinator_outdir: str,
 
         try:
             if i > 0:
-                # Geometry surgery from the previous station's optimized xyz
+                # Geometry surgery from the previous station's optimized xyz.
+                # The substrate block start is RE-DETECTED on the current
+                # geometry every station: each surgery reorders the tail
+                # (protons move into it), so a start index computed before
+                # the loop goes stale and the next surgery protonates the
+                # wrong atom — measured on the real 81-105_87 geometry.
+                substrate_start = _substrate_tail_start(
+                    current_atoms, control, coordinator_outdir)
                 surgery = _apply_station_surgery(current_atoms, i, substrate_start)
                 current_atoms = surgery
             station_xyz = os.path.join(st_dir, f"station_{name}.xyz")
@@ -533,7 +540,10 @@ def run_reduction_surface(coordinator_outdir: str,
 
         # last station: split off the leaving H2O for the product endpoint
         if i == len(STATIONS) - 1:
-            body, water = _split_water(current_atoms, substrate_start)
+            body, water = _split_water(
+                current_atoms,
+                _substrate_tail_start(current_atoms, control,
+                                      coordinator_outdir))
             body_xyz = os.path.join(st_dir, "station_co_body.xyz")
             _write_xyz(body_xyz, body, comment="complex+CO body after H2O release")
             entry["body_xyz"] = body_xyz
@@ -577,8 +587,9 @@ def _apply_station_surgery(atoms: Atoms, station_idx: int,
                            substrate_start: int) -> Atoms:
     """Produce the next station's geometry from the current one.
 
-    co2  -> co2h : add one H at the substrate O nearest to the metal
-                   (the anchored O — the one that later leaves as H2O)
+    co2  -> co2h : add one H at the DISTAL substrate O (farthest from the
+                   metal — the one that later leaves as H2O; the proximal
+                   O and the C stay bound as the CO ligand)
     co2h -> co2h2: add a second H at the SAME oxygen (H2O leaves as water)
     co2h2 -> co  : no surgery — the H2O split happens after this station
 
@@ -586,19 +597,24 @@ def _apply_station_surgery(atoms: Atoms, station_idx: int,
     contiguous and every following station surgery and NEB run sees the
     same heavy-atom correspondence.
     """
-    if station_idx == 1:
+    if station_idx in (1, 2):
         metal_idx = _coord.detect_metal_index(atoms)
-        anchor = _nearest_substrate_oxygen(atoms, substrate_start, metal_idx,
-                                           exclude=None)
-        donor = _nearest_free_hydrogen_index(atoms, anchor)
-        return _add_hydrogen_to_tail(atoms, anchor, donor, substrate_start)
-    if station_idx == 2:
-        metal_idx = _coord.detect_metal_index(atoms)
-        anchor = _nearest_substrate_oxygen(atoms, substrate_start, metal_idx,
-                                           exclude=None)
-        # the first proton is already bound to this O (< 1.2 A) and must
-        # not be picked again; the next-nearest free H is the donor
-        donor = _nearest_free_hydrogen_index(atoms, anchor)
+        # Always the distal O: the SAME oxygen every station protonates is
+        # the one _split_water removes as H2O. (Protonating the proximal,
+        # metal-bound O would leave a hydroxamate, not a CO ligand.)
+        anchor = max(
+            (i for i in range(substrate_start, len(atoms))
+             if atoms[i].symbol == "O"),
+            key=lambda i: float(np.linalg.norm(
+                atoms.positions[i] - atoms.positions[metal_idx])))
+        if station_idx == 2:
+            # the first proton is already bound to this O (< 1.2 A) and is
+            # skipped by the bonding-distance check inside the donor search;
+            # a tail-index exclusion would also remove legitimate donor
+            # hydrogens that already live in the tail block.
+            donor = _nearest_free_hydrogen_index(atoms, anchor)
+        else:
+            donor = _nearest_free_hydrogen_index(atoms, anchor)
         return _add_hydrogen_to_tail(atoms, anchor, donor, substrate_start)
     return atoms.copy()
 

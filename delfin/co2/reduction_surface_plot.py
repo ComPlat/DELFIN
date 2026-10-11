@@ -97,8 +97,6 @@ def _draw_panel(ax, points, ts_results, source: str, two_panels: bool) -> None:
         station_slots.append(slot)
         labels.append(p["label"])
         slot += 2.0  # room for the TS point in between
-    if points:
-        labels.append("")
 
     prev_point: Optional[Dict[str, Any]] = None
     for i, p in enumerate(points):
@@ -140,7 +138,7 @@ def _draw_panel(ax, points, ts_results, source: str, two_panels: bool) -> None:
     for x, y, label in gap_labels:
         ax.text(x, y, label, ha="center", va="bottom", color="#cc3311",
                 fontsize=8, rotation=0)
-    ax.set_xticks(station_slots + ([len(labels) - 1] if labels else []))
+    ax.set_xticks(station_slots)
     ax.set_xticklabels(labels)
     ax.axhline(0.0, color="grey", linewidth=0.5)
     if xs or ts_x:
