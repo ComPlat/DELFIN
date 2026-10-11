@@ -102,13 +102,25 @@ def test_the_whole_request_guard_covers_assistant_heavy_turns(floors):
     dominant term must still be compacted against the planning window. The
     whole-request guard is separate from the tool-only elider.
 
+    Uses a 4-round turn (goal + 4 complete tool rounds), because the in-turn
+    compactor only fires when there are rounds older than the kept tail to
+    summarise; a single-round toy turn could never compact and would prove
+    nothing.
+
     RED on current code: _compact_between_rounds has no planning_window
     parameter and no whole-request guard, so an assistant-heavy turn reports no
     compaction and the request stays over the window."""
+    msgs = [{"role": "user", "content": "goal", "tool_calls": None}]
+    for i in range(4):
+        msgs.append({"role": "assistant",
+                     "content": "x" * 170_000,
+                     "tool_calls": [{"id": f"c{i}", "type": "function",
+                                     "function": {"name": "bash",
+                                                  "arguments": "{}"}}]})
+        msgs.append({"role": "tool", "tool_call_id": f"c{i}",
+                     "content": "x" * 100})
     note = api_client._compact_between_rounds(
-        [{"role": "user", "content": "goal"},
-         {"role": "assistant", "content": "x" * 500_000},
-         {"role": "tool", "tool_call_id": "c0", "content": "x" * 100}],
-        100_000, 0, "s", planning_window=131_072, system_chars=0)
+        msgs, 100_000, 0, "s",
+        planning_window=131_072, system_chars=0)
     assert note != ""                            # RED: no whole-request guard today
     assert "compacted" in note
