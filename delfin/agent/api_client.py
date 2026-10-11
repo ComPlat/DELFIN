@@ -2195,10 +2195,28 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # Redirections: > file, >> file, 2> file, &> file (not >&1 / &2) --
         # per segment, so the directory a `cd` set applies to them.
         _redirect = re.compile(r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)")
-        for segment in re.split(r"[;&|]{1,2}|\n", cmd):
+        # `>&file` and `>| file` write a file too, but their `&` and `|`
+        # would split the segment in two below and the target would be lost.
+        # `>&2`, `>&-` and `2>&1` duplicate a descriptor and stay as they are.
+        _scan = re.sub(
+            r">&(?!\s*(?:\d+|-)(?=[\s;&|)]|$))\s*|>\|\s*", "> ", cmd)
+        # A `>` inside quotes is text only for a program that does not
+        # run its argument: `bash -c '... > f'`, `eval "... > f"` and
+        # `awk '{print > "f"}'` write that file, and so does a command
+        # substitution. The spans are found on the whole command, quotes
+        # and here-documents read as the shell reads them, because the
+        # split below ignores quotes and cuts `"a;b"` in two.
+        _text = _quoted_text_spans(_scan)
+        _cuts = [0]
+        for _sep in re.finditer(r"[;&|]{1,2}|\n", _scan):
+            _cuts += [_sep.start(), _sep.end()]
+        _cuts.append(len(_scan))
+        for _k in range(0, len(_cuts), 2):
+            segment = _scan[_cuts[_k]:_cuts[_k + 1]]
             seg = segment.strip()
             if not seg:
                 continue
+            _off = _cuts[_k] + len(segment) - len(segment.lstrip())
             try:
                 argv0 = shlex.split(seg, comments=True)
             except ValueError:
@@ -2209,6 +2227,8 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 _follow_cd(argv0)
                 continue
             for m in _redirect.finditer(seg):
+                if any(lo <= _off + m.start() < hi for lo, hi in _text):
+                    continue    # `>` inside quotes is text, not a redirection
                 tok = m.group(1)
                 if not tok.startswith("&"):
                     _add(tok)
@@ -3374,6 +3394,141 @@ def _sed_script_is_pure(script: str) -> bool:
         return False
     return all(_SED_PURE_STMT.fullmatch(stmt)
                for stmt in script.split(";") if stmt.strip())
+
+
+# Programs whose quoted arguments are text they print, match or store --
+# never a script they run. Only for these is a quoted `>` not a redirection.
+_QUOTED_TEXT_PROGRAMS = frozenset({
+    "git", "echo", "printf", "grep", "rg", "cp", "mv", "cat", "ls", "touch",
+    "mkdir", "test"})
+# git only where the quoted argument is a message or a pattern, named
+# directly: `git -c alias.x='!...'` and `git config alias.x '!...'` carry a
+# script.
+_GIT_MESSAGE_SUBCOMMANDS = frozenset(
+    {"commit", "tag", "merge", "log", "grep", "show", "notes", "stash"})
+
+
+def _quoted_text_spans(cmd: str) -> list:
+    """``(start, end)`` of the spans of *cmd* whose ``>`` is text.
+
+    Input: a whole shell command. Output: the quoted spans and here-document
+    bodies that belong to a command in :data:`_QUOTED_TEXT_PROGRAMS` (git
+    only with a subcommand in :data:`_GIT_MESSAGE_SUBCOMMANDS`); the
+    redirection scanner skips an operator inside one of them, so ``git
+    commit -m "a -> b"`` names no file ``b``.
+
+    The command is read once, the way bash reads it: ``'..'``, ``".."``
+    with backslash escapes, ``$'..'`` with backslash escapes, a backslash
+    outside quotes, ``#`` comments at a word start, and here-document
+    bodies (several per line, in order) as data. Commands are separated
+    at ``;``, ``|``, ``&`` (not the ``&`` of ``>&``/``<&``) and newline
+    outside all of these. Reading quotes per piece of a quote-unaware
+    split was rejected: ``echo "a;echo " > f`` cut there leaves a piece
+    that starts inside a quote, and the real ``> f`` read as quoted.
+
+    Returns ``[]`` -- no text anywhere, every ``>`` a redirection -- when a
+    quote or here-document is unterminated (bash would not run the
+    command), and a command gets no spans when it contains ``$(`` or a
+    backtick, which run inside quotes and unquoted delimiters alike.
+    Cost: one linear pass plus ``shlex.split`` per command.
+    """
+    import shlex
+    n = len(cmd)
+    cmds: list = []          # (start, end, quote spans, here-doc bodies)
+    spans: list = []
+    bodies: list = []
+    pending: list = []       # here-documents opened on the current line
+    start = 0
+    i = 0
+
+    def _close(end: int) -> None:
+        cmds.append((start, end, spans, bodies))
+
+    while i < n:
+        c = cmd[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'" or (c == "$" and cmd.startswith("$'", i)):
+            ansi = c == "$"
+            j = i + (2 if ansi else 1)
+            while j < n and cmd[j] != "'":
+                j += 2 if (ansi and cmd[j] == "\\") else 1
+            if j >= n:
+                return []
+            spans.append((i, j + 1))
+            i = j + 1
+            continue
+        if c == '"':
+            j = i + 1
+            while j < n and cmd[j] != '"':
+                j += 2 if cmd[j] == "\\" else 1
+            if j >= n:
+                return []
+            spans.append((i, j + 1))
+            i = j + 1
+            continue
+        if c == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|()"):
+            nl = cmd.find("\n", i)
+            i = n if nl == -1 else nl
+            continue
+        if cmd.startswith("<<<", i):
+            i += 3
+            continue
+        if cmd.startswith("<<", i):
+            m = _HEREDOC_START_RE.match(cmd, i)
+            if m and (m.group(3) or m.group(4)):
+                pending.append((m.group(3) or m.group(4), bool(m.group(1)),
+                                bool(m.group(2))))
+                i = m.end()
+                continue
+            return []        # `<<\EOF`, `<<END-X`: a body this does not read
+        if c == "\n" and pending:
+            pos = i + 1
+            for tag, strip_tabs, quoted in pending:
+                for line_start, line in _lines_from(cmd, pos):
+                    candidate = line.lstrip("\t") if strip_tabs else line
+                    if candidate.strip() == tag:
+                        bodies.append((pos, line_start, quoted))
+                        pos = line_start + len(line) + 1
+                        break
+                else:
+                    return []
+            pending = []
+            _close(i)
+            spans, bodies = [], []
+            start = i = min(pos - 1, n)
+            continue
+        if c in ";|\n" or (c == "&" and (i == 0 or cmd[i - 1] not in "<>")):
+            _close(i)
+            spans, bodies = [], []
+            start = i + 1
+        i += 1
+    if pending:
+        return []
+    _close(n)
+
+    out: list = []
+    for lo, hi, qs, docs in cmds:
+        text = cmd[lo:hi]
+        if "$(" in text or "`" in text:
+            continue
+        try:
+            argv = shlex.split(text, comments=True)
+        except ValueError:
+            continue
+        while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+            argv = argv[1:]
+        name = Path(argv[0]).name if argv else ""
+        if name not in _QUOTED_TEXT_PROGRAMS or (
+                name == "git" and (len(argv) < 2
+                                   or argv[1] not in _GIT_MESSAGE_SUBCOMMANDS)):
+            continue
+        out.extend(qs)
+        out.extend((b0, b1) for b0, b1, quoted in docs
+                   if quoted or not any(
+                       r in cmd[b0:b1] for r in ("$(", "`")))
+    return out
 
 
 def _word_spans(cmd: str, start: int, end: int) -> list:
@@ -4897,7 +5052,7 @@ _NETWORK_TOOLS: frozenset[str] = frozenset({
 # dispatched without ever consulting the gate.
 _GATED_TOOLS: frozenset[str] = frozenset({
     "write_file", "edit_file", "multi_edit", "bash", "bash_background",
-    "run_tests",
+    "run_tests", "make_plot",
 }) | _NETWORK_TOOLS
 
 # What may run with NO permissions object. Such a caller has no workspace,
@@ -5010,6 +5165,7 @@ _PLAN_READONLY_MCP_TOOLS: frozenset[str] = (
 # test_the_deny_list_only_names_real_tools says so.
 _WRITE_TOOL_NAMES: frozenset[str] = frozenset({
     "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
+    "make_plot",
 })
 
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
@@ -8235,6 +8391,24 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "make_plot",
+            "description": (
+                "Plot into the workspace and show it in the chat. spec: "
+                "{kind: line|scatter|bar|histogram|box, x, y, "
+                "title, ...}."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "spec": {"type": "object"},
+                },
+                "required": ["spec"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remote_trigger",
             "description": (
                 "POST a small JSON payload to the user-configured "
@@ -10941,8 +11115,22 @@ def _observe_test_evidence(
 # the rounds after it stay warm until the budget is crossed again.
 _ELIDE_TO_FRACTION = 0.6
 
+#: Whole-request compaction cliff (shared with the engine's auto-compact):
+#: when the WHOLE request -- tool output + assistant reasoning + the system
+#: prompt -- reaches this share of the planning window, older rounds are
+#: summarised even if the tool-only budget is far from exhausted. The tool
+#: elider and the in-turn compactor both only measure role=="tool" content;
+#: this is the guard that keeps assistant-heavy turns over a model that
+#: could not hold them before the tool budget ran out.
+_WHOLE_REQUEST_COMPACT_PCT = 0.95
 
-def _tool_context_char_budget(caps) -> int:
+#: Characters per token used to convert the token planning window into a
+#: char budget, kept consistent with _tool_context_char_budget's 4 chars/token
+#: so a whole-request comparison never mixes units (operator finding 1).
+_CHARS_PER_TOKEN = 4
+
+
+def _tool_context_char_budget(caps, model: str = "") -> int:
     """Char budget for accumulated tool output before the OLDEST results are
     elided, scaled to the model's real context window.
 
@@ -10961,44 +11149,237 @@ def _tool_context_char_budget(caps) -> int:
         ctx = 0
     if ctx <= 0:
         return floor
-    # The window the engine plans with, not the model's raw one: a
-    # capped session (agent.context_window_cap) budgeted its in-turn
-    # elision against the full 131k and ran into context_length_exceeded
-    # before any elision fired (LI, 2026-09-26).
+    # The SAME window the engine plans with — not the model's raw and not the
+    # bare capped window. The engine raises the window to the observed floor
+    # first, then caps; a capped in-turn budget that stayed anchored to the raw
+    # table window planned the turn against a DIFFERENT (lower) window than the
+    # engine's once a floor was learned. planning_window is the one source for
+    # both, and model names it so a floor for THIS model is not applied to it.
     try:
-        from .context_window import capped_window
-        ctx = capped_window(ctx)
+        from .context_window import planning_window
+        ctx = planning_window(ctx, model=model)
     except Exception:
-        pass
-    return max(floor, int(ctx * 0.45 * 4))
+        try:
+            from .context_window import capped_window
+            ctx = capped_window(ctx)
+        except Exception:
+            pass
+    return max(floor, int(ctx * 0.45 * _CHARS_PER_TOKEN))
+
+
+def _planning_window_for_turn(self, caps) -> int:
+    """The token planning window the round-loop budgets this turn against.
+
+    Mirrors the engine's own floor-raised-then-capped window so the in-turn
+    budget and the engine agree; caps.context_window is the raw model window
+    (tokens), and model names the observed floor.
+    """
+    try:
+        from .context_window import planning_window
+        w = planning_window(int(getattr(caps, "context_window", 0) or 0),
+                            model=str(getattr(self, "model", "") or ""))
+        return int(w)
+    except Exception:
+        return int(getattr(caps, "context_window", 0) or 0)
 
 
 def _compact_between_rounds(api_messages: list, budget_chars: int,
-                            turn_rows_base: int, session_id: str) -> str:
+                            turn_rows_base: int, session_id: str,
+                            planning_window: int = 0,
+                            system_chars: int = 0,
+                            schema_chars: int = 0) -> str:
     """Compact older rounds of the running turn in place when the tool
     output is still over budget after the elision; returns a one-line
     notice when it did, "" otherwise. Never raises: a failed compaction
-    leaves the turn exactly as it was."""
+    leaves the turn exactly as it was.
+
+    ``planning_window`` (tokens) also guards the WHOLE request: assistant
+    text and tool-call arguments can push a turn over the window while its
+    tool output sits far under the tool budget. The request is summed in
+    chars (``_CHARS_PER_TOKEN`` per token): every row's content and
+    tool-call arguments, ``schema_chars`` (the advertised tool schemas,
+    sent outside the rows) and ``system_chars`` -- the latter only when no
+    system/developer row is in ``api_messages``, since the client carries
+    the prompt as row 0 and would otherwise count it twice. Above
+    ``_WHOLE_REQUEST_COMPACT_PCT`` of the window the tool-only compactor is
+    given ``budget - non_tool`` (at least 1) as its tool-char budget, which
+    lies under the current tool chars, so it summarises old rounds.
+    """
     try:
         from . import in_turn_compaction as _itc
         new, record = _itc.compact(
             api_messages, budget_chars, turn_rows_base=turn_rows_base)
     except Exception:
         return ""
-    if not record:
-        return ""
-    api_messages[:] = new
+    if record:
+        api_messages[:] = new
+        try:
+            from .compaction_log import record_compaction
+            record_compaction(
+                session_id, kind="in_turn",
+                messages_compacted=int(record.get("rounds_compacted", 0) or 0),
+                note=str(record.get("note", "") or ""))
+        except Exception:
+            pass
+        _note = (f"\n🗜️ Context compacted within the turn: "
+                 f"{int(record.get('rounds_compacted', 0) or 0)} older "
+                 "round(s) summarised; the working state and your goals are "
+                 "kept.\n")
+    else:
+        # No tool-only compaction fired. Do NOT return: the whole-request
+        # guard below still has to run -- an assistant-heavy turn can exceed
+        # the window with its tool output sitting far under the tool budget,
+        # and the tool compactor being silent is precisely that case.
+        _note = ""
     try:
-        from .compaction_log import record_compaction
-        record_compaction(
-            session_id, kind="in_turn",
-            messages_compacted=int(record.get("rounds_compacted", 0) or 0),
-            note=str(record.get("note", "") or ""))
+        if planning_window > 0:
+            from . import in_turn_compaction as _itc2
+            whole = 0
+            has_system_row = False
+            for m in api_messages:
+                whole += len(str(m.get("content") or ""))
+                for tc in m.get("tool_calls") or []:
+                    try:
+                        whole += len(str(
+                            (tc.get("function") or {}).get("arguments") or ""))
+                    except Exception:
+                        pass
+                if m.get("role") in ("system", "developer"):
+                    has_system_row = True
+            if not has_system_row:
+                whole += int(system_chars or 0)
+            whole += int(schema_chars or 0)
+            capacity = int(int(planning_window) * _CHARS_PER_TOKEN)
+            budget = int(capacity * _WHOLE_REQUEST_COMPACT_PCT)
+            if whole > budget:
+                tool_chars = sum(
+                    len(str(m.get("content") or ""))
+                    for m in api_messages if (m.get("role") == "tool"))
+                non_tool = whole - tool_chars
+                tool_room = max(int(budget) - int(non_tool), 1)
+                new2, rec2 = _itc2.compact(
+                    api_messages, tool_room, turn_rows_base=turn_rows_base)
+                if rec2:
+                    api_messages[:] = new2
+                    try:
+                        from .compaction_log import record_compaction
+                        record_compaction(
+                            session_id, kind="in_turn_whole_request",
+                            messages_compacted=(
+                                int(rec2.get("rounds_compacted", 0) or 0)),
+                            note=str(rec2.get("note", "") or ""))
+                    except Exception:
+                        pass
+                    _extra = (f"\n🗜️ Context compacted, the whole request was "
+                              f"over the window: "
+                              f"{int(rec2.get('rounds_compacted', 0) or 0)} older "
+                              "round(s) summarised.\n")
+                else:
+                    _extra = ""
+                _note = ((_note or "") + _extra)
+    except Exception:
+        # Never raises: a guard that broke leaves the turn as it was.
+        pass
+    return _note or ""
+
+
+_PENDING_JOBS_MARK = "\u2699 STILL PENDING"
+# At most this many job ids on the note; the rest are counted. 12 ids of
+# <= 80 chars keep the line under ~1.1 kB however long the watch list is.
+_PENDING_JOBS_MAX = 12
+# The watch file is read only up to this size; a larger one gives no note.
+_PENDING_WATCH_MAX_BYTES = 1 << 20
+# Ids as job_monitor issues them: SLURM (digits, array suffixes) and
+# bash_jobs (hex); CI ids are matched with job_monitor._CI_ID_RE.
+_PENDING_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,40}$")
+
+
+def _append_pending_jobs_to_summary(api_messages: list,
+                                    pending_jobs_note: str) -> None:
+    """Put ``pending_jobs_note`` on the newest compaction summary and take
+    any earlier note off the older ones.
+
+    Input: the request rows (changed in place) and a one-line note, ""
+    when nothing is pending. A summary is a row whose content starts with
+    ``in_turn_compaction._SUMMARY_HEADER``; compaction never drops one, so
+    a turn compacted N times holds N summaries. Output: the newest summary
+    ends in ``"\\n\\n" + note``; every older summary loses its note. The
+    request therefore carries one note, the one read at the latest
+    compaction, and a job that ended between two compactions is not named
+    as running. No summary row: nothing changes. Never raises.
+
+    Cost: removing an older note rewrites that summary, so the prefix
+    cache ends there instead of at the newest summary. The newest summary
+    is spliced in where the oldest dropped round stood, directly after the
+    previous summary, so the extra uncached text is that one summary.
+    """
+    try:
+        header = "[Conversation summary"
+        try:
+            from . import in_turn_compaction as _itc
+            header = _itc._SUMMARY_HEADER
+        except Exception:
+            pass
+        mark = "\n\n" + _PENDING_JOBS_MARK
+        newest = None
+        for i, m in enumerate(api_messages):
+            c = (m or {}).get("content")
+            if isinstance(c, str) and c.startswith(header):
+                if newest is not None:
+                    prev = api_messages[newest]["content"]
+                    cut = prev.find(mark)
+                    if cut >= 0:
+                        api_messages[newest]["content"] = prev[:cut]
+                newest = i
+        if newest is None:
+            return
+        c = api_messages[newest]["content"]
+        cut = c.find(mark)
+        if cut >= 0:
+            c = c[:cut]
+        if pending_jobs_note:
+            c = c + "\n\n" + pending_jobs_note
+        if c != api_messages[newest]["content"]:
+            api_messages[newest]["content"] = c
     except Exception:
         pass
-    n = int(record.get("rounds_compacted", 0) or 0)
-    return (f"\n🗜️ Context compacted within the turn: {n} older round(s) "
-            "summarised; the working state and your goals are kept.\n")
+
+
+def _read_watch_jobs(path) -> dict:
+    """The ``jobs`` mapping of a job_monitor watch file, or {}.
+
+    Opened ``O_NONBLOCK | O_NOFOLLOW`` and read only when it is a regular
+    file of at most ``_PENDING_WATCH_MAX_BYTES``: a FIFO, a symlink, a
+    larger file, malformed JSON or a non-mapping ``jobs`` gives {}. The
+    workspace is writable by the model, so the read is bounded in time
+    and size. Never raises."""
+    import stat as _stat
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(
+            os, "O_NOFOLLOW", 0)
+        fd = os.open(str(path), flags)
+    except Exception:
+        return {}
+    try:
+        st = os.fstat(fd)
+        if (not _stat.S_ISREG(st.st_mode)
+                or st.st_size > _PENDING_WATCH_MAX_BYTES):
+            return {}
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            raw = fh.read(_PENDING_WATCH_MAX_BYTES + 1)
+        if len(raw) > _PENDING_WATCH_MAX_BYTES:
+            return {}
+        jobs = json.loads(raw.decode("utf-8")).get("jobs")
+        return jobs if isinstance(jobs, dict) else {}
+    except Exception:
+        return {}
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _elide_old_tool_results(
@@ -12777,6 +13158,9 @@ class _DocToolExecutor:
         # probes only; credential values never appear in the output).
         if name == "check_environment":
             return self._execute_check_environment(arguments, permissions)
+
+        if name == "make_plot":
+            return self._execute_make_plot(arguments, permissions)
 
         # Web tools — outbound HTTP, no filesystem side-effects. The
         # web_tools module enforces its own URL deny-list (localhost /
@@ -17446,6 +17830,51 @@ class _DocToolExecutor:
             return None
         return None
 
+    def _patch_write_targets(
+        self, cmd: str, cwd_str: str, perms: "KitToolPermissions"
+    ) -> "tuple[list | None, Optional[str]]":
+        """The git/patch write targets of *cmd*, plus a refusal-or-None.
+
+        ``_bash_write_targets`` recognises redirections and per-command
+        destinations, but not a patch whose files it would have to read
+        (``git apply file.diff``) nor a pathspec form (``git checkout -- x``).
+        ``patch_targets.targets`` answers those; a patch that can only be
+        read from stdin / a pipe / a mailbox returns UNKNOWABLE, which here
+        is a refusal (``(refusal_json, err)``) -- the caller cannot gate
+        what it cannot name, and the command may not run.
+
+        Returns ``(paths, None)`` (possibly empty) to gate, or
+        ``(None, error_json)`` to block. If the patch_targets module is
+        unavailable the git/patch commands fall through to the existing
+        deny patterns unchanged (no new hole)."""
+        try:
+            from . import patch_targets as _pt
+        except Exception:
+            return [], None
+        try:
+            result = _pt.targets(cmd, cwd_str) if cwd_str else _pt.targets(cmd)
+        except Exception:
+            # A reader that broke on a patch command has not named its
+            # targets: that command may not run. Anything else is unchanged.
+            if not re.search(r"(?<![\w./-])(?:git|patch)(?![\w.-])", cmd):
+                return [], None
+            result = getattr(_pt, "UNKNOWABLE", None)
+        if result is getattr(_pt, "UNKNOWABLE", None):
+            _record_security_event(
+                "unknowable_patch_refused", "bash", cmd[:80], blocked=True)
+            return None, json.dumps({"error": (
+                "blocked: the files this git/patch command would write "
+                "cannot be read from it -- the patch comes from a pipe, "
+                "xargs, a mailbox or a here-document, or the named patch is "
+                "missing, not a regular file or over 16 MB -- so they "
+                "cannot be checked against the write scope. Name a readable "
+                "patch file on the command line (e.g. `git apply "
+                "file.diff`, `patch -p1 -i file.diff`) or the paths "
+                "(`git restore <path>`), or ask the user for the directory "
+                "you need."
+            )})
+        return list(result), None
+
     def _gate_bash_write_targets(
         self, cmd: str, arguments: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -17480,8 +17909,6 @@ class _DocToolExecutor:
                     "that asked — ask the user what they want changed."
                 )})
             targets = _bash_write_targets(cmd)
-            if not targets:
-                return None
             cwd_arg = str(arguments.get("cwd", "") or "")
             base = perms.workspace
             if cwd_arg:
@@ -17489,6 +17916,22 @@ class _DocToolExecutor:
                     cwd_arg, perms, for_read=True)
                 if not err:
                     base = resolved_cwd
+            # `git apply` / `git am` / `patch` / `git checkout -- paths` /
+            # `git restore` write files _bash_write_targets cannot name (a
+            # patch names its files inside; a pathspec names its own here).
+            # Ask patch_targets for those exact paths and fold them in so
+            # they pass the same gate; a patch read from stdin / a pipe / a
+            # mailbox is UNKNOWABLE and the command is refused outright --
+            # "we could not check what it would write, so it may not run."
+            patch_paths, patch_err = self._patch_write_targets(
+                cmd, str(base), perms)
+            if patch_err is not None:
+                return patch_err
+            if patch_paths:
+                targets = list(targets) + [
+                    t for t in patch_paths if t not in targets]
+            if not targets:
+                return None
             for target in targets:
                 path = Path(target).expanduser()
                 if not path.is_absolute():
@@ -20159,6 +20602,62 @@ class _DocToolExecutor:
         )
         return json.dumps(rec, indent=2, ensure_ascii=False)
 
+    def _execute_make_plot(self, arguments: dict, permissions) -> str:
+        """Render a declarative plot spec into the workspace.
+
+        Input: ``{"spec": {...}}`` (``chat_plots`` module docstring).
+        Output: the ``DELFIN_CARD:`` plot result (``chat_plots.card_result``)
+        or a JSON error. Refused before anything is written: no permissions
+        or no workspace, plan mode, an output path the write gate
+        (``_gate_write_path``) refuses. A ``data: {file: ...}`` source is
+        read only after ``_check_read_access`` admits it (secret-deny list,
+        read roots). The model receives only the result's ``text``; the
+        loop splits it off by tool name.
+        """
+        spec = arguments.get("spec")
+        if not isinstance(spec, dict):
+            return json.dumps({
+                "error": "make_plot: spec must be an object with a 'kind'"
+            })
+        if not permissions:
+            return json.dumps({"error": (
+                "make_plot requires permissions (a workspace to write the "
+                "figure into)."
+            )})
+        ws = getattr(permissions, "workspace", None)
+        if not ws:
+            return json.dumps({"error": (
+                "make_plot requires a workspace to write the figure into."
+            )})
+        if effective_mode(permissions) == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — 'make_plot' rejected. Describe the "
+                "intended change and call exit_plan_mode."
+            )})
+        from . import chat_plots as _cp
+        try:
+            out_path = _cp.resolve_out_path(spec, Path(ws))
+        except _cp.SpecError as exc:
+            return json.dumps({"error": f"make_plot: {exc}"})
+        refuse = self._gate_write_path(
+            str(out_path), permissions, "make_plot", arguments)
+        if refuse is not None:
+            return json.dumps({"error": refuse})
+
+        def _reader(p: Path) -> str:
+            err = self._check_read_access(permissions, p, "make_plot")
+            if err is not None:
+                raise _cp.SpecError(f"data file {p} refused: {err}")
+            with p.open(encoding="utf-8") as fh:
+                return fh.read()
+
+        try:
+            return _cp.make_plot(spec, out_dir=str(ws), reader=_reader)
+        except _cp.SpecError as exc:
+            return json.dumps({"error": f"make_plot: {exc}"})
+        except Exception as exc:  # matplotlib refusing a value, ...
+            return json.dumps({"error": f"make_plot failed: {exc}"})
+
     def _execute_web_search(self, arguments: dict) -> str:
         query = (arguments.get("query", "") or "").strip()
         max_results = int(arguments.get("max_results", 8) or 8)
@@ -21626,6 +22125,9 @@ class OpenAIClient(_BaseClient):
         import threading as _threading
         self._steer_lock = _threading.Lock()
         self._steer_msgs: list[str] = []
+        # Callbacks run when the queued steers are put into a request (see
+        # push_steer's ``on_delivered``); discarded with them on a stop.
+        self._steer_hooks: list = []
         # Facts about the RUN itself, not things the user said —
         # see push_run_note. Shares the steer lock; both are tiny.
         self._run_notes: list[str] = []
@@ -21685,13 +22187,24 @@ class OpenAIClient(_BaseClient):
             self._run_notes.clear()
             return out
 
-    def push_steer(self, text: str) -> None:
+    def push_steer(self, text: str, *, on_delivered=None) -> None:
         """Queue a user message for MID-LOOP injection (thread-safe). Picked up
-        between tool rounds by ``stream_message`` and fed to the model."""
+        between tool rounds by ``stream_message`` and fed to the model.
+
+        ``on_delivered`` (no arguments) runs when the text is drained into
+        the model's request, never when it is drained by a stop, which hands
+        it back as not delivered. Queueing is not delivery: a session
+        message marked read at push time was marked read for a turn that
+        stopped before its next round."""
         t = (text or "").strip()
         if t:
             with self._steer_lock:
                 self._steer_msgs.append(t)
+                if on_delivered is not None:
+                    hooks = getattr(self, "_steer_hooks", None)
+                    if hooks is None:
+                        hooks = self._steer_hooks = []
+                    hooks.append(on_delivered)
 
     def _turn_cost_cap(self) -> float:
         """This turn's spending ceiling in USD, or 0.0 for no ceiling.
@@ -21790,13 +22303,26 @@ class OpenAIClient(_BaseClient):
             return notes
         return notes
 
-    def _drain_steer(self) -> list[str]:
+    def _drain_steer(self, *, delivered: bool = True) -> list[str]:
+        """Every queued steer, removed from the queue. ``delivered=True``
+        (the drains that append them to the request) runs their
+        ``on_delivered`` callbacks; ``delivered=False`` (the stop) drops
+        the callbacks unrun."""
         with self._steer_lock:
+            hooks = list(getattr(self, "_steer_hooks", None) or ())
+            if hooks:
+                self._steer_hooks.clear()
             if not self._steer_msgs:
                 return []
             out = self._steer_msgs[:]
             self._steer_msgs.clear()
-            return out
+        if delivered:
+            for hook in hooks:
+                try:
+                    hook()
+                except Exception:
+                    pass
+        return out
 
     def _open_task_state(self) -> dict:
         """Tri-state summary of this session's open tasks.
@@ -21868,6 +22394,80 @@ class OpenAIClient(_BaseClient):
             return False
         except Exception:
             return False
+
+    def _pending_jobs_note(self) -> str:
+        """One line naming this session's watched jobs that have not ended.
+
+        Input: ``<workspace>/.delfin/agent_watched_jobs.json``, the
+        per-workspace watch list of job_monitor, read through
+        ``_read_watch_jobs`` and only by the round loop right after a
+        compaction. An entry of another session is skipped; with no
+        session id every entry counts, as in engine.py's turn-start
+        ``check_agent_jobs``. An entry has ended when its ``last_state`` is
+        terminal or a reader marked it reported (``daemon_notified``,
+        ``wake_notified``); a bash entry counts only while the bash_jobs
+        registry reports its process running. A background shell that was
+        never passed to ``watch_job`` is not on the list.
+
+        The line goes into the model's context, so an id is listed only
+        when it has the shape job_monitor issues (``_PENDING_JOB_ID_RE``,
+        or ``_CI_ID_RE`` for a CI id) and is left out otherwise, never
+        rewritten; the kind is one of slurm/bash/ci, derived from the id
+        when the entry names anything else. At most ``_PENDING_JOBS_MAX``
+        ids, then a count. Output: the note, or "" when nothing qualifies
+        or anything fails.
+        """
+        try:
+            from . import job_monitor as _jm
+            ws = getattr(self._permissions, "workspace", None)
+            if not ws:
+                return ""
+            jobs = _read_watch_jobs(_jm._agent_watch_path(ws))
+            if not jobs:
+                return ""
+            sid = str(getattr(self._permissions, "task_session_id", "") or "")
+            ended = _jm._OK_TERMINAL_STATES | _jm._FAILURE_STATES
+            from . import bash_jobs as _bj
+            out: list[str] = []
+            for jid, entry in jobs.items():
+                if not isinstance(entry, dict):
+                    continue
+                jid = str(jid)
+                if sid and str(entry.get("session_id") or "") != sid:
+                    continue
+                if (str(entry.get("last_state") or "") in ended
+                        or entry.get("daemon_notified")
+                        or entry.get("wake_notified")):
+                    continue
+                if jid.startswith("ci:"):
+                    if not _jm._CI_ID_RE.match(jid):
+                        continue
+                    kind = "ci"
+                elif _PENDING_JOB_ID_RE.match(jid):
+                    kind = str(entry.get("kind") or "")
+                    if kind not in ("slurm", "bash"):
+                        kind = "slurm" if jid.isdigit() else "bash"
+                else:
+                    continue
+                if kind == "bash":
+                    try:
+                        job = _bj.get_registry().get(jid, ws)
+                    except Exception:
+                        job = None
+                    if job is None or job.poll() is not None:
+                        continue
+                out.append(f"{kind} job {jid}")
+            if not out:
+                return ""
+            out.sort()
+            listed = ", ".join(out[:_PENDING_JOBS_MAX])
+            if len(out) > _PENDING_JOBS_MAX:
+                listed += f" and {len(out) - _PENDING_JOBS_MAX} more"
+            return (f"{_PENDING_JOBS_MARK} at this compaction (not ended): "
+                    f"{listed}. bash_output reads a bash job; a watched "
+                    "job's result is reported in a later turn.")
+        except Exception:
+            return ""
 
     def _attach_subagent_runner(
         self, permissions: Optional["KitToolPermissions"],
@@ -22550,7 +23150,17 @@ class OpenAIClient(_BaseClient):
         # a 471 859-char tool-output budget, about eight times the entire
         # window of the model now receiving it. Re-derived per round below.
         _caps_model = self.model
-        _tool_budget = _tool_context_char_budget(_caps)
+        _tool_budget = _tool_context_char_budget(
+            _caps, model=str(_caps_model or ""))
+        # The tool schemas ride on every request outside api_messages; the
+        # whole-request guard books them. Measured once per turn: 41 244
+        # chars for 69 tools (~10 k tokens, 7.9 % of a 131 072 window).
+        try:
+            _schema_chars = (len(json.dumps(advertised_tools))
+                             if (has_doc_tools or has_calc_tools or has_coding)
+                             else 0)
+        except Exception:
+            _schema_chars = 0
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
             # A Stop the user pressed while a tool was running. The engine
@@ -22577,7 +23187,7 @@ class OpenAIClient(_BaseClient):
                 # permissions had changed. It stays queued instead: the
                 # next turn drains it on its first round, or on its way
                 # out if that turn calls no tool.
-                _undelivered = self._drain_steer()
+                _undelivered = self._drain_steer(delivered=False)
                 _lost = ""
                 if _undelivered:
                     _lost = (" Not delivered, because the turn stopped "
@@ -22624,7 +23234,8 @@ class OpenAIClient(_BaseClient):
                         api_key=getattr(self, "_api_key", ""))
                 except Exception:
                     pass
-                _tool_budget = _tool_context_char_budget(_caps)
+                _tool_budget = _tool_context_char_budget(
+                    _caps, model=str(getattr(self, "model", "") or ""))
                 _tool_result_cap = _resolve_tool_result_cap(self.model, _caps)
 
             # The turn's spending ceiling, checked where the spending
@@ -22664,8 +23275,15 @@ class OpenAIClient(_BaseClient):
             _in_turn_note = _compact_between_rounds(
                 api_messages, _tool_budget,
                 int(getattr(self, "_turn_rows_base", 0) or 0),
-                str(getattr(self, "session_id", "") or ""))
+                str(getattr(self, "session_id", "") or ""),
+                planning_window=(_planning_window_for_turn(self, _caps)),
+                schema_chars=_schema_chars)
             if _in_turn_note:
+                # The notice below reaches the user and nothing else. What is
+                # still running goes into the summary message, which the
+                # model does read (U11 phase 3: nothing forgotten).
+                _append_pending_jobs_to_summary(
+                    api_messages, self._pending_jobs_note())
                 yield StreamEvent(type="notice", text=_in_turn_note)
             # Output backstop: stop cleanly if this turn's total generated
             # tokens crossed the (very high) per-turn ceiling. Text emitted so
@@ -23639,6 +24257,13 @@ class OpenAIClient(_BaseClient):
                             and str(result).startswith("DELFIN_CARD:")):
                         from delfin.dashboard import chat_viewer as _cv
                         _cv_text = _cv.card_model_text(str(result))
+                        if _cv_text is not None:
+                            context_result = _wrap_untrusted(_cv_text)
+                    # make_plot: the same split for its plot card.
+                    if (fn_name == "make_plot"
+                            and str(result).startswith("DELFIN_CARD:")):
+                        from delfin.dashboard import chat_viewer as _cv
+                        _cv_text = _cv.card_model_text(str(result), "plot")
                         if _cv_text is not None:
                             context_result = _wrap_untrusted(_cv_text)
                     api_messages.append({

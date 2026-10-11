@@ -198,6 +198,10 @@ _NOT_CARRIED = {
     # -- one-shot per turn: the terminal sets it for THIS turn's fresh
     #    start; a resumed session has no turn behind it --
     "start_fresh",
+    # -- the time of the last user message, the task ticker's stale
+    #    reference; a resumed session marks nothing stale until the next
+    #    message, which is the safe direction --
+    "last_user_message_at",
     # -- construction: rebuilt from the launch arguments, never restored --
     "repo_dir", "backend", "provider", "effort", "client", "loader",
     "_lock", "_agent_workspace_dir", "_is_delfin_workspace", "_distiller",
