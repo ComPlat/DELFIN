@@ -593,43 +593,40 @@ def workspace_choices(ctx: Any, typed: str = "") -> list[str]:
     name starts with a dot. Asked on every keystroke, so bounded and
     never raising.
 
-    A session-worktree directory whose own session is still live is NOT
-    offered: starting a session there would nest a worktree-of-a-worktree,
-    and the earlier attempt left the tree offered in the dropdown only to
-    refuse it on Start (agent_sessions ``_on_start``). A worktree whose
-    session is gone stays offered -- it is startable and its state reports
-    ``releasable`` so the picker can offer it back.
+    A directory inside a session worktree that is held -- see
+    ``_worktree_hold_reason`` -- is NOT offered: starting there nests a
+    worktree-of-a-worktree. A worktree whose session is gone stays offered.
+    When the typed path is a held tree, ``_suggest_worktree`` says why it
+    is missing from the list.
+
+    Cost: the presence directory is read at most once per call, and the
+    decision is made once per sidecar -- the subfolders of one worktree all
+    find the same record (measured before: 199 presence reads for 200
+    entries, 200 ms per keystroke).
     """
+    rows: list = []
+    decided: dict = {}
+
     def _offer(text: str) -> bool:
         text = str(text or "").strip()
         if not text:
             return False
-        # A session worktree a live holder is in cannot be chosen. The
-        # exclusion follows the owning process and the live session, never a
-        # guess from the path: a tree whose owning PID is still alive is not
-        # offered even when the session has left the presence file (stale
-        # presence), and one a live session holds is refused too. A plain
-        # directory (no sidecar), or a record we cannot read, is always
-        # offered.
         try:
-            import os as _os
             side = read_worktree_sidecar(text)
         except Exception:
             return True
         if side is None:
             return True
-        if _live_session_in(text):
-            return False
-        pid = int(side.get("pid") or 0)
-        if pid > 0:
+        key = str(side.get("path") or text)
+        if key not in decided:
+            if not rows:
+                rows.append(_open_session_rows())
             try:
-                _os.kill(pid, 0)
-                return False
-            except ProcessLookupError:
-                pass
-            except OSError:
-                return False
-        return True
+                decided[key] = not _worktree_hold_reason(
+                    key, side, sessions=rows[0])
+            except Exception:
+                decided[key] = True
+        return decided[key]
 
     out: list[str] = []
     for d in (default_workspace(ctx), getattr(ctx, "agent_dir", None),
@@ -747,6 +744,7 @@ def _write_worktree_sidecar(info) -> None:
     import json
     import os
     import socket
+    from delfin.agent import proc_identity as _proc_identity
     try:
         path = Path(info.path) / _WORKTREE_SIDECAR
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -757,6 +755,9 @@ def _write_worktree_sidecar(info) -> None:
             "base_ref": str(info.base_ref),
             "created_at": float(info.created_at),
             "pid": os.getpid(),
+            # With the pid: a number handed out again later names a
+            # different process (proc_identity).
+            "proc_start": _proc_identity.process_start(os.getpid()),
             "host": (socket.gethostname() or "").strip(),
         }), encoding="utf-8")
     except Exception:
@@ -838,7 +839,6 @@ def _worktree_is_orphaned(side: dict, *, saved_workspaces=()) -> str:
     session list remembers the workspace, so removing it would turn a
     resume into a session that starts somewhere else without saying so.
     """
-    import os
     import socket
     tree = str(side.get("path") or "")
     if not tree:
@@ -846,16 +846,11 @@ def _worktree_is_orphaned(side: dict, *, saved_workspaces=()) -> str:
     here = (socket.gethostname() or "").strip()
     if str(side.get("host") or "").strip() != here:
         return "it belongs to another host"
-    pid = int(side.get("pid") or 0)
-    if pid > 0:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            pass
-        except OSError:
-            return f"its owning process ({pid}) may still be running"
-        else:
-            return f"its owning process ({pid}) is still running"
+    owner = _worktree_owner_alive(side)
+    if owner is None:
+        return f"its owning process ({side.get('pid')}) may still be running"
+    if owner:
+        return f"its owning process ({side.get('pid')}) is still running"
     holder = _live_session_in(tree)
     if holder:
         return f"a live session is working in it ({holder})"
@@ -941,8 +936,69 @@ def reclaim_orphaned_worktrees(workspace, *, limit: int = _SWEEP_LIMIT) -> dict:
     return report
 
 
-def _live_session_in(workspace) -> str:
+def _worktree_owner_alive(side: dict):
+    """Whether the process that made the worktree in ``side`` still runs.
+
+    True / False, or None when it cannot be asked. ``proc_identity.alive``
+    with the recorded pid, start time and host: a pid written on another
+    host is None (it names nothing here), and a pid whose start time
+    differs is a later process, so False. A sidecar written before the
+    start time was recorded degrades to the plain pid check.
+    """
+    from delfin.agent import proc_identity as _proc_identity
+    try:
+        return _proc_identity.alive(
+            int(side.get("pid") or 0), str(side.get("proc_start") or ""),
+            str(side.get("host") or "").strip())
+    except (TypeError, ValueError):
+        return False
+
+
+def _open_session_rows() -> list:
+    """session_presence's open sessions, or [] when they cannot be read."""
+    try:
+        from delfin.agent import session_presence as _presence
+        return list(_presence.open_sessions() or ())
+    except Exception:
+        return []
+
+
+def _worktree_hold_reason(workspace, side: dict | None = None, *,
+                          sessions=None) -> str:
+    """Why the session worktree ``workspace`` is in may not be started in,
+    or "" when it may (or when ``workspace`` is not in a session worktree).
+
+    Two holders: a live session working in the tree (session_presence),
+    and the process that made it, still running on this host. The second
+    covers a live session whose presence record went stale. An owner on
+    another host cannot be asked and does not hide the tree; a live session
+    there is found by the first check, which trusts other hosts' records.
+
+    ``sessions`` is a prefetched ``open_sessions()`` list so a caller that
+    asks about many paths reads the presence directory once.
+    """
+    if side is None:
+        side = read_worktree_sidecar(workspace)
+    if side is None:
+        return ""
+    tree = str(side.get("path") or workspace)
+    # inside=True: session_worktree hands a session the path at the same
+    # place inside the tree as its workspace was inside the repository, so
+    # a session working in tree/sub holds the tree.
+    holder = _live_session_in(tree, rows=sessions, inside=True)
+    if holder:
+        return f"a live session is working in it ({holder})"
+    if _worktree_owner_alive(side) is True:
+        return ("the dashboard process that created it is still running "
+                f"(pid {side.get('pid')})")
+    return ""
+
+
+def _live_session_in(workspace, rows=None, *, inside: bool = False) -> str:
     """A label for the live session whose workspace is ``workspace``, or "".
+
+    ``inside=True`` also counts a session whose workspace lies below
+    ``workspace``. ``rows`` is a prefetched ``open_sessions()`` list.
 
     Liveness is session_presence's answer, not a second one: its records
     carry pid and host and its reader already drops the stale ones. A
@@ -951,17 +1007,15 @@ def _live_session_in(workspace) -> str:
     assumed dead.
     """
     try:
-        from delfin.agent import session_presence as _presence
         here = Path(workspace).expanduser().resolve()
     except Exception:
         return ""
-    try:
-        rows = _presence.open_sessions()
-    except Exception:
-        return ""
+    if rows is None:
+        rows = _open_session_rows()
     for row in rows or ():
         try:
-            if Path(str(row.get("workspace") or "")).resolve() != here:
+            ws = Path(str(row.get("workspace") or "")).resolve()
+            if ws != here and not (inside and here in ws.parents):
                 continue
         except Exception:
             continue
@@ -976,7 +1030,8 @@ def _live_session_in(workspace) -> str:
 def session_worktree_state(workspace, *, hold_fn=None) -> dict:
     """Classify a directory as a session worktree: its holding state.
 
-    Returns ``{"is_worktree": bool, "holder": str, "releasable": bool}``.
+    Returns ``{"is_worktree": bool, "holder": str, "why": str,
+    "releasable": bool}``.
 
       - ``is_worktree`` — the path carries a ``.delfin/session_worktree.json``
         sidecar, so it is a session worktree on disk (or a session is started
@@ -984,6 +1039,10 @@ def session_worktree_state(workspace, *, hold_fn=None) -> dict:
       - ``holder`` — the label of a LIVE session working in it; empty when no
         live session is in it (its owning session has gone, or the path is
         not a worktree at all).
+      - ``why`` — ``_worktree_hold_reason``: why the picker does not offer
+        it, "" when it does. Set also when no session holds it but the
+        process that created it still runs, so the start form can say why
+        the entry is missing.
       - ``releasable`` — a worktree spare enough to hand back: it is a
         session worktree and ``_worktree_is_orphaned`` says it may be
         reclaimed (owning process dead on this host, no live session, no
@@ -1002,12 +1061,18 @@ def session_worktree_state(workspace, *, hold_fn=None) -> dict:
     side = read_worktree_sidecar(workspace)
     is_worktree = side is not None
     holder = ""
+    why = ""
     releasable = False
     if is_worktree:
         try:
             holder = str(hold_fn(workspace) or "")
         except Exception:
             holder = ""
+        try:
+            why = (f"a live session is working in it ({holder})" if holder
+                   else _worktree_hold_reason(workspace, side))
+        except Exception:
+            why = ""
         # Releasing must agree with the orphan check: an alive owning process
         # is not releasable even when the session has gone from the presence
         # file, and a worktree a SAVED session would reopen is not releasable
@@ -1022,6 +1087,7 @@ def session_worktree_state(workspace, *, hold_fn=None) -> dict:
     return {
         "is_worktree": is_worktree,
         "holder": holder,
+        "why": why,
         "releasable": releasable,
     }
 
@@ -1486,21 +1552,20 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         """Offer a worktree inside a git repository, and pre-select it when
         another open session already works in that repository."""
         where = str(workdir_box.value or "").strip()
-        # A worktree another live session holds is not a place to start: it
-        # is itself told apart here (its holding session, by name) so the
-        # picker cannot silently offer it. Same refusal as _on_start, at the
-        # moment of choosing and not only on Start.
+        # A held session worktree is left out of workspace_choices; typed
+        # here, it is named with the reason, so the missing entry is not a
+        # silent one.
         try:
             held = session_worktree_state(where)
         except Exception:
-            held = {"is_worktree": False, "holder": "", "releasable": False}
-        if held["is_worktree"] and held["holder"]:
+            held = {"is_worktree": False, "holder": "", "why": ""}
+        if held.get("is_worktree") and held.get("why"):
             own_worktree_box.layout.display = "none"
             own_worktree_box.value = False
             worktree_hint.value = (
-                "<div style='font-size:10px;color:#546e7a'>Held by a live "
-                f"session ({html.escape(held['holder'])}). Choose another "
-                "directory, or release it once that session ends.</div>")
+                "<div style='font-size:10px;color:#546e7a'>Not offered as a "
+                "start folder: this session worktree is held -- "
+                f"{html.escape(held['why'])}. Choose another directory.</div>")
             return
         try:
             from delfin.agent import session_presence as _presence

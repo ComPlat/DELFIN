@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -112,3 +113,19 @@ def test_a_tree_hidden_by_its_live_owner_says_why(tmp_path):
     state = asm.session_worktree_state(str(wt))
     assert state["holder"] == ""
     assert state["why"]
+
+
+def test_a_session_working_below_the_tree_root_holds_it(tmp_path,
+                                                        _private_stores):
+    """session_worktree hands a session the path inside the tree that its
+    workspace had inside the repository; that session holds the tree."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    wt = _tree(project, "held")
+    (wt / "sub").mkdir()
+    (_private_stores / "k.json").write_text(json.dumps({
+        "key": "k", "title": "Working", "workspace": str(wt / "sub"),
+        "host": socket.gethostname(), "pid": os.getpid(),
+        "updated_at": time.time()}), encoding="utf-8")
+    assert str(wt) not in asm.workspace_choices(_ctx(project),
+                                                str(project) + "/")

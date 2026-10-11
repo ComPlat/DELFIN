@@ -88,8 +88,8 @@ def test_a_held_worktree_is_still_selectable(tmp_path, monkeypatch):
     project.mkdir()
     wt = _make_session_worktree(project)
     holder = "My Session on kitzbuhel"
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: (
-        holder if str(workspace := str(ws)) == str(wt) else ""))
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: (
+        holder if str(ws) == str(wt) else ""))
     choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
     assert str(wt) not in choices, (
         "a held worktree must not be offered as a start folder")
@@ -105,8 +105,8 @@ def test_a_held_worktree_state_names_who_holds_it(tmp_path, monkeypatch):
     project.mkdir()
     wt = _make_session_worktree(project)
     holder = "My Session on kitzbuhel"
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: (
-        holder if str(workspace := str(ws)) == str(wt) else ""))
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: (
+        holder if str(ws) == str(wt) else ""))
     state = asm.session_worktree_state(str(wt))
     assert state["is_worktree"] is True
     assert state["holder"] == holder
@@ -123,7 +123,7 @@ def test_an_orphaned_worktree_is_releasable(tmp_path, monkeypatch):
     project = tmp_path / "proj"
     project.mkdir()
     wt = _make_session_worktree(project)
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: "")
     state = asm.session_worktree_state(str(wt))
     assert state["is_worktree"] is True
     assert state["holder"] == ""
@@ -174,10 +174,10 @@ def test_a_worktree_with_alive_owning_pid_is_not_offered(tmp_path, monkeypatch):
     side.mkdir(parents=True, exist_ok=True)
     (side / "session_worktree.json").write_text(json.dumps({
         "path": str(wt), "branch": "session/abc123", "repo_dir": str(project),
-        "base_ref": "deadbeef", "created_at": 0.0, "host": "somehost",
-        "pid": os.getpid(), "key": "k",
+        "base_ref": "deadbeef", "created_at": 0.0,
+        "host": socket.gethostname(), "pid": os.getpid(), "key": "k",
     }), encoding="utf-8")
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: "")
     choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
     assert str(wt) not in choices, (
         "a worktree whose owning process is alive must not be a start folder")
@@ -190,7 +190,7 @@ def test_a_plain_directory_is_still_offered(tmp_path, monkeypatch):
     project.mkdir()
     plain = project / "plain"
     plain.mkdir()
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: "")
     choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
     assert str(plain) in choices
 
@@ -207,7 +207,7 @@ def test_an_orphaned_worktree_is_offered_and_releasable(tmp_path, monkeypatch):
     project = tmp_path / "proj"
     project.mkdir()
     wt = _make_session_worktree(project)  # pid -1 (no alive owner), host "somehost"
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")  # no live session
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: "")  # no live session
     choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
     assert str(wt) in choices, "a session-gone worktree stays offered"
     state = asm.session_worktree_state(str(wt))
@@ -238,7 +238,7 @@ def test_alive_owning_pid_is_not_releasable_via_state(tmp_path, monkeypatch):
         "host": (socket.gethostname() or "").strip(), "pid": os.getpid(),
         "key": "k",
     }), encoding="utf-8")
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")  # stale presence
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: "")  # stale presence
     state = asm.session_worktree_state(str(wt))
     assert state["is_worktree"] is True
     assert state["releasable"] is False, (
@@ -256,7 +256,7 @@ def test_saved_session_worktree_is_not_releasable_via_state(tmp_path, monkeypatc
     project = tmp_path / "proj"
     project.mkdir()
     wt = _make_session_worktree(project)
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")        # no live session
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: "")        # no live session
     monkeypatch.setattr(asm, "_saved_session_workspaces", lambda: [str(wt)])
     state = asm.session_worktree_state(str(wt))
     assert state["is_worktree"] is True
@@ -274,7 +274,7 @@ def test_orphaned_worktree_with_saved_session_elsewhere_is_releasable(
     wt = _make_session_worktree(project)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: "")
     monkeypatch.setattr(asm, "_saved_session_workspaces", lambda: [str(elsewhere)])
     state = asm.session_worktree_state(str(wt))
     assert state["releasable"] is True, (

@@ -59,7 +59,7 @@ def test_held_worktree_is_not_offered_by_the_picker(tmp_path, monkeypatch):
     wt = _worktree(project)
     _sidecar(wt)
     holder = "My Session on kitzbuhel"
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: (
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: (
         holder if str(ws) == str(wt) else ""))
     choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
     assert str(wt) not in choices, (
@@ -80,7 +80,7 @@ def test_plain_folder_is_still_offered_when_a_worktree_is_held(tmp_path,
     _sidecar(held)
     plain = _worktree(project, "plain_dir")
     holder = "Session A on kitzbuhel"
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: (
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: (
         holder if str(ws) == str(held) else ""))
     choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
     assert str(plain) in choices, "a plain directory must remain offered"
@@ -98,7 +98,7 @@ def test_an_unheld_worktree_is_still_offered(tmp_path, monkeypatch):
     project.mkdir()
     for name in ("sb_a", "sb_b"):
         _sidecar(_worktree(project, name))
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: (
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: (
         "Session X on kitzbuhel" if str(ws).endswith("sb_a") else ""))
     choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
     assert str(project / "sb_b") in choices, "a session-gone worktree stays offered"
@@ -121,7 +121,7 @@ def test_alive_pid_worktree_is_not_offered_even_with_stale_presence(
     wt = _worktree(project)
     _sidecar(wt, pid=os.getpid(), host=socket.gethostname() or "somehost")
     # Session gone from the presence file: liveness-by-presence says "".
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: "")
     choices = asm.workspace_choices(_fake_ctx(project), typed=str(project) + "/")
     assert str(wt) not in choices, (
         "a worktree an alive owning process holds must not be offered")
@@ -162,7 +162,7 @@ def test_held_worktree_is_not_orphaned(tmp_path, monkeypatch):
     project.mkdir()
     wt = _worktree(project)
     _sidecar(wt, pid=-1)
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: (
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: (
         "Session Y on kitzbuhel" if str(ws) == str(wt) else ""))
     reason = asm._worktree_is_orphaned(asm.read_worktree_sidecar(wt))
     assert reason, "a live-held worktree must not be reported releasable"
@@ -184,7 +184,7 @@ def test_alive_pid_worktree_is_not_releasable_via_state(tmp_path, monkeypatch):
     project.mkdir()
     wt = _worktree(project)
     _sidecar(wt, pid=os.getpid(), host=socket.gethostname() or "somehost")
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: "")
     state = asm.session_worktree_state(str(wt))
     assert state["releasable"] is False, (
         "a worktree an alive owning process owns must not be offered for release")
@@ -208,7 +208,7 @@ def test_saved_session_worktree_is_not_releasable_via_state(tmp_path, monkeypatc
     project.mkdir()
     wt = _worktree(project)
     _sidecar(wt, pid=-1, host=socket.gethostname() or "somehost")  # dead pid, same host
-    monkeypatch.setattr(asm, "_live_session_in", lambda ws: "")  # no live holder
+    monkeypatch.setattr(asm, "_live_session_in", lambda ws, *_a, **_k: "")  # no live holder
     # A resumable session would reopen this very worktree:
     monkeypatch.setattr(asm, "_saved_session_workspaces", lambda: [str(wt)])
     state = asm.session_worktree_state(str(wt))
