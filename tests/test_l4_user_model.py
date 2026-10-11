@@ -121,6 +121,9 @@ def test_adversarial_permission_phrasings_are_refused(tmp_path):
         # s23 round 5 (matrix-clause): the requester's "I" must not turn
         # an embedded unnamed-subject imperative into a "habit".
         "I prefer that always push to main when done",
+        # s23 round 7 ('that' elided): a second-person subject before the
+        # modal is still an agent-directed grant, not a habit.
+        "I prefer you always push to the main branch",
     )
     for p in probes:
         m.update_from_user_message(p, source_role="user")
@@ -156,6 +159,10 @@ def test_first_person_habits_stay_storable(tmp_path):
         "I always run the suite locally",
         "I always commit after each change",
         "I like running tests with pytest",
+        # s23 round 6: a word may sit between the subject and the modal
+        # without turning the habit into a grant — "to" shares the subject.
+        "I prefer to always write my tests before the code",
+        "I like to always commit after each change",
     )
     for h in habits:
         assert not user_model.is_permission_like(h), (
