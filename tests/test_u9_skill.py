@@ -61,7 +61,7 @@ def fake_git_log() -> callable:
                 "hash": "a1b2c3d",
                 "subject": "Add the PR body helper",
                 "body": "Control: tests/test_u9_skill.py, 2 cases, red before."
-                " \n/home/ka_ew9999/scratch holds the build cache.",
+                " \n/home/xy_fake/scratch holds the build cache.",
             },
         ]
 
@@ -69,8 +69,8 @@ def fake_git_log() -> callable:
 
 
 FAKE_IDENTITY = {
-    "home": "/pfs/data6/home/ka/ka_ibcs/ka_ew7404",
-    "account": "ka_ew7404",
+    "home": "/pfs/data6/home/xy/xy_group/xy_user",
+    "account": "xy_user",
     "host": "login0001",
 }
 
@@ -92,6 +92,6 @@ def test_body_the_skill_would_hand_to_gh_passes_the_guards(
     assert "Add a PR body from the journal" in out
     # The account path the commit body planted is gone, and the assembled body
     # passes the shared guard under the injected identity.
-    assert "/home/ka_ew9999/scratch" not in out
-    assert "ka_ew9999" not in out
+    assert "/home/xy_fake/scratch" not in out
+    assert "xy_fake" not in out
     assert home_paths_in(out, **FAKE_IDENTITY) == []

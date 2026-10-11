@@ -78,8 +78,8 @@ def fake_git_log() -> callable:
 
 
 FAKE_IDENTITY = {
-    "home": "/pfs/data6/home/ka/ka_ibcs/ka_ew7404",
-    "account": "ka_ew7404",
+    "home": "/pfs/data6/home/xy/xy_group/xy_user",
+    "account": "xy_user",
     "host": "login0001",
 }
 
@@ -159,7 +159,7 @@ def test_body_never_leaks_account_path_or_secret_text():
             {
                 "hash": "deadbeef",
                 "subject": "Bump the runner",
-                "body": "/home/ka_ew9999/scratch is the deploy dir. "
+                "body": "/home/xy_fake/scratch is the deploy dir. "
                 "deploy_token = " + token,
             },
         ]
@@ -170,8 +170,8 @@ def test_body_never_leaks_account_path_or_secret_text():
                 "seq": 1,
                 "id": 20,
                 "subject": "Deploy on the cluster head",
-                "description": "The checkout lives under /pfs/data6/home/ka/"
-                "ka_ibcs/ka_ew7404/software/delfin and uses the deploy key.",
+                "description": "The checkout lives under /pfs/data6/home/xy/"
+                "xy_group/xy_user/software/delfin and uses the deploy key.",
                 "status": "in_progress",
             },
         ]
@@ -182,10 +182,10 @@ def test_body_never_leaks_account_path_or_secret_text():
         identity=FAKE_IDENTITY,
     )
     # No account directory segment, no account name, no secret value.
-    assert "/home/ka_ew9999/scratch" not in out
-    assert "/pfs/data6/home/ka/ka_ibcs/" not in out
-    assert "ka_ew9999" not in out
-    assert "ka_ew7404" not in out
+    assert "/home/xy_fake/scratch" not in out
+    assert "/pfs/data6/home/xy/xy_group/" not in out
+    assert "xy_fake" not in out
+    assert "xy_user" not in out
     assert token not in out
     # The assembled body passes the shared guard under the injected identity
     # -- the honest guarantee the reviewer froze (reviewer-s17 prescan).

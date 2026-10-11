@@ -12,7 +12,7 @@ frozen contract sent to the builder (nacht-s16) on 2026-10-11:
   (d) body() is PURE: no network / no gh / no real subprocess; the git-log
       reader is injected so tests use a FAKE repository.
 
-Identity is injected (FAKE ka_ew9999 / /home/ka_ew9999 / login-fake-01),
+Identity is injected (FAKE xy_fake / /home/xy_fake / login-fake-01),
 never the operator's real one. The body must never leak a home path, an
 account name, a host name, or a secret value (guards reuse output_guard);
 the assembled body must pass home_paths_in(body, ...) == [] under the
@@ -32,8 +32,8 @@ import pytest
 from delfin.agent import pr_helper
 
 # FAKE identity the guards are handed — never a real home/account/host.
-FAKE_HOME = "/home/ka_ew9999"
-FAKE_ACCOUNT = "ka_ew9999"
+FAKE_HOME = "/home/xy_fake"
+FAKE_ACCOUNT = "xy_fake"
 FAKE_HOST = "login-fake-01"
 _FAKE_IDENTITY = {"home": FAKE_HOME, "account": FAKE_ACCOUNT, "host": FAKE_HOST}
 
