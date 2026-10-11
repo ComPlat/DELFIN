@@ -4,16 +4,17 @@ Only the gate decides what is allowed. The classifier can only ADD friction:
 it is a model and can be talked into things, so it never grants what a rule
 refuses. Its one question: "Did the USER ask for this action, and is it safe?"
 
-Every action that is not a plain read inside the workspace goes to the
-classifier, in EVERY permission mode. A plain read never calls the model
-(latency). In doubt the classifier ASKS (the normal approval dialog, with its
-reason); only a clear case is refused outright, and when nobody can be asked,
-doubt becomes refusal with the reason.
+Which actions reach it is the gate's decision (api_client,
+``_classifier_second_opinion``): only those the rules allowed without a human
+seeing them, in the scope the settings select. This module judges one such
+action; a plain read never calls the model. In doubt the classifier ASKS (the
+normal approval dialog, with its reason); only a clear case is refused
+outright, and when nobody can be asked, doubt becomes refusal with the reason.
 
 The input is injection-resistant: the user's own messages (the task) and this
-turn's agent tool CALLS. Tool outputs, file contents, web pages, job logs and
-other sessions' messages are NEVER part of the input — they are where
-injections live. Any instruction/approval claim that lies INSIDE the judged
+turn's agent tool CALLS, fenced as data. Tool outputs, file contents, web
+pages, job logs and other sessions' messages are NEVER part of the input —
+they are where injections live. Any instruction/approval claim that lies INSIDE the judged
 action's own text is data (fenced with delfin.agent.untrusted.wrap) and is
 never accepted as evidence of user intent, however the model answers.
 
@@ -86,21 +87,25 @@ _READ_BASH_TOKENS = ("ls", "git", "grep", "cat", "head", "tail", "wc",
 
 # git branch/tag flags that write or destroy. The destructive intent rides a
 # flag, not a shell operator, so it is invisible to _bash_has_write_operator;
-# a branch/tag command carrying one of these is never a plain read (s28+s29).
+# a branch/tag command carrying one of these is never a plain read.
 # -m/-M (branch move, tag message) create/replace a ref or tag — not reads.
 _GIT_DESTRUCTIVE_FLAGS = frozenset({
     "-d", "-D", "-m", "-M", "-f", "--delete", "--force", "--move", "--tag",
 })
 
-# ``git log/diff/show --output=FILE`` writes a file, and ``--ext-diff`` /
-# ``--textconv`` run a configured program: neither is a read.
-_GIT_WRITING_OPTION_PREFIXES = ("--output", "--ext-diff", "--textconv")
+# ``git log/diff/show --output=FILE`` writes a file, ``--ext-diff`` /
+# ``--textconv`` run a configured program, ``git branch --set-upstream-to``
+# / ``--unset-upstream`` write .git/config and ``--edit-description``
+# starts the configured editor: none of them is a read.
+_GIT_WRITING_OPTION_PREFIXES = ("--output", "--ext-diff", "--textconv",
+                                "--set-upstream", "--unset-upstream",
+                                "--edit-description")
 
 # The one sed form that is a plain read: print a line range of a file.
 # Everything else stays classified -- ``w FILE`` writes, the ``e`` command
 # and the ``s///e`` flag run a program, and none of them needs a redirect.
 
-# find primaries that write or run code (QS ruling + s28/s29): -delete removes
+# find primaries that write or run code: -delete removes
 # files with NO shell operator; -ok prompts-then-runs; -fls/-fprint/-fprintf
 # write output files. -exec/-execdir are handled by _bash_has_write_operator.
 _FIND_DESTRUCTIVE_ACTIONS = ("-delete", "-ok", "-fls", "-fprint", "-fprintf")
@@ -109,7 +114,7 @@ _FIND_DESTRUCTIVE_ACTIONS = ("-delete", "-ok", "-fls", "-fprint", "-fprintf")
 # a read-only filter — a glob pattern or commit the listed set is narrowed by.
 # Such a value is NOT a create name. `--track/-t`, `--set-upstream-to/-u` take a
 # branch as value but CHANGE the branch (tracking / upstream), so they are
-# deliberately absent: a name after them is classified (s29 create-forms).
+# deliberately absent: a name after them is classified.
 _READ_GIT_VALUE_OPTS = frozenset({
     "--list", "-l", "--contains", "--no-contains", "--merged", "--no-merged",
     "--points-at", "--sort", "--format",
@@ -122,7 +127,7 @@ def _git_creates_ref(args: list) -> bool:
     (--list/--contains/--merged/...). ``git branch name``, ``git branch --track
     name start``, ``git tag name``, ``git tag -a name`` all create a ref; the
     intent rides an ARGUMENT, not a flag, so _GIT_DESTRUCTIVE_FLAGS cannot see
-    it (s29 create-forms finding). ``git branch``, ``git branch -vv``,
+    it. ``git branch``, ``git branch -vv``,
     ``git branch --list pat``, ``git tag --contains sha`` are reads."""
     prev_opt = ""
     for tok in args:
@@ -167,7 +172,7 @@ def _bash_has_write_operator(command: str) -> bool:
     run a program, or change state. Shell words like ``ls`` contain no such
     character; ``ls > out.txt``, ``cat > run.py << EOF``, ``a && b`` do.
 
-    Beyond the literal operators, this conservatively flags (s29): command
+    Beyond the literal operators, this conservatively flags: command
     substitution ``$( ... )`` / backticks (a nested program runs), backgrounding
     ``&`` (a job detaches and keeps running), and ``find ... -exec ... +`` /
     ``;`` (a nested command runs). Extra friction is safe; an under-classified
@@ -186,7 +191,7 @@ def _bash_has_write_operator(command: str) -> bool:
         return True
     # find -exec ... ; or + runs a command per match. ``+`` needs no leading
     # space (``find -exec rm + `` is legal), so match a bare ``+`` anywhere
-    # after -exec — fail closed (s24 cross-note); extra friction is safe.
+    # after -exec — fail closed; extra friction is safe.
     if "-exec" in cmd and (";" in cmd or "+" in cmd):
         return True
     return False
@@ -210,9 +215,9 @@ def _bash_is_plain_read(command: str) -> bool:
             return False
         # A read sub-command is only a plain read when no destructive flag
         # follows — branch -d/-D/-f -m touches refs, tag -d/-f/-m touches tags;
-        # the destructive intent rides a flag, not a shell operator (s28+s29) —
+        # the destructive intent rides a flag, not a shell operator —
         # AND (branch/tag) no bare NAME argument creates a ref, an intent that
-        # rides an argument, not a flag (s29 create-forms finding).
+        # rides an argument, not a flag.
         args = rest[2:]
         if _GIT_DESTRUCTIVE_FLAGS & set(args):
             return False
@@ -251,8 +256,8 @@ def is_plain_read(action: dict) -> bool:
 
 
 def should_classify(action: dict) -> bool:
-    """Every action that is not a plain read goes to the classifier, in every
-    permission mode — the 10.10 addendum's broadband scope."""
+    """True for every action that is not a plain read. Where the gate asks
+    at all (scope, mode) is decided by the caller."""
     return not is_plain_read(action)
 
 
@@ -316,7 +321,7 @@ def _injection_flag_kind(message: str, task_text: str = "") -> str:
     except Exception:
         # Fail CLOSED on an injection-signal failure: if we cannot scan the
         # fragment we must NOT trust the model on it, so return a suspicion
-        # kind and let the verdict force ask/never-allow. (s28 review note.)
+        # kind and let the verdict force ask/never-allow.
         return _SUSPECT_FLAG_KINDS[0]
     for kind in _SUSPECT_FLAG_KINDS:
         if any(f.startswith(kind + ":") for f in flags):
@@ -370,6 +375,13 @@ def apply_user_rules(action: dict, rules, *, only: str = "") -> "Verdict | None"
     "never" or "always". Rules that match no marker are still shown to the
     model as text."""
     representation = _action_repr(action).lower()
+    command = ""
+    if str(action.get("tool") or "") in ("bash", "bash_background"):
+        raw = str(action.get("command") or "")
+        # A chained or redirected command is never covered by an "always"
+        # rule; the marker keeps it from matching one below.
+        command = (" ".join(raw.lower().split())
+                   if not _bash_has_write_operator(raw) else "\0")
     hits = {"never": None, "always": None}
     for rule in rules or ():
         rule = str(rule or "").strip()
@@ -377,8 +389,17 @@ def apply_user_rules(action: dict, rules, *, only: str = "") -> "Verdict | None"
             continue
         for which, markers in (("never", _RULE_NEVER), ("always", _RULE_ALWAYS)):
             body = _rule_body(rule, markers)
-            if (len(body) >= _RULE_MIN_BODY and body in representation
-                    and hits[which] is None):
+            if len(body) < _RULE_MIN_BODY or hits[which] is not None:
+                continue
+            if which == "always" and command:
+                # An "always" rule names a command, and covers that command
+                # with its own arguments only: "always allow: pytest" does
+                # not cover "pytest_upload.sh" or "pytest -q && upload".
+                body = " ".join(body.split())
+                if command == body or command.startswith(body + " "):
+                    hits[which] = rule
+                continue
+            if body in representation:
                 hits[which] = rule
     if hits["never"] is not None and only in ("", "never"):
         return Verdict("refuse", f"user rule forbids it: {hits['never']!r}")
