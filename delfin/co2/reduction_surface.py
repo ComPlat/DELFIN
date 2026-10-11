@@ -107,6 +107,60 @@ def _enabled(value: Any) -> bool:
     return _coord._is_enabled(value)
 
 
+def _run_pbe0_station_opt(atoms, xyz_path: str, control: Dict[str, Any],
+                          workdir: str) -> Optional[str]:
+    """Run a DFT (PBE0/def2-SVP-style) OPT on ONE station geometry.
+
+    Used for the protonated stations (co2h, co2h2, co) where a GFN2-xTB
+    optimization DESTROYS the protonation motifs (proven on the real
+    geometry: both protons pulled off at +1 and +2). The keyword line
+    comes from the coordinator's build_orca_keywords with the CONTROL's
+    own method settings, so the station opt matches the method the
+    NEB-TS step and the final ORCA runs will use.
+
+    Returns the optimized xyz path, or None on failure.
+    """
+    outdir = os.path.join(workdir, "pbe0_opt")
+    os.makedirs(outdir, exist_ok=True)
+    inp = os.path.join(outdir, "station_pbe0_opt.inp")
+    keywords = _coord.build_orca_keywords(control, "OPT")
+    charge = int(control.get("charge", 0))
+    multiplicity = int(control.get("multiplicity", 1))
+    pal = int(control.get("PAL", 4))
+    maxcore = int(control.get("maxcore", 2000))
+
+    lines = [f"! {keywords}\n",
+             f"%maxcore {maxcore}\n",
+             f"%pal nprocs {pal} end\n",
+             f"* xyz {charge} {multiplicity}\n"]
+    for atom in atoms:
+        x, y, z = atom.position
+        lines.append(f"  {atom.symbol:<3} {x:>14.8f} {y:>14.8f} {z:>14.8f}\n")
+    lines.append("*\n")
+    with open(inp, "w", newline="\n") as f:
+        f.write("".join(lines))
+
+    orca_path = shutil.which("orca")
+    if orca_path is None:
+        print("[reduction_surface][WARN] ORCA not found in $PATH — "
+              "using the pre-opt geometry.")
+        return None
+    out = os.path.join(outdir, "station_pbe0_opt.out")
+    with open(out, "w") as f:
+        subprocess.run([orca_path, os.path.basename(inp)], cwd=outdir,
+                       stdout=f, stderr=subprocess.STDOUT, check=False)
+
+    opt_path = os.path.join(outdir, "station_pbe0_opt.xyz")
+    try:
+        atoms_opt = ase_read(out)  # ASE reads the last frame of an ORCA output
+        ase_write(opt_path, atoms_opt)
+        return opt_path
+    except Exception as exc:
+        print(f"[reduction_surface][WARN] Could not parse PBE0 opt output "
+              f"({exc}) — using the pre-opt geometry.")
+        return None
+
+
 def _station_deltas(control: Dict[str, Any]) -> List[int]:
     """Per-station charge deltas, from rs_charges or the derived default."""
     raw = _coord._clean_str(control.get("rs_charges"))
@@ -491,6 +545,10 @@ def run_reduction_surface(coordinator_outdir: str,
     multiplicity = _int_or_default(control.get("multiplicity"), 1)
     broken_sym = _coord._clean_str(control.get("broken_sym"))
     run_xtb = _enabled(control.get("rs_run_xtb", control.get("run_xtb", False)))
+    # DFT opt on the protonated stations (PBE0/def2-SVP from the CONTROL):
+    # default ON — the target method must stabilize the motifs anyway;
+    # dry tests set rs_run_dft=off.
+    run_dft = _enabled(control.get("rs_run_dft", True))
     want_ts = _enabled(control.get("reduction_surface_ts", False))
 
     result: Dict[str, Any] = {
@@ -585,6 +643,11 @@ def run_reduction_surface(coordinator_outdir: str,
                     # free H2O), so optimize the pieces separately.
                     body, water = _split_water(
                         current_atoms, substrate_start, anchor_idx=anchor_idx)
+                    if water is None:
+                        print(f"[reduction_surface][DIAG] split found no water:"
+                              f" substrate_start={substrate_start}, "
+                              f"anchor={anchor_idx}, n={len(current_atoms)}, "
+                              f"protons={_substrate_proton_indices(current_atoms, substrate_start)}")
                     if water is not None:
                         current_atoms = body  # opt runs on the body only
                         body_xyz = os.path.join(st_dir, "station_co_body.xyz")
@@ -606,8 +669,13 @@ def run_reduction_surface(coordinator_outdir: str,
                        comment=f"station {name} (charge {charge})")
             entry["xyz"] = station_xyz
 
-            # optional xTB preopt with THIS station's charge
-            if run_xtb:
+            # Preopt strategy (user decision, 2026-10-11): xTB ONLY on the
+            # non-protonated first station; the protonated stations go
+            # straight into a DFT (PBE0/def2-SVP-style) opt, because GFN2
+            # pulls the substrate protons back to the ligand on EVERY
+            # protonated station (proven at +1 and +2 on the real geometry).
+            protonated = name != "co2"
+            if run_xtb and not protonated:
                 xtb_control = dict(control)
                 xtb_control["charge"] = charge
                 xtb_control["multiplicity"] = multiplicity
@@ -627,7 +695,7 @@ def run_reduction_surface(coordinator_outdir: str,
                     if water_preopt_xyz is not None:
                         water_opt = _flow._run_xtb_preopt(
                             _read_xyz(water_preopt_xyz), water_preopt_xyz,
-                            xtb_control, st_dir, tag="h2o")
+                            xtb_control, st_dir)
                         if water_opt is not None:
                             w_path = os.path.join(st_dir, "xtb_preopt",
                                                   f"h2o_xtb_opt.out")
@@ -649,6 +717,55 @@ def run_reduction_surface(coordinator_outdir: str,
                     entry["status"] = "xtb_failed"
                     print(f"[reduction_surface][WARN] xTB preopt failed at "
                           f"station {name} — continuing with the un-optimized geometry.")
+
+            if protonated and run_dft:
+                # protonated station: DFT opt (the CONTROL's method set),
+                # never xTB — GFN2 destroys the protonation motifs.
+                # run_dft = rs_run_dft (default ON); dry tests set it off.
+                pbe0_control = dict(control)
+                pbe0_control["charge"] = charge
+                pbe0_control["multiplicity"] = multiplicity
+                popt = _run_pbe0_station_opt(current_atoms, station_xyz,
+                                             pbe0_control, st_dir)
+                if popt is not None:
+                    current_atoms = _read_xyz(popt)
+                    _write_xyz(station_xyz, current_atoms,
+                               comment=f"station {name} (charge {charge}, PBE0-optimized)")
+                    entry["pbe0_xyz"] = popt
+                    p_out = os.path.join(st_dir, "pbe0_opt",
+                                         "station_pbe0_opt.out")
+                    entry["energy_eh_pbe0"] = _orca_output_energy(p_out)
+                    # split-before-opt station: optimize the water at the
+                    # same level and sum the energies
+                    if water_preopt_xyz is not None:
+                        w_opt = _run_pbe0_station_opt(
+                            _read_xyz(water_preopt_xyz), water_preopt_xyz,
+                            pbe0_control, st_dir)
+                        if w_opt is not None:
+                            w_out = os.path.join(st_dir, "pbe0_opt",
+                                                 "station_pbe0_opt.out")
+                            # NOTE: same output name for body and water
+                            # opt — the water run overwrites the body's
+                            # .out; parse the water energy BEFORE the
+                            # body's is lost by reading p_out first.
+                            entry["water_energy_eh_pbe0"] = (
+                                _orca_output_energy(w_out))
+                            e_body = entry["energy_eh_pbe0"]
+                            e_water = entry["water_energy_eh_pbe0"]
+                            if e_body is not None and e_water is not None:
+                                entry["energy_eh_pbe0"] = e_body + e_water
+                            _write_xyz(os.path.join(st_dir, "station_h2o.xyz"),
+                                       _read_xyz(w_opt),
+                                       comment="leaving water (PBE0-optimized)")
+                            entry["water_xyz"] = os.path.join(
+                                st_dir, "station_h2o.xyz")
+                        else:
+                            print(f"[reduction_surface][WARN] water PBE0 opt "
+                                  f"failed — station energy is body-only.")
+                else:
+                    entry["status"] = "pbe0_failed"
+                    print(f"[reduction_surface][WARN] PBE0 opt failed at "
+                          f"station {name} — continuing with the pre-opt geometry.")
 
             # NEB-TS from the previous station's optimized geometry
             if want_ts and prev_station_xyz is not None:

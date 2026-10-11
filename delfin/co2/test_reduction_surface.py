@@ -44,7 +44,7 @@ def _make_coordinator_dir(tmp_path, extra=""):
     text = (d / "CONTROL.txt").read_text()
     text += (
         "\nreduction_surface=true\nadduct_start_xyz=complex_aligned_with_CO2.xyz\n"
-        "rs_run_xtb=false\nreduction_surface_ts=false\n"
+        "rs_run_xtb=false\nreduction_surface_ts=false\nrs_run_dft=off\n"
     )
     if extra:
         text += extra
