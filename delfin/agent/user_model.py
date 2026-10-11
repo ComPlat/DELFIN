@@ -164,6 +164,14 @@ def _is_structural_grant(tokens) -> bool:
             return True  # complementizer opens an agent clause - a grant
         if _SECOND_PERSON & frozenset(run):
             return True  # "you" subject before the modal - a grant
+        # A run longer than the bare pronoun must carry the shared-subject
+        # infinitive marker "to" to be a habit ("i prefer to always write").
+        # A bare matrix-frame run ("i would like always push", would like) has
+        # no "to" - the reach verb is subordinated under the user's request,
+        # not the user's own habit, so it is a grant. A run of just the
+        # pronoun ("i always write") is the direct-subject habit and stays.
+        if len(run) > 1 and "to" not in run:
+            return True
         return False  # first-person habit sharing the subject - not a grant
     return False
 
