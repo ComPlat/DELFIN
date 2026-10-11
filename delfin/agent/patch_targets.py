@@ -65,6 +65,17 @@ _WORKTREE_WRITE_SUBCOMMANDS = frozenset({
 })
 
 
+#: git subcommands that rewrite work-tree files without naming them. With
+#: the tree moved by --work-tree / GIT_WORK_TREE / core.worktree the tree
+#: itself is the target; ``-C dir`` is named by the caller's destination
+#: options already.
+_TREE_WIDE_WRITES = frozenset({
+    "reset", "stash", "merge", "pull", "rebase", "cherry-pick", "revert",
+    "switch", "clean", "rm", "mv", "read-tree", "checkout-index",
+    "sparse-checkout", "submodule", "bisect",
+})
+
+
 def _resolve(path: str, cwd: Path) -> str:
     """Resolve a possibly-relative path against *cwd*, as an absolute string."""
     p = os.path.expanduser(path)
@@ -318,7 +329,7 @@ def _git_subcommand(rest: list[str]) -> str:
 
 
 def _git_tree(rest: list[str], base: Path,
-              env_tree: str | None) -> Path:
+              env_tree: str | None) -> tuple[Path, bool]:
     """The directory ``git``'s path operands resolve against.
 
     Every leading ``-C dir`` moves the cwd, each relative to the last
@@ -326,7 +337,8 @@ def _git_tree(rest: list[str], base: Path,
     ``--work-tree[=]dir``, ``GIT_WORK_TREE`` (*env_tree*) or ``-c
     core.worktree=dir``, relative to that cwd; without one it is the cwd.
     ``--git-dir`` moves only ``.git`` and is ignored. A ``core.worktree``
-    set in a config file is not in the text and is not seen."""
+    set in a config file is not in the text and is not seen. The second
+    value is True when one of the three named the tree."""
     cwd = base
     tree = None
     config_tree = None
@@ -359,7 +371,7 @@ def _git_tree(rest: list[str], base: Path,
             continue
         i += 1
     chosen = tree or env_tree or config_tree
-    return Path(_resolve(chosen, cwd)) if chosen else cwd
+    return (Path(_resolve(chosen, cwd)), True) if chosen else (cwd, False)
 
 
 def _targets_git(rest: list[str], base: Path, *, stdin: object = None,
@@ -372,7 +384,7 @@ def _targets_git(rest: list[str], base: Path, *, stdin: object = None,
         sub = _git_subcommand(rest)
     except Exception:
         return []
-    eff_base = _git_tree(rest, base, env_tree)
+    eff_base, moved = _git_tree(rest, base, env_tree)
     after = _after_subcommand(rest, sub)
     if sub == "apply":
         return _targets_git_apply(after, eff_base, stdin=stdin)
@@ -382,9 +394,14 @@ def _targets_git(rest: list[str], base: Path, *, stdin: object = None,
         # refuse the command outright.
         return UNKNOWABLE
     if sub == "checkout":
-        return _targets_git_checkout(after, eff_base)
+        named = _targets_git_checkout(after, eff_base)
+        # A branch switch names no file but rewrites the moved tree.
+        return [str(eff_base)] if moved and named == [] else named
     if sub == "restore":
         return _targets_git_restore(after, eff_base)
+    if moved and sub in _TREE_WIDE_WRITES:
+        # The files are not in the text; the tree they are in is.
+        return [str(eff_base)]
     return []
 
 

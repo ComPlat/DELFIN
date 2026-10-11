@@ -163,6 +163,7 @@ def test_gnu_patch_directory_long_form_reads_there(ws):
     "git --work-tree=/x stash pop",
     "git -c core.worktree=/x merge feature",
     "git --work-tree /x clean -fd",
+    "GIT_WORK_TREE=/x git checkout main",
 ])
 def test_a_tree_moved_away_is_named_for_a_tree_wide_write(ws, cmd):
     assert pt.targets(cmd, ws) == ["/x"], cmd
