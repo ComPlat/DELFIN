@@ -11423,8 +11423,6 @@ _PENDING_JOBS_MARK = "\u2699 STILL PENDING"
 # At most this many job ids on the note; the rest are counted. 12 ids of
 # <= 80 chars keep the line under ~1.1 kB however long the watch list is.
 _PENDING_JOBS_MAX = 12
-# The watch file is read only up to this size; a larger one gives no note.
-_PENDING_WATCH_MAX_BYTES = 1 << 20
 # Ids as job_monitor issues them: SLURM (digits, array suffixes) and
 # bash_jobs (hex); CI ids are matched with job_monitor._CI_ID_RE.
 _PENDING_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,40}$")
@@ -11437,38 +11435,45 @@ def _append_pending_jobs_to_summary(api_messages: list,
 
     Input: the request rows (changed in place) and a one-line note, ""
     when nothing is pending. A summary is a row whose content starts with
-    ``in_turn_compaction._SUMMARY_HEADER``; compaction never drops one, so
-    a turn compacted N times holds N summaries. Output: the newest summary
-    ends in ``"\\n\\n" + note``; every older summary loses its note. The
-    request therefore carries one note, the one read at the latest
-    compaction, and a job that ended between two compactions is not named
-    as running. No summary row: nothing changes. Never raises.
+    ``in_turn_compaction._SUMMARY_HEADER``: the one this turn's compaction
+    built (an ``in_turn_compaction.SummaryRow``; each compaction folds the
+    earlier one into it) and those earlier turns left in the history.
+    Output: the newest summary -- the last ``SummaryRow``, else the last
+    header row -- ends in ``"\\n\\n" + note``; every other header row
+    loses its note. The request therefore carries one note, the one read
+    at the latest compaction, and a job that ended between two
+    compactions is not named as running. A user row after the summary
+    that merely starts with the header does not receive the note. No
+    summary row: nothing changes. Never raises.
 
-    Cost: removing an older note rewrites that summary, so the prefix
-    cache ends there instead of at the newest summary. The newest summary
-    is spliced in where the oldest dropped round stood, directly after the
-    previous summary, so the extra uncached text is that one summary.
+    Cost: removing an earlier turn's note rewrites that history row, so
+    the prefix cache ends there; this happens once, on the first
+    compaction of the turn after the one that wrote the note.
     """
     try:
         header = "[Conversation summary"
+        is_summary = None
         try:
             from . import in_turn_compaction as _itc
             header = _itc._SUMMARY_HEADER
+            is_summary = _itc.is_summary_row
         except Exception:
             pass
         mark = "\n\n" + _PENDING_JOBS_MARK
-        newest = None
-        for i, m in enumerate(api_messages):
-            c = (m or {}).get("content")
-            if isinstance(c, str) and c.startswith(header):
-                if newest is not None:
-                    prev = api_messages[newest]["content"]
-                    cut = prev.find(mark)
-                    if cut >= 0:
-                        api_messages[newest]["content"] = prev[:cut]
-                newest = i
+        rows = [i for i, m in enumerate(api_messages)
+                if isinstance((m or {}).get("content"), str)
+                and m["content"].startswith(header)]
+        own = [i for i in rows if is_summary and is_summary(api_messages[i])]
+        newest = own[-1] if own else (rows[-1] if rows else None)
         if newest is None:
             return
+        for i in rows:
+            if i == newest:
+                continue
+            prev = api_messages[i]["content"]
+            cut = prev.find(mark)
+            if cut >= 0:
+                api_messages[i]["content"] = prev[:cut]
         c = api_messages[newest]["content"]
         cut = c.find(mark)
         if cut >= 0:
@@ -11484,38 +11489,17 @@ def _append_pending_jobs_to_summary(api_messages: list,
 def _read_watch_jobs(path) -> dict:
     """The ``jobs`` mapping of a job_monitor watch file, or {}.
 
-    Opened ``O_NONBLOCK | O_NOFOLLOW`` and read only when it is a regular
-    file of at most ``_PENDING_WATCH_MAX_BYTES``: a FIFO, a symlink, a
-    larger file, malformed JSON or a non-mapping ``jobs`` gives {}. The
-    workspace is writable by the model, so the read is bounded in time
-    and size. Never raises."""
-    import stat as _stat
+    ``job_monitor.load_watched``'s ``jobs``, so the note and every other
+    reader go through the one guarded reader
+    ``job_monitor.read_watch_file`` (O_NONBLOCK | O_NOFOLLOW, regular
+    files of at most ``WATCH_FILE_MAX_BYTES``). A FIFO, a symlink, a
+    larger file, malformed JSON or a non-mapping ``jobs`` gives {}.
+    Never raises."""
     try:
-        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(
-            os, "O_NOFOLLOW", 0)
-        fd = os.open(str(path), flags)
+        from . import job_monitor as _jm
+        return _jm.load_watched(path).get("jobs") or {}
     except Exception:
         return {}
-    try:
-        st = os.fstat(fd)
-        if (not _stat.S_ISREG(st.st_mode)
-                or st.st_size > _PENDING_WATCH_MAX_BYTES):
-            return {}
-        with os.fdopen(fd, "rb") as fh:
-            fd = -1
-            raw = fh.read(_PENDING_WATCH_MAX_BYTES + 1)
-        if len(raw) > _PENDING_WATCH_MAX_BYTES:
-            return {}
-        jobs = json.loads(raw.decode("utf-8")).get("jobs")
-        return jobs if isinstance(jobs, dict) else {}
-    except Exception:
-        return {}
-    finally:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
 
 
 def _elide_old_tool_results(

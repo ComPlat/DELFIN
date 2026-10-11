@@ -168,7 +168,11 @@ import pytest  # noqa: E402
 def test_every_request_carries_one_note_however_often_it_compacted(
         tmp_path, monkeypatch, route):
     seen, _ws = _drive(tmp_path, monkeypatch, route)
-    assert len(_summaries(seen[-1])) >= 2, "the turn did not compact twice"
+    # Each compaction folds the earlier summary into its own (one row per
+    # request), so "compacted twice" is two different summary texts.
+    assert len({tuple(_summaries(r)) for r in seen if _summaries(r)}) >= 2, (
+        "the turn did not compact twice")
+    assert len(_summaries(seen[-1])) == 1
     for rows in seen:
         assert _text(rows).count("slurm job 4711") <= 1
     assert _text(seen[-1]).count("slurm job 4711") == 1
