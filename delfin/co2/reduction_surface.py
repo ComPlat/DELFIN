@@ -251,6 +251,29 @@ def _substrate_h_indices(atoms: Atoms, substrate_start: int) -> List[int]:
     return [i for i in range(substrate_start, len(atoms)) if atoms[i].symbol == "H"]
 
 
+def _substrate_proton_indices(atoms: Atoms, substrate_start: int) -> List[int]:
+    """Substrate hydrogens that are actually BOUND protons (bonding
+    distance < 1.3 A to a substrate O).
+
+    Index range alone is not enough: in a plain complex geometry the
+    ligand donor H's can sit inside the tail index range (after the
+    O,C,O block) without being protons. Only an O-H bond makes an H a
+    previous station's proton.
+    """
+    os_ = _substrate_oxygen_indices(atoms, substrate_start)
+    if not os_:
+        return []
+    out = []
+    for i, atom in enumerate(atoms):
+        if atom.symbol != "H":
+            continue
+        for o in os_:
+            if float(np.linalg.norm(atom.position - atoms.positions[o])) < 1.3:
+                out.append(i)
+                break
+    return out
+
+
 def _add_hydrogen_to_tail(atoms: Atoms, anchor_idx: int, donor_idx: int,
                           tail_start: int) -> Atoms:
     """Re-bind donor_idx to anchor_idx and move it INTO the tail block.
@@ -291,14 +314,15 @@ def _split_water(atoms: Atoms, substrate_start: int,
                  anchor_idx: Optional[int] = None) -> Tuple[Atoms, Optional[Atoms]]:
     """Split the last station into the complex+CO body and the leaving H2O.
 
-    The H2O consists of ALL substrate-tail hydrogens and the ANCHOR
-    oxygen (the twice-protonated O, tracked by index across stations;
-    falls back to the metal-farthest substrate O when no anchor is
-    given). Everything else (the metal, the ligands, and the remaining
-    substrate C+O, i.e. the bound CO) is the body.
+    The H2O consists of the BOUND substrate hydrogens (actual O-H bonds,
+    < 1.3 A — not merely tail-index H's, which can include ligand donor
+    H's sitting inside the tail range) and the ANCHOR oxygen (tracked by
+    index across stations; falls back to the metal-farthest substrate O
+    when no anchor is given). Everything else (the metal, the ligands,
+    and the remaining substrate C+O, i.e. the bound CO) is the body.
     """
     body = atoms.copy()
-    hs = _substrate_h_indices(atoms, substrate_start)
+    hs = _substrate_proton_indices(atoms, substrate_start)
     o_candidates = _substrate_oxygen_indices(atoms, substrate_start)
     if not o_candidates:
         return body, None
@@ -652,30 +676,83 @@ def _apply_station_surgery(atoms: Atoms, station_idx: int,
                            anchor_idx: Optional[int] = None) -> Atoms:
     """Produce the next station's geometry from the current one.
 
-    co2  -> co2h : add one H at the ANCHOR oxygen (the one that later
-                   leaves as H2O; the other O and the C stay bound as the
-                   CO ligand)
-    co2h -> co2h2: add a second H at the SAME anchor oxygen (H2O leaves
-                   as water)
-    co2h2 -> co  : no surgery — the H2O split happens after this station
+    co2  -> co2h : add one H at the anchor O (the one that later leaves
+                   as H2O)
+    co2h -> co2h2: add the second H at the OTHER O — the user's
+                   mechanism: one H on each O first (a cis CO2H2-like
+                   formate arrangement), NOT two on the same O
+    co2h2 -> co  : H MIGRATION — both hydrogens move to the anchor O
+                   (which leaves as H2O; the C binds the metal as the
+                   CO ligand). No net atom change.
 
     The added hydrogen is moved INTO the substrate tail, so the tail stays
     contiguous and every following station surgery and NEB run sees the
     same heavy-atom correspondence.
     """
-    if station_idx in (1, 2):
+    if station_idx == 1:
         if anchor_idx is None:
             raise ValueError("anchor oxygen index not tracked")
-        # Always the SAME oxygen every station protonates is the one
-        # _split_water removes as H2O — tracked by INDEX across stations,
-        # not re-guessed per station: after xTB preopt both substrate O can
-        # sit at identical metal distances (measured 2.67 A vs 2.67 A on the
-        # real 81-105_87 co2h geometry), so a per-station max()/min() pick
-        # can flip and put the two protons on DIFFERENT oxygens (two OH
-        # groups — no water precursor). Protonating the proximal, metal-
-        # bound O would leave a hydroxamate, not a CO ligand.
-        donor = _nearest_free_hydrogen_index(atoms, anchor_idx)
+        # Tracked by INDEX across stations, not re-guessed per station:
+        # after xTB preopt both substrate O can sit at identical metal
+        # distances (measured 2.67 A vs 2.67 A on the real 81-105_87 co2h
+        # geometry), so a per-station max()/min() pick can flip.
+        donor = _nearest_free_hydrogen_index(atoms, anchor_idx,
+                                             exclude=_substrate_proton_indices(
+                                                 atoms, substrate_start))
         return _add_hydrogen_to_tail(atoms, anchor_idx, donor, substrate_start)
+    if station_idx == 2:
+        # The SECOND proton goes to the OTHER oxygen (user's mechanism):
+        # one H on each O first. The anchor remains the H2O-leaving O —
+        # the migration step (station 3) then gathers both H on it.
+        if anchor_idx is None:
+            raise ValueError("anchor oxygen index not tracked")
+        o_all = [i for i in range(substrate_start, len(atoms))
+                 if atoms[i].symbol == "O"]
+        others = [i for i in o_all if i != anchor_idx]
+        if not others:
+            raise ValueError("no second oxygen for the second proton")
+        target = others[0]
+        # The donor must come from the LIGAND side: the substrate-tail H's
+        # are the previous protons. The "free" distance check (<1.2 A) only
+        # tests the TARGET O — the first proton H sits 2.5 A from the other
+        # O (measured on the real co2h2 geometry) and would be picked as a
+        # "donor" for the second proton, stealing it from the anchor.
+        donor = _nearest_free_hydrogen_index(atoms, target,
+                                             exclude=_substrate_proton_indices(
+                                                 atoms, substrate_start))
+        return _add_hydrogen_to_tail(atoms, target, donor, substrate_start)
+    if station_idx == 3:
+        # H MIGRATION: move BOTH substrate hydrogens onto the anchor O as
+        # an intact water moiety (O-H 1.0 A, H-O-H 104.5 deg, bisector
+        # pointing AWAY from the C so the O-H bonds avoid the substrate).
+        # No atoms added or removed — the split after this station removes
+        # the anchor O + both H as H2O and the C stays as the bound CO.
+        if anchor_idx is None:
+            raise ValueError("anchor oxygen index not tracked")
+        out = atoms.copy()
+        hs = _substrate_h_indices(atoms, substrate_start)
+        if len(hs) < 2:
+            raise ValueError("migration needs both substrate hydrogens")
+        o_pos = atoms.positions[anchor_idx]
+        # Bisector: away from the C (the only heavy atom bonded to the O).
+        vec_c = None
+        for i in range(substrate_start, len(atoms)):
+            if atoms[i].symbol == "C":
+                vec_c = o_pos - atoms.positions[i]
+                break
+        if vec_c is None or np.linalg.norm(vec_c) < 1e-6:
+            vec_c = np.array([0.0, 0.0, 1.0])
+        b = vec_c / np.linalg.norm(vec_c)
+        # Any unit vector perpendicular to b spans the bisector plane.
+        helper = np.array([1.0, 0.0, 0.0])
+        if abs(float(np.dot(helper, b))) > 0.9:
+            helper = np.array([0.0, 1.0, 0.0])
+        u = helper - float(np.dot(helper, b)) * b
+        u = u / np.linalg.norm(u)
+        half = np.deg2rad(104.5) / 2.0
+        out[hs[0]].position = o_pos + 1.0 * (np.cos(half) * b + np.sin(half) * u)
+        out[hs[1]].position = o_pos + 1.0 * (np.cos(half) * b - np.sin(half) * u)
+        return out
     return atoms.copy()
 
 

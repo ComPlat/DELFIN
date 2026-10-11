@@ -103,7 +103,7 @@ class TestSurgery:
         d_prox = np.linalg.norm(out.positions[6] - out.positions[3])
         assert d_prox > 1.5
 
-    def test_co2h2_adds_second_h_at_same_oxygen(self):
+    def test_co2h2_adds_second_h_at_other_oxygen(self):
         atoms = self._atoms()
         anchor = rs._pick_anchor_oxygen(atoms, self.SUBSTRATE_START, 0)
         step1 = rs._apply_station_surgery(atoms, 1, self.SUBSTRATE_START,
@@ -115,12 +115,15 @@ class TestSurgery:
         # tail is O, C, O + two substrate H at the end
         assert symbols[3:6] == ["O", "C", "O"]
         assert symbols[6] == "H" and symbols[7] == "H"
-        # BOTH hydrogens sit at the SAME distal oxygen — the anchored one
-        # is idx 3, the distal one idx 5
-        d1 = np.linalg.norm(out.positions[6] - out.positions[5])
-        d2 = np.linalg.norm(out.positions[7] - out.positions[5])
-        assert d1 == pytest.approx(1.00, abs=0.05)
-        assert d2 == pytest.approx(1.00, abs=0.05)
+        # user's mechanism: ONE H on EACH O — first H on the distal/anchor
+        # O (idx 5), second H on the OTHER (proximal, metal-bound) O (idx 3)
+        d_distal = np.linalg.norm(out.positions[6] - out.positions[5])
+        d_prox = np.linalg.norm(out.positions[7] - out.positions[3])
+        assert d_distal == pytest.approx(1.00, abs=0.05)
+        assert d_prox == pytest.approx(1.00, abs=0.05)
+        # and the second H is NOT on the anchor O
+        d_wrong = np.linalg.norm(out.positions[7] - out.positions[5])
+        assert d_wrong > 1.5
 
     def test_surgery_without_hydrogen_raises(self):
         atoms = self._atoms(with_h=False)
