@@ -86,20 +86,45 @@ _WRITE_OPERATORS = (">", ">>", ">|", ";", "&&", "||", "|", "<", "<<")
 
 
 def _sed_is_inplace(command: str) -> bool:
-    """True when a sed command writes back to the file in place (-i / --in-place),
-    with or without a suffix (``-i.bak``). In-place is a state change with NO
-    redirect operator, so it must not count as a plain read."""
+    """True when a sed command writes back to the file in place (-i/-I /
+    --in-place), with or without a suffix (``-i.bak``). Both GNU and BSD sed
+    accept a capital -I as an in-place form, so it is matched case-sensitively
+    for -i and -I. In-place is a state change with NO redirect operator, so it
+    must not count as a plain read."""
     toks = (command or "").strip().split()
-    return any(t == "-i" or t.startswith("-i") or t.startswith("--in-place")
-               for t in toks)
+    low = command or ""
+    return (any(t[:2] in ("-i", "-I") for t in toks)
+            or any(t.startswith("--in-place") for t in toks)
+            or "--in-place" in low.split("=")[0]
+            or "-i" in low or "-I" in low)
 
 
 def _bash_has_write_operator(command: str) -> bool:
     """True when a shell command contains a token-or-operator that can write,
     run a program, or change state. Shell words like ``ls`` contain no such
-    character; ``ls > out.txt``, ``cat > run.py << EOF``, ``a && b`` do."""
+    character; ``ls > out.txt``, ``cat > run.py << EOF``, ``a && b`` do.
+
+    Beyond the literal operators, this conservatively flags (s29): command
+    substitution ``$( ... )`` / backticks (a nested program runs), backgrounding
+    ``&`` (a job detaches and keeps running), and ``find ... -exec ... +`` /
+    ``;`` (a nested command runs). Extra friction is safe; an under-classified
+    write is the failure the classifier exists to catch."""
     cmd = (command or "").strip()
-    return any(op in cmd for op in _WRITE_OPERATORS)
+    if not cmd:
+        return False
+    for op in _WRITE_OPERATORS:
+        if op in cmd:
+            return True
+    # Command substitution / nested execution (no literal operator).
+    if "$(" in cmd or "`" in cmd:
+        return True
+    # Backgrounding detaches a job; a ``&`` at the end silently keeps running.
+    if "&" in cmd:
+        return True
+    # find -exec ... ; or + runs a command per match.
+    if "-exec" in cmd and (";" in cmd or " +" in cmd):
+        return True
+    return False
 
 
 def _bash_is_plain_read(command: str) -> bool:

