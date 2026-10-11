@@ -128,6 +128,11 @@ def test_adversarial_permission_phrasings_are_refused(tmp_path):
         # frame): "would like always push" subordinated under the request,
         # no shared-subject "to" -- a grant, not a habit.
         "i would like always push to main when finished",
+        # s22 round 9 (compound subject): "you and I" hides the "you"
+        # behind the nearest "i" — the full left context must scan before
+        # the modal, so these agent-reach grants refuse.
+        "I prefer you and I always push to the main branch",
+        "I prefer that you and I always push to the main branch",
     )
     for p in probes:
         m.update_from_user_message(p, source_role="user")
