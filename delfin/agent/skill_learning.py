@@ -59,6 +59,29 @@ def _result_text(msg: dict) -> str:
     return m.group(1) if m else ""
 
 
+#: A ``<span class="tool-param">ARG</span>`` element in a tool message.
+_TOOL_PARAM = re.compile(r'tool-param">([^<]*)<')
+
+
+def _tool_args(msg: dict) -> str:
+    """Short argv of a tool call, never its result body.
+
+    Tool messages are ``<span class="tool-name">NAME</span> ARG...<details>
+    ...result...</details>``; the argv is the text between the name chip
+    and the result block, plus any ``tool-param`` spans. The result body
+    lives inside ``<details>`` and is excluded here by construction.
+    """
+    c = _content(msg)
+    m = re.search(r'tool-name">[^<]*</span>(.*?)(?:<details>|$)', c, re.S)
+    argv = ""
+    if m:
+        frag = m.group(1)
+        params = _TOOL_PARAM.findall(frag)
+        plain = re.sub(r"<[^>]+>", "", frag).strip()
+        argv = " ".join(p for p in (params + [plain]) if p).strip()
+    return argv[:80]
+
+
 def _is_tool_failed(msg: dict, name: str | None) -> bool:
     """Did this tool result report failure? Tolerant, best-effort."""
     text = (_content(msg) + " " + _result_text(msg)).lower()
@@ -106,6 +129,38 @@ def _looks_like_correction(text: str) -> bool:
         "nicht so", "anders", "stop, ", "halt,",
     )
     return any(m in t for m in markers)
+
+
+def _trusted_excerpt(messages, cap: int = 8000) -> str:
+    """A trusted projection of the session for the skill drafter.
+
+    The drafter may ONLY see what the user said and what tools were
+    CALLED and whether they succeeded. Tool RESULT text (stdout, stderr,
+    file contents, web pages, other sessions' messages) never enters the
+    excerpt: it is unfenced, untrusted input that a paraphrase could
+    turn into a rule. Each tool message becomes a bare ``TOOL <name>
+    <argv> -> <flag>`` line with the outcome flag derived from the
+    exit_code only — never the result body. Assistant prose is dropped
+    (it may carry merged tool output); only role "user" carries text.
+    """
+    parts: list[str] = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        c = _content(m).strip()
+        if role == "user":
+            if c:
+                parts.append(f"USER: {c[:600]}")
+            continue
+        name = _tool_name(m)
+        if name is None or not c:
+            continue
+        argv = _tool_args(m)
+        flag = ("red" if _is_tool_failed(m, name)
+                else "green" if _is_tool_green(m, name) else "?")
+        parts.append(f"TOOL {name} {argv or ''} -> {flag}")
+    return "\n".join(parts)[-cap:]
 
 
 def qualifies(messages) -> list[str]:
@@ -368,8 +423,7 @@ def learn_from_session(messages, *, settings=None, llm=None,
         if evidence is None:
             return None  # no proof, no proposal
 
-        from delfin.agent.memory_distill import _transcript_excerpt
-        excerpt = _transcript_excerpt(
+        excerpt = _trusted_excerpt(
             [m for m in (messages or []) if isinstance(m, dict)])
         ev_block = (f"kind: {evidence.kind}\nref: {evidence.ref}\n"
                     f"detail: {getattr(evidence, 'detail', '')}")
