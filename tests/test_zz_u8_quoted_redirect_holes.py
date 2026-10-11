@@ -33,3 +33,22 @@ def test_a_write_behind_quotes_is_still_named(cmd, target):
 ])
 def test_an_arrow_in_a_message_is_not_a_write(cmd):
     assert _bash_write_targets(cmd) == [], cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "echo x >&out.txt",
+    "echo x >& out.txt",
+    "echo x >|out.txt",
+    "echo x >| out.txt",
+    "echo x 2>&1 >&out.txt",
+])
+def test_a_redirect_spelled_with_an_ampersand_or_a_bar_names_its_file(cmd):
+    assert _bash_write_targets(cmd) == ["out.txt"], cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "echo x >&2", "echo x 2>&1", "echo x >&-", "echo x 3>&1 1>&2 2>&3",
+    "make 2>&1 | tail -5",
+])
+def test_a_descriptor_duplicate_is_not_a_file(cmd):
+    assert _bash_write_targets(cmd) == [], cmd

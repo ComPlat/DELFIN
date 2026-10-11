@@ -2195,7 +2195,12 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # Redirections: > file, >> file, 2> file, &> file (not >&1 / &2) --
         # per segment, so the directory a `cd` set applies to them.
         _redirect = re.compile(r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)")
-        for segment in re.split(r"[;&|]{1,2}|\n", cmd):
+        # `>&file` and `>| file` write a file too, but their `&` and `|`
+        # would split the segment in two below and the target would be lost.
+        # `>&2`, `>&-` and `2>&1` duplicate a descriptor and stay as they are.
+        _scan = re.sub(
+            r">&(?!\s*(?:\d+|-)(?=[\s;&|)]|$))\s*|>\|\s*", "> ", cmd)
+        for segment in re.split(r"[;&|]{1,2}|\n", _scan):
             seg = segment.strip()
             if not seg:
                 continue
