@@ -121,12 +121,17 @@ def test_the_tool_only_budget_lets_the_whole_request_overflow(floors):
         msgs, char_budget=api_client._tool_context_char_budget(_caps(131_072)))
     assert n_elided == 0  # tool output (1000 chars) is well under budget
 
-    # The whole request (chars / 4) is what the backend receives, and — with
-    # the system prompt and this turn's reasoning included — already exceeds
-    # the whole window. RED: the tool-only guard reports "under budget"
-    # (n_elided == 0) while the request the backend would get is over-window.
-    whole_tokens = sum(len(str(m.get("content", ""))) for m in msgs) // 4
-    assert whole_tokens <= api_client._tool_context_char_budget(_caps(131_072)) // 4
+    # The WHOLE-REQUEST guard is the fix (api_client._compact_between_rounds
+    # with a planning window), not the tool-only elider above. An
+    # assistant-heavy turn (500k chars of reasoning, tiny tool output) exceeds
+    # the planning window, so the guard must compact it. RED on current code
+    # (_compact_between_rounds has no planning_window parameter), GREEN once
+    # the phase-2 patch lands — the guard reports the compaction.
+    note = api_client._compact_between_rounds(
+        msgs, 100_000, 0, "s",
+        planning_window=131_072, system_chars=0)
+    assert note != ""               # RED: no whole-request guard today
+    assert "compacted" in note
 
 
 def test_request_size_per_round_is_recorded_for_the_long_turn(floors, monkeypatch):
@@ -145,3 +150,41 @@ def test_request_size_per_round_is_recorded_for_the_long_turn(floors, monkeypatc
     # request would exceed the planning window.
     sig = inspect.signature(api_client._compact_between_rounds)
     assert "planning_window" in sig.parameters  # RED: not present today
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — ONE window for every decision: context_window.planning_window
+# ---------------------------------------------------------------------------
+
+def test_planning_window_uses_the_floor_raised_then_capped_window(floors):
+    """The single planning window = floor applied, then cap.
+
+    The engine plans compaction with _capped_context_window(_ow.at_least(
+    model, window)); the in-turn budget must read the SAME number. This is
+    the owned, single source both sides will consult.
+    """
+    from delfin.agent import context_window as CW
+
+    OW.note("kit.deepseek-v4-flash", 166_379)
+    assert CW.planning_window(131_072, "kit.deepseek-v4-flash") == 166_379
+
+
+def test_planning_window_applies_the_cap_after_the_floor(floors, monkeypatch):
+    """A cap is a hard ceiling and must clamp a floor above it.
+
+    The engine does _capped_context_window(at_least(...)) with the cap
+    applied AFTER the floor. _tool_context_char_budget must not balloon past
+    the cap just because a stale floor is large.
+    """
+    from delfin.agent import context_window as CW
+
+    monkeypatch.setenv("DELFIN_CONTEXT_WINDOW_CAP", "40000")
+    OW.note("m", 166_379)
+    assert CW.planning_window(131_072, "m") == 40_000
+
+
+def test_planning_window_without_a_floor_keeps_the_raw_window(floors):
+    from delfin.agent import context_window as CW
+
+    assert CW.planning_window(131_072, "kit.glm-5.3") == 131_072
+    assert CW.planning_window(131_072, "") == 131_072  # empty model -> no floor
