@@ -1,4 +1,4 @@
-"""U12 (operator build): the classifier's second opinion, through the real gate.
+"""The action classifier's second opinion, through the real gate.
 
 Every test drives ``_DocToolExecutor`` the way a session does. The runner
 is injected on the permissions object, so no test contacts a model.
@@ -268,11 +268,13 @@ def test_the_third_refusal_stops_the_turn_until_the_user_speaks(tmp_path):
     assert blocked and "three actions were refused" in blocked
     assert len(runner.prompts) == asked
     assert _bash(perms, "ls") is None
-    # The user answers: a new turn, a new count -- the refusals themselves hold.
+    # The user answers: a new turn, a new count, and the model's refusals
+    # are judged again against what the user has now written.
     messages.append({"role": "user", "content": "go on, but only step9"})
     runner.answers = [ALLOW]
     assert _bash(perms, "python3 step9.py") is None
-    assert _bash(perms, "python3 step0.py") is not None
+    assert _bash(perms, "python3 step0.py") is None
+    assert len(runner.prompts) == asked + 2
 
 
 def test_the_switch_reads_the_setting_and_one_process_can_override(monkeypatch):

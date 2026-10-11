@@ -16098,6 +16098,26 @@ class _DocToolExecutor:
         import hashlib
         base = action["tool"]
         bypass = mode == "bypassPermissions"
+        shown = str(action.get("command") or action.get("path")
+                    or action.get("url") or base)[:120]
+        users = _classifier_user_texts(
+            getattr(perms, "classifier_messages", None))
+        state = perms.classifier_state
+        turn = (len(users), users[-1][:200] if users else "")
+        if state.get("turn") != turn:
+            state.clear()
+            state.update(turn=turn, allowed=set(), refused=set(),
+                         refusals=0, calls=[], stalled=False)
+        # The lockout holds at every point that reaches this method, in
+        # every scope: after three refusals an auto-allowed command or an
+        # auto-accepted edit waits for the user too. No model call.
+        if int(state.get("refusals") or 0) >= _CLASSIFIER_REFUSALS_PER_TURN:
+            _record_security_event("classifier_refuse", base, shown)
+            return (
+                f"'{base}' ({shown}) was not run: three actions were "
+                "refused in this turn, so nothing but reading runs until "
+                "the user has answered. End your turn and tell the user "
+                "what you were trying to do.")
         if not (bypass or cfg.get("broad")
                 or base in ("session_message", "subagent_message")
                 or base in _CLASSIFIED_NETWORK_TOOLS):
@@ -16112,19 +16132,15 @@ class _DocToolExecutor:
         except Exception:
             key = hashlib.sha256(repr((base, args)).encode(
                 "utf-8", "replace")).hexdigest()
-        shown = str(action.get("command") or action.get("path")
-                    or action.get("url") or base)[:120]
-
-        users = _classifier_user_texts(
-            getattr(perms, "classifier_messages", None))
-        state = perms.classifier_state
-        turn = (len(users), users[-1][:200] if users else "")
-        if state.get("turn") != turn:
-            state.clear()
-            state.update(turn=turn, allowed=set(), refusals=0, calls=[])
 
         def _refused(reason: str, *, by_user: bool = False) -> str:
-            perms.record_denied_action("classifier", key)
+            # The user's own no holds for the session; the model's holds
+            # until the user writes again, since that message may ask for
+            # exactly this action.
+            if by_user:
+                perms.record_denied_action("classifier", key)
+            else:
+                state["refused"].add(key)
             state["refusals"] = int(state.get("refusals") or 0) + 1
             who = ("the user refused it when asked" if by_user
                    else "the action classifier refused it")
@@ -16141,17 +16157,16 @@ class _DocToolExecutor:
         if perms.action_denied_earlier("classifier", key):
             _record_security_event("denied_again", base, shown)
             return (
-                f"'{base}' ({shown}) was already refused in this session "
-                "after the action classifier's second opinion. It stays "
-                "refused and is not asked again -- ask the user what to do "
-                "instead.")
-        if int(state.get("refusals") or 0) >= _CLASSIFIER_REFUSALS_PER_TURN:
-            _record_security_event("classifier_refuse", base, shown)
+                f"'{base}' ({shown}) was already refused by the user in this "
+                "session, asked after the action classifier's second "
+                "opinion. It stays refused and is not asked again -- ask the "
+                "user what to do instead.")
+        if key in state["refused"]:
+            _record_security_event("denied_again", base, shown)
             return (
-                f"'{base}' ({shown}) was not run: three actions were "
-                "refused in this turn, so nothing but reading runs until "
-                "the user has answered. End your turn and tell the user "
-                "what you were trying to do.")
+                f"'{base}' ({shown}) was already refused by the action "
+                "classifier since the user's last message. It is not judged "
+                "again until the user has written -- ask the user.")
         if key in state["allowed"]:
             return None
 
@@ -16165,7 +16180,14 @@ class _DocToolExecutor:
 
         def _bounded(prompt: str, model: str) -> str:
             # The runner is the client's; the bound is the gate's, so a
-            # runner that hangs cannot hold an action for minutes.
+            # runner that hangs cannot hold an action for minutes. After
+            # one timeout the rest of the turn does not wait again: the
+            # error behaviour applies at once (user rules and the claim
+            # guard still run, they need no model).
+            if state.get("stalled"):
+                failed.append("stalled")
+                raise TimeoutError(
+                    "no verdict: the model timed out earlier in this turn")
             box: dict = {}
 
             def _work() -> None:
@@ -16180,6 +16202,7 @@ class _DocToolExecutor:
             worker.join(_CLASSIFIER_TIMEOUT_S)
             if worker.is_alive():
                 failed.append("timeout")
+                state["stalled"] = True
                 raise TimeoutError(
                     f"no verdict within {_CLASSIFIER_TIMEOUT_S:.0f} s")
             if "exc" in box:
@@ -16859,9 +16882,12 @@ class _DocToolExecutor:
                 + _reading_alternative_hint(cmd)
             )
 
-        if _bare_tool_name(name) in _CLASSIFIED_NETWORK_TOOLS:
+        if (_bare_tool_name(name) in _CLASSIFIED_NETWORK_TOOLS
+                or mode == "bypassPermissions"):
             # Sending something out, allowed by the rules and seen by
             # nobody: the category the rules cannot read the intent of.
+            # Under Bypass every other gated tool that ends here
+            # (run_tests, make_plot, web_search) is unseen as well.
             return self._classifier_second_opinion(perms, name, args, mode)
         return None
 
@@ -17124,7 +17150,9 @@ class _DocToolExecutor:
             )
         mode = getattr(perms, "mode", "")
         if mode == "bypassPermissions":
-            return None
+            # Nobody is asked here; the second opinion is the one look.
+            return self._classifier_second_opinion(
+                perms, name, args or {}, mode)
         if perms.confirm_callback is None:
             _record_security_event("mcp_side_effect", name, base, blocked=True)
             return (
@@ -22953,6 +22981,17 @@ class OpenAIClient(_BaseClient):
         # the call gets the parameter's default — which reads as the
         # lowest effort on a reasoning model. Nobody chose that.
         self._turn_thinking_budget = int(thinking_budget or 0)
+        # The conversation the action classifier reads the user's intent
+        # from, bound once per turn so every dispatch branch (native, MCP,
+        # a parallel sub-agent fan-out) sees it. Per session, unlike the
+        # shared executor. A sub-agent keeps its parent's conversation:
+        # its own first "user" message is a prompt the parent agent wrote.
+        if (self._permissions is not None and not int(
+                getattr(self._permissions, "subagent_depth", 0) or 0)):
+            try:
+                self._permissions.classifier_messages = messages
+            except Exception:
+                pass
         # The DSML re-request notice is latched per call: one notice per
         # request, re-armed on the next (the engine bounds the re-request).
         self._dsml_rerequest = False
@@ -24482,18 +24521,6 @@ class OpenAIClient(_BaseClient):
                             # refs against the caller's messages even when a
                             # nested subagent stream ran in between.
                             _doc_executor.live_messages = messages
-                            if (self._permissions is not None and not int(
-                                    getattr(self._permissions,
-                                            "subagent_depth", 0) or 0)):
-                                # Per session, unlike the shared executor:
-                                # the classifier must never judge one
-                                # session against another one's task. A
-                                # sub-agent keeps its parent's conversation:
-                                # its own first "user" message is a prompt
-                                # the PARENT AGENT wrote, and an agent must
-                                # not be able to author the user's intent.
-                                self._permissions.classifier_messages = \
-                                    messages
                             result = _doc_executor.execute(
                                 fn_name, fn_args, permissions=self._permissions
                             )
