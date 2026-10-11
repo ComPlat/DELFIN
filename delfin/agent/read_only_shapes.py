@@ -4,8 +4,7 @@ Many approval dialogs of the last waves were read-only commands the bash
 auto-allow list (api_client.py:_DEFAULT_BASH_AUTO_ALLOW) does not know:
 ``git show <ref>:<path>``, ``git grep``, ``git apply --check``,
 ``git hash-object <rel>``, ``gh --version``,
-``git switch -c pr/<name> origin/main``, and a probe test run through the
-gate in the session's own scratch directory.
+and ``git switch -c pr/<name> origin/main``.
 
 This module classifies such commands as *shapes*. ``matches`` returns the
 shape's name when the command is exactly one of the recognised read-only
@@ -339,20 +338,33 @@ def _git_hash_object(argv, workspace: str) -> bool:
 
 @_shape("git_switch_pr")
 def _git_switch_pr(argv, workspace: str) -> bool:
-    # git switch -c pr/<name> origin/main   (create local branch: reads the
-    # origin/main ref, writes a local branch ref; runs nothing)
+    # git switch -c pr/<name> origin/main   creates a LOCAL branch -- this
+    # is a WRITE that is approved by rule (it writes a branch ref, moves
+    # HEAD and the work tree), NOT a read. It runs no external program and
+    # never touches a host path outside the workspace. The <name> is
+    # strictly bounded: [A-Za-z0-9._-]+ with no leading dash and no "..",
+    # so pr/.. cannot escape or smuggle an option.
     if argv[:2] != ["git", "switch"]:
         return False
     rest = argv[2:]
     if "-c" not in rest:
         return False
-    # exactly: -c pr/<name> origin/main
+    # exactly: -c pr/<name> origin/main, nothing before or after
     i = rest.index("-c")
+    if i != 0:
+        return False
     after = rest[i + 1:]
     if len(after) != 2:
         return False
     branch, origin_ref = after
-    if not (branch.startswith("pr/") and len(branch) > 3):
+    if not branch.startswith("pr/"):
+        return False
+    name = branch[3:]
+    if not name or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" for c in name):
+        return False
+    # no leading dash, no path-special lone token and no traversal component
+    # for the name itself: a bare "." or ".." is a path special, not a branch
+    if name.startswith("-") or name in (".", "..") or ".." in name:
         return False
     if origin_ref != "origin/main":
         return False
@@ -368,23 +380,6 @@ def _gh_version(argv, workspace: str) -> bool:
     if len(argv) == 2 and argv[0] == "gh" and argv[1] in ("--version", "version"):
         return True
     return False
-
-
-@_shape("gate_probe")
-def _gate_probe(argv, workspace: str) -> bool:
-    # A probe test run through the gate, in the session's own workspace:
-    #   <workspace-gate-path> tests/test_zz_<topic>.py    (or plain `gate`)
-    # The single argument must be a tests/test_zz_*.py path inside the
-    # workspace.
-    if len(argv) != 2:
-        return False
-    prog, arg = argv
-    if "gate-tools/gate" not in prog and prog != "gate":
-        return False
-    base = arg.rsplit("/", 1)[-1]
-    if not (base.startswith("test_zz_") and base.endswith(".py")):
-        return False
-    return _resolve_inside(arg, workspace)
 
 
 #: Ordered shape names (registration order).
