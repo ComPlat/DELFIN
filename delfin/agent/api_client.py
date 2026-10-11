@@ -5982,6 +5982,16 @@ class KitToolPermissions:
     bash_max_timeout_s: int = 600
     max_output_chars: int = 12_000
     confirm_callback: Optional[Callable[[str, dict, str], bool]] = None
+    # The model-based second opinion behind the rules (action_classifier).
+    # ``classifier_runner(prompt, model) -> str`` is attached by the client
+    # that owns a model connection. None -- tests, head-less callers, a
+    # plain API client -- means there is no second opinion and the gate
+    # decides exactly as it did before. ``classifier_messages`` is THIS
+    # session's conversation, bound per dispatch; ``classifier_state`` is
+    # the per-turn verdict cache and refusal count.
+    classifier_runner: Optional[Callable[[str, str], str]] = None
+    classifier_messages: Any = None
+    classifier_state: dict = field(default_factory=dict)
     pre_tool_hook: Optional[Callable[[str, dict], None]] = None
     post_tool_hook: Optional[Callable[[str, dict, str], None]] = None
     # Structured-question UI binding. Receives the full ask_user_question
@@ -10578,6 +10588,132 @@ def _record_security_event(kind: str, tool: str, detail: str,
         pass
 
 
+# --- The action classifier: a model's second opinion behind the rules -------
+# The rules decide first and alone. This runs only where they let an action
+# through that NO HUMAN SAW (Bypass, the bash auto-allow list, an
+# auto-accepted write, a message to another agent, a network call), and it
+# can only add friction: allow keeps the rule result, ask raises the normal
+# approval dialog with the reason, refuse returns the reason to the model.
+
+_CLASSIFIER_TIMEOUT_S = 20.0
+_CLASSIFIER_REFUSALS_PER_TURN = 3
+_CLASSIFIED_NETWORK_TOOLS = frozenset({
+    "web_fetch", "remote_trigger", "push_notification"})
+
+
+def _classifier_settings() -> Optional[dict]:
+    """``{"model", "rules", "broad"}`` when the classifier is on, else None.
+
+    ``agent.classifier.enabled`` (default on), ``.model``, ``.user_rules``
+    and ``.scope``: "unattended" (the default) judges what runs under
+    Bypass, messages to other agents and network calls; "all" also judges
+    every auto-allowed command and auto-accepted edit in the other modes.
+    The default is the narrow one because a verdict costs a model round
+    trip -- measured 3-7 s on the KIT proxy for a five-token answer
+    (2026-10-11) -- and the broad scope pays that on every action.
+    ``DELFIN_CLASSIFIER=off|on|all`` overrides switch and scope for one
+    process: the settings file is one per account and read by every
+    session on it.
+    """
+    try:
+        from delfin.user_settings import load_settings
+        cfg = ((load_settings() or {}).get("agent") or {}).get("classifier")
+    except Exception:
+        cfg = None
+    cfg = cfg if isinstance(cfg, dict) else {}
+    enabled = bool(cfg.get("enabled", True))
+    broad = str(cfg.get("scope") or "").strip().lower() == "all"
+    env = os.environ.get("DELFIN_CLASSIFIER", "").strip().lower()
+    if env in ("off", "0", "false", "no"):
+        enabled = False
+    elif env in ("on", "1", "true", "yes"):
+        enabled = True
+    elif env == "all":
+        enabled = broad = True
+    if not enabled:
+        return None
+    from . import action_classifier as _ac
+    rules = cfg.get("user_rules")
+    return {
+        "model": str(cfg.get("model") or "").strip() or _ac.DEFAULT_MODEL,
+        "broad": broad,
+        "rules": [str(r) for r in rules if str(r or "").strip()][:20]
+        if isinstance(rules, (list, tuple)) else [],
+    }
+
+
+def _classifier_user_texts(messages) -> list:
+    """What the USER typed in this conversation, oldest first.
+
+    The classifier's only evidence of intent, so it is read narrowly: a
+    user-role entry that carries a tool result, or that opens with a
+    bracket or a tag, is the harness or another session speaking (a
+    session message renders as "[Message from the session ...", a
+    reminder as "<system-reminder>") and is left out whole. A real
+    message is cut where such a block begins inside it. The error runs
+    towards LESS evidence, which means more asking, never less.
+    """
+    out = []
+    for m in messages or ():
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, list):
+            if any(isinstance(b, dict) and b.get("type") != "text"
+                   for b in content):
+                continue
+            content = "\n".join(str(b.get("text") or "") for b in content
+                                if isinstance(b, dict))
+        text = str(content or "").strip()
+        if not text or text[0] in "[<":
+            continue
+        cut = re.search(
+            r"\n\s*(?:\[Message from|\[UNTRUSTED EXTERNAL CONTENT|<system-)",
+            text)
+        if cut:
+            text = text[:cut.start()].strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _classifier_action(name: str, args: dict) -> dict:
+    """The judged action as action_classifier reads it."""
+    args = args if isinstance(args, dict) else {}
+    base = _bare_tool_name(name)
+    action = {"tool": base, "kind": base}
+    if base in ("bash", "bash_background"):
+        action["command"] = str(args.get("command") or "")
+    elif base in ("session_message", "subagent_message"):
+        action["message"] = str(args.get("message") or args.get("text") or "")
+        action["path"] = str(args.get("to") or args.get("id") or "")
+    else:
+        for key in ("path", "file_path", "filename"):
+            if args.get(key):
+                action["path"] = str(args.get(key))
+                break
+        action["url"] = str(args.get("url") or "")
+        # What is written, bounded: enough to see a change of subject
+        # (a skill, a prompt, a settings file), not the whole file.
+        body = (args.get("content") or args.get("new_string")
+                or args.get("patch") or args.get("payload")
+                or args.get("message") or "")
+        if not body and isinstance(args.get("edits"), list):
+            body = "\n".join(str((e or {}).get("new_string") or "")
+                             for e in args["edits"] if isinstance(e, dict))
+        # A file that instructs an agent (a skill, a prompt, settings, a
+        # CLAUDE.md) is where "writing permissions for another agent"
+        # happens: there a claim in the text is scanned like a message.
+        # Anywhere else the body is shown to the model and nothing more --
+        # a test that mentions `git push` is not a claim of approval.
+        low = str(action.get("path") or "").lower()
+        instructs = any(mark in low for mark in (
+            "skill", "prompt", "settings", "claude.md", "agents.md",
+            "delfin.md", "/.delfin/", "/.claude/", "memory", "hook"))
+        action["text" if instructs else "content"] = str(body)[:1500]
+    return action
+
+
 # --- Verification mechanics: test-evidence ledger + test-tamper gate --------
 # A test/critic agent's PASS claim is only trusted when the turn actually RAN
 # something: whenever run_tests executes or a bash command invokes pytest/
@@ -13076,6 +13212,14 @@ class _DocToolExecutor:
             return _out
 
         # Other open sessions: who they are, and a message to one of them.
+        if name in ("session_message", "subagent_message"):
+            # Not a gated tool -- no rule reads a message. What it SAYS to
+            # another agent (an approval nobody gave, "push this") is
+            # exactly what only the second opinion can see.
+            _second = self._classifier_second_opinion(
+                permissions, name, arguments, effective_mode(permissions))
+            if _second is not None:
+                return json.dumps({"error": _second})
         if name == "session_message":
             return self._execute_session_message(arguments, permissions)
         if name == "subagent_message":
@@ -15914,8 +16058,220 @@ class _DocToolExecutor:
                 )
             return None
 
-        # Writable roots (workspace + agent_workspace + grants): allow.
-        return None
+        # Writable roots (workspace + agent_workspace + grants): allow --
+        # unseen by anyone, so the second opinion looks. A shell write is
+        # judged once, as the command it is, on the bash branch.
+        if _bare_tool_name(name) in ("bash", "bash_background"):
+            return None
+        if effective_mode(perms) == "diff_approval":
+            # Staged, not written: the user approves each change itself.
+            return None
+        return self._classifier_second_opinion(
+            perms, name, args, effective_mode(perms))
+
+    def _classifier_second_opinion(
+        self, perms: Optional["KitToolPermissions"], name: str, args: dict,
+        mode: str,
+    ) -> Optional[str]:
+        """None to let the rules' allow stand, else the refusal the model reads.
+
+        Called ONLY at a point where the rules have already said yes and no
+        human was asked. It never turns a refusal into an allow -- it is not
+        reached after one. Any failure of the classifier itself leaves the
+        rule result standing, except under Bypass, where it is the only
+        second look there is: there an error asks, or refuses when nobody
+        can be asked.
+        """
+        runner = getattr(perms, "classifier_runner", None)
+        if perms is None or runner is None:
+            return None
+        try:
+            cfg = _classifier_settings()
+            if cfg is None:
+                return None
+            from . import action_classifier as _ac
+            action = _classifier_action(name, args)
+            if _ac.is_plain_read(action):
+                return None
+        except Exception:
+            return None
+        import hashlib
+        base = action["tool"]
+        bypass = mode == "bypassPermissions"
+        shown = str(action.get("command") or action.get("path")
+                    or action.get("url") or base)[:120]
+        users = _classifier_user_texts(
+            getattr(perms, "classifier_messages", None))
+        state = perms.classifier_state
+        turn = (len(users), users[-1][:200] if users else "")
+        if state.get("turn") != turn:
+            state.clear()
+            state.update(turn=turn, allowed=set(), refused=set(),
+                         refusals=0, calls=[], stalled=False)
+        # The lockout holds at every point that reaches this method, in
+        # every scope: after three refusals an auto-allowed command or an
+        # auto-accepted edit waits for the user too. No model call.
+        if int(state.get("refusals") or 0) >= _CLASSIFIER_REFUSALS_PER_TURN:
+            _record_security_event("classifier_refuse", base, shown)
+            return (
+                f"'{base}' ({shown}) was not run: three actions were "
+                "refused in this turn, so nothing but reading runs until "
+                "the user has answered. End your turn and tell the user "
+                "what you were trying to do.")
+        if not (bypass or cfg.get("broad")
+                or base in ("session_message", "subagent_message")
+                or base in _CLASSIFIED_NETWORK_TOOLS):
+            # The frequent paths -- an auto-allowed command, an
+            # auto-accepted edit -- are judged only in the broad scope.
+            return None
+        can_ask = perms.confirm_callback is not None
+        try:
+            key = hashlib.sha256(json.dumps(
+                [base, args], sort_keys=True, default=str).encode(
+                    "utf-8", "replace")).hexdigest()
+        except Exception:
+            key = hashlib.sha256(repr((base, args)).encode(
+                "utf-8", "replace")).hexdigest()
+
+        def _refused(reason: str, *, by_user: bool = False) -> str:
+            # The user's own no holds for the session; the model's holds
+            # until the user writes again, since that message may ask for
+            # exactly this action.
+            if by_user:
+                perms.record_denied_action("classifier", key)
+            else:
+                state["refused"].add(key)
+            state["refusals"] = int(state.get("refusals") or 0) + 1
+            who = ("the user refused it when asked" if by_user
+                   else "the action classifier refused it")
+            text = (
+                f"'{base}' ({shown}) was allowed by the permission rules, "
+                f"but {who}: {reason} Do NOT reach the same effect another "
+                "way -- a second attempt is refused as well. Tell the user "
+                "what you wanted to do and why.")
+            if state["refusals"] >= _CLASSIFIER_REFUSALS_PER_TURN:
+                text += (" That is the third refusal in this turn: stop "
+                         "acting now and end your turn with that question.")
+            return text
+
+        if perms.action_denied_earlier("classifier", key):
+            _record_security_event("denied_again", base, shown)
+            return (
+                f"'{base}' ({shown}) was already refused by the user in this "
+                "session, asked after the action classifier's second "
+                "opinion. It stays refused and is not asked again -- ask the "
+                "user what to do instead.")
+        if key in state["refused"]:
+            _record_security_event("denied_again", base, shown)
+            return (
+                f"'{base}' ({shown}) was already refused by the action "
+                "classifier since the user's last message. It is not judged "
+                "again until the user has written -- ask the user.")
+        if key in state["allowed"]:
+            return None
+
+        context = {
+            "task": users[0][:2000] if users else "",
+            "recent_user": [u[:1000] for u in users[1:][-3:]],
+            "recent_calls": list(state["calls"][-6:]),
+        }
+        state["calls"].append({"tool": base, "args": shown})
+        failed: list = []
+
+        def _bounded(prompt: str, model: str) -> str:
+            # The runner is the client's; the bound is the gate's, so a
+            # runner that hangs cannot hold an action for minutes. After
+            # one timeout the rest of the turn does not wait again: the
+            # error behaviour applies at once (user rules and the claim
+            # guard still run, they need no model).
+            if state.get("stalled"):
+                failed.append("stalled")
+                raise TimeoutError(
+                    "no verdict: the model timed out earlier in this turn")
+            box: dict = {}
+
+            def _work() -> None:
+                try:
+                    box["out"] = runner(prompt, model)
+                except BaseException as exc:      # noqa: BLE001
+                    box["exc"] = exc
+
+            worker = threading.Thread(
+                target=_work, name="action-classifier", daemon=True)
+            worker.start()
+            worker.join(_CLASSIFIER_TIMEOUT_S)
+            if worker.is_alive():
+                failed.append("timeout")
+                state["stalled"] = True
+                raise TimeoutError(
+                    f"no verdict within {_CLASSIFIER_TIMEOUT_S:.0f} s")
+            if "exc" in box:
+                failed.append(type(box["exc"]).__name__)
+                raise box["exc"]
+            return str(box.get("out") or "")
+
+        on_error = ("ask" if can_ask else "refuse") if bypass else "allow"
+        try:
+            verdict = _ac.judge(
+                action, context, model=cfg["model"], runner=_bounded,
+                rules=cfg["rules"], default_on_error=on_error)
+            decision, reason = verdict.decision, str(verdict.reason or "")
+        except Exception as exc:
+            failed.append(type(exc).__name__)
+            decision, reason = on_error, f"classifier error: {exc}"
+        if failed or reason.startswith(_ac.ERROR_PREFIX):
+            _record_security_event(
+                "classifier_error", base, f"{shown}: {reason[:120]}",
+                blocked=decision != "allow")
+        reason = " ".join(reason.split())[:300]
+        if not reason.endswith((".", "!", "?")):
+            reason += "."
+
+        if decision == "allow":
+            state["allowed"].add(key)
+            return None
+        if decision == "refuse":
+            _record_security_event(
+                "classifier_refuse", base, f"{shown}: {reason[:120]}")
+            return _refused(reason)
+        # In doubt: the user decides, with the reason in front of them.
+        _record_security_event(
+            "classifier_ask", base, f"{shown}: {reason[:120]}",
+            blocked=not can_ask)
+        if not can_ask:
+            return _refused(reason + " Nobody can be asked here, so doubt "
+                            "is a refusal.")
+        if base in ("bash", "bash_background"):
+            body = f"$ {action.get('command') or ''}"
+        elif action.get("message"):
+            body = (f"{base} -> {action.get('path') or '?'}\n"
+                    f"{action['message'][:1200]}")
+        else:
+            body = f"{base} -> {shown}"
+        preview = (
+            "[ACTION CLASSIFIER -- SECOND OPINION]\n"
+            "The permission rules allow this action. The classifier is not "
+            "sure your request covers it:\n"
+            f"  {reason}\n\n{body}")
+        try:
+            ok = bool(perms.confirm_callback(base, args, preview))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        if ok:
+            state["allowed"].add(key)
+            return None
+        if self._confirm_timed_out(perms):
+            _record_security_event("approval_timeout", base, shown)
+            return (
+                f"the action classifier asked the user about '{base}' "
+                f"({shown}) and the request TIMED OUT -- the user is away, "
+                "this is NOT a denial. Do not try it again now; carry on "
+                "with work that needs no approval, or end your turn saying "
+                "what is waiting for them.")
+        _record_security_event("denied_by_user", base, shown)
+        if base in ("bash", "bash_background"):
+            perms.record_denied_action("bash", str(action.get("command") or ""))
+        return _refused(reason, by_user=True) + self._said_why(perms)
 
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions"
@@ -16322,9 +16678,11 @@ class _DocToolExecutor:
             if mode == "bypassPermissions":
                 # Bypass: only the deny-list still applies; everything else
                 # runs unattended. Use this only inside trusted workflows.
-                return None
+                # The classifier is the one second look this profile has.
+                return self._classifier_second_opinion(perms, name, args, mode)
             if perms.matches_bash_auto_allow(cmd):
-                return None
+                # The list matches the command's spelling, not its purpose.
+                return self._classifier_second_opinion(perms, name, args, mode)
             # Not auto-allowed. Whenever a per-action approval dialog is
             # wired (the dashboard KitConfirmBroker), ask the user to
             # approve THIS command — one click — instead of dead-ending
@@ -16524,6 +16882,13 @@ class _DocToolExecutor:
                 + _reading_alternative_hint(cmd)
             )
 
+        if (_bare_tool_name(name) in _CLASSIFIED_NETWORK_TOOLS
+                or mode == "bypassPermissions"):
+            # Sending something out, allowed by the rules and seen by
+            # nobody: the category the rules cannot read the intent of.
+            # Under Bypass every other gated tool that ends here
+            # (run_tests, make_plot, web_search) is unseen as well.
+            return self._classifier_second_opinion(perms, name, args, mode)
         return None
 
     def _gate_mcp_tool(
@@ -16785,7 +17150,9 @@ class _DocToolExecutor:
             )
         mode = getattr(perms, "mode", "")
         if mode == "bypassPermissions":
-            return None
+            # Nobody is asked here; the second opinion is the one look.
+            return self._classifier_second_opinion(
+                perms, name, args or {}, mode)
         if perms.confirm_callback is None:
             _record_security_event("mcp_side_effect", name, base, blocked=True)
             return (
@@ -22116,6 +22483,7 @@ class OpenAIClient(_BaseClient):
         # see push_run_note. Shares the steer lock; both are tiny.
         self._run_notes: list[str] = []
         self._attach_subagent_runner(permissions)
+        self._attach_classifier_runner(permissions)
 
     def narrow_tool_surface(
         self, allowed: Any = (), denied: Any = ()
@@ -22453,6 +22821,33 @@ class OpenAIClient(_BaseClient):
         except Exception:
             return ""
 
+    def _classifier_complete(self, prompt: str, model: str) -> str:
+        """One short, tool-less completion for the action classifier."""
+        wire = str(model or "")
+        if wire.startswith("kit.") and getattr(self, "_provider", "") != "kit":
+            # The configured classifier model lives on the KIT proxy; a
+            # session on another backend asks its own model instead of
+            # failing on every action.
+            wire = self.model
+        resp = self.client.with_options(
+            timeout=_CLASSIFIER_TIMEOUT_S, max_retries=0,
+        ).chat.completions.create(
+            model=wire or self.model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=120, stream=False)
+        return str(resp.choices[0].message.content or "")
+
+    def _attach_classifier_runner(
+        self, permissions: Optional["KitToolPermissions"],
+    ) -> None:
+        """Give the session's gate a model to ask. Idempotent."""
+        if permissions is None:
+            return
+        try:
+            permissions.classifier_runner = self._classifier_complete
+        except Exception:
+            pass
+
     def _attach_subagent_runner(
         self, permissions: Optional["KitToolPermissions"],
     ) -> None:
@@ -22498,6 +22893,7 @@ class OpenAIClient(_BaseClient):
         """Replace the KIT-Toolbox permissions policy at runtime."""
         self._permissions = permissions
         self._attach_subagent_runner(permissions)
+        self._attach_classifier_runner(permissions)
         # Same pattern as the runners above: the task tools' completion
         # check needs this turn's grounding ledgers, and the executor
         # holds no back-reference to the client. Bound as a callable so
@@ -22585,6 +22981,17 @@ class OpenAIClient(_BaseClient):
         # the call gets the parameter's default — which reads as the
         # lowest effort on a reasoning model. Nobody chose that.
         self._turn_thinking_budget = int(thinking_budget or 0)
+        # The conversation the action classifier reads the user's intent
+        # from, bound once per turn so every dispatch branch (native, MCP,
+        # a parallel sub-agent fan-out) sees it. Per session, unlike the
+        # shared executor. A sub-agent keeps its parent's conversation:
+        # its own first "user" message is a prompt the parent agent wrote.
+        if (self._permissions is not None and not int(
+                getattr(self._permissions, "subagent_depth", 0) or 0)):
+            try:
+                self._permissions.classifier_messages = messages
+            except Exception:
+                pass
         # The DSML re-request notice is latched per call: one notice per
         # request, re-armed on the next (the engine bounds the re-request).
         self._dsml_rerequest = False

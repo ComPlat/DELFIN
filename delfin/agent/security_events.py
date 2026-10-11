@@ -109,6 +109,11 @@ _KINDS = {
     "mcp_side_effect_no_perms": ("🔌", "MCP side effect without permissions"),
     "mcp_module_name":   ("🔌", "MCP module name outside the adapters dir"),
     "mcp_budget":        ("🔌", "MCP tool surface over budget"),
+    # The action classifier: a model's second opinion on what the rules let
+    # through unseen. It only ever adds friction.
+    "classifier_ask":    ("❓", "Action classifier asked the user"),
+    "classifier_refuse": ("🛑", "Action classifier refused an allowed action"),
+    "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
 }
 
 
