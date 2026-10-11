@@ -1577,7 +1577,20 @@ def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
         logger.error("[recalc] CO2 Coordinator recalc failed: %s", exc, exc_info=True)
         return False
     finally:
-        os.chdir(prev_cwd)
+        # prev_cwd can be a SLURM tmpdir that the scheduler deletes when the
+        # job ends; chdir back only if it still exists, otherwise fall back to
+        # the workspace root so the wrapper can still write its exit code.
+        try:
+            os.chdir(prev_cwd)
+        except (FileNotFoundError, OSError):
+            logger.warning(
+                "[recalc] Original cwd %s no longer exists; falling back to workspace root.",
+                prev_cwd,
+            )
+            try:
+                os.chdir(workspace_root)
+            except (FileNotFoundError, OSError):
+                logger.warning("[recalc] workspace_root %s also gone; staying in cwd.", workspace_root)
         if prev_env is None:
             os.environ.pop("DELFIN_CO2_RECALC", None)
         else:
