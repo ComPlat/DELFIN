@@ -165,6 +165,30 @@ def test_git_switch_existing_does_not_fire():
     assert matches("git switch main", WORKSPACE) == ""
 
 
+def test_git_switch_pr_name_with_dotdot_does_not_fire():
+    # the branch NAME after pr/ is bounded: `..` must be rejected
+    assert matches("git switch -c pr/../evil origin/main", WORKSPACE) == ""
+
+
+def test_git_switch_pr_name_with_inner_dotdot_does_not_fire():
+    assert matches("git switch -c pr/a..b origin/main", WORKSPACE) == ""
+
+
+def test_git_switch_pr_name_leading_dash_does_not_fire():
+    assert matches("git switch -c pr/-dash origin/main", WORKSPACE) == ""
+
+
+def test_git_switch_pr_extra_token_does_not_fire():
+    assert matches("git switch -c pr/x origin/main extra", WORKSPACE) == ""
+
+
+def test_git_switch_pr_valid_named_branch_fires():
+    assert (
+        matches("git switch -c pr/h1f-name.2 origin/main", WORKSPACE)
+        == "git_switch_pr"
+    )
+
+
 # --- shape: gh_version -----------------------------------------------------
 
 def test_gh_version_fires():
@@ -175,16 +199,19 @@ def test_gh_action_does_not_fire():
     assert matches("gh pr create", WORKSPACE) == ""
 
 
-# --- shape: gate_probe -----------------------------------------------------
+# --- shape: gate_probe was removed (operator finding 1) ---------------------
+# A program run is never a read-only shape: a command whose program is named
+# `gate` (or a workspace file named `gate-tools/gate`) must still be asked
+# about, not silently approved by rule.
 
-def test_gate_probe_fires():
-    assert (
-        matches("gate tests/test_zz_h1f_probe.py", WORKSPACE) == "gate_probe"
-    )
+def test_gate_named_program_is_not_a_shape():
+    assert matches("gate tests/test_zz_h1f_probe.py", WORKSPACE) == ""
 
 
-def test_gate_probe_outside_workspace_does_not_fire():
-    assert matches("gate /tmp/x.py", WORKSPACE) == ""
+def test_workspace_gate_tools_gate_file_is_not_a_shape():
+    # a session could write ./tools/gate-tools/gate itself and then have that
+    # program run -- that must still be asked about, never auto-approved
+    assert matches("tools/gate-tools/gate tests/test_zz_h1f_probe.py", WORKSPACE) == ""
 
 
 # --- compounds / structure are never a shape -------------------------------
@@ -229,7 +256,7 @@ def test_shape_names_are_known():
     assert "git_hash_object" in SHAPE_NAMES
     assert "git_switch_pr" in SHAPE_NAMES
     assert "gh_version" in SHAPE_NAMES
-    assert "gate_probe" in SHAPE_NAMES
+    assert "gate_probe" not in SHAPE_NAMES
 
 
 def test_no_write_option_in_head_matches():
