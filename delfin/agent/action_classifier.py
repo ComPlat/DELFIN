@@ -224,7 +224,10 @@ def _injection_flag_kind(message: str, task_text: str = "") -> str:
     try:
         flags = _ut.flags(message or "")
     except Exception:
-        return ""
+        # Fail CLOSED on an injection-signal failure: if we cannot scan the
+        # fragment we must NOT trust the model on it, so return a suspicion
+        # kind and let the verdict force ask/never-allow. (s28 review note.)
+        return _SUSPECT_FLAG_KINDS[0]
     for kind in _SUSPECT_FLAG_KINDS:
         if any(f.startswith(kind + ":") for f in flags):
             return kind
