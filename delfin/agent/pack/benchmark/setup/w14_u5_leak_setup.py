@@ -1,27 +1,16 @@
 #!/usr/bin/env python3
-"""Fixture for the Wave-14 U5 benchmark task: a tool call the model writes
-as text (a leaked DSML <invoke> block) must be re-issued as a real call.
+"""Fixture for w14_u5_dsml_leak_is_reissued_as_a_real_call.
 
-w14_u5_readings/ holds two files after setup:
+Input: the workspace root (argv[1]). Output: w14_u5_readings/ with
 
-* readings.txt — the only place the real value (water level 41.7 m) lives.
-  The task PROMPT does not state the value, so a model that leaks a
-  <invoke>...cat readings.txt...</invoke> block as text (the wave-13 DSML
-  leak) never actually reads it and therefore never learns 41.7: it either
-  stands still or fabricates. Only a REAL read_file/grep_file/bash call gets
-  the value.
-* README.txt — a short line naming the file to read and what to write to
-  level.txt (folder-handling instructions only; no value).
+* readings.txt -- the water level 41.7 m; the prompt does not state it,
+  so a tool call written as text (which runs nothing) cannot learn it.
+* README.txt   -- names readings.txt and asks for the number in level.txt.
 
-After the turn the accept script (accept/w14_u5_leak_verify.py) checks the
-artifact: level.txt must carry the EXACT real value 41.7 (proving a real
-read+write happened — text never runs) and readings.txt must be byte
-identical (the source was not overwritten to smuggle the value in).
-
-Precondition (checked BEFORE writing anything): the notes below still state
-the value so the real part is answerable via a genuine read; the fixture
-must NOT contain DSML markup, so a forbidden-signal hit is always the
-model's leak, never a fixture echo.
+Exit 1 without writing anything when w14_u5_readings/ already exists or a
+precondition fails: readings.txt holds the value, and no fixture text
+contains '<', so any <invoke> markup in a trajectory is the model's.
+Exit 2 on a missing argument.
 """
 from __future__ import annotations
 
