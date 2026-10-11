@@ -7693,7 +7693,8 @@ def create_tab(ctx):
     def _refresh_task_ticker():
         try:
             from delfin.agent.task_ticker import rows as _tt_rows
-            from delfin.agent.task_ticker import render_title as _tt_title
+            from delfin.agent.task_ticker import (
+                render_title as _tt_title, session_last_activity_at as _tt_last)
             eng = state.get("engine")
             kp = getattr(eng, "kit_permissions", None) if eng is not None else None
             if eng is not None and kp is None:
@@ -7710,7 +7711,11 @@ def create_tab(ctx):
                     ctx.repo_dir or Path.cwd())
                 sid = str(state.get("active_session_id", "") or "")
                 title = _tt_title(ws, session_id=sid)
-                rows = _tt_rows(ws, session_id=sid) if title else []
+                rows = _tt_rows(ws, session_id=sid,
+                                # A blocked reason older than the session's
+                                # last activity reads as stale (U7).
+                                last_message_at=_tt_last(ws, session_id=sid)) \
+                    if title else []
             if not title:
                 rows = []
             # Rebuilt only when a row changed: the background tick runs
@@ -7905,8 +7910,18 @@ def create_tab(ctx):
         engine = state.get("engine")
         if streaming and engine is not None and hasattr(engine.client, "push_steer"):
             engine.client.push_steer(text)
+            delivered = True
         else:
-            _send_on_its_own(text, leave_text_when_held=True)
+            delivered = _send_on_its_own(text, leave_text_when_held=True)
+        # Marked read only where the text was handed to the model (steered
+        # into the turn or sent on its own). A held session (paused, stopped,
+        # waiting for the user's answer) has not read it. (Package U7.)
+        if delivered:
+            for message in messages:
+                try:
+                    _msgs.mark_read(str(message.get("id") or ""))
+                except Exception:
+                    pass
 
     def _peek_background(workspace, group, item_id):
         """The ▸ on a Background row: the item's last output lines, in the chat."""

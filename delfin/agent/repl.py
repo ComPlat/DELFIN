@@ -2401,7 +2401,12 @@ class TerminalAgent:
             from . import task_ticker
             text = task_ticker.render_text(
                 self.opts.cwd,
-                session_id=str(getattr(self.engine, "session_id", "") or ""))
+                session_id=str(getattr(self.engine, "session_id", "") or ""),
+                # A blocked reason older than the session's last activity
+                # reads as stale (U7: nobody waits silently).
+                last_message_at=task_ticker.session_last_activity_at(
+                    self.opts.cwd,
+                    session_id=str(getattr(self.engine, "session_id", "") or "")))
         except Exception:
             return
         if text and text != "(no tasks)":
@@ -2954,6 +2959,12 @@ class TerminalAgent:
             sender = (message.get("from_title") or message.get("from")
                       or "an operator")
             body = " ".join(str(message.get("text") or "").split())
+            # Handed to the model: the sender can tell it from a message
+            # that merely left the inbox. (Package U7.)
+            try:
+                _msgs.mark_read(str(message.get("id") or ""))
+            except Exception:
+                pass
             self.transcript.chrome(
                 self.transcript.theme.dim(f"✉ {sender} → into the running "
                                           f"turn: {body[:300]}"))
@@ -3258,6 +3269,12 @@ class TerminalAgent:
                 # the next prompt, and a prompt is not echoed. Somebody
                 # watching the pane has to be able to read what arrived.
                 body = " ".join(str(message.get("text") or "").split())
+                # Handed to the model: the sender can tell it from a message
+                # that merely left the inbox. (Package U7.)
+                try:
+                    _msgs.mark_read(str(message.get("id") or ""))
+                except Exception:
+                    pass
                 self.transcript.chrome(
                     self.transcript.theme.dim(f"✉ {sender}: {body[:300]}"))
             return "\n\n".join(_msgs.render(m) for m in messages)
