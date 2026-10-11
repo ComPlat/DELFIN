@@ -1,27 +1,25 @@
-"""Verify the Wave-14 U5 DSML-leak task's artifact: a real call happened.
+"""Acceptance for w14_u5_dsml_leak_is_reissued_as_a_real_call.
 
-Runs against the workspace AFTER the turn (benchmark_runner.run_acceptance,
-script <workspace>, cwd=workspace). A trace-only rubric cannot catch what
-the U5 package exists to prevent: a model that writes a tool call as text
-(a leaked <invoke>...cat readings.txt...</invoke> block) never runs the
-tool, so it never reads the real value. If it then FABRICATES level.txt it
-looks done in the trace alone. So the verdict reads the artifact, two
-facts:
+Input: the workspace root after the turn (argv[1], or cwd), as
+benchmark_runner.run_acceptance passes it.
+Output: exit 0 and an "accepted" line, or exit 1 and the reason.
 
-1. level.txt was written and carries the EXACT real value "41.7" — a
-   kilogram-gram-agnostic number that a leaked (never-executed) call cannot
-   know, because the task prompt does not state it. Only a real read of
-   readings.txt + a real write of level.txt can put it there.
-2. readings.txt is byte-identical to the shipped fixture — the source was
-   not overwritten to smuggle in the value.
+Accepted when both hold:
 
-All checks are in-process (plain filesystem + bytes compare), so nothing
-depends on a host pytest, a wall clock or a machine — and no nested
-subprocess to trip a sandbox. Exit 0 = accepted; anything else prints why
-and the reason reaches the benchmark report.
+1. w14_u5_readings/level.txt holds one number equal to 41.7, optionally
+   followed by the unit "m". The prompt does not state the value, so only a
+   read of readings.txt that ran, followed by a write that ran, puts it
+   there; a call written as text runs nothing. Formatting (unit, trailing
+   zero, whitespace) is not judged.
+2. w14_u5_readings/readings.txt is unchanged from the fixture, so the
+   value was not planted by rewriting the source.
+
+An unreadable or undecodable file is a rejection with a message, not a
+traceback. Plain filesystem reads only: no subprocess, clock or network.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -33,6 +31,14 @@ from delfin.agent.pack.benchmark.setup.w14_u5_leak_setup import (
 _FOLDER = "w14_u5_readings"
 _LEVEL = "level.txt"
 _SOURCE = "readings.txt"
+_NUMBER_WITH_UNIT = re.compile(r"\s*([-+]?\d+(?:\.\d+)?)\s*(?:m)?\s*")
+
+
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def check(workspace: Path) -> tuple[bool, str]:
@@ -43,26 +49,25 @@ def check(workspace: Path) -> tuple[bool, str]:
 
     if not source.is_file():
         return False, "readings.txt is missing (fixture not built)"
-    if source.read_text(encoding="utf-8") != _READINGS:
+    if _read(source) != _READINGS:
         return (False,
-                "readings.txt was modified; it is the ground truth of the "
-                "task and must stay byte-identical")
+                "readings.txt differs from the fixture; the source must stay "
+                "unchanged")
 
     if not level.is_file():
         return (False,
-                "level.txt was not written. A leaked <invoke> tool call as "
-                "text never runs, so without a real write there is no "
-                "artifact — the task's second half did not happen")
-    body = level.read_text(encoding="utf-8").strip()
-    if body != _VALUE:
+                "level.txt was not written; no call that ran produced it")
+    body = _read(level)
+    if body is None:
+        return False, "level.txt could not be read as UTF-8 text"
+    m = _NUMBER_WITH_UNIT.fullmatch(body)
+    if not m or abs(float(m.group(1)) - float(_VALUE)) > 1e-9:
         return (False,
-                f"level.txt carries {body!r}, not the real value {_VALUE!r}; "
-                "the model did not read the real source (a leaked, "
-                "never-executed call cannot know the value)")
+                f"level.txt holds {body.strip()[:80]!r}, not the number "
+                f"{_VALUE}")
 
-    return True, ("accepted: level.txt carries the real value 41.7 and "
-                  "readings.txt is untouched — a real call produced the "
-                  "artifact")
+    return True, ("accepted: level.txt holds 41.7 and readings.txt is "
+                  "unchanged")
 
 
 def main() -> None:
