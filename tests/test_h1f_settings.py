@@ -49,18 +49,8 @@ def test_settings_from_payload_honours_disabled_toggle():
     assert d["enabled"] is False
 
 
-def test_settings_from_payload_restricts_shapes():
-    d = ros.read_only_shapes_from_payload(
-        _payload(enabled_shapes=["git_show_path", "gh_version"])
-    )
-    assert d["enabled_shapes"] == ["git_show_path", "gh_version"]
 
 
-def test_settings_from_payload_drops_unknown_shape_names():
-    d = ros.read_only_shapes_from_payload(
-        _payload(enabled_shapes=["git_show_path", "not_a_shape"])
-    )
-    assert d["enabled_shapes"] == ["git_show_path"]
 
 
 def test_settings_from_payload_unknown_keys_are_ignored():

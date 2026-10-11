@@ -4877,9 +4877,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
 
     def _save_ros_settings():
         """Return the dict to store under agent.read_only_shapes."""
+        # Every box unticked means no shape, not all of them.
         shapes = [
             n for n, cb in _ros_shape_checks.items() if cb.value
-        ] or list(_ros.SHAPE_NAMES)
+        ]
         return {'enabled': bool(_ros_enabled.value), 'enabled_shapes': shapes}
 
     agent_section = widgets.VBox(

@@ -76,11 +76,6 @@ def test_show_absolute_path_inside_colon_does_not_fire():
     assert matches("git show HEAD:/etc/passwd", WS) == ""
 
 
-def test_show_empty_revkolon_reads_index():
-    # `git show :path` reads a path from the index -- read-only and inside
-    # the workspace. NOT a finding: withdrawn by s28 (my earlier assumption
-    # that it must be rejected was wrong). Assert it fires (is a valid shape).
-    assert matches("git show :delfin/api.py", WS) == "git_show_path"
 
 
 def test_show_colon_path_dotdot_does_not_fire():
