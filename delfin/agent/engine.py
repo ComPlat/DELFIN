@@ -1284,7 +1284,7 @@ class AgentEngine:
             # Keep whatever window is already set (100k default).
             pass
 
-    def _capture_floor_if_in_plan(self, input_tokens: int) -> None:
+    def _capture_floor(self, input_tokens: int) -> None:
         """Record an accepted request as the model's observed floor.
 
         An accepted request is proof of the window, whether or not it stayed
@@ -3315,7 +3315,7 @@ class AgentEngine:
                         # context plus ephemeral tool results, so the code
                         # contradicted its own contract.
                         if event.input_tokens and not self._floor_captured_this_turn:
-                            self._capture_floor_if_in_plan(int(event.input_tokens))
+                            self._capture_floor(int(event.input_tokens))
                         # Prompt tokens served from the endpoint cache (Anthropic
                         # reports it here). Visibility into how much of the input
                         # was free — drives the caching/efficiency work.

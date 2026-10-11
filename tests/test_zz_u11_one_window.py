@@ -1,19 +1,14 @@
-"""Wave 14 U11 phase-2 red test — the operator builds u11_one_window.patch.
+"""One planning window for the engine and the in-turn budgets.
 
-RED on the current tree (unpatched api_client/engine): the in-turn budget is
-floor-blind, there is no whole-request guard, and the engine learns a floor
-from an over-budget request. GREEN after the operator applies the patch:
-
-  FINDING A — the in-turn elision budget plans with the SAME floor-raised-then-
-    capped window the engine uses (not the raw caps window).
-  FINDING B — a WHOLE-REQUEST guard compacts a turn whose assistant reasoning
-    + system prompt exceed the planning window even when its tool output is
-    tiny (separate from the tool-only elider).
-  FINDING C — the engine learns a model-wide floor ONLY when the accepted
-    request stayed within the planning window; an over-budget request does not
-    raise every later session's window.
-
-Run: <gate> tests/test_zz_u11_one_window.py
+  A -- the in-turn elision budget plans with the floor-raised-then-capped
+       window the engine uses (context_window.planning_window), not the raw
+       caps window.
+  B -- a whole-request guard compacts a turn whose assistant text exceeds
+       the planning window while its tool output is small; the tool-only
+       elider is unchanged.
+  C -- the engine learns a model's floor from every accepted request;
+       observed_window.note stores only a new maximum, so a smaller request
+       never lowers it.
 """
 
 from __future__ import annotations
@@ -88,7 +83,7 @@ def test_an_assistant_heavy_turn_is_compacted_against_the_planning_window(floors
     msgs = _msgs(3, result_chars=100, reasoning_chars=500_000)
     note = api_client._compact_between_rounds(
         msgs, 100_000, 0, "s", planning_window=131_072, system_chars=0)
-    assert note != ""                       # RED: no whole-request guard today
+    assert note != ""
     assert "compacted" in note
 
 
@@ -125,9 +120,9 @@ def test_the_engine_bounds_the_floor_raise_to_what_was_accepted(floors):
         return eng
 
     over = _engine()
-    over._capture_floor_if_in_plan(166_379)   # 166k over the 100k plan window
-    assert OW.floor("kit.m") == 166_379       # RED today: throttle drops it
+    over._capture_floor(166_379)   # 166k over the 100k plan window
+    assert OW.floor("kit.m") == 166_379
 
     later = _engine()                         # a fresh turn, same model
-    later._capture_floor_if_in_plan(90_000)   # a smaller accepted request
+    later._capture_floor(90_000)   # a smaller accepted request
     assert OW.floor("kit.m") == 166_379       # the raise is never lowered

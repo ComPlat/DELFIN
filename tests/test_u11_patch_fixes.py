@@ -126,7 +126,7 @@ def test_floor_learned_even_when_request_exceeds_the_table_window(home):
     eng._last_input_tokens = 0
     eng._trimmed_chars_since_floor = 0
 
-    eng._capture_floor_if_in_plan(166_379)
+    eng._capture_floor(166_379)
 
     floor = OW.at_least(model, _WINDOW)
     assert floor >= 166_379, (
