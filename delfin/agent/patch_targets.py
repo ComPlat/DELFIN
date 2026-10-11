@@ -193,6 +193,31 @@ def _git_subcommand(rest: list[str]) -> str:
     return ""
 
 
+def _work_tree_override(rest: list[str]) -> str | None:
+    """The working-tree or cwd a leading global ``git -C dir``/``--work-tree
+    =dir`` points the paths at, when present *before* the subcommand; else
+    None. ``git -C /x checkout -- f`` resolves ``f`` against ``/x``, not the
+    caller's cwd, so targets must resolve there. ``--git-dir`` moves only
+    ``.git``, not the work tree, so it is ignored."""
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if not arg.startswith("-"):
+            return None          # the subcommand: globals end here
+        if "=" in arg:
+            if arg.startswith("--work-tree="):
+                return arg.split("=", 1)[1]
+            i += 1
+            continue
+        if arg in ("-C", "--work-tree"):
+            if i + 1 < len(rest):
+                return rest[i + 1]
+            i += 2
+            continue
+        i += 1
+    return None
+
+
 def _targets_git(rest: list[str], base: Path) -> object:
     """Write targets of a ``git <sub> …`` command. ``rest`` is the argument
     list after ``git`` with any leading env-var prefix already stripped."""
@@ -200,17 +225,23 @@ def _targets_git(rest: list[str], base: Path) -> object:
         sub = _git_subcommand(rest)
     except Exception:
         return []
+    # A leading -C/--work-tree points the resolve base at that tree; without
+    # it the paths resolve against the caller's cwd (*base*).
+    override = _work_tree_override(rest)
+    eff_base = base if override is None else _resolve(override, base)
+    eff_base = Path(eff_base)
+    after = _after_subcommand(rest, sub)
     if sub == "apply":
-        return _targets_git_apply(_after_subcommand(rest, sub), base)
+        return _targets_git_apply(after, eff_base)
     if sub == "am":
         # A mailbox: the patch lives inside the mbox body, not on the command
         # line. Reading it robustly is not worth the risk of a missed target;
         # refuse the command outright.
         return UNKNOWABLE
     if sub == "checkout":
-        return _targets_git_checkout(_after_subcommand(rest, sub), base)
+        return _targets_git_checkout(after, eff_base)
     if sub == "restore":
-        return _targets_git_restore(_after_subcommand(rest, sub), base)
+        return _targets_git_restore(after, eff_base)
     return []
 
 
@@ -224,16 +255,36 @@ def _after_subcommand(rest: list[str], sub: str) -> list[str]:
 
 
 def _targets_git_apply(rest: list[str], base: Path) -> object:
-    """git apply [-pN] [--directory=prefix] [-R] [--include=…] [patch].
+    """git apply [-pN] [--directory=prefix] [-R] [--include=…] [patch ...].
 
-    The files it writes are read from the patch file named on the command
-    line. A patch on stdin (``git apply`` with no file, ``git apply -``, or a
-    pipe) is UNKNOWABLE -> the caller refuses. ``--check`` validates without
-    writing -> nothing to add."""
+    The files it writes are read from EVERY patch file named on the command
+    line (``git apply a.diff b.diff`` applies both). A patch on stdin (``git
+    apply`` with no file, ``git apply -``, or a pipe) is UNKNOWABLE -> the
+    caller refuses. ``--check`` validates without writing -> nothing to add.
+
+    ``--3way`` and ``--index`` apply the patch's hunks to the index AND
+    write the working tree, so the patch's files are named. ``--cached``
+    stages to the index alone and writes no working-tree file, so it names
+    nothing (``[]``). ``--check`` validates without writing -> nothing."""
     strip = 1
     prefix = None
     check_only = False
-    patch_file = None
+    cached_only = False
+    patch_files: list[str] = []
+
+    def _read_patch_files() -> object:
+        """The resolved targets of every named patch file, or UNKNOWABLE if
+        any one cannot be read (we cannot promise what the whole command
+        would write unless every patch is named)."""
+        targets: list[str] = []
+        for pf in patch_files:
+            result = _targets_from_patch(
+                _resolve(pf, base), strip=strip, prefix=prefix)
+            if result is UNKNOWABLE:
+                return UNKNOWABLE
+            targets.extend(result)
+        return targets
+
     i = 0
     while i < len(rest):
         a = rest[i]
@@ -241,6 +292,10 @@ def _targets_git_apply(rest: list[str], base: Path) -> object:
             check_only = True
         elif a == "-R" or a == "--reverse":
             pass            # a reverse apply still touches the same a/ b/ files
+        elif a in ("--3way", "--index") or a == "-3":
+            pass            # 3way/index write the work tree too: name the paths
+        elif a == "--cached":
+            cached_only = True  # index only; nothing written to the work tree
         elif a.startswith("--directory="):
             prefix = a.split("=", 1)[1]
         elif a == "--directory" and i + 1 < len(rest):
@@ -261,15 +316,15 @@ def _targets_git_apply(rest: list[str], base: Path) -> object:
             pass            # includes/excludes select, they don't name new files
         elif a in ("--include", "--exclude") and i + 1 < len(rest):
             i += 1
-        elif not a.startswith("-") and patch_file is None:
-            patch_file = a      # the patch file (only one is applied)
+        elif not a.startswith("-"):
+            patch_files.append(a)   # every positional is a patch file
         i += 1
-    if check_only:
+    if check_only or cached_only:
         return []
-    if patch_file is None:
+    if not patch_files:
         # Patch on stdin (positionalless, `-`, or piped in). Not knowable.
         return UNKNOWABLE
-    result = _targets_from_patch(patch_file, strip=strip, prefix=prefix)
+    result = _read_patch_files()
     if result is UNKNOWABLE:
         return UNKNOWABLE
     return [_resolve(p, base) for p in result]
@@ -279,14 +334,17 @@ def _targets_git_checkout(rest: list[str], base: Path) -> object:
     """git checkout [branch] -- <paths>  /  git checkout <path> ...
 
     The write targets are the explicit pathspecs. ``--`` separates a branch
-    from the paths; without ``--`` the traversal skips git flags and their
-    values (``-b <name>``, ``-B <name>``, ``--orphan <name>``, …) and takes
-    the remaining operands as paths (path-mode checkout). A branch name over-
-    gated as a path is harmless: branches are not writable files."""
-    return [_resolve(p, base) for p in _operands_skipping_flags(
-        rest, {"-b", "-B", "--branch", "--orphan", "--guess", "-q",
-               "--quiet", "-t", "--track", "--no-track", "-m", "--merge",
-               "-p", "--patch", "--ours", "--theirs", "-f", "--force"})]
+    from the paths, so every operand after it is a path. Without ``--`` git
+    treats a leading bare operand (no ``/``, no glob/pathspec magic) as a
+    branch/tree-ish to switch to, not a path to write -- ``git checkout main``
+    must not surface ``<ws>/main`` as a write target and then be refused
+    under a narrowed write scope; an operand is a write path therefore only
+    when it is path-shaped (contains a ``/`` or a glob) or covers ``--``.
+    """
+    return [_resolve(p, base) for p in _checkout_operands(
+        rest, base, {"-b", "-B", "--branch", "--orphan", "--guess", "-q",
+                     "--quiet", "-t", "--track", "--no-track", "-m", "--merge",
+                     "-p", "--patch", "--ours", "--theirs", "-f", "--force"})]
 
 
 def _targets_git_restore(rest: list[str], base: Path) -> object:
@@ -331,6 +389,29 @@ def _operands_skipping_flags(rest: list[str], value_flags: set[str]) -> list[str
             continue
         ops.append(a)
     return ops
+
+
+def _is_path_shaped(p: str) -> bool:
+    """True when *p* looks like a git pathspec rather than a branch name: it
+    carries a ``/``, a glob (``*?[]``) or a pathspec magic (``:(top)`` …)."""
+    return ("/" in p or ":" in p or any(c in p for c in "*?[]"))
+
+
+def _checkout_operands(rest: list[str], base: Path,
+                       value_flags: set[str]) -> list[str]:
+    """The write-target operands of ``git checkout``, disambiguated.
+
+    Everything after ``--`` is a path (that operand ends branch-switch mode).
+    Without ``--``, an operand is a write path only when it is path-shaped
+    (``/``, glob, pathspec magic) or resolves to an existing path under
+    *base*; a bare name that exists as no path is a tree-ish (branch/tag) that
+    git would switch to, not a file it writes, so it is dropped -- otherwise a
+    plain ``git checkout main`` under a narrowed write scope would be refused
+    for writing ``<ws>/main``."""
+    ops = _operands_skipping_flags(rest, value_flags)
+    if "--" in rest:
+        return ops               # after ``--`` every operand is a path
+    return [p for p in ops if _is_path_shaped(p) or (base / p).exists()]
 
 
 def _targets_patch(rest: list[str], base: Path) -> object:
@@ -379,8 +460,10 @@ def _targets_patch(rest: list[str], base: Path) -> object:
     if patch_file is None:
         # Patch read from stdin (no -i, no patchfile positional).
         return UNKNOWABLE
+    # GNU patch changes into -d DIR before it reads anything.
+    read_base = Path(_resolve(directory, base)) if directory else base
     result = _targets_from_gnupatch(
-        patch_file, strip=strip, directory=directory)
+        _resolve(patch_file, read_base), strip=strip, directory=directory)
     if result is UNKNOWABLE:
         return UNKNOWABLE
     targets = list(result)

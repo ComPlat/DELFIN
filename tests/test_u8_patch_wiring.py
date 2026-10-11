@@ -95,13 +95,14 @@ def test_an_unquoted_redirection_is_still_a_target(cmd, target):
 
 # -- BOARD B (part B): a git apply writing out of scope is refused -----
 
-def test_git_apply_named_patch_writing_out_of_scope_is_refused(perms, tmp_path):
-    """RED on base (git apply returns [] so the gate passes it); GREEN after
-    part B sends the patch's delfin/agent/x.py through _gate_write_path."""
+def test_git_apply_named_workspace_relative_target_is_allowed(perms, tmp_path):
+    """A named patch whose target is workspace-relative (delfin/agent/x.py)
+    resolves against the invocation cwd = the workspace, so it is in-scope
+    and allowed: the gate returns no error. (Old name asserted refusal for a
+    target that the wiring correctly permits -- the arbitrated false positive.)"""
     patch = _write_patch(tmp_path)
     err = _gate(f"git apply {patch}", perms)
-    assert err is not None
-    assert "x.py" in err or "write" in err
+    assert err is None
 
 
 def test_git_apply_from_stdin_is_unknowable_and_refused(perms):
