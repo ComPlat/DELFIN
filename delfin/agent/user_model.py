@@ -121,26 +121,37 @@ _PATH_RE = re.compile(
 )
 
 
-def _is_structural_grant(tokens: frozenset) -> bool:
-    """Structural allow-rule detector over the token set of a message.
+def _is_structural_grant(tokens) -> bool:
+    """Structural allow-rule detector over the token sequence of a message.
 
     Refuses when the message waives asking/confirmation (a waiver token
     co-occurs with an ask/confirmation token), grants a permission-modal
     command ("may/can" + reach verb), or grants an always-reach command
     whose subject is the agent ("you always push"; "always push") rather
     than a first-person habit ("I always write my tests").
+
+    The first-person-habit exemption is VERB-LOCAL: only a first-person
+    token immediately before the frequency modal counts as the reach-verb's
+    own subject. A matrix-clause requester ("I prefer that always push")
+    has "that" before "always", not "I", so the embedded unnamed-subject
+    imperative is treated as the agent-directed grant it is, not a habit.
     """
-    if tokens & _WAIVER_TOKENS and tokens & _ASK_TOKENS:
+    tok = frozenset(tokens)
+    if tok & _WAIVER_TOKENS and tok & _ASK_TOKENS:
         return True
-    reach = tokens & _REACH_TOKENS
-    if not reach:
+    if not (tok & _REACH_TOKENS):
         return False
-    if tokens & _PERMISSION_MODALS:
+    if tok & _PERMISSION_MODALS:
         return True
-    if tokens & _FREQUENCY_MODALS:
-        # A pure first-person habit is not a grant.
-        if tokens & _FIRST_PERSON and not (tokens & _SECOND_PERSON):
-            return False
+    for i, w in enumerate(tokens):
+        if w not in _FREQUENCY_MODALS:
+            continue
+        # A first-person habit has the pronoun directly before the modal
+        # ("I always write"); a matrix clause does not ("prefer that
+        # always"). Any other preceding word means the subject is the
+        # agent or unnamed, so this is a grant.
+        if i > 0 and tokens[i - 1] in _FIRST_PERSON:
+            continue  # first-person habit — not a grant
         return True
     return False
 
@@ -166,7 +177,7 @@ def is_permission_like(text: str) -> bool:
     for word in _ALLOW_WORDS + _MODE_WORDS + _GLOBAL_GRANT_WORDS:
         if word in norm:
             return True
-    tokens = frozenset(norm.split())
+    tokens = norm.split()
     if _is_structural_grant(tokens):
         return True
     if _PATH_RE.search(text or "") is not None:
