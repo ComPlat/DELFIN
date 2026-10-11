@@ -21,9 +21,11 @@ their request for that push and that pull request.
    `maintainer` and the push is refused for permissions), use a fork:
    `gh repo fork --remote --remote-name fork`, push the branch to `fork`,
    and open the pull request from there.
-4. Write the title and body yourself from the commits
-   (`git log --oneline origin/main..HEAD`): what changed, why, how it was
-   tested. Then `gh pr create --base <base> --title ... --body ...` (base
+4. Build the body with `delfin.agent.pr_helper.body(<workspace>,
+   "origin/<base>", session_id=<your session id from task_list>)`: goal and
+   open points from this session's tasks, what/why/how tested from the
+   branch's commits, account names and secrets redacted. Write the title
+   yourself. Then `gh pr create --base <base> --title ... --body ...` (base
    without the `origin/` prefix).
 5. An open pull request for this branch already exists
    (`gh pr view --json url`): do not open a second one; report its link.
