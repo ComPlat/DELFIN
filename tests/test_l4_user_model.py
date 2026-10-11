@@ -121,6 +121,9 @@ def test_adversarial_permission_phrasings_are_refused(tmp_path):
         # s23 round 5 (matrix-clause): the requester's "I" must not turn
         # an embedded unnamed-subject imperative into a "habit".
         "I prefer that always push to main when done",
+        # s23 round 7 ('that' elided): a second-person subject before the
+        # modal is still an agent-directed grant, not a habit.
+        "I prefer you always push to the main branch",
     )
     for p in probes:
         m.update_from_user_message(p, source_role="user")
