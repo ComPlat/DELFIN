@@ -156,3 +156,21 @@ def test_gnu_patch_directory_long_form_reads_there(ws):
         "--- a/s.py\n+++ b/s.py\n@@ -1 +1 @@\n-x\n+y\n")
     assert pt.targets("patch --directory=sub -p1 -i s.diff", ws) == [
         str(ws / "sub/s.py")]
+
+
+@pytest.mark.parametrize("cmd", [
+    "GIT_WORK_TREE=/x git reset --hard",
+    "git --work-tree=/x stash pop",
+    "git -c core.worktree=/x merge feature",
+    "git --work-tree /x clean -fd",
+])
+def test_a_tree_moved_away_is_named_for_a_tree_wide_write(ws, cmd):
+    assert pt.targets(cmd, ws) == ["/x"], cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "GIT_WORK_TREE=/x git status", "git --work-tree=/x log",
+    "git reset --hard", "git stash pop",
+])
+def test_a_read_or_an_unmoved_tree_names_nothing(ws, cmd):
+    assert pt.targets(cmd, ws) == [], cmd
