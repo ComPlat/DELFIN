@@ -6873,6 +6873,25 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "show_molecule",
+            "description": (
+                "Show an .xyz (multi-frame too) or .cube file as a rotatable "
+                "3D viewer in the chat; isovalue is the cube's isosurface "
+                "(default 0.02)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "isovalue": {"type": "number"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remember",
             "description": (
                 "Save a DURABLE fact to persistent project memory; it is "
@@ -10481,7 +10500,7 @@ def _clear_green_targets(red_files: set, ran: str) -> None:
 # file. Their targets feed the observed-files ledger consumed by the
 # code-claim citation check (verify_guard.scan_for_ungrounded_code_claims).
 _OBSERVATION_TOOLS = frozenset({
-    "read_file", "grep_file", "notebook_read", "view_image",
+    "read_file", "grep_file", "notebook_read", "view_image", "show_molecule",
     # A file the agent just WROTE is grounded evidence too: its content
     # came from the agent itself, so describing it is not a guess. Without
     # these, an answer about freshly created work products is flagged as
@@ -12786,6 +12805,8 @@ class _DocToolExecutor:
             return self._execute_sum_column(arguments, permissions)
         elif name == "view_image":
             return self._execute_view_image(arguments, permissions)
+        elif name == "show_molecule":
+            return self._execute_show_molecule(arguments, permissions)
         elif name == "forget":
             return self._execute_forget(arguments, permissions)
         elif name == "publish_report":
@@ -14233,6 +14254,53 @@ class _DocToolExecutor:
             "note": ("The image is shown to you in the next message — look at "
                      "it and describe / use what you SEE."),
         })
+
+    def _execute_show_molecule(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        """Show a molecule file (XYZ, multi-frame XYZ, cube) in the chat.
+
+        Input: ``path`` (relative paths are the session workspace's) and an
+        optional cube ``isovalue``. Output: the ``DELFIN_CARD:`` result of
+        :func:`delfin.dashboard.chat_viewer.render_molecule_tool_result`
+        (resolved path, title, plain summary; no markup), or a plain
+        ``{"error": ...}`` JSON. The file passes ``_check_read_access``
+        exactly like ``read_file``; the resolved path is what is read, so a
+        symlink or ``..`` is judged by its target.
+        """
+        perms = perms or self._permissions
+        path = self._get_path_arg(arguments)
+        if not path:
+            return json.dumps({"error": "show_molecule: 'path' is required"})
+        full = Path(path).expanduser()
+        if not full.is_absolute() and perms is not None:
+            full = Path(perms.workspace) / full
+        # The label is relative to the readable root the file lies in (the
+        # session workspace, a granted read dir, the calc/archive roots).
+        root = None
+        try:
+            root = (perms.find_readable_root_for(full.resolve())
+                    if perms is not None else None)
+        except Exception:
+            root = None
+        label = str(full)
+        if root is not None:
+            try:
+                label = str(full.resolve().relative_to(Path(root).resolve()))
+            except ValueError:
+                pass
+        err = self._check_read_access(perms, full, label=label)
+        if err:
+            return json.dumps({"error": err})
+        try:
+            from delfin.dashboard import chat_viewer
+            return chat_viewer.render_molecule_tool_result(
+                str(full.resolve()),
+                isovalue=arguments.get("isovalue"),
+                title=label,
+            )
+        except (ValueError, OSError) as exc:
+            return json.dumps({"error": f"show_molecule: {exc}"})
 
     def _execute_publish_report(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
@@ -23533,6 +23601,17 @@ class OpenAIClient(_BaseClient):
                     _thrash_note = _thrash_check(_thrash_state, fn_name, fn_args)
                     if _thrash_note:
                         context_result = _thrash_note + "\n\n" + context_result
+                    # A show_molecule card reaches the model as its plain
+                    # summary line only, wrapped as untrusted; the path and
+                    # title stay in the tool-result event the dashboard
+                    # draws from. Keyed on the tool name: the same prefix
+                    # in another tool's output is that tool's text.
+                    if (fn_name == "show_molecule"
+                            and str(result).startswith("DELFIN_CARD:")):
+                        from delfin.dashboard import chat_viewer as _cv
+                        _cv_text = _cv.card_model_text(str(result))
+                        if _cv_text is not None:
+                            context_result = _wrap_untrusted(_cv_text)
                     api_messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
