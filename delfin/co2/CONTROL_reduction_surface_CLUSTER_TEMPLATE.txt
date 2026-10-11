@@ -1,0 +1,85 @@
+# CONTROL.txt template — CO2 reduction surface (hyperpotential profile)
+#
+# Place this file as CONTROL.txt in a NEW job folder under calc/<jobname>/,
+# fill the [PLACEHOLDERS], then start the run the usual way (delfin submit /
+# /orca submit). DELFIN generates CO2_coordination/CONTROL.txt itself from
+# these co2_* keys (chain_setup transfers every co2_-prefixed key).
+#
+# Workflow the run executes, in order:
+#   1. MANTA builds the complex from co2_manta_smiles
+#   2. CO2 coordination (place_co2_general)  -> complex_aligned_with_CO2.xyz
+#   3. adduct_flow: xTB preopt + coordination check + OCCUPIER (PBE0 opt)
+#      -> the ORCA-optimized adduct geometry
+#   4. reduction_surface chain from that geometry:
+#      - station co2  : GFN2-xTB preopt (rs_run_xtb)
+#      - station co2h : PBE0/def2-SVP opt (rs_run_dft) — xTB DESTROYS the
+#                       protonation motifs (proven on 81-105_87, charge +1/+2)
+#      - station co2h2: PBE0/def2-SVP opt (one H per O)
+#      - station co   : H migration -> split BEFORE opt, body and free H2O
+#                       optimized separately, energies summed
+#      - NEB-TS between consecutive stations when reduction_surface_ts=true
+#   5. automatic profile plot reduction_surface/reduction_surface_profile.png
+#      (reference = station 1 = M...CO2 = 0)
+#
+# Reference run: calc/81-105_87_sub_irss_auto (same SMILES family).
+
+# Input / Output
+------------------------------------
+xyz=[XYZ_FILE]
+out=complex_aligned.xyz
+co2=co2.xyz
+
+# Charge & Multiplicity
+# 81-105_87 reference: adduct charge 0, multiplicity 2 — VERIFY for your
+# complex before starting (wrong mult = wasted cluster time, not an error).
+------------------------------------
+charge=[CHARGE]
+multiplicity=[MULTIPLICITY]
+broken_sym=
+
+# Solvation
+------------------------------------
+implicit_solvation_model=CPCM
+solvent=[SOLVENT]
+
+# Method Settings
+------------------------------------
+functional=PBE0
+disp_corr=D4
+ri_jkx=RIJCOSX
+aux_jk=def2/J
+main_basisset=def2-SVP
+metal_basisset=def2-TZVP
+first_coordination_sphere_metal_basisset=yes
+first_coordination_sphere_scale=1.3
+orientation_job=SP
+scan_job=OPT
+
+# CO2 coordination (MANTA-built complex)
+------------------------------------
+co2_coordination=on
+co2_adduct_source=manta
+co2_manta_smiles=[SMILES_OF_FULL_COMPLEX_WITH_COORDINATED_SUBSTRATE]
+
+# Adduct flow (automatic chain up to the ORCA-opt adduct geometry)
+------------------------------------
+co2_adduct_flow=true
+co2_run_xtb=true
+co2_run_occupier=true
+
+# CO2 reduction surface — stage 1: station chain WITHOUT NEB-TS
+------------------------------------
+co2_reduction_surface=true
+co2_rs_run_xtb=true
+co2_rs_run_dft=on
+co2_rs_charges=0,1,2,2
+co2_reduction_surface_ts=false
+
+# CO2 reduction surface — stage 2 (enable AFTER stage 1 is verified):
+# set co2_reduction_surface_ts=true and co2_rs_ts_nimages=8
+# (each NEB-TS is a full PBE0 job: budget hours per TS on PAL=48)
+
+# Resources
+------------------------------------
+PAL=48
+maxcore=6000
