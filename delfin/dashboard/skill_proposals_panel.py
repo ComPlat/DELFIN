@@ -25,8 +25,21 @@ def _proposals_module():
     return skill_proposals
 
 
+def _usage_for(name: str) -> dict:
+    """The usage roll-up for a skill name, or an empty record.
+
+    Best-effort and non-breaking: if the usage ledger is unavailable the
+    row still renders, just without a usage column. Never raises.
+    """
+    try:
+        from delfin.agent import skill_usage
+        return dict(skill_usage.usage_for(name))
+    except Exception:
+        return {}
+
+
 def collect_rows() -> list[dict]:
-    """One row per proposal: name, status, source, evidence refs."""
+    """One row per proposal: name, status, source, evidence refs, usage."""
     proposals = _proposals_module().list_proposals()
     rows = []
     for p in proposals:
@@ -40,6 +53,7 @@ def collect_rows() -> list[dict]:
             "evidence": evidence,
             "findings": list(p.findings or []),
             "created": p.created,
+            "usage": _usage_for(p.name),
         })
     return rows
 
@@ -193,13 +207,24 @@ def format_panel_html(limit: int = 20) -> str:
         findings_html = (
             f" <span style='color:#d32f2f'>⚠ {escape(findings)}</span>"
             if findings else "")
+        u = r.get("usage") or {}
+        if u.get("failures", 0):
+            usage_html = (f" <span style='color:#d32f2f' title='last "
+                          f"{escape(str(u.get('last_outcome', '')))}'>"
+                          f"used {int(u.get('uses', 0))} "
+                          f"({int(u.get('failures', 0))} fail)</span>")
+        elif u.get("uses", 0):
+            usage_html = (f" <span style='color:#888'>"
+                          f"used {int(u.get('uses', 0))} times</span>")
+        else:
+            usage_html = ""
         parts.append(
             f"<div style='font-family:monospace;font-size:12px;"
             f"margin:2px 0;'>📚 <b>{escape(r['name'])}</b> "
             f"<span style='color:{colour}'>[{escape(r['status'])}]</span>"
             f" <span style='color:#888'>from {escape(r['source'])}, "
-            f"evidence: {escape(r['evidence'])}</span>{findings_html} "
-            f"{buttons}</div>"
+            f"evidence: {escape(r['evidence'])}</span>{findings_html}"
+            f"{usage_html} {buttons}</div>"
         )
         # The full preview belongs to every row: the review needs the
         # text under review, not a snippet.
