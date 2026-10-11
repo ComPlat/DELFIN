@@ -80,6 +80,21 @@ _READ_BASH_TOKENS = ("ls", "git", "grep", "cat", "head", "tail", "wc",
                      "sed", "find", "echo", "which", "file", "stat", "du",
                      "jq")
 
+# git branch/tag flags that write or destroy. The destructive intent rides a
+# flag, not a shell operator, so it is invisible to _bash_has_write_operator;
+# a branch/tag command carrying one of these is never a plain read (s28+s29).
+# -m/-M (branch move, tag message) create/replace a ref or tag — not reads.
+_GIT_DESTRUCTIVE_FLAGS = frozenset({
+    "-d", "-D", "-m", "-M", "-f", "--delete", "--force", "--move", "--tag",
+})
+
+# find primaries that write or run code (QS ruling + s28/s29): -delete removes
+# files with NO shell operator; -ok prompts-then-runs; -fls/-fprint/-fprintf
+# write output files. -exec/-execdir are handled by _bash_has_write_operator.
+_FIND_DESTRUCTIVE_ACTIONS = ("-delete", "-ok", "-fls", "-fprint", "-fprintf")
+
+
+
 # A shell operator that can write a file, run a program, or change state —
 # the moment one of these appears, a command is not a plain read.
 _WRITE_OPERATORS = (">", ">>", ">|", ";", "&&", "||", "|", "<", "<<")
@@ -131,9 +146,10 @@ def _bash_has_write_operator(command: str) -> bool:
 
 def _bash_is_plain_read(command: str) -> bool:
     """True only for clearly read-only bash. Conservative: anything with a
-    write operator, a non-read git sub-command, or a leading token that is not
-    on the read list is classified (extra friction is safe; a read that slips
-    past classification is what we must never allow)."""
+    write operator, a non-read git sub-command, a destructive flag on a
+    read git sub-command, a find command that writes/runs, or a leading token
+    that is not on the read list is classified (extra friction is safe; a read
+    that slips past classification is what we must never allow)."""
     cmd = (command or "").strip()
     if not cmd:
         return False
@@ -142,7 +158,19 @@ def _bash_is_plain_read(command: str) -> bool:
     first = cmd.split()[0]
     if first == "git":
         rest = cmd.split()
-        return (len(rest) >= 2) and (rest[1] in _READ_GIT_SUBS)
+        if len(rest) < 2 or rest[1] not in _READ_GIT_SUBS:
+            return False
+        # A read sub-command is only a plain read when no destructive flag
+        # follows — branch -d/-D/-f -m touches refs, tag -d/-f/-m touches tags;
+        # the destructive intent rides a flag, not a shell operator (s28+s29).
+        return not (_GIT_DESTRUCTIVE_FLAGS & set(rest[2:]))
+    if first == "find":
+        # find -delete removes files with no shell operator; -ok -fls -fprint
+        # -fprintf write or run. -exec/-execdir are already caught by
+        # _bash_has_write_operator above.
+        for action in _FIND_DESTRUCTIVE_ACTIONS:
+            if action in cmd:
+                return False
     if first == "sed":
         # sed writes back to the file with -i/--in-place, which has no redirect
         # operator — a state change that must not count as a plain read.

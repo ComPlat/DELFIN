@@ -131,6 +131,46 @@ def test_find_exec_is_not_a_plain_read():
         assert ac.is_plain_read(act) is False, cmd
 
 
+def test_find_delete_is_not_a_plain_read():
+    # find . -delete deletes every matched file with NO shell operator and no
+    # -exec — it must never ride the plain-read floor (s28). -ok is find's own
+    # prompt-and-run form (s28).
+    for cmd in ("find . -delete", "find . -name '*.tmp' -delete",
+                "find . -ok rm {} +"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is False, cmd
+
+
+def test_git_branch_delete_is_not_a_plain_read():
+    # git branch -d/-D deletes a branch — destructive intent rides a flag, not
+    # a shell operator, and must reach the classifier (s28+s29).
+    for cmd in ("git branch -d topic", "git branch -D old", "git branch -d topic other"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is False, cmd
+
+
+def test_git_branch_move_or_force_is_not_a_plain_read():
+    # git branch -m/-M moves (rewrites), -f force-updates — not reads.
+    for cmd in ("git branch -m old new", "git branch -M old new",
+                "git branch -f topic other"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is False, cmd
+
+
+def test_git_tag_delete_is_not_a_plain_read():
+    # git tag -d deletes a tag — destructive flag on a read sub-command (s29).
+    act = _action(kind="bash", tool="bash", command="git tag -d v1.0")
+    assert ac.is_plain_read(act) is False
+
+
+def test_git_read_subcommands_stay_plain_reads():
+    # The read forms of branch/tag must remain on the latency-free floor.
+    for cmd in ("git branch", "git branch -vv", "git branch --list",
+                "git tag", "git tag -l"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is True, cmd
+
+
 
 def test_non_read_action_reaches_the_model():
     runner = _FakeRunner("DECISION: allow")
