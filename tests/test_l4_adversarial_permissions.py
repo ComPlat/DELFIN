@@ -113,8 +113,8 @@ def test_round5_to_infinitive_habits_stay_storable(tmp_path):
         "i try to always review my work before merging",
         "i would rather always ask before deleting",
     ]
-    for phrase in storable:
-        total = _update_and_count(tmp_path / "um.json", phrase)
+    for n, phrase in enumerate(storable):
+        total = _update_and_count(tmp_path / f"umb{n}.json", phrase)
         assert total >= 1, (
             f"round-5 over-refused a genuine first-person habit: "
             f"{phrase!r} (stored {total})"
