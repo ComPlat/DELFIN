@@ -1,16 +1,9 @@
-"""Adversarial red-test (s29 reviewer) — plain-read floor, current head b19f5c16.
+"""The plain-read floor against shell structure and destructive flags.
 
-The builder closed the original QS finding (python/pytest/awk dropped; sed -i
-special-cased), my follow-up shell-structure finding (30865a9c: ``$(``,
-backticks, ``&`` backgrounding, find -exec +/; now flagged as write operators),
-the fail-closed injection scan (aabaa2c1), and my NEW git-destructive-flag
-finding (b19f5c16: git branch/tag with -d/-D/-m/-M/-f/--delete/--force/--move/
---tag, and find -delete/-ok/-fls/-fprint/-fprintf, now classified). This file
-pins all of them.
-
-Each case asserts the expected adversarial outcome. A GREEN assertion (the case
-IS classified, is_plain_read False) is a pass for the build; a ``diff a b`` over-
-classification (never in the read floor) is benign conservatism, not a gap.
+Classified (is_plain_read False): ``$(``, backticks, ``&`` backgrounding,
+find -exec with ``+``/``;``, git branch/tag with -d/-D/-m/-M/-f/--delete/
+--force/--move/--tag, and find -delete/-ok/-fls/-fprint/-fprintf. An
+over-classification such as ``diff a b`` costs a model call, not safety.
 """
 from __future__ import annotations
 
@@ -54,7 +47,7 @@ def _results() -> list:
         ("find . -ok rm {} ;", "find . -ok rm {} ;", False),
         # git branch/tag create-forms (0a5076dd): a bare NAME positional that
         # CREATES a ref is classified, not a plain read. --track/--set-upstream
-        # stay classified (they change tracking/upstream) per s20's fix.
+        # stay classified (they change tracking/upstream).
         ("git branch feature", "git branch feature", False),
         ("git branch --track feature origin/main",
          "git branch --track feature origin/main", False),
@@ -77,7 +70,7 @@ def test_writes_hidden_under_read_tokens_are_classified():
     for label, cmd, got, expect in _results():
         if not expect and got:
             red.append(f"{label!r}: {cmd!r} -> is_plain_read True (should be classified)")
-    assert red == [], f"writes ride under the plain-read floor:\n" + "\n".join(red)
+    assert red == [], "writes ride under the plain-read floor:\n" + "\n".join(red)
 
 
 def test_genuine_reads_stay_plain():

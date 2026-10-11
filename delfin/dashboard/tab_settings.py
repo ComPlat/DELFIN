@@ -520,9 +520,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         description='Window',
         layout=widgets.Layout(width='170px', height='28px'),
     )
-    # Action classifier (agent.classifier.*), the 2026-10-09 + 10.10 second
-    # opinion layer. Rules decide first; the classifier can only add friction
-    # (never allow what a rule refuses). Default ON, default model fast.
+    # Action classifier (agent.classifier.*): a model's second opinion on
+    # what the rules allow unseen. Rules decide first; the classifier can only
+    # add friction (never allow what a rule refuses). Default on, scope
+    # "unattended"; the second checkbox writes scope "all".
     classifier_enabled_toggle = widgets.Checkbox(
         description='Action classifier enabled (model-based second opinion)',
         value=True, indent=False,

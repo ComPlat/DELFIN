@@ -1,17 +1,9 @@
-"""Adversarial review tests for the classifier's plain-read floor (U12).
+"""The classifier's plain-read floor: side-effecting commands are not reads.
 
-nacht-s28 (reviewer). These pin the builds of builder s20 that hardened the
-plain-read floor so side-effecting commands never ride it as reads:
-
-  * awk / python / pytest were dropped from `_READ_BASH_TOKENS` (8e3a7933):
-    a program run (awk system(), python -c, a pipe into sh) is a state
-    change and must reach the classifier, never be misread as a read.
-  * `sed -I` writes in place like `-i` but was missed by the case-sensitive
-    scan; hardened at 30865a9c. Red at 8e3a7933, green from 30865a9c.
-
-Like the builder's own tests these never call a model: only `is_plain_read`
-is exercised. The floor is the classifier's first line of defence — anything
-it calls a "plain read" skips the second opinion entirely.
+A command the floor calls a plain read skips the second opinion entirely.
+Pinned here: awk / python / pytest are not read tokens (a program run is a
+state change), and ``sed -I`` writes in place like ``-i``. Only
+``is_plain_read`` is exercised; no model is called.
 """
 
 import delfin.agent.action_classifier as ac
@@ -54,7 +46,7 @@ def test_sed_uppercase_inplace_is_not_a_plain_read():
 
 # ---------------------------------------------------------------------------
 # Destructive intent riding a flag, with no shell operator — the second floor
-# gap (s28/s29 finding). find -delete/-ok/-fls/-fprint/-fprintf and
+# gap. find -delete/-ok/-fls/-fprint/-fprintf and
 # git branch/tag -d/-D/-f/-m etc. delete/write and were read as safe until the
 # builder closed them at b19f5c16. Red on 658c1983, green from b19f5c16.
 # Genuine reads (find . -name x, git branch, git log, git tag -l) stay plain.
@@ -106,10 +98,8 @@ def test_find_bare_predicate_stays_plain_read():
 
 
 # ---------------------------------------------------------------------------
-# CREATE intent riding a positional ref-name, no flag — the third floor gap
-# (s28/s29 finding, s27 QS ruling IN SCOPE). git branch/tag <name> and
-# --track/-a create a ref/tag and were plain reads until s20 closed them at
-# 0a5076dd. Red on b19f5c16, green from 0a5076dd. Read-filter VALUES
+# CREATE intent riding a positional ref-name, no flag. git branch/tag <name>
+# and --track/-a create a ref/tag and are not plain reads. Read-filter VALUES
 # (--list/--contains/--merged/--points-at/--sort/--format) stay plain.
 # ---------------------------------------------------------------------------
 

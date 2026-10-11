@@ -1,19 +1,13 @@
-"""U12 reviewer (s29) — phase-1 pins of the current gate state.
+"""Facts of the gate the action classifier is built against.
 
-These freeze the facts the classifier package (U12, builder nacht-s20) must
-build against, so a wiring change that silently shifts one of them turns red
-here first. They are controls on CURRENT main behavior (cc49b2ef), not
-adversarial tests of the classifier.
-
-Verified by s29 @ cc49b2ef:
-- ``_GATED_TOOLS`` / ``_NETWORK_TOOLS`` membership (api_client.py:4890-4901).
-- ``session_message`` / ``subagent_message`` DO NOT enter ``_run_permission_gate``
-  (dispatch api_client.py:12714-12717; not in ``_GATED_TOOLS``), so any second
-  opinion on a session message cannot be a gate-internal hook.
-- ``untrusted.flags`` catches approval / push / ignore / permission phrases
-  (delfin/agent/untrusted.py:_FLAG_KINDS) — the vocabulary the classifier's
-  injection shield must not lose.
-- ``security_events`` label contract: an unknown kind must not be recorded
+A wiring change that shifts one of them turns red here first:
+- ``_GATED_TOOLS`` / ``_NETWORK_TOOLS`` membership.
+- ``session_message`` / ``subagent_message`` do not enter
+  ``_run_permission_gate`` (not in ``_GATED_TOOLS``); their second opinion
+  is called from the dispatch.
+- ``untrusted.flags`` catches approval / push / ignore / permission phrases,
+  the vocabulary the classifier's claim guard relies on.
+- ``security_events`` label contract: an unknown kind is not recorded
   unlabelled (test_the_containment_panel_labels_what_it_records.py).
 """
 
