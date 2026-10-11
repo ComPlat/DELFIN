@@ -15,7 +15,11 @@ name is validated as a plain hyphenated identifier (letters, digits,
 so an injected string can never escape the key slot or carry free text. Stored under ``~/.delfin/skills/_usage``, invisible to
 ``discover_skills``: the usage ledger never activates anything.
 
-Outcomes are strict: "success" or "failure". A use with any other
+Outcomes are strict: "success" or "failure" are final; "started" is a
+pending marker the skill-invocation path (api_client._execute_skill)
+records when a skill body is handed to the agent, whose real
+follow-through outcome is not yet known. A session-end resolver upgrades
+a pending "started" to its real "success"/"failure". A use with any other
 outcome raises ValueError (a contract bug must show in tests, never be
 silently recorded). IO is best-effort: a write that cannot land must not
 crash the invocation path it is wired into, so every read/write is
@@ -29,7 +33,7 @@ from pathlib import Path
 
 from .memory_store import _private_dir
 
-_OK_OUTCOMES = frozenset({"success", "failure"})
+_OK_OUTCOMES = frozenset({"success", "failure", "started"})
 # A skill usage key is a plain hyphenated token (casscf-setup, tune-xtb):
 # letters, digits, '-', '_' or '.'. Anything else (whitespace, ':', '=',
 # '@', backslash, '/'...) is refused -- an injected phrase like
@@ -120,6 +124,45 @@ def record_use(name: str, outcome: str, *, detail: str = "",
             fh.write(line + "\n")
     except OSError:
         return
+
+
+def resolve_pending(name: str, outcome: str, *, detail: str = "",
+                    when: str = "") -> bool:
+    """Upgrade a pending "started" use of a skill to its real outcome.
+
+    Called at session end by the wired path: a use recorded as "started"
+    when the skill body was handed over now gets its genuine follow-through
+    result. ``outcome`` must be "success" or "failure" (real results only,
+    never fabricated). Appends a resolution row only when the skill's most
+    recent ledger row is "started"; returns True when it resolved, False
+    when there was nothing pending (a skill that was invoked but whose
+    session ended without follow-through is NOT silently marked success).
+    Best-effort on IO, like record_use.
+    """
+    if outcome not in _OK_OUTCOMES:
+        raise ValueError(
+            f"invalid resolve outcome {outcome!r} for {name!r}: "
+            f"expected success or failure")
+    n = _valid_name(name)
+    path = _ledger_path(n)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, FileNotFoundError):
+        return False
+    pending = False
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(row, dict) and row.get("skill") == n:
+            pending = row.get("outcome") == "started"
+            break
+    if not pending:
+        return False
+    record_use(n, outcome, detail=detail or "resolved at session end",
+               when=when)
+    return True
 
 
 def usage_records(name: str) -> list[dict]:
