@@ -62,6 +62,17 @@ _WRITE_OR_EXEC_OPTS: frozenset[str] = frozenset({
     "--cached",           # apply to the index only (writes)
     "--3way",             # 3-way merge during apply (writes)
     "--reject",           # write .rej files on conflict
+    # -- git grep pattern-file read (reviewer-s28) ---------------------------
+    # `git grep -f FILE` / `--file=FILE` reads the pattern list from FILE,
+    # which may be ANY path on the host. A shape guarantees every path inside
+    # the workspace, so the pattern-file option is a read of an unvalidated
+    # path and is vetoed. No shape uses -f/--file as a legitimate option:
+    # git show / apply --check / hash-object / switch -c / gh --version /
+    # gate probe take no -f. The ATTACHED short form `-fFILE` is not caught by
+    # _token_is_output_or_run (it only bundles -o and -O); _git_grep rejects
+    # that spelling explicitly.
+    "-f",                 # git grep -f FILE (read pattern file)
+    "--file",             # git grep --file=FILE (long form)
 })
 
 
@@ -231,6 +242,12 @@ def _git_grep(argv, workspace: str) -> bool:
             return False
     if not _no_escape(argv):
         return False
+    # A short attached pattern-file option `-fFILE` is not in the token rule
+    # (only -o and -O are bundled there); git grep has no other lowercase
+    # -f* flag, so reject any argv token that is -f followed by a value.
+    if any(a.startswith("-f") and len(a) > 2 and not a.startswith("--")
+           for a in argv):
+        return False
     # first non-option is the pattern; the rest may be revs or paths
     pat = None
     for idx, a in enumerate(rest):
@@ -260,6 +277,21 @@ def _git_grep(argv, workspace: str) -> bool:
     return True
 
 
+#: The closed set of options `git apply --check` may carry and still be the
+#: read-only shape. Everything read-only and in-memory; see finding (s28 #3).
+_APPLY_CHECK_READONLY_OPTS: frozenset[str] = frozenset({
+    "--check",            # the marker itself (read-only)
+    "--numstat",          # print a report, writes nothing
+    "--summary",          # print a summary, writes nothing
+    "-R", "--reverse",    # apply the diff reversed (in-memory)
+    "--unidiff-zero",     # zero-context matching
+    "--directory",        # re-interpret patched paths (in-memory)
+    "--ignore-space-change", "--ignore-whitespace",  # matching tolerance
+    "-z",                 # NUL-terminated report output
+    "--verbose",
+})
+
+
 @_shape("git_apply_check")
 def _git_apply_check(argv, workspace: str) -> bool:
     # git apply --check <path>   (apply --check reads, never writes)
@@ -273,6 +305,16 @@ def _git_apply_check(argv, workspace: str) -> bool:
     if any(a in ("--index", "--cached", "--3way", "-3", "--reject")
            for a in argv[2:]):
         return False
+    # A shape is "exactly one known read-only form": any option outside the
+    # closed whitelist of genuinely read-only apply options makes the command
+    # not that form (reviewer-s28 finding 3: `--tool=x` matched although it is
+    # not a git apply option). Fail closed — such a command still goes through
+    # the normal approval dialog.
+    for a in argv[2:]:
+        if a.startswith("-"):
+            name = a.split("=", 1)[0] if "=" in a else a
+            if name not in _APPLY_CHECK_READONLY_OPTS:
+                return False
     # the positional patch path(s): exactly one, inside the workspace
     pos = [a for a in argv[2:] if not a.startswith("-")]
     if len(pos) != 1:

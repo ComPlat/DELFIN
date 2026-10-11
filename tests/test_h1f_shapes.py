@@ -72,6 +72,31 @@ def test_git_grep_textconv_does_not_fire():
     )
 
 
+# --- git_grep pattern-file reads (reviewer-s28 finding) ---------------------
+
+def test_git_grep_dash_f_absolute_file_does_not_fire():
+    # -f FILE reads the pattern list from FILE, which may be outside the
+    # workspace; the shape must not approve the read.
+    assert matches("git grep -f /etc/shadow TODO", WORKSPACE) == ""
+
+
+def test_git_grep_dash_f_attached_does_not_fire():
+    assert matches("git grep -f/etc/passwd TODO", WORKSPACE) == ""
+
+
+def test_git_grep_long_file_option_does_not_fire():
+    assert matches("git grep --file /etc/shadow TODO", WORKSPACE) == ""
+
+
+def test_git_grep_long_file_equals_does_not_fire():
+    assert matches("git grep --file=/etc/passwd TODO", WORKSPACE) == ""
+
+
+def test_git_grep_without_pattern_file_still_fires():
+    # the legitimate read-only form stays a shape
+    assert matches("git grep -n TODO delfin/", WORKSPACE) == "git_grep"
+
+
 # --- shape: git_apply_check ------------------------------------------------
 
 def test_git_apply_check_fires():
@@ -98,6 +123,14 @@ def test_git_apply_check_write_option_does_not_fire():
 def test_git_apply_check_outside_workspace_does_not_fire():
     assert (
         matches("git apply --check /etc/hostname", WORKSPACE) == ""
+    )
+
+
+def test_git_apply_check_unknown_option_does_not_fire():
+    # --tool is not a git apply option (that is difftool/mergetool); an
+    # unknown option means we are not looking at a known read-only form.
+    assert (
+        matches("git apply --check --tool=x .gate/h1f.patch", WORKSPACE) == ""
     )
 
 
