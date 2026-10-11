@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sqlite3
+import stat as _stat
 import threading
 import time
 from dataclasses import dataclass
@@ -39,6 +40,13 @@ from . import session_store
 DEFAULT_LIMIT = 5
 MAX_LIMIT = 20
 MAX_SNIPPET = 240
+
+#: The sessions directory can be written by the agent, so nothing in it is
+#: trusted to be what its name says (wave 15, package L3). A source larger
+#: than this is skipped, and a read never takes more than this many bytes.
+MAX_SOURCE_BYTES = 20 * 1024 * 1024
+
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 _write_lock = threading.Lock()
 
@@ -139,14 +147,91 @@ def _message_text(msg) -> str:
     return f"{msg.get('role', '')}: {content}"
 
 
+def _valid_session_id(session_id) -> bool:
+    """A session id is a file name stem, never a path."""
+    sid = str(session_id or "")
+    return bool(_SESSION_ID_RE.match(sid)) and ".." not in sid
+
+
+def _is_regular_file(p) -> bool:
+    """A regular file that is not a symlink: lstat judges the link itself
+    and never touches its target."""
+    try:
+        return _stat.S_ISREG(os.lstat(p).st_mode)
+    except OSError:
+        return False
+
+
+def _safe_read(p, max_bytes: int | None = None):
+    """``(bytes, stat)`` of ``p`` when it is a regular file of at most
+    ``max_bytes``, else None. Never raises, never blocks.
+
+    Decided on the OPEN descriptor, not on the path: what was a file a
+    moment ago can be a FIFO or a link by the time it is opened.
+    O_NOFOLLOW refuses a symlink (it could point into another account),
+    O_NONBLOCK returns from a FIFO at once (``read_text`` on one blocked a
+    turn for good), and fstat says what was really opened.
+    """
+    if max_bytes is None:
+        max_bytes = MAX_SOURCE_BYTES
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
+    try:
+        fd = os.open(p, flags)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not _stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+            return None
+        chunks, left = [], max_bytes + 1
+        while left > 0:
+            chunk = os.read(fd, min(left, 1 << 20))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        data = b"".join(chunks)
+        # A file that grew past the cap while it was read is skipped too.
+        return None if len(data) > max_bytes else (data, st)
+    except OSError:
+        return None
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _session_ids_on_disk() -> list[str]:
+    """Ids of the regular ``*.json`` files directly in the user's own
+    sessions directory. Flat, no walk; links, FIFOs and the mid-turn
+    ``*.turn.json`` checkpoints are not sessions."""
+    d = Path(session_store._SESSIONS_DIR)
+    out: list[str] = []
+    try:
+        for entry in d.iterdir():
+            name = entry.name
+            if not name.endswith(".json") or name.endswith(".turn.json"):
+                continue
+            sid = name[:-len(".json")]
+            if _valid_session_id(sid) and _is_regular_file(entry):
+                out.append(sid)
+    except OSError:
+        return []
+    return sorted(out)
+
+
 def _session_json_documents(session_id: str):
     """(kind, created_at, title, text) from the session json, if present."""
     p = Path(session_store._SESSIONS_DIR) / f"{session_id}.json"
-    if not p.exists():
+    got = _safe_read(p)
+    if got is None:
         return []
+    raw, stat = got
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, ValueError):
+        data = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, ValueError):
         return []
     if not isinstance(data, dict):
         return []
@@ -159,7 +244,6 @@ def _session_json_documents(session_id: str):
             parts.extend(_message_text(m) for m in msgs)
     title = str(data.get("title") or "Untitled")
     created = float(data.get("created_at") or data.get("updated_at") or 0.0)
-    stat = p.stat()
     return [(f"session:{stat.st_mtime}:{stat.st_size}",
              created, title, "\n".join(parts))]
 
@@ -167,13 +251,12 @@ def _session_json_documents(session_id: str):
 def _archive_documents(session_id: str):
     """(kind, created_at, title, text) from the transcript archive."""
     p = session_store._transcript_archive_path() / f"{session_id}.jsonl"
-    if not p.exists():
+    got = _safe_read(p)
+    if got is None:
         return []
-    try:
-        stat = p.stat()
-        lines = p.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
+    raw, stat = got
+    # One bad byte must not lose a whole archive.
+    lines = raw.decode("utf-8", errors="replace").splitlines()
     parts: list[str] = []
     first_created = None
     for line in lines:
@@ -245,7 +328,7 @@ def index_session(session_id: str):
     re-indexing never duplicates. Returns True when something was indexed,
     False when there was nothing to do or nothing to index.
     """
-    if not session_id:
+    if not _valid_session_id(session_id):
         return False
     try:
         with _write_lock:
@@ -367,8 +450,8 @@ def backfill_missing(batch: int = BACKFILL_BATCH) -> int:
     newly indexed.
     """
     try:
-        d = Path(session_store._SESSIONS_DIR)
-        if not d.is_dir():
+        on_disk = _session_ids_on_disk()
+        if not on_disk:
             return 0
         con = _open_index()
         try:
@@ -376,8 +459,7 @@ def backfill_missing(batch: int = BACKFILL_BATCH) -> int:
                 "SELECT DISTINCT session_id FROM sources").fetchall()}
         finally:
             con.close()
-        missing = [p.stem for p in d.glob("*.json")
-                   if p.stem not in known and p.stem != ""]
+        missing = [sid for sid in on_disk if sid not in known]
         if not missing:
             return 0
         n = 0
