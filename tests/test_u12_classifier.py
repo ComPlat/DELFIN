@@ -87,9 +87,13 @@ def test_sed_inplace_is_not_a_plain_read():
 
 def test_stream_sed_without_inplace_is_a_plain_read():
     # sed with only a script (no -i) reads stdin/stream and never writes back.
-    for cmd in ("sed 's/a/b/' f", "sed -n '1,5p' f"):
+    # Only the print-a-range form: `s///e` and the `e`/`w` commands run a
+    # program or write a file with no redirect, so a free script is judged.
+    act = _action(kind="bash", tool="bash", command="sed -n '1,5p' f")
+    assert ac.is_plain_read(act) is True
+    for cmd in ("sed 's/a/b/' f", "sed 's/a/id/e' f", "sed -n 'w out' f"):
         act = _action(kind="bash", tool="bash", command=cmd)
-        assert ac.is_plain_read(act) is True, cmd
+        assert ac.is_plain_read(act) is False, cmd
 
 
 def test_python_and_pytest_are_not_plain_reads():
@@ -277,8 +281,12 @@ def test_plain_text_action_with_no_claim_follows_model():
 def test_garbled_model_answer_is_doubt_ask():
     runner = _FakeRunner("I am not sure about that.")
     act = _action(command="git push origin main")
-    v = ac.judge(act, _context(), model="m", runner=runner)
-    assert v.decision == "ask"          # human reachable -> ask
+    # No readable verdict is the model failing: the documented error
+    # behaviour applies -- asked where the classifier is the only look.
+    v = ac.judge(act, _context(), model="m", runner=runner,
+                 default_on_error="ask")
+    assert v.decision == "ask"
+    assert v.reason.startswith(ac.ERROR_PREFIX)
 
 
 def test_garbled_model_answer_unattended_is_refuse():
