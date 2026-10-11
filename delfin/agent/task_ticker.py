@@ -90,15 +90,24 @@ def _stale_suffix(task: dict, last_message_at: float | None) -> str:
     strictly before ``last_message_at`` — i.e. the block outdates the last
     message. "" otherwise. A blocked task with no reason cannot reach the
     store (an invariant), and one whose timestamp is missing or not older
-    is current, so neither is flagged."""
+    is current, so neither is flagged.
+
+    Never raises: a reference that cannot parse as a number is treated as
+    "nothing stale" (same as ``None``), so a malformed value arriving over a
+    wire cannot take the panel down with it (reviewer nacht-s12).
+    """
     if last_message_at is None:
+        return ""
+    try:
+        ref = float(last_message_at)
+    except (TypeError, ValueError):
         return ""
     if str(task.get("status")) != "blocked":
         return ""
     if not str(task.get("blocked_reason") or "").strip():
         return ""
     block = _block_epoch(task)
-    if block is None or not (block < float(last_message_at)):
+    if block is None or not (block < ref):
         return ""
     return _STALE_MARKER
 

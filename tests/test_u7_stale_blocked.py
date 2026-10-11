@@ -82,3 +82,19 @@ def test_a_fresh_block_equals_the_reference_is_not_stale(store, tmp_path):
         tzinfo=_dt.timezone.utc).timestamp()
     row = TT.rows(tmp_path, session_id="s", last_message_at=equal)
     assert " (stale)" not in row[0]["label"]
+
+
+def test_a_non_numeric_last_message_at_never_takes_the_render_down(store, tmp_path):
+    """Reviewer finding (nacht-s12): ``_stale_suffix`` ran ``float()`` on the
+    reference unguarded, so a non-numeric ``last_message_at`` (a string
+    arriving over a wire) raised out of rows()/render_text()/render_html() and
+    killed the whole panel — breaking ``_block_epoch``'s "never raises: a
+    ticker is a courtesy" contract. The reference must be treated as "nothing
+    stale" when it cannot parse, not as a crash."""
+    _blocked(store, "push the branch")
+    row = TT.rows(tmp_path, session_id="s", last_message_at="not-a-number")
+    assert " (stale)" not in row[0]["label"]
+    text = TT.render_text(tmp_path, session_id="s", last_message_at="oops")
+    assert " (stale)" not in text
+    html = TT.render_html(tmp_path, session_id="s", last_message_at=object())
+    assert "(stale)" not in html
