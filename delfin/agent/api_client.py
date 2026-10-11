@@ -2208,7 +2208,24 @@ def _bash_write_targets(cmd: str) -> list[str]:
             if argv0 and Path(argv0[0]).name in ("cd", "pushd"):
                 _follow_cd(argv0)
                 continue
+            # A `>` inside quotes is text only for a program that does not
+            # run its argument: `bash -c '... > f'`, `eval "... > f"` and
+            # `awk '{print > "f"}'` write that file, and so does a command
+            # substitution inside double quotes. So the quoted spans are
+            # skipped for a short list of programs alone, and never a span
+            # that carries `$(` or a backtick outside single quotes.
+            _q = []
+            _name = Path(argv0[0]).name if argv0 else ""
+            if _name in _QUOTED_TEXT_PROGRAMS and (
+                    _name != "git" or (
+                        len(argv0) > 1
+                        and argv0[1] in _GIT_MESSAGE_SUBCOMMANDS)):
+                _q = [(lo, hi) for lo, hi in _quoted_ranges(seg)
+                      if seg[lo] == "'"
+                      or ("$(" not in seg[lo:hi] and "`" not in seg[lo:hi])]
             for m in _redirect.finditer(seg):
+                if any(lo <= m.start() < hi for lo, hi in _q):
+                    continue    # `>` inside quotes is text, not a redirection
                 tok = m.group(1)
                 if not tok.startswith("&"):
                     _add(tok)
@@ -3374,6 +3391,59 @@ def _sed_script_is_pure(script: str) -> bool:
         return False
     return all(_SED_PURE_STMT.fullmatch(stmt)
                for stmt in script.split(";") if stmt.strip())
+
+
+# Programs whose quoted arguments are text they print, match or store --
+# never a script they run. Only for these is a quoted `>` not a redirection.
+_QUOTED_TEXT_PROGRAMS = frozenset({
+    "git", "echo", "printf", "grep", "rg", "cp", "mv", "cat", "ls", "touch",
+    "mkdir", "test"})
+# git only where the quoted argument is a message or a pattern, named
+# directly: `git -c alias.x='!...'` and `git config alias.x '!...'` carry a
+# script.
+_GIT_MESSAGE_SUBCOMMANDS = frozenset(
+    {"commit", "tag", "merge", "log", "grep", "show", "notes", "stash"})
+
+
+def _quoted_ranges(s: str) -> list:
+    """``(start, end)`` of each span of *s* inside single or double quotes,
+    honoured the way the shell reads them (a backslash inside double quotes
+    escapes the next character; outside quotes it escapes it too). An
+    unterminated quote runs to the end of the string, as it does in the shell.
+
+    Tells a ``>`` that is text -- inside a quoted ``commit -m "a -> b"``
+    message, say -- from a real redirection operator, which the shell only
+    honours outside quotes. The redirection scanner skips any match whose
+    operator falls inside one of these spans, so ``-m "-> apply_proposal"``
+    no longer reads as a write to ``apply_proposal`` (operator finding, wave
+    14a) while ``echo hi > out.txt`` still names ``out.txt``.
+    """
+    ranges: list = []
+    i, n = 0, len(s)
+    quote = ""
+    qstart = -1
+    while i < n:
+        ch = s[i]
+        if quote == "":
+            if ch in "'\"":
+                quote = ch
+                qstart = i
+            elif ch == "\\":
+                i += 1          # an escaped char reads literally; skip it
+        elif quote == "'":
+            if ch == "'":
+                quote = ""
+                ranges.append((qstart, i + 1))
+        elif quote == '"':
+            if ch == "\\":
+                i += 1
+            elif ch == '"':
+                quote = ""
+                ranges.append((qstart, i + 1))
+        i += 1
+    if quote:
+        ranges.append((qstart, n))
+    return ranges
 
 
 def _word_spans(cmd: str, start: int, end: int) -> list:
@@ -17468,6 +17538,48 @@ class _DocToolExecutor:
             return None
         return None
 
+    def _patch_write_targets(
+        self, cmd: str, cwd_str: str, perms: "KitToolPermissions"
+    ) -> "tuple[list | None, Optional[str]]":
+        """The git/patch write targets of *cmd*, plus a refusal-or-None.
+
+        ``_bash_write_targets`` recognises redirections and per-command
+        destinations, but not a patch whose files it would have to read
+        (``git apply file.diff``) nor a pathspec form (``git checkout -- x``).
+        ``patch_targets.targets`` answers those; a patch that can only be
+        read from stdin / a pipe / a mailbox returns UNKNOWABLE, which here
+        is a refusal (``(refusal_json, err)``) -- the caller cannot gate
+        what it cannot name, and the command may not run.
+
+        Returns ``(paths, None)`` (possibly empty) to gate, or
+        ``(None, error_json)`` to block. If the patch_targets module is
+        unavailable the git/patch commands fall through to the existing
+        deny patterns unchanged (no new hole)."""
+        try:
+            from . import patch_targets as _pt
+        except Exception:
+            return [], None
+        try:
+            result = _pt.targets(cmd, cwd_str) if cwd_str else _pt.targets(cmd)
+        except Exception:
+            # A reader that broke on a patch command has not named its
+            # targets: that command may not run. Anything else is unchanged.
+            if not re.search(r"(?<![\w./-])(?:git|patch)(?![\w.-])", cmd):
+                return [], None
+            result = getattr(_pt, "UNKNOWABLE", None)
+        if result is getattr(_pt, "UNKNOWABLE", None):
+            _record_security_event(
+                "unknowable_patch_refused", "bash", cmd[:80], blocked=True)
+            return None, json.dumps({"error": (
+                "blocked: this git/patch command reads its patch from "
+                "standard input or a pipe, so the files it would write "
+                "cannot be checked against the write scope. Name the patch "
+                "file on the command line (e.g. `git apply file.diff`, "
+                "`git restore <path>`) so its targets can be gated, or ask "
+                "the user for the directory you need."
+            )})
+        return list(result), None
+
     def _gate_bash_write_targets(
         self, cmd: str, arguments: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -17502,8 +17614,6 @@ class _DocToolExecutor:
                     "that asked — ask the user what they want changed."
                 )})
             targets = _bash_write_targets(cmd)
-            if not targets:
-                return None
             cwd_arg = str(arguments.get("cwd", "") or "")
             base = perms.workspace
             if cwd_arg:
@@ -17511,6 +17621,22 @@ class _DocToolExecutor:
                     cwd_arg, perms, for_read=True)
                 if not err:
                     base = resolved_cwd
+            # `git apply` / `git am` / `patch` / `git checkout -- paths` /
+            # `git restore` write files _bash_write_targets cannot name (a
+            # patch names its files inside; a pathspec names its own here).
+            # Ask patch_targets for those exact paths and fold them in so
+            # they pass the same gate; a patch read from stdin / a pipe / a
+            # mailbox is UNKNOWABLE and the command is refused outright --
+            # "we could not check what it would write, so it may not run."
+            patch_paths, patch_err = self._patch_write_targets(
+                cmd, str(base), perms)
+            if patch_err is not None:
+                return patch_err
+            if patch_paths:
+                targets = list(targets) + [
+                    t for t in patch_paths if t not in targets]
+            if not targets:
+                return None
             for target in targets:
                 path = Path(target).expanduser()
                 if not path.is_absolute():

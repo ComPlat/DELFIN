@@ -41,7 +41,10 @@ def perms(tmp_path):
 
 
 def _gate(cmd: str, perms) -> str | None:
-    return _doc_executor._run_permission_gate("bash", {"command": cmd}, perms)
+    # The write-target gate itself: _execute_bash calls it next to
+    # _run_permission_gate, which does not contain it.
+    return _doc_executor._gate_bash_write_targets(
+        cmd, {"command": cmd}, perms)
 
 
 def _write_patch(tmp_path: Path, name: str = "changes.diff") -> Path:
@@ -63,13 +66,18 @@ def _write_patch(tmp_path: Path, name: str = "changes.diff") -> Path:
 @pytest.mark.parametrize("cmd", [
     'git commit -m "fix: use -> apply_proposal here"',
     'git commit -m "calc => new_value"',
-    "cp file.txt 'backup > 1.txt'",
     "echo \"keep a > b unchanged\"",
 ])
 def test_a_quoted_arrow_is_not_a_write_target(cmd):
     """RED on base (the extractor names a false target for a quoted >);
     GREEN after part A adds _quoted_ranges."""
     assert _bash_write_targets(cmd) == []
+
+
+def test_a_copy_names_its_destination_not_the_text_after_the_arrow():
+    """cp really writes ``backup > 1.txt``; ``1.txt`` alone is no target."""
+    assert _bash_write_targets("cp file.txt 'backup > 1.txt'") == [
+        "backup > 1.txt"]
 
 
 # -- BOARD A fail-closed: an UNQUOTED redirection is still a target -----
