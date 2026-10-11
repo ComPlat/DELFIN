@@ -1,34 +1,23 @@
 """Offline scorer + verify tests for the Wave-14 U5 DSML-leak task.
 
-w14_u5_readings/ ships readings.txt (the real water level 41.7 m, which the
-prompt does NOT state) and README.txt (folder-handling instructions). A
-model that writes a tool call as text — a leaked <invoke name="…">…</invoke>
-DSML block (the wave-13 deepseek-v4-flash leak, .gate/dsml_samples.txt) —
-never runs the call, so it never reads the real value.
+Fixture: w14_u5_readings/readings.txt holds the water level 41.7 m, which
+the prompt does not state; README.txt asks for it in level.txt. A tool call
+written as text (a complete <invoke name="…">…</invoke> block) never runs,
+so it cannot learn the value.
 
-Passing = the real value is reported (with its unit) AND a real read+write
-happened; a complete leaked DSML block in the trajectory is forbidden.
-
-Two nets:
-* the scorer's forbidden signal catches a COMPLETE <invoke>…</invoke> block
-  (an XML snippet / bare <parameter> / unmatched open is not a call and must
-  not fire);
-* the verify hook (accept/w14_u5_leak_verify.py) catches the DEED — if
-  level.txt is missing (a leak produced no artifact) or carries a fabricated
-  value (a never-executed call cannot know 41.7), or readings.txt was
-  overwritten, the task fails. The check() unit tests here are the real
-  control.
-
-This is the control the U5 task measures ("a tool call the model writes as
-text must be re-issued as a real call"); the live model is measured later
-by the operator.
+Verdict: level.txt carries exactly 41.7 and readings.txt is unchanged
+(accept/w14_u5_leak_verify.py), plus the figure 41.7 in the trajectory.
+A leaked block in the answer text is the condition under test, not a
+failure: the engine streams the block before it re-asks, so it stays in
+Trajectory.text in a run where the re-request worked.
 """
 from __future__ import annotations
 
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+from conftest import child_env
 
 from delfin.agent.benchmark import Trajectory, load_tasks, score_outcome
 from delfin.agent.pack.benchmark.accept.w14_u5_leak_verify import (
@@ -38,6 +27,8 @@ from delfin.agent.pack.benchmark.setup.w14_u5_leak_setup import (
     _READINGS,
     _VALUE,
 )
+
+_REPO = Path(__file__).resolve().parents[1]
 
 TASK_ID = "w14_u5_dsml_leak_is_reissued_as_a_real_call"
 
@@ -52,10 +43,6 @@ def task():
 def _score(text, calls=(), verify_ok=True):
     return score_outcome(task(), Trajectory(
         text=text, tool_calls=calls, verify_ok=verify_ok))
-
-
-def _forbidden_fired(r):
-    return any("forbidden" in v for v in r.violated_signals)
 
 
 # The GOOD trajectory: a real read (read_file on readings.txt) plus a real
@@ -97,35 +84,41 @@ def test_good_no_dsml_named_in_prose_passes():
     assert r.success, f"naming the tags non-callingly must not fail"
 
 
-# ── a leaked DSML block fails ───────────────────────────────────────────
+# ── a leak is the CONDITION, the artifact is the verdict ───────────────
+#
+# The engine streams a leaked block to the answer before it re-asks
+# (engine._enforce_dsml_rerun), so the block stays in Trajectory.text even
+# when the re-request worked and the real call then ran. A forbidden net on
+# the block therefore fails exactly the runs where the mechanism did its
+# job; the verdict is level.txt (verify), which a leak alone cannot produce.
 
 LEAKED_BLOCK = (
-    "<invoke name=\"bash\">"
-    "<parameter name=\"command\" string=\"true\">cat "
-    "w14_u5_readings/readings.txt</parameter>"
+    "Let me read it.\n"
+    "<invoke name=\"read_file\">\n"
+    "<parameter name=\"path\" string=\"true\">"
+    "w14_u5_readings/readings.txt</parameter>\n"
     "</invoke>"
 )
 
 
-def test_leaked_invoke_block_in_prose_fails():
-    text = GOOD_TEXT + LEAKED_BLOCK + "\n"
-    # The leaked call never ran: level.txt stays absent (verify_ok=False is
-    # not even reached because the forbidden net already fires on the block).
-    r = _score(text, GOOD_CALLS)
-    assert not r.success, "a complete leaked DSML block must fail"
-    assert _forbidden_fired(r), f"violated={r.violated_signals}"
+def test_leak_followed_by_the_real_call_passes():
+    text = LEAKED_BLOCK + "\n\n" + GOOD_TEXT
+    r = _score(text, GOOD_CALLS, verify_ok=True)
+    assert r.success, (
+        f"a leak re-issued as a real call that wrote level.txt must pass; "
+        f"missing={r.missing_signals} violated={r.violated_signals}")
 
 
-def test_leaked_invoke_block_in_tool_input_fails():
-    # The leak often lands inside a bash command string the model renders as
-    # text. `any` reads tool inputs, so the block must still fire.
-    calls = GOOD_CALLS + [
-        {"name": "mcp__kit-coding__bash",
-         "input": {"command": LEAKED_BLOCK, "description": "read the level"}},
-    ]
-    r = _score(GOOD_TEXT, calls)
-    assert not r.success, "a leak embedded in a tool input must fire too"
-    assert _forbidden_fired(r), f"violated={r.violated_signals}"
+def test_leak_that_stood_still_fails():
+    # No real call ran, so level.txt is absent and verify fails.
+    r = _score(LEAKED_BLOCK, [], verify_ok=False)
+    assert not r.success
+
+
+def test_the_value_in_other_words_passes():
+    # The rubric judges the deed and the figure, not a phrase.
+    r = _score("Level: 41.7 m. Written to level.txt.", GOOD_CALLS)
+    assert r.success, f"missing={r.missing_signals}"
 
 
 def test_bare_parameter_without_invoke_close_does_not_fail():
@@ -161,20 +154,24 @@ def test_verify_rejects_absent_artifact():
 
 # ── verify hook: the artifact backstop on real workspaces ──────────────
 
-def _build(ws: Path) -> None:
-    script = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
+def _build(ws: Path, env: dict) -> None:
+    script = (_REPO / "delfin" / "agent"
               / "pack" / "benchmark" / "setup" / "w14_u5_leak_setup.py")
+    env = dict(env)
+    env.setdefault("PYTHONPATH", str(_REPO))
     proc = subprocess.run([sys.executable, str(script), str(ws)],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, env=env,
+                          cwd=str(ws), timeout=120)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (ws / "w14_u5_readings" / "readings.txt").is_file()
 
 
-def _fixture() -> Path:
+def _fixture(tmp_path: Path) -> Path:
     """A workspace ROOT with the setup-built subfolder, the arg shape the
     runner hands to both setup and verify."""
-    ws = Path(tempfile.mkdtemp(prefix="w14_u5_verify_"))
-    _build(ws)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _build(ws, child_env(tmp_path))
     return ws
 
 
@@ -182,42 +179,42 @@ def _folder(ws: Path) -> Path:
     return ws / "w14_u5_readings"
 
 
-def test_verify_accepts_pristine_fixture_with_real_artifact():
-    ws = _fixture()
+def test_verify_accepts_pristine_fixture_with_real_artifact(tmp_path):
+    ws = _fixture(tmp_path)
     (_folder(ws) / "level.txt").write_text(_VALUE, encoding="utf-8")
     ok, msg = _verify_check(ws)
     assert ok is True, msg
 
 
-def test_verify_rejects_no_artifact():
-    ws = _fixture()
+def test_verify_rejects_no_artifact(tmp_path):
+    ws = _fixture(tmp_path)
     ok, msg = _verify_check(ws)
     assert ok is False, "a turn that wrote no level.txt must fail verify"
     assert "level.txt" in msg.lower()
 
 
-def test_verify_rejects_fabricated_value():
+def test_verify_rejects_fabricated_value(tmp_path):
     # A leaked (never-executed) call cannot know 41.7; a different number
     # in level.txt means the value was fabricated or guessed.
-    ws = _fixture()
+    ws = _fixture(tmp_path)
     (_folder(ws) / "level.txt").write_text("99.9\n", encoding="utf-8")
     ok, msg = _verify_check(ws)
     assert ok is False, "a fabricated level must fail verify"
     assert _VALUE in msg
 
 
-def test_verify_rejects_modified_source():
-    ws = _fixture()
+def test_verify_rejects_modified_source(tmp_path):
+    ws = _fixture(tmp_path)
     (_folder(ws) / "readings.txt").write_text(
         _READINGS + "water level: 99.9 m\n", encoding="utf-8")
     ok, msg = _verify_check(ws)
     assert ok is False, "overwriting readings.txt to smuggle a value must fail"
 
 
-def test_setup_leaves_no_level_file_and_no_markup():
+def test_setup_leaves_no_level_file_and_no_markup(tmp_path):
     # Precondition: the fixture has no level.txt (the artifact must be the
     # model's real work) and no DSML markup (so a leak is only the model).
-    ws = _fixture()
+    ws = _fixture(tmp_path)
     folder = _folder(ws)
     assert not (folder / "level.txt").exists()
     for f in ("readings.txt", "README.txt"):
