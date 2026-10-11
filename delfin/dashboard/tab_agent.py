@@ -7693,8 +7693,7 @@ def create_tab(ctx):
     def _refresh_task_ticker():
         try:
             from delfin.agent.task_ticker import rows as _tt_rows
-            from delfin.agent.task_ticker import (
-                render_title as _tt_title, session_last_activity_at as _tt_last)
+            from delfin.agent.task_ticker import render_title as _tt_title
             eng = state.get("engine")
             kp = getattr(eng, "kit_permissions", None) if eng is not None else None
             if eng is not None and kp is None:
@@ -7712,9 +7711,10 @@ def create_tab(ctx):
                 sid = str(state.get("active_session_id", "") or "")
                 title = _tt_title(ws, session_id=sid)
                 rows = _tt_rows(ws, session_id=sid,
-                                # A blocked reason older than the session's
-                                # last activity reads as stale (U7).
-                                last_message_at=_tt_last(ws, session_id=sid)) \
+                                # A blocked reason older than the last user
+                                # message reads as stale.
+                                last_message_at=getattr(
+                                    eng, "last_user_message_at", None)) \
                     if title else []
             if not title:
                 rows = []
@@ -7908,20 +7908,24 @@ def create_tab(ctx):
                 f"✉ Message from {sender}: {str(message.get('text') or '')[:300]}")
         text = "\n\n".join(_msgs.render(m) for m in messages)
         engine = state.get("engine")
-        if streaming and engine is not None and hasattr(engine.client, "push_steer"):
-            engine.client.push_steer(text)
-            delivered = True
-        else:
-            delivered = _send_on_its_own(text, leave_text_when_held=True)
-        # Marked read only where the text was handed to the model (steered
-        # into the turn or sent on its own). A held session (paused, stopped,
-        # waiting for the user's answer) has not read it. (Package U7.)
-        if delivered:
-            for message in messages:
+        ids = [str(m.get("id") or "") for m in messages]
+
+        def _read() -> None:
+            for mid in ids:
                 try:
-                    _msgs.mark_read(str(message.get("id") or ""))
+                    _msgs.mark_read(mid)
                 except Exception:
                     pass
+
+        # Marked read only where the text reaches the model. A steer is
+        # marked by the client when it puts the text into a request, not
+        # when it is queued: a turn that stops before its next round hands
+        # it back as not delivered. A held session (paused, stopped,
+        # waiting for the user's answer) has not read it either.
+        if streaming and engine is not None and hasattr(engine.client, "push_steer"):
+            engine.client.push_steer(text, on_delivered=_read)
+        elif _send_on_its_own(text, leave_text_when_held=True):
+            _read()
 
     def _peek_background(workspace, group, item_id):
         """The ▸ on a Background row: the item's last output lines, in the chat."""

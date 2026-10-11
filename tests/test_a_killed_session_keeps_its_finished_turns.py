@@ -64,7 +64,7 @@ class _StubEngine:
     def get_status(self):
         return {}
 
-    def steer(self, text):
+    def steer(self, text, on_delivered=None):
         return True
 
 

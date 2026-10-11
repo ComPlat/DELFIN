@@ -44,7 +44,7 @@ class _Engine:
         self.client = type("C", (), {"model": "m"})()
         self.provider = "kit"
 
-    def steer(self, text):
+    def steer(self, text, on_delivered=None):
         if not self.accepts:
             return False
         self.steered.append(text)

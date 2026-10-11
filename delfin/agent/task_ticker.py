@@ -60,10 +60,13 @@ def _sorted(tasks: Iterable[dict]) -> list[dict]:
     return out
 
 
-#: A block set before the session's last message may no longer hold: the
-#: person has since said something, so the "waiting on" note may be about a
-#: reason that no longer applies. Marked so on the panel rather than trusted
-#: silently (U7, phase 2).
+#: A block set before the session's last user message may no longer hold:
+#: the person has since said something, so the "waiting on" note may be
+#: about a reason that no longer applies. Marked so on the panel rather than
+#: trusted silently. The reference is the engine's ``last_user_message_at``
+#: (set when a user turn starts); the session file's ``updated_at`` is not
+#: one, because the turn-end save advances it past the block that very turn
+#: set, so every fresh block read as stale.
 _STALE_MARKER = " (stale)"
 
 
@@ -87,7 +90,7 @@ def _block_epoch(task: dict) -> float | None:
 
 def _stale_suffix(task: dict, last_message_at: float | None) -> str:
     """``_STALE_MARKER`` when *task* is a blocked task whose reason was set
-    strictly before ``last_message_at`` — i.e. the block outdates the last
+    before ``last_message_at`` (to the second) — i.e. the block outdates the last
     message. "" otherwise. A blocked task with no reason cannot reach the
     store (an invariant), and one whose timestamp is missing or not older
     is current, so neither is flagged.
@@ -107,44 +110,12 @@ def _stale_suffix(task: dict, last_message_at: float | None) -> str:
     if not str(task.get("blocked_reason") or "").strip():
         return ""
     block = _block_epoch(task)
-    if block is None or not (block < ref):
+    # The store writes whole seconds, so the block happened somewhere in
+    # [block, block + 1). Only a reference after that whole second proves
+    # the block older; a message in the same second may have come first.
+    if block is None or not (block + 1.0 <= ref):
         return ""
     return _STALE_MARKER
-
-
-def session_last_activity_at(
-    workspace: Path | str, *, session_id: str | None = None,
-) -> float | None:
-    """Epoch seconds of the session's last recorded activity — the proxy for
-    "the last message" a stale blocked reason is judged against — or None
-    when there is no such session or its timestamp cannot be read.
-
-    The reference a call site passes as ``last_message_at`` to
-    :func:`rows` / :func:`render_text` / :func:`render_html`. Sessions are
-    stored globally keyed by session id (``session_store``), so the lookup
-    is by ``session_id``; ``workspace`` is accepted for signature symmetry
-    with the render functions but does not drive the lookup.
-
-    Never raises: a session record that is absent, not a dict, or carries a
-    missing / non-numeric ``updated_at`` yields None (nothing stale), the
-    same guarantee the render functions already keep (a broken reference
-    must not take the panel down).
-    """
-    sid = str(session_id or "").strip()
-    if not sid:
-        return None
-    try:
-        from . import session_store
-        rec = session_store.load_session(sid)
-    except Exception:
-        return None
-    if not isinstance(rec, dict):
-        return None
-    try:
-        value = float(rec.get("updated_at") or 0)
-    except (TypeError, ValueError):
-        return None
-    return value or None
 
 
 def render_html(
@@ -197,8 +168,7 @@ def render_html(
                 # A block that outdates the last message is a stale note, not
                 # a fact: dimmer than the reason itself, so it reads as a
                 # caution rather than as "waiting" all the same.
-                label += (f" <span style='color:#999'>{escape(stale)}</span>"
-                          .replace("&", "&amp;"))
+                label += f" <span style='color:#999'>{escape(stale)}</span>"
         elif status == "completed" and t.get("verified") == "unmet":
             # A completion the evidence did not support stays visible as
             # such; the alternative is a green tick over an open hole.
@@ -270,7 +240,7 @@ def rows(
     a click puts into the message box).
 
     ``last_message_at`` is the epoch-second time of the session's last
-    message; a blocked task whose reason was set before it reads as stale
+    user message (``engine.last_user_message_at``); a blocked task whose reason was set before it reads as stale
     (see :func:`_stale_suffix`). None marks nothing.
     """
     store = get_store(Path(workspace))

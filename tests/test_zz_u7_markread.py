@@ -61,8 +61,12 @@ class _Engine:
         self.steer_ok = steer_ok
         self.steered = []
 
-    def steer(self, text: str):
+    def steer(self, text: str, on_delivered=None):
+        # Accepted means queued; the read mark runs when the client puts the
+        # text into a request, simulated here by running it at once.
         self.steered.append(text)
+        if self.steer_ok and on_delivered is not None:
+            on_delivered()
         return bool(self.steer_ok)
 
 
@@ -118,28 +122,16 @@ def test_a_message_whose_steer_failed_is_put_back_and_not_read(inbox):
         "a message that could not be handed over must not read as seen")
 
 
-def test_the_dashboard_delivery_calls_mark_read_on_success():
-    """Source assertion for the dashboard handoff (driving it needs the whole
-    dashboard state machine): _deliver_session_messages marks each handed
-    message read in its success branch."""
-    import pathlib
-    from delfin.dashboard import tab_agent as TA
-    src = pathlib.Path(TA.__file__).read_text(encoding="utf-8")
-    i = src.index("def _deliver_session_messages")
-    window = src[i:i + 2200]
-    assert "mark_read" in window, (
-        "the dashboard hands messages to the model and never marks them read")
-    assert "mark_read(" in window
-
-
 def test_the_dashboard_marks_read_only_what_it_delivered():
     """A held dashboard session (paused, stopped, waiting for the user's
     answer) leaves the text unsent: that message was not read. The read
-    receipt therefore hangs on what ``_send_on_its_own`` returned."""
+    receipt hangs on what ``_send_on_its_own`` returned, and a steer
+    carries it to the client (``on_delivered``)."""
     from pathlib import Path
     import delfin.dashboard.tab_agent as tab
     src = Path(tab.__file__).read_text(encoding="utf-8")
-    at = src.index("delivered = _send_on_its_own(text, leave_text_when_held=True)")
-    tail = src[at:at + 900]
-    assert "if delivered:" in tail
-    assert tail.index("if delivered:") < tail.index("_msgs.mark_read(")
+    i = src.index("def _deliver_session_messages")
+    body = src[i:src.index("\n    def ", i + 10)]
+    assert "_msgs.mark_read(" in body
+    assert "push_steer(text, on_delivered=_read)" in body
+    assert "elif _send_on_its_own(text, leave_text_when_held=True):\n            _read()" in body
