@@ -7710,7 +7710,12 @@ def create_tab(ctx):
                     ctx.repo_dir or Path.cwd())
                 sid = str(state.get("active_session_id", "") or "")
                 title = _tt_title(ws, session_id=sid)
-                rows = _tt_rows(ws, session_id=sid) if title else []
+                rows = _tt_rows(ws, session_id=sid,
+                                # A blocked reason older than the last user
+                                # message reads as stale.
+                                last_message_at=getattr(
+                                    eng, "last_user_message_at", None)) \
+                    if title else []
             if not title:
                 rows = []
             # Rebuilt only when a row changed: the background tick runs
@@ -7903,10 +7908,24 @@ def create_tab(ctx):
                 f"✉ Message from {sender}: {str(message.get('text') or '')[:300]}")
         text = "\n\n".join(_msgs.render(m) for m in messages)
         engine = state.get("engine")
+        ids = [str(m.get("id") or "") for m in messages]
+
+        def _read() -> None:
+            for mid in ids:
+                try:
+                    _msgs.mark_read(mid)
+                except Exception:
+                    pass
+
+        # Marked read only where the text reaches the model. A steer is
+        # marked by the client when it puts the text into a request, not
+        # when it is queued: a turn that stops before its next round hands
+        # it back as not delivered. A held session (paused, stopped,
+        # waiting for the user's answer) has not read it either.
         if streaming and engine is not None and hasattr(engine.client, "push_steer"):
-            engine.client.push_steer(text)
-        else:
-            _send_on_its_own(text, leave_text_when_held=True)
+            engine.client.push_steer(text, on_delivered=_read)
+        elif _send_on_its_own(text, leave_text_when_held=True):
+            _read()
 
     def _peek_background(workspace, group, item_id):
         """The ▸ on a Background row: the item's last output lines, in the chat."""

@@ -2195,10 +2195,28 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # Redirections: > file, >> file, 2> file, &> file (not >&1 / &2) --
         # per segment, so the directory a `cd` set applies to them.
         _redirect = re.compile(r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)")
-        for segment in re.split(r"[;&|]{1,2}|\n", cmd):
+        # `>&file` and `>| file` write a file too, but their `&` and `|`
+        # would split the segment in two below and the target would be lost.
+        # `>&2`, `>&-` and `2>&1` duplicate a descriptor and stay as they are.
+        _scan = re.sub(
+            r">&(?!\s*(?:\d+|-)(?=[\s;&|)]|$))\s*|>\|\s*", "> ", cmd)
+        # A `>` inside quotes is text only for a program that does not
+        # run its argument: `bash -c '... > f'`, `eval "... > f"` and
+        # `awk '{print > "f"}'` write that file, and so does a command
+        # substitution. The spans are found on the whole command, quotes
+        # and here-documents read as the shell reads them, because the
+        # split below ignores quotes and cuts `"a;b"` in two.
+        _text = _quoted_text_spans(_scan)
+        _cuts = [0]
+        for _sep in re.finditer(r"[;&|]{1,2}|\n", _scan):
+            _cuts += [_sep.start(), _sep.end()]
+        _cuts.append(len(_scan))
+        for _k in range(0, len(_cuts), 2):
+            segment = _scan[_cuts[_k]:_cuts[_k + 1]]
             seg = segment.strip()
             if not seg:
                 continue
+            _off = _cuts[_k] + len(segment) - len(segment.lstrip())
             try:
                 argv0 = shlex.split(seg, comments=True)
             except ValueError:
@@ -2209,6 +2227,8 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 _follow_cd(argv0)
                 continue
             for m in _redirect.finditer(seg):
+                if any(lo <= _off + m.start() < hi for lo, hi in _text):
+                    continue    # `>` inside quotes is text, not a redirection
                 tok = m.group(1)
                 if not tok.startswith("&"):
                     _add(tok)
@@ -3374,6 +3394,141 @@ def _sed_script_is_pure(script: str) -> bool:
         return False
     return all(_SED_PURE_STMT.fullmatch(stmt)
                for stmt in script.split(";") if stmt.strip())
+
+
+# Programs whose quoted arguments are text they print, match or store --
+# never a script they run. Only for these is a quoted `>` not a redirection.
+_QUOTED_TEXT_PROGRAMS = frozenset({
+    "git", "echo", "printf", "grep", "rg", "cp", "mv", "cat", "ls", "touch",
+    "mkdir", "test"})
+# git only where the quoted argument is a message or a pattern, named
+# directly: `git -c alias.x='!...'` and `git config alias.x '!...'` carry a
+# script.
+_GIT_MESSAGE_SUBCOMMANDS = frozenset(
+    {"commit", "tag", "merge", "log", "grep", "show", "notes", "stash"})
+
+
+def _quoted_text_spans(cmd: str) -> list:
+    """``(start, end)`` of the spans of *cmd* whose ``>`` is text.
+
+    Input: a whole shell command. Output: the quoted spans and here-document
+    bodies that belong to a command in :data:`_QUOTED_TEXT_PROGRAMS` (git
+    only with a subcommand in :data:`_GIT_MESSAGE_SUBCOMMANDS`); the
+    redirection scanner skips an operator inside one of them, so ``git
+    commit -m "a -> b"`` names no file ``b``.
+
+    The command is read once, the way bash reads it: ``'..'``, ``".."``
+    with backslash escapes, ``$'..'`` with backslash escapes, a backslash
+    outside quotes, ``#`` comments at a word start, and here-document
+    bodies (several per line, in order) as data. Commands are separated
+    at ``;``, ``|``, ``&`` (not the ``&`` of ``>&``/``<&``) and newline
+    outside all of these. Reading quotes per piece of a quote-unaware
+    split was rejected: ``echo "a;echo " > f`` cut there leaves a piece
+    that starts inside a quote, and the real ``> f`` read as quoted.
+
+    Returns ``[]`` -- no text anywhere, every ``>`` a redirection -- when a
+    quote or here-document is unterminated (bash would not run the
+    command), and a command gets no spans when it contains ``$(`` or a
+    backtick, which run inside quotes and unquoted delimiters alike.
+    Cost: one linear pass plus ``shlex.split`` per command.
+    """
+    import shlex
+    n = len(cmd)
+    cmds: list = []          # (start, end, quote spans, here-doc bodies)
+    spans: list = []
+    bodies: list = []
+    pending: list = []       # here-documents opened on the current line
+    start = 0
+    i = 0
+
+    def _close(end: int) -> None:
+        cmds.append((start, end, spans, bodies))
+
+    while i < n:
+        c = cmd[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'" or (c == "$" and cmd.startswith("$'", i)):
+            ansi = c == "$"
+            j = i + (2 if ansi else 1)
+            while j < n and cmd[j] != "'":
+                j += 2 if (ansi and cmd[j] == "\\") else 1
+            if j >= n:
+                return []
+            spans.append((i, j + 1))
+            i = j + 1
+            continue
+        if c == '"':
+            j = i + 1
+            while j < n and cmd[j] != '"':
+                j += 2 if cmd[j] == "\\" else 1
+            if j >= n:
+                return []
+            spans.append((i, j + 1))
+            i = j + 1
+            continue
+        if c == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|()"):
+            nl = cmd.find("\n", i)
+            i = n if nl == -1 else nl
+            continue
+        if cmd.startswith("<<<", i):
+            i += 3
+            continue
+        if cmd.startswith("<<", i):
+            m = _HEREDOC_START_RE.match(cmd, i)
+            if m and (m.group(3) or m.group(4)):
+                pending.append((m.group(3) or m.group(4), bool(m.group(1)),
+                                bool(m.group(2))))
+                i = m.end()
+                continue
+            return []        # `<<\EOF`, `<<END-X`: a body this does not read
+        if c == "\n" and pending:
+            pos = i + 1
+            for tag, strip_tabs, quoted in pending:
+                for line_start, line in _lines_from(cmd, pos):
+                    candidate = line.lstrip("\t") if strip_tabs else line
+                    if candidate.strip() == tag:
+                        bodies.append((pos, line_start, quoted))
+                        pos = line_start + len(line) + 1
+                        break
+                else:
+                    return []
+            pending = []
+            _close(i)
+            spans, bodies = [], []
+            start = i = min(pos - 1, n)
+            continue
+        if c in ";|\n" or (c == "&" and (i == 0 or cmd[i - 1] not in "<>")):
+            _close(i)
+            spans, bodies = [], []
+            start = i + 1
+        i += 1
+    if pending:
+        return []
+    _close(n)
+
+    out: list = []
+    for lo, hi, qs, docs in cmds:
+        text = cmd[lo:hi]
+        if "$(" in text or "`" in text:
+            continue
+        try:
+            argv = shlex.split(text, comments=True)
+        except ValueError:
+            continue
+        while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+            argv = argv[1:]
+        name = Path(argv[0]).name if argv else ""
+        if name not in _QUOTED_TEXT_PROGRAMS or (
+                name == "git" and (len(argv) < 2
+                                   or argv[1] not in _GIT_MESSAGE_SUBCOMMANDS)):
+            continue
+        out.extend(qs)
+        out.extend((b0, b1) for b0, b1, quoted in docs
+                   if quoted or not any(
+                       r in cmd[b0:b1] for r in ("$(", "`")))
+    return out
 
 
 def _word_spans(cmd: str, start: int, end: int) -> list:
@@ -17607,6 +17762,51 @@ class _DocToolExecutor:
             return None
         return None
 
+    def _patch_write_targets(
+        self, cmd: str, cwd_str: str, perms: "KitToolPermissions"
+    ) -> "tuple[list | None, Optional[str]]":
+        """The git/patch write targets of *cmd*, plus a refusal-or-None.
+
+        ``_bash_write_targets`` recognises redirections and per-command
+        destinations, but not a patch whose files it would have to read
+        (``git apply file.diff``) nor a pathspec form (``git checkout -- x``).
+        ``patch_targets.targets`` answers those; a patch that can only be
+        read from stdin / a pipe / a mailbox returns UNKNOWABLE, which here
+        is a refusal (``(refusal_json, err)``) -- the caller cannot gate
+        what it cannot name, and the command may not run.
+
+        Returns ``(paths, None)`` (possibly empty) to gate, or
+        ``(None, error_json)`` to block. If the patch_targets module is
+        unavailable the git/patch commands fall through to the existing
+        deny patterns unchanged (no new hole)."""
+        try:
+            from . import patch_targets as _pt
+        except Exception:
+            return [], None
+        try:
+            result = _pt.targets(cmd, cwd_str) if cwd_str else _pt.targets(cmd)
+        except Exception:
+            # A reader that broke on a patch command has not named its
+            # targets: that command may not run. Anything else is unchanged.
+            if not re.search(r"(?<![\w./-])(?:git|patch)(?![\w.-])", cmd):
+                return [], None
+            result = getattr(_pt, "UNKNOWABLE", None)
+        if result is getattr(_pt, "UNKNOWABLE", None):
+            _record_security_event(
+                "unknowable_patch_refused", "bash", cmd[:80], blocked=True)
+            return None, json.dumps({"error": (
+                "blocked: the files this git/patch command would write "
+                "cannot be read from it -- the patch comes from a pipe, "
+                "xargs, a mailbox or a here-document, or the named patch is "
+                "missing, not a regular file or over 16 MB -- so they "
+                "cannot be checked against the write scope. Name a readable "
+                "patch file on the command line (e.g. `git apply "
+                "file.diff`, `patch -p1 -i file.diff`) or the paths "
+                "(`git restore <path>`), or ask the user for the directory "
+                "you need."
+            )})
+        return list(result), None
+
     def _gate_bash_write_targets(
         self, cmd: str, arguments: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -17641,8 +17841,6 @@ class _DocToolExecutor:
                     "that asked — ask the user what they want changed."
                 )})
             targets = _bash_write_targets(cmd)
-            if not targets:
-                return None
             cwd_arg = str(arguments.get("cwd", "") or "")
             base = perms.workspace
             if cwd_arg:
@@ -17650,6 +17848,22 @@ class _DocToolExecutor:
                     cwd_arg, perms, for_read=True)
                 if not err:
                     base = resolved_cwd
+            # `git apply` / `git am` / `patch` / `git checkout -- paths` /
+            # `git restore` write files _bash_write_targets cannot name (a
+            # patch names its files inside; a pathspec names its own here).
+            # Ask patch_targets for those exact paths and fold them in so
+            # they pass the same gate; a patch read from stdin / a pipe / a
+            # mailbox is UNKNOWABLE and the command is refused outright --
+            # "we could not check what it would write, so it may not run."
+            patch_paths, patch_err = self._patch_write_targets(
+                cmd, str(base), perms)
+            if patch_err is not None:
+                return patch_err
+            if patch_paths:
+                targets = list(targets) + [
+                    t for t in patch_paths if t not in targets]
+            if not targets:
+                return None
             for target in targets:
                 path = Path(target).expanduser()
                 if not path.is_absolute():
@@ -21843,6 +22057,9 @@ class OpenAIClient(_BaseClient):
         import threading as _threading
         self._steer_lock = _threading.Lock()
         self._steer_msgs: list[str] = []
+        # Callbacks run when the queued steers are put into a request (see
+        # push_steer's ``on_delivered``); discarded with them on a stop.
+        self._steer_hooks: list = []
         # Facts about the RUN itself, not things the user said —
         # see push_run_note. Shares the steer lock; both are tiny.
         self._run_notes: list[str] = []
@@ -21902,13 +22119,24 @@ class OpenAIClient(_BaseClient):
             self._run_notes.clear()
             return out
 
-    def push_steer(self, text: str) -> None:
+    def push_steer(self, text: str, *, on_delivered=None) -> None:
         """Queue a user message for MID-LOOP injection (thread-safe). Picked up
-        between tool rounds by ``stream_message`` and fed to the model."""
+        between tool rounds by ``stream_message`` and fed to the model.
+
+        ``on_delivered`` (no arguments) runs when the text is drained into
+        the model's request, never when it is drained by a stop, which hands
+        it back as not delivered. Queueing is not delivery: a session
+        message marked read at push time was marked read for a turn that
+        stopped before its next round."""
         t = (text or "").strip()
         if t:
             with self._steer_lock:
                 self._steer_msgs.append(t)
+                if on_delivered is not None:
+                    hooks = getattr(self, "_steer_hooks", None)
+                    if hooks is None:
+                        hooks = self._steer_hooks = []
+                    hooks.append(on_delivered)
 
     def _turn_cost_cap(self) -> float:
         """This turn's spending ceiling in USD, or 0.0 for no ceiling.
@@ -22007,13 +22235,26 @@ class OpenAIClient(_BaseClient):
             return notes
         return notes
 
-    def _drain_steer(self) -> list[str]:
+    def _drain_steer(self, *, delivered: bool = True) -> list[str]:
+        """Every queued steer, removed from the queue. ``delivered=True``
+        (the drains that append them to the request) runs their
+        ``on_delivered`` callbacks; ``delivered=False`` (the stop) drops
+        the callbacks unrun."""
         with self._steer_lock:
+            hooks = list(getattr(self, "_steer_hooks", None) or ())
+            if hooks:
+                self._steer_hooks.clear()
             if not self._steer_msgs:
                 return []
             out = self._steer_msgs[:]
             self._steer_msgs.clear()
-            return out
+        if delivered:
+            for hook in hooks:
+                try:
+                    hook()
+                except Exception:
+                    pass
+        return out
 
     def _open_task_state(self) -> dict:
         """Tri-state summary of this session's open tasks.
@@ -22853,7 +23094,7 @@ class OpenAIClient(_BaseClient):
                 # permissions had changed. It stays queued instead: the
                 # next turn drains it on its first round, or on its way
                 # out if that turn calls no tool.
-                _undelivered = self._drain_steer()
+                _undelivered = self._drain_steer(delivered=False)
                 _lost = ""
                 if _undelivered:
                     _lost = (" Not delivered, because the turn stopped "

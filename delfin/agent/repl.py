@@ -2401,7 +2401,11 @@ class TerminalAgent:
             from . import task_ticker
             text = task_ticker.render_text(
                 self.opts.cwd,
-                session_id=str(getattr(self.engine, "session_id", "") or ""))
+                session_id=str(getattr(self.engine, "session_id", "") or ""),
+                # A blocked reason older than the last user message reads
+                # as stale.
+                last_message_at=getattr(self.engine, "last_user_message_at",
+                                        None))
         except Exception:
             return
         if text and text != "(no tasks)":
@@ -2932,9 +2936,20 @@ class TerminalAgent:
         if not messages:
             return
         text = "\n\n".join(_msgs.render(m) for m in messages)
+        ids = [str(m.get("id") or "") for m in messages]
+
+        def _read() -> None:
+            # Run by the client when the text goes into a request: a steer
+            # still queued when the turn stops was never read.
+            for mid in ids:
+                try:
+                    _msgs.mark_read(mid)
+                except Exception:
+                    pass
+
         delivered = False
         try:
-            delivered = bool(self.engine.steer(text))
+            delivered = bool(self.engine.steer(text, on_delivered=_read))
         except Exception:
             delivered = False
         if not delivered:
@@ -3258,6 +3273,12 @@ class TerminalAgent:
                 # the next prompt, and a prompt is not echoed. Somebody
                 # watching the pane has to be able to read what arrived.
                 body = " ".join(str(message.get("text") or "").split())
+                # It becomes the next prompt: read, as opposed to a message
+                # that merely left the inbox.
+                try:
+                    _msgs.mark_read(str(message.get("id") or ""))
+                except Exception:
+                    pass
                 self.transcript.chrome(
                     self.transcript.theme.dim(f"✉ {sender}: {body[:300]}"))
             return "\n\n".join(_msgs.render(m) for m in messages)

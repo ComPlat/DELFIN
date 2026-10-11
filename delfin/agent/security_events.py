@@ -40,6 +40,7 @@ from typing import Deque, Optional
 _KINDS = {
     "deny_pattern":   ("⛔", "Denied command"),
     "unsafe_install": ("⛔", "Install outside the session venv"),
+    "unknowable_patch_refused": ("⛔", "Patch from stdin refused (targets unknown)"),
     "secret_path":    ("🔑", "Secret-path access blocked"),
     "script_payload": ("📜", "Script payload blocked"),
     "self_mod":       ("🛡", "Self-modification guarded"),

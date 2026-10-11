@@ -2570,6 +2570,10 @@ class AgentEngine:
             # grounded, and flagging it would be the fastest way to teach
             # somebody to ignore the guard.
             self._last_user_message = user_message or ""
+            # Epoch seconds of this message: the task ticker reads a block
+            # set before it as stale. Not the session's save time, which
+            # every turn end advances past the block that turn set.
+            self.last_user_message_at = _time.time()
             # Per turn, like every other one-shot above it: the model is
             # told once that it is answering in the wrong language, and
             # the next turn gets to be told again if it happens again.
@@ -6230,7 +6234,12 @@ class AgentEngine:
         turn drains them at its first round.
         """
         try:
-            pending = self.client._drain_steer()
+            # Not delivered: the steers' on_delivered callbacks (a session
+            # message's read receipt) must not run for text handed back.
+            try:
+                pending = self.client._drain_steer(delivered=False)
+            except TypeError:
+                pending = self.client._drain_steer()
         except Exception:
             return ""
         # Only a list of real strings is handed back. A client whose drain
@@ -6247,14 +6256,20 @@ class AgentEngine:
         return (" Not delivered, because the turn stopped first: "
                 + quoted + more + " — send it again if it still applies.")
 
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, *, on_delivered=None) -> bool:
         """Inject a user message into the RUNNING tool loop (mid-loop steering).
         The model reacts to it on the next round, without ending the turn.
-        Returns True if the active client supports it (API/KIT/Ollama engine)."""
+        Returns True if the active client supports it (API/KIT/Ollama engine).
+
+        True means queued, not delivered: ``on_delivered`` runs when the
+        client puts the text into a request (see ``push_steer``)."""
         client = getattr(self, "client", None)
         if client is not None and hasattr(client, "push_steer"):
             try:
-                client.push_steer(text)
+                if on_delivered is None:
+                    client.push_steer(text)
+                else:
+                    client.push_steer(text, on_delivered=on_delivered)
                 # Kept for the turn's guards: a steer is the user's latest
                 # word, and "antworte auf Englisch" in it is a language
                 # request the language guard must honour.
