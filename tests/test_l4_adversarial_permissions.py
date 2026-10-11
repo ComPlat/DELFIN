@@ -93,6 +93,34 @@ def test_round4_matrix_clause_imperative_never_stored(tmp_path):
         )
 
 
+def test_round5_to_infinitive_habits_stay_storable(tmp_path):
+    # Reviewer s23 / QS s30 over-refusal finding, reproduced by me through the
+    # real storage gate against 041cfe42: round-5's strict verb-local adjacency
+    # (user_model.py:153) exempts first-person ONLY when the subject sits
+    # immediately before the frequency modal. A genuine working-style HABIT
+    # with a "to" infinitive -- "I prefer TO always write my tests before the
+    # code" -- has a word ("prefer", "to") between "i" and "always", reads as
+    # an agent grant, and is WRONGLY refused (verified stored 0). This is not a
+    # grant: it is the user's own habit/preference and MUST stay storable
+    # (round-4 stored it). Round-6 must separate the "that"-complementizer
+    # GRANT ("I prefer that always push") from the "to"-infinitive HABIT.
+    # Red pin: asserts each habit is STORABLE (total >= 1); round-5 returns 0
+    # for all four, so this is red. A round-6 fix that stops over-refusing the
+    # "prefer to always" class turns it green.
+    storable = [
+        "i prefer to always write my tests before the code",
+        "i like to always commit small changes",
+        "i try to always review my work before merging",
+        "i would rather always ask before deleting",
+    ]
+    for phrase in storable:
+        total = _update_and_count(tmp_path / "um.json", phrase)
+        assert total >= 1, (
+            f"round-5 over-refused a genuine first-person habit: "
+            f"{phrase!r} (stored {total})"
+        )
+
+
 def test_no_live_grant_from_other_session_roles(tmp_path):
     # g1: tool / agent / session / distilled text changes nothing, even when
     # it is phrased as a benign preference to slip past classification.
