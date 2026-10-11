@@ -3584,6 +3584,41 @@ def _show_molecule_card_html(tool_output) -> str | None:
     )
 
 
+def _make_plot_card_html(tool_output) -> str | None:
+    """The chat card for a ``make_plot`` result, or None.
+
+    Input: the tool's result string (``chat_plots.card_result``). Output:
+    the chat's artifact preview of the written figure
+    (``_render_artifact_inline``: image or SVG, and the download link).
+    Only a ``.svg`` or ``.png`` file is drawn; the file is read again here,
+    the result carries no figure. When the file cannot be previewed (gone,
+    over the inline size), a text card with the escaped summary line.
+    None when the result is not a valid plot payload (an error), so the
+    caller escapes it like any tool output.
+    """
+    from delfin.dashboard import chat_viewer
+
+    payload = chat_viewer.card_payload(tool_output, "plot")
+    if payload is None:
+        return None
+    path = Path(payload["path"])
+    card = None
+    if path.suffix.lower() in (".svg", ".png"):
+        try:
+            card = _render_artifact_inline(path)
+        except Exception:
+            card = None
+    if card is not None:
+        return card
+    return (
+        '<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+        'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+        '<div style="font-size:12px;color:#1f2937;font-family:monospace;'
+        'white-space:pre-wrap;overflow-wrap:anywhere;">'
+        f'{_html.escape(payload["text"])}</div></div>'
+    )
+
+
 def _render_xyz_summary(path) -> tuple[int, str] | None:
     """Parse an XYZ file and return ``(atom_count, summary_string)``.
 
@@ -18576,6 +18611,18 @@ def create_tab(ctx):
                         _card = _show_molecule_card_html(tool_output)
                         if _card is not None:
                             _append_tool_message(_card)
+                            return
+                    if tool_name == "make_plot" and _raw_name in (
+                            "make_plot", "mcp__delfin-docs__make_plot"):
+                        _card = _make_plot_card_html(tool_output)
+                        if _card is not None:
+                            _append_tool_message(_card)
+                            # Not offered again when the answer names it.
+                            from delfin.dashboard import chat_viewer as _cv
+                            _pl = _cv.card_payload(tool_output, "plot")
+                            _shown = set(state.get("_emitted_artifacts") or ())
+                            _shown.add(str(Path(_pl["path"]).resolve()))
+                            state["_emitted_artifacts"] = _shown
                             return
                     if tool_name in ("subagent", "subagent_result", "orchestrate"):
                         output = _subagent_report_text(tool_output)

@@ -1,4 +1,5 @@
-"""The ``show_molecule`` tool result: what it carries, and how it is read.
+"""The card tool results (``show_molecule``, ``make_plot``): what they
+carry, and how they are read.
 
 Input: a molecule file the executor's read gate has already admitted.
 Output: the result string ``DELFIN_CARD:`` + JSON::
@@ -12,6 +13,10 @@ bundled 3Dmol, so it works on a node without outbound network; trajectories
 animated; cubes drawn with atoms and both isosurface signs). The model and
 the terminal are given ``text`` only (:func:`card_model_text`), never the
 file content.
+
+``make_plot`` (``delfin.agent.chat_plots.card_result``) writes a figure and
+returns the same marker with ``{"card": "plot", "path", "title", "text"}``;
+the dashboard shows that file with the chat's artifact preview.
 
 Rejected: an ``<iframe sandbox srcdoc>`` card built here. The sandboxed
 document cannot see the dashboard's bundled 3Dmol and fetched an unpinned
@@ -29,7 +34,8 @@ from pathlib import Path
 from delfin.agent import chat_media
 
 #: Marker prefix of a card result. Only a result of the ``show_molecule``
-#: tool is read as a card (see tab_agent._show_molecule_card_html); the same
+#: or ``make_plot`` tool is read as a card, each as its own kind (see
+#: tab_agent._show_molecule_card_html, _make_plot_card_html); the same
 #: prefix in any other tool's output is ordinary text.
 CARD_MARKER = "DELFIN_CARD:"
 
@@ -85,11 +91,14 @@ def render_molecule_tool_result(
     return CARD_MARKER + json.dumps(payload)
 
 
-def card_payload(result) -> "dict | None":
-    """The validated payload of a molecule card result, or None.
+def card_payload(result, card: str = "molecule") -> "dict | None":
+    """The validated payload of a ``card`` result, or None.
 
-    None for anything that does not start with the marker or whose JSON
-    is not exactly the shape above (wrong types, missing keys).
+    ``card`` is the kind the caller expects from the tool that produced
+    ``result``: ``"molecule"`` (show_molecule) or ``"plot"`` (make_plot,
+    ``delfin.agent.chat_plots.card_result``). None for anything that does
+    not start with the marker, is of another kind, or whose JSON is not
+    exactly that kind's shape (wrong types, missing keys).
     """
     if not isinstance(result, str) or not result.startswith(CARD_MARKER):
         return None
@@ -97,18 +106,19 @@ def card_payload(result) -> "dict | None":
         payload = json.loads(result[len(CARD_MARKER):])
     except (ValueError, TypeError):
         return None
-    if not isinstance(payload, dict) or payload.get("card") != "molecule":
+    if not isinstance(payload, dict) or payload.get("card") != card:
         return None
     for key in ("path", "title", "text"):
         if not isinstance(payload.get(key), str):
             return None
-    iso = payload.get("isovalue")
-    if iso is not None and _isovalue(iso) is None:
-        return None
+    if card == "molecule":
+        iso = payload.get("isovalue")
+        if iso is not None and _isovalue(iso) is None:
+            return None
     return payload
 
 
-def card_model_text(result) -> "str | None":
+def card_model_text(result, card: str = "molecule") -> "str | None":
     """The plain summary the model receives for a card result, or None."""
-    payload = card_payload(result)
+    payload = card_payload(result, card)
     return payload["text"] if payload is not None else None

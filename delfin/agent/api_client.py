@@ -4897,7 +4897,7 @@ _NETWORK_TOOLS: frozenset[str] = frozenset({
 # dispatched without ever consulting the gate.
 _GATED_TOOLS: frozenset[str] = frozenset({
     "write_file", "edit_file", "multi_edit", "bash", "bash_background",
-    "run_tests",
+    "run_tests", "make_plot",
 }) | _NETWORK_TOOLS
 
 # What may run with NO permissions object. Such a caller has no workspace,
@@ -5010,6 +5010,7 @@ _PLAN_READONLY_MCP_TOOLS: frozenset[str] = (
 # test_the_deny_list_only_names_real_tools says so.
 _WRITE_TOOL_NAMES: frozenset[str] = frozenset({
     "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
+    "make_plot",
 })
 
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
@@ -8229,6 +8230,24 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "make_plot",
+            "description": (
+                "Plot into the workspace and show it in the chat. spec: "
+                "{kind: line|scatter|bar|histogram|box, x, y, "
+                "title, ...}."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "spec": {"type": "object"},
+                },
+                "required": ["spec"],
             },
         },
     },
@@ -12777,6 +12796,9 @@ class _DocToolExecutor:
         # probes only; credential values never appear in the output).
         if name == "check_environment":
             return self._execute_check_environment(arguments, permissions)
+
+        if name == "make_plot":
+            return self._execute_make_plot(arguments, permissions)
 
         # Web tools — outbound HTTP, no filesystem side-effects. The
         # web_tools module enforces its own URL deny-list (localhost /
@@ -20159,6 +20181,62 @@ class _DocToolExecutor:
         )
         return json.dumps(rec, indent=2, ensure_ascii=False)
 
+    def _execute_make_plot(self, arguments: dict, permissions) -> str:
+        """Render a declarative plot spec into the workspace.
+
+        Input: ``{"spec": {...}}`` (``chat_plots`` module docstring).
+        Output: the ``DELFIN_CARD:`` plot result (``chat_plots.card_result``)
+        or a JSON error. Refused before anything is written: no permissions
+        or no workspace, plan mode, an output path the write gate
+        (``_gate_write_path``) refuses. A ``data: {file: ...}`` source is
+        read only after ``_check_read_access`` admits it (secret-deny list,
+        read roots). The model receives only the result's ``text``; the
+        loop splits it off by tool name.
+        """
+        spec = arguments.get("spec")
+        if not isinstance(spec, dict):
+            return json.dumps({
+                "error": "make_plot: spec must be an object with a 'kind'"
+            })
+        if not permissions:
+            return json.dumps({"error": (
+                "make_plot requires permissions (a workspace to write the "
+                "figure into)."
+            )})
+        ws = getattr(permissions, "workspace", None)
+        if not ws:
+            return json.dumps({"error": (
+                "make_plot requires a workspace to write the figure into."
+            )})
+        if effective_mode(permissions) == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — 'make_plot' rejected. Describe the "
+                "intended change and call exit_plan_mode."
+            )})
+        from . import chat_plots as _cp
+        try:
+            out_path = _cp.resolve_out_path(spec, Path(ws))
+        except _cp.SpecError as exc:
+            return json.dumps({"error": f"make_plot: {exc}"})
+        refuse = self._gate_write_path(
+            str(out_path), permissions, "make_plot", arguments)
+        if refuse is not None:
+            return json.dumps({"error": refuse})
+
+        def _reader(p: Path) -> str:
+            err = self._check_read_access(permissions, p, "make_plot")
+            if err is not None:
+                raise _cp.SpecError(f"data file {p} refused: {err}")
+            with p.open(encoding="utf-8") as fh:
+                return fh.read()
+
+        try:
+            return _cp.make_plot(spec, out_dir=str(ws), reader=_reader)
+        except _cp.SpecError as exc:
+            return json.dumps({"error": f"make_plot: {exc}"})
+        except Exception as exc:  # matplotlib refusing a value, ...
+            return json.dumps({"error": f"make_plot failed: {exc}"})
+
     def _execute_web_search(self, arguments: dict) -> str:
         query = (arguments.get("query", "") or "").strip()
         max_results = int(arguments.get("max_results", 8) or 8)
@@ -23639,6 +23717,13 @@ class OpenAIClient(_BaseClient):
                             and str(result).startswith("DELFIN_CARD:")):
                         from delfin.dashboard import chat_viewer as _cv
                         _cv_text = _cv.card_model_text(str(result))
+                        if _cv_text is not None:
+                            context_result = _wrap_untrusted(_cv_text)
+                    # make_plot: the same split for its plot card.
+                    if (fn_name == "make_plot"
+                            and str(result).startswith("DELFIN_CARD:")):
+                        from delfin.dashboard import chat_viewer as _cv
+                        _cv_text = _cv.card_model_text(str(result), "plot")
                         if _cv_text is not None:
                             context_result = _wrap_untrusted(_cv_text)
                     api_messages.append({
