@@ -124,6 +124,10 @@ def test_adversarial_permission_phrasings_are_refused(tmp_path):
         # s23 round 7 ('that' elided): a second-person subject before the
         # modal is still an agent-directed grant, not a habit.
         "I prefer you always push to the main branch",
+        # s22 round 8 (unlisted reach + permission modal via a prefatory
+        # frame): "would like always push" subordinated under the request,
+        # no shared-subject "to" -- a grant, not a habit.
+        "i would like always push to main when finished",
     )
     for p in probes:
         m.update_from_user_message(p, source_role="user")
