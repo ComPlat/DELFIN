@@ -81,7 +81,7 @@ def test_good_no_dsml_named_in_prose_passes():
     text = GOOD_TEXT + ("(I did not emit a <invoke> block; I called the "
                         "tools for real.)\n")
     r = _score(text, GOOD_CALLS)
-    assert r.success, f"naming the tags non-callingly must not fail"
+    assert r.success, "naming the tags non-callingly must not fail"
 
 
 # ── a leak is the CONDITION, the artifact is the verdict ───────────────
