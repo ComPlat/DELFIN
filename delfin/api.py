@@ -4147,6 +4147,43 @@ _DELFIN_FEATURES: dict[str, dict] = {
             "cascade guarded by co2_coordination)",
             "delfin/dashboard/tab_submit.py (delfin-co2-chain submit mode)",
             "delfin/define.py (co2_coordination=off, co2_species_delta=0)",
+            "delfin/co2/reduction_surface.py (the CO2 reduction surface "
+            "chain, guarded by co2_reduction_surface)",
+        ],
+    },
+    "co2_reduction_surface": {
+        "category": "workflow",
+        "summary": (
+            "CO2 reduction surface: automatic hyperpotential surface of "
+            "the CO2 reduction mechanism at a metal-organic complex, "
+            "station by station — complex+CO2, complex+CO2H, complex+CO2H2, "
+            "then complex+CO with the H2O released. Geometries are "
+            "CHAINED: each station is cut from the previous station's "
+            "optimized geometry (protons added at the coordinated "
+            "substrate), then GFN2-xTB pre-optimized with the station's "
+            "own charge; MANTA (manta_smiles) only builds the initial "
+            "complex. Charges are cumulative: base_charge + the "
+            "per-station deltas (rs_charges, default 0,+1,+2,+2). With "
+            "`co2_reduction_surface_ts=on` an ORCA NEB-TS search "
+            "(%neb NEB_End_XYZFile/NImages) runs between consecutive "
+            "stations. Triggered from the main CONTROL.txt with "
+            "`co2_reduction_surface=on` (it reaches the coordinator's "
+            "CONTROL.txt as the `reduction_surface` key, like every "
+            "co2_* override). Writes "
+            "reduction_surface_result.json and the automatic energy "
+            "profile plot reduction_surface_profile.png/.pdf into "
+            "CO2_coordination/."
+        ),
+        "see_also": [
+            "delfin/co2/reduction_surface.py (run_reduction_surface, "
+            "run_neb_ts_station_pair, _apply_station_surgery, _split_water)",
+            "delfin/co2/reduction_surface_plot.py (write_profile_plot)",
+            "delfin/co2/adduct_flow.py (run_adduct_flow — the flow the "
+            "surface chain starts from)",
+            "delfin/co2/chain_setup.py (rs_* / reduction_surface defaults "
+            "in _CO2_DEFAULTS, section in _build_co2_control)",
+            "delfin/define.py (co2_reduction_surface=off, "
+            "co2_reduction_surface_ts=off)",
         ],
     },
     "tadf_xtb": {

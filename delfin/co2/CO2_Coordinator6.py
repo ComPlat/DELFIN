@@ -2112,6 +2112,25 @@ def main():
         control_dir = os.path.dirname(os.path.abspath("CONTROL.txt")) or "."
         result = run_adduct_flow(control_dir, workdir=control_dir)
         print(f"[INFO] Adduct flow finished with status: {result['status']}")
+
+        # --- 2c) CO2 reduction surface chain (optional, after the flow) ---
+        # Builds the CO2 -> CO2H -> CO2H2 -> CO+H2O station chain from the
+        # flow's geometry, with NEB-TS between the stations when
+        # reduction_surface_ts=true. Runs also without adduct_flow (below).
+        if _is_enabled(args.get("reduction_surface", False)):
+            from delfin.co2.reduction_surface import run_reduction_surface
+            rs_result = run_reduction_surface(control_dir, workdir=control_dir)
+            print(f"[INFO] Reduction surface finished with status: {rs_result['status']}")
+        return
+
+    # --- 2b') Reduction surface without the adduct flow ---
+    # The chain can also start from a provided placement geometry when the
+    # coordination chain is not wanted.
+    if _is_enabled(args.get("reduction_surface", False)):
+        from delfin.co2.reduction_surface import run_reduction_surface
+        control_dir = os.path.dirname(os.path.abspath("CONTROL.txt")) or "."
+        rs_result = run_reduction_surface(control_dir, workdir=control_dir)
+        print(f"[INFO] Reduction surface finished with status: {rs_result['status']}")
         return
 
     # --- 3) Orientation scan at fixed distance (optional) ---

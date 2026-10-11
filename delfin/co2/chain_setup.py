@@ -169,6 +169,19 @@ _CO2_DEFAULTS = {
     "run_xtb": "false",
     # Automatic OCCUPIER pass after the chain (runs the prepared job dir)
     "run_occupier": "false",
+    # CO2 reduction surface (chained stations CO2 -> CO2H -> CO2H2 -> CO+H2O)
+    # rs_charges: comma list of per-station charge deltas; empty = derived
+    #   (0, +1, +2, +2 — one protonation adds +1, the H2O leaves neutral).
+    # rs_run_xtb: xTB preopt after each station (empty = fall back to run_xtb)
+    # reduction_surface_ts: NEB-TS search between consecutive stations
+    # rs_ts_nimages: NEB image count for the NEB-TS searches
+    # rs_maxcore: per-core memory for the NEB-TS jobs (empty = 3800)
+    "reduction_surface": "false",
+    "rs_charges": "",
+    "rs_run_xtb": "",
+    "reduction_surface_ts": "false",
+    "rs_ts_nimages": "6",
+    "rs_maxcore": "",
 }
 
 # Fields that DELFIN's main CONTROL.txt may set and that should be
@@ -277,6 +290,10 @@ def _build_co2_control(
         ("# Adduct flow (automatic chain)", [
             "adduct_flow", "adduct_start_xyz", "coord_max_dist", "run_xtb",
             "run_occupier",
+        ]),
+        ("# CO2 Reduction Surface (chained stations + NEB-TS)", [
+            "reduction_surface", "rs_charges", "rs_run_xtb",
+            "reduction_surface_ts", "rs_ts_nimages", "rs_maxcore",
         ]),
         ("# Alignment (0-based indices)", ["metal", "metal_index", "align_bond_index", "neighbors"]),
         ("# CO2 placement", [

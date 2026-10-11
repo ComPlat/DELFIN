@@ -119,6 +119,8 @@ CO2 Coordination:
 ----------
 co2_coordination=off
 co2_species_delta=0
+co2_reduction_surface=off
+co2_reduction_surface_ts=off
 ------------------------------------------------------
 calc_prop_of_interest=no
 properties_of_interest=IP,EA
