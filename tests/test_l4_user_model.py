@@ -156,6 +156,10 @@ def test_first_person_habits_stay_storable(tmp_path):
         "I always run the suite locally",
         "I always commit after each change",
         "I like running tests with pytest",
+        # s23 round 6: a word may sit between the subject and the modal
+        # without turning the habit into a grant — "to" shares the subject.
+        "I prefer to always write my tests before the code",
+        "I like to always commit after each change",
     )
     for h in habits:
         assert not user_model.is_permission_like(h), (

@@ -146,13 +146,21 @@ def _is_structural_grant(tokens) -> bool:
     for i, w in enumerate(tokens):
         if w not in _FREQUENCY_MODALS:
             continue
-        # A first-person habit has the pronoun directly before the modal
-        # ("I always write"); a matrix clause does not ("prefer that
-        # always"). Any other preceding word means the subject is the
-        # agent or unnamed, so this is a grant.
-        if i > 0 and tokens[i - 1] in _FIRST_PERSON:
-            continue  # first-person habit — not a grant
-        return True
+        # Verb-local first-person habit: a first-person pronoun somewhere
+        # before the modal exempts ONLY when the run from it to the modal
+        # carries no complementizer "that". "I prefer to always write"
+        # (i..to..always, no that) is a shared-subject habit; "I prefer
+        # that always push" (i..that..always) has "that" introducing a
+        # fresh agent-directed clause, so the embedded imperative is a
+        # grant. No preceding first-person at all => unnamed/agent grant.
+        j = i - 1
+        while j >= 0 and tokens[j] not in _FIRST_PERSON:
+            j -= 1
+        if j < 0:
+            return True  # no first-person subject in this message - a grant
+        if "that" in tokens[j:i]:
+            return True  # complementizer opens an agent clause - a grant
+        return False  # first-person habit sharing the subject - not a grant
     return False
 
 
