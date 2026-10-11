@@ -255,6 +255,7 @@ def test_rendering_leaves_the_process_backend_alone(tmp_path):
     which switches a dashboard kernel's inline backend off."""
     import subprocess
     import sys
+    from conftest import child_env
     code = (
         "import matplotlib; matplotlib.use('svg');"
         "import matplotlib as m; salt = m.rcParams['svg.hashsalt'];"
@@ -265,5 +266,5 @@ def test_rendering_leaves_the_process_backend_alone(tmp_path):
         "import sys; assert 'matplotlib.pyplot' not in sys.modules"
     )
     r = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                       text=True, timeout=120)
+                       text=True, timeout=120, env=child_env(tmp_path))
     assert r.returncode == 0, r.stderr[-2000:]
