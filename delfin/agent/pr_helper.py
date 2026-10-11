@@ -53,7 +53,8 @@ def _default_task_loader(workspace: str) -> list[TaskRecord]:
     return store.list(include_deleted=False)
 
 
-def _default_git_log(base: str, head: str) -> list[CommitRecord]:
+def _default_git_log(base: str, head: str,
+                     cwd: "str | None" = None) -> list[CommitRecord]:
     """``git log base..HEAD`` with subject and body, via subprocess.
 
     Never used by the tests (they inject a fake runner); kept a thin shell
@@ -63,9 +64,14 @@ def _default_git_log(base: str, head: str) -> list[CommitRecord]:
 
     sep = "\x1e"  # record separator, practically absent from commit text
     fmt = f"%h%x1f%s%x1f%b%{sep}"
+    # A ref is never an option: ``git log --output=<file>`` writes a file,
+    # so a name that starts with a dash is not handed to git at all.
+    if str(base).startswith("-") or str(head).startswith("-"):
+        return []
     proc = subprocess.run(
-        ["git", "log", f"--format={fmt}", f"{base}..{head}"],
-        capture_output=True, text=True, check=False,
+        ["git", "log", f"--format={fmt}", "--end-of-options",
+         f"{base}..{head}"],
+        capture_output=True, text=True, check=False, cwd=cwd,
     )
     commits: list[CommitRecord] = []
     for line in proc.stdout.split(sep):
@@ -169,7 +175,9 @@ def body(
     or a token.
     """
     load_tasks = task_loader or _default_task_loader
-    run_log = git_log or _default_git_log
+    # The commits of THIS workspace, not of wherever the process stands.
+    run_log = git_log or (
+        lambda b, h: _default_git_log(b, h, cwd=str(workspace)))
     who = dict(identity or {})
 
     tasks = [dict(t) for t in (load_tasks(workspace) or [])]
