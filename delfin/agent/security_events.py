@@ -39,6 +39,7 @@ from typing import Deque, Optional
 # fails when a new kind is recorded without a label.
 _KINDS = {
     "deny_pattern":   ("⛔", "Denied command"),
+    "unsafe_install": ("⛔", "Install outside the session venv"),
     "secret_path":    ("🔑", "Secret-path access blocked"),
     "script_payload": ("📜", "Script payload blocked"),
     "self_mod":       ("🛡", "Self-modification guarded"),

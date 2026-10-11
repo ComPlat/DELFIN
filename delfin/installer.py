@@ -27,6 +27,7 @@ installer can read the list with any Python before DELFIN's venv exists::
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -35,7 +36,12 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 #: In the order they are installed and listed.
-GROUPS: Tuple[str, ...] = ("qm", "analysis", "mlp", "csp", "ai", "ketcher")
+GROUPS: Tuple[str, ...] = ("qm", "analysis", "mlp", "csp", "ai", "py", "ketcher")
+
+#: What the test gate needs to run the suite, by module name. Kept in one
+#: tuple so the catalog tool's presence check and its install command name
+#: the same packages and never drift apart.
+TEST_GATE_MODULES: Tuple[str, ...] = ("pytest", "pytest_timeout")
 
 PROFILES: Tuple[str, ...] = ("core", "standard", "all")
 
@@ -124,6 +130,12 @@ TOOLS: Tuple[Tool, ...] = (
     Tool("epic_mace", "ai", "epic-MACE", switch="INSTALL_EPIC_MACE", modules=("mace",),
          aliases=("epic-mace",), own_env="mace"),
     Tool("plotly", "ai", "plotly", switch="INSTALL_PLOTLY", modules=("plotly",)),
+    # Python packages DELFIN needs to do its own work, installed with pip
+    # into the session venv -- never --user / ~/.local. A missing pytest
+    # was installed with ``pip install --user`` in a field session; being
+    # in this group is what makes it offered as a proposal instead.
+    Tool("pytest", "py", "pytest", modules=TEST_GATE_MODULES,
+         size="small; it runs every DELFIN test"),
     # The structure editor, fetched into DELFIN's published directory.
     Tool("ketcher", "ketcher", "Ketcher"),
 )
@@ -153,7 +165,7 @@ def profile(which: str) -> List[str]:
         return []
     if which == "standard":
         return [tool.name for tool in TOOLS
-                if not tool.licensed and tool.group in ("qm", "analysis", "ketcher")]
+                if not tool.licensed and tool.group in ("qm", "analysis", "py", "ketcher")]
     if which == "all":
         return [tool.name for tool in TOOLS if not tool.licensed]
     raise KeyError(f"unknown profile: {which} (one of {', '.join(PROFILES)})")
@@ -352,6 +364,41 @@ def _install_ketcher(on_line, force: bool, timeout: Optional[float]) -> Tuple[bo
     return bool(result.get("ok")), lines
 
 
+def _install_python_tools(tools: List[Tool], *, on_line=None,
+                          timeout: Optional[float] = None) -> Tuple[bool, List[str]]:
+    """Install ``py``-group tools with pip, into the session venv only.
+
+    These are Python packages DELFIN needs to do its own work. The argv is
+    :func:`python_tools_install_argv`, of which the command a proposal shows
+    is the quoted form, so the shown and the run install are the same --
+    the same no-``--user``, session-venv rule holds for both.
+    """
+    lines: List[str] = []
+
+    def say(text: str) -> None:
+        lines.append(text)
+        if on_line is not None:
+            try:
+                on_line(text)
+            except Exception:
+                pass
+
+    ok = True
+    for tool in tools:
+        argv = python_tools_install_argv(tool)
+        if not argv:
+            say(f"{tool.name}: no install command (not a py-group tool?)")
+            ok = False
+            continue
+        say(f"installing {tool.name}")
+        done = subprocess.run(argv, capture_output=True,
+                              text=True, timeout=timeout or 1800.0)
+        if done.returncode != 0:
+            ok = False
+            say((done.stderr or done.stdout or "pip failed").strip()[:400])
+    return ok, lines
+
+
 #: What makes each family's installer update rather than keep what is there --
 #: the same switches the update buttons in Settings have always used.
 _UPDATE_ENV: Dict[str, Dict[str, str]] = {
@@ -377,6 +424,8 @@ def install(requested: Iterable[str], *, on_line: Optional[Callable[[str], None]
     for group, tools in plan(requested).items():
         if group == "ketcher":
             ok, lines = _install_ketcher(on_line, force or update, timeout)
+        elif group == "py":
+            ok, lines = _install_python_tools(tools, on_line=on_line, timeout=timeout)
         else:
             group_env = dict(_UPDATE_ENV.get(group, {})) if update else {}
             group_env.update(env or {})
@@ -435,6 +484,89 @@ def _own_env_has(tool: Tool, python: str) -> bool:
 def _probe_name(tool: Tool) -> str:
     """The name qm_health checks a program under."""
     return "gnrs" if tool.name == "genarris" else tool.name
+
+
+def session_python() -> str:
+    """The interpreter DELFIN may install into: the venv this process runs
+    inside, or ``sys.executable`` when there is no venv.
+
+    This is the ONLY target a python install is offered against -- the
+    session venv, never the user's home (no ``--user``, no ``~/.local``).
+    Deliberately a plain determinant, cheap to call and easy to test.
+    """
+    if hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix:
+        # We are inside a venv; its interpreter is the one that imports
+        # what is installed, so that is what pip must run under.
+        return str(Path(sys.prefix) / ("bin" if os.name != "nt" else "Scripts")
+                   / ("python.exe" if os.name == "nt" else "python"))
+    return sys.executable
+
+
+def _plain_interpreter(value: str) -> Optional[str]:
+    """``value`` as a bare interpreter path, or None if it is not one.
+
+    The only thing this function lets through is a plain executable path:
+    the session venv's Python. Anything that could smuggle a pip flag in
+    with the interpreter -- a ``--user``, a ``--target``, a ``-m``, a
+    whitespace-separated extra argument -- is refused so that the command
+    builder below can never emit an install outside the session venv, no
+    matter what an override passes in.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+    if " " in value or "\t" in value:          # anything but one word
+        return None
+    if value.startswith("-"):                  # a flag, not a path
+        return None
+    return value
+
+
+def python_tools_install_command(tool: Tool, *, python: str = "") -> str:
+    """The exact command that puts *tool* into the session venv.
+
+    ``tool`` is a ``py``-group tool (a Python package DELFIN needs). The
+    command is pinned to the session venv's interpreter and names the
+    tool's modules as packages, with no ``--user`` and no ``--target``:
+    either would move the install outside the only place it is offered
+    into.
+
+    ``python`` is only ever a bare interpreter path for testing; anything
+    that is not one is refused and the session venv stands in, so an
+    override can never become a way around the no-``--user``/no-``--target``
+    rule.
+
+    Pure: no interpreter is run to build the string.
+    """
+    return " ".join(shlex.quote(a)
+                    for a in python_tools_install_argv(tool, python=python))
+
+
+def python_tools_install_argv(tool: Tool, *, python: str = "") -> List[str]:
+    """:func:`python_tools_install_command` as an argv list, [] if none.
+
+    What :func:`_install_python_tools` runs. Kept as a list so an
+    interpreter path with a space stays one argument; the string form
+    quotes it, which the bash gate reads back to the same path.
+    """
+    if not tool or tool.group != "py":
+        return []
+    packages = [_pip_package(m) for m in (tool.modules or ())]
+    if not packages:
+        return []
+    py = _plain_interpreter(python) or session_python()
+    return [py, "-m", "pip", "install", *packages]
+
+
+def _pip_package(module: str) -> str:
+    """The pip distribution name for an installed module name.
+
+    pytest's dist name equals its module name; the test gate's time-out
+    plugin ships as ``pytest-timeout`` while importing as
+    ``pytest_timeout``. Only the pair the catalog declares matters, so a
+    tiny map keeps them in one place.
+    """
+    return "pytest-timeout" if module == "pytest_timeout" else module
 
 
 def present(tool: Tool) -> bool:
