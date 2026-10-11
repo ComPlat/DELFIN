@@ -3425,7 +3425,8 @@ def _xyz_frame_count(text: str) -> int:
     return frames
 
 
-def _mol3d_card_html(path, name_html: str) -> str | None:
+def _mol3d_card_html(path, name_html: str,
+                     isovalue: float | None = None) -> str | None:
     """An interactive 3D card for a structure, trajectory or orbital.
 
     Input: a path and its escaped display name. Output: HTML for the
@@ -3460,7 +3461,7 @@ def _mol3d_card_html(path, name_html: str) -> str | None:
     except Exception:
         pass                       # settings unreadable: draw it anyway
 
-    payload = _mol3d_payload(path)
+    payload = _mol3d_payload(path, isovalue)
     if payload is None:
         return None
 
@@ -3473,6 +3474,7 @@ def _mol3d_card_html(path, name_html: str) -> str | None:
         f'<div class="delfin-artifact delfin-chat-mol3d" '
         f'data-mol3d-fmt="{payload["fmt"]}" '
         f'data-mol3d-frames="{payload["frames"]}" '
+        f'data-mol3d-iso="{payload["iso"]:g}" '
         f'data-mol3d="{_html.escape(payload["text"], quote=True)}" '
         f'style="margin:6px 0;padding:6px;border:1px solid #e5e7eb;'
         f'border-radius:6px;background:#fff;">'
@@ -3490,12 +3492,14 @@ def _mol3d_card_html(path, name_html: str) -> str | None:
     )
 
 
-def _mol3d_payload(path) -> dict | None:
+def _mol3d_payload(path, isovalue: float | None = None) -> dict | None:
     """What a 3D card would show for this file, or None for no card.
 
-    Input: a path. Output: ``{"fmt", "text", "frames", "label"}`` where
-    *fmt* is what 3Dmol is told the data is ("xyz", "cube", "pdb") and
-    *frames* > 1 means a trajectory to animate.
+    Input: a path, and the cube isosurface magnitude (None or not a
+    positive finite number: 0.02). Output: ``{"fmt", "text", "frames",
+    "label", "iso"}`` where *fmt* is what 3Dmol is told the data is
+    ("xyz", "cube", "pdb"), *frames* > 1 means a trajectory to animate,
+    and *iso* is the level both isosurface signs are drawn at.
 
     Pure, and separate from the HTML, because the decisions worth
     testing are here: which formats get a viewer, when a file is too
@@ -3534,9 +3538,50 @@ def _mol3d_payload(path) -> dict | None:
             n_atoms, formula = summary
             label = (f"{n_atoms} atoms · {formula}" if frames == 1
                      else f"{n_atoms} atoms · {frames} frames · {formula}")
-    elif fmt == "cube":
-        label = "volumetric data · two isosurfaces at ±0.02"
-    return {"fmt": fmt, "text": text, "frames": frames, "label": label}
+    iso = 0.02
+    if (isinstance(isovalue, (int, float)) and not isinstance(isovalue, bool)
+            and 0 < abs(isovalue) < float("inf")):
+        iso = abs(float(isovalue))
+    if fmt == "cube":
+        label = f"volumetric data · two isosurfaces at ±{iso:g}"
+    return {"fmt": fmt, "text": text, "frames": frames, "label": label,
+            "iso": iso}
+
+
+def _show_molecule_card_html(tool_output) -> str | None:
+    """The chat card for a ``show_molecule`` result, or None.
+
+    Input: the tool's result string. Output: the chat's 3D card for the
+    resolved path the executor admitted (``_mol3d_card_html``), or, when
+    that card is not drawn (viewers switched off in the settings, more
+    frames than the card animates), a text card saying so with the
+    summary line. None when the result is not a valid card payload (an
+    error), so the caller escapes it like any tool output.
+
+    Nothing from the result reaches the page unescaped: the path is read
+    again here, the title and summary are HTML-escaped.
+    """
+    from delfin.dashboard import chat_viewer
+
+    payload = chat_viewer.card_payload(tool_output)
+    if payload is None:
+        return None
+    name_html = _html.escape(payload["title"])
+    card = _mol3d_card_html(Path(payload["path"]), name_html,
+                            isovalue=payload.get("isovalue"))
+    if card is not None:
+        return card
+    return (
+        '<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+        'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+        '<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+        f'\u269b\ufe0f <code>{name_html}</code> '
+        '<span style="color:#9ca3af;">(no 3D view: viewers are switched '
+        'off, or the file has too many frames)</span></div>'
+        '<div style="font-size:12px;color:#1f2937;font-family:monospace;'
+        f'white-space:pre-wrap;overflow-wrap:anywhere;">'
+        f'{_html.escape(payload["text"])}</div></div>'
+    )
 
 
 def _render_xyz_summary(path) -> tuple[int, str] | None:
@@ -7044,6 +7089,8 @@ def create_tab(ctx):
             var data = card.getAttribute('data-mol3d') || '';
             var fmt = card.getAttribute('data-mol3d-fmt') || 'xyz';
             var frames = parseInt(card.getAttribute('data-mol3d-frames') || '1', 10);
+            var iso = parseFloat(card.getAttribute('data-mol3d-iso') || '0.02');
+            if (!(iso > 0)) iso = 0.02;
             if (!data) return true;
             var viewer = $3Dmol.createViewer(stage, {backgroundColor: 'white'});
             if (fmt === 'cube') {
@@ -7052,9 +7099,9 @@ def create_tab(ctx):
                 // The same two isosurfaces the Calculations tab draws, so
                 // an orbital looks the same wherever it is opened.
                 viewer.addVolumetricData(data, 'cube',
-                    {isoval: 0.02, color: '#0026ff', opacity: 0.85});
+                    {isoval: iso, color: '#0026ff', opacity: 0.85});
                 viewer.addVolumetricData(data, 'cube',
-                    {isoval: -0.02, color: '#b00010', opacity: 0.85});
+                    {isoval: -iso, color: '#b00010', opacity: 0.85});
             } else if (frames > 1) {
                 viewer.addModelsAsFrames(data, fmt);
                 viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
@@ -18467,6 +18514,7 @@ def create_tab(ctx):
 
                 def _on_tool_result(tool_name, tool_output):
                     """Append tool result as collapsible detail to the last tool message."""
+                    _raw_name = tool_name
                     _bare = tool_name
                     if _bare and _bare.startswith("mcp__"):
                         _parts = _bare.split("__")
@@ -18518,6 +18566,17 @@ def create_tab(ctx):
                     output = tool_output
                     _MAX_LINES = 8
                     _MAX_CHARS = 600
+                    # show_molecule: the card is drawn here from the
+                    # result's resolved path; an error or any other tool's
+                    # output falls through and is escaped below. The OpenAI
+                    # loop reports its own tools as mcp__delfin-docs__<name>;
+                    # a tool of a configured MCP server is not this one.
+                    if tool_name == "show_molecule" and _raw_name in (
+                            "show_molecule", "mcp__delfin-docs__show_molecule"):
+                        _card = _show_molecule_card_html(tool_output)
+                        if _card is not None:
+                            _append_tool_message(_card)
+                            return
                     if tool_name in ("subagent", "subagent_result", "orchestrate"):
                         output = _subagent_report_text(tool_output)
                         _MAX_LINES = 2000
