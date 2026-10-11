@@ -107,14 +107,22 @@ def compact(
     protected_pairs = rounds[-int(keep_last_rounds):] if keep_last_rounds else []
     last_pair = rounds[-1] if rounds else None
     chars = _tool_chars(messages)
-    doomed: list[tuple[int, int]] = []
+    # Rounds are cut per assistant message: one message with parallel
+    # tool calls is several pairs sharing its index, and dropping it while
+    # one of its results stays leaves an orphaned tool row (API 400). The
+    # group holding the last pair is never cut.
+    groups: dict[int, list[tuple[int, int]]] = {}
     for pair in rounds:
+        groups.setdefault(pair[0], []).append(pair)
+    doomed: list[tuple[int, int]] = []
+    for call_idx in sorted(groups):
         if chars <= int(budget_chars):
             break
-        if pair == last_pair:
+        if last_pair is not None and call_idx == last_pair[0]:
             break
-        doomed.append(pair)
-        chars -= len(str(messages[pair[1]].get("content", "")))
+        for pair in groups[call_idx]:
+            doomed.append(pair)
+            chars -= len(str(messages[pair[1]].get("content", "")))
     del protected_pairs
 
     if not doomed:
