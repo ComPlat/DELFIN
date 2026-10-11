@@ -77,6 +77,30 @@ def test_plain_read_bash_is_not_classified():
     assert not runner.called
 
 
+def test_sed_inplace_is_not_a_plain_read():
+    # sed -i writes back to the file with NO redirect operator — it must reach
+    # the classifier (state change), not ride the plain-read floor.
+    for cmd in ("sed -i 's/a/b/' f", "sed -i.bak 's/a/b/' f", "sed --in-place 's/a/b/' f"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is False, cmd
+
+
+def test_stream_sed_without_inplace_is_a_plain_read():
+    # sed with only a script (no -i) reads stdin/stream and never writes back.
+    for cmd in ("sed 's/a/b/' f", "sed -n '1,5p' f"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is True, cmd
+
+
+def test_python_and_pytest_are_not_plain_reads():
+    # Running code is a state change even with no redirect: python run_me.py
+    # writes by running. Neither may ride the plain-read floor.
+    for cmd in ("python run_me.py", "pytest tests/test_x.py", "python -c 'print(1)'"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is False, cmd
+
+
+
 def test_non_read_action_reaches_the_model():
     runner = _FakeRunner("DECISION: allow")
     act = _action(kind="bash", tool="bash", command="git push origin main")

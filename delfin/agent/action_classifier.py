@@ -72,14 +72,26 @@ _READ_GIT_SUBS = {
 }
 
 # Leading tokens that are reads unless a write operator or non-read git
-# sub-command follows.
+# sub-command follows. python/pytest/awk are deliberately ABSENT: they run
+# code, and a state change can happen with no redirect operator (`python
+# run_me.py` writes by running). sed is special-cased below (read-only unless
+# -i/--in-place). jq reads JSON and only writes through a redirect (caught).
 _READ_BASH_TOKENS = ("ls", "git", "grep", "cat", "head", "tail", "wc",
                      "sed", "find", "echo", "which", "file", "stat", "du",
-                     "awk", "pytest", "python", "jq")
+                     "jq")
 
 # A shell operator that can write a file, run a program, or change state —
 # the moment one of these appears, a command is not a plain read.
 _WRITE_OPERATORS = (">", ">>", ">|", ";", "&&", "||", "|", "<", "<<")
+
+
+def _sed_is_inplace(command: str) -> bool:
+    """True when a sed command writes back to the file in place (-i / --in-place),
+    with or without a suffix (``-i.bak``). In-place is a state change with NO
+    redirect operator, so it must not count as a plain read."""
+    toks = (command or "").strip().split()
+    return any(t == "-i" or t.startswith("-i") or t.startswith("--in-place")
+               for t in toks)
 
 
 def _bash_has_write_operator(command: str) -> bool:
@@ -104,6 +116,10 @@ def _bash_is_plain_read(command: str) -> bool:
     if first == "git":
         rest = cmd.split()
         return (len(rest) >= 2) and (rest[1] in _READ_GIT_SUBS)
+    if first == "sed":
+        # sed writes back to the file with -i/--in-place, which has no redirect
+        # operator — a state change that must not count as a plain read.
+        return not _sed_is_inplace(cmd)
     return first in _READ_BASH_TOKENS
 
 
