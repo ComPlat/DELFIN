@@ -15713,16 +15713,20 @@ class _DocToolExecutor:
             if denied:
                 _record_security_event("deny_pattern", "bash",
                                        f"{cmd[:80]} → {denied}")
-                _suggestion = ""
-                try:
-                    from . import refusal_hints as _refusal_hints
-                    _suggestion = _refusal_hints.suggest(cmd, denied)
-                except Exception:
-                    _suggestion = ""
+                # One answer per refusal: the route table first; the
+                # pattern-keyed note only where the table is silent, and
+                # only if no command it names is denied again.
                 _hint = _denied_command_hint(denied)
-                if _suggestion:
-                    _hint = (_hint + " " + _suggestion if _hint
-                             else " " + _suggestion)
+                if not _hint:
+                    try:
+                        from . import refusal_hints as _refusal_hints
+                        _note = _refusal_hints.suggest(cmd, denied)
+                    except Exception:
+                        _note = ""
+                    if _note and not any(
+                            perms.matches_bash_deny(_prose_blanked(c))
+                            for c in re.findall(r"`([^`]+)`", _note)):
+                        _hint = " " + _note
                 return (f"command rejected by deny-pattern {denied!r}: "
                         f"refusing to run.{_hint}")
             # Installs outside the session venv (pip --user/--target/
