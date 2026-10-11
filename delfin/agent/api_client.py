@@ -11301,38 +11301,45 @@ def _append_pending_jobs_to_summary(api_messages: list,
 
     Input: the request rows (changed in place) and a one-line note, ""
     when nothing is pending. A summary is a row whose content starts with
-    ``in_turn_compaction._SUMMARY_HEADER``; compaction never drops one, so
-    a turn compacted N times holds N summaries. Output: the newest summary
-    ends in ``"\\n\\n" + note``; every older summary loses its note. The
-    request therefore carries one note, the one read at the latest
-    compaction, and a job that ended between two compactions is not named
-    as running. No summary row: nothing changes. Never raises.
+    ``in_turn_compaction._SUMMARY_HEADER``: the one this turn's compaction
+    built (an ``in_turn_compaction.SummaryRow``; each compaction folds the
+    earlier one into it) and those earlier turns left in the history.
+    Output: the newest summary -- the last ``SummaryRow``, else the last
+    header row -- ends in ``"\\n\\n" + note``; every other header row
+    loses its note. The request therefore carries one note, the one read
+    at the latest compaction, and a job that ended between two
+    compactions is not named as running. A user row after the summary
+    that merely starts with the header does not receive the note. No
+    summary row: nothing changes. Never raises.
 
-    Cost: removing an older note rewrites that summary, so the prefix
-    cache ends there instead of at the newest summary. The newest summary
-    is spliced in where the oldest dropped round stood, directly after the
-    previous summary, so the extra uncached text is that one summary.
+    Cost: removing an earlier turn's note rewrites that history row, so
+    the prefix cache ends there; this happens once, on the first
+    compaction of the turn after the one that wrote the note.
     """
     try:
         header = "[Conversation summary"
+        is_summary = None
         try:
             from . import in_turn_compaction as _itc
             header = _itc._SUMMARY_HEADER
+            is_summary = _itc.is_summary_row
         except Exception:
             pass
         mark = "\n\n" + _PENDING_JOBS_MARK
-        newest = None
-        for i, m in enumerate(api_messages):
-            c = (m or {}).get("content")
-            if isinstance(c, str) and c.startswith(header):
-                if newest is not None:
-                    prev = api_messages[newest]["content"]
-                    cut = prev.find(mark)
-                    if cut >= 0:
-                        api_messages[newest]["content"] = prev[:cut]
-                newest = i
+        rows = [i for i, m in enumerate(api_messages)
+                if isinstance((m or {}).get("content"), str)
+                and m["content"].startswith(header)]
+        own = [i for i in rows if is_summary and is_summary(api_messages[i])]
+        newest = own[-1] if own else (rows[-1] if rows else None)
         if newest is None:
             return
+        for i in rows:
+            if i == newest:
+                continue
+            prev = api_messages[i]["content"]
+            cut = prev.find(mark)
+            if cut >= 0:
+                api_messages[i]["content"] = prev[:cut]
         c = api_messages[newest]["content"]
         cut = c.find(mark)
         if cut >= 0:
