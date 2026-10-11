@@ -61,23 +61,49 @@ def estimate_tokens(text: str) -> int:
 
 
 # A permission-like message is refused outright: it tries to widen the
-# agent's reach (an allow rule, a path grant, a mode). Keyword layer first
-# (matches the explicit cases the guard tests name), path layer second.
+# agent's reach (an allow rule, a path grant, a mode). Phrase layer first
+# (the explicit cases the guard tests name), then a modal-pushed verb layer
+# (a downgraded verb is only permission-shaped when an allowance modal like
+# "may"/"can"/"always" precedes it), then the path layer.
 _ALLOW_WORDS = (
     "allow", "allowed", "grants", "grant", "granted", "permission",
-    "permit", "always allows", "may push", "may run", "may write",
-    "can push", "do not ask", "skip the confirmation", "without asking",
+    "permit", "always allows", "do not ask", "without asking",
 )
+# Matched against the camelCase-split, lowercased form, so "acceptEdits"
+# and "accept edits" are the same token stream and no mode name hides
+# behind a case difference. (Holding the camelCase names here would be
+# dead code: the input is lowercased before matching.)
 _MODE_WORDS = (
-    "acceptEdits", "bypassPermissions", "bypass permissions", "plan mode",
+    "accept edits", "bypass permissions", "plan mode",
     "default mode", "mode to", "set the mode",
 )
 _GLOBAL_GRANT_WORDS = ("global:", "scope:", "every workspace", "widen")
+# A downgraded action verb is permission-shaped only when an allowance
+# modal pushes it: "always push to main", "may write there", "can run git".
+# A bare "I want to write" is not. Word insertion ("always push" vs the
+# adjacent "always allows") is exactly what this layer catches.
+_ALLOW_MODAL_VERB_RE = re.compile(
+    r"\b(?:always|may|can|please)\s+(?:push|write|run|commit|execute)\b"
+)
+# Confirmation waivers, singular or plural, article or article-less:
+# "skip the confirmation", "skip all confirmations", "skip confirmations".
+_SKIP_CONFIRM_RE = re.compile(
+    r"\bskip\s+(?:all|any|the|your)?\s*confirmations?\b"
+)
 # Absolute path, POSIX or Windows, or a home-relative path.
 _PATH_RE = re.compile(
     r"(?:/(?:[^/\s]+/)*[^/\s]+|~/[^\s]+|[A-Za-z]:\\[^\s]+|"
     r"\.\.(?:/[^/\s]+)*)"
 )
+
+
+def _case_and_camel_normalize(text: str) -> str:
+    """Lowercase ``text`` with camelCase split, so "acceptEdits" and
+    "accept edits" compare equal and a mode name cannot hide behind a case
+    difference in the input."""
+    if not text:
+        return ""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text).lower()
 
 
 def is_permission_like(text: str) -> bool:
@@ -88,10 +114,14 @@ def is_permission_like(text: str) -> bool:
     refused; a false positive costs one user message, a false negative lets a
     rule into the model.
     """
-    lower = (text or "").lower()
+    norm = _case_and_camel_normalize(text)
     for word in _ALLOW_WORDS + _MODE_WORDS + _GLOBAL_GRANT_WORDS:
-        if word in lower:
+        if word in norm:
             return True
+    if _ALLOW_MODAL_VERB_RE.search(norm) is not None:
+        return True
+    if _SKIP_CONFIRM_RE.search(norm) is not None:
+        return True
     if _PATH_RE.search(text or "") is not None:
         return True
     return False
