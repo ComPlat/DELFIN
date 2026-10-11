@@ -11283,6 +11283,105 @@ def _compact_between_rounds(api_messages: list, budget_chars: int,
     return _note or ""
 
 
+_PENDING_JOBS_MARK = "\u2699 STILL PENDING"
+# At most this many job ids on the note; the rest are counted. 12 ids of
+# <= 80 chars keep the line under ~1.1 kB however long the watch list is.
+_PENDING_JOBS_MAX = 12
+# The watch file is read only up to this size; a larger one gives no note.
+_PENDING_WATCH_MAX_BYTES = 1 << 20
+# Ids as job_monitor issues them: SLURM (digits, array suffixes) and
+# bash_jobs (hex); CI ids are matched with job_monitor._CI_ID_RE.
+_PENDING_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,40}$")
+
+
+def _append_pending_jobs_to_summary(api_messages: list,
+                                    pending_jobs_note: str) -> None:
+    """Put ``pending_jobs_note`` on the newest compaction summary and take
+    any earlier note off the older ones.
+
+    Input: the request rows (changed in place) and a one-line note, ""
+    when nothing is pending. A summary is a row whose content starts with
+    ``in_turn_compaction._SUMMARY_HEADER``; compaction never drops one, so
+    a turn compacted N times holds N summaries. Output: the newest summary
+    ends in ``"\\n\\n" + note``; every older summary loses its note. The
+    request therefore carries one note, the one read at the latest
+    compaction, and a job that ended between two compactions is not named
+    as running. No summary row: nothing changes. Never raises.
+
+    Cost: removing an older note rewrites that summary, so the prefix
+    cache ends there instead of at the newest summary. The newest summary
+    is spliced in where the oldest dropped round stood, directly after the
+    previous summary, so the extra uncached text is that one summary.
+    """
+    try:
+        header = "[Conversation summary"
+        try:
+            from . import in_turn_compaction as _itc
+            header = _itc._SUMMARY_HEADER
+        except Exception:
+            pass
+        mark = "\n\n" + _PENDING_JOBS_MARK
+        newest = None
+        for i, m in enumerate(api_messages):
+            c = (m or {}).get("content")
+            if isinstance(c, str) and c.startswith(header):
+                if newest is not None:
+                    prev = api_messages[newest]["content"]
+                    cut = prev.find(mark)
+                    if cut >= 0:
+                        api_messages[newest]["content"] = prev[:cut]
+                newest = i
+        if newest is None:
+            return
+        c = api_messages[newest]["content"]
+        cut = c.find(mark)
+        if cut >= 0:
+            c = c[:cut]
+        if pending_jobs_note:
+            c = c + "\n\n" + pending_jobs_note
+        if c != api_messages[newest]["content"]:
+            api_messages[newest]["content"] = c
+    except Exception:
+        pass
+
+
+def _read_watch_jobs(path) -> dict:
+    """The ``jobs`` mapping of a job_monitor watch file, or {}.
+
+    Opened ``O_NONBLOCK | O_NOFOLLOW`` and read only when it is a regular
+    file of at most ``_PENDING_WATCH_MAX_BYTES``: a FIFO, a symlink, a
+    larger file, malformed JSON or a non-mapping ``jobs`` gives {}. The
+    workspace is writable by the model, so the read is bounded in time
+    and size. Never raises."""
+    import stat as _stat
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(
+            os, "O_NOFOLLOW", 0)
+        fd = os.open(str(path), flags)
+    except Exception:
+        return {}
+    try:
+        st = os.fstat(fd)
+        if (not _stat.S_ISREG(st.st_mode)
+                or st.st_size > _PENDING_WATCH_MAX_BYTES):
+            return {}
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            raw = fh.read(_PENDING_WATCH_MAX_BYTES + 1)
+        if len(raw) > _PENDING_WATCH_MAX_BYTES:
+            return {}
+        jobs = json.loads(raw.decode("utf-8")).get("jobs")
+        return jobs if isinstance(jobs, dict) else {}
+    except Exception:
+        return {}
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def _elide_old_tool_results(
     api_messages: list[dict],
     *,
@@ -22296,6 +22395,80 @@ class OpenAIClient(_BaseClient):
         except Exception:
             return False
 
+    def _pending_jobs_note(self) -> str:
+        """One line naming this session's watched jobs that have not ended.
+
+        Input: ``<workspace>/.delfin/agent_watched_jobs.json``, the
+        per-workspace watch list of job_monitor, read through
+        ``_read_watch_jobs`` and only by the round loop right after a
+        compaction. An entry of another session is skipped; with no
+        session id every entry counts, as in engine.py's turn-start
+        ``check_agent_jobs``. An entry has ended when its ``last_state`` is
+        terminal or a reader marked it reported (``daemon_notified``,
+        ``wake_notified``); a bash entry counts only while the bash_jobs
+        registry reports its process running. A background shell that was
+        never passed to ``watch_job`` is not on the list.
+
+        The line goes into the model's context, so an id is listed only
+        when it has the shape job_monitor issues (``_PENDING_JOB_ID_RE``,
+        or ``_CI_ID_RE`` for a CI id) and is left out otherwise, never
+        rewritten; the kind is one of slurm/bash/ci, derived from the id
+        when the entry names anything else. At most ``_PENDING_JOBS_MAX``
+        ids, then a count. Output: the note, or "" when nothing qualifies
+        or anything fails.
+        """
+        try:
+            from . import job_monitor as _jm
+            ws = getattr(self._permissions, "workspace", None)
+            if not ws:
+                return ""
+            jobs = _read_watch_jobs(_jm._agent_watch_path(ws))
+            if not jobs:
+                return ""
+            sid = str(getattr(self._permissions, "task_session_id", "") or "")
+            ended = _jm._OK_TERMINAL_STATES | _jm._FAILURE_STATES
+            from . import bash_jobs as _bj
+            out: list[str] = []
+            for jid, entry in jobs.items():
+                if not isinstance(entry, dict):
+                    continue
+                jid = str(jid)
+                if sid and str(entry.get("session_id") or "") != sid:
+                    continue
+                if (str(entry.get("last_state") or "") in ended
+                        or entry.get("daemon_notified")
+                        or entry.get("wake_notified")):
+                    continue
+                if jid.startswith("ci:"):
+                    if not _jm._CI_ID_RE.match(jid):
+                        continue
+                    kind = "ci"
+                elif _PENDING_JOB_ID_RE.match(jid):
+                    kind = str(entry.get("kind") or "")
+                    if kind not in ("slurm", "bash"):
+                        kind = "slurm" if jid.isdigit() else "bash"
+                else:
+                    continue
+                if kind == "bash":
+                    try:
+                        job = _bj.get_registry().get(jid, ws)
+                    except Exception:
+                        job = None
+                    if job is None or job.poll() is not None:
+                        continue
+                out.append(f"{kind} job {jid}")
+            if not out:
+                return ""
+            out.sort()
+            listed = ", ".join(out[:_PENDING_JOBS_MAX])
+            if len(out) > _PENDING_JOBS_MAX:
+                listed += f" and {len(out) - _PENDING_JOBS_MAX} more"
+            return (f"{_PENDING_JOBS_MARK} at this compaction (not ended): "
+                    f"{listed}. bash_output reads a bash job; a watched "
+                    "job's result is reported in a later turn.")
+        except Exception:
+            return ""
+
     def _attach_subagent_runner(
         self, permissions: Optional["KitToolPermissions"],
     ) -> None:
@@ -23106,6 +23279,11 @@ class OpenAIClient(_BaseClient):
                 planning_window=(_planning_window_for_turn(self, _caps)),
                 schema_chars=_schema_chars)
             if _in_turn_note:
+                # The notice below reaches the user and nothing else. What is
+                # still running goes into the summary message, which the
+                # model does read (U11 phase 3: nothing forgotten).
+                _append_pending_jobs_to_summary(
+                    api_messages, self._pending_jobs_note())
                 yield StreamEvent(type="notice", text=_in_turn_note)
             # Output backstop: stop cleanly if this turn's total generated
             # tokens crossed the (very high) per-turn ceiling. Text emitted so
