@@ -2788,6 +2788,21 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"worktree\s+list|"
     r"shortlog|reflog|fetch|pull(?!\s+--rebase\s+--force)|"
     r"switch(?![^;|&]*--discard-changes)|"
+    # Read-only plumbing from _GIT_READ_ONLY_SUBCOMMANDS (api_client.py:1034)
+    # that a session uses to orient itself in the tree (where two branches
+    # diverged, what a commit's parents are), absent from the alternation, so
+    # an all-read compound (git log --oneline main -1; echo ---;
+    # git merge-base HEAD X) went to the confirm gate for one read-only part.
+    # Allow-list only; write forms (merge, checkout, add, --output, -c) stay
+    # behind the write gates. Each is classified read-only by _git_reads_only.
+    r"merge-base|rev-list|for-each-ref|name-rev|count-objects|check-ignore|"
+    # grep -O/--open-files-in-pager runs a program of the caller's choice
+    # on the matches, so that form stays behind the confirm gate. git
+    # bundles short options (-nO<prog>) and accepts any unique prefix of a
+    # long one (--open=<prog>), so the lookahead refuses an O anywhere in a
+    # short-option token and every --op... spelling, not one form of each.
+    r"cat-file|whatchanged|version|"
+    r"grep(?![^;|&]*(?:\s-[A-Za-z0-9]*O|\s--op))|"
     # NOTE: 'push' is deliberately NOT here. Pushing publishes to a remote — an
     # outward-facing, hard-to-undo action (it can hit a shared/protected branch
     # like main). Per this list's own policy ("Anything that pushes to remote …
@@ -15698,8 +15713,22 @@ class _DocToolExecutor:
             if denied:
                 _record_security_event("deny_pattern", "bash",
                                        f"{cmd[:80]} → {denied}")
+                # One answer per refusal: the route table first; the
+                # pattern-keyed note only where the table is silent, and
+                # only if no command it names is denied again.
+                _hint = _denied_command_hint(denied)
+                if not _hint:
+                    try:
+                        from . import refusal_hints as _refusal_hints
+                        _note = _refusal_hints.suggest(cmd, denied)
+                    except Exception:
+                        _note = ""
+                    if _note and not any(
+                            perms.matches_bash_deny(_prose_blanked(c))
+                            for c in re.findall(r"`([^`]+)`", _note)):
+                        _hint = " " + _note
                 return (f"command rejected by deny-pattern {denied!r}: "
-                        f"refusing to run.{_denied_command_hint(denied)}")
+                        f"refusing to run.{_hint}")
             # Installs outside the session venv (pip --user/--target/
             # --prefix and their spellings, another interpreter's pip,
             # pipx, conda base) are refused here, in the deny tier, so the
