@@ -221,8 +221,19 @@ def decide(token: str, event: dict) -> str | None:
     elif tool == "Bash":
         cmd = str(args.get("command") or "")
         err = _unjson(ex._gate_bash_read_paths(cmd, perms, cwd))
+        targets: list = []
         if err is None:
-            for target in ac._bash_write_targets(cmd):
+            # git apply / patch / checkout -- / restore name their files
+            # in the patch or the pathspec, not as a redirection: the same
+            # reader the executor's bash gate uses, and the same refusal
+            # for a patch that cannot be read from the text.
+            patch_paths, patch_err = ex._patch_write_targets(cmd, cwd, perms)
+            if patch_err is not None:
+                err = _unjson(patch_err)
+            else:
+                targets = ac._bash_write_targets(cmd) + list(patch_paths or [])
+        if err is None:
+            for target in targets:
                 p = _abs(target, cwd, state["workspace"])
                 if ac._is_ephemeral_sink(p, perms.workspace):
                     continue

@@ -1284,6 +1284,32 @@ class AgentEngine:
             # Keep whatever window is already set (100k default).
             pass
 
+    def _capture_floor(self, input_tokens: int) -> None:
+        """Record an accepted request as the model's observed floor.
+
+        An accepted request is proof of the window, whether or not it stayed
+        within the static table window: the table understates by design, and a
+        request the backend actually counted is the ground truth for how big a
+        window *model* can hold (observed_window.py holds 131072 -> 166379 as
+        exactly that example). So the floor is learned unconditionally; what is
+        BOUNDED is not the learning but the raise itself -- observed_window.note
+        stores only the new maximum actually accepted and never extrapolates, so
+        no single request can push the floor past a number the backend really
+        held (measured 2026-10-08: one 190k request raised the floor
+        model-wide, but that 190k genuinely was accepted).
+        """
+        self._floor_captured_this_turn = True
+        self._last_input_tokens = int(input_tokens)
+        try:
+            from . import observed_window as _ow
+            _ow.note(getattr(self.client, "model", "") or "",
+                     int(input_tokens))
+        except Exception:
+            pass
+        # Fresh provider count -> trims applied since the previous floor are
+        # already reflected in it.
+        self._trimmed_chars_since_floor = 0
+
     def _compaction_status_line(self) -> str:
         """What the last compaction actually did, including when it did
         nothing and why.
@@ -2544,6 +2570,10 @@ class AgentEngine:
             # grounded, and flagging it would be the fastest way to teach
             # somebody to ignore the guard.
             self._last_user_message = user_message or ""
+            # Epoch seconds of this message: the task ticker reads a block
+            # set before it as stale. Not the session's save time, which
+            # every turn end advances past the block that turn set.
+            self.last_user_message_at = _time.time()
             # Per turn, like every other one-shot above it: the model is
             # told once that it is answering in the wrong language, and
             # the next turn gets to be told again if it happens again.
@@ -3289,18 +3319,7 @@ class AgentEngine:
                         # context plus ephemeral tool results, so the code
                         # contradicted its own contract.
                         if event.input_tokens and not self._floor_captured_this_turn:
-                            self._floor_captured_this_turn = True
-                            self._last_input_tokens = int(event.input_tokens)
-                            # An accepted request is proof of the window.
-                            try:
-                                from . import observed_window as _ow
-                                _ow.note(getattr(self.client, "model", "") or "",
-                                         int(event.input_tokens))
-                            except Exception:
-                                pass
-                            # Fresh provider count -> trims applied since the
-                            # previous floor are already reflected in it.
-                            self._trimmed_chars_since_floor = 0
+                            self._capture_floor(int(event.input_tokens))
                         # Prompt tokens served from the endpoint cache (Anthropic
                         # reports it here). Visibility into how much of the input
                         # was free — drives the caching/efficiency work.
@@ -6215,7 +6234,12 @@ class AgentEngine:
         turn drains them at its first round.
         """
         try:
-            pending = self.client._drain_steer()
+            # Not delivered: the steers' on_delivered callbacks (a session
+            # message's read receipt) must not run for text handed back.
+            try:
+                pending = self.client._drain_steer(delivered=False)
+            except TypeError:
+                pending = self.client._drain_steer()
         except Exception:
             return ""
         # Only a list of real strings is handed back. A client whose drain
@@ -6232,14 +6256,20 @@ class AgentEngine:
         return (" Not delivered, because the turn stopped first: "
                 + quoted + more + " — send it again if it still applies.")
 
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, *, on_delivered=None) -> bool:
         """Inject a user message into the RUNNING tool loop (mid-loop steering).
         The model reacts to it on the next round, without ending the turn.
-        Returns True if the active client supports it (API/KIT/Ollama engine)."""
+        Returns True if the active client supports it (API/KIT/Ollama engine).
+
+        True means queued, not delivered: ``on_delivered`` runs when the
+        client puts the text into a request (see ``push_steer``)."""
         client = getattr(self, "client", None)
         if client is not None and hasattr(client, "push_steer"):
             try:
-                client.push_steer(text)
+                if on_delivered is None:
+                    client.push_steer(text)
+                else:
+                    client.push_steer(text, on_delivered=on_delivered)
                 # Kept for the turn's guards: a steer is the user's latest
                 # word, and "antworte auf Englisch" in it is a language
                 # request the language guard must honour.
