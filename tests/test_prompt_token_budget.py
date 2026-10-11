@@ -206,7 +206,11 @@ def test_role_prompt_within_token_budget(filename, max_tokens):
         # behind a lazy-module trigger on purpose, because a quality rule
         # that loads only when a keyword appears is absent exactly when the
         # model writes a test without naming one.
-        ("solo_agent", "solo", ["solo_agent"], 11484),
+        # 11484 -> 11555 (2026-10-08): two rules moved OUT of the exempt
+        # principles INTO the refusal addendum, where the budget sees them
+        # (71 tokens, measured). The prompt as a whole got smaller by it:
+        # the principles lost ~130 tokens, which the budget does not count.
+        ("solo_agent", "solo", ["solo_agent"], 11555),
         ("dashboard_agent", "dashboard", ["dashboard_agent"], 10400),
     ],
 )

@@ -446,6 +446,51 @@ def _context_tokens(engine) -> int:
     return max(1, total // 4)
 
 
+class _OpenTasksBlock:
+    """The session's open tasks, rendered for a fresh start.
+
+    ``TaskState`` -- the object ``fresh_context_for_turn`` was written to
+    render -- is constructed nowhere in the product: the terminal reads
+    ``getattr(self, "_task_state", None)`` and gets None, and the dashboard
+    passes nothing. So a fresh start carried the working-state block and no
+    task at all, on both surfaces, while the engine kept a task store the
+    auto-continue already consults. This renders that store, bounded, and
+    is built where the fresh start is decided so both surfaces get it.
+    """
+
+    def __init__(self, summary: dict):
+        self._summary = summary or {}
+
+    def render(self) -> str:
+        parts = []
+        for status in ("in_progress", "pending", "blocked"):
+            rows = self._summary.get(status) or []
+            for row in rows[:6]:
+                subject = str((row or {}).get("subject") or "").strip()
+                if not subject:
+                    continue
+                reason = str((row or {}).get("blocked_reason") or "").strip()
+                line = f"- [{status}] {subject[:160]}"
+                if reason:
+                    line += f" (blocked: {reason[:120]})"
+                parts.append(line)
+        if not parts:
+            return ""
+        return "Open tasks when the context was cut:\n" + "\n".join(parts)
+
+
+def open_tasks_for_fresh_start(engine) -> "_OpenTasksBlock | None":
+    """What the engine knows about its open tasks, or None. Never raises."""
+    try:
+        client = getattr(engine, "client", None)
+        summary = client._open_task_state() if client is not None else None
+    except Exception:
+        return None
+    if not isinstance(summary, dict) or summary.get("state") != "open":
+        return None
+    return _OpenTasksBlock(summary)
+
+
 def fresh_context_for_turn(
     engine,
     task_state,
@@ -475,6 +520,8 @@ def fresh_context_for_turn(
     """
     if _context_tokens(engine) <= token_budget:
         return ""
+    if task_state is None:
+        task_state = open_tasks_for_fresh_start(engine)
     try:
         core = task_state.render() if task_state is not None else ""
     except Exception:
@@ -524,6 +571,22 @@ def _resolve_fresh_budget(context_budget, engine) -> int:
     if context_budget is None:
         context_budget = getattr(engine, "context_budget", None)
     if context_budget is None:
+        # The operator's 900k is a CEILING, not the budget. It was taken
+        # from a session that re-sent >900k tokens per turn -- the sum
+        # over every round of a turn -- and is compared here against the
+        # CURRENT context, which a model's window bounds. GLM 5.3's window
+        # is 131,072: a 900k budget on it is 6.9x the whole window and can
+        # never fire, so the fresh start was dead for every KIT model while
+        # one session paid 20.5M input tokens over 22 turns (2026-10-08).
+        #
+        # The window itself, not a fraction of it: the sliding trim (0.70
+        # -> 0.50) and compaction (0.95) run first and keep a session
+        # under it. A fresh start is for the case they could not -- a
+        # context that is still over the window after both -- which is a
+        # harder reset than either, and should not pre-empt them.
+        window = int(getattr(engine, "context_window_tokens", 0) or 0)
+        if window > 0:
+            return min(_DEFAULT_FRESH_BUDGET, window)
         return _DEFAULT_FRESH_BUDGET
     return int(context_budget or 0)
 
@@ -881,6 +944,33 @@ def _fit_to_width(text: str, width: int) -> str:
     while cut and string_width(cut) > max(1, width - 1):
         cut = cut[:-1]
     return cut + "…"
+
+
+def shell_escape(engine, command: str) -> list[str]:
+    """`!cmd` for any surface: through the agent's gate, lines for a person.
+
+    Input: the engine and the command after the `!`. Output: the lines to
+    show. Semantics: identical to the terminal's `_shell_out` -- the same
+    deny-list, secret scan, auto-allow list and approval the model's own
+    bash calls go through, because a shell escape that skipped them would
+    let someone do from the agent's prompt exactly what the agent may not.
+
+    Extracted so the dashboard runs the same code: it had no `!` at all
+    (goal 5 of the 2026-10-08 brief), and a second implementation would be
+    a second place for the gate to be forgotten. Never raises.
+    """
+    command = str(command or "").strip()
+    if not command:
+        return []
+    executor = getattr(engine, "run_gated_bash", None)
+    if not callable(executor):
+        return ["! is not available on this backend — it runs through the "
+                "same gate the agent uses, and this one has none"]
+    try:
+        out = executor(command)
+    except Exception as exc:
+        return [f"[error] {exc}"]
+    return TerminalAgent._shell_lines(out)
 
 
 class TerminalAgent:
@@ -1465,11 +1555,12 @@ class TerminalAgent:
         """
         if not command:
             return
+        # One implementation for both surfaces (shell_escape); the terminal
+        # only adds its off-thread run and its colours.
         executor = getattr(self.engine, "run_gated_bash", None)
         if not callable(executor):
             self.transcript.chrome(self.transcript.theme.dim(
-                "! is not available on this backend — it runs through the "
-                "same gate the agent uses, and this one has none"))
+                shell_escape(self.engine, command)[0]))
             return
         out = self._off_thread(lambda: executor(command))
         if isinstance(out, Exception):
@@ -1686,6 +1777,13 @@ class TerminalAgent:
                 # answer to this request still had somewhere to land.
                 ok, msg = self.broker.accept_edits()
                 self.transcript.chrome(self.transcript.theme.cyan(f"  {msg}"))
+                self._apply(req, self._allow(req))
+                return
+            if key == "R":
+                ok, msg = self.broker.persist_read(tc.read_dir_for(req))
+                self.transcript.chrome(
+                    self.transcript.theme.cyan(f"  {msg}") if ok
+                    else self.transcript.theme.red(f"  {msg}"))
                 self._apply(req, self._allow(req))
                 return
             if key in ("A", "k"):

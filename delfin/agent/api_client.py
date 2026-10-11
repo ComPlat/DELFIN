@@ -229,7 +229,9 @@ class CLIClient(_BaseClient):
                  mcp_config: str = "",
                  allowed_tools: list[str] | None = None,
                  extra_dirs: list[str] | None = None,
-                 effort: str = ""):
+                 effort: str = "",
+                 read_only_dirs: list[str] | None = None,
+                 confirm_callback: Optional[Callable[[str, dict, str], bool]] = None):
         self.model = model or self.DEFAULT_MODEL
         self.permission_mode = permission_mode
         self.cwd = cwd or None
@@ -247,6 +249,40 @@ class CLIClient(_BaseClient):
             )
         self._proc: subprocess.Popen | None = None
         self._session_id: str = ""
+        # DELFIN's file gate in front of the CLI's own tools (cli_gate):
+        # the same read/write boundary, and the same dialog, as every
+        # other backend. One token per client; the relay carries the
+        # hook's questions to ``confirm_callback``.
+        self.read_only_dirs = list(read_only_dirs or ())
+        self.confirm_callback = confirm_callback
+        from . import cli_gate as _cli_gate
+        self._gate_token = _cli_gate.new_token()
+        self._gate_relay = None
+
+    def set_confirm_callback(self, callback) -> None:
+        """Who the gate asks. Applies to the next tool call."""
+        self.confirm_callback = callback
+        self._write_gate_state()
+        self._start_gate_relay()
+
+    def _write_gate_state(self) -> None:
+        from . import cli_gate as _cli_gate
+        _cli_gate.write_state(
+            self._gate_token,
+            workspace=str(Path(self.cwd or os.getcwd()).resolve()),
+            mode=self.permission_mode or "default",
+            can_ask=self.confirm_callback is not None,
+            extra_dirs=list(self.extra_dirs or ()),
+            read_only_dirs=self.read_only_dirs)
+
+    def _start_gate_relay(self) -> None:
+        from . import cli_gate as _cli_gate
+        if self._gate_relay is not None:
+            self._gate_relay.stop()
+            self._gate_relay = None
+        if self.confirm_callback is not None:
+            self._gate_relay = _cli_gate.Relay(
+                self._gate_token, self.confirm_callback).start()
 
     def enforced_tool_surface(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """The allow list handed to the subprocess; no deny list exists here.
@@ -284,11 +320,19 @@ class CLIClient(_BaseClient):
                 # asks less, not the one that asks nothing.
                 cmd.extend(["--permission-mode", self.permission_mode])
 
-        # DELFIN's secret deny list, in the CLI's rule syntax. The CLI runs
-        # its own tools, so DELFIN's read and write gates never see them;
-        # deny rules hold in every CLI mode, bypass included.
+        # DELFIN's secret deny list, in the CLI's rule syntax, and DELFIN's
+        # own file gate as a PreToolUse hook (cli_gate): the CLI runs its
+        # own tools, so without it they never met the boundary every other
+        # backend keeps -- under Bypass, reads and writes anywhere. Deny
+        # rules and a hook's deny both hold in every CLI mode, bypass
+        # included. No gate state, no start: an unchecked CLI is not the
+        # fallback.
+        from . import cli_gate as _cli_gate
+        self._write_gate_state()
+        self._start_gate_relay()
         cmd.extend(["--settings", json.dumps(
-            {"permissions": {"deny": _cli_secret_deny_rules()}})])
+            {"permissions": {"deny": _cli_secret_deny_rules()},
+             "hooks": _cli_gate.hook_settings(self._gate_token)})])
 
         if self.mcp_config:
             cmd.extend(["--mcp-config", self.mcp_config])
@@ -1200,57 +1244,260 @@ def _bash_reads_denied_path(cmd: str, denied: set,
     return ""
 
 
-def _bash_outside_reads(cmd: str) -> list[str]:
-    """Absolute paths a content-dumping command would print.
+# Commands that print what a DIRECTORY holds: its names, and with `find`
+# or `tree` everything below it. Not content readers, but a listing of a
+# folder outside the workspace is still a look outside it -- `ls /home/x`
+# and `find ~ -name '*.log'` reached past a read_file the user would have
+# been asked about. Absolute and `~` arguments only, like the readers.
+_BASH_DIR_LISTERS: frozenset[str] = frozenset({"ls", "find", "tree"})
 
-    Only the readers above are inspected, and only their absolute
-    arguments — a conservative net around the exact circumvention that was
-    observed (three refused read_file calls, then `cat` on the same files).
+# `cd X && cat file` reads X/file by a relative name, which the reader
+# check above never sees. The directory changed into is the thing to ask
+# about. A bare `cd` goes home.
+_BASH_DIR_CHANGERS: frozenset[str] = frozenset({"cd", "pushd"})
 
-    An inline python payload is inspected too, for the same reason and by
-    the same rule: `python3 -c "print(open('/etc/passwd').read())"` is
-    `cat /etc/passwd` with the path one level in. Before the payload could
-    be read at all this was moot -- the command was refused outright --
-    and reading it would have opened a route past this gate if the reads
-    had not been collected with the writes.
+
+def _is_system_path(word: str) -> bool:
+    """True for interpreter, binary and library directories (no user data)."""
+    text = os.path.normpath(os.path.expanduser(word))
+    return (text in _SYSTEM_DIRS
+            or (text + "/").startswith(_SYSTEM_PATH_PREFIXES))
+
+
+#: Programs that touch no file named on their command line: they print
+#: their arguments, look up names, or report metadata only. Every OTHER
+#: program's path arguments are reads -- `python x.py /data/run.out`,
+#: `cp /data/a .`, `git -C /other/repo log` all look outside as surely as
+#: `cat` does. wc, stat, file and the digests are here on purpose: a size
+#: or a hash is not the content, and asking about it is friction with
+#: nothing behind it.
+_BASH_NO_FILE_PROGRAMS: frozenset[str] = frozenset({
+    "echo", "printf", "true", "false", "exit", "export", "unset", "set",
+    "which", "type", "command", "hash", "alias", "sleep", "kill", "date",
+    "wc", "stat", "file", "md5sum", "sha1sum", "sha256sum", "sha512sum",
+    "test", "[", "[[", "basename", "dirname", "realpath", "readlink",
+    "mkdir", "touch", "rm", "rmdir", "chmod", "squeue", "scancel", "sacct",
+})
+
+#: Read-only system information. Not user data, and asked for by every
+#: core-count check a calculation script does.
+_SYSTEM_INFO_FILES: frozenset[str] = frozenset({
+    "/proc/cpuinfo", "/proc/meminfo", "/proc/loadavg", "/proc/version",
+    "/proc/uptime", "/etc/os-release", "/etc/hostname",
+})
+
+
+def _home_expanded(word: str) -> str:
+    home = str(Path.home())
+    for spelling in ("${HOME}", "$HOME"):
+        if word.startswith(spelling):
+            return home + word[len(spelling):]
+    return word
+
+
+def _glob_root(word: str) -> str:
+    """The directory a glob reads: everything before its first wildcard
+    component. `/data/run*/x.out` reads /data."""
+    parts = word.split("/")
+    keep = []
+    for part in parts:
+        if any(c in part for c in "*?["):
+            break
+        keep.append(part)
+    root = "/".join(keep)
+    return root or ("/" if word.startswith("/") else ".")
+
+
+def _read_exempt(path: str) -> bool:
+    """System directories, pseudo-devices, system info.
+
+    NOT /tmp: on a shared login node it holds other users' files, and
+    read_file asks there -- a shell exemption made `cat /tmp/x` the way
+    around that question (caught by CI, where test folders live in /tmp).
+    Writing scratch to /tmp stays free; reading it back asks once, and the
+    approval opens the directory for the session."""
+    text = os.path.normpath(path)
+    return (_is_system_path(text) or _is_safe_device(text)
+            or text in _SYSTEM_INFO_FILES
+            or text.startswith("/proc/self/"))
+
+
+def _shell_segments(cmd: str) -> list[str]:
+    """``cmd`` split at ``;``, ``&``, ``|`` and newlines OUTSIDE quotes.
+
+    Splitting inside quotes cut `sh -c "a; b"` into pieces with a stray
+    quote each, and the stray quote then became part of a "path"."""
+    out: list[str] = []
+    cur: list[str] = []
+    quote = ""
+    i = 0
+    text = cmd or ""
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(text):
+                cur.append(ch + text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            cur.append(ch)
+        elif ch in "'\"":
+            quote = ch
+            cur.append(ch)
+        elif ch == "\\" and i + 1 < len(text):
+            cur.append(ch + text[i + 1])
+            i += 2
+            continue
+        elif ch == "&" and ((i > 0 and text[i - 1] in "<>")
+                            or (i + 1 < len(text) and text[i + 1] == ">")):
+            cur.append(ch)          # 2>&1, &>file: a redirection, not a split
+        elif ch in ";&|\n":
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    out.append("".join(cur))
+    return [seg for seg in out if seg.strip()]
+
+
+_SHELL_PROGRAMS: frozenset[str] = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+
+
+def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
+                        _depth: int = 0) -> list[str]:
+    """Paths a shell command would read, for the outside-read gate.
+
+    Every path argument of every program counts, except programs that
+    touch no file (``_BASH_NO_FILE_PROGRAMS``) and exempt locations
+    (``_read_exempt``). Also counted: ``cd``/``pushd`` targets (a bare cd
+    is home), input redirections (``< file``), option values
+    (``--input=/x``), the directory a glob reads, and paths inside an
+    inline python payload.
+
+    Absolute and home paths (``~``, ``$HOME``) are returned as written.
+    With ``cwd`` -- where the command starts -- relative paths are
+    returned too, resolved against the directory the command is in at
+    that point: ``cd sub && cat ../../x`` is followed through the cd, and
+    the gate resolves symlinks, so a link that points out is caught where
+    it points. Without ``cwd`` relative paths are not inspected.
+
+    History: only the absolute arguments of a list of content readers
+    were inspected, so `cd /etc && cat hostname`, `ls ~`, `cp /x .`,
+    `cat ../../x` and `cat $HOME/.bashrc` all read outside the workspace
+    without a question in every mode (2026-10-09).
     """
     out: list[str] = []
     try:
-        # Here-documents too, and with include_expanded=True, for the
-        # same reason the write gate takes them: this path REFUSES on
-        # what it finds, so reading a body the shell may still add to can
-        # only block more. `python3 - <<'EOF' print(open('/etc/passwd')
-        # .read()) EOF` produced no read target at all before.
         srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
         srcs += _inline_payload.extract_stdin_payloads(
             cmd, include_expanded=True)
         for src in srcs:
             for tok in _inline_payload.analyze_payload(src).reads:
+                tok = _home_expanded(tok)
                 if tok.startswith("/") or tok.startswith("~"):
                     out.append(tok)
+                elif cwd is not None and ".." in Path(tok).parts:
+                    out.append(str(Path(cwd) / tok))
     except Exception:
         pass
+    here: "Path | None" = Path(cwd) if cwd is not None else None
+    previous = here
+
+    def _add(word: str) -> None:
+        word = _home_expanded(word)
+        if not word or word.startswith("$") or word.startswith("<"):
+            return
+        if any(c in word for c in "*?["):
+            word = _glob_root(word)
+        if word.startswith("/") or word.startswith("~"):
+            if not _read_exempt(os.path.expanduser(word)):
+                out.append(word)
+            return
+        if here is not None:
+            full = str(here / word)
+            if not _read_exempt(full):
+                out.append(full)
+
     try:
         import shlex
-        for segment in re.split(r"[;&|]{1,2}|\n", cmd):
+        for segment in _shell_segments(cmd):
             segment = segment.strip()
             if not segment:
                 continue
             try:
                 argv = shlex.split(segment, comments=True)
             except ValueError:
-                argv = segment.split()
+                argv = [w.strip("\"'") for w in segment.split()]
             while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
                 argv = argv[1:]
             if not argv:
                 continue
-            if Path(argv[0]).name not in _BASH_CONTENT_READERS:
+            prog = Path(argv[0]).name
+            args = argv[1:]
+            # `sh -c "…"` runs a whole command line: judge that line too,
+            # from where this one is at that point.
+            if prog in _SHELL_PROGRAMS and "-c" in args and _depth < 3:
+                i = args.index("-c")
+                if i + 1 < len(args):
+                    out.extend(_bash_outside_reads(
+                        args[i + 1], here, _depth + 1))
                 continue
-            for a in argv[1:]:
-                if a.startswith("-") or any(c in a for c in "*?["):
+            if prog in _BASH_DIR_CHANGERS:
+                if "-" in args:
+                    here, previous = previous, here
                     continue
-                if a.startswith("/") or a.startswith("~"):
-                    out.append(a)
+                dests = [a for a in args if not a.startswith("-")]
+                dest = _home_expanded(dests[0]) if dests else "~"
+                if dest.startswith("$"):
+                    here = None         # unknown: stop resolving relatives
+                    continue
+                target = (Path(os.path.expanduser(dest)) if
+                          (dest.startswith("/") or dest.startswith("~"))
+                          else (here / dest if here is not None else None))
+                if target is not None and not _read_exempt(str(target)):
+                    out.append(dest if (dest.startswith("/")
+                                        or dest.startswith("~"))
+                               else str(target))
+                previous, here = here, target
+                continue
+            # Input redirection reads, whatever the program.
+            for i, a in enumerate(args):
+                if a == "<" and i + 1 < len(args):
+                    _add(args[i + 1])
+                elif a.startswith("<") and not a.startswith("<<") and len(a) > 1:
+                    _add(a[1:])
+            if prog in _BASH_NO_FILE_PROGRAMS:
+                continue
+            skip_next = False
+            for i, a in enumerate(args):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
+                    skip_next = True    # the redirection's own target
+                    continue
+                if (a.startswith("<") or a.startswith(">")
+                        or (a[:1] in "0123456789&" and ">" in a[:3])):
+                    continue
+                if a.startswith("-"):
+                    if "=" in a:
+                        _add(a.split("=", 1)[1])
+                    continue
+                if prog == "dd" and a.startswith("if="):
+                    _add(a[3:])
+                    continue
+                if "=" in a.split("/")[0]:
+                    continue
+                looks_like_path = ("/" in a or a.startswith("~")
+                                   or a.startswith("$HOME")
+                                   or a.startswith("${HOME}")
+                                   or a in (".", "..")
+                                   or prog in _BASH_CONTENT_READERS
+                                   or prog in _BASH_DIR_LISTERS)
+                if looks_like_path:
+                    _add(a)
     except Exception:
         return out
     return out
@@ -1895,14 +2142,78 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 return
             if any(c in tok for c in "*?[]"):        # globs: not a literal path
                 return
+            # A relative target after `cd` lands where cd went. The read
+            # scanner has followed cd/pushd for a while; this one resolved
+            # `cd /x && printf y > f` to `f` -- against the gate's own cwd,
+            # inside the workspace -- so the write to /x/f was never seen.
+            # Where filesystem isolation stands that is a dead end; where
+            # only this scanner stands (the Claude CLI backend's hook) it
+            # was a way to write anywhere, the hook's own state included.
+            if here is not None and not (tok.startswith("/") or tok.startswith("~")):
+                tok = str(here / tok)
             targets.append(tok)
 
-        # Redirections: > file, >> file, 2> file, &> file (not >&1 / &2).
-        for m in re.finditer(r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)",
-                             cmd):
-            tok = m.group(1)
-            if not tok.startswith("&"):
-                _add(tok)
+        # The directory the shell is in, per segment: None until a `cd`
+        # names one. After a `cd $VAR`, a `cd` into a variable-built path or
+        # a `cd -` with no known previous, it is UNRESOLVED -- and a
+        # relative write from there is reported under a path that cannot be
+        # inside any root, so the gate refuses it. The read scanner stops
+        # inspecting relatives at that point; for writes that would be the
+        # open direction, and "could not tell where this writes" is a
+        # refusal, not a pass.
+        here = None
+        previous = None
+        moved = False
+        _UNRESOLVED = Path("/<directory this command changed into could not be resolved>")
+
+        def _follow_cd(argv: list) -> None:
+            nonlocal here, previous, moved
+            if any(a == "-" for a in argv[1:]):
+                # `cd -` goes back: to a directory this walk knew, to the
+                # start directory (None, inside) -- or, before any cd in
+                # this command, to the SHELL's $OLDPWD, which nobody here
+                # knows. Only that last one is unresolved.
+                if not moved:
+                    here, previous = _UNRESOLVED, here
+                else:
+                    here, previous = previous, here
+                return
+            moved = True
+            args = [a for a in argv[1:] if not a.startswith("-")]
+            dest = os.path.expanduser(args[0]) if args else os.path.expanduser("~")
+            if "$" in dest or "`" in dest:
+                previous, here = here, _UNRESOLVED
+                return
+            if dest.startswith("/"):
+                target = Path(dest)
+            elif here is None:
+                target = None            # relative cd from the gate's cwd: still inside
+            else:
+                target = here / dest
+            previous, here = here, target
+
+        # Redirections: > file, >> file, 2> file, &> file (not >&1 / &2) --
+        # per segment, so the directory a `cd` set applies to them.
+        _redirect = re.compile(r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)")
+        for segment in re.split(r"[;&|]{1,2}|\n", cmd):
+            seg = segment.strip()
+            if not seg:
+                continue
+            try:
+                argv0 = shlex.split(seg, comments=True)
+            except ValueError:
+                argv0 = seg.split()
+            while argv0 and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv0[0]):
+                argv0 = argv0[1:]
+            if argv0 and Path(argv0[0]).name in ("cd", "pushd"):
+                _follow_cd(argv0)
+                continue
+            for m in _redirect.finditer(seg):
+                tok = m.group(1)
+                if not tok.startswith("&"):
+                    _add(tok)
+        here = None
+        previous = None
 
         # What an inline python payload would write.
         #
@@ -1942,6 +2253,9 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 continue
             name = Path(argv[0]).name
             rest = argv[1:]
+            if name in ("cd", "pushd"):
+                _follow_cd(argv)
+                continue
 
             # `cd <dir> && ...` — the destination of the segment's writes.
             if name in ("dd",):
@@ -2474,6 +2788,21 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"worktree\s+list|"
     r"shortlog|reflog|fetch|pull(?!\s+--rebase\s+--force)|"
     r"switch(?![^;|&]*--discard-changes)|"
+    # Read-only plumbing from _GIT_READ_ONLY_SUBCOMMANDS (api_client.py:1034)
+    # that a session uses to orient itself in the tree (where two branches
+    # diverged, what a commit's parents are), absent from the alternation, so
+    # an all-read compound (git log --oneline main -1; echo ---;
+    # git merge-base HEAD X) went to the confirm gate for one read-only part.
+    # Allow-list only; write forms (merge, checkout, add, --output, -c) stay
+    # behind the write gates. Each is classified read-only by _git_reads_only.
+    r"merge-base|rev-list|for-each-ref|name-rev|count-objects|check-ignore|"
+    # grep -O/--open-files-in-pager runs a program of the caller's choice
+    # on the matches, so that form stays behind the confirm gate. git
+    # bundles short options (-nO<prog>) and accepts any unique prefix of a
+    # long one (--open=<prog>), so the lookahead refuses an O anywhere in a
+    # short-option token and every --op... spelling, not one form of each.
+    r"cat-file|whatchanged|version|"
+    r"grep(?![^;|&]*(?:\s-[A-Za-z0-9]*O|\s--op))|"
     # NOTE: 'push' is deliberately NOT here. Pushing publishes to a remote — an
     # outward-facing, hard-to-undo action (it can hit a shared/protected branch
     # like main). Per this list's own policy ("Anything that pushes to remote …
@@ -2878,6 +3207,11 @@ _DENY_HINTS: tuple[tuple[str, str], ...] = (
                  "cannot make: call worktree_remove with the path."),
     ("branch", " A branch you no longer need is the user's to delete; say "
                "which one and why in your answer."),
+    ("sh|bash|zsh", " Running a fetched script executes remote code the "
+               "gates never see. A package belongs in the SESSION VENV "
+               "(`<session python> -m pip install`); a missing tool is "
+               "DELFIN's proposal for the user to approve with /fix. Do "
+               "not add a `curl|sh` allow-pattern."),
     ("reset", " To undo work in the tree, revert the specific files or "
               "commit first; a hard reset throws away what was not saved."),
     ("clean", " Say which files you mean and remove them one by one, or ask "
@@ -2906,6 +3240,50 @@ def _denied_command_hint(pattern: str) -> str:
         if needle in text:
             return hint
     return ""
+
+
+def _refuse_unsafe_install(cmd: str, session_python: str,
+                           workspace: Optional[str] = None) -> str:
+    """The refusal hint for an install outside the session venv, or "".
+
+    Input: a bash command and the session interpreter ('' when unknown,
+    which refuses every ``python -m pip install``). Output: the reason and
+    the sanctioned route, or "". The rule is
+    :func:`delfin.agent.sandbox.unsafe_install_refusal`, shared with the
+    dashboard's approval runner so the two paths cannot drift. It runs in
+    the deny tier of the gate, before the bypass return, so it refuses in
+    every permission mode; an ask would leave a ``pip install --user`` to
+    whoever reads the prompt, and bypass or an auto-allow pattern would run
+    it. The session venv's own install (``python_tools_install_command``,
+    what an approved proposal runs) is not refused.
+    """
+    from .sandbox import unsafe_install_refusal as _rule
+    reason = _rule(cmd or "", session_python, workspace=workspace)
+    if not reason:
+        return ""
+    return f" ({reason})." + _UNSAFE_INSTALL_HINT.format(
+        py=session_python or "<session venv python>")
+
+
+#: Names the two routes the model can actually take. The first cut named
+#: python_tools_install_command / apply_proposal, which are functions, not
+#: tools: a refusal that points at nothing callable invites a workaround.
+_UNSAFE_INSTALL_HINT = (
+    " Packages belong in the SESSION VENV: run `{py} -m pip install "
+    "<package>` with no --user/--target/--prefix, or name the missing "
+    "package in your answer so the user can approve DELFIN's proposal "
+    "with /fix. Do not add an allow-pattern that lets this command run."
+)
+
+
+def _session_python_for_gate() -> str:
+    """The session interpreter, or '' if the installer cannot be imported.
+
+    '' means the session venv cannot be identified, and
+    :func:`_refuse_unsafe_install` then refuses every interpreter.
+    """
+    from .sandbox import _session_python
+    return _session_python()
 
 
 def _prose_blanked(cmd: str) -> str:
@@ -3380,6 +3758,173 @@ def _is_git_push(cmd: str) -> bool:
     return bool(_GIT_PUSH_RE.search(_with_shell_bodies(cmd)))
 
 
+#: `gh pr create` publishes a branch as a pull request; `gh pr merge`
+#: lands it on the base branch. Neither was gated: both ran through the
+#: shell gate as ordinary commands in every permission mode, with no
+#: question asked (measured 2026-10-08) -- so the contributor rule
+#: "changes reach main through a pull request the maintainer accepts"
+#: held for `git push` and not for the two commands that are that rule.
+_GH_PR_CREATE_RE = re.compile(r"(?:^|[;&|]\s*)gh\s+pr\s+create\b")
+_GH_PR_MERGE_RE = re.compile(r"(?:^|[;&|]\s*)gh\s+pr\s+merge\b")
+
+
+def _handover_line(cmd: str, kind: str) -> str:
+    """The command offered to the user, for a refusal about consent.
+    Never raises: a refusal must stand even when the offer cannot be made."""
+    try:
+        from .handover import for_user
+        return for_user(cmd, kind=kind)
+    except Exception:
+        return ""
+
+
+def _push_readiness_rows(workspace, *, local_only=False, remote=None,
+                         requires_gh=True):
+    """The gate's one source of readiness rows; tests replace it.
+
+    The ONLY place the command gate learns whether this checkout can push.
+    Lazy-imports the doctor so api_client never forces a chemistry
+    environment at import time. Tests neutralise it via a conftest autouse
+    fixture (returns []) so no existing test depends on the host, and the
+    push/pr gate tests override it with exact fake rows.
+
+    ``workspace`` is the directory the command runs git in
+    (``_push_probe_target``). local_only asks the doctor's local check
+    only; otherwise ready_for_push adds the ``git ls-remote`` probe of
+    ``remote``, hard-bounded inside the doctor. That probe is skipped when
+    ``workspace`` is not inside a git repository: the gate then could not
+    tell which repository the command pushes from, and a probe of the
+    wrong one is a refusal of a push that would succeed. ``requires_gh``
+    False leaves out ``gh auth status``, a network call of up to 20 s.
+    """
+    from . import doctor as _doc
+    if not local_only and not _git_out(workspace, "rev-parse", "--git-dir"):
+        local_only = True
+    if local_only:
+        return _doc._check_git_tooling({"workspace": workspace,
+                                        "skip_gh": not requires_gh})
+    return _doc.ready_for_push(workspace, remote=remote, gh=requires_gh)
+
+
+#: ``git push`` options that take their value as the next word, so that
+#: word is not the remote.
+_PUSH_VALUE_OPTS = frozenset({"-o", "--push-option", "--receive-pack",
+                              "--exec", "--repo"})
+_LEADING_CD_RE = re.compile(r"^\s*cd\s+(\S+)\s*&&")
+
+
+def _push_probe_target(cmd: str, args: Any, workspace: Any):
+    """(directory, remote) of the first push or PR command in ``cmd``.
+
+    The directory starts at the workspace and follows the tool's ``cwd``
+    argument, a leading ``cd <dir> &&`` and every ``git -C <dir>``, in
+    that order -- the same way the shell and git resolve them. The remote
+    is the first positional word after ``git push`` (a remote name or a
+    URL), ``--repo=<r>`` when given, else None (the doctor's origin).
+    Never raises; a command it cannot parse yields the workspace and None.
+    """
+    import shlex
+
+    where = Path(workspace)
+    remote = None
+    try:
+        cwd_arg = str((args or {}).get("cwd") or "").strip()
+        if cwd_arg:
+            where = where / Path(cwd_arg).expanduser()
+        text = _with_shell_bodies(cmd)
+        m = _GIT_PUSH_RE.search(text)
+        start = m.start() if m else 0
+        for alt in (_GH_PR_CREATE_RE, _GH_PR_MERGE_RE):
+            g = alt.search(text)
+            if g and (m is None or g.start() < start):
+                m, start = g, g.start()
+        line_start = text.rfind("\n", 0, start) + 1
+        cd = _LEADING_CD_RE.match(text[line_start:start])
+        if cd:
+            where = where / Path(cd.group(1)).expanduser()
+        if m is None or m.re is not _GIT_PUSH_RE:
+            return where, None
+        for d in re.findall(r"\s-C\s+(\S+)", m.group(0)):
+            where = where / Path(shlex.split(d)[0]).expanduser()
+        rest = re.split(r"[;&|\n]", text[m.end():], maxsplit=1)[0]
+        words = shlex.split(rest)
+        i = 0
+        while i < len(words):
+            w = words[i]
+            if w.startswith("--repo="):
+                return where, w.split("=", 1)[1] or None
+            if w in _PUSH_VALUE_OPTS:
+                if w == "--repo" and i + 1 < len(words):
+                    return where, words[i + 1]
+                i += 2
+                continue
+            if not w.startswith("-"):
+                return where, w
+            i += 1
+    except Exception:
+        pass
+    return where, remote
+
+
+def _push_capability_block(perms, cmd, args=None, *, local_only=False):
+    """First readiness row that forbids this push/pr on this host, or None.
+
+    The known facts about whether this checkout can push come from the
+    doctor, and this is the single place the gate consults them -- via
+    `_push_readiness_rows` (the one replaceable source), so the refusal
+    and the /doctor report tell the same story.
+
+    Which rows count depends on the command. Every one needs git on PATH.
+    ``gh pr create`` / ``gh pr merge`` also need gh installed and logged
+    in; a plain ``git push`` publishes over SSH/HTTPS and does not, so an
+    absent gh never refuses it. No row about the commit identity counts:
+    neither a push nor a pull request makes a commit, and a host whose
+    commits carry ``-c user.name=...`` or GIT_AUTHOR_* pushes fine with
+    nothing configured (measured: the identity row refused such a push).
+
+    ``local_only`` skips the network probe (``git ls-remote``): it is the
+    cheap pre-ask check, so a host that cannot even run git never prompts.
+    The full check runs at the surrender point, against the directory and
+    remote the command names (``_push_probe_target``); a hang there is a
+    WARN row -- a refusal, never a pass.
+
+    Every returned row carries prose ``fix``; callers render it so the
+    refusal names the remedy. Never raises: a probe that explodes becomes
+    a WARN refuse-row.
+    """
+    requires_gh = _is_gh_pr_create(cmd) or _is_gh_pr_merge(cmd)
+    try:
+        where, remote = _push_probe_target(cmd, args, perms.workspace)
+        rows = _push_readiness_rows(where, local_only=local_only,
+                                    remote=remote, requires_gh=requires_gh)
+    except Exception as exc:
+        # No `_row` helper in api_client -- return the row contract dict.
+        return {"check": "readiness", "status": "WARN",
+                "detail": f"could not ask the doctor ({exc})",
+                "fix": "run the doctor and fix what it reports, then retry"}
+    keep = {"git installed"}
+    if requires_gh:
+        keep |= {"gh installed", "gh authenticated"}
+    if not local_only:
+        keep |= {"git remote"}
+    for r in rows:
+        if r.get("check") in keep and r.get("status") != "PASS":
+            return r
+    return None
+
+
+def _push_block_text(row) -> str:
+    return f"blocked: {row['check']}: {row['detail']} -- {row['fix']}"
+
+
+def _is_gh_pr_create(cmd: str) -> bool:
+    return bool(_GH_PR_CREATE_RE.search(_with_shell_bodies(cmd)))
+
+
+def _is_gh_pr_merge(cmd: str) -> bool:
+    return bool(_GH_PR_MERGE_RE.search(_with_shell_bodies(cmd)))
+
+
 # -- a push to GitHub, the one way out of the process cage ---------------------
 #
 # SSH is closed inside the cage (keys, agent and control sockets are masked,
@@ -3591,6 +4136,28 @@ def _grant_push_from_answer(perms: Any, raw_result: Any) -> None:
 def _ends_with_a_question(text: str) -> bool:
     """True when an answer ends by asking the user something."""
     return (text or "").rstrip().rstrip("*_`").rstrip().endswith(("?", "？"))
+
+
+def _announces_an_action(text: str) -> bool:
+    """True when an answer ENDS by saying what it is about to do.
+
+    The last sentence, not any sentence: "I'll read the lines" in the
+    middle of a finished report is narration; at the very end, followed
+    by nothing, it is a promise the turn did not keep. Never true for an
+    answer that ends with a question -- that one is waiting on the user
+    and must not be pushed.
+    """
+    from .german import ANNOUNCES_ACTION_RE
+    tail = (text or "").rstrip().rstrip("*_`").rstrip()
+    if not tail or _ends_with_a_question(tail):
+        return False
+    # Only the last sentence or line is examined, with its Markdown
+    # emphasis taken off both ends.
+    last = tail.rsplit("\n", 1)[-1].strip().lstrip("*_`#> ").rstrip("*_`")
+    for mark in (". ", "! "):
+        if mark in last:
+            last = last.rsplit(mark, 1)[-1]
+    return bool(ANNOUNCES_ACTION_RE.search(last.strip()))
 
 
 def _pushed_refs(output: str) -> list[tuple[str, str, str]]:
@@ -4330,7 +4897,7 @@ _NETWORK_TOOLS: frozenset[str] = frozenset({
 # dispatched without ever consulting the gate.
 _GATED_TOOLS: frozenset[str] = frozenset({
     "write_file", "edit_file", "multi_edit", "bash", "bash_background",
-    "run_tests",
+    "run_tests", "make_plot",
 }) | _NETWORK_TOOLS
 
 # What may run with NO permissions object. Such a caller has no workspace,
@@ -4443,6 +5010,7 @@ _PLAN_READONLY_MCP_TOOLS: frozenset[str] = (
 # test_the_deny_list_only_names_real_tools says so.
 _WRITE_TOOL_NAMES: frozenset[str] = frozenset({
     "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
+    "make_plot",
 })
 
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
@@ -4739,6 +5307,18 @@ _REASONING_MIN_TOKENS = 2048
 
 # Tools that WRITE to persistent memory. Counted against
 # ModelProfile.max_memory_writes_per_turn — reads are never capped.
+#
+#: One more write is allowed per this many NON-memory tool calls in the
+#: same turn. The cap exists to break a loop, and a loop does nothing
+#: else: a model that calls remember three times in a row still stops at
+#: the profile's cap, because it has earned nothing. A turn that ran
+#: forty tool calls has learned more than two things, and refusing the
+#: third threw the fact away -- measured in the field, six refusals in
+#: one session (2026-10-08), in the session that ran longest.
+#:
+#: Ten, from that session: its longest turn made 40 calls, which buys
+#: four more writes on top of the profile's two.
+_MEMORY_WRITE_EARN_EVERY = 10
 _MEMORY_WRITE_TOOLS: frozenset[str] = frozenset({"remember", "forget"})
 
 
@@ -4893,7 +5473,7 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
 #: principles_guard.EXPECTED_DIGEST). The startup guard requires the file
 #: to match both; this file is protected, so an agent cannot move it.
 PRINCIPLES_DIGEST = (
-    "595bdd3ae230c626bc0a837160def06590c63d4936f5ee3f88ab5dc0cbe88b24"
+    "610797fc16c11c8a455141a318b0d9b7248465f340569596e6f49ca85f8a9d80"
 )
 
 _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
@@ -6309,6 +6889,25 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "show_molecule",
+            "description": (
+                "Show an .xyz (multi-frame too) or .cube file as a rotatable "
+                "3D viewer in the chat; isovalue is the cube's isosurface "
+                "(default 0.02)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "isovalue": {"type": "number"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remember",
             "description": (
                 "Save a DURABLE fact to persistent project memory; it is "
@@ -7637,6 +8236,24 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "make_plot",
+            "description": (
+                "Plot into the workspace and show it in the chat. spec: "
+                "{kind: line|scatter|bar|histogram|box, x, y, "
+                "title, ...}."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "spec": {"type": "object"},
+                },
+                "required": ["spec"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remote_trigger",
             "description": (
                 "POST a small JSON payload to the user-configured "
@@ -8764,6 +9381,19 @@ def _open_tasks_notice(state: dict) -> str:
         return _at.format_open_tasks_notice(state or {})
     except Exception:
         return ""
+
+
+def _open_tasks_key(state: dict) -> tuple:
+    """Identity of an open-task set: (id, status) of every listed task
+    plus the counts, so a change below the listed cap still counts."""
+    st = state or {}
+    rows = tuple(
+        (str(t.get("id", "")), status)
+        for status in ("in_progress", "pending", "blocked")
+        for t in (st.get(status) or []))
+    counts = tuple(sorted((str(k), int(v or 0))
+                          for k, v in (st.get("counts") or {}).items()))
+    return rows + counts
 
 
 def check_completion_claim(
@@ -9904,7 +10534,7 @@ def _clear_green_targets(red_files: set, ran: str) -> None:
 # file. Their targets feed the observed-files ledger consumed by the
 # code-claim citation check (verify_guard.scan_for_ungrounded_code_claims).
 _OBSERVATION_TOOLS = frozenset({
-    "read_file", "grep_file", "notebook_read", "view_image",
+    "read_file", "grep_file", "notebook_read", "view_image", "show_molecule",
     # A file the agent just WROTE is grounded evidence too: its content
     # came from the agent itself, so describing it is not a guess. Without
     # these, an answer about freshly created work products is flagged as
@@ -12167,6 +12797,9 @@ class _DocToolExecutor:
         if name == "check_environment":
             return self._execute_check_environment(arguments, permissions)
 
+        if name == "make_plot":
+            return self._execute_make_plot(arguments, permissions)
+
         # Web tools — outbound HTTP, no filesystem side-effects. The
         # web_tools module enforces its own URL deny-list (localhost /
         # RFC1918 / cloud metadata) and binary-content rejection.
@@ -12209,6 +12842,8 @@ class _DocToolExecutor:
             return self._execute_sum_column(arguments, permissions)
         elif name == "view_image":
             return self._execute_view_image(arguments, permissions)
+        elif name == "show_molecule":
+            return self._execute_show_molecule(arguments, permissions)
         elif name == "forget":
             return self._execute_forget(arguments, permissions)
         elif name == "publish_report":
@@ -12441,7 +13076,9 @@ class _DocToolExecutor:
                 return json.dumps({"error": err})
 
         if not full.exists():
-            return json.dumps({"error": f"File not found: {rel_path}"})
+            return json.dumps({"error": (
+                f"File not found: {rel_path}"
+                + _why_that_path_is_not_there(rel_path, root))})
         if full.is_dir():
             entries = sorted(p.name for p in full.iterdir())[:50]
             return json.dumps({"type": "directory", "entries": entries})
@@ -13655,6 +14292,53 @@ class _DocToolExecutor:
                      "it and describe / use what you SEE."),
         })
 
+    def _execute_show_molecule(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        """Show a molecule file (XYZ, multi-frame XYZ, cube) in the chat.
+
+        Input: ``path`` (relative paths are the session workspace's) and an
+        optional cube ``isovalue``. Output: the ``DELFIN_CARD:`` result of
+        :func:`delfin.dashboard.chat_viewer.render_molecule_tool_result`
+        (resolved path, title, plain summary; no markup), or a plain
+        ``{"error": ...}`` JSON. The file passes ``_check_read_access``
+        exactly like ``read_file``; the resolved path is what is read, so a
+        symlink or ``..`` is judged by its target.
+        """
+        perms = perms or self._permissions
+        path = self._get_path_arg(arguments)
+        if not path:
+            return json.dumps({"error": "show_molecule: 'path' is required"})
+        full = Path(path).expanduser()
+        if not full.is_absolute() and perms is not None:
+            full = Path(perms.workspace) / full
+        # The label is relative to the readable root the file lies in (the
+        # session workspace, a granted read dir, the calc/archive roots).
+        root = None
+        try:
+            root = (perms.find_readable_root_for(full.resolve())
+                    if perms is not None else None)
+        except Exception:
+            root = None
+        label = str(full)
+        if root is not None:
+            try:
+                label = str(full.resolve().relative_to(Path(root).resolve()))
+            except ValueError:
+                pass
+        err = self._check_read_access(perms, full, label=label)
+        if err:
+            return json.dumps({"error": err})
+        try:
+            from delfin.dashboard import chat_viewer
+            return chat_viewer.render_molecule_tool_result(
+                str(full.resolve()),
+                isovalue=arguments.get("isovalue"),
+                title=label,
+            )
+        except (ValueError, OSError) as exc:
+            return json.dumps({"error": f"show_molecule: {exc}"})
+
     def _execute_publish_report(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
@@ -14009,7 +14693,8 @@ class _DocToolExecutor:
             return None, (
                 f"path is outside the allowed workspace roots [{roots_str}]: "
                 f"{rel_path}."
-                + self._hint_if_it_names_the_workspace(rel_path, ws) +
+                + self._hint_if_it_names_the_workspace(rel_path, ws)
+                + _handover_hint(resolved, ws) +
                 " To work on it, ask the user to GRANT this path "
                 "to the agent (add it via --add-dir / extra_workspace_dirs), "
                 "or move the project into an allowed workspace root. Do NOT "
@@ -14470,44 +15155,55 @@ class _DocToolExecutor:
                 "remember_permission(kind='extra_dir', ...) to read it."
             )
 
-        # There IS someone, and they said not to ask. Exempt, for the same
-        # reason the egress gate above is and by the same rule: a profile
-        # that promises nothing is asked stops meaning anything the first
-        # time a gate asks anyway.
+        # Bypass is NOT exempt. It used to be: "a profile that promises
+        # nothing is asked" let every read outside the roots through
+        # silently, so a Bypass session could read anything on the
+        # cluster its account could -- and the working directory, the one
+        # boundary the user drew, meant nothing for reading. Bypass is a
+        # statement about the work INSIDE that boundary ("do not ask me
+        # about each edit or command in my folders"), not a key to the
+        # rest of the filesystem. Reaching outside is a different act and
+        # stays a question in every mode, the way it is in Claude Code.
         #
-        # The line is prompt versus rule, not read versus write. Measured
-        # across the whole surface before drawing it: reading outside the
-        # roots is the ONLY act on this gate that was ever a question —
-        # writing outside, writing into the archive and writing to /etc
-        # are refusals in every mode, asked of nobody. So lifting the
-        # question here cannot loosen a single write.
+        # Nobody answering is not a refusal: the dialog expires, the model
+        # is told the user is away and carries on inside the workspace
+        # (see the timeout branch below). Only an explicit "no" closes the
+        # path for the session, and with no dialog at all it is refused
+        # above.
         #
-        # It also ends a split that the model, not the user, was resolving:
-        # `read_file` on an outside path asked while the same file reached
-        # through an MCP shell did not, because MCP arguments belong to the
-        # server and no path check runs on them. Which of the two the model
-        # happened to pick decided whether the user saw a dialog.
-        if getattr(perms, "mode", "") == "bypassPermissions":
-            _record_security_event(
-                "outside_read_bypass", "read", str(resolved), blocked=False)
-            return None
         # Say what the click actually does. The old wording promised "only
         # this single read" while the approval added the file's PARENT to
         # the writable workspace roots — so approving a read of a file in
         # $HOME made $HOME writable for the session. The grant is now
         # read-only (see ``add_session_read_dir``) and described as it is.
-        _grantable = _is_grantable_read_dir(resolved.parent)
+        #
+        # A DIRECTORY target -- `ls`, `find`, or a `cd` the command then
+        # reads relative to -- opens that directory itself, not its parent:
+        # approving `cd /data/run1` must not open all of /data.
+        try:
+            _is_dir = resolved.is_dir()
+        except OSError:
+            _is_dir = False
+        _grant_dir = resolved if _is_dir else resolved.parent
+        _grantable = _is_grantable_read_dir(_grant_dir)
+        _what = "directory" if _is_dir else "file"
         preview = (
             "[OUTSIDE-WORKSPACE READ]\n"
-            f"The agent wants to read a file outside the allowed roots:\n"
+            f"The agent wants to read a {_what} outside the allowed roots:\n"
             f"  {resolved}\n\n"
-            + ("Approving allows READING this file and other files in\n"
-               f"  {resolved.parent}\n"
+            + (("Approving allows READING this file and other files in\n"
+                if not _is_dir else
+                "Approving allows READING the files in\n")
+               + f"  {_grant_dir}\n"
                "for the rest of this session. It grants NO write access "
                "there, and nothing is saved — a later session asks again."
                if _grantable else
-               "Approving allows READING this one file. Its directory is a "
-               "system, home or key directory and is not opened.")
+               ("Approving allows READING this one file. Its directory is a "
+                "system, home or key directory and is not opened."
+                if not _is_dir else
+                "Approving allows this one command to read in it. It is a "
+                "system, home or key directory and is not opened for the "
+                "session."))
         )
         try:
             ok = bool(perms.confirm_callback(
@@ -14545,7 +15241,7 @@ class _DocToolExecutor:
         # for. Best-effort — a refused grant leaves the approved read intact.
         if _grantable:
             try:
-                _granted = perms.add_session_read_dir(resolved.parent)
+                _granted = perms.add_session_read_dir(_grant_dir)
                 _record_security_event(
                     "read_grant", "read_file", str(_granted), blocked=False)
             except Exception:
@@ -15039,8 +15735,32 @@ class _DocToolExecutor:
             if denied:
                 _record_security_event("deny_pattern", "bash",
                                        f"{cmd[:80]} → {denied}")
+                # One answer per refusal: the route table first; the
+                # pattern-keyed note only where the table is silent, and
+                # only if no command it names is denied again.
+                _hint = _denied_command_hint(denied)
+                if not _hint:
+                    try:
+                        from . import refusal_hints as _refusal_hints
+                        _note = _refusal_hints.suggest(cmd, denied)
+                    except Exception:
+                        _note = ""
+                    if _note and not any(
+                            perms.matches_bash_deny(_prose_blanked(c))
+                            for c in re.findall(r"`([^`]+)`", _note)):
+                        _hint = " " + _note
                 return (f"command rejected by deny-pattern {denied!r}: "
-                        f"refusing to run.{_denied_command_hint(denied)}")
+                        f"refusing to run.{_hint}")
+            # Installs outside the session venv (pip --user/--target/
+            # --prefix and their spellings, another interpreter's pip,
+            # pipx, conda base) are refused here, in the deny tier, so the
+            # refusal holds in every mode; see _refuse_unsafe_install.
+            _unsafe = _refuse_unsafe_install(_prose_blanked(cmd),
+                                            _session_python_for_gate(),
+                                            str(perms.workspace))
+            if _unsafe:
+                _record_security_event("unsafe_install", "bash", cmd[:80])
+                return f"command rejected: unsafe install target{_unsafe}"
             # A walk over a whole file system (find/du/tree/rg, grep -r,
             # ls -R rooted at the home, an ancestor of it or a mount point)
             # is refused in every mode, before anything is asked -- the
@@ -15124,6 +15844,38 @@ class _DocToolExecutor:
             # A contributor's change reaches the default branch through a
             # pull request. No grant covers that push: it is the maintainer's
             # decision, made on the PR, not the contributor's to request.
+            # Merging a pull request is the maintainer's act, on the PR.
+            # A contributor never does it from here, whatever was asked;
+            # a maintainer does it under the same one-request grant a
+            # push needs, because it publishes to the default branch.
+            # Before anything asks the user, ask readiness: a host that
+            # cannot run the command at all (no git; for pr create/merge
+            # no gh or no gh login) has nothing to consent to, so refuse
+            # with the remedy and never prompt. No git ls-remote here.
+            _publishes = (_is_gh_pr_merge(cmd) or _is_git_push(cmd)
+                          or _is_gh_pr_create(cmd))
+            if _publishes:
+                row = _push_capability_block(perms, cmd, args,
+                                             local_only=True)
+                if row is not None:
+                    return _push_block_text(row)
+            if _is_gh_pr_merge(cmd):
+                if _git_role() == "contributor":
+                    _record_security_event("pr_merge_contributor", "bash",
+                                           cmd[:80], blocked=True)
+                    return ("blocked: `gh pr merge` lands a pull request on "
+                            "the default branch, and that is the maintainer's "
+                            "decision, made on the pull request. Tell the user "
+                            "the PR is ready and give them its link; do not "
+                            "merge it from here.")
+                if not (perms.push_grants or {}).get("push"):
+                    _record_security_event("pr_merge_unrequested", "bash",
+                                           cmd[:80], blocked=True)
+                    return ("blocked: `gh pr merge` publishes to the default "
+                            "branch, and the user has not asked for that since "
+                            "their last message. Say which PR you would merge "
+                            "and whether its checks are green, and let them "
+                            "say so." + _handover_line(cmd, "pr_merge_unrequested"))
             if _is_git_push(cmd) and _git_role() == "contributor":
                 _cwd_arg = str(args.get("cwd") or "").strip()
                 _where = Path(perms.workspace)
@@ -15145,6 +15897,27 @@ class _DocToolExecutor:
                         "open the pull request. A maintainer sets "
                         "agent.git_role = maintainer.")
             _asked = perms.confirm_callback is not None
+            # Opening a pull request publishes the branch. It spends the
+            # same one-request grant a push does: the user who asked for a
+            # push asked for its PR, and nobody else did.
+            if _is_gh_pr_create(cmd) and not (perms.push_grants or {}).get("push"):
+                if mode == "bypassPermissions" or not _asked:
+                    _record_security_event("pr_create_unrequested", "bash",
+                                           cmd[:80], blocked=True)
+                    return ("blocked: `gh pr create` publishes the branch as a "
+                            "pull request, and the user has not asked for a push "
+                            "or a PR since their last message. Say what the PR "
+                            "would contain and against which base, and ask."
+                            + _handover_line(cmd, "pr_create_unrequested"))
+                try:
+                    ok = bool(perms.confirm_callback(
+                        "bash", {"command": cmd},
+                        f"$ {cmd}\n(opens a pull request; the user has not "
+                        "asked for one since their last message)"))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    return "blocked: the user did not approve opening the pull request."
             if (_is_git_push(cmd) and not (perms.push_grants or {}).get("push")
                     and (_asked or mode == "bypassPermissions"
                          or perms.matches_bash_auto_allow(cmd))):
@@ -15183,7 +15956,23 @@ class _DocToolExecutor:
                     return ("the user did not approve this push. Do not retry "
                             "it or reach the remote another way.")
                 perms.push_grants["push"] = 1
+                # A granted push must still confirm the host can actually
+                # publish before the command runs. Full check (network
+                # included, hard-bounded inside the doctor): non-PASS
+                # refuses with the remedy rather than letting git fail.
+                row = _push_capability_block(perms, cmd, args)
+                if row is not None:
+                    return _push_block_text(row)
                 return None
+            if _publishes:
+                # Every remaining route a push/pr can run on (a pre-set
+                # grant, a pr create that already confirmed, pr merge
+                # with a grant, bypass, auto-allow) must pass the same
+                # full check right before it is allowed -- a grant here
+                # is a grant to publish, not a waiver of reachability.
+                row = _push_capability_block(perms, cmd, args)
+                if row is not None:
+                    return _push_block_text(row)
             if mode == "bypassPermissions":
                 # Bypass: only the deny-list still applies; everything else
                 # runs unattended. Use this only inside trusted workflows.
@@ -15529,7 +16318,9 @@ class _DocToolExecutor:
             # scan applied but with the WORKSPACE boundary missing. Under a
             # locked scope that is the whole promise, routed around by
             # naming a different server.
-            gate_err = self._gate_bash_read_paths(cmd, perms)
+            gate_err = self._gate_bash_read_paths(
+                cmd, perms, str(args.get("cwd") or args.get("workdir")
+                                or args.get("working_directory") or ""))
             if gate_err is not None:
                 return gate_err
             return self._gate_bash_write_targets(
@@ -15863,7 +16654,9 @@ class _DocToolExecutor:
         if err:
             return json.dumps({"error": err})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg, getattr(perms, "workspace", None)))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
 
@@ -15985,7 +16778,9 @@ class _DocToolExecutor:
         if err:
             return json.dumps({"error": err})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg, getattr(perms, "workspace", None)))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
 
@@ -16393,7 +17188,7 @@ class _DocToolExecutor:
         # Build the concrete pattern list for this directory.
         #
         # On systems with symlinks (e.g. BwUniCluster: /home/<user>/ is a
-        # symlink to /pfs/data6/home/<user>/), the agent may issue bash
+        # symlink to /clusterfs/home/<user>/), the agent may issue bash
         # commands with EITHER path form. We register patterns for both
         # the resolved (canonical) and unresolved (as-given) directory so
         # bash auto-allow matches regardless of which form the agent picks.
@@ -16500,7 +17295,7 @@ class _DocToolExecutor:
         })
 
     def _gate_bash_read_paths(
-        self, cmd: str, perms: "KitToolPermissions"
+        self, cmd: str, perms: "KitToolPermissions", cwd: str = "",
     ) -> Optional[str]:
         """Hold a refused read against every tool, and route a shell file
         dump outside the workspace through the same confirmation as
@@ -16564,7 +17359,13 @@ class _DocToolExecutor:
                     "the tool that asked — do not reach it another way. Ask "
                     "the user what to use instead."
                 )})
-            for target in _bash_outside_reads(scan):
+            # Where the command starts, so relative paths, `..` and links
+            # are judged where they really lead.
+            base = Path(perms.workspace)
+            if cwd:
+                c = Path(str(cwd)).expanduser()
+                base = c if c.is_absolute() else base / c
+            for target in _bash_outside_reads(scan, base):
                 path = Path(target).expanduser()
                 if not path.is_absolute():
                     continue
@@ -16752,7 +17553,8 @@ class _DocToolExecutor:
         cmd = arguments.get("command", "") or ""
         description = arguments.get("description", "") or ""
 
-        gate_err = self._gate_bash_read_paths(cmd, perms)
+        gate_err = self._gate_bash_read_paths(
+            cmd, perms, str(arguments.get("cwd") or ""))
         if gate_err is not None:
             return gate_err
 
@@ -16973,7 +17775,7 @@ class _DocToolExecutor:
         cwd_arg = arguments.get("cwd", "") or ""
         timeout_s = int(arguments.get("timeout_s", 24 * 3600) or 24 * 3600)
 
-        gate_err = self._gate_bash_read_paths(cmd, perms)
+        gate_err = self._gate_bash_read_paths(cmd, perms, str(cwd_arg))
         if gate_err is not None:
             return gate_err
         gate_err = self._gate_bash_write_targets(cmd, arguments, perms)
@@ -17162,7 +17964,9 @@ class _DocToolExecutor:
             if err2:
                 return json.dumps({"error": err2})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg, getattr(perms, "workspace", None)))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
         if resolved.suffix.lower() != ".ipynb":
@@ -17228,7 +18032,9 @@ class _DocToolExecutor:
         if err:
             return json.dumps({"error": err})
         if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path_arg}"})
+            return json.dumps({"error": (
+                f"file not found: {path_arg}"
+                + _why_that_path_is_not_there(path_arg, getattr(perms, "workspace", None)))})
         if not resolved.is_file():
             return json.dumps({"error": f"not a regular file: {path_arg}"})
         if resolved.suffix.lower() != ".ipynb":
@@ -17880,12 +18686,19 @@ class _DocToolExecutor:
         others = _presence.open_sessions(exclude_key=me)
         if not to:
             return json.dumps({
+                # session_id as well as key. `to` accepts either, and the
+                # key is the one that changes when a session is re-opened
+                # -- so a roster with only the key hands back the address
+                # that just failed and never shows the stable one.
                 "sessions": [{
                     "key": r.get("key"), "title": r.get("title", ""),
+                    "session_id": r.get("session_id", ""),
                     "workspace": r.get("workspace", ""),
                     "branch": r.get("branch", ""),
                 } for r in others],
-                "note": ("Pass to=<key> and message to write to one."
+                "note": ("Pass to=<key> and message to write to one. A "
+                         "session's key changes when it is re-opened; "
+                         "to=<session_id> is the address that does not."
                          if others else "No other session is open."),
             }, ensure_ascii=False)
         if to.lower() in ("all", "*", "everyone"):
@@ -17936,6 +18749,7 @@ class _DocToolExecutor:
                               f"{to!r} - address one by its `key`."),
                     "sessions": [{
                         "key": r.get("key"), "title": r.get("title", ""),
+                        "session_id": r.get("session_id", ""),
                         "workspace": r.get("workspace", ""),
                         "branch": r.get("branch", ""),
                     } for r in _named],
@@ -17945,10 +18759,18 @@ class _DocToolExecutor:
             # by its TITLE, got told the key was unknown, and had to ask
             # for the roster it could have been handed (2026-09-17).
             return json.dumps({
-                "error": (f"no other open session {to!r} — address one by its "
-                          "`key` or its exact title."),
+                "error": (f"no other open session {to!r} — address one by "
+                          "its `key`, its `session_id` or its exact title. A "
+                          "key changes when a session is re-opened, so one "
+                          "that worked earlier can stop working; the "
+                          "session_id does not change."),
+                # session_id as well as key. `to` accepts either, and the
+                # key is the one that changes when a session is re-opened
+                # -- so a roster with only the key hands back the address
+                # that just failed and never shows the stable one.
                 "sessions": [{
                     "key": r.get("key"), "title": r.get("title", ""),
+                    "session_id": r.get("session_id", ""),
                     "workspace": r.get("workspace", ""),
                     "branch": r.get("branch", ""),
                 } for r in others],
@@ -18294,8 +19116,26 @@ class _DocToolExecutor:
             base_ref=base,
             created_at=0.0,
         )
+        def _merge_gate(paths):
+            # Every file the merge would write goes through the same write
+            # gate a write_file into the TARGET would: write scope, the
+            # read-only archive, the Self-Modification Guard. A merge was
+            # git applying a diff, unchecked, file by file.
+            if perms is None:
+                return None
+            for rel in paths:
+                refusal = self._gate_write_path(
+                    str(target / rel), perms, "worktree_merge",
+                    {"path": rel})
+                if refusal is not None:
+                    _record_security_event(
+                        "worktree_merge_refused", "worktree_merge",
+                        rel[:200], blocked=True)
+                    return f"'{rel}': {refusal}"
+            return None
+
         try:
-            result = _wt.merge_worktree(info)
+            result = _wt.merge_worktree(info, gate=_merge_gate)
         except _wt.WorktreeError as exc:
             return json.dumps({"error": str(exc)})
         removed = bool(getattr(info, "cleaned_up", False))
@@ -19341,6 +20181,62 @@ class _DocToolExecutor:
         )
         return json.dumps(rec, indent=2, ensure_ascii=False)
 
+    def _execute_make_plot(self, arguments: dict, permissions) -> str:
+        """Render a declarative plot spec into the workspace.
+
+        Input: ``{"spec": {...}}`` (``chat_plots`` module docstring).
+        Output: the ``DELFIN_CARD:`` plot result (``chat_plots.card_result``)
+        or a JSON error. Refused before anything is written: no permissions
+        or no workspace, plan mode, an output path the write gate
+        (``_gate_write_path``) refuses. A ``data: {file: ...}`` source is
+        read only after ``_check_read_access`` admits it (secret-deny list,
+        read roots). The model receives only the result's ``text``; the
+        loop splits it off by tool name.
+        """
+        spec = arguments.get("spec")
+        if not isinstance(spec, dict):
+            return json.dumps({
+                "error": "make_plot: spec must be an object with a 'kind'"
+            })
+        if not permissions:
+            return json.dumps({"error": (
+                "make_plot requires permissions (a workspace to write the "
+                "figure into)."
+            )})
+        ws = getattr(permissions, "workspace", None)
+        if not ws:
+            return json.dumps({"error": (
+                "make_plot requires a workspace to write the figure into."
+            )})
+        if effective_mode(permissions) == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — 'make_plot' rejected. Describe the "
+                "intended change and call exit_plan_mode."
+            )})
+        from . import chat_plots as _cp
+        try:
+            out_path = _cp.resolve_out_path(spec, Path(ws))
+        except _cp.SpecError as exc:
+            return json.dumps({"error": f"make_plot: {exc}"})
+        refuse = self._gate_write_path(
+            str(out_path), permissions, "make_plot", arguments)
+        if refuse is not None:
+            return json.dumps({"error": refuse})
+
+        def _reader(p: Path) -> str:
+            err = self._check_read_access(permissions, p, "make_plot")
+            if err is not None:
+                raise _cp.SpecError(f"data file {p} refused: {err}")
+            with p.open(encoding="utf-8") as fh:
+                return fh.read()
+
+        try:
+            return _cp.make_plot(spec, out_dir=str(ws), reader=_reader)
+        except _cp.SpecError as exc:
+            return json.dumps({"error": f"make_plot: {exc}"})
+        except Exception as exc:  # matplotlib refusing a value, ...
+            return json.dumps({"error": f"make_plot failed: {exc}"})
+
     def _execute_web_search(self, arguments: dict) -> str:
         query = (arguments.get("query", "") or "").strip()
         max_results = int(arguments.get("max_results", 8) or 8)
@@ -19994,6 +20890,145 @@ def set_bash_isolation_override(mode: str) -> None:
     _BASH_ISOLATION_OVERRIDE = str(mode or "")
 
 
+def _handover_hint(resolved, workspace) -> str:
+    """A clause naming the shared directory, when the refused path is
+    another session's worktree. Otherwise "".
+
+    This is where the need showed up. Three sessions worked on one
+    repository, each in its own worktree, and handed each other
+    FILENAMES; every handover was refused by this very message, which
+    told them to ask the user to grant the path. Granting one session
+    read access to another's worktree would hand over that session's
+    whole workspace -- the right answer is the one directory they share,
+    and the refusal is where it is useful to say so.
+
+    Only for a path under the SAME repository's worktrees: a refusal for
+    an unrelated directory has nothing to do with handing work over, and
+    a hint that fires everywhere is one nobody reads. Never raises.
+    """
+    try:
+        from . import exchange as _ex
+        room = _ex.directory_for(workspace, create=False)
+        if room is None:
+            return ""
+        here = Path(resolved)
+        if room in here.parents or here == room:
+            return ""                       # already the shared directory
+        owner = room.parent.parent          # the repository that owns it
+        worktrees = owner / ".delfin" / "worktrees"
+        if worktrees not in here.parents:
+            return ""
+        return (f" That path is in another session's worktree. The one "
+                f"place sessions on this repository can hand work over is "
+                f"{room} — ask that session to put it there (it is already "
+                f"one of your roots), rather than asking for its worktree.")
+    except Exception:
+        return ""
+
+
+def _why_that_path_is_not_there(path_arg: str, workspace=None) -> str:
+    """A clause naming the mistake a missing path reads like, or "".
+
+    Input: the path as the caller wrote it. Output: a sentence to append
+    to "file not found", or "" when the path says nothing about itself.
+    Semantics: advisory only -- it never decides whether a path is
+    allowed and never looks inside one.
+
+    Two shapes, both from one afternoon's field reports:
+
+    An elision. A model that abbreviates a long path in prose will
+    sometimes send the abbreviation: `/pfs/.../ChemDarwin/README.md`
+    reached the file layer twice. "Not found" is true and useless; the
+    path is not a path.
+
+    A home directory built by hand. `/home/u12345/agent_workspace/...`
+    where the account's home is `/clusterfs/groups/team/u12345`. The guess
+    is reasonable and wrong, and the answer costs a round every time
+    because nothing in the refusal says where home actually is. Named
+    only when the account name really does appear in the path somewhere
+    other than at its own home, so an ordinary typo gets no lecture.
+
+    Never raises: a path that cannot be parsed simply says nothing.
+    """
+    try:
+        text = str(path_arg or "")
+        if not text:
+            return ""
+        parts = [seg for seg in text.replace("\\", "/").split("/")]
+        if any(seg == "..." for seg in parts):
+            return (" — the path contains a '...' segment, which reads as an "
+                    "abbreviation rather than a directory. Send the path in "
+                    "full, or list the parent and pick from what comes back.")
+        home = Path.home()
+        if (Path(text).is_absolute() and home.name
+                and home.name in parts
+                and not text.startswith(str(home))):
+            return (f" — this account's home directory is {home}. The path "
+                    f"puts '{home.name}' somewhere else, which is how a home "
+                    "path built by hand usually goes wrong here.")
+        elsewhere = _on_another_sessions_branch(text, workspace)
+        if elsewhere:
+            return elsewhere
+    except Exception:
+        return ""
+    return ""
+
+
+def _on_another_sessions_branch(path_arg: str, workspace) -> str:
+    """A clause when the same relative path exists in a sibling worktree.
+
+    The third shape from the field (2026-10-08): a session built its
+    component, found `delfin/chemdarwin_interface.py` absent from its own
+    worktree, and cleanly reverted 475 lines -- the module was on another
+    session's branch. The shared handover directory carries documents;
+    code reaches a worktree through main. "File not found" was true and
+    said nothing about either.
+
+    Looks only at the SAME repository's worktrees and only for existence
+    of the same relative path, never at content: that a file exists on a
+    sibling branch is what `git branch -a` would tell anyone. Names the
+    branch and the way: that session pushes and opens a PR; this one
+    merges main. Never raises.
+    """
+    try:
+        from . import exchange as _ex
+        if not workspace or Path(path_arg).is_absolute():
+            return ""
+        room = _ex.directory_for(workspace, create=False)
+        if room is None:
+            return ""
+        owner = room.parent.parent
+        trees = owner / ".delfin" / "worktrees"
+        if not trees.is_dir():
+            return ""
+        mine = Path(workspace).resolve()
+        rel = Path(path_arg)
+        found = []
+        for tree in sorted(trees.iterdir()):
+            if not tree.is_dir() or tree.resolve() == mine:
+                continue
+            if (tree / rel).exists():
+                branch = ""
+                try:
+                    from .session_presence import repository_of
+                    branch = str(repository_of(str(tree)).get("branch") or "")
+                except Exception:
+                    branch = ""
+                found.append(f"{tree.name}" + (f" (branch {branch})" if branch else ""))
+            if len(found) >= 3:
+                break
+        if not found:
+            return ""
+        return (f" — this path exists in another session's worktree: "
+                f"{', '.join(found)}. Code reaches you through main, not "
+                "through their worktree: ask that session to push its "
+                "branch and open a pull request, then merge origin/main "
+                "here (`git merge origin/main`). Documents go through the "
+                "shared handover directory instead.")
+    except Exception:
+        return ""
+
+
 def _bash_isolation_argv(
     cmd: str,
     run_cwd,
@@ -20154,8 +21189,13 @@ def _bash_isolation_argv(
         roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
     except Exception:
         roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
+    # --bind-try: a root that does not exist yet is skipped, not fatal. The
+    # repository's handover directory (exchange.with_exchange) is a root
+    # from the start but is created on first write -- and a plain --bind of
+    # it made bwrap refuse to start, so EVERY shell command of the session
+    # failed with "Can't find source path …/.delfin/handover" (2026-10-09).
     for r in roots + [str(Path(p).resolve()) for p in extra_write]:
-        args += ["--bind", r, r]
+        args += ["--bind-try", r, r]
     git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
     for r in git_roots:
         try:
@@ -20623,6 +21663,11 @@ class OpenAIClient(_BaseClient):
         # moves the other way (2 -> 11), so this is sent by CAPABILITY, never
         # by default.
         self.effort = (effort or "").strip().lower()
+        # One-shot DSML re-request latch (U5 phase 3): per run, at most one
+        # corrective re-request notice is emitted for a leaked
+        # <invoke name=...>...</invoke> tool call written as text, so a
+        # re-request that leaks again is never forwarded a second time.
+        self._dsml_rerequest = False
         self.model = model or self.DEFAULT_MODEL
         # Provider identity ("openai"|"kit"|"ollama"). Used to gate
         # provider-specific request shaping (Ollama num_ctx, reasoning_effort
@@ -21034,6 +22079,9 @@ class OpenAIClient(_BaseClient):
         # the call gets the parameter's default — which reads as the
         # lowest effort on a reasoning model. Nobody chose that.
         self._turn_thinking_budget = int(thinking_budget or 0)
+        # The DSML re-request notice is latched per call: one notice per
+        # request, re-armed on the next (the engine bounds the re-request).
+        self._dsml_rerequest = False
         # Mid-session memory nudge (package 7): the one-per-user-turn cap
         # is reset HERE, at the entry of the public turn method — not
         # derived from any turn counter, which would be a guess about
@@ -21051,6 +22099,9 @@ class OpenAIClient(_BaseClient):
         # rounds. Read from the profile once, here, so a model switch
         # mid-session takes effect on the next turn and not mid-loop.
         _memory_writes = 0
+        # Tool calls this turn that were NOT memory writes. The cap earns
+        # headroom from them; see _MEMORY_WRITE_EARN_EVERY.
+        _work_calls = 0
         try:
             from .model_profiles import get_profile as _gp_mem
             _memory_cap = int(_gp_mem(self.model).max_memory_writes_per_turn or 0)
@@ -21538,6 +22589,9 @@ class OpenAIClient(_BaseClient):
         _AUTO_CONT_CAP = 12
         _auto_cont_count = 0
         _did_tools_since_cont = False
+        # Whether the announced-action continuation already fired this
+        # turn; see the second auto-continue trigger.
+        _announced_once = False
         # Completion events that arrive as the turn is ENDING. Both drains
         # below are exactly-once: what they hand over is gone from their
         # store, so it has to be acted on in this turn -- nothing in the
@@ -22132,6 +23186,31 @@ class OpenAIClient(_BaseClient):
                               f"executing {len(_recovered)} tool call(s) "
                               f"({_names}) now]\n"),
                     )
+                elif not self._dsml_rerequest:
+                    # DSML leak (U5 phase 3): deepseek-v4-flash writes a tool
+                    # call as literal ``<invoke name=...>...</invoke>`` text
+                    # instead of calling the tool, so it runs as nothing. A
+                    # COMPLETE block is a re-request case, NOT a silent
+                    # redispatch like the Harmony JSON above: emit a
+                    # corrective notice exactly once telling the model to
+                    # call the tool, latched per run so a re-request that
+                    # leaks AGAIN is never forwarded a second time (loop).
+                    _dsml_leaked = None
+                    try:
+                        from delfin.agent.text_sanitize import (
+                            leaked_tool_call_dominates,
+                        )
+                        _dsml_leaked = leaked_tool_call_dominates(_joined)
+                    except Exception:
+                        _dsml_leaked = None
+                    if _dsml_leaked:
+                        self._dsml_rerequest = True
+                        yield StreamEvent(
+                            type="notice",
+                            text=(f"\n\n⚠️ a call to {_dsml_leaked[0]} "
+                                  f"was written as text instead of calling "
+                                  f"the tool; it did not run.\n"),
+                        )
 
             # If model made tool calls, execute them locally and loop
             if finish_reason == "tool_calls" and _tool_calls:
@@ -22274,15 +23353,19 @@ class OpenAIClient(_BaseClient):
                     # content look like progress.
                     if fn_name in _MEMORY_WRITE_TOOLS and _memory_cap:
                         _memory_writes += 1
-                        if _memory_writes > _memory_cap:
+                        _allowed = _memory_cap + (
+                            _work_calls // _MEMORY_WRITE_EARN_EVERY)
+                        if _memory_writes > _allowed:
                             result = json.dumps({"error": (
                                 f"memory write refused: this turn has "
-                                f"already recorded {_memory_cap} fact(s), "
-                                f"which is the limit for this model. You "
+                                f"already recorded {_allowed} fact(s), "
+                                f"which is the limit for this model after "
+                                f"{_work_calls} other tool call(s). You "
                                 f"are recording instead of answering — "
                                 f"finish the task the user asked for, and "
                                 f"remember at most what is genuinely "
-                                f"durable, once."
+                                f"durable, once. The allowance rises as "
+                                f"the turn does real work."
                             )})
                             yield StreamEvent(
                                 type="tool_result",
@@ -22296,6 +23379,12 @@ class OpenAIClient(_BaseClient):
                             })
                             _round_results.append(result)
                             continue
+                    elif fn_name not in _MEMORY_WRITE_TOOLS:
+                        # Counted BEFORE dispatch, so a call that the gate
+                        # refuses still counts as work: a turn spent being
+                        # told no has still not spent itself recording, and
+                        # the cap is about recording instead of working.
+                        _work_calls += 1
 
                     # ACTION-protocol repair: roles that drive the UI via
                     # plain-text "ACTION: /command" lines sometimes emit the
@@ -22619,6 +23708,24 @@ class OpenAIClient(_BaseClient):
                     _thrash_note = _thrash_check(_thrash_state, fn_name, fn_args)
                     if _thrash_note:
                         context_result = _thrash_note + "\n\n" + context_result
+                    # A show_molecule card reaches the model as its plain
+                    # summary line only, wrapped as untrusted; the path and
+                    # title stay in the tool-result event the dashboard
+                    # draws from. Keyed on the tool name: the same prefix
+                    # in another tool's output is that tool's text.
+                    if (fn_name == "show_molecule"
+                            and str(result).startswith("DELFIN_CARD:")):
+                        from delfin.dashboard import chat_viewer as _cv
+                        _cv_text = _cv.card_model_text(str(result))
+                        if _cv_text is not None:
+                            context_result = _wrap_untrusted(_cv_text)
+                    # make_plot: the same split for its plot card.
+                    if (fn_name == "make_plot"
+                            and str(result).startswith("DELFIN_CARD:")):
+                        from delfin.dashboard import chat_viewer as _cv
+                        _cv_text = _cv.card_model_text(str(result), "plot")
+                        if _cv_text is not None:
+                            context_result = _wrap_untrusted(_cv_text)
                     api_messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
@@ -23178,6 +24285,37 @@ class OpenAIClient(_BaseClient):
             # "Soll ich git push origin main jetzt ausführen?", was sent back
             # in by the line below, and tried the push it had just asked
             # about -- which the gate refused a second time.
+            # Second trigger, from the field (2026-10-08): the model ENDS
+            # its turn by announcing what it is about to do -- "Zuerst lese
+            # ich die betroffenen Zeilen, um sauber zu editieren:" -- and
+            # does not do it. One session stopped exactly there; another
+            # spent seven consecutive turns announcing and calling nothing.
+            # Neither had open tasks, so the trigger above could not fire.
+            # An announcement is a stronger signal than an open task: the
+            # model has said the action itself. Once per turn, so a model
+            # that announces again after being sent back costs one extra
+            # round and not a loop; and never over a question.
+            _announced = (not _announced_once
+                          and _auto_cont_count < _AUTO_CONT_CAP
+                          and not self._waiting_on_watched_jobs()
+                          and _announces_an_action("".join(_text_chunks)))
+            if _announced:
+                _announced_once = True
+                _auto_cont_count += 1
+                _did_tools_since_cont = False
+                _final = "".join(_text_chunks) if _text_chunks else ""
+                if _final.strip():
+                    api_messages.append({"role": "assistant", "content": _final})
+                api_messages.append({"role": "user", "content": (
+                    "You ended your turn by announcing an action and did "
+                    "not take it. Take it NOW with the tool call you "
+                    "described, and continue until the step is done. If the "
+                    "action is risky or you are unsure the user wants it, "
+                    "ask with ask_user_question instead of announcing.")})
+                yield StreamEvent(
+                    type="notice", text="\n\n↻ announced an action → taking it\n")
+                continue
+
             if (_did_tools_since_cont and _auto_cont_count < _AUTO_CONT_CAP
                     and self._has_pending_tasks()
                     and not self._waiting_on_watched_jobs()
@@ -23218,6 +24356,18 @@ class OpenAIClient(_BaseClient):
             # it, in the stream, so the headless run prints it too.
             _end_state = self._open_task_state()
             _end_notice = _open_tasks_notice(_end_state)
+            # Said once per open set: the same list at the end of every
+            # turn of a long plan is noise the reader learns to skip, and
+            # the task line at the foot of the chat shows it anyway. A
+            # changed set (a task added, started, finished) is said again;
+            # an unreadable ledger is always said.
+            if _end_notice and str(_end_state.get("state", "")) == "open":
+                _key = _open_tasks_key(_end_state)
+                if _key == getattr(self, "_announced_open_tasks", None):
+                    _end_notice = ""
+                self._announced_open_tasks = _key
+            else:
+                self._announced_open_tasks = None
             if _end_notice:
                 yield StreamEvent(type="notice",
                                   text="\n\n" + _end_notice + "\n")
@@ -23274,6 +24424,44 @@ class OpenAIClient(_BaseClient):
 # Codex CLI backend (uses OpenAI Codex CLI binary)
 # ---------------------------------------------------------------------------
 
+_CODEX_FULL_AUTO: dict[str, bool] = {}
+
+
+def _codex_has_full_auto(codex_path: str) -> bool:
+    """Whether this codex still accepts ``--full-auto``. Asked once."""
+    if codex_path not in _CODEX_FULL_AUTO:
+        try:
+            out = subprocess.run([codex_path, "exec", "--help"],
+                                 capture_output=True, text=True, timeout=20)
+            _CODEX_FULL_AUTO[codex_path] = "--full-auto" in (out.stdout or "")
+        except Exception:
+            _CODEX_FULL_AUTO[codex_path] = False
+    return _CODEX_FULL_AUTO[codex_path]
+
+
+_CODEX_READ_GAP_ANNOUNCED = False
+
+
+def _announce_codex_reads_unchecked() -> None:
+    """Say once that the Codex backend reads outside the folder unasked.
+
+    Its sandbox confines writes, not reads, in every mode, and DELFIN's
+    read gate cannot be put in front of it safely (see the Bypass entry in
+    ``_PERM_TO_CODEX_FLAGS``). A boundary that does not hold is shown,
+    not implied.
+    """
+    global _CODEX_READ_GAP_ANNOUNCED
+    if _CODEX_READ_GAP_ANNOUNCED:
+        return
+    _CODEX_READ_GAP_ANNOUNCED = True
+    _record_security_event(
+        "isolation_missing", "codex",
+        "the Codex CLI backend can READ outside the working folder without "
+        "asking, in every mode -- its sandbox confines writes only. Use the "
+        "Claude CLI or a chat-API backend where reading outside must ask.",
+        blocked=False)
+
+
 class CodexCLIClient(_BaseClient):
     """Use the OpenAI Codex CLI (``codex exec``) for agent tasks.
 
@@ -23312,7 +24500,15 @@ class CodexCLIClient(_BaseClient):
         # that says "bypass" gets that.
         "acceptEdits":         ["--full-auto", "--sandbox", "workspace-write"],
         "auto":                ["--full-auto", "--sandbox", "workspace-write"],
-        "bypassPermissions":   ["--full-auto", "--sandbox", "danger-full-access"],
+        # Bypass skips the questions inside the working folder; it does not
+        # lift the folder (user, 2026-10-09). danger-full-access did: the
+        # whole disk, writable, no sandbox. DELFIN's own gate cannot sit in
+        # front of Codex the way it sits in front of Claude Code -- a
+        # PreToolUse hook only runs with --dangerously-bypass-hook-trust,
+        # which also runs every hook a trusted repository ships, unreviewed
+        # (measured with codex 0.160). So Codex keeps its own kernel
+        # sandbox here: writes stay in the workspace.
+        "bypassPermissions":   ["--full-auto", "--sandbox", "workspace-write"],
     }
 
     supplies_session_id = True          # emits a session_init event
@@ -23373,7 +24569,12 @@ class CodexCLIClient(_BaseClient):
         codex_flags = self._PERM_TO_CODEX_FLAGS.get(
             self.permission_mode, ["--full-auto"]
         )
+        # codex 0.160 removed --full-auto (exec never asks for approval
+        # any more) and refuses to start when given it.
+        if not _codex_has_full_auto(self.codex_path):
+            codex_flags = [f for f in codex_flags if f != "--full-auto"]
         cmd.extend(codex_flags)
+        _announce_codex_reads_unchecked()
         if self.cwd:
             cmd.extend(["-C", self.cwd])
 
@@ -23500,6 +24701,24 @@ def _map_kit_permission_mode(permission_mode: str) -> str:
     return table.get(pm, "default")
 
 
+def _persisted_read_dirs(persisted) -> tuple[Path, ...]:
+    """The saved "always allow reading here" directories that still qualify.
+
+    Re-checked on every load: a directory saved before it was a symlink to
+    $HOME, or that no longer exists, opens nothing.
+    """
+    out: list[Path] = []
+    for d in getattr(persisted, "read_dirs", None) or ():
+        try:
+            p = Path(d).expanduser().resolve()
+        except Exception:
+            continue
+        if p in out or not p.is_dir() or not _is_grantable_read_dir(p):
+            continue
+        out.append(p)
+    return tuple(out)
+
+
 def _workspace_sandbox(
     cwd: str, permission_mode: str,
     kit_confirm_callback: Optional[Callable[[str, dict, str], bool]],
@@ -23533,12 +24752,14 @@ def _workspace_sandbox(
                   "plan", "default", "acceptEdits", "bypassPermissions"
               } else "default")
     )
+    from . import exchange as _exchange
     local_perms = KitToolPermissions(
         workspace=local_ws, mode=local_mode,
         confirm_callback=kit_confirm_callback,
-        extra_workspace_dirs=local_extra,
+        extra_workspace_dirs=_exchange.with_exchange(local_ws, local_extra),
         read_only_workspace_dirs=tuple(read_only_dirs or ()),
         confirm_write_dirs=tuple(confirm_write_dirs or ()),
+        session_read_dirs=_persisted_read_dirs(persisted),
         bash_auto_allow_patterns=tuple(_DEFAULT_BASH_AUTO_ALLOW),
         bash_deny_patterns=tuple(_DEFAULT_BASH_DENY_PATTERNS),
     )
@@ -23640,13 +24861,16 @@ def create_client(
             deny_patterns = deny_patterns + extra_deny
         write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
 
+        from . import exchange as _exchange
         kit_perms = KitToolPermissions(
             workspace=kit_workspace,
             mode=kit_mode,
             confirm_callback=kit_confirm_callback,
-            extra_workspace_dirs=kit_extra,
+            extra_workspace_dirs=_exchange.with_exchange(kit_workspace,
+                                                         kit_extra),
             read_only_workspace_dirs=tuple(read_only_dirs or ()),
             confirm_write_dirs=tuple(confirm_write_dirs or ()),
+            session_read_dirs=_persisted_read_dirs(persisted),
             bash_auto_allow_patterns=allow_patterns,
             bash_deny_patterns=deny_patterns,
             write_allow_globs=write_globs,
@@ -23718,4 +24942,6 @@ def create_client(
                      mcp_config=mcp_config,
                      allowed_tools=allowed_tools,
                      extra_dirs=extra_dirs,
-                     effort=effort)
+                     effort=effort,
+                     read_only_dirs=read_only_dirs,
+                     confirm_callback=kit_confirm_callback)

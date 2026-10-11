@@ -197,6 +197,12 @@ _STATIC: dict[str, dict[str, Any]] = {
                             "— spends the completion budget on hidden "
                             "reasoning before any content, so it needs the "
                             "thinking token floor; listing says 512k"},
+    # The flash line of glm-5.3, which is what the long-running sessions
+    # run on. It had no entry, so it fell to the 32,768 heuristic while
+    # the endpoint accepted 85,535-token requests from it (2026-10-08).
+    "kit.glm-5.3-flash": {"context_window": 131_072, "is_reasoning": True,
+                          "note": "same family as kit.glm-5.3; listing "
+                                  "says 512k; observed >= 85k accepted"},
     "kit.deepseek-v4-flash": {"context_window": 131_072,
                               "note": "endpoint-verified 2026-09-07; V4 chat "
                                       "line, native function calling; "

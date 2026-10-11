@@ -188,9 +188,13 @@ def _memory_entry_header(title: str, rel: str, raw: str) -> str:
     written = _stamp("created_at")
     if written:
         parts.append(written)
-    recalled = _stamp("updated_at")
-    if recalled and recalled != written:
-        parts.append(f"last recalled {recalled}")
+    # No "last recalled <date>". It moved every day a note was recalled,
+    # and the prompt head is cached as a prefix: the first byte that
+    # differs from yesterday makes everything after it cold. Measured
+    # between two builds of the solo prompt one second apart, this date
+    # was the ONLY difference, at 95.6% of the way in -- so 4.4% of the
+    # system prompt plus the whole conversation after it was re-read at
+    # full price for a date the model does nothing with.
     return f"# {title} ({rel}) — {', '.join(parts)}"
 
 

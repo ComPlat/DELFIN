@@ -67,7 +67,17 @@ dependencies = [
     # the one release restores the signal; it does not fix the chemistry,
     # and the code has to be made to work with the new series before this
     # line can go.
-    "rdkit>=2023.3.1,!=2026.3.6,<2027",
+    #
+    # The 2026.9 series is held back the same way, dated for the same
+    # reason. Between two slow-tests runs on 2026-10-09 nothing changed
+    # but rdkit, 2026.3.5 -> 2026.9.1, and ten builder tests failed
+    # (chelate backbone, metalloid donors, isomer benchmark and
+    # determinism, multihapto, UFF determinism). Measured on the same
+    # checkout: 2026.9.1 -> 4 failed / 12 passed over three of those
+    # files; 2026.3.5 -> 14 passed, 2 xfailed. The fast gate passes on
+    # 2026.9.1; only the construction tests notice. Lift this when they
+    # pass on 2026.9.
+    "rdkit>=2023.3.1,!=2026.3.6,<2026.9",
     "stk>=2024.1,<2027",
     "openbabel-wheel>=3.1.0,<4",
     "ipykernel>=6.0,<8",

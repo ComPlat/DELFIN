@@ -41,7 +41,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 __all__ = [
     "Proposal",
@@ -49,6 +49,7 @@ __all__ = [
     "find",
     "render",
     "apply_proposal",
+    "install_proposal",
     "APPLICABLE",
     "ADVICE",
 ]
@@ -77,6 +78,15 @@ class Proposal:
     advice: str
     command: str = ""
     setting: Optional[tuple] = None
+    #: Where the action would run (e.g. the session venv). Shown so a
+    #: person sees that nothing is installed into an arbitrary or private
+    #: location.
+    target: str = ""
+    #: What speaks FOR / AGAINST approving, one line each.
+    pros: Tuple[str, ...] = ()
+    cons: Tuple[str, ...] = ()
+    #: How to undo the action, when there is one.
+    undo: str = ""
 
     @property
     def kind(self) -> str:
@@ -117,6 +127,43 @@ def _proposal(row: dict) -> Proposal:
     )
 
 
+def _test_runner_proposal(row: dict) -> Optional[Proposal]:
+    """A proposal for the missing test gate, from the catalog, not the row.
+
+    The doctor's test-runner row used to carry its own remedy
+    (``sys.executable -m pip install 'delfin-complat[test]'``), which is the
+    field-report vector: it targets the front-most interpreter, not the
+    session venv, and names an extra the default install does not select.
+    The remedy is DELFIN's to choose, so this builds it from the catalog --
+    the session-venv command, with target/pros/cons/undo -- and declines
+    any row command. ``install_proposal`` is thereby given a real caller: a
+    missing pytest surfaces as the full, safe proposal it was written for.
+    """
+    try:
+        from delfin import installer as _installer
+    except Exception:
+        return None
+    tool = _installer.find("pytest")
+    command = (
+        _installer.python_tools_install_command(tool)
+        if tool is not None else "")
+    if not command:
+        return None
+    check = str(row.get("check", "") or "test runner")
+    return install_proposal(
+        check=check,
+        detail=str(row.get("detail", "") or
+                   "pytest is not installed in the session interpreter"),
+        command=command,
+        target=_installer.session_python(),
+        pros=("runs every DELFIN test in the interpreter DELFIN uses",),
+        cons=("adds pytest and the test gate's packages to the session venv",),
+        undo=command.replace(" install ", " uninstall ", 1) + " --yes",
+        status=str(row.get("status", "") or "WARN"),
+        advice=str(row.get("fix", "") or ""),
+    )
+
+
 def proposals(workspace: str | Path | None = None, *,
               rows: list[dict] | None = None) -> list[Proposal]:
     """Everything the doctor reported that is not already fine.
@@ -141,7 +188,14 @@ def proposals(workspace: str | Path | None = None, *,
             continue
         if str(row.get("status", "")).upper() == "PASS":
             continue
-        prop = _proposal(row)
+        if str(row.get("check", "")).lower() == "test runner":
+            # The missing test gate is the one thing DELFIN can install,
+            # and the command is DELFIN's to choose -- route it through the
+            # catalog so it always targets the session venv.
+            routed = _test_runner_proposal(row)
+            prop = routed if routed is not None else _proposal(row)
+        else:
+            prop = _proposal(row)
         if not prop.check:
             continue
         pid = prop.pid
@@ -179,9 +233,55 @@ def render(prop: Proposal) -> str:
     if prop.kind == APPLICABLE:
         lines.append(f"  DELFIN can do this for you: {prop.action}")
         lines.append(f"  approve it with: /fix {prop.pid} run")
+        if prop.target:
+            lines.append(f"  target: {prop.target}")
+        for pro in prop.pros or ():
+            lines.append(f"  + {pro}")
+        for con in prop.cons or ():
+            lines.append(f"  - {con}")
+        if prop.undo:
+            lines.append(f"  to undo: {prop.undo}")
     else:
         lines.append("  Not something DELFIN can apply: this one is yours.")
     return "\n".join(lines)
+
+
+def install_proposal(
+    check: str,
+    detail: str,
+    *,
+    command: str,
+    target: str = "",
+    pros: Tuple[str, ...] = (),
+    cons: Tuple[str, ...] = (),
+    undo: str = "",
+    status: str = "WARN",
+    advice: str = "",
+) -> "Proposal":
+    """A proposal for something DELFIN can install, carrying what a person
+    needs to decide.
+
+    An install is an APPLICABLE proposal: the ``command`` is what is shown,
+    approved verbatim and then run through the ordinary shell path. Around
+    it the caller states where it goes (``target``), what speaks for and
+    against it (``pros``/``cons``) and how to reverse it (``undo``), so the
+    render is a decision rather than a guess. The ``command`` is trusted as
+    given -- building it is the caller's job, and for catalogue tools that
+    is :func:`delfin.installer.python_tools_install_command`, which pins it
+    to the session venv and emits no ``--user``.
+    """
+    return Proposal(
+        pid=_slug(check),
+        check=check,
+        status=status,
+        detail=detail,
+        advice=advice,
+        command=command.strip(),
+        target=target,
+        pros=tuple(pros or ()),
+        cons=tuple(cons or ()),
+        undo=undo,
+    )
 
 
 def apply_proposal(prop: Proposal, approved_action: str, *,

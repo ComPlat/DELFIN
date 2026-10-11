@@ -39,6 +39,7 @@ from typing import Deque, Optional
 # fails when a new kind is recorded without a label.
 _KINDS = {
     "deny_pattern":   ("⛔", "Denied command"),
+    "unsafe_install": ("⛔", "Install outside the session venv"),
     "secret_path":    ("🔑", "Secret-path access blocked"),
     "script_payload": ("📜", "Script payload blocked"),
     "self_mod":       ("🛡", "Self-modification guarded"),
@@ -57,6 +58,7 @@ _KINDS = {
     # so the panel is the only place it is ever visible — which is exactly
     # why the rung records instead of asking, rather than doing neither.
     "outside_read_bypass": ("👁", "Read outside the roots (Bypass)"),
+    "worktree_merge_refused": ("⛔", "Worktree merge refused (a file it writes is not allowed)"),
     "approval_timeout": ("⌛", "Approval window expired"),
     "isolation":      ("🔒", "Filesystem isolation active"),
     "isolation_missing": ("⚠", "Filesystem isolation NOT active"),
@@ -76,6 +78,9 @@ _KINDS = {
     "approval_from_outside": ("\U0001f441", "Approved from outside the terminal"),
     "settings_updated": ("🛡", "Settings changed by a security update"),
     "push_unrequested": ("📤", "Push nobody asked for"),
+    "pr_create_unrequested": ("📤", "Pull request nobody asked for"),
+    "pr_merge_contributor": ("🚫", "Merge attempted by a contributor"),
+    "pr_merge_unrequested": ("📤", "Merge nobody asked for"),
     "push_default_branch": ("🔀", "Contributor push to the default branch"),
     "auto_verify":    ("🔁", "Auto-verify caught a problem"),
     "auto_verify_exhausted": ("🔁", "Auto-verify gave up"),

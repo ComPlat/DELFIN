@@ -62,3 +62,51 @@ def test_over_budget_the_turn_starts_fresh_with_the_prompt_kept(monkeypatch):
 
 def test_a_broken_engine_degrades_to_the_plain_prompt():
     assert repl.prepare_fresh_turn(object(), "p") == "p"
+
+
+class _EngineWithTasks(_Engine):
+    """The engine as both surfaces hand it in: a client with a task store."""
+
+    def __init__(self, n_messages, chars, summary):
+        super().__init__(n_messages, chars)
+
+        class _Client:
+            def _open_task_state(self_inner):
+                return summary
+        self.client = _Client()
+
+
+def test_a_fresh_start_names_the_open_task(monkeypatch):
+    """``TaskState`` was constructed nowhere, so the fresh block carried
+    no task on either surface. The engine's own store is rendered now."""
+    monkeypatch.setattr(repl, "_archive_cut_history", lambda e, h: None)
+    eng = _EngineWithTasks(40, 4_000, {
+        "state": "open",
+        "in_progress": [{"id": 2, "seq": 2, "subject": "Implement the fitness oracle"}],
+        "pending": [{"id": 3, "seq": 3, "subject": "Write the CSV writer"}],
+        "blocked": [{"id": 4, "seq": 4, "subject": "Run on the cluster",
+                     "blocked_reason": "waiting for the queue"}],
+    })
+    out = repl.prepare_fresh_turn(eng, "next step")
+    assert "Implement the fitness oracle" in out
+    assert "[pending] Write the CSV writer" in out
+    assert "blocked: waiting for the queue" in out
+
+
+def test_no_open_tasks_adds_no_block(monkeypatch):
+    monkeypatch.setattr(repl, "_archive_cut_history", lambda e, h: None)
+    eng = _EngineWithTasks(40, 4_000, {"state": "none", "in_progress": [],
+                                       "pending": [], "blocked": []})
+    out = repl.prepare_fresh_turn(eng, "next step")
+    assert "Open tasks" not in out and out.endswith("next step")
+
+
+def test_a_task_store_that_cannot_be_read_costs_nothing(monkeypatch):
+    monkeypatch.setattr(repl, "_archive_cut_history", lambda e, h: None)
+    eng = _Engine(40, 4_000)
+    class _Broken:
+        def _open_task_state(self):
+            raise RuntimeError("store unreadable")
+    eng.client = _Broken()
+    out = repl.prepare_fresh_turn(eng, "next step")
+    assert out.endswith("next step") and eng.start_fresh

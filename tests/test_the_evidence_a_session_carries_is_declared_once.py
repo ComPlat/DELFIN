@@ -190,6 +190,8 @@ def _assigned_attributes(node: ast.AST) -> set[str]:
 # "does a resumed session need this?" to be answered here, in one line,
 # instead of being answered by silence three releases later.
 _NOT_CARRIED = {
+    # U5: per-turn DSML re-request latches, re-armed by every real user turn.
+    "_dsml_leak_spent", "_dsml_guard_active",
     # -- per-turn latch: the follow-up note of the turn that just ended;
     #    a resumed session starts with no turn behind it --
     "pending_turn_continuation", "_continuation_fired",

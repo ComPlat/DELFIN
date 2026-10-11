@@ -69,6 +69,7 @@ _NOT_EXERCISED_HERE = {
     "session_message": "tests/test_sessions_can_write_to_each_other.py — "
                        "needs a second open session",
     "run_tests": "would run the suite inside the suite",
+    "make_plot": "renders a plot card; covered by tests/test_v2_*.py",
     # Exercised through the real executor in their own files, each with
     # the store it needs set up under a redirected HOME.
     "skill_propose_patch": "tests/test_skill_patch_tool.py — needs an "
@@ -117,6 +118,7 @@ _NOT_EXERCISED_HERE = {
     "notebook_read": "tests covering notebook editing",
     "notebook_edit": "needs an .ipynb fixture with outputs",
     "view_image": "needs an image and a vision-capable route",
+    "show_molecule": "renders a viewer card; covered by tests/test_zz_show_molecule.py",
     # Chemistry data: needs an indexed corpus and a calc archive.
     "search_docs": "needs the indexed doc corpus",
     "read_section": "needs the indexed doc corpus",

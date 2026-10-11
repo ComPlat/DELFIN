@@ -694,6 +694,15 @@ def main(argv=None):
         help="Fail if the requested port is occupied instead of choosing another (SSH launchers).",
     )
     parser.add_argument(
+        "--claude-terminal",
+        action="store_true",
+        help=(
+            "Offer the Claude Code CLI in a terminal panel of the Agent tab. "
+            "Loopback only; the terminal runs the claude command and nothing "
+            "else."
+        ),
+    )
+    parser.add_argument(
         "--port",
         type=int,
         default=8866,
@@ -857,6 +866,26 @@ def main(argv=None):
         )
         sys.exit(2)
 
+    # -- Claude terminal (opt-in) ---------------------------------------------
+    # A terminal is a process under the user's account, outside the agent's
+    # sandbox. Only on a loopback bind -- never with --allow-remote-bind --
+    # and only when the CLI exists: no command, no terminal, never a shell.
+    _claude_argv: list[str] = []
+    if args.claude_terminal:
+        if not _is_loopback_bind(args.ip):
+            print("Error: --claude-terminal is only offered on a loopback "
+                  f"bind, not on {args.ip}.", file=sys.stderr)
+            sys.exit(2)
+        _claude = shutil.which("claude") or next(
+            (str(p) for p in (Path.home() / ".local/bin/claude",
+                              Path.home() / ".claude/local/claude")
+             if p.is_file() and os.access(p, os.X_OK)), "")
+        if not _claude:
+            print("Error: --claude-terminal needs the claude command on PATH "
+                  "(or in ~/.local/bin).", file=sys.stderr)
+            sys.exit(2)
+        _claude_argv = [os.path.abspath(_claude)]
+
     # -- Token-based authentication ----------------------------------------
     # Auto-generate a token by default. On shared multi-user hosts (HPC login
     # nodes), even 127.0.0.1 is reachable by other local users, so a token is
@@ -971,9 +1000,18 @@ def main(argv=None):
     # never uses. notebook_shim is left alone (harmless redirect shim).
     _extensions = (
         "{'voila': True, 'jupyterlab': False, 'notebook': False, "
-        "'jupyter_lsp': False, 'jupyter_server_terminals': False, "
+        "'jupyter_lsp': False, 'jupyter_server_terminals': "
+        + ("True" if _claude_argv else "False") + ", "
         "'delfin.dashboard.server_guard': True}"
     )
+    if _claude_argv:
+        import json as _json
+        from delfin.dashboard import claude_terminal as _ct
+        env[_ct.ARGV_ENV] = _json.dumps(_claude_argv)
+        env[_ct.CWD_ENV] = os.environ.get("DELFIN_LAUNCH_CWD") or os.getcwd()
+        env[_ct.ENABLED_ENV] = "1"
+    else:
+        env.pop("DELFIN_CLAUDE_TERMINAL", None)
     cmd = [
         sys.executable,
         "-m",
@@ -1012,8 +1050,13 @@ def main(argv=None):
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico|pdf)",
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
-        # Shrink the RCE surface: the dashboard never needs server terminals.
-        "--ServerApp.terminals_enabled=False",
+        # Shrink the RCE surface: no server terminals, unless the Claude
+        # terminal was asked for -- and then only through the manager that
+        # runs the claude command and nothing else (claude_terminal.py).
+        *(["--ServerApp.terminals_enabled=True",
+            "--TerminalsExtensionApp.terminal_manager_class="
+            "delfin.dashboard.claude_terminal.ClaudeOnlyTerminalManager"]
+          if _claude_argv else ["--ServerApp.terminals_enabled=False"]),
         # Ctrl+C stops immediately instead of prompting "Shut down (y/[n])?".
         "--ServerApp.answer_yes=True",
         "--ServerApp.websocket_ping_interval=30000",

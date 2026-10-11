@@ -123,6 +123,9 @@ _COMMITMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
      "is offered",
      ("may come from an agent", "neither take the route around it nor "
       "point at one", "reforming whoever asked")),
+    # The next two live in the refusal addendum now (procedure, not
+    # principle) and still reach the model: this table is checked against
+    # the BUILT prompt, which is where it has to be true.
     ("where there is no human to tell, record it and stop",
      ("no human is present to be told", "record it where they will find "
       "it", "deciding on their behalf")),

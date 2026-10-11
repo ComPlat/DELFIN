@@ -63,6 +63,7 @@ def _fresh_defaults() -> dict[str, Any]:
     return {
         "default_mode": "default",
         "extra_workspace_dirs": [],
+        "read_dirs": [],
         "allow_patterns": [],
         "deny_patterns": [],
         "write_allow_globs": [],
@@ -77,6 +78,9 @@ class KitSettings:
 
     default_mode: str = "default"
     extra_workspace_dirs: list[str] = field(default_factory=list)
+    #: Directories the agent may READ in every session, never write: what
+    #: "always allow reading here" on an outside-read dialog saves.
+    read_dirs: list[str] = field(default_factory=list)
     allow_patterns: list[str] = field(default_factory=list)
     deny_patterns: list[str] = field(default_factory=list)
     #: The repo's own write scope (repo file only). Not part of to_dict, so
@@ -89,6 +93,7 @@ class KitSettings:
         return {
             "default_mode": self.default_mode,
             "extra_workspace_dirs": list(self.extra_workspace_dirs),
+            "read_dirs": list(self.read_dirs),
             "allow_patterns": list(self.allow_patterns),
             "deny_patterns": list(self.deny_patterns),
         }
@@ -128,8 +133,8 @@ def _normalize_kit_block(block: Any) -> dict[str, Any]:
     mode = block.get("default_mode")
     if isinstance(mode, str) and mode in _VALID_MODES:
         out["default_mode"] = mode
-    for key in ("extra_workspace_dirs", "allow_patterns", "deny_patterns",
-                "write_allow_globs"):
+    for key in ("extra_workspace_dirs", "read_dirs", "allow_patterns",
+                "deny_patterns", "write_allow_globs"):
         v = block.get(key)
         if isinstance(v, list):
             out[key] = [str(x) for x in v if isinstance(x, (str, os.PathLike))]
@@ -170,9 +175,9 @@ def _merge(user: dict[str, Any],
         out["default_mode"] = user_mode
     # deny_patterns tighten, so the repo's are taken. The other two widen:
     # an auto-allow pattern removes a confirmation, and an extra workspace
-    # dir adds somewhere the agent may write. Those come from the user's
-    # file only.
-    for key in ("extra_workspace_dirs", "allow_patterns"):
+    # dir adds somewhere the agent may write, a read dir somewhere it may
+    # look. Those come from the user's file only.
+    for key in ("extra_workspace_dirs", "read_dirs", "allow_patterns"):
         merged: list[str] = []
         for item in user.get(key, []):
             if item not in merged:
@@ -220,6 +225,7 @@ def load(repo_dir: Optional[Path | str] = None,
     return KitSettings(
         default_mode=merged["default_mode"],
         extra_workspace_dirs=merged["extra_workspace_dirs"],
+        read_dirs=merged["read_dirs"],
         allow_patterns=merged["allow_patterns"],
         deny_patterns=merged["deny_patterns"],
         write_allow_globs=merged["write_allow_globs"],
@@ -294,6 +300,54 @@ def remove_extra_dir(directory: str | os.PathLike, *,
         ]
 
     return _mutate(scope, repo_dir, user_path, m)
+
+
+def read_grant_dir(path: str | os.PathLike) -> str:
+    """The directory "always allow reading" saves for a read of ``path``.
+
+    A directory target is itself; a file is its directory. Empty when that
+    directory may not be opened for reads at all -- home, system and key
+    directories -- because one click on a read must not open them for
+    every future session. The same test the session grant applies.
+    """
+    try:
+        p = Path(path).expanduser().resolve()
+        d = p if p.is_dir() else p.parent
+        from .api_client import _is_grantable_read_dir
+        return str(d) if (d.is_dir() and _is_grantable_read_dir(d)) else ""
+    except Exception:
+        return ""
+
+
+def persist_read_dir(directory: str | os.PathLike, *,
+                     user_path: Optional[Path] = None) -> KitSettings:
+    """Add ``directory`` to the persisted READ-ONLY ``read_dirs`` list.
+
+    User scope only: a repository may not widen what its sessions read.
+    Refuses a directory ``read_grant_dir`` would not offer.
+    """
+    resolved = read_grant_dir(directory)
+    if not resolved or Path(resolved) != Path(directory).expanduser().resolve():
+        raise ValueError(
+            f"{directory} cannot be opened for reading in every session "
+            "(not a directory, or a home, system or key directory)")
+
+    def m(block: dict[str, Any]) -> None:
+        if resolved not in block["read_dirs"]:
+            block["read_dirs"].append(resolved)
+
+    return _mutate("user", None, user_path, m)
+
+
+def remove_read_dir(directory: str | os.PathLike, *,
+                    user_path: Optional[Path] = None) -> KitSettings:
+    """Remove ``directory`` from the persisted read list (safe if absent)."""
+    resolved = str(Path(directory).expanduser().resolve())
+
+    def m(block: dict[str, Any]) -> None:
+        block["read_dirs"] = [d for d in block["read_dirs"] if d != resolved]
+
+    return _mutate("user", None, user_path, m)
 
 
 def persist_pattern(pattern: str, *, kind: str = "allow",
