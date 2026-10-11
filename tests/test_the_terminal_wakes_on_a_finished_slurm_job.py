@@ -129,11 +129,14 @@ def test_a_finished_job_is_reported_exactly_once(ws):
 
 
 def test_the_daemons_peek_is_not_taken_away(ws):
-    # consume=False + marker means a peek by the daemon under its own marker
-    # still leaves the completion for the turn to report once.
+    # A consume=False + marker peek by the DAEMON (session_id=None, its own
+    # marker) does NOT consume: it still leaves the completion for the owning
+    # session's turn to report once. (The old body peeked as session-a and
+    # then expected session-a's OWN turn to hear it again -- that same-session
+    # double delivery was the V3-1 defect removed by the fix.)
     _register(ws, "12345", session_id="session-a", state="COMPLETED")
-    assert job_wake.finished_watched_jobs(
-        ws, set(), session_id="session-a", run_fn=_scheduler) != []
+    assert jm.check_agent_jobs(ws, run_fn=_scheduler,
+                               consume=False, marker="daemon_notified") != []
     assert jm.check_agent_jobs(ws, run_fn=_scheduler, session_id="session-a",
                                consume=True) != []
 

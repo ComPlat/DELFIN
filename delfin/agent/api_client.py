@@ -3192,6 +3192,11 @@ _DENY_HINTS: tuple[tuple[str, str], ...] = (
                  "cannot make: call worktree_remove with the path."),
     ("branch", " A branch you no longer need is the user's to delete; say "
                "which one and why in your answer."),
+    ("sh|bash|zsh", " Running a fetched script executes remote code the "
+               "gates never see. A package belongs in the SESSION VENV "
+               "(`<session python> -m pip install`); a missing tool is "
+               "DELFIN's proposal for the user to approve with /fix. Do "
+               "not add a `curl|sh` allow-pattern."),
     ("reset", " To undo work in the tree, revert the specific files or "
               "commit first; a hard reset throws away what was not saved."),
     ("clean", " Say which files you mean and remove them one by one, or ask "
@@ -3220,6 +3225,50 @@ def _denied_command_hint(pattern: str) -> str:
         if needle in text:
             return hint
     return ""
+
+
+def _refuse_unsafe_install(cmd: str, session_python: str,
+                           workspace: Optional[str] = None) -> str:
+    """The refusal hint for an install outside the session venv, or "".
+
+    Input: a bash command and the session interpreter ('' when unknown,
+    which refuses every ``python -m pip install``). Output: the reason and
+    the sanctioned route, or "". The rule is
+    :func:`delfin.agent.sandbox.unsafe_install_refusal`, shared with the
+    dashboard's approval runner so the two paths cannot drift. It runs in
+    the deny tier of the gate, before the bypass return, so it refuses in
+    every permission mode; an ask would leave a ``pip install --user`` to
+    whoever reads the prompt, and bypass or an auto-allow pattern would run
+    it. The session venv's own install (``python_tools_install_command``,
+    what an approved proposal runs) is not refused.
+    """
+    from .sandbox import unsafe_install_refusal as _rule
+    reason = _rule(cmd or "", session_python, workspace=workspace)
+    if not reason:
+        return ""
+    return f" ({reason})." + _UNSAFE_INSTALL_HINT.format(
+        py=session_python or "<session venv python>")
+
+
+#: Names the two routes the model can actually take. The first cut named
+#: python_tools_install_command / apply_proposal, which are functions, not
+#: tools: a refusal that points at nothing callable invites a workaround.
+_UNSAFE_INSTALL_HINT = (
+    " Packages belong in the SESSION VENV: run `{py} -m pip install "
+    "<package>` with no --user/--target/--prefix, or name the missing "
+    "package in your answer so the user can approve DELFIN's proposal "
+    "with /fix. Do not add an allow-pattern that lets this command run."
+)
+
+
+def _session_python_for_gate() -> str:
+    """The session interpreter, or '' if the installer cannot be imported.
+
+    '' means the session venv cannot be identified, and
+    :func:`_refuse_unsafe_install` then refuses every interpreter.
+    """
+    from .sandbox import _session_python
+    return _session_python()
 
 
 def _prose_blanked(cmd: str) -> str:
@@ -6816,6 +6865,25 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "path": {
                         "type": "string",
                     },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "show_molecule",
+            "description": (
+                "Show an .xyz (multi-frame too) or .cube file as a rotatable "
+                "3D viewer in the chat; isovalue is the cube's isosurface "
+                "(default 0.02)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "isovalue": {"type": "number"},
                 },
                 "required": ["path"],
             },
@@ -10432,7 +10500,7 @@ def _clear_green_targets(red_files: set, ran: str) -> None:
 # file. Their targets feed the observed-files ledger consumed by the
 # code-claim citation check (verify_guard.scan_for_ungrounded_code_claims).
 _OBSERVATION_TOOLS = frozenset({
-    "read_file", "grep_file", "notebook_read", "view_image",
+    "read_file", "grep_file", "notebook_read", "view_image", "show_molecule",
     # A file the agent just WROTE is grounded evidence too: its content
     # came from the agent itself, so describing it is not a guess. Without
     # these, an answer about freshly created work products is flagged as
@@ -12737,6 +12805,8 @@ class _DocToolExecutor:
             return self._execute_sum_column(arguments, permissions)
         elif name == "view_image":
             return self._execute_view_image(arguments, permissions)
+        elif name == "show_molecule":
+            return self._execute_show_molecule(arguments, permissions)
         elif name == "forget":
             return self._execute_forget(arguments, permissions)
         elif name == "publish_report":
@@ -14185,6 +14255,53 @@ class _DocToolExecutor:
                      "it and describe / use what you SEE."),
         })
 
+    def _execute_show_molecule(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        """Show a molecule file (XYZ, multi-frame XYZ, cube) in the chat.
+
+        Input: ``path`` (relative paths are the session workspace's) and an
+        optional cube ``isovalue``. Output: the ``DELFIN_CARD:`` result of
+        :func:`delfin.dashboard.chat_viewer.render_molecule_tool_result`
+        (resolved path, title, plain summary; no markup), or a plain
+        ``{"error": ...}`` JSON. The file passes ``_check_read_access``
+        exactly like ``read_file``; the resolved path is what is read, so a
+        symlink or ``..`` is judged by its target.
+        """
+        perms = perms or self._permissions
+        path = self._get_path_arg(arguments)
+        if not path:
+            return json.dumps({"error": "show_molecule: 'path' is required"})
+        full = Path(path).expanduser()
+        if not full.is_absolute() and perms is not None:
+            full = Path(perms.workspace) / full
+        # The label is relative to the readable root the file lies in (the
+        # session workspace, a granted read dir, the calc/archive roots).
+        root = None
+        try:
+            root = (perms.find_readable_root_for(full.resolve())
+                    if perms is not None else None)
+        except Exception:
+            root = None
+        label = str(full)
+        if root is not None:
+            try:
+                label = str(full.resolve().relative_to(Path(root).resolve()))
+            except ValueError:
+                pass
+        err = self._check_read_access(perms, full, label=label)
+        if err:
+            return json.dumps({"error": err})
+        try:
+            from delfin.dashboard import chat_viewer
+            return chat_viewer.render_molecule_tool_result(
+                str(full.resolve()),
+                isovalue=arguments.get("isovalue"),
+                title=label,
+            )
+        except (ValueError, OSError) as exc:
+            return json.dumps({"error": f"show_molecule: {exc}"})
+
     def _execute_publish_report(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
@@ -15583,6 +15700,16 @@ class _DocToolExecutor:
                                        f"{cmd[:80]} → {denied}")
                 return (f"command rejected by deny-pattern {denied!r}: "
                         f"refusing to run.{_denied_command_hint(denied)}")
+            # Installs outside the session venv (pip --user/--target/
+            # --prefix and their spellings, another interpreter's pip,
+            # pipx, conda base) are refused here, in the deny tier, so the
+            # refusal holds in every mode; see _refuse_unsafe_install.
+            _unsafe = _refuse_unsafe_install(_prose_blanked(cmd),
+                                            _session_python_for_gate(),
+                                            str(perms.workspace))
+            if _unsafe:
+                _record_security_event("unsafe_install", "bash", cmd[:80])
+                return f"command rejected: unsafe install target{_unsafe}"
             # A walk over a whole file system (find/du/tree/rg, grep -r,
             # ls -R rooted at the home, an ancestor of it or a mount point)
             # is refused in every mode, before anything is asked -- the
@@ -23474,6 +23601,17 @@ class OpenAIClient(_BaseClient):
                     _thrash_note = _thrash_check(_thrash_state, fn_name, fn_args)
                     if _thrash_note:
                         context_result = _thrash_note + "\n\n" + context_result
+                    # A show_molecule card reaches the model as its plain
+                    # summary line only, wrapped as untrusted; the path and
+                    # title stay in the tool-result event the dashboard
+                    # draws from. Keyed on the tool name: the same prefix
+                    # in another tool's output is that tool's text.
+                    if (fn_name == "show_molecule"
+                            and str(result).startswith("DELFIN_CARD:")):
+                        from delfin.dashboard import chat_viewer as _cv
+                        _cv_text = _cv.card_model_text(str(result))
+                        if _cv_text is not None:
+                            context_result = _wrap_untrusted(_cv_text)
                     api_messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
