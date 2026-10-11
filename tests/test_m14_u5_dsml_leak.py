@@ -203,6 +203,29 @@ def test_verify_rejects_fabricated_value(tmp_path):
     assert _VALUE in msg
 
 
+def test_verify_accepts_the_number_with_its_unit_or_trailing_zero(tmp_path):
+    # The question is whether the value was read, not its formatting.
+    ws = _fixture(tmp_path)
+    for body in ("41.7 m\n", "41.70\n", " 41.7m "):
+        (_folder(ws) / "level.txt").write_text(body, encoding="utf-8")
+        ok, msg = _verify_check(ws)
+        assert ok is True, (body, msg)
+
+
+def test_verify_rejects_the_value_inside_other_text(tmp_path):
+    ws = _fixture(tmp_path)
+    (_folder(ws) / "level.txt").write_text("41.7 or 99.9\n", encoding="utf-8")
+    ok, _ = _verify_check(ws)
+    assert ok is False
+
+
+def test_verify_reports_an_undecodable_artifact_without_a_traceback(tmp_path):
+    ws = _fixture(tmp_path)
+    (_folder(ws) / "level.txt").write_bytes(b"\xff\xfe41.7")
+    ok, msg = _verify_check(ws)
+    assert ok is False and "level.txt" in msg
+
+
 def test_verify_rejects_modified_source(tmp_path):
     ws = _fixture(tmp_path)
     (_folder(ws) / "readings.txt").write_text(
