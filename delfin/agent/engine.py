@@ -1284,6 +1284,32 @@ class AgentEngine:
             # Keep whatever window is already set (100k default).
             pass
 
+    def _capture_floor(self, input_tokens: int) -> None:
+        """Record an accepted request as the model's observed floor.
+
+        An accepted request is proof of the window, whether or not it stayed
+        within the static table window: the table understates by design, and a
+        request the backend actually counted is the ground truth for how big a
+        window *model* can hold (observed_window.py holds 131072 -> 166379 as
+        exactly that example). So the floor is learned unconditionally; what is
+        BOUNDED is not the learning but the raise itself -- observed_window.note
+        stores only the new maximum actually accepted and never extrapolates, so
+        no single request can push the floor past a number the backend really
+        held (measured 2026-10-08: one 190k request raised the floor
+        model-wide, but that 190k genuinely was accepted).
+        """
+        self._floor_captured_this_turn = True
+        self._last_input_tokens = int(input_tokens)
+        try:
+            from . import observed_window as _ow
+            _ow.note(getattr(self.client, "model", "") or "",
+                     int(input_tokens))
+        except Exception:
+            pass
+        # Fresh provider count -> trims applied since the previous floor are
+        # already reflected in it.
+        self._trimmed_chars_since_floor = 0
+
     def _compaction_status_line(self) -> str:
         """What the last compaction actually did, including when it did
         nothing and why.
@@ -3293,18 +3319,7 @@ class AgentEngine:
                         # context plus ephemeral tool results, so the code
                         # contradicted its own contract.
                         if event.input_tokens and not self._floor_captured_this_turn:
-                            self._floor_captured_this_turn = True
-                            self._last_input_tokens = int(event.input_tokens)
-                            # An accepted request is proof of the window.
-                            try:
-                                from . import observed_window as _ow
-                                _ow.note(getattr(self.client, "model", "") or "",
-                                         int(event.input_tokens))
-                            except Exception:
-                                pass
-                            # Fresh provider count -> trims applied since the
-                            # previous floor are already reflected in it.
-                            self._trimmed_chars_since_floor = 0
+                            self._capture_floor(int(event.input_tokens))
                         # Prompt tokens served from the endpoint cache (Anthropic
                         # reports it here). Visibility into how much of the input
                         # was free — drives the caching/efficiency work.
