@@ -38,6 +38,22 @@ def test_git_show_path_config_evil_pager_does_not_fire():
     )
 
 
+# --- git_show bare-arg containment (reviewer-s27) ---------------------------
+
+def test_git_show_bare_absolute_path_does_not_fire():
+    # a bare absolute path arg (no colon) must not ride along unvalidated
+    assert matches("git show HEAD:config.py /etc/passwd", WORKSPACE) == ""
+
+
+def test_git_show_bare_relative_rev_inside_fires():
+    # a bare relative rev/ref token resolves inside the workspace and is fine
+    assert matches("git show v1.2.3 delfin/api.py", WORKSPACE) == "git_show_path"
+
+
+def test_git_show_bare_parent_escape_does_not_fire():
+    assert matches("git show HEAD ../config.py", WORKSPACE) == ""
+
+
 # --- shape: git_grep -------------------------------------------------------
 
 def test_git_grep_fires():

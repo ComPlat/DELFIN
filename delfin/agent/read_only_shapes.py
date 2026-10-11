@@ -204,6 +204,11 @@ def _git_show_path(argv, workspace: str) -> bool:
             _rev, sep, path = a.partition(":")
             if not sep or not _repo_relative(path):
                 return False
+        elif not _resolve_inside(a, workspace):
+            # a bare positional arg (a rev, or a `rev::path`-less path) must
+            # still resolve inside the workspace: an absolute or `..`-escaping
+            # token would otherwise ride along unvalidated (reviewer-s27).
+            return False
     return True
 
 
@@ -366,3 +371,70 @@ def matches_with(command: str, workspace: str,
         except Exception:
             continue
     return ""
+
+
+# ── stored settings contract ────────────────────────────────────────────────
+#
+# The gate (api_client.py, protected) consults ``agent.read_only_shapes`` from
+# the user settings payload before the confirm dialog; the settings tab
+# (tab_settings.py, owned) renders and persists that same block. The keys, the
+# defaults and the normalisation live HERE so both sides read one definition:
+#
+#     agent.read_only_shapes = {
+#         "enabled": bool,          # master switch, default True
+#         "enabled_shapes": [name], # active shape names, default = SHAPE_NAMES
+#     }
+#
+# Normalisation on load: unknown shape names are dropped, the two known keys
+# are always present, and a partial save can never corrupt the block.
+
+SETTINGS_KEY = "read_only_shapes"
+
+
+def read_only_shapes_defaults() -> dict:
+    """The canonical on-disk settings for the read-only-shape gate."""
+    return {
+        "enabled": True,
+        "enabled_shapes": list(SHAPE_NAMES),
+    }
+
+
+def read_only_shapes_from_payload(payload: dict) -> dict:
+    """Return the normalised ``read_only_shapes`` block from *payload*.
+
+    *payload* is a user-settings dict; the block lives under
+    ``payload['agent']['read_only_shapes']``. Missing payload, missing block or
+    malformed values fall back to the defaults (master switch ON, every shape
+    enabled). Unknown shape names are dropped so a stale name cannot silently
+    widen the gate.
+    """
+    unknown = set(SHAPE_NAMES)
+    agent = (payload or {}).get("agent") or {}
+    block = agent.get(SETTINGS_KEY) or {}
+    if not isinstance(block, dict):
+        return read_only_shapes_defaults()
+    enabled = block.get("enabled", True)
+    if not isinstance(enabled, bool):
+        enabled = True
+    wanted = block.get("enabled_shapes")
+    if not isinstance(wanted, list) or not wanted:
+        shapes = list(SHAPE_NAMES)
+    else:
+        shapes = [n for n in wanted if n in unknown]
+        if not shapes:
+            shapes = list(SHAPE_NAMES)
+    return {"enabled": enabled, "enabled_shapes": shapes}
+
+
+def read_only_shapes_into_payload(payload: dict, settings: dict) -> dict:
+    """Write the normalised *settings* block back into *payload* (mutating)
+    without disturbing other ``agent`` keys, and return *payload*."""
+    payload.setdefault("agent", {})
+    payload["agent"][SETTINGS_KEY] = read_only_shapes_from_payload(payload)
+    stored = payload["agent"][SETTINGS_KEY]
+    stored["enabled"] = bool(settings.get("enabled", True))
+    stored["enabled_shapes"] = [
+        n for n in settings.get("enabled_shapes", SHAPE_NAMES)
+        if n in set(SHAPE_NAMES)
+    ] or list(SHAPE_NAMES)
+    return payload

@@ -4723,6 +4723,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             payload['agent']['backend'] = agent_backend_input.value
             payload['agent']['model'] = agent_model_input.value
             payload['agent']['role_models'] = _save_role_model_settings()
+            if _ros is not None:
+                _ros.read_only_shapes_into_payload(
+                    payload, _save_ros_settings()
+                )
             save_settings(payload, settings_path)
             agent_status_html.value = (
                 '<span style="color:#2e7d32;">&#x2714; Agent settings saved. '
@@ -4735,12 +4739,83 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
 
     agent_save_btn.on_click(_save_agent_settings_with_roles)
 
+    # -- Read-only command shapes (approval by rule) -----------------------
+    # Rendered and persisted through the helpers in delfin.agent.
+    # read_only_shapes so the gate (api_client.py, protected) and this tab
+    # share one stored contract: agent.read_only_shapes = {enabled,
+    # enabled_shapes}. Lazy import like _subagent_caps_now: the helper module
+    # imports only the stdlib and stays importable anywhere.
+    try:
+        from delfin.agent import read_only_shapes as _ros
+    except Exception:
+        _ros = None
+
+    _ros_enabled = widgets.Checkbox(
+        value=True,
+        description='Enable read-only shapes approval by rule',
+        layout=widgets.Layout(width='340px'),
+    )
+    _ros_shape_checks: dict[str, widgets.Checkbox] = {}
+    _ros_shape_rows = []
+    for _name in (_ros.SHAPE_NAMES if _ros else []):
+        _cb = widgets.Checkbox(
+            value=True,
+            description=_name,
+            layout=widgets.Layout(width='240px'),
+        )
+        _ros_shape_checks[_name] = _cb
+        _ros_shape_rows.append(
+            widgets.HBox([_cb], layout=widgets.Layout(gap='8px'))
+        )
+
+    _ros_header = widgets.HTML(
+        value=(
+            '<b style="font-size:13px;">Read-only command shapes</b><br>'
+            '<span style="color:#757575;font-size:12px;">'
+            'Commands that match a known read-only shape (git show '
+            '&lt;ref&gt;:&lt;path&gt;, git grep, git apply --check, '
+            'gate probe, …) are approved by rule instead of raising an '
+            'approval dialog. Each shape parses as one program, runs no '
+            'other executable, writes no file and resolves every path '
+            'inside the workspace.</span>'
+        ),
+    )
+    _ros_box = widgets.VBox(
+        [_ros_header, _ros_enabled] + _ros_shape_rows,
+        layout=widgets.Layout(
+            padding='8px',
+            gap='4px',
+            border='1px solid #e0e0e0',
+            border_radius='4px',
+        ),
+    )
+
+    def _load_ros_settings():
+        if _ros is None:
+            return
+        try:
+            block = _ros.read_only_shapes_from_payload(load_settings())
+            _ros_enabled.value = bool(block.get('enabled', True))
+            active = set(block.get('enabled_shapes', []))
+            for _name, _cb in _ros_shape_checks.items():
+                _cb.value = _name in active
+        except Exception:
+            pass
+
+    def _save_ros_settings():
+        """Return the dict to store under agent.read_only_shapes."""
+        shapes = [
+            n for n, cb in _ros_shape_checks.items() if cb.value
+        ] or list(_ros.SHAPE_NAMES)
+        return {'enabled': bool(_ros_enabled.value), 'enabled_shapes': shapes}
+
     agent_section = widgets.VBox(
         [
             agent_backend_input,
             agent_cli_status,
             agent_model_input,
             role_models_box,
+            _ros_box,
             widgets.HBox([agent_save_btn, agent_status_html]),
             agent_env_hint,
         ],
@@ -4748,6 +4823,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     )
     _load_agent_settings()
     _load_role_model_settings()
+    _load_ros_settings()
 
     # ══════════════════════════════════════════════════════════════════════
     # Section: Scheduling (SLURM memory headroom)
