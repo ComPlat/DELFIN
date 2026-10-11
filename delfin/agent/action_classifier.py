@@ -121,8 +121,10 @@ def _bash_has_write_operator(command: str) -> bool:
     # Backgrounding detaches a job; a ``&`` at the end silently keeps running.
     if "&" in cmd:
         return True
-    # find -exec ... ; or + runs a command per match.
-    if "-exec" in cmd and (";" in cmd or " +" in cmd):
+    # find -exec ... ; or + runs a command per match. ``+`` needs no leading
+    # space (``find -exec rm + `` is legal), so match a bare ``+`` anywhere
+    # after -exec — fail closed (s24 cross-note); extra friction is safe.
+    if "-exec" in cmd and (";" in cmd or "+" in cmd):
         return True
     return False
 

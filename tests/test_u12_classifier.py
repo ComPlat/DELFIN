@@ -123,8 +123,10 @@ def test_backgrounding_is_not_a_plain_read():
 
 def test_find_exec_is_not_a_plain_read():
     # find -exec ... ; / + runs a command per match; the `;` substring check
-    # missed the `+` form (s29).
-    for cmd in ("find . -exec rm {} +", "find . -exec rm {} ;"):
+    # missed the `+` form (s29), and the space-before-`+` check missed the
+    # compacted no-space forms (s24/QS: `find -exec rm{}+`, `find -exec rm{};`).
+    for cmd in ("find . -exec rm {} +", "find . -exec rm {} ;",
+                "find . -exec rm{}+", "find . -exec rm{};"):
         act = _action(kind="bash", tool="bash", command=cmd)
         assert ac.is_plain_read(act) is False, cmd
 
