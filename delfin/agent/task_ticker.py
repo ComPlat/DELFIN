@@ -112,6 +112,41 @@ def _stale_suffix(task: dict, last_message_at: float | None) -> str:
     return _STALE_MARKER
 
 
+def session_last_activity_at(
+    workspace: Path | str, *, session_id: str | None = None,
+) -> float | None:
+    """Epoch seconds of the session's last recorded activity — the proxy for
+    "the last message" a stale blocked reason is judged against — or None
+    when there is no such session or its timestamp cannot be read.
+
+    The reference a call site passes as ``last_message_at`` to
+    :func:`rows` / :func:`render_text` / :func:`render_html`. Sessions are
+    stored globally keyed by session id (``session_store``), so the lookup
+    is by ``session_id``; ``workspace`` is accepted for signature symmetry
+    with the render functions but does not drive the lookup.
+
+    Never raises: a session record that is absent, not a dict, or carries a
+    missing / non-numeric ``updated_at`` yields None (nothing stale), the
+    same guarantee the render functions already keep (a broken reference
+    must not take the panel down).
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    try:
+        from . import session_store
+        rec = session_store.load_session(sid)
+    except Exception:
+        return None
+    if not isinstance(rec, dict):
+        return None
+    try:
+        value = float(rec.get("updated_at") or 0)
+    except (TypeError, ValueError):
+        return None
+    return value or None
+
+
 def render_html(
     workspace: Path | str,
     *,
