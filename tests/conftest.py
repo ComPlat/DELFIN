@@ -928,6 +928,18 @@ def _emergency_stop_reaches_no_real_process(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def neutral_push_readiness(monkeypatch):
+    """The push/pr readiness probe reads the REAL host (git config, PATH,
+    network) -- exactly like GitHub CI with no user identity. That must not
+    leak into tests: neutralise the gate's row source to [] (nothing
+    non-PASS) for every test, so no existing test depends on the machine
+    the run happens on. The push/pr gate tests override the same hook with
+    exact fake rows via monkeypatch.setattr(api_client, ...)."""
+    from delfin.agent import api_client as ac
+    monkeypatch.setattr(ac, "_push_readiness_rows", lambda *a, **k: [])
+
+
+@pytest.fixture(autouse=True)
 def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
                         _user_state_resolvers):
     """Point every writable user-state sink into the test's own directory.
