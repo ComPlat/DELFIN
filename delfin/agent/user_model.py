@@ -80,12 +80,14 @@ _MODE_WORDS = (
 _GLOBAL_GRANT_WORDS = ("global:", "scope:", "every workspace", "widen")
 # The following guards are STRUCTURAL, not phrase lists: they look at
 # whether a WAIVER / negation token and a command verb are both present,
-# so a novel rephrasing (word insertion, a different modal, a different
-# possessive) cannot sneak an allow rule past by inventing wording the
-# deny list does not name. A plain "I want you to ask first" (wanting to
-# be asked) matches no waiver token and stays storable.
+# and for the always-reach form at whether the agent (second person) or
+# the user (first-person habit) is the subject. A novel rephrasing (word
+# insertion, a different modal, a different possessive) cannot sneak an
+# allow rule past by inventing wording a deny list does not name. A plain
+# "I want you to ask first" matches no waiver token and stays storable.
 _WAIVER_TOKENS = frozenset(
-    {"without", "never", "not", "skip", "no longer", "don't"}
+    {"without", "never", "not", "no", "skip", "don't", "won't", "stop",
+     "cease", "omit", "refrain"}
 )
 # Ask / confirmation tokens -- the thing being waived, however worded.
 _ASK_TOKENS = frozenset(
@@ -98,10 +100,20 @@ _REACH_TOKENS = frozenset(
     {"push", "write", "merge", "commit", "delete", "overwrite", "deploy",
      "transfer", "execute", "approve", "run", "install", "modify"}
 )
-# The always-modal: "always <reach-verb>" is the tested strong grant form
-# ("always push", "always merge"); a capability statement like "I can run"
-# is left alone.
-_ALWAYS_MODAL = frozenset({"always"})
+# Permission modals: "may"/"can" applied to a reach verb is a grant
+# regardless of subject ("you may write", "may always push"). Unlike the
+# frequency modal, there is no innocent first-person reading.
+_PERMISSION_MODALS = frozenset({"may", "can", "might", "could"})
+# Frequency / free-choice modal: "always"/"whenever" + a reach verb is a
+# grant when the subject is the AGENT ("you always push") or unnamed
+# ("always push"), but a harmless habit when it is a pure first-person
+# statement ("I always write my tests before the code").
+_FREQUENCY_MODALS = frozenset({"always", "whenever", "frequently"})
+# Pronouns, separated so a habit ("I always ...") is told from a grant
+# ("you always ..."). "I" and "you" both present => the reach verb is the
+# agent's, refuse.
+_FIRST_PERSON = frozenset({"i", "me", "my", "myself", "mine"})
+_SECOND_PERSON = frozenset({"you", "your", "yourself", "yours"})
 # Absolute path, POSIX or Windows, or a home-relative path.
 _PATH_RE = re.compile(
     r"(?:/(?:[^/\s]+/)*[^/\s]+|~/[^\s]+|[A-Za-z]:\\[^\s]+|"
@@ -112,14 +124,23 @@ _PATH_RE = re.compile(
 def _is_structural_grant(tokens: frozenset) -> bool:
     """Structural allow-rule detector over the token set of a message.
 
-    Returns True when the message waives asking/confirmation (a waiver or
-    negation token co-occurs with an ask/confirmation token), or grants an
-    always-reach command ("always" co-occurs with a strong reach verb).
-    Token-based so rephrasing cannot split an adjacent phrase.
+    Refuses when the message waives asking/confirmation (a waiver token
+    co-occurs with an ask/confirmation token), grants a permission-modal
+    command ("may/can" + reach verb), or grants an always-reach command
+    whose subject is the agent ("you always push"; "always push") rather
+    than a first-person habit ("I always write my tests").
     """
     if tokens & _WAIVER_TOKENS and tokens & _ASK_TOKENS:
         return True
-    if tokens & _ALWAYS_MODAL and tokens & _REACH_TOKENS:
+    reach = tokens & _REACH_TOKENS
+    if not reach:
+        return False
+    if tokens & _PERMISSION_MODALS:
+        return True
+    if tokens & _FREQUENCY_MODALS:
+        # A pure first-person habit is not a grant.
+        if tokens & _FIRST_PERSON and not (tokens & _SECOND_PERSON):
+            return False
         return True
     return False
 
