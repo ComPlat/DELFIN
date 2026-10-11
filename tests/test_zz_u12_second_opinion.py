@@ -49,7 +49,8 @@ TASK = [{"role": "user", "content": "fix the failing parser test"}]
 @pytest.fixture(autouse=True)
 def _on(monkeypatch):
     monkeypatch.setattr(
-        A, "_classifier_settings", lambda: {"model": "m", "rules": []})
+        A, "_classifier_settings",
+        lambda: {"model": "m", "rules": [], "broad": True})
 
 
 def _perms(tmp_path, mode, runner=None, dialog=None, messages=TASK):
@@ -284,11 +285,17 @@ def test_the_switch_reads_the_setting_and_one_process_can_override(monkeypatch):
     assert A._classifier_settings() is None
     monkeypatch.setenv("DELFIN_CLASSIFIER", "on")
     assert A._classifier_settings() == {
-        "model": "kit.x", "rules": ["never allow git push"]}
+        "model": "kit.x", "rules": ["never allow git push"], "broad": False}
+    monkeypatch.setenv("DELFIN_CLASSIFIER", "all")
+    assert A._classifier_settings()["broad"] is True
     monkeypatch.setattr(US, "load_settings", lambda: {})
     monkeypatch.delenv("DELFIN_CLASSIFIER")
     from delfin.agent import action_classifier as ac
-    assert A._classifier_settings() == {"model": ac.DEFAULT_MODEL, "rules": []}
+    assert A._classifier_settings() == {
+        "model": ac.DEFAULT_MODEL, "rules": [], "broad": False}
+    monkeypatch.setattr(US, "load_settings", lambda: {
+        "agent": {"classifier": {"scope": "all"}}})
+    assert A._classifier_settings()["broad"] is True
     monkeypatch.setenv("DELFIN_CLASSIFIER", "off")
     assert A._classifier_settings() is None
 
@@ -363,3 +370,24 @@ def test_a_users_always_rule_does_not_carry_a_claim_past_the_guard():
                      {"task": "t"}, model="m", runner=lambda p, m: ALLOW,
                      rules=["always allow reading blocks"])
     assert other.decision == "allow" and "user rule" not in other.reason
+
+
+def test_the_default_scope_judges_what_nobody_attends(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        A, "_classifier_settings",
+        lambda: {"model": "m", "rules": [], "broad": False})
+    runner = Runner(REFUSE)
+    # The frequent paths of an attended session are left to the rules ...
+    attended = _perms(tmp_path, "acceptEdits", runner)
+    assert A._DocToolExecutor()._run_permission_gate(
+        "write_file", {"path": "notes.md", "content": "x"}, attended) is None
+    assert _bash(attended, "python3 build.py") is None
+    assert runner.prompts == []
+    # ... a message to another agent is not, in any mode ...
+    out = A._DocToolExecutor().execute(
+        "session_message", {"to": "nacht-s2", "message": "status?"},
+        permissions=attended)
+    assert "error" in json.loads(out) and len(runner.prompts) == 1
+    # ... and neither is anything that runs under Bypass.
+    unattended = _perms(tmp_path, "bypassPermissions", Runner(REFUSE))
+    assert _bash(unattended, "python3 build.py") is not None

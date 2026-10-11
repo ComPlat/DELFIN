@@ -527,6 +527,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         description='Action classifier enabled (model-based second opinion)',
         value=True, indent=False,
     )
+    classifier_broad_toggle = widgets.Checkbox(
+        description=('Also judge auto-allowed commands and auto-accepted '
+                     'edits in every mode (one model round trip per action)'),
+        value=False, indent=False,
+    )
     classifier_model_input = widgets.Combobox(
         placeholder='Model (default kit.deepseek-v4-flash)',
         options=sorted({m for opts in _JOBMON_MODEL_SUGGESTIONS.values()
@@ -685,6 +690,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             classifier = dict(payload['agent'].get('classifier') or {})
             classifier.update({
                 'enabled': bool(classifier_enabled_toggle.value),
+                'scope': ('all' if classifier_broad_toggle.value
+                          else 'unattended'),
                 'model': str(classifier_model_input.value or '').strip(),
                 # Free-text user rules: the classifier can only ADD friction
                 # (an "always allow" rule never lifts a rule refusal). One
@@ -1288,6 +1295,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         classifier_payload = agent_payload.get('classifier') or {}
         classifier_enabled_toggle.value = bool(
             classifier_payload.get('enabled', True))
+        classifier_broad_toggle.value = (
+            str(classifier_payload.get('scope') or '').strip().lower() == 'all')
         classifier_model_input.value = str(
             classifier_payload.get('model') or '').strip()
         classifier_rules_input.value = '\n'.join(
@@ -3930,6 +3939,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 [classifier_enabled_toggle], layout=_row_layout,
             ),
             widgets.HBox(
+                [classifier_broad_toggle], layout=_row_layout,
+            ),
+            widgets.HBox(
                 [widgets.HTML('<b>Model</b>'), classifier_model_input],
                 layout=_row_layout,
             ),
@@ -3939,8 +3951,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 'Rules decide first; the classifier only adds friction, never '
-                'allows what a rule refuses. User rules (always/never allow), '
-                'one per line, pass to the model with your priority.'
+                'allows what a rule refuses. By default it judges what runs '
+                'under Bypass, messages to other agents and network calls. '
+                'User rules, one per line, start with "never allow" or '
+                '"always allow".'
                 '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'

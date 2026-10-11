@@ -10602,11 +10602,18 @@ _CLASSIFIED_NETWORK_TOOLS = frozenset({
 
 
 def _classifier_settings() -> Optional[dict]:
-    """``{"model", "rules"}`` when the classifier is on, else None.
+    """``{"model", "rules", "broad"}`` when the classifier is on, else None.
 
-    ``agent.classifier.enabled`` (default on), ``.model``, ``.user_rules``.
-    ``DELFIN_CLASSIFIER=off|on`` overrides the switch for one process: the
-    settings file is one per account and read by every session on it.
+    ``agent.classifier.enabled`` (default on), ``.model``, ``.user_rules``
+    and ``.scope``: "unattended" (the default) judges what runs under
+    Bypass, messages to other agents and network calls; "all" also judges
+    every auto-allowed command and auto-accepted edit in the other modes.
+    The default is the narrow one because a verdict costs a model round
+    trip -- measured 3-7 s on the KIT proxy for a five-token answer
+    (2026-10-11) -- and the broad scope pays that on every action.
+    ``DELFIN_CLASSIFIER=off|on|all`` overrides switch and scope for one
+    process: the settings file is one per account and read by every
+    session on it.
     """
     try:
         from delfin.user_settings import load_settings
@@ -10615,17 +10622,21 @@ def _classifier_settings() -> Optional[dict]:
         cfg = None
     cfg = cfg if isinstance(cfg, dict) else {}
     enabled = bool(cfg.get("enabled", True))
+    broad = str(cfg.get("scope") or "").strip().lower() == "all"
     env = os.environ.get("DELFIN_CLASSIFIER", "").strip().lower()
     if env in ("off", "0", "false", "no"):
         enabled = False
     elif env in ("on", "1", "true", "yes"):
         enabled = True
+    elif env == "all":
+        enabled = broad = True
     if not enabled:
         return None
     from . import action_classifier as _ac
     rules = cfg.get("user_rules")
     return {
         "model": str(cfg.get("model") or "").strip() or _ac.DEFAULT_MODEL,
+        "broad": broad,
         "rules": [str(r) for r in rules if str(r or "").strip()][:20]
         if isinstance(rules, (list, tuple)) else [],
     }
@@ -16103,6 +16114,12 @@ class _DocToolExecutor:
         import hashlib
         base = action["tool"]
         bypass = mode == "bypassPermissions"
+        if not (bypass or cfg.get("broad")
+                or base in ("session_message", "subagent_message")
+                or base in _CLASSIFIED_NETWORK_TOOLS):
+            # The frequent paths -- an auto-allowed command, an
+            # auto-accepted edit -- are judged only in the broad scope.
+            return None
         can_ask = perms.confirm_callback is not None
         try:
             key = hashlib.sha256(json.dumps(
