@@ -68,7 +68,12 @@ def test_the_in_turn_budget_is_floor_blind(floors):
     OW.note("kit.deepseek-v4-flash", 166_379)
     caps = _caps(131_072)
     planning = OW.at_least("kit.deepseek-v4-flash", caps.context_window)
-    assert api_client._tool_context_char_budget(caps) == int(planning * 0.45 * 4)
+    # The floor is per model, so the budget is asked for THIS model.
+    assert api_client._tool_context_char_budget(
+        caps, model="kit.deepseek-v4-flash") == int(planning * 0.45 * 4)
+    # Without a model there is no floor to apply: the table window stands.
+    assert api_client._tool_context_char_budget(caps) == int(
+        caps.context_window * 0.45 * 4)
 
 
 def test_the_floor_does_not_poison_the_in_turn_budget_above_the_cap(floors, monkeypatch):
@@ -111,10 +116,16 @@ def test_the_tool_only_budget_lets_the_whole_request_overflow(floors):
     exceeds the window the engine plans with. RED because the whole-request
     guard is what must fire, and today only the tool-only one exists.
     """
-    user = _msg("user", "the user's goal for this long turn")
-    reasoning = _msg("assistant", "x" * (500_000))  # ~125k tokens of reasoning
-    tool = _msg("tool", "x" * 1000, tool_call_id="c0")
-    msgs = [user, reasoning, tool]
+    # Four rounds: a compaction summarises OLDER rounds and keeps the last
+    # ones, so a turn of a single round has nothing it could give up.
+    msgs = [_msg("user", "the user's goal for this long turn")]
+    for i in range(4):
+        msgs.append({
+            "role": "assistant", "content": "x" * 150_000,  # reasoning
+            "tool_calls": [{"id": f"c{i}", "type": "function",
+                            "function": {"name": "bash", "arguments": "{}"}}]})
+        msgs.append(_msg("tool", "x" * 1000, tool_call_id=f"c{i}"))
+    before = sum(len(str(m.get("content") or "")) for m in msgs)
 
     # The turn, as the round loop would treat it: elide tool output only.
     n_elided = api_client._elide_old_tool_results(
@@ -131,7 +142,9 @@ def test_the_tool_only_budget_lets_the_whole_request_overflow(floors):
         msgs, 100_000, 0, "s",
         planning_window=131_072, system_chars=0)
     assert note != ""               # RED: no whole-request guard today
-    assert "compacted" in note
+    assert "summarised" in note
+    # ... and the request really is smaller, not only announced as such.
+    assert sum(len(str(m.get("content") or "")) for m in msgs) < before
 
 
 def test_request_size_per_round_is_recorded_for_the_long_turn(floors, monkeypatch):

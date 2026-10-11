@@ -10960,8 +10960,22 @@ def _observe_test_evidence(
 # the rounds after it stay warm until the budget is crossed again.
 _ELIDE_TO_FRACTION = 0.6
 
+#: Whole-request compaction cliff (shared with the engine's auto-compact):
+#: when the WHOLE request -- tool output + assistant reasoning + the system
+#: prompt -- reaches this share of the planning window, older rounds are
+#: summarised even if the tool-only budget is far from exhausted. The tool
+#: elider and the in-turn compactor both only measure role=="tool" content;
+#: this is the guard that keeps assistant-heavy turns over a model that
+#: could not hold them before the tool budget ran out.
+_WHOLE_REQUEST_COMPACT_PCT = 0.95
 
-def _tool_context_char_budget(caps) -> int:
+#: Characters per token used to convert the token planning window into a
+#: char budget, kept consistent with _tool_context_char_budget's 4 chars/token
+#: so a whole-request comparison never mixes units (operator finding 1).
+_CHARS_PER_TOKEN = 4
+
+
+def _tool_context_char_budget(caps, model: str = "") -> int:
     """Char budget for accumulated tool output before the OLDEST results are
     elided, scaled to the model's real context window.
 
@@ -10980,44 +10994,133 @@ def _tool_context_char_budget(caps) -> int:
         ctx = 0
     if ctx <= 0:
         return floor
-    # The window the engine plans with, not the model's raw one: a
-    # capped session (agent.context_window_cap) budgeted its in-turn
-    # elision against the full 131k and ran into context_length_exceeded
-    # before any elision fired (LI, 2026-09-26).
+    # The SAME window the engine plans with — not the model's raw and not the
+    # bare capped window. The engine raises the window to the observed floor
+    # first, then caps; a capped in-turn budget that stayed anchored to the raw
+    # table window planned the turn against a DIFFERENT (lower) window than the
+    # engine's once a floor was learned. planning_window is the one source for
+    # both, and model names it so a floor for THIS model is not applied to it.
     try:
-        from .context_window import capped_window
-        ctx = capped_window(ctx)
+        from .context_window import planning_window
+        ctx = planning_window(ctx, model=model)
     except Exception:
-        pass
-    return max(floor, int(ctx * 0.45 * 4))
+        try:
+            from .context_window import capped_window
+            ctx = capped_window(ctx)
+        except Exception:
+            pass
+    return max(floor, int(ctx * 0.45 * _CHARS_PER_TOKEN))
+
+
+def _planning_window_for_turn(self, caps) -> int:
+    """The token planning window the round-loop budgets this turn against.
+
+    Mirrors the engine's own floor-raised-then-capped window so the in-turn
+    budget and the engine agree; caps.context_window is the raw model window
+    (tokens), and model names the observed floor.
+    """
+    try:
+        from .context_window import planning_window
+        w = planning_window(int(getattr(caps, "context_window", 0) or 0),
+                            model=str(getattr(self, "model", "") or ""))
+        return int(w)
+    except Exception:
+        return int(getattr(caps, "context_window", 0) or 0)
 
 
 def _compact_between_rounds(api_messages: list, budget_chars: int,
-                            turn_rows_base: int, session_id: str) -> str:
+                            turn_rows_base: int, session_id: str,
+                            planning_window: int = 0,
+                            system_chars: int = 0) -> str:
     """Compact older rounds of the running turn in place when the tool
     output is still over budget after the elision; returns a one-line
     notice when it did, "" otherwise. Never raises: a failed compaction
-    leaves the turn exactly as it was."""
+    leaves the turn exactly as it was.
+
+    ``planning_window`` (tokens) and ``system_chars`` let the same function
+    also guard the WHOLE request: assistant reasoning can push a turn over the
+    window while its tool output sits far under the tool budget, and neither
+    the elider nor the in-turn compactor (which only measure tool content)
+    would touch it. The guard runs unit-consistently in CHARS throughout
+    (operator finding 1): the whole request is measured as its raw char total
+    and compared against the window's char capacity; when it exceeds it, the
+    tool-only compactor is given a real tool-char budget (room after the
+    non-tool share), which provably lies under the current tool chars, so
+    ``compact`` MUST summarise old rounds instead of no-op'ing.
+    """
     try:
         from . import in_turn_compaction as _itc
         new, record = _itc.compact(
             api_messages, budget_chars, turn_rows_base=turn_rows_base)
     except Exception:
         return ""
-    if not record:
-        return ""
-    api_messages[:] = new
+    if record:
+        api_messages[:] = new
+        try:
+            from .compaction_log import record_compaction
+            record_compaction(
+                session_id, kind="in_turn",
+                messages_compacted=int(record.get("rounds_compacted", 0) or 0),
+                note=str(record.get("note", "") or ""))
+        except Exception:
+            pass
+        _note = (f"\n🗜️ Context compacted within the turn: "
+                 f"{int(record.get('rounds_compacted', 0) or 0)} older "
+                 "round(s) summarised; the working state and your goals are "
+                 "kept.\n")
+    else:
+        # No tool-only compaction fired. Do NOT return: the whole-request
+        # guard below still has to run -- an assistant-heavy turn can exceed
+        # the window with its tool output sitting far under the tool budget,
+        # and the tool compactor being silent is precisely that case.
+        _note = ""
     try:
-        from .compaction_log import record_compaction
-        record_compaction(
-            session_id, kind="in_turn",
-            messages_compacted=int(record.get("rounds_compacted", 0) or 0),
-            note=str(record.get("note", "") or ""))
+        if planning_window > 0:
+            # Whole-request guard, unit-consistent in CHARS (operator finding 1).
+            # The tool compactor above only measures tool output; assistant
+            # reasoning can push the whole request over the window while tool
+            # output sits far under the tool budget. Measure the WHOLE request
+            # (tool + assistant + system) in raw chars against the window's char
+            # capacity, and when it exceeds it, give the tool-only compactor a
+            # real tool-char budget (room left after the non-tool share). That
+            # budget provably lies UNDER the current tool chars (whole > budget
+            # means tool > budget - non_tool), so compact must summarise old
+            # rounds instead of no-op'ing on a token-sized budget.
+            from . import in_turn_compaction as _itc2
+            whole = sum(len(str(m.get("content") or "")) for m in api_messages)
+            whole += int(system_chars or 0)
+            capacity = int(int(planning_window) * _CHARS_PER_TOKEN)
+            budget = int(capacity * _WHOLE_REQUEST_COMPACT_PCT)
+            if whole > budget:
+                tool_chars = sum(
+                    len(str(m.get("content") or ""))
+                    for m in api_messages if (m.get("role") == "tool"))
+                non_tool = whole - tool_chars
+                tool_room = max(int(budget) - int(non_tool), 1)
+                new2, rec2 = _itc2.compact(
+                    api_messages, tool_room, turn_rows_base=turn_rows_base)
+                if rec2:
+                    api_messages[:] = new2
+                    try:
+                        from .compaction_log import record_compaction
+                        record_compaction(
+                            session_id, kind="in_turn_whole_request",
+                            messages_compacted=(
+                                int(rec2.get("rounds_compacted", 0) or 0)),
+                            note=str(rec2.get("note", "") or ""))
+                    except Exception:
+                        pass
+                    _extra = (f"\n🗜️ Context compacted, the whole request was "
+                              f"over the window: "
+                              f"{int(rec2.get('rounds_compacted', 0) or 0)} older "
+                              "round(s) summarised.\n")
+                else:
+                    _extra = ""
+                _note = ((_note or "") + _extra)
     except Exception:
+        # Never raises: a guard that broke leaves the turn as it was.
         pass
-    n = int(record.get("rounds_compacted", 0) or 0)
-    return (f"\n🗜️ Context compacted within the turn: {n} older round(s) "
-            "summarised; the working state and your goals are kept.\n")
+    return _note or ""
 
 
 def _elide_old_tool_results(
@@ -22628,7 +22731,8 @@ class OpenAIClient(_BaseClient):
         # a 471 859-char tool-output budget, about eight times the entire
         # window of the model now receiving it. Re-derived per round below.
         _caps_model = self.model
-        _tool_budget = _tool_context_char_budget(_caps)
+        _tool_budget = _tool_context_char_budget(
+            _caps, model=str(_caps_model or ""))
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
             # A Stop the user pressed while a tool was running. The engine
@@ -22702,7 +22806,8 @@ class OpenAIClient(_BaseClient):
                         api_key=getattr(self, "_api_key", ""))
                 except Exception:
                     pass
-                _tool_budget = _tool_context_char_budget(_caps)
+                _tool_budget = _tool_context_char_budget(
+                    _caps, model=str(getattr(self, "model", "") or ""))
                 _tool_result_cap = _resolve_tool_result_cap(self.model, _caps)
 
             # The turn's spending ceiling, checked where the spending
@@ -22742,7 +22847,10 @@ class OpenAIClient(_BaseClient):
             _in_turn_note = _compact_between_rounds(
                 api_messages, _tool_budget,
                 int(getattr(self, "_turn_rows_base", 0) or 0),
-                str(getattr(self, "session_id", "") or ""))
+                str(getattr(self, "session_id", "") or ""),
+                planning_window=(_planning_window_for_turn(self, _caps)),
+                system_chars=int(
+                    getattr(self, "_system_prompt_chars", 0) or 0))
             if _in_turn_note:
                 yield StreamEvent(type="notice", text=_in_turn_note)
             # Output backstop: stop cleanly if this turn's total generated
