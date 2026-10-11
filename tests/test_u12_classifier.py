@@ -172,6 +172,35 @@ def test_git_read_subcommands_stay_plain_reads():
 
 
 
+def test_git_create_forms_are_not_plain_reads():
+    # git branch / git tag CREATE a ref by a bare NAME argument, with no
+    # destructive flag at all — the state change rides the argument, not a
+    # flag, so `rest[2:]` against _GIT_DESTRUCTIVE_FLAGS misses it (s29 probe).
+    # `git branch name start` and `--track name start` create too. These must
+    # reach the classifier, not ride the plain-read floor.
+    for cmd in ("git branch myfeature",
+                "git branch --track myfeature foobar",
+                "git branch myfeature foobar",
+                "git tag v1.2.3",
+                "git tag -a v1.2.3"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is False, cmd
+
+
+def test_git_read_subcommand_value_filters_stay_plain_reads():
+    # A filter VALUE after a read-only option (--list/--contains/--points-at/...)
+    # is a read pattern, not a create name; the list forms must stay on the
+    # latency-free floor (they were pinned before the create-forms fix).
+    for cmd in ("git branch --list 'feature-*'",
+                "git branch --contains abc1234",
+                "git branch --no-merged main",
+                "git tag --list 'v1.*'",
+                "git tag -l 'v1.*'",
+                "git tag --contains abc1234"):
+        act = _action(kind="bash", tool="bash", command=cmd)
+        assert ac.is_plain_read(act) is True, cmd
+
+
 def test_non_read_action_reaches_the_model():
     runner = _FakeRunner("DECISION: allow")
     act = _action(kind="bash", tool="bash", command="git push origin main")

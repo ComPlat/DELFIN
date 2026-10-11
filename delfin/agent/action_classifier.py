@@ -93,6 +93,40 @@ _GIT_DESTRUCTIVE_FLAGS = frozenset({
 # write output files. -exec/-execdir are handled by _bash_has_write_operator.
 _FIND_DESTRUCTIVE_ACTIONS = ("-delete", "-ok", "-fls", "-fprint", "-fprintf")
 
+# Options to a `git branch` / `git tag` read sub-command whose VALUE is itself
+# a read-only filter — a glob pattern or commit the listed set is narrowed by.
+# Such a value is NOT a create name. `--track/-t`, `--set-upstream-to/-u` take a
+# branch as value but CHANGE the branch (tracking / upstream), so they are
+# deliberately absent: a name after them is classified (s29 create-forms).
+_READ_GIT_VALUE_OPTS = frozenset({
+    "--list", "-l", "--contains", "--no-contains", "--merged", "--no-merged",
+    "--points-at", "--sort", "--format",
+})
+
+
+def _git_creates_ref(args: list) -> bool:
+    """True when a ``git branch``/``git tag`` argument list CREATES a ref: it
+    holds a positional NAME that is not the value of a read-only filter option
+    (--list/--contains/--merged/...). ``git branch name``, ``git branch --track
+    name start``, ``git tag name``, ``git tag -a name`` all create a ref; the
+    intent rides an ARGUMENT, not a flag, so _GIT_DESTRUCTIVE_FLAGS cannot see
+    it (s29 create-forms finding). ``git branch``, ``git branch -vv``,
+    ``git branch --list pat``, ``git tag --contains sha`` are reads."""
+    prev_opt = ""
+    for tok in args:
+        if tok.startswith("-"):
+            prev_opt = tok
+            continue
+        # A positional is a name (create) unless it is the value of a read
+        # filter. --list/-l take an optional pattern, --contains/--merged/...
+        # a commit; all are reads, so their value is consumed and not a name.
+        if prev_opt in _READ_GIT_VALUE_OPTS:
+            prev_opt = ""
+            continue
+        # --set-upstream-to/-u etc. write; a name after them is a create.
+        return True
+    return False
+
 
 
 # A shell operator that can write a file, run a program, or change state —
@@ -162,8 +196,15 @@ def _bash_is_plain_read(command: str) -> bool:
             return False
         # A read sub-command is only a plain read when no destructive flag
         # follows — branch -d/-D/-f -m touches refs, tag -d/-f/-m touches tags;
-        # the destructive intent rides a flag, not a shell operator (s28+s29).
-        return not (_GIT_DESTRUCTIVE_FLAGS & set(rest[2:]))
+        # the destructive intent rides a flag, not a shell operator (s28+s29) —
+        # AND (branch/tag) no bare NAME argument creates a ref, an intent that
+        # rides an argument, not a flag (s29 create-forms finding).
+        args = rest[2:]
+        if _GIT_DESTRUCTIVE_FLAGS & set(args):
+            return False
+        if rest[1] in ("branch", "tag") and _git_creates_ref(args):
+            return False
+        return True
     if first == "find":
         # find -delete removes files with no shell operator; -ok -fls -fprint
         # -fprintf write or run. -exec/-execdir are already caught by
