@@ -114,12 +114,87 @@ def monitor_settings(settings: dict | None = None) -> dict:
 # Watch list (shared file: dashboard writes, daemon reads — and vice versa)
 # ---------------------------------------------------------------------------
 
-def load_watched(path: Path | None = None) -> dict:
-    p = path or _WATCHED_PATH
+# Upper bound on a watch file that is read at all. A watch entry is
+# ~200 bytes and entries are pruned after seven days, so 1 MiB is ~5000
+# live watches; a larger file is not one this module wrote.
+WATCH_FILE_MAX_BYTES = 1 << 20
+
+
+def read_watch_file(path: Path | str) -> Optional[dict]:
+    """The parsed top-level mapping of a watch file, or None.
+
+    Input: a path to a watch file (the per-workspace agent watch file,
+    the shared ``~/.delfin/watched_jobs.json`` or the workspace index).
+    Output: the JSON object it holds; None when the path is missing, is
+    not a regular file (FIFO, socket, device, directory), is a symlink,
+    is larger than ``WATCH_FILE_MAX_BYTES``, is not UTF-8 JSON, or holds
+    a non-object. Never raises.
+
+    Opened ``O_NONBLOCK | O_NOFOLLOW`` and checked with ``fstat`` on the
+    open descriptor, so the type check and the read see the same inode:
+    a FIFO open returns at once and is then refused, a symlink in the
+    last component fails the open (ELOOP), and at most
+    ``WATCH_FILE_MAX_BYTES + 1`` bytes are read whatever ``st_size``
+    said. The agent watch file lives in a model-writable workspace and
+    is read at every turn start, so the read must be bounded in time and
+    size. Cost: one open + fstat + read, as before. Symlinked parent
+    directories are still followed (``O_NOFOLLOW`` covers the last
+    component only), so a ``~/.delfin`` that is itself a link keeps
+    working.
+
+    Rejected: ``Path.is_file()`` before ``read_text()`` (follows links,
+    and the path can be swapped between check and open); ``signal.alarm``
+    around a blocking read (main thread only, and the dashboard reads
+    from worker threads).
+    """
+    import stat as _stat
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(str(path), flags)
     except Exception:
+        return None
+    try:
+        st = os.fstat(fd)
+        if (not _stat.S_ISREG(st.st_mode)
+                or st.st_size > WATCH_FILE_MAX_BYTES):
+            return None
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            raw = fh.read(WATCH_FILE_MAX_BYTES + 1)
+        if len(raw) > WATCH_FILE_MAX_BYTES:
+            return None
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def load_watched(path: Path | None = None) -> dict:
+    """The watch list at ``path`` (default: the shared file), as
+    ``{"jobs": {...}, ...}``; ``{"jobs": {}}`` for anything
+    :func:`read_watch_file` refuses or a ``jobs`` that is no mapping.
+
+    The empty view is the answer for every caller, the turn start
+    included: it never blocks and never raises. No warning is emitted --
+    the file sits in a model-writable workspace and is read on every
+    turn and daemon tick, so an attention event per refusal would be a
+    channel the model can flood. The next write (``save_watched``)
+    replaces the refused entry with a regular file; for an oversize file
+    the entries it held are dropped then, which a file this module wrote
+    does not reach (see ``WATCH_FILE_MAX_BYTES``)."""
+    data = read_watch_file(path or _WATCHED_PATH)
+    if data is None:
         return {"jobs": {}}
+    if not isinstance(data.get("jobs", {}), dict):
+        data["jobs"] = {}
+    return data
 
 
 def save_watched(data: dict, path: Path | None = None) -> None:
@@ -128,6 +203,9 @@ def save_watched(data: dict, path: Path | None = None) -> None:
     # Atomic (temp file + os.replace, the memory_store._atomic_write
     # pattern): daemon and dashboard share this file — a reader racing a
     # plain truncate-write would observe an empty or torn watch list.
+    # os.replace renames over the last path component without opening
+    # it, so a symlink or FIFO there is replaced, never written through;
+    # mkstemp creates the temp file O_EXCL in the same directory.
     import tempfile
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{p.name}.", suffix=".tmp", dir=str(p.parent))
@@ -389,12 +467,8 @@ def _note_agent_watch_workspace(workspace: str | Path) -> None:
     try:
         ws = str(Path(workspace).expanduser())
         now = time.time()
-        try:
-            data = json.loads(
-                _AGENT_WATCH_INDEX_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-        seen = data.get("workspaces") if isinstance(data, dict) else None
+        data = read_watch_file(_AGENT_WATCH_INDEX_PATH) or {}
+        seen = data.get("workspaces")
         if not isinstance(seen, dict):
             seen = {}
         seen = {w: t for w, t in seen.items()
@@ -409,8 +483,8 @@ def _note_agent_watch_workspace(workspace: str | Path) -> None:
 def agent_watch_workspaces() -> list[str]:
     """Workspaces with an agent watch file, newest registration first."""
     try:
-        data = json.loads(_AGENT_WATCH_INDEX_PATH.read_text(encoding="utf-8"))
-        seen = data.get("workspaces") if isinstance(data, dict) else None
+        data = read_watch_file(_AGENT_WATCH_INDEX_PATH) or {}
+        seen = data.get("workspaces")
         if not isinstance(seen, dict):
             return []
         return [w for w, _ in sorted(seen.items(), key=lambda kv: -float(kv[1] or 0))
