@@ -17656,12 +17656,15 @@ class _DocToolExecutor:
             _record_security_event(
                 "unknowable_patch_refused", "bash", cmd[:80], blocked=True)
             return None, json.dumps({"error": (
-                "blocked: this git/patch command reads its patch from "
-                "standard input or a pipe, so the files it would write "
-                "cannot be checked against the write scope. Name the patch "
-                "file on the command line (e.g. `git apply file.diff`, "
-                "`git restore <path>`) so its targets can be gated, or ask "
-                "the user for the directory you need."
+                "blocked: the files this git/patch command would write "
+                "cannot be read from it -- the patch comes from a pipe, "
+                "xargs, a mailbox or a here-document, or the named patch is "
+                "missing, not a regular file or over 16 MB -- so they "
+                "cannot be checked against the write scope. Name a readable "
+                "patch file on the command line (e.g. `git apply "
+                "file.diff`, `patch -p1 -i file.diff`) or the paths "
+                "(`git restore <path>`), or ask the user for the directory "
+                "you need."
             )})
         return list(result), None
 

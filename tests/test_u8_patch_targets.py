@@ -168,7 +168,12 @@ def test_git_restore_source(tmp_path):
 
 
 def test_git_restore_staged(tmp_path):
+    # --staged alone writes the index, not the file; with and without `--`
+    # alike (test_index_only_forms_write_no_work_tree_file).
     got = targets("git restore --staged -- delfin/x.py",
+                  cwd=str(tmp_path))
+    assert got == []
+    got = targets("git restore --staged --worktree -- delfin/x.py",
                   cwd=str(tmp_path))
     assert got == [f"{tmp_path}/delfin/x.py"]
 
