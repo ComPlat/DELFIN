@@ -11287,8 +11287,6 @@ _PENDING_JOBS_MARK = "\u2699 STILL PENDING"
 # At most this many job ids on the note; the rest are counted. 12 ids of
 # <= 80 chars keep the line under ~1.1 kB however long the watch list is.
 _PENDING_JOBS_MAX = 12
-# The watch file is read only up to this size; a larger one gives no note.
-_PENDING_WATCH_MAX_BYTES = 1 << 20
 # Ids as job_monitor issues them: SLURM (digits, array suffixes) and
 # bash_jobs (hex); CI ids are matched with job_monitor._CI_ID_RE.
 _PENDING_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,40}$")
@@ -11348,38 +11346,17 @@ def _append_pending_jobs_to_summary(api_messages: list,
 def _read_watch_jobs(path) -> dict:
     """The ``jobs`` mapping of a job_monitor watch file, or {}.
 
-    Opened ``O_NONBLOCK | O_NOFOLLOW`` and read only when it is a regular
-    file of at most ``_PENDING_WATCH_MAX_BYTES``: a FIFO, a symlink, a
-    larger file, malformed JSON or a non-mapping ``jobs`` gives {}. The
-    workspace is writable by the model, so the read is bounded in time
-    and size. Never raises."""
-    import stat as _stat
+    ``job_monitor.load_watched``'s ``jobs``, so the note and every other
+    reader go through the one guarded reader
+    ``job_monitor.read_watch_file`` (O_NONBLOCK | O_NOFOLLOW, regular
+    files of at most ``WATCH_FILE_MAX_BYTES``). A FIFO, a symlink, a
+    larger file, malformed JSON or a non-mapping ``jobs`` gives {}.
+    Never raises."""
     try:
-        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(
-            os, "O_NOFOLLOW", 0)
-        fd = os.open(str(path), flags)
+        from . import job_monitor as _jm
+        return _jm.load_watched(path).get("jobs") or {}
     except Exception:
         return {}
-    try:
-        st = os.fstat(fd)
-        if (not _stat.S_ISREG(st.st_mode)
-                or st.st_size > _PENDING_WATCH_MAX_BYTES):
-            return {}
-        with os.fdopen(fd, "rb") as fh:
-            fd = -1
-            raw = fh.read(_PENDING_WATCH_MAX_BYTES + 1)
-        if len(raw) > _PENDING_WATCH_MAX_BYTES:
-            return {}
-        jobs = json.loads(raw.decode("utf-8")).get("jobs")
-        return jobs if isinstance(jobs, dict) else {}
-    except Exception:
-        return {}
-    finally:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
 
 
 def _elide_old_tool_results(
