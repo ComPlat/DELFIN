@@ -45,6 +45,11 @@ def test_writes_and_payloads_stay_refused(perms, cmd):
     "git grep -Ovim foo",
     "git grep -O'sh -c id' foo",
     "git grep --open-files-in-pager=sh foo",
+    # git bundles short options and accepts a unique long-option prefix.
+    "git grep -nOvim foo",
+    "git grep -iOless foo",
+    "git grep --open=less foo",
+    "git grep --open-files=less foo",
 ])
 def test_a_git_grep_that_runs_a_pager_program_is_not_auto_allowed(perms, cmd):
     assert not perms.matches_bash_auto_allow(cmd), cmd
