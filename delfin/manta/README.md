@@ -11,20 +11,23 @@
 
 # MANTA
 
-**MANTA** is the coordination-structure engine inside [DELFIN](../../README.md). From a transition-metal **SMILES**, it **constructs** the provably-complete set of coordination isomers and expands each into conformers — then energy-ranks the ensemble. It is **deterministic**, uses **no force field at the metal**, and uses **no licensed crystallographic data at runtime**.
+**MANTA** is the deterministic constructor inside [DELFIN](../../README.md). From a transition-metal **SMILES** it **enumerates** the coordination isomers as symmetry orbits and **builds** each of them with the metal held on its coordination polyhedron, adding ring-pucker, pose and mirror siblings. The result is the **isomer–conformer ensemble** of the input: the finite set of frames emitted for one SMILES (by analogy with the conformer–rotamer ensemble of CREST); a single structure is a frame. On this path **no force field acts on a free metal centre**, and **no licensed crystallographic data is read at runtime**.
 
-> **Construct, don't search.** CREST / GOAT explore the conformational space *stochastically* (metadynamics, genetic search). MANTA *enumerates* the coordination manifold from group theory and ideal geometry, then relaxes and ranks. The two are complementary: MANTA gives a deterministic, complete, license-clean starting manifold; a global optimizer can refine it.
+> **Construct, don't search.** CREST / GOAT explore the conformational space *stochastically* (metadynamics, genetic search). MANTA *constructs* the ensemble from group theory and ideal geometry. The two are complementary: MANTA gives a deterministic, license-clean set of starting frames, with the enumerated isomer count as an explicit denominator; a global optimizer can refine any of them.
 
 ## What it does
 
 | Stage | How |
 |-------|-----|
-| **Coordination isomers** | Burnside–Pólya enumeration over the donor set on ideal polyhedra. The orbit counts are cross-checked against exhaustive deduplication for every supported polyhedron (`tests/test_burnside_enumerator.py`), and the named cases — *cis/trans*, Δ/Λ, homoleptic and maximally asymmetric CN6 — are pinned in `tests/test_prescribed_isomer_enumerator.py` |
-| **Geometry** | Donors placed on ideal polyhedron vertices (Pyykkö covalent radii) + VSEPR; metallacycle backbones embedded by distance geometry — **no force field at the metal** |
-| **Conformers** | Hindered-rotation / ring-pucker enumeration per isomer, RMSD-deduplicated |
-| **Ranking** | Optional GFN2-xTB (or GFN-FF) energy ranking of the emitted ensemble (via the `xtb` CLI) |
+| **Coordination isomers** | The admissible placements of the donor arms on the vertices of an ideal polyhedron are reduced to orbits under the rotation group of the polyhedron and the interchange of identical ligands (Burnside–Pólya counting); mirror images are distinct orbits. The enumerator agrees with the orbit count and with brute force for monodentate ligands and for bidentates whose donors differ in element or are symmetry-equivalent (`tests/test_burnside_enumerator.py`, `tests/test_prescribed_isomer_enumerator.py`); for bidentates with two different donors of one element it can undercount, and for tri- and higher-dentate ligands it can under- or overcount |
+| **Geometry** | Donors placed on the ideal vertices at covalent-radius metal–donor distances (Cordero; Pyykkö–Atsumi for heavy main-group donors), each ligand turned so that its lone pair points at the metal; a chelate is embedded as a metallacycle and rotated onto its vertices; the ligand periphery is then relieved with metal and donors frozen |
+| **Siblings** | Ring puckers (Cremer–Pople targets, relaxed with UFF while metal and donors are fixed points), pose, lone-pair and re-embedding siblings and a mirror frame, each gated and de-duplicated. The ensemble is a union of these sets, not a product; only the isomer part has a closed-form count, the sibling sets are heuristic and capped, and no torsion grid is enumerated |
+| **Self-gate** | Every frame must pass a check against bond collapse, atom overlap, shell intrusion and a continuous-shape limit before it is emitted |
+| **Ranking** | Optional GFN2-xTB (or GFN-FF) energy ranking of the emitted ensemble (via the `xtb` CLI); off by default |
 
-Every result is **deterministic** — same SMILES in, byte-identical manifold out, independent of process or hash seed.
+Inputs outside the constructor's scope (it covers one metal centre with coordination number 4, 5 or 6 and ligands below a size cap per donor arm), or whose isomers all fail the self-gate, are built entirely by a **legacy path** that minimises UFF over the whole complex with the metal as a typed, fixed atom. The two paths are either-or per system; their outputs are not combined.
+
+Construction uses fixed seeds and total orders in enumeration, selection and de-duplication, so it is **deterministic for all but a few systems**: the same SMILES on the same commit and environment gives byte-identical frames. The known exception is the UFF step of the legacy path with soft donor-distance restraints, which can differ between repeats under machine load.
 
 ## Usage
 
@@ -34,7 +37,7 @@ with `smiles_converter=MANTA` in CONTROL.txt. From Python:
 ```python
 from delfin.smiles_converter import smiles_to_xyz_isomers
 
-# returns the constructed, deduplicated coordination-isomer manifold as XYZ blocks
+# returns the isomer–conformer ensemble (one XYZ block per frame)
 isomers = smiles_to_xyz_isomers("[Co](N)(N)(N)(N)(Cl)Cl")
 ```
 
@@ -48,15 +51,16 @@ All new behaviour is **flag-gated and default-OFF** (byte-identical to the prior
 
 ## Package layout
 
-`delfin/manta/` holds the engine (68 modules). Key entry points:
+`delfin/manta/` holds the constructor (about 120 modules). Key entry points:
 
 | Module | Role |
 |--------|------|
-| `polya_isomer_count.py` | Burnside–Pólya isomer enumeration (the completeness theorem) |
+| `polya_isomer_count.py` | Burnside–Pólya orbit count of the coordination isomers |
 | `polyhedra.py` | ideal coordination polyhedra + vertex sets |
 | `decompose.py` | SMILES → coordination decomposition (donors, denticity, hapticity) |
 | `assemble_complex.py` | places donors on vertices, orients chelates, seats the metal |
-| `conformer_enum.py` / `conformer_complete.py` | per-isomer conformer construction |
+| `_ring_pucker.py` | ring-pucker siblings (Cremer–Pople targets) |
+| `conformer_enum.py` / `conformer_complete.py` | ligand-conformer enumeration and the conformer-completion pass; not used by the shipped configuration (the completion pass is behind a switch that is off) |
 | `_gfnff_rank.py` | GFN2 / GFN-FF energy ranking via the `xtb` CLI |
 
 ## Scope & limitations (read this)
@@ -64,10 +68,10 @@ All new behaviour is **flag-gated and default-OFF** (byte-identical to the prior
 MANTA is honest about its boundaries:
 
 - **Starting geometries, not production geometries.** Output is a *constructive* geometry (≈ UFF-quality), correct in topology/coordination but **not** xTB/DFT-accurate. Always relax with xTB/DFT before any production calculation.
-- **Recall is gas-phase-bounded.** MANTA constructs the gas-phase-feasible manifold. Crystal-packing-distorted poses are, by construction, not reachable — this is a shared physical ceiling, not an enumeration gap.
+- **Recall is gas-phase-bounded.** MANTA constructs a gas-phase ensemble. Crystal-packing-distorted poses are, by construction, not reachable — this is a shared physical ceiling, not an enumeration gap.
 - **Build-rate boundaries.** A minority of systems (some strained metallacycles whose distance-geometry embed collapses, certain multi-hapto / cage motifs) do not build FF-free and fall back or are skipped — documented, not hidden.
-- **Completeness is over the modelled coordination model** (denticity, hapticity, ideal polyhedra). Exotic bonding outside that model is out of scope.
+- **Enumeration is over the modelled coordination model** (denticity, hapticity, ideal polyhedra). Only the enumerated orbits that build and pass the self-gate are realised, so the realised isomers are bounded by the enumeration, not guaranteed equal to it; how much of the enumerated set a run realises is measured, not asserted. Exotic bonding outside that model is out of scope.
 
 ## License & data provenance
 
-LGPL-3.0-or-later. The runtime uses **only open priors** (Pyykkö covalent radii, open-database-derived ideal distances) — **no CCDC/CSD/GRIP data ships or is read at runtime**. A mechanical license guard (`scripts/license_guard.py` + CI test) enforces this.
+LGPL-3.0-or-later. The runtime uses **only open priors** (Cordero and Pyykkö–Atsumi covalent radii, open-database-derived ideal distances) — **no CCDC/CSD/GRIP data ships or is read at runtime**. A mechanical license guard (`scripts/license_guard.py` + CI test) enforces this.
