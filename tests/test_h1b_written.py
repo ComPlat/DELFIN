@@ -189,3 +189,16 @@ def test_f5_cmdsub_runs_reader(tmp_path):
     written = [os.path.join(workspace, "x.sh")]
     assert sw.verdict('sh -c "$(bash x.sh)"', written, workspace).matched
     assert sw.verdict('sh -c "$(< x.sh)"', written, workspace).matched
+
+
+def test_abs_cd_then_run_not_doubled(tmp_path):
+    """cd /abs/under-workspace && python3 x.py — an ABSOLUTE cd under the
+    workspace must not double the workspace in _resolve (s21 re-review).
+    `_cd_join` keeps the absolute target absolute so
+    os.path.join(workspace, /ws, x.py) = /ws/x.py, not /ws/ws/x.py."""
+    workspace = _ws(tmp_path)
+    written = [os.path.join(workspace, "x.py")]
+    assert sw.verdict(f"cd {workspace} && python3 x.py", written,
+                      workspace).matched
+    assert sw.verdict(f"cd {workspace} && ./x.py", written,
+                      workspace).matched

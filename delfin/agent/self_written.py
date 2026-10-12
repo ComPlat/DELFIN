@@ -237,7 +237,10 @@ def _cd_join(cwd: str, target: str) -> str:
     if not target or target == "/":
         return ""
     if target.startswith("/"):
-        return os.path.normpath(target.lstrip("/"))
+        # Keep the absolute target absolute: _resolve's os.path.join(workspace,
+        # base, ref) drops the workspace prefix when base is absolute, so
+        # `cd /ws && python3 x.py` resolves x.py against /ws, not /ws/ws.
+        return os.path.normpath(target)
     parts = [p for p in (cwd + "/" + target).split("/") if p and p != "."]
     out: List[str] = []
     for p in parts:
@@ -258,6 +261,11 @@ def _resolve(ref: str, workspace: str, base: str = "") -> str:
     """
     if ref.startswith("/"):
         return os.path.normpath(ref)
+    if base.startswith("/"):
+        # An absolute base is already workspace-rooted (``cd /ws`` when the
+        # workspace IS /ws): join ref against it directly, never under the
+        # workspace prefix, or the workspace would be doubled (/ws/ws/x.py).
+        return os.path.normpath(os.path.join(base, ref))
     if base:
         return os.path.normpath(os.path.join(workspace, base, ref))
     return os.path.normpath(os.path.join(workspace, ref))
