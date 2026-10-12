@@ -1823,6 +1823,15 @@ def cmd_bench(args: argparse.Namespace) -> int:
                   f"{result.duration_s:>5.1f}s",
                   flush=True)
 
+    _learning_home = getattr(args, "learning_home", "") or None
+    if _learning_home is not None:
+        try:
+            _learning_home = _br._learning_home_checked(_learning_home)
+        except ValueError as exc:
+            print(f"\nbenchmark not started: {exc}", file=sys.stderr)
+            return 2
+        print(f"  learning home: {_learning_home} (kept across runs)")
+
     try:
         results = _br.run_suite(
             tasks,
@@ -1834,6 +1843,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
             repeats=repeats,
             progress=_progress,
             on_replicate=_on_rep if repeats > 1 else None,
+            learning_home=_learning_home,
         )
     except _br.BenchmarkRunInProgress as exc:
         # The lock's message already names the holder and the two ways
@@ -3638,6 +3648,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=("N retries per task to defeat single-sample noise; "
               "result is median quality + majority success + quality_stdev "
               "(default: 1)"),
+    )
+    bench_run.add_argument(
+        "--learning-home", default="", dest="learning_home",
+        help=("Keep the agent's state under DIR across runs, one lineage "
+              "per task and replicate: the two arms of a learning "
+              "measurement (PREREG_W15.md) pass the same DIR. Never the "
+              "user's home. Default: a fresh scratch home per attempt"),
     )
 
     bench_ls = bench_sub.add_parser("list", help="List packaged tasks")
