@@ -33,7 +33,10 @@ from pathlib import Path
 
 from .memory_store import _private_dir
 
-_OK_OUTCOMES = frozenset({"success", "failure", "started"})
+#: "started" is a use whose result is not known yet; "unverified" is a use
+#: whose session ended with nothing that proves either way. Neither is a
+#: success, and neither is a failure.
+_OK_OUTCOMES = frozenset({"success", "failure", "started", "unverified"})
 # A skill usage key is a plain hyphenated token (casscf-setup, tune-xtb):
 # letters, digits, '-', '_' or '.'. Anything else (whitespace, ':', '=',
 # '@', backslash, '/'...) is refused -- an injected phrase like
@@ -142,7 +145,7 @@ def resolve_pending(name: str, outcome: str, *, detail: str = "",
     if outcome not in _OK_OUTCOMES:
         raise ValueError(
             f"invalid resolve outcome {outcome!r} for {name!r}: "
-            f"expected success or failure")
+            f"expected success, failure or unverified")
     n = _valid_name(name)
     path = _ledger_path(n)
     try:
@@ -242,12 +245,18 @@ def usage_for(name: str) -> dict:
     """One skill's roll-up: uses, successes, failures, last_used,
     last_outcome. Empty record when the skill was never used."""
     rows = usage_records(name)
-    failures = sum(1 for r in rows if r["outcome"] == "failure")
+    count = {o: sum(1 for r in rows if r["outcome"] == o) for o in _OK_OUTCOMES}
+    resolved = count["success"] + count["failure"] + count["unverified"]
+    # One use is one "started" row plus, later, the row that resolves it;
+    # a use recorded directly with its result has no "started" row.
+    uses = max(count["started"], resolved)
     return {
         "skill": name,
-        "uses": len(rows),
-        "successes": len(rows) - failures,
-        "failures": failures,
+        "uses": uses,
+        "successes": count["success"],
+        "failures": count["failure"],
+        "unverified": count["unverified"],
+        "pending": uses - resolved,
         "last_used": rows[0]["when"] if rows else "",
         "last_outcome": rows[0]["outcome"] if rows else "",
     }

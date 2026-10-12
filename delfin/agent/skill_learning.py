@@ -131,6 +131,14 @@ def _looks_like_correction(text: str) -> bool:
     return any(m in t for m in markers)
 
 
+def _users_own_words(msg: dict) -> list:
+    try:
+        from .api_client import _classifier_user_texts
+        return _classifier_user_texts([msg])
+    except Exception:
+        return []
+
+
 def _trusted_excerpt(messages, cap: int = 8000) -> str:
     """A trusted projection of the session for the skill drafter.
 
@@ -150,8 +158,12 @@ def _trusted_excerpt(messages, cap: int = 8000) -> str:
         role = m.get("role")
         c = _content(m).strip()
         if role == "user":
-            if c:
-                parts.append(f"USER: {c[:600]}")
+            # Not everything in the user role is the user: a message from
+            # another session, a reminder, a wrapped tool result arrive
+            # there too. The same reading as the action classifier's --
+            # one definition of "the user's own words".
+            for own in _users_own_words(m):
+                parts.append(f"USER: {own[:600]}")
             continue
         name = _tool_name(m)
         if name is None or not c:

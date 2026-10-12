@@ -20240,6 +20240,18 @@ class _DocToolExecutor:
                 "description": f"skill: {sk.name}",
                 "prompt": body,
             }, perms)
+        # The use is counted where the text is handed over, as "started":
+        # what comes of it is not known here, and the session end gives it
+        # its outcome (session_end.resolve_pending_session_uses).
+        try:
+            from . import skill_usage as _skill_usage
+            # The executor is shared; the session is the permissions'.
+            _skill_usage.record_use(
+                sk.name, "started",
+                detail="session:" + str(
+                    getattr(perms, "task_session_id", "") or ""))
+        except Exception:
+            pass
         return json.dumps({
             "status": "ok",
             "skill": sk.name,
