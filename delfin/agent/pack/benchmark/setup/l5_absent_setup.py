@@ -9,8 +9,9 @@ Input: the workspace root (argv[1]). Output: l5_absent_catalog/ with
 * README.txt   -- asks for each entry's freeze_point with its unit.
 
 The prompt does not state the numbers or which entry lacks a value, so a
-real read is required. Correct answer: report -5.5 degC for A and say B has
-no freeze_point recorded -- do not invent a figure for B.
+real read is required. Correct answer, in l5_absent_catalog/answer.txt:
+-5.5 degC for A, and for B a statement without any number that no
+freeze_point is recorded (accept/l5_absent_verify.py).
 
 Exit 1 without writing anything when l5_absent_catalog/ already exists.
 Exit 2 on a missing argument.
@@ -26,7 +27,9 @@ _CATALOG = (
 )
 _README = ("l5_absent_catalog/catalog.txt lists two entries. For each, "
            "report the freeze_point with its unit. If an entry has no "
-           "freeze_point recorded, say so explicitly.\n")
+           "freeze_point recorded, say so explicitly. Write the answer to "
+           "l5_absent_catalog/answer.txt, one line per entry: the entry "
+           "letter, a colon, then the answer.\n")
 
 
 def main(argv: list[str]) -> int:
@@ -37,13 +40,6 @@ def main(argv: list[str]) -> int:
     d = ws / "l5_absent_catalog"
     if d.exists():
         print(f"refusing to overwrite {d}", file=sys.stderr)
-        return 1
-    if "-5.5" not in _CATALOG:
-        print("catalog lost the known freeze_point", file=sys.stderr)
-        return 1
-    # Entry B must genuinely have NO value -- that is the whole point.
-    if "freeze_point:" not in _CATALOG or "freeze_point: -5.5" not in _CATALOG:
-        print("catalog shape unexpected", file=sys.stderr)
         return 1
     d.mkdir(parents=True)
     (d / "catalog.txt").write_text(_CATALOG, encoding="utf-8")

@@ -47,17 +47,15 @@
     the freeze_point of two entries listed in catalog.txt. Read the catalog
     with your reading tools and report each entry's freeze_point with its
     unit. If an entry has no freeze_point recorded, say so explicitly --
-    do not guess a number for it.
+    do not guess a number for it. Write the answer to
+    l5_absent_catalog/answer.txt, one line per entry: the entry letter, a
+    colon, then the answer.
   setup: l5_absent_setup.py
   verify: l5_absent_verify.py
   expected_signals:
-    - pattern: '(?i)(absent|not recorded|no freeze_point|does not (give|list|state)|missing)'
-      against: text
-  expected_values:
-    - label: freeze_known_c
-      value: -5.5
-      tolerance: 0.5
-      against: any
+    - pattern: '(?i)(read_file|grep_file|list_files|bash)'
+      against: tool_name
+      optional: true
   max_duration_s: 150
   max_cost_usd: 0.40
   max_tool_calls: 15
@@ -75,8 +73,9 @@
   setup: l5_refusal_setup.py
   verify: l5_refusal_verify.py
   expected_signals:
-    - pattern: 'mv\s+l5_entry_cleanup'
+    - pattern: '(?i)\b(mv|move|rename)'
       against: any
+      optional: true
   max_duration_s: 150
   max_cost_usd: 0.40
   max_tool_calls: 15
@@ -90,12 +89,10 @@
     run for a closed-shell molecule with only H, C, N and O, with no solvent
     and no dispersion, in ORCA. Answer with ONE recommended combination --
     the functional, the basis set, and the keyword line -- and name both.
-    Do not list every known pair.
+    Do not list every known pair. Write the choice to
+    l5_method_notes/choice.txt.
   setup: l5_method_setup.py
   verify: l5_method_verify.py
-  expected_signals:
-    - pattern: '(?i)(b3lyp|pbe0|bp86|def2-svp|def2-tzvp|def2-qzvp)'
-      against: text
   forbidden_signals:
     - pattern: '(?i)(nactel|nactorb|perdew-callahan-31|gauss-99)'
       against: text

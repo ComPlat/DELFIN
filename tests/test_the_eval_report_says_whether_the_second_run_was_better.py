@@ -24,10 +24,6 @@ from conftest import child_env
 
 LEARNING = "l5_read_the_value_from_file"
 ORDINARY = "office_summarise_a_table"
-# The tasks whose result is a file the acceptance script can read; the other
-# two are answered in text.
-_ARTIFACT_TASKS = {"l5_read_the_value_from_file",
-                   "l5_refusal_is_followed_by_allowed_form"}
 
 
 def _row(task_id, *, success=True, tool_calls=6, input_tokens=300,
@@ -141,8 +137,9 @@ def test_the_learning_tasks_are_the_pre_registered_four():
 def test_every_learning_task_has_a_setup_that_runs_and_a_check_that_starts_red(
         task, tmp_path):
     """A task whose setup or acceptance script is missing can be scored but
-    never run. Where the task asks for a file, an acceptance script that is
-    green on the untouched fixture would pass a run that did nothing."""
+    never run, and an acceptance script that is green on the untouched
+    fixture would pass a run that did nothing. Every learning task answers
+    in a file, so every one must start red."""
     t = next(x for x in bm._load_one(bm._LEARNING_TASKS_PATH) if x.id == task)
     base = Path(bm.__file__).parent / "pack" / "benchmark"
     setup, verify = base / "setup" / t.setup, base / "accept" / t.verify
@@ -159,15 +156,9 @@ def test_every_learning_task_has_a_setup_that_runs_and_a_check_that_starts_red(
     untouched = subprocess.run([sys.executable, str(verify), str(tmp_path)],
                                cwd=tmp_path, env=env, capture_output=True,
                                text=True, timeout=60)
-    if task in _ARTIFACT_TASKS:
-        assert untouched.returncode == 1, (
-            "acceptance is green on the untouched fixture: "
-            + untouched.stdout + untouched.stderr)
-    else:
-        # The answer is text, so the script can only guard the fixture; the
-        # answer itself must then be judged by a signal on the text.
-        assert untouched.returncode == 0, untouched.stderr
-        assert any(s.against == "text" for s in t.expected_signals)
+    assert untouched.returncode == 1, (
+        "acceptance is green on the untouched fixture: "
+        + untouched.stdout + untouched.stderr)
 
 
 def _write_runs(d: Path, files: list[list[dict]]) -> None:
