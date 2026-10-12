@@ -1967,7 +1967,7 @@ class AgentEngine:
             return True
         return any(p in ("tests", "test") for p in parts)
 
-    # --- a skill improves while it is used (wave 15, L2) -----------------
+    # --- a skill improves while it is used ---------------------------------
 
     _SKILL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
@@ -1982,6 +1982,23 @@ class AgentEngine:
         skill.
         """
         self._typed_now = text if isinstance(text, str) else ""
+
+    def _forget_skill_turn(self) -> None:
+        """Drop the skills the last turn loaded and any correction of them.
+
+        Called where one conversation ends and another begins on this
+        engine (a new cycle, a restored session). The per-turn reset in
+        :meth:`_note_skill_correction` only runs at the next turn, which
+        is then already the other conversation's: without this, a
+        correction typed there was put on record against a skill only the
+        previous conversation had used.
+        """
+        self._typed_now = ""
+        self._skills_used_turn = []
+        self._skill_correction = None
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and hasattr(perms, "skill_corrections"):
+            perms.skill_corrections = {}
 
     def _note_skill_use(self, tool_name: str, tool_input: Any) -> None:
         """Remember which skills this turn loaded (the ``skill`` tool)."""
@@ -6861,6 +6878,7 @@ class AgentEngine:
             # satisfied — which suppressed the delegation reminder for work
             # that had never delegated anything.
             self._reset_session_fields()
+            self._forget_skill_turn()
             self.session_id = self._fresh_session_id()  # fresh session for new cycle
             self._sync_task_session()
             self._foreign_tasks_shown = False  # new session → notice re-armed
@@ -7319,6 +7337,9 @@ class AgentEngine:
         restored: list[str] = []
         missing: list[str] = []
         drifted: list[str] = []
+        # Not carried, and not left over from whatever this engine held
+        # before: the restored session has no turn behind it.
+        self._forget_skill_turn()
 
         if data.get("mode"):
             restored.append("mode")
