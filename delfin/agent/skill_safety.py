@@ -126,7 +126,7 @@ _INTERPRETER_INVOCATION_RE = re.compile(
 _TEXT_RULES: tuple[tuple[str, re.Pattern, str], ...] = (
     ("approval-bypass",
      re.compile(r"(?i)\b(?:always\s+approve|pre-?approve|auto-?approve"
-                r"|approve\s+(?:everything|anything|all\b|without)"
+                r"|approv(?:e|es|ed|ing)\s+(?:everything|anything|all\b|without)"
                 r"|remember\s+the\s+(?:choice|approval)"
                 r"|remember_permission\b|skip\s+the\s+(?:confirm|dialog|gate))"
                 r"|--dangerously[a-z-]*|—dangerously[a-z-]*"),

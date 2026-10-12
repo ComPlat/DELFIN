@@ -731,6 +731,10 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
     ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),
     ("delfin.agent.memory_store", "_delfin_global_memory_dir", "memory"),
+    # Every skill hand-over appends a row here and every session end
+    # resolves it: a test or a benchmark attempt that hands a skill over
+    # would otherwise add uses to the record the user reads in the panel.
+    ("delfin.agent.skill_usage", "_usage_dir", "skills/_usage"),
 )
 
 #: Constants that point into the user's real ``~/.delfin`` DELIBERATELY:
