@@ -115,22 +115,28 @@ def resolve_pending_session_uses(session_id: str) -> int:
     run. Neither: "unverified" -- a session that ran no test proves
     nothing about the skill, and calling that a failure would be as much
     an invention as calling it a success. Only rows tagged with this
-    session's id are touched. Returns how many were resolved.
+    session's id are touched, each "started" row gets one resolving row,
+    and a second end of the same session resolves only what was started
+    after the first. Returns how many uses were resolved.
+
+    Limit: the outcome is the whole session's test record. A skill used
+    for one thing in a session whose unrelated test went red is resolved
+    "failure" all the same; nothing here links a test run to a skill.
+    Cost: one session load plus one bounded read per ledger file.
     """
     try:
         sid = str(session_id or "").strip()
         if not sid:
             return 0
         from delfin.agent import skill_usage as _su
+        names = _su.pending_for_session(sid)
+        if not names:
+            return 0
         verdicts = {_run_verdict(r) for r in _session_test_runs(sid)}
         outcome = ("failure" if "red" in verdicts
                    else "success" if "green" in verdicts else "unverified")
-        resolved = 0
-        for name in _su.pending_for_session(sid):
-            if _su.resolve_pending(name, outcome,
-                                   detail=f"session:{sid} {outcome}"):
-                resolved += 1
-        return resolved
+        return sum(_su.resolve_session(name, sid, outcome)
+                   for name in names)
     except Exception:
         return 0
 

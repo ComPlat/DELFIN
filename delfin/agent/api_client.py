@@ -20243,13 +20243,18 @@ class _DocToolExecutor:
         # The use is counted where the text is handed over, as "started":
         # what comes of it is not known here, and the session end gives it
         # its outcome (session_end.resolve_pending_session_uses).
+        # Without a session id no end will resolve the row, so the use is
+        # recorded as what it will stay: unverified.
         try:
             from . import skill_usage as _skill_usage
             # The executor is shared; the session is the permissions'.
-            _skill_usage.record_use(
-                sk.name, "started",
-                detail="session:" + str(
-                    getattr(perms, "task_session_id", "") or ""))
+            _sid = str(getattr(perms, "task_session_id", "") or "").strip()
+            if _sid:
+                _skill_usage.record_use(sk.name, "started",
+                                        detail="session:" + _sid)
+            else:
+                _skill_usage.record_use(sk.name, "unverified",
+                                        detail="no session id")
         except Exception:
             pass
         return json.dumps({

@@ -48,14 +48,14 @@ def test_the_panel_row_carries_the_usage_rollup(tmp_path, monkeypatch):
     assert usage["last_outcome"] == "failure"
 
 
-def test_the_panel_html_marks_a_failing_skill(tmp_path, monkeypatch):
+def test_the_panel_html_marks_a_use_in_a_red_session(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     p = _propose(tmp_path)
     su.record_use(p.name, "success")
     su.record_use(p.name, "failure")
     html = format_panel_html()
     assert p.name in html
-    assert "1 fail" in html
+    assert "1 in a session with a red test run" in html
     assert "used 2" in html
 
 
