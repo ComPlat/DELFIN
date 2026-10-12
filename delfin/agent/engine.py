@@ -700,6 +700,30 @@ class AgentEngine:
         # around the nested call, reset in ``finally``; while it is set, no
         # re-arm and no second DSML check happens.
         self._dsml_guard_active: bool = False
+        # H1E: ONE stall guard per ENGINE (per session), not per stream_message
+        # call, not a class/__init__ singleton that leaks streaks across engines.
+        # It is fed at the end of every engine turn with (kind, fingerprint) of
+        # how that turn ended, and after `repeats` identical endings (default 3,
+        # agent.stall_guard.repeats) the session stops starting follow-up turns:
+        # the engine ends with a status sentence instead of looping. Reset by a
+        # real tool run or by a message a person typed (a fresh user turn above).
+        try:
+            from delfin.agent.stall_guard import StallGuard
+            _sg_repeats = None
+            try:
+                from delfin import user_settings
+                _sg_repeats = (((user_settings.load_settings().get("agent", {}) or {})
+                                .get("stall_guard", {}) or {}).get("repeats"))
+            except Exception:
+                _sg_repeats = None
+            self._stall_guard = StallGuard(
+                repeats=int(_sg_repeats) if _sg_repeats not in (None, "") else 3)
+        except Exception:
+            self._stall_guard = None
+        # Non-empty once the guard has stopped the session: the status sentence
+        # naming what repeated and what to change. Every follow-up issuer asks
+        # the guard first and sends nothing more while this is set.
+        self._stall_guard_stopped: str = ""
         self._last_observed_files: set[str] = set()
         self._last_turn_tools: list[str] = []
         self._observed_ledger_available: bool = False
@@ -2027,6 +2051,16 @@ class AgentEngine:
 
     _SKILL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
+    def _stall_progress(self) -> None:
+        """Real progress: a tool ran, or a person sent a message. The streak
+        of identical turn endings starts over and a stop is lifted."""
+        self._stall_guard_stopped = ""
+        if self._stall_guard is not None:
+            try:
+                self._stall_guard.note_progress()
+            except Exception:
+                pass
+
     def note_typed(self, text: str) -> None:
         """What a person just typed into this session's input box.
 
@@ -2038,6 +2072,9 @@ class AgentEngine:
         skill.
         """
         self._typed_now = text if isinstance(text, str) else ""
+        # A person sending a message is the other kind of real progress: a
+        # session that stopped on a repeating turn goes on from here.
+        self._stall_progress()
 
     def _forget_skill_turn(self) -> None:
         """Drop the skills the last turn loaded and any correction of them.
@@ -3332,6 +3369,12 @@ class AgentEngine:
                     self._honour_pause()
 
                 elif event.type == "tool_result":
+                    # H1E: a real tool genuinely ran and produced a
+                    # result — genuine work resets the stall guard's
+                    # streak, so a turn that makes progress between
+                    # two leak-notices is never stopped on a stale
+                    # streak.
+                    self._stall_progress()
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
                     # Commit the held command only if it actually ran.
@@ -4029,20 +4072,48 @@ class AgentEngine:
             except Exception:
                 _dsml_name = None
             if _dsml_name and not self._dsml_leak_spent and not self._dsml_guard_active:
-                full_response = self._enforce_dsml_rerun(
-                    full_response, _dsml_name, _dsml_args,
-                    memory_context=memory_context,
-                    on_token=on_token,
-                    on_tool_use=on_tool_use,
-                    on_tool_result=on_tool_result,
-                    on_permission_denied=on_permission_denied,
-                    on_thinking=on_thinking,
-                    thinking_budget=thinking_budget,
-                    max_tokens=max_tokens,
-                    on_notice=on_notice,
-                    on_tool_result_meta=on_tool_result_meta,
-                    on_wait=on_wait,
-                )
+                # H1E: feed the per-engine stall guard on EVERY leak, so three
+                # consecutive leak-TURNS (each a follow-up to the last) end the
+                # session instead of the engine re-requesting into a loop. On
+                # STOP the re-request is skipped and the turn ends with the
+                # status; otherwise it is re-requested once as before.
+                _reran = None
+                if self._stall_guard is not None:
+                    # The fingerprint is the tool, not the wording: the
+                    # sentences around a leaked call differ every time, the
+                    # call that never runs is the same.
+                    if self._stall_guard.advance(
+                            "dsml_leak", str(_dsml_name)) == "stop":
+                        _stopped = (
+                            f"A call to {_dsml_name} was written as text "
+                            f"instead of being made, repeated in "
+                            f"{self._stall_guard.repeats} turns in a row; "
+                            "nothing ran. This session stops asking again "
+                            "and sends no further follow-up. To go on, "
+                            "send a message; the call must then be made as "
+                            "a real tool call.")
+                        self._stall_guard_stopped = _stopped
+                        _reran = (full_response.strip() + "\n\n⚠ " + _stopped)
+                if _reran is None:
+                    _reran = self._enforce_dsml_rerun(
+                        full_response, _dsml_name, _dsml_args,
+                        memory_context=memory_context,
+                        on_token=on_token,
+                        on_tool_use=on_tool_use,
+                        on_tool_result=on_tool_result,
+                        on_permission_denied=on_permission_denied,
+                        on_thinking=on_thinking,
+                        thinking_budget=thinking_budget,
+                        max_tokens=max_tokens,
+                        on_notice=on_notice,
+                        on_tool_result_meta=on_tool_result_meta,
+                        on_wait=on_wait,
+                    )
+                full_response = _reran
+            elif not _dsml_name:
+                # The turn ended on a real answer: whatever repeated before
+                # it is over.
+                self._stall_progress()
 
         # A turn that announced an action while plan mode refused its calls
         # says so in the ANSWER, not only in a notice that scrolls past.
@@ -6927,8 +6998,13 @@ class AgentEngine:
     def _note_turn_continuation(self, answer: str) -> None:
         """Record one follow-up note when *answer* announces work that it did
         not do while tasks stay open. Never raises; the latch keeps it to one
-        pending note until the caller calls clear_turn_continuation()."""
+        pending note until the caller calls clear_turn_continuation().
+        H1E: once the stall guard has stopped the session (_stall_guard_stopped
+        is set), no follow-up is produced — the turn that repeats itself is
+        over."""
         if not answer or self._continuation_fired:
+            return
+        if self._stall_guard_stopped:
             return
         try:
             from delfin.agent.turn_continuation import should_continue
