@@ -25,8 +25,21 @@ def _proposals_module():
     return skill_proposals
 
 
+def _usage_for(name: str) -> dict:
+    """The usage roll-up for a skill name, or an empty record.
+
+    Best-effort and non-breaking: if the usage ledger is unavailable the
+    row still renders, just without a usage column. Never raises.
+    """
+    try:
+        from delfin.agent import skill_usage
+        return dict(skill_usage.usage_for(name))
+    except Exception:
+        return {}
+
+
 def collect_rows() -> list[dict]:
-    """One row per proposal: name, status, source, evidence refs."""
+    """One row per proposal: name, status, source, evidence refs, usage."""
     proposals = _proposals_module().list_proposals()
     rows = []
     for p in proposals:
@@ -40,6 +53,7 @@ def collect_rows() -> list[dict]:
             "evidence": evidence,
             "findings": list(p.findings or []),
             "created": p.created,
+            "usage": _usage_for(p.name),
         })
     return rows
 
@@ -179,7 +193,7 @@ def format_panel_html(limit: int = 20) -> str:
             "<div style='color:#888;font-size:12px;font-style:italic;'>"
             "📚 Skill proposals: no skill proposals awaiting review — "
             "none proposed this session.</div>"
-        )
+        ) + _usage_section_html()
     parts: list[str] = []
     for r in rows[:limit]:
         colour = _STATUS_COLOURS.get(r["status"], "#888")
@@ -193,13 +207,14 @@ def format_panel_html(limit: int = 20) -> str:
         findings_html = (
             f" <span style='color:#d32f2f'>⚠ {escape(findings)}</span>"
             if findings else "")
+        usage_html = _usage_label(r.get("usage") or {})
         parts.append(
             f"<div style='font-family:monospace;font-size:12px;"
             f"margin:2px 0;'>📚 <b>{escape(r['name'])}</b> "
             f"<span style='color:{colour}'>[{escape(r['status'])}]</span>"
             f" <span style='color:#888'>from {escape(r['source'])}, "
-            f"evidence: {escape(r['evidence'])}</span>{findings_html} "
-            f"{buttons}</div>"
+            f"evidence: {escape(r['evidence'])}</span>{findings_html}"
+            f"{usage_html} {buttons}</div>"
         )
         # The full preview belongs to every row: the review needs the
         # text under review, not a snippet.
@@ -214,6 +229,60 @@ def format_panel_html(limit: int = 20) -> str:
         "<div style='font-size:11px;color:#aaa;margin-bottom:3px;'>"
         f"📚 Skill proposals &nbsp; {len(rows)} awaiting review</div>"
         + "".join(parts) + "</div>"
+    ) + _usage_section_html()
+
+
+def _usage_label(u: dict) -> str:
+    """One skill's use count as an HTML span, or "".
+
+    The outcome is the session's test record, not the skill's: a use is
+    shown "in a session with a red test run", never as a failure of the
+    skill. Rejected: "N fail" -- it names the skill as the cause of a red
+    run the ledger cannot attribute.
+    """
+    uses = int(u.get("uses", 0) or 0)
+    if not uses:
+        return ""
+    red = int(u.get("failures", 0) or 0)
+    green = int(u.get("successes", 0) or 0)
+    bits = []
+    if green:
+        bits.append(f"{green} with green tests only")
+    if red:
+        bits.append(f"{red} in a session with a red test run")
+    colour = "#d32f2f" if red else "#888"
+    tail = f" ({'; '.join(bits)})" if bits else ""
+    return (f" <span style='color:{colour}'>used {uses}"
+            f"{escape(tail)}</span>")
+
+
+def _usage_section_html() -> str:
+    """Every skill with a usage record, live or not, one line each.
+
+    Accepted proposals leave the proposal list (they are live skills
+    then), and only a live skill can be handed over, so a record shown
+    only beside a proposal row would never be seen. Never raises.
+    """
+    try:
+        from delfin.agent import skill_usage
+        summary = skill_usage.usage_summary()
+    except Exception:
+        return ""
+    lines = []
+    for name in sorted(summary):
+        label = _usage_label(summary[name])
+        if label:
+            lines.append(
+                "<div style='font-family:monospace;font-size:12px;"
+                f"margin:2px 0;'>🧾 <b>{escape(name)}</b>{label}</div>")
+    if not lines:
+        return ""
+    return (
+        "<div style='border-left:3px solid #888;padding:6px 10px;"
+        "margin-top:4px;border-radius:4px;'>"
+        "<div style='font-size:11px;color:#aaa;margin-bottom:3px;'>"
+        "🧾 Skill use &nbsp; outcome = the session's test runs, not the "
+        "skill's</div>" + "".join(lines) + "</div>"
     )
 
 
