@@ -197,3 +197,13 @@ def test_a_refusal_in_the_classifiers_dialog_closes_the_file_too(
     out = _bash(ex, perms, "cp a f.txt")
     assert out and "already refused" in out
     assert len(dialog.asked) == 1
+
+
+def test_a_refusal_never_closes_the_workspace_itself(ws):
+    """`cp a .` names the workspace as its destination; refusing it must
+    not refuse every later copy into the workspace without a dialog."""
+    ex, perms, dialog = _session(ws)
+    assert _bash(ex, perms, "./tool && cp ../x .") is not None
+    dialog.answer = True
+    assert _bash(ex, perms, "./tool && cp a .") is None
+    assert len(dialog.asked) == 2
