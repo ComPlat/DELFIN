@@ -5138,6 +5138,43 @@ _PLAN_READONLY_MCP_TOOLS: frozenset[str] = (
     _PLAN_READONLY_TOOLS | _MCP_READONLY_TOOL_BASES
 )
 
+# What plan mode additionally runs for a DELEGATE (subagent_depth > 0)
+# whose own allow list names the tool, i.e. whose preset granted it.
+#
+# * web_search: writes nothing locally and sends a query only to the fixed
+#   search providers, never to a host the model chooses; the query passes
+#   web_tools.outbound_secret_reason first, and under a locked scope the
+#   network gate still asks. A depth-0 session in plan mode stays without
+#   it, and _derive_perms drops it from the list of a plan-mode parent's
+#   delegate, so delegation is not a way for that parent to search.
+# * subagent_message: for a delegate it only speaks upward to the session
+#   running it -- a report, like subagent_result.
+#
+# Rejected: web_fetch. Its URL names an arbitrary host and carries up to
+# 2000 characters of arbitrary query data, which is an outbound channel,
+# not a lookup; it stays refused and the plan-mode presets no longer list
+# it. Rejected: admitting web_search for every plan-mode caller, which
+# would change the depth-0 plan contract the UI labels read-only.
+_PLAN_DELEGATE_TOOLS: frozenset[str] = frozenset({
+    "web_search", "subagent_message",
+})
+
+
+def _plan_mode_admits_for_delegate(name: str, perms) -> bool:
+    """True when plan mode runs *name* for this delegate though the
+    read-only list does not name it. See ``_PLAN_DELEGATE_TOOLS``.
+
+    An empty allow list (a preset that declares none) admits nothing: the
+    grant must be explicit.
+    """
+    bare = _bare_tool_name(name)
+    if bare not in _PLAN_DELEGATE_TOOLS:
+        return False
+    if int(getattr(perms, "subagent_depth", 0) or 0) <= 0:
+        return False
+    allowed = getattr(perms, "session_allowed_tools", None) or frozenset()
+    return bare in allowed
+
 # What a role that only reads must not do. Six roles declare a tool set
 # in engine._ROLE_TOOL_WHITELIST that contains neither Edit nor Write —
 # a statement of intent that nothing was keeping.
@@ -12624,6 +12661,7 @@ class _DocToolExecutor:
             )})
         elif (getattr(permissions, "mode", "") == "plan"
                 and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
+                and not _plan_mode_admits_for_delegate(name, permissions)
                 and not bool((arguments or {}).get("check_only"))):
             # Plan mode, deny-by-default. One gate covering everything the
             # per-family refusals had not been remembered into -- future
@@ -16288,7 +16326,7 @@ class _DocToolExecutor:
         if leaked:
             return leaked
 
-        if mode == "plan":
+        if mode == "plan" and not _plan_mode_admits_for_delegate(name, perms):
             return (
                 f"plan mode (read-only) — '{name}' rejected. "
                 "Describe the proposed change in chat instead. "
@@ -17002,6 +17040,7 @@ class _DocToolExecutor:
         # parse_orca_output, which is the investigation plan mode is for.
         if perms is not None and getattr(perms, "mode", "") == "plan":
             if (_bare_tool_name(name) not in _PLAN_READONLY_MCP_TOOLS
+                    and not _plan_mode_admits_for_delegate(name, perms)
                     and not bool((args or {}).get("check_only"))):
                 _record_security_event("plan_mode_mcp", name, "", blocked=True)
                 # Same wording as the native gate, for the same reason:

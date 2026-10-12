@@ -108,8 +108,17 @@ def test_web_fetch_stays_refused_and_is_not_offered(tmp_path):
         if preset.mode == "plan":
             assert "web_fetch" not in preset.tools, name
     child = _child(tmp_path, "explore")
+    out = _run("web_fetch", {"url": "https://example.org"}, child)
+    assert "ran" not in json.loads(out), out
+    # A preset that lists it anyway (a markdown file on disk) is still
+    # refused by the mode, not only by the list.
+    listed = S._derive_perms(_parent(tmp_path), "plan",
+                             preset_tools=("web_fetch", "web_search"))
+    listed.subagent_id = "sa-test"
     assert _plan_refused(_run("web_fetch", {"url": "https://example.org"},
-                              child))
+                              listed))
+    assert json.loads(_run("web_search", {"query": "x"}, listed)) == {
+        "ran": "web_search"}
 
 
 def test_a_session_in_plan_mode_still_cannot_search(tmp_path):
@@ -123,7 +132,8 @@ def test_a_session_in_plan_mode_still_cannot_search(tmp_path):
 def test_a_plan_parent_does_not_search_through_its_child(tmp_path):
     child = _child(tmp_path, "explore", parent_mode="plan")
     assert "web_search" not in (child.session_allowed_tools or frozenset())
-    assert _plan_refused(_run("web_search", {"query": "x"}, child))
+    out = _run("web_search", {"query": "x"}, child)
+    assert "ran" not in json.loads(out), out
 
 
 def test_a_child_without_a_list_does_not_gain_the_search(tmp_path):
@@ -137,7 +147,7 @@ def test_a_child_without_a_list_does_not_gain_the_search(tmp_path):
 def test_a_locked_scope_still_asks_before_a_child_searches(tmp_path):
     asked = []
     parent = A.KitToolPermissions(
-        workspace=tmp_path, mode="default", scope_locked=True,
+        workspace=tmp_path, mode="default", lock_workspace=True,
         confirm_callback=lambda n, a, p: asked.append(n) or False)
     p = S.SUBAGENT_PRESETS["explore"]
     child = S._derive_perms(parent, p.mode, preset_tools=p.tools)
