@@ -5964,6 +5964,11 @@ class KitToolPermissions:
     path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
     path_protected_globs: tuple[str, ...] = _DEFAULT_PATH_PROTECTED_GLOBS
     extra_workspace_dirs: tuple[Path, ...] = ()
+    # Which of the writable roots is the user's configured agent workspace
+    # (set by bind_agent_workspace, None when there is none). Grants no
+    # access: under Bypass a write there is screened without the model,
+    # as one in ``workspace`` is.
+    agent_workspace_dir: Optional[Path] = None
     # Reachable but NOT freely writable — protects valuable data:
     #   read_only_workspace_dirs — reads allowed, writes HARD-denied (archive of
     #     stored calculations; the DELFIN checkout when you didn't launch there).
@@ -10600,6 +10605,168 @@ _CLASSIFIER_REFUSALS_PER_TURN = 3
 _CLASSIFIED_NETWORK_TOOLS = frozenset({
     "web_fetch", "remote_trigger", "push_notification"})
 
+# Under Bypass the classifier's own failure (error, timeout, no verdict, and
+# every later action of a turn once one timed out) keeps the rule result,
+# because the user chose a profile that asks nothing. These are the actions
+# where the failure still asks: deleting, rewriting git history,
+# publishing, uploading. Read on the command with commit-message prose
+# blanked, so a message that mentions `rm -rf` is not a delete. Several of
+# them are refused earlier anyway (deny list, push gate, egress scan); the
+# list is the floor for the spellings those gates let through.
+_BYPASS_HIGH_RISK_BASH = re.compile(r"""(?x)
+    (?:^|[\s;&|(`])(?:sudo\s+)?rm\s+(?:\S+\s+)*?
+        (?:-[a-zA-Z]*[rRf][a-zA-Z]*|--recursive|--force)\b
+  | \bfind\b[^;&|\n]*\s-delete\b
+  | \bgit\s+(?:-[Cc]\s+\S+\s+)*
+        (?:push\b|rebase\b|filter-branch\b|filter-repo\b|clean\b
+         |reset\s+--hard\b|branch\s+(?:-[dD]\b|--delete\b)|tag\s+-d\b
+         |checkout\s+(?:--\s|\.(?:\s|$))|restore\b|stash\s+(?:drop|clear)\b
+         |update-ref\s+-d\b|reflog\s+expire\b|gc\s+--prune\b
+         |commit\s+(?:\S+\s+)*?--amend\b)
+  | \bgh\s+(?:pr\s+(?:create|merge)|release\s+create|repo\s+(?:create|delete)
+         |api\b)
+  | \b(?:scp|sftp|rsync)\b
+  | \bcurl\b[^;&|\n]*\s(?:-T|--upload-file|-F|--form|-d|--data\S*
+         |-X\s*(?:POST|PUT|PATCH|DELETE))(?:\s|=|$)
+  | \bwget\b[^;&|\n]*\s--post
+  | \b(?:shred|mkfs(?:\.\w+)?)\b
+  | \bdd\b[^;&|\n]*\bof=
+  | \btruncate\s+-s\s*0\b
+""")
+
+# Writes that keep the second look under Bypass wherever they land: a file
+# that configures git or runs hooks. Files that instruct an agent (skills,
+# prompts, settings, memory) are recognised by _classifier_action.
+_BYPASS_HIGH_RISK_WRITE_NAMES = frozenset({
+    ".gitattributes", ".gitmodules", ".gitconfig", ".pre-commit-config.yaml",
+})
+
+_BYPASS_SCREENED_TOOLS = frozenset({
+    "session_message", "subagent_message", "web_search"})
+
+# Path marks of a file that instructs an agent: there a claim in the text
+# is scanned like a message (see _classifier_action).
+_INSTRUCTING_PATH_MARKS = (
+    "skill", "prompt", "settings", "claude.md", "agents.md",
+    "delfin.md", "/.delfin/", "/.claude/", "memory", "hook")
+
+
+def _bypass_failure_asks(action: dict) -> bool:
+    """True when, under Bypass, a classifier failure on *action* must ask.
+
+    Input: an action as ``_classifier_action`` builds it. Output: True for
+    the narrow high-risk class (deletes, history rewrites, publishing,
+    uploads, remote triggers, writes to files that instruct an agent or
+    configure git), False otherwise, where the failure leaves the rule
+    result standing. A model verdict is not affected: an "ask" or
+    "refuse" the model gives with a reason holds for every action.
+    """
+    tool = str(action.get("tool") or "")
+    if tool in ("bash", "bash_background"):
+        cmd = _prose_blanked(str(action.get("command") or ""))
+        return bool(_BYPASS_HIGH_RISK_BASH.search(cmd))
+    if tool in ("remote_trigger", "push_notification"):
+        return True
+    if "text" in action:
+        return True
+    name = Path(str(action.get("path") or "")).name
+    return name in _BYPASS_HIGH_RISK_WRITE_NAMES
+
+
+def _path_instructs_an_agent(path: str) -> bool:
+    """Whether *path* names a file that instructs or configures an agent."""
+    low = str(path or "").lower()
+    return any(mark in low for mark in _INSTRUCTING_PATH_MARKS)
+
+
+def _bypass_screened_action(
+    perms: "KitToolPermissions", action: dict,
+) -> Optional[dict]:
+    """The action to screen without the model under Bypass, or None.
+
+    Input: an action as ``_classifier_action`` builds it. Output: the
+    action itself for a message to another session or a web search; for
+    a write whose target resolves inside the session workspace or the
+    configured agent workspace, the action with the instructing-file
+    question answered on the path RELATIVE to that root; None for
+    everything else, which goes to the model.
+
+    Relative, because a DELFIN worktree lives under ``.delfin/worktrees``
+    and the absolute path of every file in it matched the ``/.delfin/``
+    mark: each report written there counted as an agent instruction.
+    A write whose relative path does instruct an agent (skills, prompts,
+    settings, memory, hooks) or configures git stays with the model.
+
+    The returned action still passes the user's own rules and the
+    claim-of-approval guard (``action_classifier.screen``).
+    """
+    tool = str(action.get("tool") or "")
+    if tool in _BYPASS_SCREENED_TOOLS:
+        return action
+    if tool not in ("write_file", "edit_file", "multi_edit"):
+        return None
+    raw = str(action.get("path") or "").strip()
+    if not raw:
+        return None
+    try:
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            p = Path(perms.workspace) / p
+        resolved = p.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    roots = [Path(perms.workspace)]
+    agent_ws = getattr(perms, "agent_workspace_dir", None)
+    if agent_ws:
+        roots.append(Path(agent_ws))
+    for root in roots:
+        try:
+            rel = resolved.relative_to(Path(root).resolve()).as_posix()
+        except (ValueError, OSError, RuntimeError):
+            continue
+        if (_path_instructs_an_agent("/" + rel)
+                or Path(rel).name in _BYPASS_HIGH_RISK_WRITE_NAMES):
+            return None
+        out = dict(action)
+        if "text" in out:
+            out["content"] = out.pop("text")
+        return out
+    return None
+
+
+def bind_agent_workspace(
+    perms: Optional["KitToolPermissions"], path: str,
+) -> Optional[Path]:
+    """Record *path* as the session's configured agent workspace.
+
+    Input: the permissions and the directory the dashboard configures as
+    the agent workspace (``ctx.agent_dir``, by default ~/agent_workspace).
+    Output: the resolved directory when it was bound, else None. Bound
+    only when it already is one of the writable roots -- so the write
+    gate and the sandbox accept writes there -- and never when it is the
+    home directory, an ancestor of it, or a filesystem root. It widens
+    nothing: it only names which writable root counts as the user's own
+    for the Bypass second opinion (``_bypass_screened_action``).
+    """
+    if perms is None or not str(path or "").strip():
+        return None
+    try:
+        resolved = Path(str(path)).expanduser().resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if (resolved == home or resolved in home.parents
+            or resolved == Path(resolved.anchor) or not resolved.is_dir()):
+        return None
+    try:
+        roots = [Path(r).resolve() for r in perms.all_workspace_roots()]
+    except Exception:
+        return None
+    if resolved not in roots:
+        return None
+    perms.agent_workspace_dir = resolved
+    return resolved
+
 
 def _classifier_settings() -> Optional[dict]:
     """``{"model", "rules", "broad"}`` when the classifier is on, else None.
@@ -10707,9 +10874,7 @@ def _classifier_action(name: str, args: dict) -> dict:
         # Anywhere else the body is shown to the model and nothing more --
         # a test that mentions `git push` is not a claim of approval.
         low = str(action.get("path") or "").lower()
-        instructs = any(mark in low for mark in (
-            "skill", "prompt", "settings", "claude.md", "agents.md",
-            "delfin.md", "/.delfin/", "/.claude/", "memory", "hook"))
+        instructs = _path_instructs_an_agent(low)
         action["text" if instructs else "content"] = str(body)[:1500]
     return action
 
@@ -16078,9 +16243,10 @@ class _DocToolExecutor:
         Called ONLY at a point where the rules have already said yes and no
         human was asked. It never turns a refusal into an allow -- it is not
         reached after one. Any failure of the classifier itself leaves the
-        rule result standing, except under Bypass, where it is the only
-        second look there is: there an error asks, or refuses when nobody
-        can be asked.
+        rule result standing, except under Bypass for the high-risk class
+        of ``_bypass_failure_asks``: there an error asks, or refuses when
+        nobody can be asked. Under Bypass the actions of
+        ``_bypass_screened_action`` get the model-free screen only.
         """
         runner = getattr(perms, "classifier_runner", None)
         if perms is None or runner is None:
@@ -16210,11 +16376,29 @@ class _DocToolExecutor:
                 raise box["exc"]
             return str(box.get("out") or "")
 
-        on_error = ("ask" if can_ask else "refuse") if bypass else "allow"
+        # The classifier failing is not a reason to ask under Bypass: the
+        # user chose the profile that asks nothing, so the rule result
+        # stands -- except for the narrow high-risk class, where it asks
+        # (or refuses when nobody can be asked). A verdict the model gives
+        # with a reason is unaffected.
+        if bypass and _bypass_failure_asks(action):
+            on_error = "ask" if can_ask else "refuse"
+        else:
+            on_error = "allow"
         try:
-            verdict = _ac.judge(
-                action, context, model=cfg["model"], runner=_bounded,
-                rules=cfg["rules"], default_on_error=on_error)
+            screened = (_bypass_screened_action(perms, action)
+                        if bypass else None)
+            if screened is not None:
+                # A message to a sibling session, a web search, a write in
+                # the session or agent workspace: the user's rules and the
+                # claim-of-approval guard, without the model round trip.
+                verdict = (_ac.screen(screened, context, cfg["rules"])
+                           or _ac.Verdict(
+                               "allow", "screened without the model."))
+            else:
+                verdict = _ac.judge(
+                    action, context, model=cfg["model"], runner=_bounded,
+                    rules=cfg["rules"], default_on_error=on_error)
             decision, reason = verdict.decision, str(verdict.reason or "")
         except Exception as exc:
             failed.append(type(exc).__name__)

@@ -481,6 +481,16 @@ class AgentEngine:
         # line, a bug report) names a mode nobody can select.
         self.mode = _migrate_mode(mode)
         self._agent_workspace_dir = agent_workspace_dir
+        # Name the configured agent workspace on the permissions, when it
+        # is one of their writable roots (never $HOME): under Bypass a
+        # write there is screened without the classifier model, like one
+        # in the session workspace. It grants nothing by itself.
+        if agent_workspace_dir:
+            try:
+                from .api_client import bind_agent_workspace
+                bind_agent_workspace(self.kit_permissions, agent_workspace_dir)
+            except Exception:
+                pass
         self.route: list[str] = []
         self.mode_description: str = ""
         self.current_role_index: int = 0
