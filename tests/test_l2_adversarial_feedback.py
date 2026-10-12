@@ -69,6 +69,29 @@ def test_any_non_user_string_source_proposes_nothing():
         assert out == {"corrects": False, "skill": None, "user_words": None}, src
 
 
+def test_omitted_source_is_fail_closed():
+    # F2 (builder 9f861f5b): the default source is "unknown", so a
+    # correction-looking message with NO explicit source proposes nothing.
+    # Only an explicit source="user" may admit a correction — an omitted
+    # source must not silently inherit the user's identity.
+    out = skill_feedback.feedback("my_skill", CORRECTION_TEXT)
+    assert out == {"corrects": False, "skill": None, "user_words": None}
+
+
+def test_explicit_user_source_is_recognised():
+    out = skill_feedback.feedback("my_skill", CORRECTION_TEXT, source="user")
+    assert out["corrects"] is True
+
+
+def test_none_skill_does_not_crash():
+    # F1 (builder 9f861f5b): a missing/non-string skill proposes nothing
+    # instead of raising.
+    out = skill_feedback.feedback(None, CORRECTION_TEXT, source="user")
+    assert out == {"corrects": False, "skill": None, "user_words": None}
+    out = skill_feedback.feedback(7, CORRECTION_TEXT, source="user")
+    assert out == {"corrects": False, "skill": None, "user_words": None}
+
+
 def test_correction_from_user_source_is_recognised():
     out = skill_feedback.feedback("my_skill", "nein, das war falsch",
                                   source="user")
