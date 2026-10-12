@@ -168,3 +168,43 @@ def test_every_learning_task_has_a_setup_that_runs_and_a_check_that_starts_red(
         # answer itself must then be judged by a signal on the text.
         assert untouched.returncode == 0, untouched.stderr
         assert any(s.against == "text" for s in t.expected_signals)
+
+
+def _write_runs(d: Path, files: list[list[dict]]) -> None:
+    now = time.time()
+    for i, rows in enumerate(files):
+        p = d / f"run_{i + 1}.jsonl"
+        p.write_text("\n".join(json.dumps(r) for r in rows) + "\n",
+                     encoding="utf-8")
+        age = 100 * (len(files) - i)
+        os.utime(p, (now - age, now - age))
+
+
+@pytest.mark.parametrize("newest", [
+    [_row(LEARNING, tool_calls=3, learning_state="")],
+    [_row(ORDINARY, tool_calls=3, learning_state="")],
+])
+def test_a_later_ordinary_run_does_not_hide_the_learning_pair(
+        tmp_path, monkeypatch, newest):
+    """The latest two run files are not necessarily the two arms: an
+    ordinary run made after them must neither replace the pair nor turn
+    its lines into errors."""
+    d = tmp_path / "benchmark_runs"
+    d.mkdir()
+    monkeypatch.setattr(bm, "_DEFAULT_RUNS_DIR", d)
+    _write_runs(d, [[_row(LEARNING, tool_calls=9)],
+                    [_row(LEARNING, tool_calls=4)],
+                    newest])
+    section = _learning_section(eval_loop.build_report(outcomes=[]))
+    assert "1 learned" in section and "0 error" in section
+    assert "run_1.jsonl" in section and "run_2.jsonl" in section
+
+
+def test_two_runs_under_different_learning_homes_are_not_a_pair(
+        tmp_path, monkeypatch):
+    d = tmp_path / "benchmark_runs"
+    d.mkdir()
+    monkeypatch.setattr(bm, "_DEFAULT_RUNS_DIR", d)
+    _write_runs(d, [[_row(LEARNING, tool_calls=9, learning_state="s1")],
+                    [_row(LEARNING, tool_calls=4, learning_state="s2")]])
+    assert "## Learning" not in eval_loop.build_report(outcomes=[])
