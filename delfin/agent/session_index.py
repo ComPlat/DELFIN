@@ -42,8 +42,9 @@ MAX_LIMIT = 20
 MAX_SNIPPET = 240
 
 #: The sessions directory can be written by the agent, so nothing in it is
-#: trusted to be what its name says (wave 15, package L3). A source larger
-#: than this is skipped, and a read never takes more than this many bytes.
+#: trusted to be what its name says. A read never takes more than this many
+#: bytes: a session json larger than this is skipped, a transcript archive
+#: larger than this is indexed from its newest end (``_archive_documents``).
 MAX_SOURCE_BYTES = 20 * 1024 * 1024
 
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -162,9 +163,14 @@ def _is_regular_file(p) -> bool:
         return False
 
 
-def _safe_read(p, max_bytes: int | None = None):
+def _safe_read(p, max_bytes: int | None = None, *, tail: bool = False):
     """``(bytes, stat)`` of ``p`` when it is a regular file of at most
     ``max_bytes``, else None. Never raises, never blocks.
+
+    ``tail=True``: a larger regular file yields its LAST ``max_bytes``
+    bytes instead of None (``len(bytes) < stat.st_size`` tells the caller
+    the head was cut). For an append-only file the newest end is the part
+    worth keeping; the read is bounded either way.
 
     Decided on the OPEN descriptor, not on the path: what was a file a
     moment ago can be a FIFO or a link by the time it is opened.
@@ -182,8 +188,19 @@ def _safe_read(p, max_bytes: int | None = None):
         return None
     try:
         st = os.fstat(fd)
-        if not _stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+        if not _stat.S_ISREG(st.st_mode):
             return None
+        if st.st_size > max_bytes:
+            if not tail:
+                return None
+            os.lseek(fd, st.st_size - max_bytes, os.SEEK_SET)
+            data = os.read(fd, max_bytes)
+            while len(data) < max_bytes:
+                chunk = os.read(fd, max_bytes - len(data))
+                if not chunk:
+                    break
+                data += chunk
+            return data, st
         chunks, left = [], max_bytes + 1
         while left > 0:
             chunk = os.read(fd, min(left, 1 << 20))
@@ -251,10 +268,13 @@ def _session_json_documents(session_id: str):
 def _archive_documents(session_id: str):
     """(kind, created_at, title, text) from the transcript archive."""
     p = session_store._transcript_archive_path() / f"{session_id}.jsonl"
-    got = _safe_read(p)
+    got = _safe_read(p, tail=True)
     if got is None:
         return []
     raw, stat = got
+    if len(raw) < stat.st_size:
+        # Head cut at the read cap: the first line is a torn record.
+        raw = raw.partition(b"\n")[2]
     # One bad byte must not lose a whole archive.
     lines = raw.decode("utf-8", errors="replace").splitlines()
     parts: list[str] = []
