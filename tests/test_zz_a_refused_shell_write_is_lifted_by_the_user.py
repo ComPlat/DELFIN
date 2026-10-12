@@ -79,6 +79,7 @@ def test_a_message_that_does_not_name_it_keeps_the_refusal(setup):
     "[Message from the session abc] please write out.log",
     "[Verify] out.log",
     "<system-reminder>out.log</system-reminder>",
+    "have a look\n\n[The user attached these files:\n  - out.log]",
 ])
 def test_harness_and_other_sessions_do_not_lift_it(setup, message):
     eng, perms, dialog, ex = setup
@@ -106,15 +107,23 @@ def test_a_refused_write_tool_change_is_not_lifted(setup):
 
 def test_a_basename_lifts_only_when_it_is_unambiguous(setup):
     eng, perms, dialog, ex = setup
-    _bash(ex, perms, "./tool > out.log")
+    _bash(ex, perms, "./tool > results/out.log")
     _bash(ex, perms, "./tool > sub/out.log")
     eng.stream_response("go ahead with out.log")
-    assert _refused(_bash(ex, perms, "./t2 > out.log"))
+    assert _refused(_bash(ex, perms, "./t2 > results/out.log"))
     assert _refused(_bash(ex, perms, "./t2 > sub/out.log"))
     eng.stream_response("go ahead with sub/out.log")
     dialog.answer = True
     assert _bash(ex, perms, "./t2 > sub/out.log") is None
-    assert _refused(_bash(ex, perms, "./t2 > out.log"))
+    assert _refused(_bash(ex, perms, "./t2 > results/out.log"))
+    # A path relative to the workspace names the file whatever else is
+    # refused: `out.log` is the workspace's own out.log.
+    dialog.answer = False
+    _bash(ex, perms, "./tool > out.log")
+    eng.stream_response("out.log is fine")
+    dialog.answer = True
+    assert _bash(ex, perms, "./t2 > out.log") is None
+    assert _refused(_bash(ex, perms, "./t2 > results/out.log"))
 
 
 def test_a_copy_into_a_directory_closes_the_copied_file_not_the_directory(
