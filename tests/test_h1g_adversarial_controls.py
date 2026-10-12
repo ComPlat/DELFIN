@@ -90,14 +90,14 @@ class TestWholeFileProtocol:
         assert result != "shown"
         assert result.startswith("no control run:")
 
-    def test_whole_file_red_green_not_shown_even_in_scope(self):
-        # In-scope (test file changed) too: a whole-file red+green never
-        # reads as a control for the fix.
+    def test_whole_file_red_green_in_scope_is_a_control(self):
+        # In-scope (test file changed): a whole-file red+green on the fix's
+        # own changed counter-test IS a completed control (operator F3 /
+        # s27 round-2: whole-file red then file passing later = control).
         changed = ["delfin/agent/thing.py", "tests/test_thing.py"]
         runs = [{"target": "tests/test_thing.py", "red": True, "green": True}]
         result = assess(changed, runs)
-        assert result != "shown"
-        assert result.startswith("no control run:")
+        assert result == "shown"
 
     def test_whole_file_green_only_still_never_seen_failing(self):
         # Regression guard: the whole-file green-only shape that phase-2

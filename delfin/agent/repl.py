@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import repl_render as rr
+from .harness_rows import HarnessText
 
 __all__ = [
     "RenderItem", "Transcript", "TurnResult", "run_turn", "TURN_KEYS",
@@ -754,6 +755,8 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
             except Exception:
                 pass
             user_message = fresh + "\n\n" + prompt
+            if isinstance(prompt, HarnessText):
+                user_message = HarnessText(user_message)
     try:
         full_text = engine.stream_response(
             user_message=user_message,
@@ -971,6 +974,60 @@ def shell_escape(engine, command: str) -> list[str]:
     except Exception as exc:
         return [f"[error] {exc}"]
     return TerminalAgent._shell_lines(out)
+
+
+def shell_escape_result(engine, command: str) -> dict:
+    """`!cmd` through the agent's gate, as fields rather than lines.
+
+    Input: the engine and the command after the `!`. Output: a dict with
+    ``command``, ``stdout``, ``stderr`` (escape sequences and C0 controls
+    removed, tabs and newlines kept), ``exit_code`` (None when nothing
+    ran), ``refused`` (the gate's reason, "" when it let the command
+    through) and ``error`` ("" or why nothing could run). Never raises.
+
+    The same executor call as shell_escape, so the same gate. For a
+    surface that renders the streams itself -- the dashboard puts them
+    in preformatted blocks -- where shell_escape's lines would have to be
+    parsed back apart, and its 200-line cap is the terminal's choice.
+
+    stdout and stderr arrive on separate pipes, so their interleaving is
+    not recoverable here; each keeps its own order. Merging them with
+    2>&1 would change the command the user approved.
+    """
+    command = str(command or "").strip()
+    run = {"command": command, "stdout": "", "stderr": "",
+           "exit_code": None, "refused": "", "error": ""}
+    if not command:
+        return run
+    executor = getattr(engine, "run_gated_bash", None)
+    if not callable(executor):
+        run["error"] = ("! is not available on this backend — it runs "
+                        "through the same gate the agent uses, and this one "
+                        "has none")
+        return run
+    try:
+        out = executor(command)
+    except Exception as exc:
+        run["error"] = str(exc)
+        return run
+    import json
+
+    text = str(out or "")
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        payload = None
+    if not isinstance(payload, dict):
+        run["stdout"] = rr.strip_control(text)
+        return run
+    if payload.get("error"):
+        run["refused"] = str(payload["error"])
+        return run
+    run["stdout"] = rr.strip_control(str(payload.get("stdout", "") or ""))
+    run["stderr"] = rr.strip_control(str(payload.get("stderr", "") or ""))
+    code = payload.get("exit_code")
+    run["exit_code"] = code if isinstance(code, int) else None
+    return run
 
 
 class TerminalAgent:
@@ -2518,6 +2575,8 @@ class TerminalAgent:
         # Enter consumes it.  Do not print it a second time when its turn
         # starts; ordinary idle-prompt input has not been shown yet.
         pending_already_shown = False
+        # True while ``pending`` came from _wake_text, not from the keys.
+        woke = False
         try:
             while True:
                 if not pending and self.queued:
@@ -2525,6 +2584,7 @@ class TerminalAgent:
                     pending_already_shown = True
                 if not pending:
                     pending_already_shown = False
+                    woke = False
                     try:
                         from .repl_keys import raw_mode_supported
                         if raw_mode_supported(self._stdin):
@@ -2532,7 +2592,9 @@ class TerminalAgent:
                             # a pipe or a redirect keeps the readline
                             # path except that IT too wakes on a session
                             # message now (wave-12 finding 3).
-                            pending = self.read_boxed().strip()
+                            raw = self.read_boxed()
+                            woke = isinstance(raw, HarnessText)
+                            pending = raw.strip()
                         else:
                             # readline's input() blocks forever, so an idle
                             # session on this path never saw an incoming
@@ -2544,6 +2606,7 @@ class TerminalAgent:
                                 self._read_line,
                                 lambda: self._wake_text(""),
                                 ready=self._line_ready)
+                            woke = bool(from_wake)
                             pending = text.strip()
                     except EOFError:
                         self.transcript.chrome("")
@@ -2570,6 +2633,9 @@ class TerminalAgent:
                     return 0
                 if not pending:
                     continue
+                if woke:
+                    pending = HarnessText(pending)
+                woke = False
                 pending_prompt = pending          # visible past the try
                 try:
                     self.turn(pending)
@@ -2613,7 +2679,7 @@ class TerminalAgent:
                     # same hatch applies -- leave with 130 instead of
                     # raising out of run() past every handler.
                     try:
-                        self.turn(continuation)
+                        self.turn(HarnessText(continuation))
                     except KeyboardInterrupt:
                         self.transcript.chrome("")
                         return 130
@@ -2935,7 +3001,7 @@ class TerminalAgent:
         messages = _msgs.take(key)
         if not messages:
             return
-        text = "\n\n".join(_msgs.render(m) for m in messages)
+        text = HarnessText("\n\n".join(_msgs.render(m) for m in messages))
         ids = [str(m.get("id") or "") for m in messages]
 
         def _read() -> None:
@@ -3352,7 +3418,7 @@ class TerminalAgent:
         self._announce_presence()       # the poll doubles as the heartbeat
         mail = self._operator_messages(typed)
         if mail:
-            return mail
+            return HarnessText(mail)
         try:
             from . import job_wake
             if not job_wake.wake_enabled():
@@ -3394,7 +3460,7 @@ class TerminalAgent:
             prompt = job_wake.wake_prompt(done)
             if _note:
                 prompt = (prompt + "\n\n" + _note) if prompt else _note
-            return prompt
+            return HarnessText(prompt) if prompt else ""
         except Exception:
             return ""
 

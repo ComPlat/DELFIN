@@ -24,6 +24,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .harness_rows import history_mark
+
 _API_KEYS = ("role", "content", "tool_calls", "tool_call_id", "name")
 
 
@@ -49,7 +51,8 @@ def _cut(text: str, limit: int, what: str) -> str:
 def _api_row(row: dict) -> dict:
     out = {k: row[k] for k in _API_KEYS if k in row and row[k] is not None}
     out["content"] = _as_text(out.get("content"))
-    return out
+    # A row the harness wrote stays marked in the history (harness_rows).
+    return history_mark(out, row)
 
 
 def _call_ids(row: dict) -> list[str]:

@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from . import agent_metrics as _agent_metrics
 from .api_client import StreamEvent, create_client
+from .harness_rows import HARNESS_KEY, HarnessRow, HarnessText, is_harness_row
 from .prompt_loader import AVAILABLE_ON_DEMAND, PromptLoader
 
 
@@ -372,6 +373,45 @@ def _capped_context_window(window: int) -> int:
     reads the same cap). Kept for the existing callers and tests."""
     from .context_window import capped_window
     return capped_window(window)
+
+
+def _content_parts(content) -> list:
+    if isinstance(content, list):
+        return list(content)
+    text = "" if content is None else str(content)
+    return [{"type": "text", "text": text}] if text else []
+
+
+def _merge_user_rows(older: dict, newer: dict) -> dict:
+    """One user row holding ``older`` then ``newer``, both intact.
+
+    Input: two consecutive ``user`` rows of the same author, both typed
+    or both harness (``harness_rows.is_harness_row``); the caller keeps a
+    typed and a harness row apart. Output: a new plain dict; the inputs
+    are not modified. String contents are joined with a blank line (an
+    empty part adds nothing); when either content is a list of parts
+    (text + image), the result is the concatenated part list with a
+    string side wrapped as one text part. Keys of ``newer`` win over keys
+    of ``older``. Two harness rows give a row with ``HARNESS_KEY`` set,
+    whichever carrier marked them (``HarnessRow``, ``HarnessText``
+    content, ``origin == "event"``): the history keeps the key form,
+    which survives a JSON save.
+
+    Rejected: keeping the newer row (lost the typed steer that a
+    harness note followed in the same drain); keeping both separate in
+    the history (strict chat templates refuse two user turns in a row).
+    """
+    merged = {**older, **newer}
+    a, b = older.get("content"), newer.get("content")
+    if isinstance(a, list) or isinstance(b, list):
+        merged["content"] = _content_parts(a) + _content_parts(b)
+    else:
+        merged["content"] = "\n\n".join(
+            s for s in ("" if a is None else str(a),
+                        "" if b is None else str(b)) if s)
+    if is_harness_row(older):
+        merged[HARNESS_KEY] = True
+    return merged
 
 
 class AgentEngine:
@@ -780,14 +820,20 @@ class AgentEngine:
         Returns the tool result string. Raises RuntimeError when this
         backend carries no permissions object, because on those the shell
         tool is unavailable to the model too.
+
+        The output is kept up to ``api_client.PERSON_OUTPUT_CHARS`` per
+        stream instead of the model's ``max_output_chars``: every caller
+        (`!`, /git) shows it to a person, who has no context window to
+        protect. The gate decides exactly as before.
         """
         perms = self.kit_permissions
         if perms is None:
             raise RuntimeError(
                 "this backend has no permission gate, so it has no shell")
-        from .api_client import _doc_executor
-        return _doc_executor.execute("bash", {"command": str(command or "")},
-                                     perms)
+        from .api_client import _doc_executor, output_for_a_person
+        with output_for_a_person():
+            return _doc_executor.execute(
+                "bash", {"command": str(command or "")}, perms)
 
     # -- what a turn delegated ---------------------------------------------
 
@@ -2664,6 +2710,12 @@ class AgentEngine:
         # drop the very evidence ledgers the retry is judged against.
         _is_guard_feedback = str(
             user_message or "").lstrip().startswith("[Verify]")
+        # Who wrote this turn's row (harness_rows): a surface hands a turn
+        # it starts on its own as HarnessText; a correction turn is the
+        # engine's own.
+        _harness_turn = (isinstance(user_message, HarnessText)
+                         or _is_guard_feedback or self._claim_guard_active
+                         or self._dsml_guard_active)
         if (not self._claim_guard_active and not self._dsml_guard_active
                 and not _is_guard_feedback):
             self._claim_guard_corrected = False
@@ -2847,7 +2899,10 @@ class AgentEngine:
         # has to be captured here.
         self._turn_is_bare_greeting = self.is_bare_greeting(user_message)
 
-        self.messages.append(self._build_user_message(user_message, images))
+        _row = self._build_user_message(user_message, images)
+        if _harness_turn:
+            _row[HARNESS_KEY] = True
+        self.messages.append(_row)
         # Sanitize message history: ensure proper user/assistant alternation.
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
@@ -5019,10 +5074,23 @@ class AgentEngine:
         structural issues.  This removes duplicates and ensures the
         conversation can be sent to the API without errors.
 
+        Consecutive user rows are never dropped: a steer typed into a
+        running turn is followed by harness rows (job notes, run notes,
+        steering blocks) from the same drain, and keeping only the newer
+        row removed the typed text from every later request and saved
+        session. Two typed or two harness rows are merged into one
+        (``_merge_user_rows``; a harness merge keeps the mark). A typed
+        and a harness row are kept apart with an assistant filler, each
+        with its own mark (harness_rows), so the harness part never reads
+        as the user's words. Consecutive assistant rows keep the newer one. A history without consecutive same-role rows
+        is left as the same list of the same objects, so its request bytes
+        (and the prefix cache) do not change.
+
         Pinned messages (``msg["_pinned"]``) are never merged away: when a
-        pinned message would be replaced by a newer same-role message, a
-        short opposite-role filler is inserted instead so BOTH survive
-        verbatim and alternation still holds for strict chat templates.
+        pinned message would be replaced by a newer same-role message, or
+        a user row meets a pinned user row, a short opposite-role filler
+        is inserted instead so BOTH survive verbatim and alternation still
+        holds for strict chat templates.
         """
         if len(self.messages) < 2:
             return
@@ -5040,18 +5108,34 @@ class AgentEngine:
         for msg in self.messages[1:]:
             role = msg.get("role")
             if role == cleaned[-1].get("role") and role in ("user", "assistant"):
-                if cleaned[-1].get("_pinned"):
-                    # The older message is pinned — keep it verbatim and
-                    # restore alternation with a filler instead of merging.
+                older_pinned = bool(cleaned[-1].get("_pinned"))
+                if older_pinned or (role == "user" and msg.get("_pinned")):
+                    # A pinned message is kept verbatim: alternation is
+                    # restored with a filler instead of merging.
                     filler_role = "assistant" if role == "user" else "user"
                     cleaned.append({
                         "role": filler_role,
                         "content": "[alternation filler - pinned message "
-                                   "above kept verbatim]",
+                                   + ("above" if older_pinned else "below")
+                                   + " kept verbatim]",
                     })
                     cleaned.append(msg)
+                elif role == "user" and (
+                        is_harness_row(cleaned[-1]) != is_harness_row(msg)):
+                    # Typed and harness text are not merged: one plain
+                    # row would hand the harness part to every reader
+                    # of the user's words, one marked row would hide the
+                    # typed part from them. Both stay, each with its mark.
+                    cleaned.append({
+                        "role": "assistant",
+                        "content": "[alternation filler - the user's message "
+                                   "and the harness note are kept apart]",
+                    })
+                    cleaned.append(msg)
+                elif role == "user":
+                    cleaned[-1] = _merge_user_rows(cleaned[-1], msg)
                 else:
-                    # Consecutive same-role messages: keep the latest
+                    # Consecutive assistant messages: keep the latest
                     # (also keeps a pinned NEWER message automatically).
                     cleaned[-1] = msg
             else:
@@ -5180,7 +5264,9 @@ class AgentEngine:
         stripped (same length and indices, so ``live:<i>`` refs stay valid).
         A ``_steer`` key is the turn's steering tail (_attach_turn_tail):
         rendered at the end of that message's content, the same bytes on
-        every request that carries the message.
+        every request that carries the message. A row with the harness key
+        is copied as a ``HarnessRow``: the mark stays readable to the
+        action classifier, which reads this list, without a key on the wire.
         """
         msgs = self.messages
         if not any(
@@ -5193,6 +5279,8 @@ class AgentEngine:
             if isinstance(m, dict) and any(str(k).startswith("_") for k in m):
                 row = {k: v for k, v in m.items()
                        if not str(k).startswith("_")}
+                if m.get(HARNESS_KEY) is True:
+                    row = HarnessRow(row)
                 tail = m.get("_steer")
                 if tail:
                     row["content"] = self._with_turn_tail(
@@ -5955,7 +6043,7 @@ class AgentEngine:
         if _state_block:
             _summary_msg = f"{_state_block}\n{_summary_msg}"
         self.messages = [
-            {"role": "user", "content": _summary_msg},
+            {"role": "user", "content": _summary_msg, HARNESS_KEY: True},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
         ] + pinned_old + recent
         # `recent` starts with an assistant turn whenever compaction fires right
@@ -6075,7 +6163,8 @@ class AgentEngine:
 
             # Inject as a user message and continue the conversation
             context_msg = "\n\n".join(injected_parts)
-            self.messages.append({"role": "user", "content": context_msg})
+            self.messages.append(
+                {"role": "user", "content": context_msg, HARNESS_KEY: True})
 
             # Stream continuation
             chunks: list[str] = []
@@ -7458,7 +7547,8 @@ class AgentEngine:
             from . import session_store as _ss_ckpt
             _note = _ss_ckpt.consume_crash_recovery_note(self.session_id)
             if _note:
-                self.messages.append({"role": "user", "content": _note})
+                self.messages.append(
+                    {"role": "user", "content": _note, HARNESS_KEY: True})
                 self.messages.append({
                     "role": "assistant",
                     "content": "Understood. I will verify the workspace "

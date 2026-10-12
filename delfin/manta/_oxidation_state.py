@@ -11,9 +11,9 @@ WHY (16.08.2026, user).  Three measured open work items hang on the same missing
   2. JAHN-TELLER is strong exactly for unequal e_g occupation: **d4 HS, d7 LS, d9**.  The
      e_g orbitals point at the ligands, the distortion lies at 0.2-0.4 A -- measurable.
      (The t2g cases d1/d2/d4 LS/d5 LS/d6 HS/d7 HS lie at ~0.05 A and vanish in the
-     noise.)  Measured on 16.08. on `_ml_prior.json`: **Cu-N skew 3.7x at n=12339,
-     Cu-O 3.3x at n=7987** -- the long upper tail of the "two long" bonds.  Mn and
-     Cr do NOT show it (0.9x / 1.2x), because in the CSD they occur predominantly as Mn(II) d5
+     noise.)  Measured on 16.08. against crystal M-D length distributions: Cu-N and Cu-O
+     show a clearly skewed long upper tail -- the "two long" bonds.  Mn and Cr do NOT,
+     because in crystal structures they occur predominantly as Mn(II) d5
      and Cr(III) d3 -- **not JT-active**.  This cannot be decided at the ELEMENT,
      only at the STATE.
   3. The M-D length key: HS and LS differ by 0.1-0.2 A (Co(II) HS ~2.1,

@@ -216,8 +216,8 @@ def _kabsch(p, q):
     """Nearest orthogonal R with R·p_i ≈ q_i, plus the residual RMS.
 
     The determinant is deliberately NOT forced to +1: a mirror or an inversion is a real
-    symmetry operation, and the CCDC survey found improper operations in 35 % of complexes
-    (52 % of those trans) -- restricting to proper rotations reproduces half the reality.
+    symmetry operation, and a survey of crystal structures found improper operations in a
+    large share of complexes -- restricting to proper rotations misses much of the reality.
     """
     import numpy as np
 
