@@ -110,9 +110,17 @@ def _storable(text: Any) -> str:
     line = _one_line(text)
     if not line or len(line) > MAX_ENTRY_CHARS:
         return ""
+    if line[0] in _QUOTE_OPENERS:
+        return ""  # a quotation: somebody else's words, pasted
     if is_permission_like(line):
         return ""
     return line
+
+
+# A line that opens as a quotation (mail/markdown "> ", straight, curly,
+# German and French quote marks) carries somebody else's sentence; "I am
+# the PI" inside one is the reviewer's role, not the user's.
+_QUOTE_OPENERS = frozenset(">\"'“”„‘‚«»")
 
 
 # --- token / permission helpers -------------------------------------------------
@@ -177,8 +185,12 @@ _FREQUENCY_MODALS = frozenset({"always", "whenever", "frequently"})
 _FIRST_PERSON = frozenset({"i", "me", "my", "myself", "mine"})
 _SECOND_PERSON = frozenset({"you", "your", "yourself", "yours"})
 # Absolute path, POSIX or Windows, or a home-relative path.
+# The leading slash must not follow a word character: "kcal/mol",
+# "kJ/mol" and "and/or" are units and words, not paths, and refusing
+# them dropped ordinary preferences ("Ich bevorzuge Ergebnisse in
+# kcal/mol").
 _PATH_RE = re.compile(
-    r"(?:/(?:[^/\s]+/)*[^/\s]+|~/[^\s]+|[A-Za-z]:\\[^\s]+|"
+    r"(?:(?<![\w.~-])/(?:[^/\s]+/)*[^/\s]+|~/[^\s]+|[A-Za-z]:\\[^\s]+|"
     r"\.\.(?:/[^/\s]+)*)"
 )
 
@@ -283,6 +295,9 @@ def is_permission_like(text: str) -> bool:
 _CORRECTION_HINTS = (
     "don't", "do not", "never", "avoid", "stop", "instead", "actually",
     "you should", "you must", "please don't", "not that", "wrong",
+    # A rule for every later turn is a standing correction by itself
+    # ("From now on answer in German" carries no other hint).
+    "from now on", "in future", "ab jetzt", "künftig",
     "nicht", "nie", "niemals", "keine", "immer", "stets", "stattdessen",
 )
 _ROLE_HINTS = (
