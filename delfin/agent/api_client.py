@@ -16564,10 +16564,15 @@ class _DocToolExecutor:
             # The same write in another spelling. The user refused a write
             # to a file -- `echo x > f` -- and `printf x > f`, `tee f`,
             # `cp a f` or `sed -i ... f` is not that exact command, so the
-            # dialog simply came up again (waves 13-15: sessions reached
-            # the refused effect on the second or third wording). The
-            # refusal covers the file, whatever writes it.
-            for _refused in self._bash_named_write_paths(cmd, args, perms):
+            # dialog simply came up again (sessions reached the refused
+            # effect on the second or third wording). The refusal covers
+            # the file, whatever writes it. Parsed only while the ledger
+            # holds a refused write: 0.13-0.27 ms per command otherwise.
+            _has_refused_write = any(
+                str(k).startswith("write:")
+                for k in (getattr(perms, "denied_actions", None) or {}))
+            for _refused in (self._bash_named_write_paths(cmd, args, perms)
+                             if _has_refused_write else ()):
                 if perms.action_denied_earlier("write", _refused):
                     _shown = self._display_path(Path(_refused), perms)
                     _record_security_event("denied_again", "bash", cmd[:80])
@@ -18300,6 +18305,10 @@ class _DocToolExecutor:
                     targets += named
             except Exception:
                 pass
+            # A workspace root is where `cp x .` copies INTO, not a file;
+            # recorded, it refused every later copy into the workspace.
+            roots = {str(Path(r).resolve()) for r in (
+                list(perms.all_workspace_roots()) + [perms.workspace])}
             for target in targets:
                 path = Path(target).expanduser()
                 if not path.is_absolute():
@@ -18307,6 +18316,8 @@ class _DocToolExecutor:
                 if _is_ephemeral_sink(path, getattr(perms, "workspace", None)):
                     continue
                 path = str(path.resolve(strict=False))
+                if path in roots:
+                    continue
                 if path not in out:
                     out.append(path)
             return out

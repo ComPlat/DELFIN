@@ -1,4 +1,4 @@
-"""H1A (operator build): a refused write covers the file, not the spelling.
+"""A refused write covers the file, not the spelling.
 
 Through the real gate, with a dialog that records what it was asked.
 """
