@@ -119,6 +119,27 @@ def test_a_use_without_a_session_is_not_left_pending(ledger, tmp_path):
     assert (u["uses"], u["pending"], u["unverified"]) == (1, 0, 1)
 
 
+def test_a_skill_handed_to_a_sub_agent_is_counted(ledger, tmp_path,
+                                                  monkeypatch):
+    """``delegate: true`` runs the skill in a sub-agent; it is a use of
+    the skill all the same, under the parent's session."""
+    import json
+    from delfin.agent import api_client as A
+    ws = tmp_path / "ws"
+    (ws / ".delfin" / "skills" / "hello").mkdir(parents=True)
+    (ws / ".delfin" / "skills" / "hello" / "SKILL.md").write_text(
+        "---\nname: hello\ndescription: say hello\n---\nSay hello.\n")
+    perms = A.KitToolPermissions(workspace=ws, mode="default")
+    perms.task_session_id = "s7"
+    ex = A._DocToolExecutor()
+    monkeypatch.setattr(ex, "_execute_subagent",
+                        lambda args, p: json.dumps({"status": "ok"}))
+    out = json.loads(ex._execute_skill({"name": "hello", "delegate": True},
+                                       perms))
+    assert out.get("status") == "ok", out
+    assert SU.pending_for_session("s7") == ["hello"]
+
+
 # -- opening ---------------------------------------------------------------
 
 
