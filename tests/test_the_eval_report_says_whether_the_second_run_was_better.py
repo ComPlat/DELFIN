@@ -20,6 +20,7 @@ import pytest
 
 from delfin.agent import benchmark as bm
 from delfin.agent import eval_loop
+from conftest import child_env
 
 LEARNING = "l5_read_the_value_from_file"
 ORDINARY = "office_summarise_a_table"
@@ -30,12 +31,17 @@ _ARTIFACT_TASKS = {"l5_read_the_value_from_file",
 
 
 def _row(task_id, *, success=True, tool_calls=6, input_tokens=300,
-         output_tokens=150, duration_s=20.0, cost_usd=0.12, verify_ok=True):
-    return {"task_id": task_id, "model": "m", "learning_state": "s",
+         output_tokens=150, duration_s=20.0, cost_usd=0.12, verify_ok=True,
+         learning_state="s"):
+    """A five-replicate row with identical replicates."""
+    return {"task_id": task_id, "model": "m",
+            "learning_state": learning_state,
             "success": success, "quality_0_100": 90,
             "tool_calls": tool_calls, "input_tokens": input_tokens,
             "output_tokens": output_tokens, "duration_s": duration_s,
-            "cost_usd": cost_usd, "verify_ok": verify_ok}
+            "cost_usd": cost_usd, "verify_ok": verify_ok, "n_samples": 5,
+            "per_run_tool_calls": [tool_calls] * 5,
+            "per_run_tokens_total": [input_tokens + output_tokens] * 5}
 
 
 @pytest.fixture
@@ -66,7 +72,8 @@ def test_fewer_tool_calls_on_the_second_run_is_reported_as_learned(runs):
     runs([_row(LEARNING, tool_calls=9)], [_row(LEARNING, tool_calls=4)])
     section = _learning_section(eval_loop.build_report(outcomes=[]))
     assert "1 learned" in section
-    assert f"{LEARNING}: learned (tool calls 9→4" in section
+    assert f"{LEARNING}: learned (median tool calls 9→4" in section
+    assert "N=5/5" in section
 
 
 def test_the_same_counted_work_is_no_learning_whatever_the_clock_says(runs):
@@ -140,7 +147,7 @@ def test_every_learning_task_has_a_setup_that_runs_and_a_check_that_starts_red(
     base = Path(bm.__file__).parent / "pack" / "benchmark"
     setup, verify = base / "setup" / t.setup, base / "accept" / t.verify
     assert setup.is_file() and verify.is_file()
-    env = {**os.environ, "HOME": str(tmp_path / "home")}
+    env = child_env(tmp_path)
     made = subprocess.run([sys.executable, str(setup), str(tmp_path)],
                           cwd=tmp_path, env=env, capture_output=True,
                           text=True, timeout=60)

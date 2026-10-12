@@ -1,184 +1,187 @@
 """learning_metric: does a second run of the same task do better than the first?
 
-Wave 15a built a learning loop (skill use counted with its outcome, a
-correction proposes a skill patch, a user model, cross-session search), but
-nothing measured whether a *second* run of the same benchmark task is better
-than the first. This module is that instrument: a single pure function from
-two run records of the same task to a verdict.
+Input: two run records of the same task, each one JSONL row as written by
+``benchmark.write_run`` (``asdict(BenchmarkResult)``), the first made before
+the second under one learning home (``bench run --learning-home``). Output:
+a verdict with its evidence. Pure: reads its two dicts, mutates neither.
 
-A run record is one JSONL row as written by ``write_run``
-(``delfin/agent/benchmark.py:2099``) -- ``asdict(BenchmarkResult)``. The
-record has NO "rounds" and no "questions" counter; the honest per-run
-efficiency proxies are ``tool_calls``, ``input_tokens``, ``output_tokens``
-and ``duration_s``, and the correctness proxies are ``success``,
-``quality_0_100`` and ``verify_ok``. The metric never invents a missing
-field: a record it cannot read is an error, never a silent zero.
+Rules (PREREG_W15.md):
 
-Rules fixed before any run (PREREG_W15.md):
+* **Correctness dominates.** A second run that is not correct
+  (``success`` False, or ``verify_ok`` False) is ``wrong`` whatever it
+  saved.
+* **N=1 is not evidence.** Each record must carry at least
+  ``MIN_REPLICATES`` replicates with their per-replicate counts
+  (``per_run_tool_calls``, ``per_run_tokens_total``); fewer is ``error``.
+* **A difference must lie beyond the spread.** A counted field is
+  ``better`` only when every second-arm replicate is below every
+  first-arm replicate, ``worse`` only when every one is above (complete
+  separation; a shared value is not a separation). ``learned``: at least
+  one field better, none worse. ``regressed``: any field worse.
+  ``no_learning``: neither field separates. Under no effect, with
+  exchangeable samples and no ties, a given field separates in a given
+  direction with probability 1 / C(2N, N): 1/252 at N = 5.
+* **Only counted work decides.** ``tool_calls`` and ``tokens_total``
+  (``input_tokens + output_tokens``) decide; ``duration_s`` and
+  ``cost_usd`` are validated and reported but never decide.
+* **A missing or mistyped field is an error**, never a silent zero.
 
-* **Correctness dominates.** A second run that is faster but wrong is a fail
-  whatever it saved (``wrong``).
-* **Identical runs are not learning.** Equality on every DECIDING proxy is
-  ``no_learning``, never ``learned``. The deciding proxies are the counted
-  ones ``tool_calls`` and ``tokens_total`` (operator finding F1 / PREREG
-  dated amendment): ``duration_s`` and ``cost_usd`` are wall-clock and price
-  noise no two real runs share, so they never decide ``learned`` /
-  ``regressed`` / ``no_learning`` -- they stay validated and in the evidence,
-  reported but not compared.
-* **Missing/unknown field is an error**, never a silent zero.
+Measured cost of the separation rule against strict inequality on the
+medians, over 65 disjoint 5-versus-5 windows of successful rows of one
+task and model from existing run files (no learning setup): medians gave
+39 learned, 26 regressed, 0 no_learning; separation gave 1, 1, 63.
+Rejected: a relative band on the medians (a free parameter with no
+calibration behind it; across tasks the median coefficient of variation
+is 0.33 for tokens and 0.37 for tool calls, with a wide spread, so any one
+band is too wide for some tasks and too narrow for others).
 
-The CALLER decides which record is first and which is second: two rows from
-one run file are replicates of one snapshot and are not a learning
-comparison; first-vs-second requires two runs separated in time (two run
-files). The metric is time-agnostic and pure -- it cannot see the caller's
-intent, so that pairing rule lives in the caller (the runner hook).
+Pairing (same model, profile, mode, learning home) is checked by the
+caller, ``benchmark.compare_learning``; this function checks only that
+both records are of the same task.
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-# The efficiency proxies the VERDICT is decided on; fewer is better.
-# ``tokens_total`` is derived from the per-run ``input_tokens`` +
-# ``output_tokens``, which is why it is not itself a record field.
-# Only the COUNTED proxies decide (operator F1, PREREG dated amendment):
-# ``duration_s`` / ``cost_usd`` are wall-clock and price noise that no two
-# real runs share, so if they decided, no_learning would be unreachable and
-# identical counted work would flit between learned and regressed on timing
-# alone. They stay validated and reported in the evidence, never deciding.
-_DECIDING_FIELDS: tuple[str, ...] = ("tool_calls", "tokens_total")
+#: Replicates per arm below which no verdict but ``error`` is given.
+MIN_REPLICATES = 5
+
+#: The counted proxies the verdict is decided on (fewer is better), each
+#: with the record field that holds its per-replicate samples.
+_DECIDING_FIELDS: tuple[tuple[str, str], ...] = (
+    ("tool_calls", "per_run_tool_calls"),
+    ("tokens_total", "per_run_tokens_total"),
+)
 
 VERDICTS: tuple[str, ...] = ("error", "wrong", "learned", "no_learning",
                              "regressed")
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _get_int(record: dict, field: str) -> Optional[int]:
-    """Read an integer-typed per-run field, or None if absent/mistyped.
-
-    A field the record does not carry, or carries as a non-int, is treated
-    as unreadable -- the caller asked for a comparison the record cannot
-    answer, so the honest result is an error, not a fabricated zero.
-    """
+    """An integer field, or None if absent or mistyped (a bool is not an
+    int here)."""
     value = record.get(field)
-    if isinstance(value, bool) or not isinstance(value, int):
+    return value if _is_int(value) else None
+
+
+def _samples(record: dict, field: str) -> Optional[list[int]]:
+    """The per-replicate samples of ``field``: a list of ints whose length
+    equals ``n_samples``; None otherwise."""
+    values = record.get(field)
+    n = record.get("n_samples")
+    if not isinstance(values, list) or not _is_int(n) or len(values) != n:
         return None
-    return value
+    if not all(_is_int(v) for v in values):
+        return None
+    return list(values)
 
 
-def _validate(record: dict, which: str) -> Optional[str]:
+def _validate(record: Any, which: str) -> Optional[str]:
     """Validate one run record; return an error string or None if valid."""
     if not isinstance(record, dict):
-        return f"{which} record is not a dict"
-    unmeasured = record.get("unmeasured")
-    if unmeasured is True:
+        return (f"{which} record is not a dict "
+                "(missing field is an error, never a silent zero)")
+    if record.get("unmeasured") is True:
         return (f"{which} run is unmeasured (the request never reached the "
                 "model); a non-run is not a measurement")
-    if "task_id" not in record or not isinstance(record.get("task_id"), str):
+    if not isinstance(record.get("task_id"), str):
         return f"{which} record has no string task_id"
     if not isinstance(record.get("success"), bool):
         return f"{which} record has no bool success"
-    q = record.get("quality_0_100")
-    if isinstance(q, bool) or not isinstance(q, int):
+    if _get_int(record, "quality_0_100") is None:
         return f"{which} record has no int quality_0_100"
     for field in ("tool_calls", "input_tokens", "output_tokens"):
         if _get_int(record, field) is None:
             return (f"{which} record has no int {field} "
                     "(missing field is an error, never a silent zero)")
-    dur = record.get("duration_s")
-    if isinstance(dur, bool) or not isinstance(dur, (int, float)):
-        return f"{which} record has no numeric duration_s"
-    cost = record.get("cost_usd")
-    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
-        return f"{which} record has no numeric cost_usd"
+    for field in ("duration_s", "cost_usd"):
+        value = record.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"{which} record has no numeric {field}"
+    n = record.get("n_samples")
+    if not _is_int(n) or n < MIN_REPLICATES:
+        return (f"{which} run has N={n} replicates; a learning verdict "
+                f"needs at least {MIN_REPLICATES} per arm (N=1 is not "
+                "evidence)")
+    for _, samples_field in _DECIDING_FIELDS:
+        if _samples(record, samples_field) is None:
+            return (f"{which} record has no {samples_field} of {n} ints "
+                    "(missing field is an error, never a silent zero)")
     return None
+
+
+def _proxies(record: dict) -> dict:
+    out: dict[str, Any] = {
+        "tool_calls": record["tool_calls"],
+        "tokens_total": record["input_tokens"] + record["output_tokens"],
+        "duration_s": record["duration_s"],
+        "cost_usd": record["cost_usd"],
+    }
+    for field, samples_field in _DECIDING_FIELDS:
+        out[f"{field}_samples"] = _samples(record, samples_field)
+    return out
 
 
 def learning_verdict(first: dict, second: dict) -> dict:
     """Compare two run records of the same task; how did the second do?
 
-    Returns ``{"verdict": str, "evidence": dict, "error": str|None}``.
-    ``verdict`` is one of ``("error", "wrong", "learned", "no_learning",
-    "regressed")``. ``evidence`` carries first/second per efficiency proxy
-    plus the second-run correctness, so a verdict can be quoted with its
-    numbers. ``error`` is set (and ``verdict`` is ``"error"``) when the two
-    records cannot be compared; never a silent zero.
-
-    Correctness dominates: any second run that is not correct is ``wrong``
-    whatever it saved. Equality on every efficiency proxy is
-    ``no_learning``. See PREREG_W15.md for the fixed rules.
+    Returns ``{"verdict": str, "evidence": dict, "error": str|None}`` with
+    ``verdict`` one of :data:`VERDICTS`. ``evidence`` carries, per arm, the
+    median counts, the per-replicate samples, duration and cost, plus
+    ``n_first`` / ``n_second`` and the second run's correctness. ``error``
+    is set (and ``verdict`` is ``"error"``) when the records cannot be
+    compared.
     """
-    if not isinstance(first, dict):
+    for which, record in (("first", first), ("second", second)):
+        err = _validate(record, which)
+        if err is not None:
+            return {"verdict": "error", "evidence": {}, "error": err}
+    if first["task_id"] != second["task_id"]:
         return {"verdict": "error", "evidence": {},
-                "error": "first record is not a dict "
-                         "(missing field is an error, never a silent zero)"}
-    if not isinstance(second, dict):
-        return {"verdict": "error", "evidence": {},
-                "error": "second record is not a dict "
-                         "(missing field is an error, never a silent zero)"}
-    err_first = _validate(first, "first")
-    err_second = _validate(second, "second")
-    err = err_first or err_second
-    if err is None and first["task_id"] != second["task_id"]:
-        err = (f"task_id mismatch: {first['task_id']!r} != "
-               f"{second['task_id']!r} -- a learning comparison needs two "
-               "runs of the SAME task")
-    if err is not None:
-        return {"verdict": "error", "evidence": {}, "error": err}
+                "error": (f"task_id mismatch: {first['task_id']!r} != "
+                          f"{second['task_id']!r} -- a learning comparison "
+                          "needs two runs of the SAME task")}
 
-    # Efficiency proxies, derived from the record.
-    proxies_first = {
-        "tool_calls": _get_int(first, "tool_calls"),
-        "tokens_total": (_get_int(first, "input_tokens")
-                         + _get_int(first, "output_tokens")),
-        "duration_s": first["duration_s"],
-        "cost_usd": first["cost_usd"],
-    }
-    proxies_second = {
-        "tool_calls": _get_int(second, "tool_calls"),
-        "tokens_total": (_get_int(second, "input_tokens")
-                         + _get_int(second, "output_tokens")),
-        "duration_s": second["duration_s"],
-        "cost_usd": second["cost_usd"],
-    }
-    evidence = {
-        "first": dict(proxies_first),
-        "second": dict(proxies_second),
+    p_first, p_second = _proxies(first), _proxies(second)
+    evidence: dict[str, Any] = {
+        "first": p_first,
+        "second": p_second,
+        "n_first": first["n_samples"],
+        "n_second": second["n_samples"],
         "second_success": bool(second["success"]),
         "second_quality_0_100": int(second["quality_0_100"]),
     }
 
-    # Correctness first. A wrong second answer fails whatever it saved.
     if not second["success"]:
         evidence["reason"] = "second run is not correct"
         return {"verdict": "wrong", "evidence": evidence, "error": None}
-    # A second run whose artifact failed verification is wrong, whatever
-    # ``success`` says. ``verify_ok is None`` (no verify script ran) is NOT a
-    # correctness signal -- never scored as a pass, never as a fail: there
-    # is no evidence a regression was proven, which is "no regression
-    # proven", not "correct".
+    # ``verify_ok is None`` (no acceptance script ran) is neither a pass
+    # nor a fail.
     if second.get("verify_ok") is False:
         evidence["reason"] = "second run did not verify (verify_ok False)"
         return {"verdict": "wrong", "evidence": evidence, "error": None}
 
-    # Efficiency comparison across the efficiency proxies.
-    better = []
-    worse = []
-    for field in _DECIDING_FIELDS:
-        a = proxies_first[field]
-        b = proxies_second[field]
-        if b < a:
+    better: list[str] = []
+    worse: list[str] = []
+    for field, _ in _DECIDING_FIELDS:
+        a = p_first[f"{field}_samples"]
+        b = p_second[f"{field}_samples"]
+        if max(b) < min(a):
             better.append(field)
-        elif b > a:
+        elif min(b) > max(a):
             worse.append(field)
 
-    if worse and not better:
-        case = "regressed"
-    elif better and worse:
+    if worse:
         case = "regressed"
     elif better:
         case = "learned"
     else:
         case = "no_learning"
     evidence["reason"] = (
-        f"better={better or 'none'}, worse={worse or 'none'}")
+        f"separated better={better or 'none'}, worse={worse or 'none'}")
     return {"verdict": case, "evidence": evidence, "error": None}

@@ -459,6 +459,11 @@ class BenchmarkResult:
     success_ci_high: Optional[float] = None
     per_run_quality: list[int] = field(default_factory=list)
     per_run_success: list[bool] = field(default_factory=list)
+    # Per-replicate counted work, in replicate order. The scalar
+    # tool_calls / input_tokens / output_tokens above are medians; a
+    # learning verdict compares the two samples, not two medians.
+    per_run_tool_calls: list[int] = field(default_factory=list)
+    per_run_tokens_total: list[int] = field(default_factory=list)
     # --- forensic fields for pattern-bug-vs-real-fail diagnosis ---
     text_excerpt: str = ""              # first ≤400 chars of model output
     # For each violated signal, the sentence that tripped it. The excerpt
@@ -2076,6 +2081,8 @@ def aggregate_replicates(
         success_ci_high=wilson_interval(n_pass, n)[1],
         per_run_quality=list(qualities),
         per_run_success=list(success_flags),
+        per_run_tool_calls=list(tool_counts),
+        per_run_tokens_total=[i + o for i, o in zip(in_toks, out_toks)],
         text_excerpt=excerpt,
         tool_names=tool_names_union,
         tool_subjects=subjects,
@@ -2937,7 +2944,9 @@ def compare_learning(
     Keeps ``learning_metric`` pure: THIS caller decides which record is
     first and which is second. Returns::
 
-        {run_a, run_b, per_task: [{task_id, verdict, error, first, second}],
+        {run_a, run_b,
+         per_task: [{task_id, verdict, error, first, second,
+                     n_first, n_second}],
          summary: {n_learned, n_no_learning, n_regressed, n_wrong, n_error,
                    n_only_in_a, n_only_in_b, only_in_a, only_in_b}}
 
@@ -2992,6 +3001,8 @@ def compare_learning(
             "error": out.get("error"),
             "first": evidence.get("first"),
             "second": evidence.get("second"),
+            "n_first": evidence.get("n_first"),
+            "n_second": evidence.get("n_second"),
         })
     per_task.sort(key=lambda p: str(p["task_id"]))
 
@@ -3052,10 +3063,11 @@ def format_learning_note(lc: dict, *, only: Any = None) -> str:
         if v in ("error",) or not first or not second:
             detail = str(p.get("error") or "no comparable record")
         else:
-            detail = (f"tool calls {first.get('tool_calls')}→"
+            detail = (f"median tool calls {first.get('tool_calls')}→"
                       f"{second.get('tool_calls')}, tokens "
                       f"{first.get('tokens_total')}→"
-                      f"{second.get('tokens_total')}")
+                      f"{second.get('tokens_total')}, "
+                      f"N={p.get('n_first')}/{p.get('n_second')}")
         lines.append(f"{p.get('task_id')}: {v.replace('_', ' ')} ({detail})")
     return "\n".join(lines)
 
