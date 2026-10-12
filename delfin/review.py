@@ -16,6 +16,13 @@ the structures (``<folder>/review_<name>.json``):
   ``history``; nothing is overwritten away.
 * ``order`` -- in blinded mode the shuffled order, so the anonymous number
   shown to the reviewer maps back to the file and frame.
+* ``notes`` -- ``{file: {frame_index: record}}`` for a comment typed on a
+  frame that has no rating yet (comment, timestamp, file, frame, label,
+  sha256; in blinded mode also the anonymous number).  It is not a rating
+  (progress and summary ignore it), it is exported as a CSV row with an
+  empty verdict, and a later rating of that frame takes it over.  Kept out
+  of ``reviews`` so that readers which count every entry there as a
+  rating, and the ``history`` of earlier ratings, stay as they were.
 
 The file is written after every rating (atomically, through a temporary file
 and a rename), so an interrupted session loses nothing, and opening the same
@@ -210,8 +217,14 @@ class ReviewSession:
     @classmethod
     def open(cls, source, *, name: str = '', review_path=None, blind: bool = False,
              seed: int = 0, findings_path=None,
-             categories: Iterable[str] | None = None) -> ReviewSession:
-        """Open a multi-frame XYZ file or a folder of them and resume its review."""
+             categories: Iterable[str] | None = None,
+             default_categories: Iterable[str] | None = None) -> ReviewSession:
+        """Open a multi-frame XYZ file or a folder of them and resume its review.
+
+        *categories* replaces the stored list; *default_categories* is used
+        only by a review that has none stored yet, so a list set up before
+        a new review is opened is kept and a resumed review keeps its own.
+        """
         source = Path(source).expanduser()
         if source.is_dir():
             folder = source
@@ -252,7 +265,10 @@ class ReviewSession:
                 meta['index'] = row
         if categories is not None:
             data['categories'] = [c for c in (s.strip() for s in categories) if c]
-        data.setdefault('categories', list(DEFAULT_CATEGORIES))
+        if not data.get('categories') and default_categories is not None:
+            data['categories'] = [c for c in (s.strip() for s in default_categories) if c]
+        if not data.get('categories'):
+            data['categories'] = list(DEFAULT_CATEGORIES)
         data.setdefault('reviews', {})
         data['source'] = source.name
         data.setdefault('created', _now())
@@ -376,6 +392,11 @@ class ReviewSession:
         shown = self.findings_for(frame)
         if shown and not self.blind:
             rec['findings_shown'] = shown
+        notes = self.data.get('notes') or {}
+        if frame.file in notes:
+            notes[frame.file].pop(str(frame.index), None)
+            if not notes[frame.file]:
+                notes.pop(frame.file)
         per_file = self.data['reviews'].setdefault(frame.file, {})
         earlier = per_file.get(str(frame.index))
         if earlier:
@@ -397,6 +418,38 @@ class ReviewSession:
                 return
         if self.next_unrated() is None:
             self.next()
+
+    def pending_note(self, file: str, index: int) -> str:
+        """The comment stored for an unrated frame ('' when none, or the file changed)."""
+        rec = (self.data.get('notes') or {}).get(file, {}).get(str(index))
+        if not rec:
+            return ''
+        sha = self.data['files'].get(file, {}).get('sha256')
+        if sha and rec.get('sha256') != sha:
+            return ''
+        return str(rec.get('note', ''))
+
+    def set_pending_note(self, note: str) -> None:
+        """Store (or, when empty, drop) the comment on the current, unrated frame and save."""
+        frame = self.current
+        text = str(note or '').strip()
+        notes = self.data.setdefault('notes', {})
+        per_file = notes.setdefault(frame.file, {})
+        if text:
+            rec: dict[str, Any] = {
+                'note': text, 'timestamp': _now(), 'file': frame.file,
+                'frame': frame.index, 'label': frame.label,
+                'sha256': self.data['files'].get(frame.file, {}).get('sha256', ''),
+            }
+            if self.blind:
+                rec['blind_number'] = self.position + 1
+                rec['seed'] = self.seed
+            per_file[str(frame.index)] = rec
+        else:
+            per_file.pop(str(frame.index), None)
+        if not per_file:
+            notes.pop(frame.file, None)
+        self.save()
 
     def set_file_comment(self, file: str, comment: str) -> None:
         self.data['files'].setdefault(file, {})['comment'] = str(comment or '').strip()
@@ -483,18 +536,27 @@ def iter_records(data: dict[str, Any]):
 
 
 def write_csv(data: dict[str, Any], path: Path) -> None:
+    """One row per rating, and one with an empty verdict per comment on an unrated frame."""
     files = data.get('files', {})
+    rows = list(iter_records(data))
+    rated = {(f, i) for f, i, _, stale in rows if not stale}
+    for fname, frames in (data.get('notes') or {}).items():
+        sha = files.get(fname, {}).get('sha256')
+        for key, rec in frames.items():
+            if str(key).isdigit() and (fname, int(key)) not in rated:
+                rows.append((fname, int(key), rec, bool(sha and rec.get('sha256') != sha)))
+    rows.sort(key=lambda row: (row[0], row[1]))
     with open(path, 'w', newline='', encoding='utf-8') as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS + ('stale',))
         writer.writeheader()
-        for fname, idx, rec, stale in iter_records(data):
+        for fname, idx, rec, stale in rows:
             meta = files.get(fname, {})
             writer.writerow({
                 'file': fname,
                 'frame': idx,
                 'label': rec.get('label', ''),
                 'verdict': rec.get('verdict', ''),
-                'categories': ';'.join(rec.get('categories', [])),
+                'categories': ';'.join(rec.get('categories') or []),
                 'note': rec.get('note', ''),
                 'timestamp': rec.get('timestamp', ''),
                 'sha256': rec.get('sha256', ''),

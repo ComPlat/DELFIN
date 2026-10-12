@@ -1489,7 +1489,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
     # flags them as "collapsed", which drops an otherwise-clean geometry isomer to the
     # legacy fallback (measured: AFOWOH's trans-Cl isomer rejected over 2 aryl C-H at
     # 0.81/0.87 A — 0.01 A under threshold).  When enabled, H-involving bonds use a
-    # lower floor (XH_FRAC*ideal, default 0.55 ~= the CCDC X-H metric floor) so a real
+    # lower floor (XH_FRAC*ideal, hand-set default 0.55) so a real
     # H-on-atom collapse (< ~0.6 A) is still caught while X-ray-short H pass.  Heavy-
     # heavy bonds keep the 0.82 floor unchanged.  Env-gated, default OFF => byte-id
     # (floor is 0.82*ideal for every bond, exactly the historic _count_collapsed /

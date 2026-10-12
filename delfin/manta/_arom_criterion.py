@@ -6,13 +6,10 @@ of C/N/O/S is aromatic, and all three did it with the same line:
 
     mean ring bond < 1.46 A
 
-Measured on 910 crystals (3237 aromatics against 505 non-aromatics,
-``agent_workspace/FORENSIK_2026_08_19_hapto42/``, steps E/G/I), this gate
-catches the aromatics at 99,35 % -- and at the same time lets **54,46 %** of all
-non-aromatics through.  The balanced error is 27,55 %.  Per class:
-
-    oxazoline 92,6 %   imidazoline 96,7 %   THF 28,8 %
-    piperidine 30,0 %  cyclohexane 18,3 %   cyclopentane 0 %
+Measured on crystal rings (aromatics against non-aromatics), this gate catches
+nearly every aromatic -- and at the same time lets about half of all
+non-aromatics through: oxazoline and imidazoline almost always, THF, piperidine
+and cyclohexane in a sizeable share, cyclopentane never.
 
 THE REASON IS THE ABSOLUTE ANGSTROM SCALE.  1.46 A is a C-C number.  A ring
 with O or N has intrinsically shorter bonds (C-O 1.43, C-N 1.47 in the
@@ -20,27 +17,21 @@ SATURATED state), so a saturated oxazoline falls below a threshold that was
 built for carbon -- without anything about it being aromatic.
 
 AND THE SAME SCALE HAS A SECOND, PREVIOUSLY UNNAMED DEFECT: THIOPHENE is
-recognized by EVERY absolute threshold at **0 %**.  C-S is 1.72 A long, the
-ring mean of a real thiophene is 1.518 A -- it already fails 1.46 today and
-was never flattened.
+recognized by NO absolute threshold.  C-S is 1.72 A long, the ring mean of a
+real thiophene is about 1.52 A -- it already fails 1.46 today and was never
+flattened.
 
 THE ELEMENT NORMALIZATION REPAIRS BOTH WITH ONE QUANTITY.  Instead of the raw
 length, the mean of ``d_ij / (r_i + r_j)`` is evaluated -- the bond is measured
-against the covalent-radius sum of its OWN elements.  Four quantities were
-checked against one another on the same crystal rings (step G):
+against the covalent-radius sum of its OWN elements.  Compared on the same
+crystal rings with the raw mean (at two thresholds) and the spread of the ring
+bonds, the ratio had by far the lowest balanced error.
 
-    quantity                   threshold  aromatics  non-arom.    balanced
-    raw mean (AS-IS)           < 1.460     99,35 %     54,46 %       27,55 %
-    raw mean                   < 1.410     97,62 %      4,95 %        3,66 %
-    spread                     < 0.035     94,19 %     34,06 %       19,93 %
-    ratio d/(r_i+r_j)          < 0.939     99,26 %      5,94 %        3,34 %
+⚠ THE SPREAD IS NOT THE ANSWER: it separates oxazoline flawlessly, but is BLIND
+to saturated carbocycles -- cyclohexane spreads as uniformly as benzene.
 
-⚠ THE SPREAD IS NOT THE ANSWER (five times worse): it separates oxazoline
-flawlessly, but is BLIND to saturated carbocycles -- cyclohexane spreads 0,014,
-as uniformly as benzene.
-
-Price of the normalization, honestly: thiophene 0 -> 95,2 %, but pyrrole 100 -> 84,8 %
-and furan 100 -> 66,7 % (n=6).  An unrecognized aromatic is not flattened --
+Price of the normalization, honestly: thiophene is now recognized, but some
+pyrroles and furans are missed.  An unrecognized aromatic is not flattened --
 that is MISSED FLATTENING, not a new defect.
 
 ⚠ WHY THIS FILE EXISTS AT ALL.  On 18.08. a repair was already made at exactly
@@ -72,77 +63,45 @@ from typing import Dict, Optional, Sequence, Tuple
 # Until 19.08.2026 this number stood three times in the tree; it now stands ONCE, here.
 _AROMATIC_BOND_MAX: float = 1.46
 
-# Element-normalized: mean of d_ij / (r_i + r_j).  Optimum of the BALANCED
-# error on 3237 aromatics + 505 non-aromatics from 910 crystals (step G).
+# Element-normalized: mean of d_ij / (r_i + r_j).  The ring counts as aromatic when the
+# mean stays BELOW a ratio threshold.
 #
-# WHAT 0.939 MEANS IN ANGSTROM -- the threshold per bond type (Cordero sums):
-#     C-C 1.427   C-N 1.380   C-O 1.333   C-S 1.700   N-N 1.333   O-O 1.239
-# ⚠ FOR PURE CARBOCYCLES THIS IS STRICTER THAN TODAY (1.427 instead of 1.460), and
-# on BUILD frames -- whose bonds are longer than in the crystal -- a noticeable
-# share of real benzene rings therefore drops out.  An unrecognized aromatic is
-# not flattened: missed flattening, not a new defect.  For S-containing rings it is,
-# conversely, much WIDER (1.700 instead of 1.460) -- exactly the thiophene repair.
-# ⚠ 25.08.2026: 0.939 -> 0.963.  RECALIBRATED ON BUILD FRAMES, not on crystals.
+# ⚠ THE THRESHOLD IS NOT SHIPPED.  It was first set at the optimum of the balanced error
+# on crystal rings and on 25.08.2026 recalibrated on BUILD frames (whose bonds are longer
+# than in the crystal), with the truth label "this ring is aromatic" taken from the
+# PLANARITY OF THE RING IN THE CRYSTAL -- a quantity that does not depend on the bond
+# length being calibrated and that the build does not influence.  Because that label
+# comes from structures that are not redistributed here, the value is read from the file
+# named by DELFIN_FFFREE_AROM_RATIO_TABLE (key ``ratio_max``, see _unshipped_tables).
+# Without it the normalized gate stays off even with its switch on, and the absolute
+# 1.46 A gate above decides.
 #
-# WHY THE OLD NUMBER WAS WRONGLY APPLIED.  0.939 is the optimum on 910
-# CRYSTALS.  `aromrad6k` measured it on BUILD frames on 24.08., and the
-# verdict shows both sides of the coin:
-#     pyramidal_sp2         15911 -> 15360 frames   (mass 3028 -> 2837)
-#     smiles_ccdc_regressed    35 systems           <- the price
-# So better on average, too strict in the individual case -- exactly the
-# uncertainty that the preregistration named as THE question of the run.
-#
-# THE NEW CALIBRATION (`harness/arom_eichung_baurahmen.py`, 1500 systems):
-#     threshold  aromatic missed   non-ar. through   balanced
-#     0.939 old      13,34 %            5,41 %         9,37 %
-#     0.963 new       2,14 %           10,81 %         6,48 %
-# In angstrom for C-C: 1.427 -> 1.464.  With that, the threshold for pure
-# carbocycles sits again where the historical raw number 1.460 stood -- it was
-# NEVER the problem for carbocycles; the normalization had inadvertently
-# tightened it by 0.033 A.  For S-containing rings the thiophene gain is kept
-# (C-S now 1.743 instead of 1.700, still far above 1.46).
-#
-# ⚠ NOT MEASURED CIRCULARLY, and that was the actual difficulty: the
-# TRUTH ("this ring is aromatic") must not come from the bond length,
-# because that is the quantity being calibrated.  It comes from the PLANARITY OF
-# THE RING IN THE CRYSTAL -- a quantity that has nothing to do with the bond
-# length and that the build does not influence.  The same ring motif is then
-# measured in the BUILD frame.
-#
-# ⚠ SENSITIVITY PROBE, because the flatness threshold 0.08 A is freely chosen:
-#     flat< 0.04 -> optimum 0.954      flat< 0.06 -> 0.963     flat< 0.08 -> 0.963
-#     flat< 0.12 -> 0.963              flat< 0.18 -> 0.963
-# Four of five yield the same number; only the strictest deviates, and there the
-# non-aromatic class is at its thinnest with n=46.  So the number does not hang
-# on the chosen flatness.
-#
-# ⚠ WHAT IS THIN ABOUT THE MEASUREMENT, named honestly: 1402 aromatics against 37
-# non-aromatics.  The "aromatic missed" side -- which determines the DAMAGE -- rests
-# on over 1400 rings and holds.  The "non-aromatic wrongly through" side rests
-# on 37 and is coarse; but it costs only an unnecessary flattening, not a
-# defect.  That is why the error has deliberately been weighted asymmetrically here.
-#
-# 🔴 THE PRICE HAS A NAME, and the self-test shows it: OXAZOLINE sits at
-# 0.965.  With 0.939 it was rejected with a margin of 0.026; with 0.963 the
-# margin is only **0.002**.  Probe 11-13 holds (0.965 >= 0.963), but it holds
-# narrowly -- and it computes with an IDEAL GEOMETRY.  On a build frame the same
-# ring scatters, and an oxazoline that came out slightly shorter is now wrongly
-# flattened.  That is exactly the measured doubling of the wrongly admitted
-# non-aromatics (5,41 % -> 10,81 %), here on a named substance instead of a
-# percentage.
-# ⇒ WHAT TO WATCH IN THE VERDICT: `smiles_ccdc_regressed` and
-#   `pyramidal_sp2` on systems with oxazoline/imidazoline.  If something rises
-#   there, 0.963 is too wide for this ring family and the threshold ought to be
+# WHAT THE CALIBRATION SHOWED.  The crystal optimum, applied to build frames, was too
+# strict for real benzene rings (a noticeable share dropped out); the build-frame value
+# sits, for pure carbocycles, again where the historical raw number 1.460 stood, and keeps
+# the thiophene gain for S-containing rings.  The optimum did not hang on the chosen
+# flatness threshold.  The price has a name: OXAZOLINE then sits only just above the
+# threshold, so a slightly short oxazoline on a build frame is wrongly flattened.
+# ⇒ WHAT TO WATCH IN A VERDICT: `smiles_ccdc_regressed` and `pyramidal_sp2` on systems
+#   with oxazoline/imidazoline.  If something rises there, the threshold ought to be
 #   tiered BY ELEMENT (C-C differently from C-N-O), not lowered globally.
-#   That would be the next refinement -- one number for all rings is itself
-#   an approximation, and this measurement shows its limit.
 #
 # Default of the SWITCH unchanged OFF -> byte-identical.
-_AROM_RATIO_MAX: float = 0.963
+_AROM_RATIO_TABLE_ENV = "DELFIN_FFFREE_AROM_RATIO_TABLE"
+
+
+def _arom_ratio_max() -> Optional[float]:
+    """The ratio threshold from the supplied table, or None without one.
+
+    Imported lazily so that this module keeps pulling in nothing but ``os`` and
+    ``typing`` at import time (see the module docstring).
+    """
+    from delfin.manta._unshipped_tables import scalar_table
+    return scalar_table(_AROM_RATIO_TABLE_ENV).get("ratio_max")
+
 
 # Only in case a ring atom has no covalent radius.  Cannot fire with the callers
-# (all three filter the rings to C/N/O/S beforehand), but sits at the same value
-# as in the measurement so that the number stays comparable.
+# (all three filter the rings to C/N/O/S beforehand); 0.90 is a hand-set mid value.
 _COV_FALLBACK: float = 0.90
 
 _COV_TABLE: Optional[Dict[str, float]] = None
@@ -156,6 +115,10 @@ def radii_criterion_enabled() -> bool:
     :428 before the import at :435), but a gate that unfolds its effect only
     under the right import order is exactly the construction that has already
     ended up as a "dark switch" more than once in this project.
+
+    Even ON, the normalized gate needs its threshold from the file named by
+    DELFIN_FFFREE_AROM_RATIO_TABLE (see ``_arom_ratio_max``); without it the
+    absolute gate decides.
     """
     return os.environ.get("DELFIN_FFFREE_AROM_CRITERION_RADII", "0") == "1"
 
@@ -166,7 +129,7 @@ def _cov_table() -> Dict[str, float]:
     Fetched only here (see module docstring: import order).  ``polyhedra.COV``
     carries C 0.76, N 0.71, O 0.66, S 1.05 -- i.e. all four elements that the
     callers admit as ring-capable -- and for these four agrees digit for digit
-    with ``_bond_decollapse._COV``, the table on which the threshold 0.939 was
+    with ``_bond_decollapse._COV``, the table on which the crystal threshold was
     measured.  The switch ``DELFIN_FFFREE_COV_COMPLETE`` only fills GAPS there
     via ``setdefault`` and cannot shift C/N/O/S.
     """
@@ -194,13 +157,14 @@ def ring_rejected_by_length(
     """
     if not lens or len(edges) != len(lens):
         return True
-    if radii_criterion_enabled():
+    _ratio_max = _arom_ratio_max() if radii_criterion_enabled() else None
+    if _ratio_max is not None:
         cov = _cov_table()
         acc = 0.0
         for (i, j), d in zip(edges, lens):
             acc += d / (cov.get(syms[i], _COV_FALLBACK)
                         + cov.get(syms[j], _COV_FALLBACK))
-        return (acc / len(lens)) >= _AROM_RATIO_MAX
+        return (acc / len(lens)) >= _ratio_max
     return (sum(lens) / len(lens)) >= _AROMATIC_BOND_MAX
 
 
@@ -221,6 +185,14 @@ def _selbsttest() -> int:  # pragma: no cover - tool, not a production path
     from delfin.manta import _bond_decollapse as BD
 
     stand = {"n": 0, "fehl": 0}
+
+    # The calibrated threshold is not shipped (see _arom_ratio_max).  The probes below
+    # only need SOME threshold between thiophene (0.925) and oxazoline (0.965), so the
+    # self-test supplies a hand-set probe value through the same table mechanism.
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as _fh:
+        _fh.write("ratio_max\t0.95\n")
+    os.environ[_AROM_RATIO_TABLE_ENV] = _fh.name
 
     def _urteil(name, ok):
         stand["n"] += 1
@@ -273,7 +245,7 @@ def _selbsttest() -> int:  # pragma: no cover - tool, not a production path
                          (r + dh) * math.sin(winkel[k]), 0.0))
         return rows
 
-    # --- Test rings.  Lengths are crystal medians (step G/I). ------------------
+    # --- Test rings.  Typical textbook bond lengths. -----------------------------
     BENZOL = _ring(["C"] * 6, [1.39] * 6, {2: 0.12})
     # Thiophene: C-S 1.71, S-C 1.71, C-C 1.37, C=C 1.42, C-C 1.37
     #   -> raw mean 1.516 > 1.46, i.e. REJECTED by the as-is state.
@@ -305,8 +277,8 @@ def _selbsttest() -> int:  # pragma: no cover - tool, not a production path
 
     # --- 1) the PREDICATE itself, without going through the ring finders ------
     #     Thiophene as a RING: the five bonds average raw to 1.516 A
-    #     (> 1.46, i.e. rejected), normalized to 0.925 (< 0.939, i.e. kept).
-    #     ⚠ A SINGLE C-S bond (1.71/1.81 = 0.945) fails when taken on its
+    #     (> 1.46, i.e. rejected), normalized to 0.925 (below the probe threshold, kept).
+    #     ⚠ A SINGLE C-S bond (1.71/1.81 = 0.945) can fail when taken on its
     #     own -- what is decided is the RING, not the bond.
     t_syms = ["S", "C", "C", "C", "C"]
     t_edges = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0)]
