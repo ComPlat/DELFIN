@@ -374,6 +374,45 @@ def _capped_context_window(window: int) -> int:
     return capped_window(window)
 
 
+def _content_parts(content) -> list:
+    if isinstance(content, list):
+        return list(content)
+    text = "" if content is None else str(content)
+    return [{"type": "text", "text": text}] if text else []
+
+
+def _merge_user_rows(older: dict, newer: dict) -> dict:
+    """One user row holding ``older`` then ``newer``, both intact.
+
+    Input: two consecutive ``user`` rows. Output: a new plain dict; the
+    inputs are not modified. String contents are joined with a blank
+    line (an empty part adds nothing); when either content is a list of
+    parts (text + image), the result is the concatenated part list with
+    a string side wrapped as one text part. Keys of ``newer`` win over
+    keys of ``older``, except ``_harness``: the merged row carries it
+    only when both rows did, so a typed part is never relabelled as
+    harness text. A plain dict is returned even for dict subclasses, so
+    a row-type mark is not inherited from one side either.
+
+    Rejected: keeping the newer row (lost the typed steer that a
+    harness note followed in the same drain); keeping both separate in
+    the history (strict chat templates refuse two user turns in a row).
+    """
+    merged = {**older, **newer}
+    a, b = older.get("content"), newer.get("content")
+    if isinstance(a, list) or isinstance(b, list):
+        merged["content"] = _content_parts(a) + _content_parts(b)
+    else:
+        merged["content"] = "\n\n".join(
+            s for s in ("" if a is None else str(a),
+                        "" if b is None else str(b)) if s)
+    if older.get("_harness") and newer.get("_harness"):
+        merged["_harness"] = True
+    else:
+        merged.pop("_harness", None)
+    return merged
+
+
 class AgentEngine:
     """Core orchestration engine for the DELFIN agent.
 
@@ -5019,10 +5058,20 @@ class AgentEngine:
         structural issues.  This removes duplicates and ensures the
         conversation can be sent to the API without errors.
 
+        Consecutive user rows are merged into one (``_merge_user_rows``),
+        never dropped: a steer typed into a running turn is followed by
+        harness rows (job notes, run notes, steering blocks) from the same
+        drain, and keeping only the newer row removed the typed text from
+        every later request and saved session. Consecutive assistant rows
+        keep the newer one. A history without consecutive same-role rows
+        is left as the same list of the same objects, so its request bytes
+        (and the prefix cache) do not change.
+
         Pinned messages (``msg["_pinned"]``) are never merged away: when a
-        pinned message would be replaced by a newer same-role message, a
-        short opposite-role filler is inserted instead so BOTH survive
-        verbatim and alternation still holds for strict chat templates.
+        pinned message would be replaced by a newer same-role message, or
+        a user row meets a pinned user row, a short opposite-role filler
+        is inserted instead so BOTH survive verbatim and alternation still
+        holds for strict chat templates.
         """
         if len(self.messages) < 2:
             return
@@ -5040,18 +5089,22 @@ class AgentEngine:
         for msg in self.messages[1:]:
             role = msg.get("role")
             if role == cleaned[-1].get("role") and role in ("user", "assistant"):
-                if cleaned[-1].get("_pinned"):
-                    # The older message is pinned — keep it verbatim and
-                    # restore alternation with a filler instead of merging.
+                older_pinned = bool(cleaned[-1].get("_pinned"))
+                if older_pinned or (role == "user" and msg.get("_pinned")):
+                    # A pinned message is kept verbatim: alternation is
+                    # restored with a filler instead of merging.
                     filler_role = "assistant" if role == "user" else "user"
                     cleaned.append({
                         "role": filler_role,
                         "content": "[alternation filler - pinned message "
-                                   "above kept verbatim]",
+                                   + ("above" if older_pinned else "below")
+                                   + " kept verbatim]",
                     })
                     cleaned.append(msg)
+                elif role == "user":
+                    cleaned[-1] = _merge_user_rows(cleaned[-1], msg)
                 else:
-                    # Consecutive same-role messages: keep the latest
+                    # Consecutive assistant messages: keep the latest
                     # (also keeps a pinned NEWER message automatically).
                     cleaned[-1] = msg
             else:
