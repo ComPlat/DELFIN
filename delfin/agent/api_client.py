@@ -2210,6 +2210,14 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # and here-documents read as the shell reads them, because the
         # split below ignores quotes and cuts `"a;b"` in two.
         _text = _quoted_text_spans(_scan)
+        # In the quoted code of a non-shell interpreter a `>` touching `=`
+        # or following `-` is that language's operator (`>=`, `>>=`, `->`,
+        # `=>`, `<=>`): no shell parses that text, and the name after it is
+        # an operand, not a file. A bare `>` there is still reported, since
+        # `os.system('echo x > f')` writes f. A shell's argument (`bash -c`,
+        # `eval`) is re-parsed by that shell, so `>=` there -- like `>=`
+        # unquoted -- stays a redirect to a file named `=`.
+        _code = _quoted_text_spans(_scan, owners=_CODE_INTERPRETERS)
         _cuts = [0]
         for _sep in re.finditer(r"[;&|]{1,2}|\n", _scan):
             _cuts += [_sep.start(), _sep.end()]
@@ -2232,6 +2240,13 @@ def _bash_write_targets(cmd: str) -> list[str]:
             for m in _redirect.finditer(seg):
                 if any(lo <= _off + m.start() < hi for lo, hi in _text):
                     continue    # `>` inside quotes is text, not a redirection
+                _op = re.search(r">{1,2}", m.group(0))
+                _gt = _off + m.start() + _op.start()
+                _past = _off + m.start() + _op.end()
+                if (any(lo <= _gt < hi for lo, hi in _code)
+                        and (_scan[_gt - 1:_gt] in ("-", "=")
+                             or _scan[_past:_past + 1] == "=")):
+                    continue    # an operator of the interpreted language
                 tok = m.group(1)
                 if not tok.startswith("&"):
                     _add(tok)
@@ -2251,12 +2266,73 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # more. That argument does not hold on a path that grants, and
         # `_inline_payload_is_readable` accordingly takes quoted bodies
         # only.
-        _srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
-        _srcs += _inline_payload.extract_stdin_payloads(
+        #
+        # A relative payload target is resolved where the interpreter
+        # starts: the command is tokenised once with quotes honoured
+        # (a multi-line `-c` string stays one word), cut into commands at
+        # `; & | && || newline`, and `cd`/`pushd` are followed in order.
+        # A `-c` payload takes the directory of its own command; the n-th
+        # python here-document opener takes the directory at that opener.
+        # Where that pairing cannot be made (the tokeniser fails, or the
+        # counts differ) a command that contains a `cd` reports relative
+        # targets as unresolved, so the gate refuses rather than guesses.
+        _moved_before = moved
+        here = previous = None
+        moved = False
+        _c_dirs: list = []           # (payload, directory)
+        _doc_dirs: list = []
+        _paired = True
+        try:
+            _lx = shlex.shlex(cmd, posix=True, punctuation_chars=";&|\n")
+            _lx.whitespace = " \t\r"
+            _lx.whitespace_split = True
+            _toks = list(_lx)
+        except ValueError:
+            _toks, _paired = [], False
+        _cmds: list = [[]]
+        for _t in _toks:
+            if _t and all(ch in ";&|\n" for ch in _t):
+                _cmds.append([])
+            else:
+                _cmds[-1].append(_t)
+        for _argv in _cmds:
+            _words = list(_argv)
+            while _words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", _words[0]):
+                _words = _words[1:]
+            if not _words:
+                continue
+            if Path(_words[0]).name in ("cd", "pushd"):
+                _follow_cd(_words)
+                continue
+            for src in _inline_payload.extract_c_payloads(
+                    shlex.join(_argv)) or []:
+                _c_dirs.append((src, here))
+            if (any(re.match(r"(?:[\w./~+-]*/)?python[0-9.]*$", w)
+                    for w in _argv)
+                    and any(w.startswith("<<") and not w.startswith("<<<")
+                            for w in _argv)):
+                _doc_dirs.append(here)
+        _fallback = _UNRESOLVED if (
+            moved or re.search(r"(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)", cmd)) \
+            else None
+        _c_srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
+        _docs = _inline_payload.extract_stdin_payloads(
             cmd, include_expanded=True)
-        for src in _srcs:
+        # The whole-command split glues an unquoted `;` to the word before
+        # it (`"open('a','w')";` -> `open('a','w');`), so the per-command
+        # payloads are the exact ones; the whole-command list only checks
+        # that none was lost, and on a difference both are read, unpaired.
+        if not _paired or len(_c_dirs) != len(_c_srcs):
+            _c_dirs = [(s, _fallback)
+                       for s in _c_srcs + [s for s, _ in _c_dirs]]
+        if not _paired or len(_doc_dirs) != len(_docs):
+            _doc_dirs = [_fallback] * len(_docs)
+        for src, where in _c_dirs + list(zip(_docs, _doc_dirs)):
+            here = where
             for tok in _inline_payload.analyze_payload(src).writes:
                 _add(tok)
+        here = previous = None
+        moved = _moved_before
 
         # Per shell segment: command name + arguments.
         for segment in re.split(r"[;&|]{1,2}|\n", cmd):
@@ -3399,6 +3475,13 @@ def _sed_script_is_pure(script: str) -> bool:
                for stmt in script.split(";") if stmt.strip())
 
 
+# Non-shell interpreters: a quoted argument is code in their own language,
+# which no shell parses for redirects. `python3.11` is matched as `python3`.
+# Shells, `eval`, `awk` and `env`-style wrappers are deliberately absent.
+_CODE_INTERPRETERS = frozenset({
+    "python", "python2", "python3", "node", "nodejs", "perl", "ruby",
+    "Rscript", "R", "php"})
+
 # Programs whose quoted arguments are text they print, match or store --
 # never a script they run. Only for these is a quoted `>` not a redirection.
 _QUOTED_TEXT_PROGRAMS = frozenset({
@@ -3411,7 +3494,7 @@ _GIT_MESSAGE_SUBCOMMANDS = frozenset(
     {"commit", "tag", "merge", "log", "grep", "show", "notes", "stash"})
 
 
-def _quoted_text_spans(cmd: str) -> list:
+def _quoted_text_spans(cmd: str, owners: Optional[frozenset] = None) -> list:
     """``(start, end)`` of the spans of *cmd* whose ``>`` is text.
 
     Input: a whole shell command. Output: the quoted spans and here-document
@@ -3434,6 +3517,10 @@ def _quoted_text_spans(cmd: str) -> list:
     command), and a command gets no spans when it contains ``$(`` or a
     backtick, which run inside quotes and unquoted delimiters alike.
     Cost: one linear pass plus ``shlex.split`` per command.
+
+    With *owners*, the spans returned are those of commands whose program
+    (``pythonX.Y`` read as ``pythonX``) is in that set instead, the
+    git subcommand rule not applied; same reading, same empty results.
     """
     import shlex
     n = len(cmd)
@@ -3523,7 +3610,10 @@ def _quoted_text_spans(cmd: str) -> list:
         while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
             argv = argv[1:]
         name = Path(argv[0]).name if argv else ""
-        if name not in _QUOTED_TEXT_PROGRAMS or (
+        if owners is not None:
+            if re.sub(r"^(python[23])\.\d+$", r"\1", name) not in owners:
+                continue
+        elif name not in _QUOTED_TEXT_PROGRAMS or (
                 name == "git" and (len(argv) < 2
                                    or argv[1] not in _GIT_MESSAGE_SUBCOMMANDS)):
             continue
@@ -10990,6 +11080,31 @@ def _classifier_settings() -> Optional[dict]:
     }
 
 
+# Harness rows that reach the history as user-role text without a bracket:
+# the turn-continuation notes (turn_continuation), the follow-ups the tool
+# loop appends at turn end, the stray-write run note (engine) and the
+# language check with its "[Verify] " prefix removed (engine).
+_CLASSIFIER_HARNESS_OPENERS = (
+    "System note:",
+    "This session's work is in `",
+    "This finished while you were answering.",
+    "You ended your turn by announcing an action",
+    "Continue — there are still OPEN tasks.",
+    "Automatic check, not a message from the user",
+)
+
+# What the classifier is shown of the user's words: the newest message as
+# the task, then earlier ones newest first, within the bound the first-plus-
+# last-three selection had (2000 + 3 x 1000 characters). A first message
+# shorter than _CLASSIFIER_SUBSTANTIVE_CHARS is a greeting or a one-liner
+# and is not carried past the newest ones.
+_CLASSIFIER_USER_CHARS = 5000
+_CLASSIFIER_TASK_CHARS = 2000
+_CLASSIFIER_EARLIER_CHARS = 1000
+_CLASSIFIER_EARLIER_MSGS = 8
+_CLASSIFIER_SUBSTANTIVE_CHARS = 40
+
+
 def _classifier_user_texts(messages) -> list:
     """What the USER typed in this conversation, oldest first.
 
@@ -10997,9 +11112,10 @@ def _classifier_user_texts(messages) -> list:
     user-role entry that carries a tool result, or that opens with a
     bracket or a tag, is the harness or another session speaking (a
     session message renders as "[Message from the session ...", a
-    reminder as "<system-reminder>") and is left out whole. A real
-    message is cut where such a block begins inside it. The error runs
-    towards LESS evidence, which means more asking, never less.
+    reminder as "<system-reminder>") and is left out whole, as is one
+    that opens with a harness note's wording (_CLASSIFIER_HARNESS_OPENERS).
+    A real message is cut where such a block begins inside it. The error
+    runs towards LESS evidence, which means more asking, never less.
     """
     out = []
     for m in messages or ():
@@ -11013,7 +11129,8 @@ def _classifier_user_texts(messages) -> list:
             content = "\n".join(str(b.get("text") or "") for b in content
                                 if isinstance(b, dict))
         text = str(content or "").strip()
-        if not text or text[0] in "[<":
+        if not text or text[0] in "[<" or text.startswith(
+                _CLASSIFIER_HARNESS_OPENERS):
             continue
         cut = re.search(
             r"\n\s*(?:\[Message from|\[UNTRUSTED EXTERNAL CONTENT|<system-)",
@@ -11023,6 +11140,45 @@ def _classifier_user_texts(messages) -> list:
         if text:
             out.append(text)
     return out
+
+
+def _classifier_context_users(users) -> tuple:
+    """``(task, earlier)`` the classifier prompt is built from.
+
+    Input: the user's own texts, oldest first (_classifier_user_texts).
+    ``task`` is the newest one, cut to _CLASSIFIER_TASK_CHARS: in a
+    session of several days the user's first message is not the request
+    the action serves, and the greeting a session opens with was judged
+    as the task for every action of every later day. ``earlier`` holds
+    up to _CLASSIFIER_EARLIER_MSGS of the messages before it, newest
+    first, each cut to _CLASSIFIER_EARLIER_CHARS, until the
+    _CLASSIFIER_USER_CHARS total is reached; short follow-ups ("weiter",
+    "yes") cost their length, so the reach extends back past them. The
+    first message closes the list when it is substantive and room is
+    left: in a short session it is the task.
+
+    Rejected: first plus last three (the defect); a greeting matcher
+    (wording-dependent; length decides as well for "Hallo Session C").
+    """
+    users = [str(u) for u in users or () if str(u or "").strip()]
+    if not users:
+        return "", []
+    task = users[-1][:_CLASSIFIER_TASK_CHARS]
+    room = _CLASSIFIER_USER_CHARS - len(task)
+    earlier: list = []
+    taken = len(users) - 1
+    for i in range(len(users) - 2, -1, -1):
+        if room <= 0 or len(earlier) >= _CLASSIFIER_EARLIER_MSGS:
+            break
+        piece = users[i][:min(_CLASSIFIER_EARLIER_CHARS, room)]
+        earlier.append(piece)
+        room -= len(piece)
+        taken = i
+    first = users[0]
+    if (taken > 0 and room > 0
+            and len(first) >= _CLASSIFIER_SUBSTANTIVE_CHARS):
+        earlier.append(first[:min(_CLASSIFIER_EARLIER_CHARS, room)])
+    return task, earlier
 
 
 def _classifier_action(name: str, args: dict) -> dict:
@@ -16549,9 +16705,10 @@ class _DocToolExecutor:
         if key in state["allowed"]:
             return None
 
+        task, earlier = _classifier_context_users(users)
         context = {
-            "task": users[0][:2000] if users else "",
-            "recent_user": [u[:1000] for u in users[1:][-3:]],
+            "task": task,
+            "recent_user": earlier,
             "recent_calls": list(state["calls"][-6:]),
         }
         state["calls"].append({"tool": base, "args": shown})
@@ -23319,7 +23476,30 @@ class OpenAIClient(_BaseClient):
                     hook()
                 except Exception:
                     pass
+            self._steers_reach_classifier(out)
         return out
+
+    def _steers_reach_classifier(self, steers: list) -> None:
+        """Append delivered steers to the conversation the classifier reads.
+
+        ``classifier_messages`` is bound once per turn to the engine's
+        history, which receives this turn's steers only after the turn
+        has ended; until then an action that a steer asked for was judged
+        against the message before it. The binding is replaced by a new
+        list, so the engine's history is not written. A sub-agent's steer
+        is its parent's text, never the user's, and is not added; a
+        session message delivered as a steer opens with a bracket and is
+        dropped by _classifier_user_texts like any other.
+        """
+        perms = getattr(self, "_permissions", None)
+        if perms is None or int(getattr(perms, "subagent_depth", 0) or 0):
+            return
+        try:
+            bound = list(getattr(perms, "classifier_messages", None) or ())
+            perms.classifier_messages = bound + [
+                {"role": "user", "content": s} for s in steers]
+        except Exception:
+            pass
 
     def _open_task_state(self) -> dict:
         """Tri-state summary of this session's open tasks.

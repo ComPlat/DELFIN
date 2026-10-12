@@ -5286,6 +5286,60 @@ def _build_inline_diff(old: str, new: str, _e, soft_cap: int = 60) -> str:
     )
 
 
+def _skill_patch_card_html(args, tool_output) -> str:
+    """The chat card for one ``skill_propose_patch`` result.
+
+    Input: the call's arguments (``name``, ``old``, ``new``) and the
+    tool's result string. Output: HTML. A result that is a JSON object
+    with ``status == "ok"`` and a non-empty ``proposal`` (the store
+    folder the proposal went to) is drawn as the old -> new diff with
+    that folder named. Every other result (an ``error`` with or without
+    ``findings``, a result that is not JSON, an ``ok`` that names no
+    folder) is one line, "refused", with the reason and no diff: nothing
+    was stored, and a diff reads as a pending change.
+
+    Everything from the arguments and the result is HTML-escaped; the
+    reason is collapsed to one line and cut at 300 characters.
+
+    Rejected: drawing the diff at the call, as the Edit tools do. The
+    call is shown before the executor decides, and a refusal cannot take
+    a drawn diff back.
+    """
+    import json as _json
+
+    _e = _html.escape
+    args = args if isinstance(args, dict) else {}
+    name = _e(" ".join(str(args.get("name") or "").split()))
+    try:
+        got = _json.loads(tool_output) if tool_output else None
+    except (TypeError, ValueError):
+        got = None
+    folder = got.get("proposal") if isinstance(got, dict) else None
+    if (isinstance(got, dict) and got.get("status") == "ok"
+            and isinstance(folder, str) and folder.strip()):
+        return (
+            '<span class="tool-name">Skill patch (proposal)</span>  '
+            f'<span class="tool-path">{name}</span>  '
+            f'<span class="tool-param">stored as {_e(folder)}, '
+            'pending review</span>\n'
+            + _build_inline_diff(str(args.get("old") or ""),
+                                 str(args.get("new") or ""), _e))
+    if isinstance(got, dict):
+        reason = str(got.get("error") or got.get("reason") or "")
+        findings = got.get("findings")
+        if isinstance(findings, list) and findings:
+            reason += " (" + "; ".join(str(f) for f in findings) + ")"
+    else:
+        reason = str(tool_output or "")
+    reason = " ".join(reason.split()) or "no proposal was stored"
+    if len(reason) > 300:
+        reason = reason[:299] + "…"
+    return (
+        '<span class="tool-name">Skill patch refused</span>  '
+        f'<span class="tool-path">{name}</span>  '
+        f'<span class="tool-param">{_e(reason)}</span>')
+
+
 def _record_turn_outcome(
     engine,
     user_task: str,
@@ -18351,6 +18405,8 @@ def create_tab(ctx):
             tool_count = [0]  # mutable counter for tool calls in this turn
             turn_tools: set[str] = set()  # tool names used this turn (verify-guard)
             turn_files: set[str] = set()  # file paths the agent touched (bug report)
+            # (header message, args) per skill_propose_patch call, in order
+            skill_patch_calls: list = []
             _routed_from = [""]  # user's model to restore after routed turn
             last_update = 0.0
             try:
@@ -18619,16 +18675,15 @@ def create_tab(ctx):
                         )
 
                     elif tool_name == "skill_propose_patch":
-                        # A proposal, shown as what it would change. The
-                        # stored text is the active skill with exactly
-                        # this replacement (and the version line bumped).
+                        # The executor has not decided yet: a header
+                        # only. The result handler replaces this line
+                        # with the diff (stored) or the refusal.
                         _append_tool_message(
-                            '<span class="tool-name">Skill patch '
-                            '(proposal)</span>  <span class="tool-path">'
-                            f'{_e(str(parsed.get("name") or ""))}</span>\n'
-                            + _build_inline_diff(
-                                str(parsed.get("old") or ""),
-                                str(parsed.get("new") or ""), _e))
+                            '<span class="tool-name">Skill patch</span>  '
+                            '<span class="tool-path">'
+                            f'{_e(str(parsed.get("name") or ""))}</span>')
+                        skill_patch_calls.append(
+                            (state["chat_messages"][-1], parsed))
 
                     elif tool_name in (
                         "Edit", "Write",
@@ -18928,6 +18983,17 @@ def create_tab(ctx):
                             _shown.add(str(Path(_pl["path"]).resolve()))
                             state["_emitted_artifacts"] = _shown
                             return
+                    if tool_name == "skill_propose_patch":
+                        # Diff only for a stored proposal; the raw result
+                        # still follows as the collapsible detail below.
+                        _calls = skill_patch_calls
+                        _msg, _args = (_calls.pop(0) if _calls
+                                       else (None, {}))
+                        _card = _skill_patch_card_html(_args, tool_output)
+                        if _msg is not None and _msg in state["chat_messages"]:
+                            _msg["content"] = _card
+                        else:
+                            _append_tool_message(_card)
                     if tool_name in ("subagent", "subagent_result", "orchestrate"):
                         output = _subagent_report_text(tool_output)
                         _MAX_LINES = 2000
