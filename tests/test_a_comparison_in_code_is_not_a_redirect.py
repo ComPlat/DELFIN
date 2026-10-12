@@ -56,9 +56,6 @@ SHELL = [
     ('python3 -c "import os; os.system(\'echo x > f\')"', "f"),
     ("python3 -c \"open('f','w')\"", "f"),
 ]
-# Shell redirects only: a write python performs itself after `cd` is not
-# resolved against the cd target by the scanner (a separate open defect).
-SHELL_REDIRECTS = SHELL[:-1]
 
 
 class TestTheScanner:
@@ -98,7 +95,7 @@ class TestItReachesTheGate:
         assert eng._gate_bash_write_targets(
             f"cd {outside} && {cmd}", {}, perms) is None
 
-    @pytest.mark.parametrize("cmd,target", SHELL_REDIRECTS)
+    @pytest.mark.parametrize("cmd,target", SHELL)
     def test_a_shell_redirect_after_cd_outside_is_refused(
             self, executor, cmd, target):
         eng, perms, outside = executor
