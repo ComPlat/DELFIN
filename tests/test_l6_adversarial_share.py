@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 import delfin.agent.skill_share as ss
+from delfin.agent import skill_proposals as sp
 from delfin.agent.skills import discover_skills
 
 
@@ -170,8 +171,19 @@ def test_export_reimport_round_trip_verifies(home, tmp_path):
     assert out == text
     bundle = _bundle_path(tmp_path, "clean-skill")
     info = ss.import_bundle(bundle)
-    assert info["status"] == "verified"
+    # operator L6 F1 ruling (a): an import ARRIVES AS A PROPOSAL. A clean
+    # bundle is stored as a 'pending' proposal (source 'shared'); there is no
+    # separate 'verified' status — a hash mismatch raises and stores nothing.
+    assert info["status"] == "pending"
+    assert info["source"] == "shared"
     assert info["text"] == text
+    # a proposal is on disk but never active: it is pending, never a live skill,
+    # and accept() refuses it at the evidence gate.
+    prop = sp.get_proposal(info["name"])
+    assert prop is not None and prop.status == "pending"
+    assert prop.source == "shared"
+    with pytest.raises(ValueError):
+        sp.accept(info["name"], by="s17-l6-test")
 
 
 def test_import_refuses_a_symlinked_bundle(home, tmp_path):

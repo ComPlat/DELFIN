@@ -58,8 +58,8 @@ def test_clean_import_never_becomes_active(home):
     path.write_bytes(_bundle_bytes("demo", "# demo\n\nClean skill text.\n"))
     out = skill_share.import_bundle(str(path))
     assert out is not None
-    assert out.get("status") == "verified"
-    # a verified import must NOT touch the live skills tree
+    assert out.get("status") == "pending"  # import arrives as a proposal (F1)
+    # a pending proposal must NOT touch the live skills tree
     assert not (home / ".delfin" / "skills" / "demo" / "SKILL.md").exists()
 
 

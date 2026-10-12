@@ -583,6 +583,42 @@ def _prepare_office_fixtures() -> str:
     return reason
 
 
+def _learning_home_checked(learning_home: Path | str) -> Path:
+    """Resolve a learning home and refuse the user's own state.
+
+    Input: the directory a learning measurement keeps the agent's state
+    in. Output: its resolved path. Raises ``ValueError`` when the
+    directory is the user's home (by ``$HOME`` or by the password
+    database) or lies inside the user's ``~/.delfin``: the measurement
+    would then read the user's past and write into their stores, which is
+    what the scratch home exists to prevent.
+    """
+    import os as _os
+    home = Path(learning_home).expanduser().resolve()
+    real_homes = {Path(_os.path.expanduser("~")).resolve()}
+    try:
+        import pwd as _pwd
+        real_homes.add(Path(_pwd.getpwuid(_os.getuid()).pw_dir).resolve())
+    except Exception:
+        pass
+    for real in real_homes:
+        real_state = real / ".delfin"
+        if home == real or home == real_state or real_state in home.parents:
+            raise ValueError(
+                f"learning home {home} is the user's own state ({real}); "
+                "a learning measurement needs a directory of its own")
+    return home
+
+
+def learning_state_id(learning_home: Path | str) -> str:
+    """Stable id of a learning home, stored on every run record made under
+    it: the first 16 hex digits of the SHA-1 of its resolved path. The path
+    itself is not stored, so a run file does not carry a home directory."""
+    import hashlib
+    resolved = str(Path(learning_home).expanduser().resolve())
+    return hashlib.sha1(resolved.encode("utf-8")).hexdigest()[:16]
+
+
 class _PristineWorkspace:
     """Snapshot/restore guard for the fixture workspaces (a dir that does not
     exist under the current working directory is skipped), and a blank
@@ -594,7 +630,8 @@ class _PristineWorkspace:
     all -- silently, at the one moment the caller most needed to hear it.
     """
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, root: Path | None = None, *,
+                 learning_home: Path | str | None = None) -> None:
         import os as _os
         base = root or Path(_os.getcwd())
         self._bases = [base / rel for rel in _BEHAVIOR_WS_RELS]
@@ -613,6 +650,14 @@ class _PristineWorkspace:
         # wording of a different task's prompt that way (2026-09-10).
         # Redirecting also removes the one window the restore had, where
         # the real store was emptied and copied back.
+        #
+        # ``learning_home`` replaces the fresh scratch home with a kept one
+        # for a learning measurement: the attempt reads what an earlier
+        # attempt under the same directory left and its own writes stay
+        # there for the next. Still nobody's past -- the directory belongs
+        # to the measurement, and the user's real home is refused.
+        self._learning_home = (_learning_home_checked(learning_home)
+                               if learning_home is not None else None)
         self._scratch_home: Path | None = None
         self._redirect = None
         self._pairs: list[tuple[Path, Path]] = []
@@ -623,9 +668,15 @@ class _PristineWorkspace:
         import tempfile
 
         from . import state_paths as _sp
-        self._scratch_home = Path(tempfile.mkdtemp(prefix="bench-home-"))
+        if self._learning_home is not None:
+            (self._learning_home / ".delfin").mkdir(parents=True,
+                                                    exist_ok=True)
+            home = self._learning_home
+        else:
+            home = Path(tempfile.mkdtemp(prefix="bench-home-"))
+            self._scratch_home = home
         self._redirect = _sp.RedirectedUserState(
-            self._scratch_home, keep=_sp.KEPT_BY_A_LIVE_RUN)
+            home, keep=_sp.KEPT_BY_A_LIVE_RUN)
         self._redirect.__enter__()
 
     def _leave_scratch_home(self) -> None:
@@ -842,6 +893,7 @@ def _run_task_once(
     max_tokens: int,
     run_once: Callable[..., dict],
     clock: Callable[[], float],
+    learning_home: Path | None = None,
 ) -> BenchmarkResult:
     """Single attempt — kept private so retry-aggregation logic lives
     in one place at the public ``run_task`` entry."""
@@ -878,7 +930,7 @@ def _run_task_once(
     verify_ok: "Optional[bool]" = None
     verify_output = ""
     try:
-        with _PristineWorkspace():
+        with _PristineWorkspace(learning_home=learning_home):
             _ws = workspace_for(Path(os.getcwd()), mode=task.mode,
                                 task_class=task.task_class)
             _seed_fixture_memories(Path(os.getcwd()), _ws)
@@ -1167,8 +1219,18 @@ def run_task(
     run_once: Callable[..., dict] | None = None,
     clock: Callable[[], float] | None = None,
     on_replicate: Callable[[int, BenchmarkResult], None] | None = None,
+    learning_home: Path | str | None = None,
 ) -> BenchmarkResult:
     """Execute one task and return a scored result.
+
+    ``learning_home`` (a learning measurement, PREREG_W15.md): replicate
+    ``k`` runs under ``<learning_home>/<task id>/replicate-<k>``, a home
+    that is kept, so the same call made again later -- the second arm --
+    continues each lineage where the first arm left it. Replicates within
+    one call stay independent of each other. ``None`` (default): every
+    attempt runs under a fresh scratch home that is deleted afterwards.
+    The result carries :func:`learning_state_id` of ``learning_home`` in
+    ``learning_state`` (empty without one).
 
     ``repeats=1`` (default): single sample, returned as-is.
     ``repeats>1``: run the task N times against a FRESH engine each time
@@ -1193,6 +1255,8 @@ def run_task(
     _prepare_office_fixtures()
 
     n = max(1, int(repeats))
+    base = (_learning_home_checked(learning_home)
+            if learning_home is not None else None)
     replicates: list[BenchmarkResult] = []
     for i in range(n):
         r = _run_task_once(
@@ -1200,6 +1264,8 @@ def run_task(
             model=model, backend=backend, provider=provider,
             profile_name=profile_name, engine_factory=factory,
             max_tokens=max_tokens, run_once=run_once, clock=now,
+            learning_home=(base / task.id / f"replicate-{i + 1}"
+                           if base is not None else None),
         )
         replicates.append(r)
         if on_replicate is not None:
@@ -1209,9 +1275,13 @@ def run_task(
                 pass
 
     if n == 1:
-        return replicates[0]
-    from .benchmark import aggregate_replicates
-    return aggregate_replicates(replicates)
+        result = replicates[0]
+    else:
+        from .benchmark import aggregate_replicates
+        result = aggregate_replicates(replicates)
+    if base is not None:
+        result.learning_state = learning_state_id(base)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1330,6 +1400,7 @@ def run_suite(
     progress: Callable[[Task, BenchmarkResult], None] | None = None,
     on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,
     run_once: Callable[..., dict] | None = None,
+    learning_home: Path | str | None = None,
 ) -> list[BenchmarkResult]:
     """Run every task and return scored (optionally aggregated) results.
 
@@ -1337,7 +1408,7 @@ def run_suite(
     N times; the returned list still has one entry per task with the
     aggregate stats.  ``progress`` fires once per task with the final
     aggregated result; ``on_replicate`` fires for each individual
-    sample as it lands.
+    sample as it lands. ``learning_home`` is forwarded to ``run_task``.
     """
 
     import os as _os
@@ -1351,7 +1422,8 @@ def run_suite(
             tasks, model=model, backend=backend, provider=provider,
             profile_name=profile_name, engine_factory=engine_factory,
             max_tokens=max_tokens, repeats=repeats, progress=progress,
-            on_replicate=on_replicate, run_once=run_once, root=_root)
+            on_replicate=on_replicate, run_once=run_once, root=_root,
+            learning_home=learning_home)
 
 
 def _run_suite_locked(
@@ -1368,6 +1440,7 @@ def _run_suite_locked(
     on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,
     run_once: Callable[..., dict] | None = None,
     root: Path | None = None,
+    learning_home: Path | str | None = None,
 ) -> list[BenchmarkResult]:
     """The suite body, under the fixture lock."""
     _root = Path(root) if root is not None else Path(os.getcwd())
@@ -1390,6 +1463,7 @@ def _run_suite_locked(
             max_tokens=max_tokens, repeats=repeats,
             run_once=run_once,
             on_replicate=per_task_replicate,
+            learning_home=learning_home,
         )
         out.append(result)
         if progress is not None:

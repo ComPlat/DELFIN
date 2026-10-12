@@ -1408,8 +1408,8 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     #
     # MEASURED 27.08. with TWO independent instruments:
     #   build side     534 systems with >=2 foldable rings -> 371 (69.5 %) with orbit
-    #   crystal side  (CCDC clean_v2, DELFIN-independent)
-    #                1757 with >=2 folded rings -> 1393 (79.3 %) with orbit
+    #   crystal side  (crystal structures, DELFIN-independent): the same holds, a
+    #                clear majority of multi-ring systems has such an orbit
     #
     # THE ACTUAL GAIN IS NOT COMPUTE TIME BUT COVERAGE.  The cap
     # thirty lines further down (`combos[:budget]`) cuts off by fold depth

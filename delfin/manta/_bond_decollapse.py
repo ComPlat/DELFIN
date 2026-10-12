@@ -64,18 +64,14 @@ _NONBOND_FLOOR = 0.78   # non-bonded heavy pair < this·Σcov → push apart
 # converter_backend._coll_floor, as the default of assemble_complex._collapsed_heavy_bonds_strict)
 # and was thus neither findable nor measurable.  Default unchanged 0.82 -> byte-identical.
 #
-# WHY IT NEEDS TO BE MEASURED.  Measured on 11.08. on 8974 CCDC crystals with 287043
-# heavy-atom bonds (radii and bond detection exactly as here):
-#     distribution d/Sigma_cov   p0.1 = 0.768   p1 = 0.808   median 0.919   minimum 0.511
-# The self-gate rejects an ENTIRE config as soon as ONE bond lies below it.  Counted per
-# crystal that means:
-#     floor 0.82 -> 1558 of 8974 crystals affected = 17,4 %
-#           0.78 ->  549 = 6,1 %      0.75 -> 77 = 0,9 %      0.72 -> 34 = 0,4 %
-# The floor would thus reject every sixth EXPERIMENTALLY DETERMINED crystal as collapsed
-# -- against the standing rule that the eye stays silent on clean CCDC structures.  Two
-# independent measurements from the same week fit this: 94,5 % of ALL self-gate
-# rejections are COLLAPSED_BOND, and 193 of 996 systems die on this one number.
-# 17,4 % against 19,4 % -- that matches.
+# WHY IT NEEDS TO BE MEASURED.  Measured on 11.08. on clean crystal structures (radii and
+# bond detection exactly as here), the distribution of d/Sigma_cov over heavy-atom bonds
+# has a lower tail that reaches below 0.82.  The self-gate rejects an ENTIRE config as soon
+# as ONE bond lies below it, so the floor would reject a noticeable share of
+# EXPERIMENTALLY DETERMINED crystals as collapsed -- against the standing rule that the eye
+# stays silent on clean crystal structures.  An independent measurement from the same week
+# fits this: almost all self-gate rejections are COLLAPSED_BOND, at a rate of the same
+# order as the share of crystals the floor would hit.
 #
 # ⚠ AND THE CODE CONTRADICTED ITSELF: refine.py:93 builds against _COLLAPSE = 0.70, the
 # non-bond floor here stands at 0.78, judgement was passed with 0.82.  The builder was
@@ -92,10 +88,10 @@ _NONBOND_FLOOR = 0.78   # non-bonded heavy pair < this·Σcov → push apart
 # therefore needs a BOOLEAN axis -- otherwise the value would have to stand in BOTH arms,
 # and that is exactly where cap10swingunion failed ("UNDECLARED AXIS: both arms carry
 # it, the A/B cannot see it").
-#   DELFIN_FFFREE_COLLAPSE_FLOOR_CAL=1    -> the crystal-calibrated floor 0.75  (A/B axis)
+#   DELFIN_FFFREE_COLLAPSE_FLOOR_CAL=1    -> the lower candidate floor 0.75  (A/B axis)
 #   DELFIN_FFFREE_COLLAPSE_FLOOR=<number> -> overrides both  (manual sweep)
-# 0.75 is not chosen freely: it is the threshold with 0,9 % false positives on the 8974
-# crystals AND at the same time the lower bound of the distortion band in refine.py:139
+# 0.75 is not chosen freely: it hits almost no clean crystal structure
+# AND is at the same time the lower bound of the distortion band in refine.py:139
 # (dev < -0.25).  At this value the code says the same thing in three places.
 _CAL = os.environ.get("DELFIN_FFFREE_COLLAPSE_FLOOR_CAL", "0") == "1"
 try:
@@ -154,7 +150,7 @@ _AROM_M_COORD_DIST = 2.6    # atom within this of a metal counts as coordinated;
                             # aromatic-retargeted (LUMTAP never-worse scope)
 
 # Iter 31 (aromatic bond-length ROOT seat, DELFIN_FFFREE_AROM_SEAT): when on, the
-# per-bond SPRING TARGET of this final decollapse pass uses the delocalised CCDC
+# per-bond SPRING TARGET of this final decollapse pass uses the delocalised
 # aromatic length for bonds KNOWN to be aromatic ring bonds, so the spring cannot
 # re-elongate an aromatic ring bond that refine/UFF already seated back toward the
 # single-bond covalent sum (~1.52 for C–C).  Default OFF → byte-identical.  ONLY
@@ -211,7 +207,7 @@ def _norm_iso(sym: str) -> str:
     and all queries `syms[i] == 'H'` (H parent assignment, vdW counting, angle gate,
     collapse counting) missed it.  A D atom thus counted as a HEAVY ATOM with an
     invented radius: it attracted phantom bonds and triggered collapse findings that
-    are not real.  Affected: 219 of 307370 crystals.
+    are not real.  Affected: a small number of deuterated crystal structures.
 
     ⚠ The OUTPUT stays untouched: the reassembly below writes `p[0]`, i.e. the
     ORIGINAL SYMBOL from the input line.  A D does not become an H here, it is only
@@ -409,7 +405,7 @@ def _aromatic_ring_bonds(syms, P, bonds) -> set:
                     lens.append(float(np.linalg.norm(P[i] - P[j])))
                     edges.append((i, j))
         # ONE SOURCE (see import above): switch OFF = old comparison
-        # ``mittel >= 1.46``, switch ON = mean of d/(r_i+r_j) >= 0.939.
+        # ``mittel >= 1.46``, switch ON = mean of d/(r_i+r_j) >= the supplied ratio threshold.
         if not lens or ring_rejected_by_length(syms, edges, lens):
             continue                       # saturated / non-aromatic ring
         for (i, j) in edges:
@@ -517,7 +513,7 @@ def _count_h_planar_viol(syms, P) -> int:
 
 
 def _count_bond_distort(syms, P, bonds) -> int:
-    """F3_bond proxy — heavy-heavy bonds whose length deviates outside the CSD
+    """F3_bond proxy — heavy-heavy bonds whose length deviates outside the
     band [-0.25, +0.085] of the element-pair ideal (matches the _violations
     distort band).  The decollapse moves non-frozen atoms to fix collapse but
     can stretch/compress other bonds out of band; this lets the acceptance gate
