@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from . import agent_metrics as _agent_metrics
 from .api_client import StreamEvent, create_client
-from .harness_rows import HARNESS_KEY, HarnessRow, HarnessText
+from .harness_rows import HARNESS_KEY, HarnessRow, HarnessText, is_harness_row
 from .prompt_loader import AVAILABLE_ON_DEMAND, PromptLoader
 
 
@@ -385,15 +385,17 @@ def _content_parts(content) -> list:
 def _merge_user_rows(older: dict, newer: dict) -> dict:
     """One user row holding ``older`` then ``newer``, both intact.
 
-    Input: two consecutive ``user`` rows. Output: a new plain dict; the
-    inputs are not modified. String contents are joined with a blank
-    line (an empty part adds nothing); when either content is a list of
-    parts (text + image), the result is the concatenated part list with
-    a string side wrapped as one text part. Keys of ``newer`` win over
-    keys of ``older``, except ``_harness``: the merged row carries it
-    only when both rows did, so a typed part is never relabelled as
-    harness text. A plain dict is returned even for dict subclasses, so
-    a row-type mark is not inherited from one side either.
+    Input: two consecutive ``user`` rows of the same author, both typed
+    or both harness (``harness_rows.is_harness_row``); the caller keeps a
+    typed and a harness row apart. Output: a new plain dict; the inputs
+    are not modified. String contents are joined with a blank line (an
+    empty part adds nothing); when either content is a list of parts
+    (text + image), the result is the concatenated part list with a
+    string side wrapped as one text part. Keys of ``newer`` win over keys
+    of ``older``. Two harness rows give a row with ``HARNESS_KEY`` set,
+    whichever carrier marked them (``HarnessRow``, ``HarnessText``
+    content, ``origin == "event"``): the history keeps the key form,
+    which survives a JSON save.
 
     Rejected: keeping the newer row (lost the typed steer that a
     harness note followed in the same drain); keeping both separate in
@@ -407,10 +409,8 @@ def _merge_user_rows(older: dict, newer: dict) -> dict:
         merged["content"] = "\n\n".join(
             s for s in ("" if a is None else str(a),
                         "" if b is None else str(b)) if s)
-    if older.get("_harness") and newer.get("_harness"):
-        merged["_harness"] = True
-    else:
-        merged.pop("_harness", None)
+    if is_harness_row(older):
+        merged[HARNESS_KEY] = True
     return merged
 
 
@@ -5074,12 +5074,15 @@ class AgentEngine:
         structural issues.  This removes duplicates and ensures the
         conversation can be sent to the API without errors.
 
-        Consecutive user rows are merged into one (``_merge_user_rows``),
-        never dropped: a steer typed into a running turn is followed by
-        harness rows (job notes, run notes, steering blocks) from the same
-        drain, and keeping only the newer row removed the typed text from
-        every later request and saved session. Consecutive assistant rows
-        keep the newer one. A history without consecutive same-role rows
+        Consecutive user rows are never dropped: a steer typed into a
+        running turn is followed by harness rows (job notes, run notes,
+        steering blocks) from the same drain, and keeping only the newer
+        row removed the typed text from every later request and saved
+        session. Two typed or two harness rows are merged into one
+        (``_merge_user_rows``; a harness merge keeps the mark). A typed
+        and a harness row are kept apart with an assistant filler, each
+        with its own mark (harness_rows), so the harness part never reads
+        as the user's words. Consecutive assistant rows keep the newer one. A history without consecutive same-role rows
         is left as the same list of the same objects, so its request bytes
         (and the prefix cache) do not change.
 
@@ -5115,6 +5118,18 @@ class AgentEngine:
                         "content": "[alternation filler - pinned message "
                                    + ("above" if older_pinned else "below")
                                    + " kept verbatim]",
+                    })
+                    cleaned.append(msg)
+                elif role == "user" and (
+                        is_harness_row(cleaned[-1]) != is_harness_row(msg)):
+                    # Typed and harness text are not merged: one plain
+                    # row would hand the harness part to every reader
+                    # of the user's words, one marked row would hide the
+                    # typed part from them. Both stay, each with its mark.
+                    cleaned.append({
+                        "role": "assistant",
+                        "content": "[alternation filler - the user's message "
+                                   "and the harness note are kept apart]",
                     })
                     cleaned.append(msg)
                 elif role == "user":
