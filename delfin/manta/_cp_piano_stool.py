@@ -135,7 +135,7 @@ _ETA5_TARGET_MC_FALLBACK: float = 1.85
 
 # Ring-detection thresholds.
 #
-# Real Cp piano-stool M-C distances in CCDC averages are ~2.0–2.4 Å, with
+# Typical Cp piano-stool M-C distances are ~2.0–2.4 Å, with
 # all 5 carbons within ±0.2 Å of each other when the binding is intact.
 # UFF can distort this — one or two carbons may drift to ~2.7–3.0 Å — but
 # if more than one carbon is past 3 Å (or the mean is past 2.7 Å) the

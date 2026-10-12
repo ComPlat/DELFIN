@@ -111,9 +111,9 @@ _CHAMPION_FLAGS = (
                           # its 'realisation' was on a broken frame; firing-side kept -- FONKOL still fires).
                           # Env DELFIN_FFFREE_CN6_OH_ADD; impl smiles_converter energy-outlier-cut root (keep
                           # inf-energy topo-valid isomer primaries; VOYWUD 6->5->6).
-    "AROM_SEAT",          # #21: construction-time FREE-aromatic bond-length seat toward the CCDC delocalised
-                          # targets (C-C 1.387 / C-N 1.349 / C-O 1.369 / C-S 1.732 / N-N 1.364 = the eye's
-                          # org_prior "ar" mu).  refine() aromatic-aware (coordinated ring SYSTEMS EXCLUDED ->
+    "AROM_SEAT",          # #21: construction-time FREE-aromatic bond-length seat toward the delocalised
+                          # targets of delfin.fffree.aromatic_bond_targets (CSD-derived until their COD
+                          # re-derivation lands, see delfin/manta/PROVENANCE.md).  refine() aromatic-aware (coordinated ring SYSTEMS EXCLUDED ->
                           # coordination byte-identical, never-worse by construction) + UFF AddDistanceConstraint
                           # on the metal-free path + bond_decollapse target.  landed 2026-07-17 (night):
                           # class:sigma_coord:100 never-worse (n=3 affected, cap_LOST=0, mean -13.5) + full:120
@@ -254,9 +254,9 @@ _CHAMPION_FLAGS = (
                           #
                           # SCOPE, and why it does not come from the code comment: the lever fired on
                           # EVERY CN6 system.  Its rationale names "early-TM Mo/W", but the CRYSTALS
-                          # say otherwise -- of 210 CN6 crystals in the 1000-pool, 8 are
-                          # trigonal-prismatic, and their metals are Zr 2, Co 2, Zn 1, Ti 1, Fe 1,
-                          # Cu 1.  The prism is forced by the LIGAND (clathrochelates, dithiolenes),
+                          # say otherwise -- only a few CN6 crystals in the 1000-pool are
+                          # trigonal-prismatic, and their metals are mixed (Zr, Co, Zn, Ti, Fe,
+                          # Cu).  The prism is forced by the LIGAND (clathrochelates, dithiolenes),
                           # not by the metal.  TPR6_EARLY_TM nevertheless restricts to d0-d2 of
                           # groups 3-7: element-based, universal, no SMILES and no refcode -- and
                           # MEASURED better than without (without the restriction tier2 broke on 2

@@ -163,7 +163,7 @@ def _verify_topology_from_graph(
         # Rule 1 (universal graph invariance, three-cutoff).
         # Element-agnostic coordination-sphere check using the
         # standard covalent-radii sum (r_cov_M + r_cov_X) AND
-        # CSD-calibrated M-L ideal lengths for the lower bound:
+        # the M-L reference lengths of the lookup table for the lower bound:
         #
         # * SMILES-bonded atoms:
         #   - Upper bound: d <= 1.35 x (r_cov_M + r_cov_X)
@@ -245,7 +245,7 @@ def _verify_topology_from_graph(
                             _violation = True
                             break
                         # Lower bound: reject collapsed M-L bonds
-                        # (ratio < 0.70 vs CSD ideal).  Use the
+                        # (ratio < 0.70 vs the table ideal).  Use the
                         # lookup-table ideal, not covalent sum.
                         try:
                             _ml_ideal = float(
