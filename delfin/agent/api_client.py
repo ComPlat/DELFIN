@@ -20343,6 +20343,7 @@ class _DocToolExecutor:
             return json.dumps({
                 "status": "ok",
                 "proposed": got["name"],
+                "proposal": got.get("proposal") or got["name"],
                 "base_version": got["base_version"],
                 "new_version": got["new_version"],
                 "proposal_status": got["status"],
@@ -20365,6 +20366,7 @@ class _DocToolExecutor:
         return json.dumps({
             "status": "ok",
             "proposed": out["name"],
+            "proposal": out.get("proposal") or out["name"],
             "base_version": out["base_version"],
             "new_version": out["new_version"],
             "proposal_status": out["status"],

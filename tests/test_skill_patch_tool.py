@@ -41,7 +41,8 @@ class StandInProposals:
         self.proposals = []
         self.accepted = []
 
-    def propose(self, name, text, *, evidence, source, base_version=""):
+    def propose(self, name, text, *, evidence, source, base_version="",
+                reason=""):
         rec = {"name": name, "text": text, "evidence": evidence,
                "source": source, "base_version": base_version,
                "status": "pending"}

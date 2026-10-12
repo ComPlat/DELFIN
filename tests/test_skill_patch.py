@@ -44,7 +44,8 @@ class FakeProposals:
     def __init__(self):
         self.calls = []
 
-    def propose(self, name, text, *, evidence, source, base_version=""):
+    def propose(self, name, text, *, evidence, source, base_version="",
+                reason=""):
         self.calls.append({
             "name": name, "text": text, "evidence": evidence,
             "source": source, "base_version": base_version,
