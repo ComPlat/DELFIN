@@ -1,17 +1,15 @@
-# L5: does a second run of the same task do better than the first?
+# Learning tasks: does a second run of the same task do better than the first?
 #
-# Pre-registered in PREREG_W15.md. The four tasks below are the real-run
-# scenarios for the OPERATOR; each is the SAME task id run twice across two
-# benchmark runs (`bench run --task <id> --repeats N` in run A, again in
-# run B, same model, separated in time so a skill/memory can persist). The
-# runner hook (a .gate patch, phase 3) calls
-# delfin.agent.pack.benchmark.learning_metric.learning_verdict on the two
-# run records and reports whether the second run is faster and still correct.
+# Design and decision rule: PREREG_W15.md. Each task is run in two arms,
+# `delfin-agent bench run --task <id> --repeats 5 --learning-home DIR`
+# twice with the same DIR and model; replicate k of the second arm reads the
+# state replicate k of the first arm left. benchmark.compare_learning pairs
+# the two run files and learning_metric.learning_verdict decides per task.
 #
-# Each setup plants material a learned skill or remembered fact makes cheaper
-# to reach the second time; the first run must discover it by tool calls.
-# Setup/accept scripts for these tasks are added as a .gate patch (they live
-# in the read-only setup/ and accept/ directories).
+# Each setup plants material the first run has to find by tool calls and
+# that a memory or session from the first run makes cheaper to reach. Each
+# answer is a file in the task's fixture folder, judged by value by its
+# acceptance script.
 
 # --- Pair 1: remembering the exact path + unit saves read-and-guess calls ---
 - id: l5_read_the_value_from_file

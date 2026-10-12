@@ -231,7 +231,7 @@ def test_the_counts_still_match_what_was_measured():
     # has a setup script and writes only into its fixture workspace.
     #
     # science 20 -> 22 and other 50 -> 52 on 2026-10-12: the four
-    # pre-registered learning tasks (tasks_w15_learning.yaml, wave 15b, L5).
+    # pre-registered learning tasks (tasks_w15_learning.yaml).
     # Two are classed science, the two office-like ones fall under other.
     # Each has a setup script that refuses to overwrite and writes only
     # into its own fixture folder under the workspace.

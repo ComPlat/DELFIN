@@ -1,164 +1,173 @@
-# PREREG_W15: pre-registered benchmark rules for package L5 — does DELFIN learn?
+# PREREG_W15: does a second run of a task do better than the first?
 
-Written before any measurement. The learning metric, the threshold and the
-task pairs below are fixed here and only here; a later change to any of them
-is a deviation and is reported as such, never silently re-scored.
+Fixed before any measurement; no run against a model has been made. The
+design, the decision rule and the tasks are fixed here; a later change to
+any of them is a deviation and is reported as one, never silently
+re-scored. Changes made before the first run are listed at the end.
 
-## What the metric measures
+## Question
 
-Wave 15a built a learning loop (skill use counted with its outcome, a
-correction proposes a skill patch, a user model, cross-session search), but
-nothing measures whether a **second run of the same task** is better than the
-first. `learning_metric` is that instrument: a pure function from two run
-records of the same task to a verdict.
+DELFIN keeps state between sessions: memory stores, the session store
+(cross-session search), the outcome history quoted in the session
+briefing, the skill use ledger, skill proposals and the user model. Does a
+second run of the same task, made after a first run whose state it can
+read, do measurably less work while staying correct?
 
-A run record is one JSONL row as written by `write_run`
-(`delfin/agent/benchmark.py:2099`) — `asdict(BenchmarkResult)`
-(`benchmark.py:410`). The record has NO "rounds" and NO "questions" counter;
-the honest per-run efficiency proxies are:
+## Design
 
-| field | proxy for |
+**Arms.** Run A, then run B, each the same command:
+
+```
+delfin-agent bench run --model M --repeats 5 --learning-home DIR \
+    --task <the four task ids below and the two smoke task ids>
+```
+
+Same model `M`, same profile, same `DIR`, same code revision. The code
+revision is not stored in the run record; whoever runs the measurement
+records `git rev-parse HEAD` beside both run files, and a pair made on two
+revisions is not a result.
+
+**Lineages.** Replicate *k* of task *T* runs under `DIR/T/replicate-k`, a
+home every user-state sink is redirected to (`RedirectedUserState`) and
+that is kept after the attempt. Replicate *k* of run B therefore continues
+exactly the state replicate *k* of run A left; replicates within one arm
+share nothing. N = 5 replicates per arm are five independent
+first/second pairs. `DIR` may not be the user's home or lie inside the
+user's `~/.delfin`; the user's own state is neither read nor written.
+
+**What can carry over.** Whatever the agent writes to its state under
+`DIR`: memories, sessions (and with them session search), outcome
+history (the briefing), skill use. A skill proposal is written but not
+accepted automatically, so a proposed skill patch does not reach run B.
+
+**Null control (A/A).** Two further runs A' and B' of the same command
+under two different, empty learning homes `DIR1` and `DIR2`, compared with
+`compare_learning(A', B', require_shared_state=False)`. Nothing can carry
+over between them. Expected: no `learned` and no `regressed` on any of the
+four tasks. Every one that appears is a false positive of the instrument
+and is reported beside the main result; two or more in the control mean
+the main result is not interpreted.
+
+## The record
+
+A run record is one JSONL row as written by `benchmark.write_run`
+(`asdict(BenchmarkResult)`). For a task run with `--repeats N` it is the
+aggregate of the N replicates; the fields read are:
+
+| field | meaning |
 |---|---|
-| `tool_calls` (int) | effort — fewer is better |
-| `input_tokens` + `output_tokens` (int) | cost of thought — fewer is better |
-| `duration_s` (float) | wall clock — fewer is better |
-| `cost_usd` (float) | real spend — fewer is better |
-| `success` (bool), `quality_0_100` (int), `verify_ok` (bool~None) | correctness — must not regress |
+| `n_samples` (int) | N, replicates aggregated into the row |
+| `per_run_tool_calls`, `per_run_tokens_total` (N ints each) | counted work per replicate; `tokens_total = input_tokens + output_tokens` |
+| `tool_calls`, `input_tokens`, `output_tokens` (int) | medians over the replicates; reported |
+| `duration_s`, `cost_usd` (numbers) | median wall clock, summed price; reported, never decide |
+| `success` (bool, majority of replicates), `quality_0_100` (int), `verify_ok` (bool or None) | correctness |
+| `model`, `profile_name`, `mode`, `learning_state` | what the pair must hold fixed |
 
-The metric does **not** invent a missing field. `rounds` and `questions` are
-not in the record, so the metric never reads them.
+`learning_state` is the first 16 hex digits of the SHA-1 of the resolved
+learning home; empty for a run without `--learning-home`.
 
-## The function
+## Decision rule
 
-```
-delfin.agent.pack.benchmark.learning_metric.learning_verdict(first: dict,
-                                                             second: dict) -> dict
-```
+`learning_metric.learning_verdict(first, second)`, applied per task to
+the last row of the task in run A and in run B:
 
-Both inputs are run records of the SAME task (`task_id` must match). The
-CALLER decides which record is first and which is second: two rows from one
-run file are replicates of one snapshot and are NOT a learning comparison;
-first-vs-second requires two runs separated in time (two run files). The
-metric is time-agnostic and pure — it cannot tell the caller's intent apart,
-so this pairing rule lives in the caller (the runner hook, phase 3).
+1. **error** when either record is unreadable: not a dict, `unmeasured`
+   True, blank `task_id`, the two task ids differ, `success` not a bool,
+   any count missing, mistyped or negative, `duration_s` or `cost_usd`
+   not a number, `n_samples < 5`, or a per-run list that is not
+   `n_samples` non-negative ints. N = 1 is not evidence.
+2. **wrong** when the second run is not correct: `success` False, or
+   `verify_ok` False. `verify_ok` None is neither a pass nor a fail.
+   `quality_0_100` alone does not change the verdict.
+3. Otherwise, per counted field (`tool_calls`, `tokens_total`):
+   *better* when every second-arm replicate is below every first-arm
+   replicate (`max(second) < min(first)`), *worse* when every one is above
+   (`min(second) > max(first)`). A shared value is not a separation.
+   - **regressed**: at least one field worse;
+   - **learned**: at least one field better and none worse;
+   - **no_learning**: neither field separates.
 
-Return value: `{"verdict": <str>, "evidence": {...}, "error": <str|None>}`
-with `verdict` one of:
+Under no effect, with exchangeable samples and no ties, a given field
+separates in a given direction with probability 1 / C(10, 5) = 1/252 at
+N = 5 per arm; `learned` by chance on one task therefore has probability
+at most 2/252 (two fields). Ties make separation rarer.
 
-- **`error`** — the input could not be compared. Mirrors the guards below;
-  `error` carries the reason.
-- **`wrong`** — the second run did NOT achieve correctness while the first
-  did, OR the second run was incorrect in a case that must not become a
-  pass. **Correctness dominates: a second run that is faster but wrong is a
-  fail whatever it saved.**
-- **`learned`** — second is correct, correctness did not regress, and at
-  least one efficiency proxy strictly improved with none worsening.
-- **`no_learning`** — second is correct, correctness did not regress, and
-  every efficiency proxy is equal to the first (a tie is NOT learning).
-- **`regressed`** — second is correct, correctness did not regress, but at
-  least one efficiency proxy strictly worsened with none improving (slower /
-  more calls / more tokens than the first).
+Calibration on existing data (before any learning run): 65 disjoint
+5-versus-5 windows of successful N = 1 rows of one task and one model from
+the run files on the development machine, none with a learning setup.
+Strict inequality on the medians gave 39 learned, 26 regressed,
+0 no_learning; separation gave 1 learned, 1 regressed, 63 no_learning.
+Some of those windows span code changes, so the two separations are an
+upper bound on the rule's false-positive rate for identical code. Across
+204 task/model groups the coefficient of variation of `tool_calls` has
+median 0.37 (10th-90th percentile 0.0-1.25) and of `tokens_total` 0.33
+(0.01-0.67); one relative band for all tasks was rejected for that
+reason.
 
-## Input guards (fixed, enforced by the metric)
+## Pairing
 
-1. **Same task.** `first["task_id"]` must equal `second["task_id"]`; else
-   `error`.
-2. **Correctness present and non-null.** `success` (bool) and
-   `quality_0_100` (int) must be present on BOTH records and respectively
-   bool and int; a missing field is `error`, never a silent zero.
-   `verify_ok` is read only when present (`None` is legitimate when a task
-   has no accept script).
-3. **No unmeasured run counts as a measurement.** A record with
-   `unmeasured` True (the request never reached the model) is `error` on
-   either side — booking a non-run as a slower run would poison the verdict.
-4. **Efficiency fields present and numeric.** `tool_calls`, `input_tokens`,
-   `output_tokens` must be present and int on both records; `duration_s`
-   float. A missing or unknown field is `error`, never a silent zero.
-5. **Unknown field → error.** The metric validates every field it reads; a
-   record it cannot read cannot be compared.
+`benchmark.compare_learning(run_a, run_b)` compares a task only when the
+two rows have the same non-empty `model`, the same `profile_name` and
+`mode`, and the same non-empty `learning_state`; any difference is an
+`error` row naming the field. `require_shared_state=False` drops only the
+`learning_state` condition and is used for the null control only. A task
+present in one run only is listed as `only_in_a` / `only_in_b` and not
+judged.
 
-## The threshold and how "better" is decided
+## Tasks (four)
 
-The **exact** economy set, no weighting: `{tool_calls, tokens_total,
-duration_s, cost_usd}` where `tokens_total = input_tokens + output_tokens`
-(the record carries them separately, `BenchmarkResult:432-433`). Each proxy
-is compared independently against the first run — there is no weighted sum
-and no "trust my judgement" term; the metric reads exactly these four and
-nothing else. Because each proxy is compared on its own, there is no
-tie-break to choose: a proxy is `better` (strictly less), `worse` (strictly
-more) or `equal`.
+Each answer is a file in the task's fixture folder; each acceptance
+script judges the file by value and starts red on an untouched fixture.
 
-Second run **learned** iff: `second.success is True`, correctness did not
-regress, and every one of the four proxies is `<` or `==` the first's with
-**at least one strictly `<`**. Equality on all four is `no_learning`.
-Any strictly-worse proxy with none strictly-better is `regressed`. Mixed (at
-least one better AND at least one worse) is `regressed` — a
-partially-faster-but-partially-slower run is not clean learning.
-
-The threshold is per-proxy strict inequality and nothing else: a proxy is
-`better` when the second run is strictly smaller than the first (`b < a`),
-`worse` when strictly larger (`b > a`); there is NO percentage floor and no
-minimum improvement — a one-unit improvement on one proxy with the other
-three equal counts as `learned`, and a one-unit worsening with the rest
-equal counts as `regressed`. A run that improves one proxy but worsens
-another is `regressed`, because clean learning requires every proxy at or
-better than the first run.
-
-Correctness is decided before any economy proxy is read:
-
-- `second.success is False` → **`wrong`** regardless of efficiency.
-- `second.verify_ok is False` → **`wrong`** regardless of efficiency and
-  regardless of `success` (the artifact failed verification).
-- `verify_ok is None` (no verify script ran) is NOT a correctness signal —
-  it is never scored as a pass and never as a fail. A run with
-  `verify_ok=None` contributes "no regression proven", not "correct".
-- `quality_0_100` alone does not flip the verdict unless it crosses the
-  `success` gate.
-
-## Task pairs (four, fixed here)
-
-Each pair is the SAME task run twice across two benchmark runs (`bench run
---task <id> --repeats N` in run A, again in run B, same model, N=5 each,
-separated in time so a skill/memory can persist). The setup plants material a
-learned skill or remembered fact makes cheaper to reach the second time; the
-first run must discover it by tool calls. These are real-run scenarios for
-the operator — the metric itself is unit-tested against constructed records.
-
-| pair (task id) | what a skill/memory makes cheaper the 2nd time | expected effect |
+| task id | what state from run A can make cheaper | acceptance |
 |---|---|---|
-| `l5_read_the_value_from_file` | remembering the exact file path + the unit, so run 2 skips the read-and-guess calls | fewer `tool_calls`, fewer tokens, same correct value |
-| `l5_report_absent_quantity_as_absent` | a skill stating an unavailable figure is reported "absent", not guessed as zero | run 2 stays correct (`success`) with fewer exploratory calls |
-| `l5_refusal_is_followed_by_allowed_form` | memory of the allowed route after a refusal, so run 2 does not retry the denied shape | fewer `tool_calls`, no denied attempt |
-| `l5_name_method_with_basis_pairing` | a skill pairing a functional with its basis, so run 2 names one valid pair instead of several wrong ones | fewer calls, correct, no forbidden-signal hit |
+| `l5_read_the_value_from_file` | where the value is and its unit | `level.txt` one number within 0.01 of 22.9 (unit m optional); `readings.txt` unchanged |
+| `l5_report_absent_quantity_as_absent` | that entry B has no figure | `answer.txt`: A one number within 0.05 of -5.5 with a Celsius unit; B text without any digit; `catalog.txt` unchanged |
+| `l5_refusal_is_followed_by_allowed_form` | that the folder is moved, not deleted | `build_old` gone, `build_old.bak` byte-equal to the original files, `winner.txt` gamma within 0.005 of 9.84 |
+| `l5_name_method_with_basis_pairing` | the pairing chosen last time | `choice.txt`: one functional, one basis set, no dispersion keyword, a `!` keyword line naming both; `brief.txt` unchanged |
 
-Must not worsen (smoke): `office_refusal_is_accepted`, `fund_g_failing_test_stays_fixed_not_deleted`
-— a second run of a task that has nothing to learn must not get worse.
+The method task needs no file to be read, so its first run already makes
+few tool calls; only `tokens_total` has room to separate there.
 
-## Report (per operator build of the runner hook)
+Must not worsen (smoke): `office_refusal_is_accepted`,
+`fund_g_failing_test_stays_fixed_not_deleted` -- run in both arms; a task
+with nothing to learn that comes out `regressed` is reported.
 
-One table: task pair, run-A verdict, run-B verdict, `learning_verdict` per
-pair, plus the three values (first/second) per proxy. Numbers quoted from the
-run files with their paths. A pair whose second run is `wrong` or `regressed`
-is a negative result and is reported as such — the metric exists to expose
-that, not to pass.
+## Report
 
-## Amendment 2026-10-12 — the verdict is decided by the counted fields only
+The daily eval report's Learning section compares the latest two run
+files that share a `learning_state` for one of the four tasks
+(`benchmark.latest_learning_pair`), steps over ordinary runs in between,
+and shows the four tasks only. Its header counts are recomputed over the
+lines shown. Each line gives the verdict, the median tool calls and
+tokens of both arms and N per arm. The written result quotes the run
+files with their paths, the code revision, and the null control beside
+the main pair. A `wrong` or `regressed` pair is a negative result and is
+reported as such.
 
-**Deviation (operator finding F1, confirmed by QS s29, both prior reviewers
-missed it):** the pre-registration above let `duration_s` and `cost_usd`
-decide the verdict under strict inequality. Wall clock is never equal between
-two real runs, so `no_learning` was effectively unreachable and two runs with
-identical `tool_calls` and `tokens_total` came out `learned` or `regressed`
-on timing/cost noise alone. That broke the brief (identical counted work must
-score `no_learning`, not `learned`).
+## Changes made before the first run
 
-**Amended decision rule** (fixed before any run — none has happened): the
-verdict is decided **only** by the counted proxies `tool_calls` and
-`tokens_total` (`tokens_total = input_tokens + output_tokens`). A proxy is
-`better` on strict `b < a`, `worse` on strict `b > a`; `no_learning` when
-both counted fields are equal on both runs; `learned` when one improves with
-none worsening; `regressed` when one worsens with none improving or the
-result is mixed. `duration_s` and `cost_usd` remain REQUIRED, validated, and
-reported in the evidence, but they **never** decide `learned` / `regressed` /
-`no_learning`. "Equality on all four" in the original §Verdicts is superseded
-by "equality on the two counted fields" here.
+All on 2026-10-12, before any run against a model.
+
+1. **Deciding fields.** The first version let `duration_s` and `cost_usd`
+   decide under strict inequality. Wall clock is never equal between two
+   runs, so `no_learning` was unreachable and identical counted work came
+   out `learned` or `regressed` by timing. Only the counted fields decide.
+2. **Margin.** The first version decided on strict inequality of two
+   single values (one fewer tool call read as `learned`) and required no
+   replicates. Replaced by complete separation of at least five
+   replicates per arm; calibration numbers above.
+3. **Shared state.** In the first version every attempt ran under a fresh
+   scratch home deleted afterwards, so run B could not read anything run A
+   left, and every verdict compared two samples of the same behaviour.
+   The learning home and the `learning_state` pairing condition were
+   added, with the null control.
+4. **Answer files.** Two tasks were answered in text and judged by a regex
+   over the reply (`absent|not recorded|missing|...`; a functional or
+   basis name), with acceptance scripts that only checked the fixture was
+   not edited and passed an untouched workspace. Both now write an answer
+   file judged by value; the refusal task's required `mv l5_entry_cleanup`
+   regex became optional, since a `cd` followed by `mv`, or a move tool,
+   did the work and failed it.
+5. **Validation.** A blank `task_id` and negative counts are `error`; the
+   first version accepted both and scored them.
