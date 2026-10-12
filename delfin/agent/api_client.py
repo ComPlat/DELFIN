@@ -2263,12 +2263,73 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # more. That argument does not hold on a path that grants, and
         # `_inline_payload_is_readable` accordingly takes quoted bodies
         # only.
-        _srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
-        _srcs += _inline_payload.extract_stdin_payloads(
+        #
+        # A relative payload target is resolved where the interpreter
+        # starts: the command is tokenised once with quotes honoured
+        # (a multi-line `-c` string stays one word), cut into commands at
+        # `; & | && || newline`, and `cd`/`pushd` are followed in order.
+        # A `-c` payload takes the directory of its own command; the n-th
+        # python here-document opener takes the directory at that opener.
+        # Where that pairing cannot be made (the tokeniser fails, or the
+        # counts differ) a command that contains a `cd` reports relative
+        # targets as unresolved, so the gate refuses rather than guesses.
+        _moved_before = moved
+        here = previous = None
+        moved = False
+        _c_dirs: list = []           # (payload, directory)
+        _doc_dirs: list = []
+        _paired = True
+        try:
+            _lx = shlex.shlex(cmd, posix=True, punctuation_chars=";&|\n")
+            _lx.whitespace = " \t\r"
+            _lx.whitespace_split = True
+            _toks = list(_lx)
+        except ValueError:
+            _toks, _paired = [], False
+        _cmds: list = [[]]
+        for _t in _toks:
+            if _t and all(ch in ";&|\n" for ch in _t):
+                _cmds.append([])
+            else:
+                _cmds[-1].append(_t)
+        for _argv in _cmds:
+            _words = list(_argv)
+            while _words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", _words[0]):
+                _words = _words[1:]
+            if not _words:
+                continue
+            if Path(_words[0]).name in ("cd", "pushd"):
+                _follow_cd(_words)
+                continue
+            for src in _inline_payload.extract_c_payloads(
+                    shlex.join(_argv)) or []:
+                _c_dirs.append((src, here))
+            if (any(re.match(r"(?:[\w./~+-]*/)?python[0-9.]*$", w)
+                    for w in _argv)
+                    and any(w.startswith("<<") and not w.startswith("<<<")
+                            for w in _argv)):
+                _doc_dirs.append(here)
+        _fallback = _UNRESOLVED if (
+            moved or re.search(r"(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)", cmd)) \
+            else None
+        _c_srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
+        _docs = _inline_payload.extract_stdin_payloads(
             cmd, include_expanded=True)
-        for src in _srcs:
+        # The whole-command split glues an unquoted `;` to the word before
+        # it (`"open('a','w')";` -> `open('a','w');`), so the per-command
+        # payloads are the exact ones; the whole-command list only checks
+        # that none was lost, and on a difference both are read, unpaired.
+        if not _paired or len(_c_dirs) != len(_c_srcs):
+            _c_dirs = [(s, _fallback)
+                       for s in _c_srcs + [s for s, _ in _c_dirs]]
+        if not _paired or len(_doc_dirs) != len(_docs):
+            _doc_dirs = [_fallback] * len(_docs)
+        for src, where in _c_dirs + list(zip(_docs, _doc_dirs)):
+            here = where
             for tok in _inline_payload.analyze_payload(src).writes:
                 _add(tok)
+        here = previous = None
+        moved = _moved_before
 
         # Per shell segment: command name + arguments.
         for segment in re.split(r"[;&|]{1,2}|\n", cmd):
