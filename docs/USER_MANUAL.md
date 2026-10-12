@@ -1200,9 +1200,12 @@ every `*.xyz` in a folder, and lets you rate each frame by eye.
    toggles (a chosen one is coloured), the comment on this frame, a line that
    says when the rating was saved, and the keys. Pick categories and type a
    comment first, then rate; the next unrated frame is shown.
-4. Keys (while no text field has the focus): `P` pass, `B` block, `1`–`9`
-   categories, `N` next unrated, `←` / `→` previous / next; `Esc` leaves the
-   comment field.
+4. Keys (while no text field has the focus; the file and frame lists and the
+   checkboxes do not hold them): `P` pass, `B` block, `1`–`9` categories, `N`
+   next unrated, `←` / `→` previous / next; `Esc` leaves the comment field.
+   A rating key rates the frame that was on screen when it was pressed: held
+   down it rates once, and pressed again before the next frame has appeared
+   it is ignored.
 5. Every rating is written at once to `<folder>/review_<name>.json` (name:
    the **Name** field, else the folder or file name). Opening the same folder
    again resumes where you stopped. Each record holds verdict, categories,

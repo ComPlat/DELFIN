@@ -24,9 +24,12 @@ What is on the screen
   findings (normal mode only).
 * **More**: a comment on the whole file and on the whole review, Export CSV.
 
-Keys (while the tab is visible and no text field has the focus): Left/Right
-move, N jumps to the next unrated frame, P passes, B blocks, 1-9 toggle the
-categories in their listed order, Esc leaves a text field of the tab.  The
+Keys (while the tab is visible and no text field has the focus; the tab's
+lists and checkboxes do not hold them): Left/Right move, N jumps to the next
+unrated frame, P passes, B blocks, 1-9 toggle the categories in their listed
+order, Esc leaves a text field of the tab.  A rating or category key carries
+the position that was on screen and is dropped when the kernel has moved on;
+auto-repeat is dropped except for the arrows.  The
 browser hands each key to a hidden text field, the same bridge the Ketcher
 panel uses, so every key also works headless through
 :meth:`ReviewPanel.handle_key`.  The script that listens for the keys is
@@ -56,8 +59,9 @@ __all__ = ['ReviewPanel', 'create_tab']
 
 PANEL_CLASS = 'delfin-review-panel'
 KEYS_CLASS = 'delfin-review-keys'
+AT_CLASS = 'delfin-review-at-'
 FRAME_WINDOW = 100
-VIEWER_WIDTH = 720
+VIEWER_WIDTH = '100%'   # of the middle column; a fixed 720 px ran under the rating column
 VIEWER_HEIGHT = 520
 _MARK = {'pass': '✓', 'block': '✗', None: '·'}
 _HELP = "<span style='color:#757575;font-size:11.5px'>{}</span>"
@@ -76,7 +80,16 @@ _CSS = """<style>
 
 
 def _keys_js() -> str:
-    """Hand arrow keys, P, B, N and digits to the hidden field while the panel is shown."""
+    """Hand arrow keys, P, B, N and digits to the hidden field while the panel is shown.
+
+    The line sent is ``<ms> <key> <position>``: the position is read from the
+    ``delfin-review-at-<n>`` class the kernel sets on the hidden field after it
+    has drawn frame *n*, so a rating key names the frame that was on screen.
+    Auto-repeat is dropped for every key but the arrows (a held P would rate
+    each frame it advanced to).  A text field, a text input and a select
+    outside the panel keep the keys; the panel's own lists and checkboxes do
+    not, so P after a click into the frame list still rates.
+    """
     return (
         "(function(){\n"
         "  if(window.__delfinReviewKeys) return;\n"
@@ -87,7 +100,11 @@ def _keys_js() -> str:
         "    var panel=document.querySelector('." + PANEL_CLASS + "');\n"
         "    if(!panel||panel.offsetParent===null) return;\n"
         "    var el=ev.target, tag=(el&&el.tagName||'').toUpperCase();\n"
-        "    if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||(el&&el.isContentEditable)){\n"
+        "    var kind=(el&&el.type||'').toLowerCase();\n"
+        "    var typing=tag==='TEXTAREA'||(el&&el.isContentEditable)||\n"
+        "      (tag==='INPUT'&&['checkbox','radio','button','submit','reset','range'].indexOf(kind)<0)||\n"
+        "      (tag==='SELECT'&&!panel.contains(el));\n"
+        "    if(typing){\n"
         "      if(ev.key==='Escape'&&panel.contains(el)){el.blur();ev.preventDefault();}\n"
         "      return;\n"
         "    }\n"
@@ -97,8 +114,10 @@ def _keys_js() -> str:
         "    var input=box&&box.querySelector('input, textarea');\n"
         "    if(!input) return;\n"
         "    ev.preventDefault();\n"
+        "    if(ev.repeat&&key!=='left'&&key!=='right') return;\n"
+        "    var at=/(?:^|\\s)" + AT_CLASS + "(\\d+)(?:\\s|$)/.exec(box.className);\n"
         "    var setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');\n"
-        "    var line=Date.now()+' '+key;\n"
+        "    var line=Date.now()+' '+key+(at?' '+at[1]:'');\n"
         "    if(setter&&setter.set) setter.set.call(input,line); else input.value=line;\n"
         "    input.dispatchEvent(new Event('input',{bubbles:true}));\n"
         "    input.dispatchEvent(new Event('change',{bubbles:true}));\n"
@@ -126,22 +145,23 @@ class ReviewPanel:
         # -- open a review ---------------------------------------------------
         self.path_input = W.Text(value=start, description='Open:', style=label,
                                  placeholder='multi-frame .xyz or a folder of .xyz files',
-                                 layout=L(width='560px'))
+                                 layout=L(width='560px', max_width='100%'))
         self.open_btn = W.Button(description='Open', button_style='info', icon='folder-open',
                                  layout=L(width='100px'))
         self.name_input = W.Text(value='', description='Name:', style=label,
                                  placeholder='default: folder or file name',
-                                 layout=L(width='360px'))
+                                 layout=L(width='360px', max_width='100%'))
         self.findings_input = W.Text(value='', description='Findings:', style=label,
                                      placeholder='optional JSON; default findings.json',
-                                     layout=L(width='560px'))
+                                     layout=L(width='560px', max_width='100%'))
         self.blind_cb = W.Checkbox(value=False, description='Blinded', indent=False,
                                    layout=L(width='90px'))
         self.seed_input = W.IntText(value=0, description='Seed:',
                                     style={'description_width': '40px'},
                                     layout=L(width='140px'))
         self.categories_input = W.Textarea(value='\n'.join(rv.DEFAULT_CATEGORIES),
-                                           layout=L(width='360px', height='170px'))
+                                           layout=L(width='360px', max_width='100%',
+                                                    height='170px'))
         self.categories_btn = W.Button(description='Apply categories',
                                        layout=L(width='150px'))
 
@@ -198,6 +218,7 @@ class ReviewPanel:
         self.status_html = W.HTML('')
         self.keys_input = W.Text(value='', layout=L(display='none'))
         self.keys_input.add_class(KEYS_CLASS)
+        self._at_class = ''
 
         self._build_categories(rv.DEFAULT_CATEGORIES)
         self._wire()
@@ -240,7 +261,7 @@ class ReviewPanel:
         self.files_box = W.VBox([self.left_title, self.file_list])
         self.sidebar = W.VBox([self.files_box, W.HTML('<b>Frames</b>'), self.frame_list],
                               layout=L(width='200px', min_width='160px'))
-        middle = W.VBox([self.viewer], layout=L(flex='1 1 480px', min_width='360px'))
+        middle = W.VBox([self.viewer], layout=L(flex='1 1 480px', min_width='240px'))
         self.rating_box = W.VBox([
             W.HBox([self.pass_btn, self.block_btn],
                    layout=L(width='100%', justify_content='space-between')),
@@ -444,9 +465,19 @@ class ReviewPanel:
         self.refresh()
         self._say(f'{len(cats)} categories applied and saved in {self.session.review_path.name}.')
 
-    def handle_key(self, key: str):
+    def handle_key(self, key: str, at: int | None = None):
+        """Act on one key; *at* is the position the browser showed when it was pressed.
+
+        A rating or category key whose *at* is not the current position is
+        dropped: the kernel moved on (after a rating) before the screen did.
+        Navigation keys are relative and always act.
+        """
         key = (key or '').strip().lower()
         if self.session is None:
+            return
+        if (at is not None and at != self.session.position
+                and (key in ('p', 'b') or key.isdigit())):
+            self._say(f'Key {key.upper()} ignored: it was pressed for a frame no longer shown.')
             return
         if key == 'left':
             self._move('prev')
@@ -464,10 +495,11 @@ class ReviewPanel:
 
     # -- observers ---------------------------------------------------------------
     def _on_key(self, change):
-        value = str(change.get('new') or '')
-        if not value:
+        parts = str(change.get('new') or '').split()
+        if len(parts) < 2:
             return
-        self.handle_key(value.split(' ', 1)[-1])
+        at = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+        self.handle_key(parts[1], at)
 
     def _on_list_toggle(self, change):
         self.sidebar.layout.display = '' if change.get('new') else 'none'
@@ -551,6 +583,14 @@ class ReviewPanel:
         self._draw_progress()
         self._draw_context(frame)
         self._draw_viewer(frame)
+        self._mark_shown(s.position)
+
+    def _mark_shown(self, position: int):
+        """Tell the key script which frame is on screen (sent after the frame itself)."""
+        if self._at_class:
+            self.keys_input.remove_class(self._at_class)
+        self._at_class = f'{AT_CLASS}{position}'
+        self.keys_input.add_class(self._at_class)
 
     def refresh_lists(self, full: bool = False):
         s = self.session
@@ -576,6 +616,7 @@ class ReviewPanel:
                 self.file_list.value = frame.file
                 positions = [p for p, (f, _) in enumerate(s.order) if f == frame.file]
             else:
+                self.file_list.options = []
                 positions = list(range(len(s)))
             # Thousands of options are rebuilt after every rating, so the list
             # shows a window around the current frame.
