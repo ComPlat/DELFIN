@@ -20229,22 +20229,12 @@ class _DocToolExecutor:
                 "available": available,
             })
         body = _skills_mod.render_skill_invocation(sk, args)
-        if arguments.get("delegate"):
-            # The two halves existed and there was no bridge: a skill
-            # returned text for THIS agent to follow, and a sub-agent took
-            # a prompt. So a self-contained job could be packaged as a
-            # skill or delegated, never both -- and every step of it landed
-            # in the parent's context whether or not the parent needed it.
-            return self._execute_subagent({
-                "subagent_type": "general-purpose",
-                "description": f"skill: {sk.name}",
-                "prompt": body,
-            }, perms)
-        # The use is counted where the text is handed over, as "started":
-        # what comes of it is not known here, and the session end gives it
-        # its outcome (session_end.resolve_pending_session_uses).
-        # Without a session id no end will resolve the row, so the use is
-        # recorded as what it will stay: unverified.
+        # The use is counted where the text is handed over -- to this
+        # agent or, with delegate, to a sub-agent -- as "started": what
+        # comes of it is not known here, and the session end gives it its
+        # outcome (session_end.resolve_pending_session_uses). Without a
+        # session id no end will resolve the row, so the use is recorded
+        # as what it will stay: unverified.
         try:
             from . import skill_usage as _skill_usage
             # The executor is shared; the session is the permissions'.
@@ -20257,6 +20247,17 @@ class _DocToolExecutor:
                                         detail="no session id")
         except Exception:
             pass
+        if arguments.get("delegate"):
+            # The two halves existed and there was no bridge: a skill
+            # returned text for THIS agent to follow, and a sub-agent took
+            # a prompt. So a self-contained job could be packaged as a
+            # skill or delegated, never both -- and every step of it landed
+            # in the parent's context whether or not the parent needed it.
+            return self._execute_subagent({
+                "subagent_type": "general-purpose",
+                "description": f"skill: {sk.name}",
+                "prompt": body,
+            }, perms)
         return json.dumps({
             "status": "ok",
             "skill": sk.name,
