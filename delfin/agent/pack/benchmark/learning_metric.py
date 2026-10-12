@@ -18,8 +18,13 @@ Rules fixed before any run (PREREG_W15.md):
 
 * **Correctness dominates.** A second run that is faster but wrong is a fail
   whatever it saved (``wrong``).
-* **Identical runs are not learning.** Equality on every efficiency proxy is
-  ``no_learning``, never ``learned``.
+* **Identical runs are not learning.** Equality on every DECIDING proxy is
+  ``no_learning``, never ``learned``. The deciding proxies are the counted
+  ones ``tool_calls`` and ``tokens_total`` (operator finding F1 / PREREG
+  dated amendment): ``duration_s`` and ``cost_usd`` are wall-clock and price
+  noise no two real runs share, so they never decide ``learned`` /
+  ``regressed`` / ``no_learning`` -- they stay validated and in the evidence,
+  reported but not compared.
 * **Missing/unknown field is an error**, never a silent zero.
 
 The CALLER decides which record is first and which is second: two rows from
@@ -33,11 +38,15 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-# The efficiency proxies compared between the two runs; fewer is better.
+# The efficiency proxies the VERDICT is decided on; fewer is better.
 # ``tokens_total`` is derived from the per-run ``input_tokens`` +
 # ``output_tokens``, which is why it is not itself a record field.
-_EFFICIENCY_FIELDS: tuple[str, ...] = ("tool_calls", "tokens_total",
-                                       "duration_s", "cost_usd")
+# Only the COUNTED proxies decide (operator F1, PREREG dated amendment):
+# ``duration_s`` / ``cost_usd`` are wall-clock and price noise that no two
+# real runs share, so if they decided, no_learning would be unreachable and
+# identical counted work would flit between learned and regressed on timing
+# alone. They stay validated and reported in the evidence, never deciding.
+_DECIDING_FIELDS: tuple[str, ...] = ("tool_calls", "tokens_total")
 
 VERDICTS: tuple[str, ...] = ("error", "wrong", "learned", "no_learning",
                              "regressed")
@@ -154,7 +163,7 @@ def learning_verdict(first: dict, second: dict) -> dict:
     # Efficiency comparison across the efficiency proxies.
     better = []
     worse = []
-    for field in _EFFICIENCY_FIELDS:
+    for field in _DECIDING_FIELDS:
         a = proxies_first[field]
         b = proxies_second[field]
         if b < a:
