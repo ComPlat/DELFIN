@@ -780,14 +780,20 @@ class AgentEngine:
         Returns the tool result string. Raises RuntimeError when this
         backend carries no permissions object, because on those the shell
         tool is unavailable to the model too.
+
+        The output is kept up to ``api_client.PERSON_OUTPUT_CHARS`` per
+        stream instead of the model's ``max_output_chars``: every caller
+        (`!`, /git) shows it to a person, who has no context window to
+        protect. The gate decides exactly as before.
         """
         perms = self.kit_permissions
         if perms is None:
             raise RuntimeError(
                 "this backend has no permission gate, so it has no shell")
-        from .api_client import _doc_executor
-        return _doc_executor.execute("bash", {"command": str(command or "")},
-                                     perms)
+        from .api_client import _doc_executor, output_for_a_person
+        with output_for_a_person():
+            return _doc_executor.execute(
+                "bash", {"command": str(command or "")}, perms)
 
     # -- what a turn delegated ---------------------------------------------
 

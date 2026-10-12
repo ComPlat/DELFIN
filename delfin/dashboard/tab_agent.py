@@ -95,6 +95,169 @@ def proposed_prompt(text: str):
     return None
 
 
+#: Fence tags that say "this is a command line". An untagged fence is not
+#: one: it may be output, a path list or a config excerpt.
+_SHELL_FENCE = re.compile(
+    r"^[ \t]*```[ \t]*(bash|sh|shell|zsh|console)[ \t]*\n(.*?)^[ \t]*```",
+    re.M | re.S | re.I)
+
+
+def _single_command(lang: str, body: str):
+    """The one logical command in a fenced block's *body*, or None."""
+    lines = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if lang == "console":
+            # Output lines are what the command printed, not commands.
+            if not line.startswith("$ "):
+                continue
+            line = line[2:].strip()
+        elif line.startswith("$ "):
+            line = line[2:].strip()
+        if not line or line.startswith("#"):
+            continue
+        lines.append(line)
+    # Backslash continuations are one command spread over lines.
+    joined: list[str] = []
+    for line in lines:
+        if joined and joined[-1].endswith("\\"):
+            joined[-1] = joined[-1][:-1].rstrip() + " " + line
+        else:
+            joined.append(line)
+    if len(joined) != 1 or joined[0].endswith("\\"):
+        return None
+    cmd = joined[0]
+    if cmd.startswith("!"):
+        cmd = cmd[1:].strip()
+    return cmd or None
+
+
+def proposed_shell_command(text: str):
+    """``! <command>`` for the first one-command shell block in *text*.
+
+    Input: a turn's final answer. Output: the offer string, or None.
+
+    Semantics: a fenced ``bash``/``sh``/``shell``/``zsh`` block, or the
+    ``$ `` lines of a ``console`` block, whose content after dropping
+    comments, blank lines and a leading ``$ `` prompt is ONE logical
+    command (backslash continuations joined). The first such block wins:
+    several single-command blocks in one answer are usually steps in
+    order, and the first step is the one to take next.
+
+    A block of several commands offers nothing. The `!` path runs one
+    command line; joining lines with ``;`` or ``&&`` would change what
+    happens when one fails, and offering only the first line would send
+    half of a procedure as if it were the whole.
+
+    A command whose offer does not fit ``_PLACEHOLDER_WIDTH`` offers
+    nothing: Tab copies the placeholder verbatim, and a longer
+    placeholder is cut with an ellipsis, so a cut command would be what
+    Tab puts in the box. Control characters offer nothing, because the
+    box would show something other than what is sent.
+
+    Rejected: buttons under each block in the chat. The chat is one
+    ``widgets.HTML`` value rebuilt on every refresh; a button in it
+    would need a page-script bridge back into the kernel, whereas the
+    offer row beside the box already fills the input from the kernel.
+    """
+    try:
+        for m in _SHELL_FENCE.finditer(str(text or "")):
+            cmd = _single_command(m.group(1).lower(), m.group(2))
+            if not cmd or any(ord(c) < 32 or ord(c) == 127 for c in cmd):
+                continue
+            offer = "! " + cmd
+            if len(offer) <= _PLACEHOLDER_WIDTH:
+                return offer
+    except Exception:
+        return None
+    return None
+
+
+#: Characters per stream a `!` result shows in the chat. The chat is one
+#: HTML value rebuilt on refresh, and the browser lays all of it out; 200k
+#: characters is ~3000 lines of 64 columns. Above it the whole stream is
+#: written to a file in the workspace and the message names it.
+_SHELL_CHAT_CHARS = 200_000
+
+
+def shell_output_html(run: dict) -> str:
+    """One `!` result as the chat shows it.
+
+    Input: the dict from ``repl.shell_escape_result``, optionally with
+    ``sizes`` ({stream: full length}) and ``saved`` ({stream: path}) when
+    a stream was longer than the chat shows. Output: HTML.
+
+    Every model- or command-authored string is HTML-escaped and placed in
+    a ``<pre>``, never passed through the markdown converter: ``%P``,
+    ``*``, ``_``, ``|a|b|``, ``#`` and leading spaces are output, not
+    markup. stdout first, then stderr labelled, then the exit code.
+    """
+    def esc(value) -> str:
+        return _html.escape(str(value or ""))
+
+    run = run if isinstance(run, dict) else {}
+    parts = [f'<div class="delfin-shell-cmd">! {esc(run.get("command"))}</div>']
+    if run.get("refused"):
+        parts.append(f'<div class="delfin-shell-note">refused: '
+                     f'{esc(run["refused"])}</div>')
+    if run.get("error"):
+        parts.append(f'<div class="delfin-shell-note">[error] '
+                     f'{esc(run["error"])}</div>')
+    sizes = run.get("sizes") or {}
+    saved = run.get("saved") or {}
+    for stream in ("stdout", "stderr"):
+        body = str(run.get(stream) or "")
+        if not body:
+            continue
+        if stream == "stderr":
+            parts.append('<div class="delfin-shell-label">stderr</div>')
+        cls = "delfin-shell-out" + (" delfin-shell-err" if stream == "stderr"
+                                    else "")
+        parts.append(f'<pre class="{cls}">{esc(body.rstrip(chr(10)))}</pre>')
+        if saved.get(stream):
+            total = int(sizes.get(stream) or 0)
+            parts.append(
+                f'<div class="delfin-shell-note">{stream}: {total:,} '
+                f'characters, the first {len(body):,} shown; all of it in '
+                f'{esc(saved[stream])}</div>')
+    code = run.get("exit_code")
+    if code is not None:
+        parts.append(f'<div class="delfin-shell-exit">exit {esc(code)}</div>')
+    elif not (run.get("refused") or run.get("error")):
+        parts.append('<div class="delfin-shell-exit">exit unknown</div>')
+    return ('<div class="delfin-chat-msg delfin-chat-system delfin-shell-run">'
+            + "".join(parts) + "</div>")
+
+
+def _shell_run_for_chat(run: dict, directory) -> dict:
+    """Cut each stream to _SHELL_CHAT_CHARS, saving any longer one whole.
+
+    Input: a ``shell_escape_result`` dict and the directory for saved
+    output. Output: a copy with ``sizes`` and ``saved`` added for every
+    stream that was cut. A stream that cannot be saved is still cut, and
+    the note then says why it was not saved: the chat must not hold
+    an unbounded value either way.
+    """
+    out = dict(run)
+    stamp = (time.strftime("%Y%m%d-%H%M%S")
+             + f"-{time.time_ns() % 10**9:09d}")
+    for stream in ("stdout", "stderr"):
+        body = str(run.get(stream) or "")
+        if len(body) <= _SHELL_CHAT_CHARS:
+            continue
+        target = Path(directory) / f"{stamp}.{stream}.txt"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body, encoding="utf-8")
+            where = str(target)
+        except OSError as exc:
+            where = f"(not saved: {exc})"
+        out.setdefault("sizes", {})[stream] = len(body)
+        out.setdefault("saved", {})[stream] = where
+        out[stream] = body[:_SHELL_CHAT_CHARS]
+    return out
+
+
 def input_placeholder(steps, default: str, proposed=None) -> str:
     """The line waiting in the message box: an offer, a task, or the hint.
 
@@ -1041,6 +1204,29 @@ _AGENT_CSS = """\
     font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
     white-space: pre-wrap;
     word-break: break-all;
+}
+/* `!` output as a terminal shows it: columns kept, wide lines scroll
+   inside the block rather than the page, long output scrolls inside a
+   bounded height. */
+.delfin-shell-run { white-space: normal; color: #374151; }
+.delfin-shell-cmd { font-weight: 600; margin-bottom: 2px; }
+.delfin-shell-run pre.delfin-shell-out {
+    white-space: pre;
+    word-break: normal;
+    overflow: auto;
+    max-height: 32em;
+    margin: 2px 0;
+    padding: 4px 6px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 3px;
+    font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+    font-size: 11px;
+    line-height: 1.35;
+}
+.delfin-shell-run pre.delfin-shell-err { color: #b91c1c; }
+.delfin-shell-label, .delfin-shell-exit, .delfin-shell-note {
+    font-size: 10px; color: #6b7280;
 }
 .delfin-chat-tool {
     background: transparent;
@@ -7000,7 +7186,12 @@ def create_tab(ctx):
                 state.get("active_session_id", "") or ""), limit=50)
         except Exception:
             steps = []
-        offer = proposed_prompt(str(state.get("_last_answer_text", "") or ""))
+        # A marked PROMPT: is a statement and outranks a shell block, which
+        # is read from the answer's structure. Either only fills the box:
+        # Send is still the user's, and `! ...` then takes the same gated
+        # path as typing it.
+        _answer = str(state.get("_last_answer_text", "") or "")
+        offer = proposed_prompt(_answer) or proposed_shell_command(_answer)
         input_textarea.placeholder = input_placeholder(
             steps, _INPUT_HINT, proposed=offer)
         # Green only while an offer waits: a box that stays coloured over
@@ -10770,6 +10961,9 @@ def create_tab(ctx):
                 f'{msg["content"]}</div>'
             )
         elif role == "system":
+            if isinstance(msg.get("shell"), dict):
+                # `!` output: preformatted and escaped, never markdown.
+                return shell_output_html(msg["shell"])
             raw = msg["content"]
             content = _md_to_html(raw)
             if raw.startswith("---") or raw.startswith("Session restored"):
@@ -17741,11 +17935,57 @@ def create_tab(ctx):
             input_textarea.value = ""
             _eng = state.get("engine")
 
+            # The offer was the previous answer's, as for any message; left
+            # standing, the command just sent would wait to be sent again.
+            state["_last_answer_text"] = ""
+            try:
+                _refresh_next_steps()
+            except Exception:
+                pass
+            # A running line in place of streamed output: the gate's
+            # executor collects both pipes and returns at exit, so there
+            # is nothing to stream without a second executor beside the
+            # gated one. The line is replaced by the result in place.
+            _key = f"shell-escape-{time.monotonic_ns()}"
+            _live_system_message(f"! {_cmd}\n  running …", _key)
+
             def _run_escape():
-                from delfin.agent.repl import shell_escape as _escape
-                lines = _escape(_eng, _cmd)
-                _append_system_message(
-                    f"! {_cmd}\n" + "\n".join("  " + ln for ln in lines))
+                from delfin.agent.repl import shell_escape_result as _escape
+                run = _escape(_eng, _cmd)
+                try:
+                    _kp = getattr(_eng, "kit_permissions", None)
+                    _dir = (getattr(_kp, "agent_workspace_dir", None)
+                            or Path(_agent_workspace_path()) / "agent_workspace")
+                    run = _shell_run_for_chat(run, Path(_dir) / "shell_output")
+                except Exception:
+                    run = _shell_run_for_chat(run, Path.cwd() / "shell_output")
+                # Plain text for what reads content (search, export, a
+                # mode handoff); the chat renders the fields.
+                plain = [f"! {_cmd}"]
+                if run.get("refused"):
+                    plain.append(f"  refused: {run['refused']}")
+                if run.get("error"):
+                    plain.append(f"  [error] {run['error']}")
+                body = "\n".join(s for s in (run.get("stdout"),
+                                             run.get("stderr")) if s)
+                plain += ["  " + ln for ln in body.splitlines()[:200]]
+                if run.get("exit_code") not in (0, None):
+                    plain.append(f"  (exit {run['exit_code']})")
+                msgs = state["chat_messages"]
+                live = state.setdefault("_live_messages", {})
+                index = _live_message_slot(msgs, live, _key)
+                live.pop(_key, None)
+                entry = {"role": "system", "content": "\n".join(plain),
+                         "role_label": "", "shell": run}
+                if index is None:
+                    msgs.append(entry)
+                else:
+                    msgs[index] = entry
+                    # Same count, new entry: the streaming fast path would
+                    # keep the cached "running" line in its prefix.
+                    _html_cache["prefix_count"] = -1
+                _refresh_chat_html()
+                state["_last_html_refresh"] = time.monotonic()
 
             threading.Thread(target=_run_escape, daemon=True,
                              name="dashboard-shell-escape").start()
@@ -21870,6 +22110,7 @@ def create_tab(ctx):
         "load_session": _load_saved_session,
         "save": _auto_save_session,
         "refresh_background": _refresh_subagent_panel,
+        "refresh_next_steps": _refresh_next_steps,
         "deliver_messages": _deliver_session_messages,
     }
 
