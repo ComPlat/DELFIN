@@ -4323,7 +4323,8 @@ def _lift_shell_write_refusals(perms: Any, content: Any) -> list:
             lifted.append(path)
         if lifted:
             _record_security_event(
-                "refusal_lifted", "user", ", ".join(lifted)[:120])
+                "refusal_lifted", "user", ", ".join(lifted)[:120],
+                blocked=False)
         return lifted
     except Exception:
         return []
