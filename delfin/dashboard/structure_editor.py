@@ -21140,7 +21140,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     manta_button = widgets.Button(
         description='MANTA', button_style='',
         layout=widgets.Layout(width='150px'),
-        tooltip='MANTA: build the complete coordination-isomer manifold from the '
+        tooltip='MANTA: build the isomer–conformer ensemble from the '
                 'SMILES and rank it by GFN2 energy (best isomer/conformer first; '
                 'needs xtb). Results show in the viewer with isomer navigation.',
     )
@@ -21182,9 +21182,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         options=['fast', 'normal', 'max', 'extreme'], value='extreme',
         description='Quality:', style={'description_width': 'initial'},
         layout=widgets.Layout(width='160px'),
-        tooltip='Conformer depth (the main completeness<->speed switch). extreme guarantees the '
-                'GFN2 global minimum is in the manifold (convergence-proven); fast/normal miss it '
-                'by ~2.5 kcal/mol on multi-isomer systems.')
+        tooltip='Construction depth (seeds and conformer counts; the main thoroughness<->speed '
+                'switch). extreme is the most thorough; fast/normal build fewer candidates and can '
+                'miss low-energy frames on multi-isomer systems.')
     manta_seeds = widgets.IntText(
         value=_MANTA_PROFILE_SEEDS['extreme'], description='Seeds:',
         style={'description_width': 'initial'}, layout=widgets.Layout(width='130px'),
@@ -21200,7 +21200,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     manta_max_iso = widgets.IntText(
         value=0, description='Max isomers (0=ALL):', style={'description_width': 'initial'},
         layout=widgets.Layout(width='190px'),
-        tooltip='Cap emitted isomers. 0 = COMPLETE manifold, never cut off (recommended).')
+        tooltip='Cap emitted isomers. 0 = no cap, every isomer the builder realises (recommended).')
     # DEFAULT = No / No -> users get ONLY the manifold (no post-processing).  Rank and Opt are
     # SEPARATE opt-ins: Rank reorders by xtb single-point energy (geometry UNCHANGED); Opt xtb-
     # geometry-optimises structures (changes geometry).  You can Rank without Opt, or Opt without Rank.
@@ -21208,7 +21208,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         options=['No', 'gfn2', 'gfnff', 'gfn1', 'gfn0'], value='No',
         description='Rank:', style={'description_width': 'initial'},
         layout=widgets.Layout(width='150px'),
-        tooltip='Energy-RANK the manifold so the global-minimum isomer/conformer is first — '
+        tooltip='Energy-RANK the ensemble so the lowest-energy frame is first — '
                 'single-point xtb energy, geometry UNCHANGED (pure reordering, no post-processing of '
                 'the structures). No = keep construction order (already best-first by realism). '
                 'gfn2 = standard; gfnff = fast force-field.')
@@ -21217,8 +21217,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         description='Opt:', style={'description_width': 'initial'},
         layout=widgets.Layout(width='140px'),
         tooltip='Geometry-OPTimise structures to a clean final geometry (xtb; method FOLLOWS Rank, or '
-                'gfn2 if Rank=No). No = keep the construction geometry (pure manifold, DEFAULT). '
-                'Top-N = optimise the N best; All = the whole manifold (slowest/best). '
+                'gfn2 if Rank=No). No = keep the construction geometry (pure ensemble, DEFAULT). '
+                'Top-N = optimise the N best; All = the whole ensemble (slowest/best). '
                 'Independent of Rank.')
     manta_spin = widgets.Dropdown(
         options=['auto', '1', '2', '3', '4', '5', '6', '7'], value='auto',
@@ -21232,14 +21232,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         options=['On', 'Off'], value='On',
         description='Determinism:', style={'description_width': 'initial'},
         layout=widgets.Layout(width='160px'),
-        tooltip='DETERMINISTIC construction (DEFAULT On) — byte-identical, reproducible manifold, '
+        tooltip='DETERMINISTIC construction (DEFAULT On) — byte-identical, reproducible ensemble, '
                 'IDENTICAL to what the CLI and the development loop build (ship = validate). '
                 'Off = non-deterministic embedding (racy frame count; only for exploring extra '
-                'ETKDG variety). Keep On for a stable, reproducible isomer x conformer manifold.')
+                'ETKDG variety). Keep On for a stable, reproducible isomer–conformer ensemble.')
     manta_settings_row = widgets.VBox([
         widgets.HTML("<b style='color:#1FA9C0'>MANTA settings</b> "
-                     "<span style='color:#888;font-size:90%'>— complete coordination-isomer "
-                     "&times; conformer manifold</span>"),
+                     "<span style='color:#888;font-size:90%'>— isomer–conformer ensemble</span>"),
         widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt, manta_spin, manta_det],
                      layout=widgets.Layout(gap='12px', flex_wrap='wrap', align_items='center')),
     ], layout=widgets.Layout(border='1px solid #d0e7ec', padding='8px', margin='4px 0'))
@@ -22011,7 +22010,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _topn = -1 if opt_topn is None else int(opt_topn)
             _opt_on = _topn >= 0
             if not rank and not _opt_on:
-                _caption = ('MANTA: building the complete coordination-isomer × conformer manifold '
+                _caption = ('MANTA: building the isomer–conformer ensemble '
                             '(no post-processing)...')
             else:
                 _parts = []
@@ -22019,7 +22018,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     _parts.append(f'{_method_lbl} energy-ranking')
                 if _opt_on:
                     _parts.append('optimizing all' if _topn == 0 else f'optimizing top {_topn}')
-                _caption = ('MANTA: building manifold + ' + ' + '.join(_parts) +
+                _caption = ('MANTA: building ensemble + ' + ' + '.join(_parts) +
                             ' (needs xtb; takes a bit)...')
             _show_mol_busy(_caption)
         else:

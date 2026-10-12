@@ -51,6 +51,8 @@ _KINDS = {
     "denied_by_user": ("✋", "User denied"),
     "denied_again":   ("🚫", "Refusal circumvented"),
     "denied_path_via_bash": ("🚫", "Refused path reached via shell"),
+    # The user's typed message named a file whose shell write was refused.
+    "refusal_lifted": ("🔓", "Refused shell write lifted by the user"),
     # find/du/tree/rg, grep -r or ls -R over a home or a mount point: one
     # metadata request per file on a shared file system.
     "tree_walk":      ("🌲", "Walk over a whole file system refused"),
