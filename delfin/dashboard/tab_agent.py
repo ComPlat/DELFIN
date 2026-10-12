@@ -17,6 +17,7 @@ import ipywidgets as widgets
 # rather than lazily like the rest of delfin.agent because it is a pure
 # data module with no imports of its own beyond the stdlib.
 from delfin.agent import pricing as _pricing
+from delfin.agent.harness_rows import HarnessText
 
 
 _PLAN_HINT_VERBS = re.compile(
@@ -7914,7 +7915,7 @@ def create_tab(ctx):
             sender = message.get("from_title") or message.get("from") or "a session"
             _append_system_message(
                 f"✉ Message from {sender}: {str(message.get('text') or '')[:300]}")
-        text = "\n\n".join(_msgs.render(m) for m in messages)
+        text = HarnessText("\n\n".join(_msgs.render(m) for m in messages))
         engine = state.get("engine")
         ids = [str(m.get("id") or "") for m in messages]
 
@@ -17818,6 +17819,8 @@ def create_tab(ctx):
                         + "\n".join(f"  - {p}" for p in _written)
                         + "\nIf one of these paths does not exist, say which "
                         "and stop; do not search for it.]")
+            if state.get("_on_its_own"):
+                _steer_text = HarnessText(_steer_text)
             if _seng is not None and hasattr(_seng, "steer") and _seng.steer(_steer_text):
                 input_textarea.value = ""
                 _append_chat_message(
@@ -18100,6 +18103,11 @@ def create_tab(ctx):
                 state["_turn_first_output_monotonic"] = now
 
         role_label = _format_role_label(engine.current_role)
+        # A send nobody typed (_send_on_its_own): its first turn reaches
+        # the engine as HarnessText, so the row is kept marked. Read
+        # here: the flag is cleared when _on_send returns, before the
+        # worker reaches the engine.
+        _harness_send = [bool(state.get("_on_its_own"))]
 
         def _worker():
             nonlocal _sm_approval
@@ -19158,7 +19166,8 @@ def create_tab(ctx):
                     except Exception:
                         pass
                     _final_text = engine.stream_response(
-                        user_message=current_msg,
+                        user_message=(HarnessText(current_msg) if _harness_send[0]
+                                      else current_msg),
                         on_token=_on_token,
                         on_tool_use=_on_tool_use,
                         on_tool_result=_on_tool_result,
@@ -19170,6 +19179,9 @@ def create_tab(ctx):
                         memory_context=_memory,
                         images=_vision_images,
                     )
+                    # Only the first turn was sent on its own; a later
+                    # role of the cycle starts from the handoff.
+                    _harness_send[0] = False
                     # When the engine's claim-grounding guard spent its
                     # correction turn, the streamed chunks contain the
                     # provisional answer AND the correction concatenated —
@@ -19375,7 +19387,7 @@ def create_tab(ctx):
                             "genuinely missing question.)"
                         )
                         engine.messages.append(
-                            {"role": "user", "content": feedback}
+                            {"role": "user", "content": feedback, "_harness": True}
                         )
                         if engine._stop_requested:
                             break
@@ -19383,7 +19395,7 @@ def create_tab(ctx):
                         chunks.clear()
                         thinking_chunks.clear()
                         engine.stream_response(
-                            user_message=feedback,
+                            user_message=HarnessText(feedback),
                             on_token=_on_token,
                             on_tool_use=_on_tool_use,
                             on_tool_result=_on_tool_result,
@@ -19502,7 +19514,7 @@ def create_tab(ctx):
                                         engine, "_last_observed_files", None))
                             )
                             engine.messages.append(
-                                {"role": "user", "content": _cfeedback}
+                                {"role": "user", "content": _cfeedback, "_harness": True}
                             )
                             chunks.clear()
                             thinking_chunks.clear()
@@ -19550,7 +19562,7 @@ def create_tab(ctx):
                                     "[Verify] " + _vg.correction_feedback(_vflags)
                                 )
                                 engine.messages.append(
-                                    {"role": "user", "content": _vfeedback}
+                                    {"role": "user", "content": _vfeedback, "_harness": True}
                                 )
                                 chunks.clear()
                                 thinking_chunks.clear()
@@ -19606,7 +19618,7 @@ def create_tab(ctx):
                                     + _vg.quantity_claim_feedback(_qflags)
                                 )
                                 engine.messages.append(
-                                    {"role": "user", "content": _qfeedback}
+                                    {"role": "user", "content": _qfeedback, "_harness": True}
                                 )
                                 chunks.clear()
                                 thinking_chunks.clear()
