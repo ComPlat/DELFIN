@@ -321,3 +321,24 @@ def test_a_person_gets_the_whole_output_and_the_model_keeps_its_cap(
     assert "truncated" in model_view["stdout"], (
         "the model's cap is unchanged by a person's escape")
     assert len(model_view["stdout"]) < len(run["stdout"])
+
+
+# ---------------------------------------------------------------------------
+# The model is told, in the prompt it actually receives
+# ---------------------------------------------------------------------------
+
+def test_the_code_role_is_told_the_user_runs_a_shown_command_with_the_bang(
+        monkeypatch):
+    """The field case ran in the Code mode (role solo_agent) inside the
+    dashboard; the rule has to be in THAT built prompt, in its stable
+    head, not only in the markdown."""
+    from delfin import user_settings
+    from delfin.agent.prompt_loader import PromptLoader
+
+    monkeypatch.setattr(user_settings, "load_settings",
+                        lambda *a, **k: {"agent": {"slim_prompt": True}})
+    built = PromptLoader().build_system_prompt(
+        role_id="solo_agent", mode_id="solo", task_text="Hallo",
+        session_key="bang-offer-1")
+    assert "runs it with `! <command>`" in built
+    assert "same gate as yours" in built
