@@ -44,11 +44,18 @@ def test_the_ledger_is_a_redirected_user_store():
         state_paths.USER_STATE_RESOLVERS
 
 
-def test_a_redirected_run_writes_into_the_scratch_home(tmp_path):
-    with state_paths.RedirectedUserState(tmp_path):
+def test_a_redirected_run_writes_into_the_scratch_home(tmp_path,
+                                                       monkeypatch):
+    # HOME points at a decoy: a resolver the redirect misses lands there,
+    # not in the real home, and the assertion below still fails.
+    decoy = tmp_path / "decoy"
+    monkeypatch.setenv("HOME", str(decoy))
+    scratch = tmp_path / "scratch"
+    with state_paths.RedirectedUserState(scratch):
         SU.record_use("probe-skill", "started", detail="session:s1")
-    assert (tmp_path / ".delfin" / "skills" / "_usage"
+    assert (scratch / ".delfin" / "skills" / "_usage"
             / "probe-skill.jsonl").is_file()
+    assert not (decoy / ".delfin").exists()
 
 
 # -- pairing ---------------------------------------------------------------
