@@ -16683,6 +16683,36 @@ class _DocToolExecutor:
             if perms.matches_bash_auto_allow(cmd):
                 # The list matches the command's spelling, not its purpose.
                 return self._classifier_second_opinion(perms, name, args, mode)
+            # A command that is EXACTLY one of a few harmless forms is
+            # approved by rule (read_only_shapes): the dialogs they raised
+            # were answered "yes" every time and taught nothing. Reached
+            # only here -- after the deny list, the secret scan and the
+            # refusal ledger -- and the read and write path gates still run
+            # on the command afterwards. A switched-off shape, an unreadable
+            # setting or any failure falls through to the dialog.
+            try:
+                from . import read_only_shapes as _ros
+                from delfin.user_settings import load_settings as _ros_load
+                _ros_cfg = _ros.read_only_shapes_from_payload(_ros_load() or {})
+                # Only for a command that runs in the workspace itself: a
+                # path is judged against the workspace, and a `cwd` would
+                # make it mean something else (another root, another repo).
+                _ros_cwd = str(args.get("cwd") or "").strip()
+                if _ros_cwd and Path(_ros_cwd).resolve(strict=False) == \
+                        Path(perms.workspace).resolve(strict=False):
+                    _ros_cwd = ""
+                _ros_shape = (_ros.matches_with(
+                    cmd, str(perms.workspace),
+                    set(_ros_cfg.get("enabled_shapes") or ()))
+                    if _ros_cfg.get("enabled") and _ros_cwd in ("", ".")
+                    else "")
+            except Exception:
+                _ros_shape = ""
+            if _ros_shape:
+                _record_security_event(
+                    "read_only_shape", "bash",
+                    f"{_ros_shape}: {cmd[:80]}", blocked=False)
+                return self._classifier_second_opinion(perms, name, args, mode)
             # Not auto-allowed. Whenever a per-action approval dialog is
             # wired (the dashboard KitConfirmBroker), ask the user to
             # approve THIS command — one click — instead of dead-ending
@@ -20229,6 +20259,24 @@ class _DocToolExecutor:
                 "available": available,
             })
         body = _skills_mod.render_skill_invocation(sk, args)
+        # The use is counted where the text is handed over -- to this
+        # agent or, with delegate, to a sub-agent -- as "started": what
+        # comes of it is not known here, and the session end gives it its
+        # outcome (session_end.resolve_pending_session_uses). Without a
+        # session id no end will resolve the row, so the use is recorded
+        # as what it will stay: unverified.
+        try:
+            from . import skill_usage as _skill_usage
+            # The executor is shared; the session is the permissions'.
+            _sid = str(getattr(perms, "task_session_id", "") or "").strip()
+            if _sid:
+                _skill_usage.record_use(sk.name, "started",
+                                        detail="session:" + _sid)
+            else:
+                _skill_usage.record_use(sk.name, "unverified",
+                                        detail="no session id")
+        except Exception:
+            pass
         if arguments.get("delegate"):
             # The two halves existed and there was no bridge: a skill
             # returned text for THIS agent to follow, and a sub-agent took
