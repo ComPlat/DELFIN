@@ -41,7 +41,7 @@ failure this package exists to catch (reviewer s28, probe #1).
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 
 def _norm(path: str) -> str:
@@ -134,31 +134,87 @@ def _index_runs(test_runs: Iterable) -> Dict[str, Tuple[bool, bool]]:
     return out
 
 
+def normalize_test_runs(test_runs: Iterable) -> list:
+    """Adapt the verify ledger's run records to :func:`assess` input shape.
+
+    The verify step's ledger (``_observe_test_evidence``, api_client.py:11126)
+    stores each run as ``{"tool", "command", "exit_code", "status", "passed",
+    "failed", "ts"}`` — a per-RUN shape. ``assess`` expects per-run ``{"target",
+    "red", "green"}``. This pure adapter maps one onto the other: the run's
+    ``command`` (the pytest target / command) becomes ``target``; red and green
+    follow the same rule ``check_completion_claim`` already uses for "green"
+    (task_evidence.py:506-507): a run is green when neither ``failed`` nor
+    ``status`` reports failure, red otherwise. Runs that say nothing about
+    either (no ``command``/``target``, no status) are dropped — they carry no
+    target to judge a control by.
+    """
+    _FAIL_STATES = ("failed", "error", "gave_up")
+    out = []
+    for r in (test_runs or ()) if isinstance(test_runs, (list, tuple, set)) else []:
+        if not isinstance(r, dict):
+            continue
+        if "target" in r or "red" in r or "green" in r:
+            out.append(r)  # already in assess shape
+            continue
+        target = str(r.get("command") or r.get("target") or "").strip()
+        if not target:
+            continue
+        status = str(r.get("status", "") or "")
+        failed = int(r.get("failed", 0) or 0)
+        green = failed == 0 and status not in _FAIL_STATES
+        out.append({"target": target, "red": not green, "green": green})
+    return out
+
+
+def _in_fix_scope(target: str, test_changed: List[str]) -> bool:
+    """Whether a run ``target`` belongs to the fix's own counter-test.
+
+    The fix's counter-test lives in the test file(s) the turn changed;
+    a target is in scope when its test FILE is one of them. This is the
+    guard that keeps an unrelated target's red+green from being read as
+    a control for the fix (QS findings A/B/C): only evidence on the
+    fix's own changed test records a control.
+    """
+    ft = _file_part(target)
+    return any(_same_test_file(t, ft) for t in test_changed)
+
+
 def assess(changed_files: Iterable, test_runs: Iterable) -> Optional[str]:
     """The report line for the turn's control-run evidence.
 
     ``changed_files``: paths the turn changed (product AND test files).
     ``test_runs``: recorded runs from the DURABLE ledger — every run
     ``{"target": <pytest target or node id>, "red": bool,
-    "green": bool}`` (a whole-file run may use ``file``). A control is
-    on record when the SAME target was seen red AND green.
+    "green": bool}`` (a whole-file run may use ``file``).
+
+    A control is **per node, on the fix's own counter-test**: the SAME
+    test node (``tests/test_x.py::test_y``) inside a changed test file
+    seen red and green. A red+green on an unrelated node or an unrelated
+    file is evidence for that node, not for the fix, and never proves a
+    control for it (reviewers s27/s28 probes). A whole-file target
+    (no ``::node``) is never a completed control: it cannot say which
+    node carried the red (QS finding B).
 
     Returns:
     * ``None`` — the turn changed no product file; nothing is added.
-    * ``"shown"`` — a control run is on record: some test target was
-      seen both red and green.
-    * one sentence naming what is missing otherwise. A completed control
-      wins over a green-only unrelated run, so a properly-controlled fix
-      is not sentenced just because the turn also holds a stale
-      green-only run.
+    * ``"shown"`` — a control run is on record on the fix's own
+      counter-test: a node inside a changed test file seen both red and
+      green. When NO test file changed (a product-only fix), any
+      controlled node stands in for the (pre-existing) counter-test.
+    * one sentence naming what is missing otherwise — and a missing
+      control on the fix's own test is NEVER masked by a completed
+      control elsewhere.
 
     Precedence (documented, not guessed):
     1. a changed test file that no run target covers — the fix's own
        counter-test sitting unrun;
-    2. a target seen green but never red (the classic "passes with and
-       without the fix");
-    3. a target seen red but never green after the change;
-    4. otherwise — a product change with no recorded run at all.
+    2. the fix's own scope: a node (or file) seen green but never red —
+       the classic "passes with and without the fix";
+    3. the fix's own scope: a node red but never green after the change;
+    4. the fix's own scope: a node seen both red and green -> "shown";
+    5. a product-only fix (no test file changed): a controlled node
+       anywhere -> "shown"; an uncontrolled one names what it lacks;
+    6. otherwise — a product change with no recorded run at all.
     """
     if not changed_files:
         return None
@@ -177,23 +233,66 @@ def assess(changed_files: Iterable, test_runs: Iterable) -> Optional[str]:
         if not any(_same_test_file(t, f) for f in run_files):
             return f"no control run: test {t} was changed but never run"
 
-    # A complete control on some TARGET is the strongest evidence.
-    if any(red and green for red, green in runs_by_target.values()):
-        return "shown"
+    def _node(t: str) -> bool:
+        """A target that names a specific test node (not a whole file)."""
+        return "::" in t
 
-    # 2/3. No complete control. Name the first offender in deterministic
-    # (sorted) order — the relative order between the two halves is
-    # explicit: a never-seen-red target first, then red-but-not-green.
+    def _target_sentence(t: str, verdict: str) -> str:
+        return f"no control run: test {t} {verdict}"
+
+    if test_changed:
+        # 2/3/4. The fix's own counter-test decides. Evaluate its scope
+        # in strict precedence, so a green-only node in the fix's own
+        # file is never masked by a red+green on a different node.
+        scope = [t for t in sorted(runs_by_target)
+                 if _in_fix_scope(t, test_changed)]
+        # 2. green but never red — the passing-without-the-fix marker.
+        never_red = [t for t in scope if not runs_by_target[t][0]
+                     and runs_by_target[t][1]]
+        if never_red:
+            return _target_sentence(never_red[0], "was never seen failing")
+        # 3. red but never green after the change.
+        red_not_green = [t for t in scope
+                         if runs_by_target[t][0] and not runs_by_target[t][1]]
+        if red_not_green:
+            return _target_sentence(
+                red_not_green[0],
+                "was seen failing but never passing after the change")
+        # 4. a completed control on a NODE inside the fix's own file.
+        controlled = [t for t in scope
+                      if runs_by_target[t][0] and runs_by_target[t][1]]
+        if any(_node(t) for t in controlled):
+            return "shown"
+        # The fix's scope ran (whole file only) but no node was pinned.
+        if controlled and not any(_node(t) for t in controlled):
+            return ("no control run: the run on "
+                    f"{controlled[0]} does not name a node that was "
+                    "seen red and green")
+        # The scope has no green and no red — no usable run for it.
+        return "no control run: no test run was recorded for the change"
+
+    # 5. A product-only fix (no test file changed): any controlled node
+    #    stands in for the counter-test. A whole-file target that claims
+    #    red AND green is ambiguous (which node failed?) and never reads
+    #    as a completed control (QS finding B).
+    controlled = [t for t in runs_by_target
+                  if runs_by_target[t][0] and runs_by_target[t][1]]
+    if any(_node(t) for t in controlled):
+        return "shown"
+    if controlled:
+        return ("no control run: the run on "
+                f"{controlled[0]} does not name a node that was "
+                "seen red and green")
     never_red = [t for t in sorted(runs_by_target)
-                 if not runs_by_target[t][0]]
+                 if not runs_by_target[t][0] and runs_by_target[t][1]]
     if never_red:
-        return (f"no control run: test {never_red[0]}"
-                " was never seen failing")
+        return _target_sentence(never_red[0], "was never seen failing")
     red_not_green = [t for t in sorted(runs_by_target)
                      if runs_by_target[t][0] and not runs_by_target[t][1]]
     if red_not_green:
-        return (f"no control run: test {red_not_green[0]}"
-                " was seen failing but never passing after the change")
+        return _target_sentence(
+            red_not_green[0],
+            "was seen failing but never passing after the change")
 
-    # 4. A product change with no recorded run at all.
+    # 6. A product change with no recorded run at all.
     return "no control run: no test run was recorded for the change"
