@@ -110,7 +110,6 @@ def test_symlink_and_fifo_do_not_hide_a_returned_snippet(index_home):
     """After a backfill the result list contains only real sessions --
     neither the fake symlink session nor the FIFO appears."""
     _write_session(index_home, "ok", text="searchable real content")
-    d = index_home / "agent_sessions"
 
     out_link = index_home / "agent_sessions" / "link.json"
     out_link.symlink_to(str(index_home / ".." / "target.json"))

@@ -48,8 +48,6 @@ def index_home(tmp_path, monkeypatch):
 def _write_session(home, sid, *, title="A session", messages=None,
                    archive=None):
     """Write a saved session exactly as session_store would."""
-    from delfin.agent import session_store
-
     d = home / "agent_sessions"
     data = {
         "session_id": sid,
