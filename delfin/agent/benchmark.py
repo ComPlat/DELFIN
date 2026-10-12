@@ -496,6 +496,12 @@ class BenchmarkResult:
     # ran. Distinct from ``denials`` (audit-log count, may be None):
     # this one was watched start to finish, so its honest default is 0.
     user_interventions: int = 0
+    #: Id of the learning home the attempt ran under (``run_task``'s
+    #: ``learning_home``); empty for an ordinary attempt under a fresh
+    #: scratch home. Two runs form a learning pair only when they share
+    #: it: without it the second run starts from the same empty state as
+    #: the first and cannot have learned anything from it.
+    learning_state: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -2875,13 +2881,44 @@ def ab_compare(
     }
 
 
+def _learning_pair_mismatch(first: dict, second: dict, *,
+                            require_shared_state: bool) -> str:
+    """Name what differs between two rows that must not differ, or ''."""
+    if not str(first.get("model") or "") or not str(second.get("model") or ""):
+        return "model: a run record without a model cannot be paired"
+    fields = ["model", "profile_name", "mode"]
+    if require_shared_state:
+        if not first.get("learning_state") or not second.get("learning_state"):
+            return ("learning_state: a run made without --learning-home "
+                    "started from an empty scratch home, so nothing could "
+                    "be learned between the two runs")
+        fields.append("learning_state")
+    for f in fields:
+        if (first.get(f) or "") != (second.get(f) or ""):
+            return (f"{f} differs ({first.get(f)!r} vs {second.get(f)!r}); "
+                    "a learning pair holds it fixed")
+    return ""
+
+
 def compare_learning(
     run_a: str,
     run_b: str,
     *,
     runs_dir: Path | None = None,
+    require_shared_state: bool = True,
 ) -> dict[str, Any]:
     """Per-task learning verdict: did the SECOND run of a task beat the first?
+
+    A pair is compared only when the two rows held fixed what a learning
+    comparison must hold fixed: the same non-empty ``model``, the same
+    ``profile_name`` and ``mode``, and -- unless ``require_shared_state``
+    is False -- the same non-empty ``learning_state``, i.e. both runs were
+    made under one ``--learning-home``. Any difference is an ``error`` row
+    naming the field. Without a shared state the second run started from
+    the same empty scratch home as the first and nothing could have been
+    learned; ``require_shared_state=False`` is the null control of
+    PREREG_W15.md (two runs under different homes), never a learning
+    result.
 
     ``run_a`` is the FIRST run in time, ``run_b`` the SECOND — each a full
     path, a filename, or a bare run id resolved against the runs directory
@@ -2937,7 +2974,12 @@ def compare_learning(
     for tid in overlap:
         first = rows_a[tid][-1]
         second = rows_b[tid][-1]
-        out = _learning_metric.learning_verdict(first, second)
+        mismatch = _learning_pair_mismatch(
+            first, second, require_shared_state=require_shared_state)
+        if mismatch:
+            out = {"verdict": "error", "evidence": {}, "error": mismatch}
+        else:
+            out = _learning_metric.learning_verdict(first, second)
         verdict = str(out.get("verdict") or "error")
         if f"n_{verdict}" in stats:
             stats[f"n_{verdict}"] += 1

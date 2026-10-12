@@ -31,6 +31,8 @@ def _row(*, task_id="l5_read_the_value_from_file", success=True,
     """One valid asdict(BenchmarkResult) row, as write_run writes it."""
     return {
         "task_id": task_id,
+        "model": "m",
+        "learning_state": "s",
         "success": success,
         "quality_0_100": quality_0_100,
         "tool_calls": tool_calls,

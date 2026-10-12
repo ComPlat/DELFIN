@@ -31,7 +31,8 @@ _ARTIFACT_TASKS = {"l5_read_the_value_from_file",
 
 def _row(task_id, *, success=True, tool_calls=6, input_tokens=300,
          output_tokens=150, duration_s=20.0, cost_usd=0.12, verify_ok=True):
-    return {"task_id": task_id, "success": success, "quality_0_100": 90,
+    return {"task_id": task_id, "model": "m", "learning_state": "s",
+            "success": success, "quality_0_100": 90,
             "tool_calls": tool_calls, "input_tokens": input_tokens,
             "output_tokens": output_tokens, "duration_s": duration_s,
             "cost_usd": cost_usd, "verify_ok": verify_ok}
