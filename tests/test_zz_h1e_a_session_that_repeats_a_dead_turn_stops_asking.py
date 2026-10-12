@@ -159,3 +159,43 @@ def test_every_engine_counts_for_itself(make):
     one.stream_response("b"); two.stream_response("b")
     one.stream_response("c")
     assert one._stall_guard_stopped and two._stall_guard_stopped == ""
+
+
+def test_a_turn_whose_second_request_is_answered_is_not_a_dead_turn(tmp_path):
+    """The engine asks once more inside the turn. When that request is
+    answered properly, the turn ended well: five such turns in a row are
+    five good turns, each with its one extra request."""
+
+    class _LeaksThenAnswers:
+        calls = 0
+
+        def stream_message(self, system=None, messages=None, *_a, **_k):
+            type(self).calls += 1
+            last_user = ""
+            for m in messages or []:
+                if m.get("role") == "user":
+                    last_user = str(m.get("content", ""))
+            text = ("Done, the file is written."
+                    if "expressed as literal markup" in last_user else _leak())
+            yield StreamEvent(type="text_delta", text=text)
+            yield StreamEvent(type="message_delta", stop_reason="end_turn",
+                              input_tokens=1, output_tokens=1)
+
+    client = _LeaksThenAnswers()
+    with patch("delfin.agent.engine.create_client", return_value=client):
+        eng = E.AgentEngine(repo_dir=str(tmp_path), backend="api",
+                            provider="kit", model="kit.qwen3.5-397b-A17b",
+                            mode="solo")
+    for i in range(5):
+        out = eng.stream_response(f"turn {i}")
+        assert "Done, the file is written." in out
+    assert eng._stall_guard_stopped == ""
+    assert _LeaksThenAnswers.calls == 10
+
+
+def test_an_engine_that_never_ran_its_constructor_still_notes_a_follow_up():
+    eng = object.__new__(E.AgentEngine)
+    eng._continuation_fired = False
+    eng._open_task_count = lambda: 1
+    eng.pending_turn_continuation = ""
+    eng._note_turn_continuation("Let me run the tests now.")   # must not raise

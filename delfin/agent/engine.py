@@ -2055,9 +2055,10 @@ class AgentEngine:
         """Real progress: a tool ran, or a person sent a message. The streak
         of identical turn endings starts over and a stop is lifted."""
         self._stall_guard_stopped = ""
-        if self._stall_guard is not None:
+        guard = getattr(self, "_stall_guard", None)
+        if guard is not None:
             try:
-                self._stall_guard.note_progress()
+                guard.note_progress()
             except Exception:
                 pass
 
@@ -4078,7 +4079,7 @@ class AgentEngine:
                 # STOP the re-request is skipped and the turn ends with the
                 # status; otherwise it is re-requested once as before.
                 _reran = None
-                if self._stall_guard is not None:
+                if getattr(self, "_stall_guard", None) is not None:
                     # The fingerprint is the tool, not the wording: the
                     # sentences around a leaked call differ every time, the
                     # call that never runs is the same.
@@ -4109,6 +4110,17 @@ class AgentEngine:
                         on_tool_result_meta=on_tool_result_meta,
                         on_wait=on_wait,
                     )
+                    # A turn is dead only when the re-requested answer was
+                    # the call written as text AGAIN. An answer that came
+                    # back as a real one is how the turn ended, and it ends
+                    # the streak.
+                    try:
+                        from delfin.agent.text_sanitize import (
+                            leaked_tool_call as _still_leaked)
+                        if not _still_leaked(_reran or ""):
+                            self._stall_progress()
+                    except Exception:
+                        pass
                 full_response = _reran
             elif not _dsml_name:
                 # The turn ended on a real answer: whatever repeated before
@@ -7004,7 +7016,7 @@ class AgentEngine:
         over."""
         if not answer or self._continuation_fired:
             return
-        if self._stall_guard_stopped:
+        if getattr(self, "_stall_guard_stopped", ""):
             return
         try:
             from delfin.agent.turn_continuation import should_continue
