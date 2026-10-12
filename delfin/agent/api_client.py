@@ -2207,6 +2207,14 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # and here-documents read as the shell reads them, because the
         # split below ignores quotes and cuts `"a;b"` in two.
         _text = _quoted_text_spans(_scan)
+        # In the quoted code of a non-shell interpreter a `>` touching `=`
+        # or following `-` is that language's operator (`>=`, `>>=`, `->`,
+        # `=>`, `<=>`): no shell parses that text, and the name after it is
+        # an operand, not a file. A bare `>` there is still reported, since
+        # `os.system('echo x > f')` writes f. A shell's argument (`bash -c`,
+        # `eval`) is re-parsed by that shell, so `>=` there -- like `>=`
+        # unquoted -- stays a redirect to a file named `=`.
+        _code = _quoted_text_spans(_scan, owners=_CODE_INTERPRETERS)
         _cuts = [0]
         for _sep in re.finditer(r"[;&|]{1,2}|\n", _scan):
             _cuts += [_sep.start(), _sep.end()]
@@ -2229,6 +2237,13 @@ def _bash_write_targets(cmd: str) -> list[str]:
             for m in _redirect.finditer(seg):
                 if any(lo <= _off + m.start() < hi for lo, hi in _text):
                     continue    # `>` inside quotes is text, not a redirection
+                _op = re.search(r">{1,2}", m.group(0))
+                _gt = _off + m.start() + _op.start()
+                _past = _off + m.start() + _op.end()
+                if (any(lo <= _gt < hi for lo, hi in _code)
+                        and (_scan[_gt - 1:_gt] in ("-", "=")
+                             or _scan[_past:_past + 1] == "=")):
+                    continue    # an operator of the interpreted language
                 tok = m.group(1)
                 if not tok.startswith("&"):
                     _add(tok)
@@ -3396,6 +3411,13 @@ def _sed_script_is_pure(script: str) -> bool:
                for stmt in script.split(";") if stmt.strip())
 
 
+# Non-shell interpreters: a quoted argument is code in their own language,
+# which no shell parses for redirects. `python3.11` is matched as `python3`.
+# Shells, `eval`, `awk` and `env`-style wrappers are deliberately absent.
+_CODE_INTERPRETERS = frozenset({
+    "python", "python2", "python3", "node", "nodejs", "perl", "ruby",
+    "Rscript", "R", "php"})
+
 # Programs whose quoted arguments are text they print, match or store --
 # never a script they run. Only for these is a quoted `>` not a redirection.
 _QUOTED_TEXT_PROGRAMS = frozenset({
@@ -3408,7 +3430,7 @@ _GIT_MESSAGE_SUBCOMMANDS = frozenset(
     {"commit", "tag", "merge", "log", "grep", "show", "notes", "stash"})
 
 
-def _quoted_text_spans(cmd: str) -> list:
+def _quoted_text_spans(cmd: str, owners: Optional[frozenset] = None) -> list:
     """``(start, end)`` of the spans of *cmd* whose ``>`` is text.
 
     Input: a whole shell command. Output: the quoted spans and here-document
@@ -3431,6 +3453,10 @@ def _quoted_text_spans(cmd: str) -> list:
     command), and a command gets no spans when it contains ``$(`` or a
     backtick, which run inside quotes and unquoted delimiters alike.
     Cost: one linear pass plus ``shlex.split`` per command.
+
+    With *owners*, the spans returned are those of commands whose program
+    (``pythonX.Y`` read as ``pythonX``) is in that set instead, the
+    git subcommand rule not applied; same reading, same empty results.
     """
     import shlex
     n = len(cmd)
@@ -3520,7 +3546,10 @@ def _quoted_text_spans(cmd: str) -> list:
         while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
             argv = argv[1:]
         name = Path(argv[0]).name if argv else ""
-        if name not in _QUOTED_TEXT_PROGRAMS or (
+        if owners is not None:
+            if re.sub(r"^(python[23])\.\d+$", r"\1", name) not in owners:
+                continue
+        elif name not in _QUOTED_TEXT_PROGRAMS or (
                 name == "git" and (len(argv) < 2
                                    or argv[1] not in _GIT_MESSAGE_SUBCOMMANDS)):
             continue
