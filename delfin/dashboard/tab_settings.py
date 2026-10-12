@@ -520,6 +520,31 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         description='Window',
         layout=widgets.Layout(width='170px', height='28px'),
     )
+    # Action classifier (agent.classifier.*): a model's second opinion on
+    # what the rules allow unseen. Rules decide first; the classifier can only
+    # add friction (never allow what a rule refuses). Default on, scope
+    # "unattended"; the second checkbox writes scope "all".
+    classifier_enabled_toggle = widgets.Checkbox(
+        description='Action classifier enabled (model-based second opinion)',
+        value=True, indent=False,
+    )
+    classifier_broad_toggle = widgets.Checkbox(
+        description=('Also judge auto-allowed commands and auto-accepted '
+                     'edits in every mode (one model round trip per action)'),
+        value=False, indent=False,
+    )
+    classifier_model_input = widgets.Combobox(
+        placeholder='Model (default kit.deepseek-v4-flash)',
+        options=sorted({m for opts in _JOBMON_MODEL_SUGGESTIONS.values()
+                        for m in opts}),
+        value='',
+        ensure_option=False,   # free typing stays allowed
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    classifier_rules_input = widgets.Textarea(
+        placeholder="One per line, e.g.:\nnever allow: git push origin main\nalways allow: git push origin my-topic-branch",
+        layout=widgets.Layout(width='100%', min_width='280px', height='64px'),
+    )
     # Subagent per-run limits (agent.subagents.*). The fallbacks are READ
     # from the backend instead of repeated here — a copied number silently
     # drifts the moment the backend budget changes.
@@ -663,6 +688,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 'window': int(evalloop_window_input.value or 200),
             })
             payload['agent']['eval_loop'] = evalloop
+            classifier = dict(payload['agent'].get('classifier') or {})
+            classifier.update({
+                'enabled': bool(classifier_enabled_toggle.value),
+                'scope': ('all' if classifier_broad_toggle.value
+                          else 'unattended'),
+                'model': str(classifier_model_input.value or '').strip(),
+                # Free-text user rules: the classifier can only ADD friction
+                # (an "always allow" rule never lifts a rule refusal). One
+                # statement per line; blank lines ignored.
+                'user_rules': [
+                    ln.strip() for ln in
+                    str(classifier_rules_input.value or '').splitlines()
+                    if ln.strip()],
+            })
+            payload['agent']['classifier'] = classifier
             subs = dict(payload['agent'].get('subagents') or {})
             subs.update({
                 'max_wall_s': int(subagent_wall_input.value or _SA_WALL),
@@ -1253,6 +1293,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             evalloop_window_input.value = int(evalloop_payload.get('window', 200) or 200)
         except Exception:
             evalloop_window_input.value = 200
+        classifier_payload = agent_payload.get('classifier') or {}
+        classifier_enabled_toggle.value = bool(
+            classifier_payload.get('enabled', True))
+        classifier_broad_toggle.value = (
+            str(classifier_payload.get('scope') or '').strip().lower() == 'all')
+        classifier_model_input.value = str(
+            classifier_payload.get('model') or '').strip()
+        classifier_rules_input.value = '\n'.join(
+            classifier_payload.get('user_rules') or [])
         subagents_payload = agent_payload.get('subagents') or {}
         try:
             subagent_wall_input.value = int(subagents_payload.get('max_wall_s', _SA_WALL) or _SA_WALL)
@@ -3884,6 +3933,30 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             widgets.HBox(
                 [widgets.HTML('<b>Model</b>'), automem_model_input],
                 layout=_row_layout,
+            ),
+            widgets.HTML('<b style="margin-top:6px; display:block;">'
+                         '🛡 Action classifier (second opinion)</b>'),
+            widgets.HBox(
+                [classifier_enabled_toggle], layout=_row_layout,
+            ),
+            widgets.HBox(
+                [classifier_broad_toggle], layout=_row_layout,
+            ),
+            widgets.HBox(
+                [widgets.HTML('<b>Model</b>'), classifier_model_input],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
+                [classifier_rules_input], layout=_row_layout,
+            ),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                'Rules decide first; the classifier only adds friction, never '
+                'allows what a rule refuses. By default it judges what runs '
+                'under Bypass, messages to other agents and network calls. '
+                'User rules, one per line, start with "never allow" or '
+                '"always allow".'
+                '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'
                          '🤖 Subagent limits (per delegated run)</b>'),
