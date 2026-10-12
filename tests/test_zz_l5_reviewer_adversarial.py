@@ -48,11 +48,13 @@ def _rec(*, task_id="l5_read_the_value_from_file", success=True,
 
 
 def test_mixed_better_and_worse_is_regressed():
-    """Second is faster (tool_calls down) but costlier (cost_usd up) -> the
-    pre-registration names a partially-worse run 'regressed', not the all-
-    equal 'no_learning' and not 'learned'."""
-    first = _rec(tool_calls=6, cost_usd=0.12)
-    second = _rec(tool_calls=4, cost_usd=0.20)  # better on calls, worse on cost
+    """Second is faster (tool_calls down) but more think-work (tokens_total
+    up) -> the pre-registration names a partially-worse run 'regressed', not
+    the all-equal 'no_learning' and not 'learned'. After the operator F1,
+    only the COUNTED proxies (tool_calls, tokens_total) decide, so a mixed
+    move on counted proxies is what must still yield 'regressed'."""
+    first = _rec(tool_calls=6, output_tokens=150)
+    second = _rec(tool_calls=4, output_tokens=400)  # better on calls, worse on tokens_total
     out = VERD(first, second)
     assert out["verdict"] == "regressed"
     assert out["error"] is None
@@ -208,10 +210,11 @@ def test_second_better_on_all_proxies_is_learned():
 
 
 def test_single_proxy_worse_is_regressed():
-    """Only cost went up while everything else is equal -> regressed, because
-    at least one proxy strictly worsened and no proxy improved."""
-    first = _rec(cost_usd=0.12)
-    second = _rec(cost_usd=0.18)
+    """Only tokens_total went up (more output) while tool_calls stays equal
+    -> regressed, because a counted proxy strictly worsened and none
+    improved. (cost_usd/duration_s no longer decide after operator F1.)"""
+    first = _rec(tool_calls=6, output_tokens=150)
+    second = _rec(tool_calls=6, output_tokens=250)
     out = VERD(first, second)
     assert out["verdict"] == "regressed"
     assert out["error"] is None
