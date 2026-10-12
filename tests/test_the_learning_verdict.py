@@ -219,3 +219,17 @@ def test_the_inputs_are_not_mutated():
     before = (repr(first), repr(second))
     VERD(first, second)
     assert (repr(first), repr(second)) == before
+
+
+def test_an_empty_task_id_is_not_a_task():
+    out = VERD(_rec(task_id=""), _rec(task_id="", tool_calls=2))
+    assert out["verdict"] == "error"
+    assert "task_id" in out["error"]
+
+
+def test_a_negative_count_is_an_error_not_a_saving():
+    for over in ({"tool_calls": -1}, {"input_tokens": -500},
+                 {"per_run_tool_calls": [6, 6, 6, 6, -1]},
+                 {"per_run_tokens_total": [450, 450, -1, 450, 450]}):
+        out = VERD(_rec(), _rec(**over))
+        assert out["verdict"] == "error", over
