@@ -20360,6 +20360,24 @@ class _DocToolExecutor:
                 "carry out the work and report it. Calling this again will "
                 "return the same answer."
             )})
+        # A sub-agent's plan goes to the agent that delegated it, not to
+        # the user's plan dialog: the child inherits the parent's
+        # callback through dataclasses.replace, and calling it put the
+        # child's plan on the parent's screen, blocked the child for the
+        # dashboard's 180 s window and left a "pending plan" in the saved
+        # session. An approval there would also lift the child out of a
+        # mode clamped from its parent. The child stays in plan mode.
+        if int(getattr(perms, "subagent_depth", 0) or 0) > 0:
+            return json.dumps({
+                "status": "returned_to_parent",
+                "message": (
+                    "You are a sub-agent: your plan is not put to the user "
+                    "and nothing here approves it. Plan mode stays active. "
+                    "End now and return the plan as your final report; the "
+                    "agent that delegated this task decides what happens "
+                    "next."
+                ),
+            })
         # A plan is already on screen and unanswered. Return NOW, without
         # touching the approval callback -- that callback blocks for the
         # whole approval window, and this is the second time through.
