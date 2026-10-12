@@ -311,8 +311,10 @@ def import_bundle(path: str | os.PathLike, *, source: str = "shared") -> dict:
 
     # F1 (operator overrules the earlier QS ruling): an import ARRIVES AS A
     # PROPOSAL. propose() with ONE honest provenance evidence entry stores it
-    # (never a claim of a test): kind "recipe", ref the bundle sha256, detail
-    # saying it is not verified on this machine. Unsafe text (git-push /
+    # (never a claim of a test): kind "shared", ref the bundle sha256, detail
+    # saying it is not verified on this machine. The kind matters: "recipe"
+    # verifies in any workspace that has a verify recipe, whatever its ref,
+    # so a bundle would have been acceptable with no check at all. Unsafe text (git-push /
     # curl / a secret) is STORED "blocked" by propose's own safety scan; clean
     # text is STORED "pending"; accept() still refuses at the evidence gate
     # until local evidence verifies (skill_proposals docstring :236 names this
@@ -320,7 +322,7 @@ def import_bundle(path: str | os.PathLike, *, source: str = "shared") -> dict:
     from . import skill_proposals
     from .skill_proposals import Evidence
     provenance = Evidence(
-        kind="recipe",
+        kind="shared",
         ref=stored_sha,
         detail=f"imported bundle, author label {author!r}, "
                "not verified on this machine",
@@ -330,7 +332,10 @@ def import_bundle(path: str | os.PathLike, *, source: str = "shared") -> dict:
         text,
         evidence=[provenance],
         source=source,
-        base_version=version,
+        # No base_version: with one, propose() treats the proposal as a PATCH
+        # of the live skill of the same name, and accepting it would replace
+        # this user's own skill. An import is always a new proposal under a
+        # free name; the exporter's version stays in the returned record.
     )
     return {"status": proposal.status,
             "source": proposal.source,

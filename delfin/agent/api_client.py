@@ -21198,18 +21198,28 @@ class _DocToolExecutor:
             return json.dumps({"error": (
                 "plan mode (read-only) — skill_export rejected. Present "
                 "the plan first.")})
-        name = str(arguments.get("name") or "")
+        name = str(arguments.get("name") or "").strip()
         target_dir = str(arguments.get("target_dir") or "")
         if not name or not target_dir:
             return json.dumps({"error": (
                 "skill_export needs 'name' and a 'target_dir'")})
+        if "/" in name or "\\" in name or name.startswith("."):
+            return json.dumps({"error": f"invalid skill name: {name!r}"})
+        # The gate decides about the FILE that is written, at the place it
+        # is written: a relative folder is taken from the workspace (not
+        # from wherever the process happens to stand), and the bundle's own
+        # path is what is asked about, not only the folder around it.
+        folder = Path(target_dir).expanduser()
+        if not folder.is_absolute():
+            folder = Path(perms.workspace) / folder
+        bundle_path = folder / f"{name}.skill.json"
         gate_err = self._gate_write_path(
-            target_dir, perms, "skill_export", arguments)
+            str(bundle_path), perms, "skill_export", arguments)
         if gate_err is not None:
             return json.dumps({"error": gate_err})
         try:
             from .skill_share import export_bundle
-            text = export_bundle(name, target_dir,
+            text = export_bundle(name, str(folder),
                                  author=str(arguments.get("author") or ""))
         except Exception as exc:
             return json.dumps({"error": str(exc)})
@@ -21242,16 +21252,22 @@ class _DocToolExecutor:
         path = str(arguments.get("path") or "")
         if not path:
             return json.dumps({"error": "skill_import needs a 'path'"})
+        bundle = Path(path).expanduser()
+        if not bundle.is_absolute():
+            bundle = Path(perms.workspace) / bundle
         denied = self._check_read_access(
-            perms, Path(path), label="skill_import")
+            perms, bundle, label="skill_import")
         if denied is not None:
             return json.dumps({"error": denied})
         try:
             from .skill_share import import_bundle
-            info = import_bundle(path)
+            info = import_bundle(str(bundle))
         except Exception as exc:
             return json.dumps({"error": str(exc)})
-        return json.dumps(info, ensure_ascii=False)
+        # The bundle was written by someone else. What it says -- the skill
+        # text, the author label, the reasons of a block -- reaches the
+        # model fenced as outside content, never as the harness speaking.
+        return _wrap_untrusted(json.dumps(info, ensure_ascii=False))
 
     # ------- Plan-mode roundtrip ------------------------------------------
 
