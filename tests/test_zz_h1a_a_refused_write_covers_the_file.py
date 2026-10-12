@@ -153,3 +153,47 @@ def test_a_timeout_is_absence_and_closes_nothing(ws):
     dialog.last_timed_out = False
     dialog.answer = True
     assert _bash(ex, perms, "cp a f.txt") is None
+
+
+def test_a_cd_in_the_command_decides_which_file(ws):
+    """`cd sub && ... > f` writes sub/f: that is the file refused, not f."""
+    ex, perms, dialog = _session(ws)
+    assert _bash(ex, perms, "cd sub && ./tool > f.txt") is not None
+    dialog.answer = True
+    assert _bash(ex, perms, "./tool2 > f.txt") is None
+    out = _bash(ex, perms, "./tool2 > sub/f.txt")
+    assert out and "already refused" in out
+    out = _bash(ex, perms, "cd sub && ./tool2 > ../sub/f.txt")
+    assert out and "already refused" in out
+
+
+def test_a_git_restore_of_the_file_is_the_same_write(ws):
+    """patch_targets names the paths of git checkout/restore; the write
+    gate gates them, so the refusal reads them too -- both ways."""
+    ex, perms, dialog = _session(ws)
+    assert _bash(ex, perms, "./tool > f.txt") is not None
+    out = _bash(ex, perms, "git checkout -- f.txt")
+    assert out and "already refused" in out
+    assert len(dialog.asked) == 1
+    ex, perms, dialog = _session(ws)
+    assert _bash(ex, perms, "git restore f.txt") is not None
+    out = _bash(ex, perms, "./tool > f.txt")
+    assert out and "already refused" in out
+    assert len(dialog.asked) == 1
+
+
+def test_a_refusal_in_the_classifiers_dialog_closes_the_file_too(
+        ws, monkeypatch):
+    monkeypatch.setattr(
+        A, "_classifier_settings",
+        lambda: {"model": "m", "rules": [], "broad": True})
+    ex, perms, dialog = _session(ws, mode="bypassPermissions")
+    perms.classifier_runner = (
+        lambda prompt, model:
+        "DECISION: ask\nREASON: the request does not mention this.")
+    perms.classifier_messages = [{"role": "user", "content": "look around"}]
+    assert _bash(ex, perms, "./tool > f.txt") is not None
+    assert len(dialog.asked) == 1
+    out = _bash(ex, perms, "cp a f.txt")
+    assert out and "already refused" in out
+    assert len(dialog.asked) == 1
