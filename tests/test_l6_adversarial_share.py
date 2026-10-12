@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 import delfin.agent.skill_share as ss
+from delfin.agent.skills import discover_skills
 
 
 @pytest.fixture
@@ -185,3 +186,57 @@ def test_import_refuses_a_symlinked_bundle(home, tmp_path):
     if not scraped:
         with pytest.raises(Exception):
             ss.import_bundle(link)
+# --------------------------------------------------------------------------
+# author / version scrub (finding s17, fix bd4568f7): machine identity in the
+# author or version bundle field must BLOCK on export AND re-scrub on import
+# --------------------------------------------------------------------------
+
+def test_export_blocked_when_author_carries_userhost(home, tmp_path):
+    """A user@host in the author label blocks the export, naming the field,
+    and nothing is written (phase-2 'user or host name BLOCKS')."""
+    _install_accepted(home)
+    with pytest.raises(Exception) as err:
+        ss.export_bundle("shared-skill", str(tmp_path), author="alice@srv")
+    assert "author" in str(err.value)
+    assert not _bundle_path(tmp_path).exists()
+
+
+def test_export_blocked_when_author_carries_absolute_path(home, tmp_path):
+    """An absolute path in the author label blocks the export."""
+    _install_accepted(home)
+    with pytest.raises(Exception) as err:
+        ss.export_bundle("shared-skill", str(tmp_path), author="/home/x/me")
+    assert "author" in str(err.value)
+    assert not _bundle_path(tmp_path).exists()
+
+
+def test_export_blocked_when_version_carries_machine_ref(home, tmp_path):
+    """A machine ref in the version (from proposal.json base_version) blocks
+    the export naming the field."""
+    _install_accepted(home)
+    meta = json.loads((_live_dir(home, "shared-skill") / "proposal.json").read_text("utf-8"))
+    meta["base_version"] = "/home/x/base"
+    (_live_dir(home, "shared-skill") / "proposal.json").write_text(json.dumps(meta), "utf-8")
+    with pytest.raises(Exception) as err:
+        ss.export_bundle("shared-skill", str(tmp_path))
+    assert "version" in str(err.value)
+    assert not _bundle_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize("author", ["alice@srv", "/home/x/me"])
+def test_import_rescrubs_author_never_verified(home, tmp_path, author):
+    """A hash-valid bundle whose author carries machine identity is re-scrubbed
+    on import: status 'blocked' (never 'verified', never active)."""
+    bundle = _make_valid_bundle(tmp_path, author=author)
+    info = ss.import_bundle(bundle)
+    assert info["status"] == "blocked"
+    assert "shared-skill" not in [s.name for s in discover_skills()]
+
+
+def test_import_rescrubs_version_never_verified(home, tmp_path):
+    """A hash-valid bundle whose version carries machine identity is re-scrubbed
+    on import: status 'blocked'."""
+    bundle = _make_valid_bundle(tmp_path, version="v1 /home/x/base")
+    info = ss.import_bundle(bundle)
+    assert info["status"] == "blocked"
+    assert "shared-skill" not in [s.name for s in discover_skills()]
