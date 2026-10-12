@@ -1,18 +1,23 @@
 """delfin.fffree.aromatic_bond_targets — delocalised aromatic bond-length targets.
 
-Aggregate aromatic (bond order "aromatic") bond-length averages per element pair,
-in angstrom.  These are TEXTBOOK / CCDC-calibrated mean lengths for the fully
-delocalised (mesomerism-equalised) ring bond — the length at which a benzene C-C,
-a pyridine C-N, a furan C-O, a thiophene C-S or a pyrazole N-N actually sits in
-real crystal structures, NOT the single-bond covalent sum (~1.52 for C-C) that a
-covalent-radius prior would give and NOT a Kekule-localised 1.34/1.50 alternation.
+Aromatic (bond order "aromatic") bond lengths per element pair, in angstrom, for
+the fully delocalised (mesomerism-equalised) ring bond — the length at which a
+benzene C-C, a pyridine C-N, a furan C-O, a thiophene C-S or a pyrazole N-N
+actually sits in real crystal structures, NOT the single-bond covalent sum (~1.52
+for C-C) that a covalent-radius prior would give and NOT a Kekule-localised
+1.34/1.50 alternation.
+
+⚠ PROVENANCE.  The five values are medians of our own statistics on CSD crystal
+structures (bond order "ar" of ligand bonds in metal complexes).  They are one of
+the two values of the shipped configuration that are still CSD-derived; a
+re-derivation by the same method from the COD (CC0) reproduces them to within
+0.012 A (C-C identical) and will replace them.  See delfin/manta/PROVENANCE.md.
 
 They are deliberately VENDORED here (a plain dict, no external dependency) so the
 public DELFIN construction path can seat aromatic rings at the right length with
-NO import from the private eye / weddell repositories.  The values are the eye's
-`org_prior_band` mu for bond order "ar" (its ground-truth aromatic prior); do NOT
-replace them with a Pyykko single<->double interpolation (1.393 / 1.333 / ...) or
-any other covalent-radius estimate — those optimise the ring to the wrong point.
+NO import from any other repository.  Do NOT replace them with a Pyykko
+single<->double interpolation (1.393 / 1.333 / ...) or any other covalent-radius
+estimate — those optimise the ring to the wrong point.
 
 Universality note: the table is intentionally small (the common aromatic ring-bond
 element pairs).  Any pair NOT listed returns ``None`` from :func:`aromatic_target`,

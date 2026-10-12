@@ -36,7 +36,7 @@ _USE_COD_BONDS = os.environ.get("DELFIN_FFFREE_COD_BONDS", "0") == "1"
 _RIGID_H_DRAG = os.environ.get("DELFIN_FFFREE_RIGID_H_DRAG", "0") == "1"
 
 # Iter 31 (aromatic bond-length ROOT seat, User 2026-07-17): seat aromatic ring
-# bonds at their delocalised CCDC targets DURING this coordinate descent, so
+# bonds at their delocalised targets (aromatic_bond_targets) DURING this coordinate descent, so
 # metal-COORDINATED aromatic rings are built at the right length (coherent
 # relaxation) instead of being dragged post-hoc.  The frozen metal+donor atoms
 # (``fixed_idx``) keep the coordination invariant while the FREE ring atoms move

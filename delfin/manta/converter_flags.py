@@ -1058,9 +1058,9 @@ existing gate the symmetric LOWER bound it lacks, via two universal,
 silent-on-clean signals that mirror the WEDDELL ``find_planar_collapse``
 axis: (A) an sp3 centre whose four nearest bonded neighbours have a
 tetra-volume below ``DELFIN_COLLAPSE_TETRA_VOL_MIN`` A^3 (a real sp3 centre
-is ~1.5-2.5, clean-CCDC floor 0.81, even in a flat ring); (B) any covalent
+is ~1.5-2.5 and stays well above the floor even in a flat ring); (B) any covalent
 bond compressed below ``DELFIN_COLLAPSE_BOND_MIN_SCALE`` x the covalent-radius
-sum (below every real bond order -- clean shortest single 0.73x, triple N#N
+sum (below every real bond order, triple N#N
 ~0.77x).  The existing embed-retry then re-embeds the conformer; one that
 stays collapsed is dropped (it is physically impossible)."""
 
@@ -1069,14 +1069,14 @@ DELFIN_COLLAPSE_TETRA_VOL_MIN: float = _delfin_env_float(
     "DELFIN_COLLAPSE_TETRA_VOL_MIN", 0.40
 )
 """sp3 tetra-volume (A^3) floor for the collapse-reject; below this the centre
-is planar-collapsed (clean-CCDC min 0.81, so 0.40 is a 2x silent margin)."""
+is planar-collapsed (hand-set with a wide margin below real sp3 centres)."""
 
 
 DELFIN_COLLAPSE_BOND_MIN_SCALE: float = _delfin_env_float(
     "DELFIN_COLLAPSE_BOND_MIN_SCALE", 0.65
 )
 """Lower bound on a covalent bond length relative to the covalent-radius sum
-for the collapse-reject (clean-CCDC shortest bond 0.73x -> 0.65 is silent)."""
+for the collapse-reject (hand-set below the shortest real bonds, so silent on clean structures)."""
 
 
 DELFIN_FINAL_GATE_ENABLED: int = _delfin_env_int("DELFIN_FINAL_GATE_ENABLED", 1)
