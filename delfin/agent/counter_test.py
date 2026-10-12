@@ -166,6 +166,162 @@ def normalize_test_runs(test_runs: Iterable) -> list:
     return out
 
 
+# PS # -- the durable cross-turn reconstruction --------------------------
+# The parsing regexes below mirror delfin/agent/api_client.py:10732-10782
+# (`_TEST_BASH_CMD_RE`, `_parse_test_counts`, `_failing_test_files`,
+# `_clear_green_targets`) so the durable reconstruction in
+# `durable_test_runs` classifies a run exactly the way the live per-turn
+# ledger (`_observe_test_evidence`, api_client.py:11126) does. This module
+# stays dependency-free; the regexes are copied so a pure, gated test can
+# run without importing the api client.
+
+import re as _re
+
+_TEST_CMD_RE = _re.compile(
+    r"(?:^|[;&|(])\s*(?:python[\d.]*\s+-m\s+(?:pytest|unittest)\b"
+    r"|pytest\b|py\.test\b)"
+)
+_PYTEST_PASSED_RE = _re.compile(r"(\d+)\s+passed\b")
+_PYTEST_FAILED_RE = _re.compile(r"(\d+)\s+failed\b")
+_PYTEST_ERROR_RE = _re.compile(r"(\d+)\s+errors?\b")
+_UNITTEST_FAIL_RE = _re.compile(
+    r"FAILED\s*\((?:failures=(\d+))?(?:,\s*)?(?:errors=(\d+))?\)")
+_PYTEST_FAILED_LINE_RE = _re.compile(
+    r"^(?:FAILED|ERROR)\s+([\w./\\-]+\.py)", _re.MULTILINE)
+_ANSI_ESCAPE_RE = _re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_FAIL_STATES = ("failed", "error", "gave_up")
+
+
+def _parse_test_counts(output: str):
+    """(passed, failed+errors) from pytest/unittest console output.
+    (0, 0) when nothing matched — combine with the exit code/admitted
+    failure, mirroring api_client._parse_test_counts :10750."""
+    text = output or ""
+    passed = failed = errors = 0
+    m = _PYTEST_PASSED_RE.search(text)
+    if m:
+        passed = int(m.group(1))
+    m = _PYTEST_FAILED_RE.search(text)
+    if m:
+        failed = int(m.group(1))
+    m = _PYTEST_ERROR_RE.search(text)
+    if m:
+        errors = int(m.group(1))
+    m = _UNITTEST_FAIL_RE.search(text)
+    if m:
+        failed += int(m.group(1) or 0)
+        errors += int(m.group(2) or 0)
+    return passed, failed + errors
+
+
+def _failing_test_files(output: str):
+    """Test files named in 'FAILED/ERROR tests/x.py' summary lines, colors
+    stripped — mirror api_client._failing_test_files :10774."""
+    clean = _ANSI_ESCAPE_RE.sub("", output or "")
+    return {m.group(1) for m in _PYTEST_FAILED_LINE_RE.finditer(clean)}
+
+
+def _trace_entry_command(entry: dict) -> str:
+    """The shell command of a durable tool_trace entry, or ''.
+
+    A trace entry carries its call input as JSON (``tool_trace.call_args``
+    :145); a bash-like call's target test command is the ``command``
+    argument when present, else the entry's own ``tool`` name cannot say
+    which tests it ran. Mirrors tool_trace.command_of :171 but also reads
+    the raw input string so the pure reconstruction needs no import."""
+    raw = entry.get("input")
+    if isinstance(raw, dict):
+        return str(raw.get("command") or "")
+    if isinstance(raw, str):
+        try:
+            parsed = __import__("json").loads(raw)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            return str(parsed.get("command") or "")
+        return raw[:400] if _TEST_CMD_RE.search(raw) else ""
+    return ""
+
+
+def _run_status_from(failed: int, exit_code) -> str:
+    """The same status word ``_observe_test_evidence`` would assign."""
+    if failed:
+        return "failed"
+    if exit_code == 0:
+        return "ok"
+    if exit_code is None:
+        return "unknown"
+    return "failed" if exit_code != 0 else "ok"
+
+
+def durable_test_runs(trace_entries, *, now=None) -> list:
+    """Reconstruct the per-turn test-run ledger from the DURABLE tool_trace.
+
+    ``assess`` needs a red from an EARLIER turn to decide a control, but
+    the live verify ledger (``_observe_test_evidence``) is per-turn and is
+    replaced at every turn start — so the "seen red before the change"
+    observation is not in the current turn's ``tests`` argument. This pure
+    function rebuilds the run records across turns from the durable
+    ``tool_trace`` entries (``{tool, input, output, ok, ts}``): every call
+    whose command targets pytest becomes one record in the same shape the
+    per-turn ledger emits — ``{"tool", "command", "exit_code", "status",
+    "passed", "failed", "ts"}`` — which ``normalize_test_runs`` then maps
+    to ``{"target", "red", "green"}`` for ``assess``.
+
+    A green run is one that demonstrably executed tests and failed none: a
+    bare exit-0 from ``--version`` is not a run (mirrors
+    ``_observe_test_evidence`` :11189-11192). An entry that carries no
+    test command or no readable evidence is dropped.
+
+    ``now`` pins the timestamp for determinism in tests (defaults to each
+    entry's recorded ``ts``).
+
+    Returns a list of run records suitable for ``normalize_test_runs``.
+    """
+    out = []
+    for e in (trace_entries or ()) if isinstance(trace_entries, (list, tuple, set)) else []:
+        if not isinstance(e, dict):
+            continue
+        cmd = _trace_entry_command(e)
+        if not _TEST_CMD_RE.search(cmd):
+            continue
+        tool = str(e.get("tool", "") or "")
+        output = str(e.get("output", "") or "")
+        exit_code = e.get("ok")
+        if isinstance(exit_code, bool):
+            # ``ok`` (True/False) is the durable record's success flag; the
+            # per-turn shape wants the integer exit code we infer from it.
+            exit_code = 0 if exit_code else 1
+        try:
+            exit_code = int(exit_code)
+        except (TypeError, ValueError):
+            exit_code = None
+        passed, failed = _parse_test_counts(output)
+        # A non-zero exit beats a missing summary line (api_client :11179):
+        # a failed run whose output lacks the "N failed" line is still red.
+        if failed == 0 and isinstance(exit_code, int) and exit_code != 0:
+            failed = 1
+        # A run that demonstrated no tests (no "N passed", no "N failed")
+        # is not evidence of anything — a bare `--version`, `--help` or
+        # `--collect-only` — and must not masquerade as a green run
+        # (api_client :11189-11192: only a run that demonstrably executed
+        # tests clears red state).
+        if failed == 0 and passed == 0:
+            continue
+        status = _run_status_from(failed, exit_code)
+        ts = float(e.get("ts") or 0) if now is None else float(now)
+        out.append({
+            "tool": (tool or "bash"),
+            "command": cmd[:300],
+            "exit_code": exit_code,
+            "status": status,
+            "passed": passed,
+            "failed": failed,
+            "ts": ts,
+        })
+    return out
+
+
 def _in_fix_scope(target: str, test_changed: List[str]) -> bool:
     """Whether a run ``target`` belongs to the fix's own counter-test.
 
