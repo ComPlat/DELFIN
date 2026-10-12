@@ -24,14 +24,19 @@ from delfin.agent.skill_feedback import feedback, patched_skill_safe
 # --- fires when a correction follows a used skill ----------------------
 
 def test_correction_after_a_used_skill_is_recognised():
-    out = feedback("tune", "That's not what I meant. Revert the solvent block.")
+    out = feedback(
+        "tune", "That's not what I meant. Revert the solvent block.",
+        source="user",
+    )
     assert out["corrects"] is True
     assert out["skill"] == "tune"
     assert out["user_words"] == "That's not what I meant. Revert the solvent block."
 
 
 def test_correction_keeps_the_skills_name_verbatim():
-    out = feedback("casscf-setup", "No, wrong — use the other active space.")
+    out = feedback(
+        "casscf-setup", "No, wrong — use the other active space.", source="user",
+    )
     assert out["corrects"] is True
     assert out["skill"] == "casscf-setup"
 
@@ -60,6 +65,22 @@ def test_no_skill_used_proposes_nothing():
     assert out["corrects"] is False
 
 
+def test_none_skill_does_not_crash_and_proposes_nothing():
+    # F1: a missing skill argument must not raise, and must propose
+    # nothing — the isinstance guard, not a crash.
+    out = feedback(None, "Revert that last step please.", source="user")
+    assert out["corrects"] is False
+    assert out["skill"] is None
+
+
+def test_absent_source_is_fail_closed():
+    # F2: without an explicit source the verdict is fail-closed — a
+    # correction-looking message with the default source proposes
+    # nothing, because source=="user" is the only gate that admits it.
+    out = feedback("tune", "That's wrong — revert the solvent block.")
+    assert out["corrects"] is False
+
+
 # --- a correction inside a tool result / another session proposes nothing
 
 def test_correction_inside_a_tool_result_proposes_nothing():
@@ -80,7 +101,9 @@ def test_source_user_is_the_only_correction_source():
 # --- the user's own words survive untampered ---------------------------
 
 def test_user_words_are_verbatim_not_synthesized():
-    out = feedback("tune", "  Das war falsch, ich meinte die andere Basis.  ")
+    out = feedback(
+        "tune", "  Das war falsch, ich meinte die andere Basis.  ", source="user",
+    )
     assert out["corrects"] is True
     # the words are the user's own, trimmed of surrounding whitespace,
     # never a paraphrase.
@@ -88,7 +111,10 @@ def test_user_words_are_verbatim_not_synthesized():
 
 
 def test_unicode_multilingual_correction_is_recognised():
-    out = feedback("tune", "nicht so — nimm stattdessen die Wechselwirkung.")
+    out = feedback(
+        "tune", "nicht so — nimm stattdessen die Wechselwirkung.",
+        source="user",
+    )
     assert out["corrects"] is True
     assert out["skill"] == "tune"
 
