@@ -141,3 +141,24 @@ pair, plus the three values (first/second) per proxy. Numbers quoted from the
 run files with their paths. A pair whose second run is `wrong` or `regressed`
 is a negative result and is reported as such — the metric exists to expose
 that, not to pass.
+
+## Amendment 2026-10-12 — the verdict is decided by the counted fields only
+
+**Deviation (operator finding F1, confirmed by QS s29, both prior reviewers
+missed it):** the pre-registration above let `duration_s` and `cost_usd`
+decide the verdict under strict inequality. Wall clock is never equal between
+two real runs, so `no_learning` was effectively unreachable and two runs with
+identical `tool_calls` and `tokens_total` came out `learned` or `regressed`
+on timing/cost noise alone. That broke the brief (identical counted work must
+score `no_learning`, not `learned`).
+
+**Amended decision rule** (fixed before any run — none has happened): the
+verdict is decided **only** by the counted proxies `tool_calls` and
+`tokens_total` (`tokens_total = input_tokens + output_tokens`). A proxy is
+`better` on strict `b < a`, `worse` on strict `b > a`; `no_learning` when
+both counted fields are equal on both runs; `learned` when one improves with
+none worsening; `regressed` when one worsens with none improving or the
+result is mixed. `duration_s` and `cost_usd` remain REQUIRED, validated, and
+reported in the evidence, but they **never** decide `learned` / `regressed` /
+`no_learning`. "Equality on all four" in the original §Verdicts is superseded
+by "equality on the two counted fields" here.

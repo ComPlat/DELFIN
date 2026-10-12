@@ -2,15 +2,19 @@
 
 Multi-frame XYZ files produced by DELFIN's MANTA construction from a SMILES, exactly as the
 current `main` builds them with the shipped champion settings (the same construction the
-`delfin manta` CLI and the dashboard use). No geometry optimisation of any kind was applied:
-every frame is the deterministic construction output, no force field, no xTB, no DFT.
+`delfin manta` CLI and the dashboard use). No optimisation was applied after the construction:
+every frame is the deterministic construction output as emitted, including the force-field
+steps that are part of the construction itself (on the constructor path these relax only free
+ligands and, with metal and donors fixed, ring puckers; the legacy path, which builds the
+systems outside the constructor's scope, minimises UFF over the whole complex). No
+subsequent force-field, xTB or DFT optimisation was run.
 
 ## What is in here
 
 * `index.tsv` — one row per example: `id`, the input `smiles`, `n_atoms` (heavy atoms + H),
-  `n_frames` (isomers / conformers in the manifold).
-* `structures/<id>.xyz` — the manifold of that example as concatenated XYZ frames. The comment
-  line of every frame carries the example id, the frame index and DELFIN's own frame label
+  `n_frames` (frames in the isomer–conformer ensemble).
+* `structures/<id>.xyz` — the isomer–conformer ensemble of that example as concatenated XYZ
+  frames. The comment line of every frame carries the example id, the frame index and DELFIN's own frame label
   (coordination polyhedron, isomer or conformer tag).
 
 ## How the examples were chosen
@@ -34,5 +38,6 @@ delfin-manta "<smiles from index.tsv>" -o my_example
 ```
 
 The construction config defaults to `champion` and no optimisation is run. The output is
-byte-identical to the shipped file when run on the same `main` commit (the
-construction is deterministic).
+byte-identical to the shipped file when run on the same `main` commit in the reference
+environment (see the main README); the construction is deterministic for all but a few
+systems.
