@@ -16862,6 +16862,21 @@ class _DocToolExecutor:
                 perms.record_denied_action(_SHELL_WRITE_KIND, _path)
         return _refused(reason, by_user=True) + self._said_why(perms)
 
+    def _self_written_exec(self, cmd: str, perms) -> "object | None":
+        """The verdict when ``cmd`` executes a file this session wrote, else
+        None. Reads the session's write journal. It decides nothing: the
+        caller uses it to word a refusal that was already made."""
+        try:
+            from . import self_written as _sw
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            if not sid:
+                return None
+            v = _sw.verdict(cmd, _journal_changes(sid),
+                            str(getattr(perms, "workspace", "") or ""))
+            return v if (v and v.matched) else None
+        except Exception:
+            return None
+
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -17080,11 +17095,40 @@ class _DocToolExecutor:
             payload_hit = self._scan_bash_script_payloads(cmd, args, perms)
             if payload_hit is not None:
                 _record_security_event("script_payload", "bash", str(payload_hit))
-                return (
+                refusal = (
                     f"bash refuses to run a script whose contents trip the "
                     f"safety scan: {payload_hit}. The deny-list + secret scan "
                     "apply to executed script files too, not just the command "
                     "line."
+                )
+                # The commonest way into this refusal is a script the session
+                # wrote itself a moment ago, and the commonest reaction was
+                # to run the same file under another spelling. Say what was
+                # refused (the file's content, not the act of running it)
+                # and, the second time for the same file, end the attempts.
+                # Running a self-written script is otherwise untouched: this
+                # only adds words to a refusal that already happened.
+                own = self._self_written_exec(cmd, perms)
+                if own is None:
+                    return refusal
+                if perms.action_denied_earlier("self_written", own.key):
+                    return (
+                        f"{refusal} This is '{own.key}', a file this session "
+                        "wrote, and it was already refused once for its "
+                        "content. Spelling the run another way does not "
+                        "change what the file contains. Stop here and tell "
+                        "the user what the script was meant to do and what "
+                        "the scan objects to."
+                    )
+                perms.record_denied_action("self_written", own.key)
+                return (
+                    f"{refusal} This is '{own.key}', a file this session "
+                    "wrote: what was refused is its content, not running "
+                    "your own script. Change the file so the named pattern "
+                    "is gone (text that only quotes a command belongs in a "
+                    "data file the script reads), or use the tool that "
+                    "exists for the job. Running the same file through "
+                    "another command will be refused again."
                 )
             # Outbound data-transfer (exfiltration) detection. Always surfaced
             # in the containment panel; hard-blocked in the unattended mode and
