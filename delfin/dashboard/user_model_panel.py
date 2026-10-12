@@ -1,4 +1,4 @@
-"""The dashboard's "User model" panel (package L4, phase 2).
+"""The dashboard's "User model" panel.
 
 The typed user picture (role, expertise, preferences, working style,
 corrections) is visible, editable, and offers "forget this entry" and

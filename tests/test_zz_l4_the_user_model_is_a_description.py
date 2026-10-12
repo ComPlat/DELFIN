@@ -1,4 +1,4 @@
-"""Wave 15, package L4 -- the user model is a description, never a grant.
+"""The user model is a description, never a grant.
 
 What protects it is where it is fed from and what a line may be, not a
 list of forbidden wordings: one short line, typed by a person into the

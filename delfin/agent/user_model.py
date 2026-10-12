@@ -1,4 +1,4 @@
-"""A typed user model that deepens across sessions (package L4).
+"""A typed user model that deepens across sessions.
 
 DELFIN has typed memory but no explicit picture of the user -- role,
 expertise, preferences, working style, corrections. This module adds that

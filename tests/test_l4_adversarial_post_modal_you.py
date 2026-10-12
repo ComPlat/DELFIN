@@ -1,8 +1,7 @@
-"""L4 reviewer (s23) adversarial test: round-9 post-modal "you" pin (green).
+"""Adversarial test: a "you" after the reach clause.
 
-Round-9 (17ee5012) made the subject test scan the FULL left context before
-the frequency modal for a _SECOND_PERSON token (user_model.py:164-167), which
-closed the compound-subject grants. This pins that the scan did NOT become
+The subject test scans the FULL left context before the frequency modal
+for a _SECOND_PERSON token, which closes the compound-subject grants. This pins that the scan did NOT become
 over-broad: a "you" that appears AFTER the reach clause (a separate addressed
 clause, not the modal's subject) must not turn a genuine first-person habit
 into a grant. "I prefer to always write my tests before you review them" is a
