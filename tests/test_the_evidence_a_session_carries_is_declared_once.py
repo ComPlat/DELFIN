@@ -195,6 +195,14 @@ _NOT_CARRIED = {
     # -- per-turn latch: the follow-up note of the turn that just ended;
     #    a resumed session starts with no turn behind it --
     "pending_turn_continuation", "_continuation_fired",
+    # -- per turn (L2): what was just typed, which skills the turn before
+    #    loaded, and whether the one corrects the other. A resumed session
+    #    has no turn behind it, so its first message corrects no skill --
+    #    the direction that proposes less --
+    "_typed_now", "_skills_used_turn", "_skill_correction",
+    # The stall guard counts identical turn endings of THIS run; a resumed
+    # session starts with a clean count and no stop.
+    "_stall_guard", "_stall_guard_stopped",
     # -- one-shot per turn: the terminal sets it for THIS turn's fresh
     #    start; a resumed session has no turn behind it --
     "start_fresh",

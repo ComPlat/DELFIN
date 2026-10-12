@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from . import agent_metrics as _agent_metrics
 from .api_client import StreamEvent, create_client
+from .harness_rows import HARNESS_KEY, HarnessRow, HarnessText, is_harness_row
 from .prompt_loader import AVAILABLE_ON_DEMAND, PromptLoader
 
 
@@ -374,6 +375,45 @@ def _capped_context_window(window: int) -> int:
     return capped_window(window)
 
 
+def _content_parts(content) -> list:
+    if isinstance(content, list):
+        return list(content)
+    text = "" if content is None else str(content)
+    return [{"type": "text", "text": text}] if text else []
+
+
+def _merge_user_rows(older: dict, newer: dict) -> dict:
+    """One user row holding ``older`` then ``newer``, both intact.
+
+    Input: two consecutive ``user`` rows of the same author, both typed
+    or both harness (``harness_rows.is_harness_row``); the caller keeps a
+    typed and a harness row apart. Output: a new plain dict; the inputs
+    are not modified. String contents are joined with a blank line (an
+    empty part adds nothing); when either content is a list of parts
+    (text + image), the result is the concatenated part list with a
+    string side wrapped as one text part. Keys of ``newer`` win over keys
+    of ``older``. Two harness rows give a row with ``HARNESS_KEY`` set,
+    whichever carrier marked them (``HarnessRow``, ``HarnessText``
+    content, ``origin == "event"``): the history keeps the key form,
+    which survives a JSON save.
+
+    Rejected: keeping the newer row (lost the typed steer that a
+    harness note followed in the same drain); keeping both separate in
+    the history (strict chat templates refuse two user turns in a row).
+    """
+    merged = {**older, **newer}
+    a, b = older.get("content"), newer.get("content")
+    if isinstance(a, list) or isinstance(b, list):
+        merged["content"] = _content_parts(a) + _content_parts(b)
+    else:
+        merged["content"] = "\n\n".join(
+            s for s in ("" if a is None else str(a),
+                        "" if b is None else str(b)) if s)
+    if is_harness_row(older):
+        merged[HARNESS_KEY] = True
+    return merged
+
+
 class AgentEngine:
     """Core orchestration engine for the DELFIN agent.
 
@@ -481,6 +521,16 @@ class AgentEngine:
         # line, a bug report) names a mode nobody can select.
         self.mode = _migrate_mode(mode)
         self._agent_workspace_dir = agent_workspace_dir
+        # Name the configured agent workspace on the permissions, when it
+        # is one of their writable roots (never $HOME): under Bypass a
+        # write there is screened without the classifier model, like one
+        # in the session workspace. It grants nothing by itself.
+        if agent_workspace_dir:
+            try:
+                from .api_client import bind_agent_workspace
+                bind_agent_workspace(self.kit_permissions, agent_workspace_dir)
+            except Exception:
+                pass
         self.route: list[str] = []
         self.mode_description: str = ""
         self.current_role_index: int = 0
@@ -650,6 +700,30 @@ class AgentEngine:
         # around the nested call, reset in ``finally``; while it is set, no
         # re-arm and no second DSML check happens.
         self._dsml_guard_active: bool = False
+        # H1E: ONE stall guard per ENGINE (per session), not per stream_message
+        # call, not a class/__init__ singleton that leaks streaks across engines.
+        # It is fed at the end of every engine turn with (kind, fingerprint) of
+        # how that turn ended, and after `repeats` identical endings (default 3,
+        # agent.stall_guard.repeats) the session stops starting follow-up turns:
+        # the engine ends with a status sentence instead of looping. Reset by a
+        # real tool run or by a message a person typed (a fresh user turn above).
+        try:
+            from delfin.agent.stall_guard import StallGuard
+            _sg_repeats = None
+            try:
+                from delfin import user_settings
+                _sg_repeats = (((user_settings.load_settings().get("agent", {}) or {})
+                                .get("stall_guard", {}) or {}).get("repeats"))
+            except Exception:
+                _sg_repeats = None
+            self._stall_guard = StallGuard(
+                repeats=int(_sg_repeats) if _sg_repeats not in (None, "") else 3)
+        except Exception:
+            self._stall_guard = None
+        # Non-empty once the guard has stopped the session: the status sentence
+        # naming what repeated and what to change. Every follow-up issuer asks
+        # the guard first and sends nothing more while this is set.
+        self._stall_guard_stopped: str = ""
         self._last_observed_files: set[str] = set()
         self._last_turn_tools: list[str] = []
         self._observed_ledger_available: bool = False
@@ -770,14 +844,20 @@ class AgentEngine:
         Returns the tool result string. Raises RuntimeError when this
         backend carries no permissions object, because on those the shell
         tool is unavailable to the model too.
+
+        The output is kept up to ``api_client.PERSON_OUTPUT_CHARS`` per
+        stream instead of the model's ``max_output_chars``: every caller
+        (`!`, /git) shows it to a person, who has no context window to
+        protect. The gate decides exactly as before.
         """
         perms = self.kit_permissions
         if perms is None:
             raise RuntimeError(
                 "this backend has no permission gate, so it has no shell")
-        from .api_client import _doc_executor
-        return _doc_executor.execute("bash", {"command": str(command or "")},
-                                     perms)
+        from .api_client import _doc_executor, output_for_a_person
+        with output_for_a_person():
+            return _doc_executor.execute(
+                "bash", {"command": str(command or "")}, perms)
 
     # -- what a turn delegated ---------------------------------------------
 
@@ -1967,6 +2047,133 @@ class AgentEngine:
             return True
         return any(p in ("tests", "test") for p in parts)
 
+    # --- a skill improves while it is used ---------------------------------
+
+    _SKILL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+    def _stall_progress(self) -> None:
+        """Real progress: a tool ran, or a person sent a message. The streak
+        of identical turn endings starts over and a stop is lifted."""
+        self._stall_guard_stopped = ""
+        if self._stall_guard is not None:
+            try:
+                self._stall_guard.note_progress()
+            except Exception:
+                pass
+
+    def note_typed(self, text: str) -> None:
+        """What a person just typed into this session's input box.
+
+        Called by the surface from the one place the text comes off the
+        keyboard, and read once by the turn it starts. The turn entry
+        point cannot tell by itself: it is also called with job notices,
+        canned replies, the harness's own follow-ups and other sessions'
+        messages, and none of those may count as the user correcting a
+        skill.
+        """
+        self._typed_now = text if isinstance(text, str) else ""
+        # A person sending a message is the other kind of real progress: a
+        # session that stopped on a repeating turn goes on from here.
+        self._stall_progress()
+
+    def _forget_skill_turn(self) -> None:
+        """Drop the skills the last turn loaded and any correction of them.
+
+        Called where one conversation ends and another begins on this
+        engine (a new cycle, a restored session). The per-turn reset in
+        :meth:`_note_skill_correction` only runs at the next turn, which
+        is then already the other conversation's: without this, a
+        correction typed there was put on record against a skill only the
+        previous conversation had used.
+        """
+        self._typed_now = ""
+        self._skills_used_turn = []
+        self._skill_correction = None
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and hasattr(perms, "skill_corrections"):
+            perms.skill_corrections = {}
+
+    def _note_skill_use(self, tool_name: str, tool_input: Any) -> None:
+        """Remember which skills this turn loaded (the ``skill`` tool)."""
+        if str(tool_name or "").rsplit("__", 1)[-1] != "skill":
+            return
+        try:
+            args = (json.loads(tool_input) if isinstance(tool_input, str)
+                    else tool_input)
+            name = str((args or {}).get("name") or "")
+        except Exception:
+            return
+        # What _execute_skill accepts as the same name.
+        name = name.strip().lstrip("/").strip()
+        if name.lower().endswith(".md"):
+            name = name[:-3].strip()
+        if not self._SKILL_NAME_RE.fullmatch(name):
+            return
+        used = getattr(self, "_skills_used_turn", None)
+        if not isinstance(used, list):
+            used = self._skills_used_turn = []
+        if name not in used:
+            used.append(name)
+            del used[:-8]
+
+    def _note_skill_correction(self, user_message: str) -> None:
+        """Decide whether this turn opens with a correction of a skill.
+
+        Yes only when all of it holds: a person typed this turn's message
+        (:meth:`note_typed`) and it arrived as typed; it is their own
+        words under the narrow reading the action classifier uses; the
+        turn before loaded a skill that exists; and
+        ``skill_feedback.feedback`` reads the words as a correction.
+        Everything is forgotten first, so a turn nobody typed carries no
+        correction over from the one before.
+        """
+        typed = str(getattr(self, "_typed_now", "") or "").strip()
+        self._typed_now = ""
+        used = list(getattr(self, "_skills_used_turn", None) or [])
+        self._skills_used_turn = []
+        self._skill_correction = None
+        perms = self.kit_permissions
+        if perms is not None:
+            perms.skill_corrections = {}
+        if not typed or not used or typed not in (user_message or ""):
+            return
+        from .api_client import _classifier_user_texts
+        from .skill_feedback import feedback
+        from . import skills as _skills
+        if _classifier_user_texts(
+                [{"role": "user", "content": typed}]) != [typed]:
+            return
+        workspace = getattr(perms, "workspace", None) if perms else None
+        for name in reversed(used):
+            if _skills.get_skill(name, workspace) is None:
+                continue
+            verdict = feedback(name, typed, source="user")
+            if not verdict.get("corrects"):
+                continue
+            self._skill_correction = (name, verdict["user_words"])
+            if perms is not None:
+                # The patch tool reads this: the reason it puts on record
+                # is the user's words, not the model's account of them.
+                perms.skill_corrections = {name: verdict["user_words"]}
+            return
+
+    def _build_skill_correction_block(self) -> str:
+        """Tell the model, once, that its skill was just corrected."""
+        pair = getattr(self, "_skill_correction", None)
+        if not pair:
+            return ""
+        name = pair[0]
+        return (
+            "[Skill correction] The user's message reads as a correction, "
+            f"and the skill '{name}' was used in the turn before it. If "
+            "the correction is about what that skill says to do, propose "
+            f"the fix with skill_propose_patch(name='{name}', old, new, "
+            "evidence). That creates a proposal the user sees as a diff "
+            "and has to accept; the active skill stays as it is, and the "
+            "reason put on record is the user's own words. If the "
+            "correction is about something else, do what the user asked "
+            "and leave the skill alone.")
+
     def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
         """Say it mid-turn when a write lands outside the pinned directory.
 
@@ -2120,6 +2327,8 @@ class AgentEngine:
                       self._build_finished_subagents_block()))
         pairs.append(("budget", self._build_budget_block()))
         pairs.append(("answered", self._build_answered_attention_block()))
+        pairs.append(("skill_correction",
+                      self._build_skill_correction_block()))
         # One-time backend capability notice: reduced surfaces (no tool
         # loop, no verify enforcement, ...) are stated at session start
         # instead of failing silently mid-task. Best-effort — a missing
@@ -2389,11 +2598,6 @@ class AgentEngine:
             session_id=str(getattr(self, "session_id", "") or ""),
         )
 
-    #: An unattributed request older than this is somebody else's. Long
-    #: enough for a user who stepped away from their own session, short
-    #: enough that yesterday's inbox is not read as today's work.
-    _APPROVAL_REMINDER_MAX_AGE_S = 3600.0
-
     def _remind_of_waiting_approvals(self) -> None:
         """Tell the turn about an approval that expired while nobody was there.
 
@@ -2415,25 +2619,18 @@ class AgentEngine:
             pending = _att.list_pending("confirm_pending") or []
         except Exception:
             return
-        # Only what this turn could act on. An entry names its session
-        # since 2026-09-18; one that predates that says nothing, so it
-        # counts only while it is recent. Without this a fresh session
-        # that had said "Hallo" was told seven requests were waiting for
-        # it, all from sessions that had ended hours before, and spent a
-        # turn working that out.
-        import time as _time
+        # Only what this turn could act on: entries naming this session.
+        # An unattributed entry is not this session's -- it stays in the
+        # user's inbox (/attention) and is not shown to the model. Every
+        # broker stamps its session now; an entry without one comes from
+        # an older build or a request raised with no engine, and cannot be
+        # shown to be ours. Counting recent ones as ours (the earlier
+        # rule, 1 h) told one dashboard session another's expired
+        # edit_file dialog was waiting for it, and it acted on it.
         mine = str(getattr(self, "session_id", "") or "")
-        now = _time.time()
 
         def _is_mine(ev: dict) -> bool:
-            owner = str(ev.get("session_id") or "")
-            if owner:
-                return owner == mine
-            try:
-                age = now - float(ev.get("created_at") or 0.0)
-            except (TypeError, ValueError):
-                return False
-            return 0 <= age <= self._APPROVAL_REMINDER_MAX_AGE_S
+            return bool(mine) and str(ev.get("session_id") or "") == mine
 
         pending = [e for e in pending if _is_mine(e)]
         seen = self.__dict__.setdefault("_reminded_approvals", set())
@@ -2550,6 +2747,12 @@ class AgentEngine:
         # drop the very evidence ledgers the retry is judged against.
         _is_guard_feedback = str(
             user_message or "").lstrip().startswith("[Verify]")
+        # Who wrote this turn's row (harness_rows): a surface hands a turn
+        # it starts on its own as HarnessText; a correction turn is the
+        # engine's own.
+        _harness_turn = (isinstance(user_message, HarnessText)
+                         or _is_guard_feedback or self._claim_guard_active
+                         or self._dsml_guard_active)
         if (not self._claim_guard_active and not self._dsml_guard_active
                 and not _is_guard_feedback):
             self._claim_guard_corrected = False
@@ -2581,9 +2784,23 @@ class AgentEngine:
             # Per SESSION, and only the first time: what language this
             # conversation runs in. See _note_session_language.
             self._note_session_language(user_message or "")
+            # A refused shell write the user names again in their own
+            # message is theirs to have: lifted here, at the start of the
+            # turn the message opens, from the text as typed (the turn's
+            # volatile tail is not part of it). A refusal recorded later in
+            # this turn is not lifted by the message that preceded it.
+            try:
+                from .api_client import _lift_shell_write_refusals
+                _lift_shell_write_refusals(
+                    self.kit_permissions, user_message or "")
+            except Exception:
+                pass
             # Per turn: the stray-write note is said once and the next
             # turn may say it again if the work drifts again.
             self._stray_write_noted = False
+            # Per turn: does what was just typed correct a skill the turn
+            # before it used? Judged here, where a real turn begins.
+            self._note_skill_correction(user_message or "")
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -2719,7 +2936,10 @@ class AgentEngine:
         # has to be captured here.
         self._turn_is_bare_greeting = self.is_bare_greeting(user_message)
 
-        self.messages.append(self._build_user_message(user_message, images))
+        _row = self._build_user_message(user_message, images)
+        if _harness_turn:
+            _row[HARNESS_KEY] = True
+        self.messages.append(_row)
         # Sanitize message history: ensure proper user/assistant alternation.
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
@@ -2921,6 +3141,9 @@ class AgentEngine:
         # identically.
         _turn_error = ""
         _turn_tool_calls = 0
+        # len(chunks) at the latest tool call: the text after it is what
+        # the turn ENDS with, judged by the continuation detector.
+        _chunks_at_last_tool = 0
         # Tool NAMES this turn — evidence input for the claim-grounding
         # guard (a lookup tool used this turn grounds quantity claims).
         _turn_tool_names: list[str] = []
@@ -3115,6 +3338,7 @@ class AgentEngine:
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
                     _turn_tool_calls += 1
+                    _chunks_at_last_tool = len(chunks)
                     _turn_tool_names.append(event.tool_name)
                     # Evidence for the functional-claim guard: record WHAT
                     # was executed, not just that some tool ran. Held here
@@ -3133,6 +3357,7 @@ class AgentEngine:
                     # Order matters: the stray check reads the pin, so it
                     # must see the pin as it was BEFORE this write set it.
                     self._note_stray_write(event.tool_name, event.tool_input)
+                    self._note_skill_use(event.tool_name, event.tool_input)
                     self._maybe_pin_project_dir(
                         event.tool_name, event.tool_input)
                     if on_tool_use:
@@ -3144,6 +3369,12 @@ class AgentEngine:
                     self._honour_pause()
 
                 elif event.type == "tool_result":
+                    # H1E: a real tool genuinely ran and produced a
+                    # result — genuine work resets the stall guard's
+                    # streak, so a turn that makes progress between
+                    # two leak-notices is never stopped on a stale
+                    # streak.
+                    self._stall_progress()
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
                     # Commit the held command only if it actually ran.
@@ -3658,6 +3889,7 @@ class AgentEngine:
             self._record_context_usage(full_response)
 
             # Progressive disclosure: NEED_CONTEXT detection (Feature 1)
+            _answer_streamed = full_response
             if self._progressive_disclosure:
                 full_response = self._handle_need_context(
                     full_response, user_message, memory_context,
@@ -3677,7 +3909,16 @@ class AgentEngine:
             # latch, re-armed only by clear_turn_continuation(), so this
             # block alone can never loop; the caller additionally caps how
             # many follow-ups run in a row.
-            self._note_turn_continuation(full_response)
+            #
+            # Judged on the text after the turn's last tool call: narration
+            # written before a call ("Let me first verify ...") is joined
+            # into full_response, and judging it drew 8 false notes in 10
+            # (report 20261012-082746). A NEED_CONTEXT re-answer replaces
+            # the text, so then the replacement is judged.
+            self._note_turn_continuation(
+                "".join(chunks[_chunks_at_last_tool:])
+                if _turn_tool_calls and full_response is _answer_streamed
+                else full_response)
         elif self._stop_requested:
             # Stop before any answer text — during thinking, or before the
             # first token. The message appended at the top of this turn has
@@ -3831,20 +4072,48 @@ class AgentEngine:
             except Exception:
                 _dsml_name = None
             if _dsml_name and not self._dsml_leak_spent and not self._dsml_guard_active:
-                full_response = self._enforce_dsml_rerun(
-                    full_response, _dsml_name, _dsml_args,
-                    memory_context=memory_context,
-                    on_token=on_token,
-                    on_tool_use=on_tool_use,
-                    on_tool_result=on_tool_result,
-                    on_permission_denied=on_permission_denied,
-                    on_thinking=on_thinking,
-                    thinking_budget=thinking_budget,
-                    max_tokens=max_tokens,
-                    on_notice=on_notice,
-                    on_tool_result_meta=on_tool_result_meta,
-                    on_wait=on_wait,
-                )
+                # H1E: feed the per-engine stall guard on EVERY leak, so three
+                # consecutive leak-TURNS (each a follow-up to the last) end the
+                # session instead of the engine re-requesting into a loop. On
+                # STOP the re-request is skipped and the turn ends with the
+                # status; otherwise it is re-requested once as before.
+                _reran = None
+                if self._stall_guard is not None:
+                    # The fingerprint is the tool, not the wording: the
+                    # sentences around a leaked call differ every time, the
+                    # call that never runs is the same.
+                    if self._stall_guard.advance(
+                            "dsml_leak", str(_dsml_name)) == "stop":
+                        _stopped = (
+                            f"A call to {_dsml_name} was written as text "
+                            f"instead of being made, repeated in "
+                            f"{self._stall_guard.repeats} turns in a row; "
+                            "nothing ran. This session stops asking again "
+                            "and sends no further follow-up. To go on, "
+                            "send a message; the call must then be made as "
+                            "a real tool call.")
+                        self._stall_guard_stopped = _stopped
+                        _reran = (full_response.strip() + "\n\n⚠ " + _stopped)
+                if _reran is None:
+                    _reran = self._enforce_dsml_rerun(
+                        full_response, _dsml_name, _dsml_args,
+                        memory_context=memory_context,
+                        on_token=on_token,
+                        on_tool_use=on_tool_use,
+                        on_tool_result=on_tool_result,
+                        on_permission_denied=on_permission_denied,
+                        on_thinking=on_thinking,
+                        thinking_budget=thinking_budget,
+                        max_tokens=max_tokens,
+                        on_notice=on_notice,
+                        on_tool_result_meta=on_tool_result_meta,
+                        on_wait=on_wait,
+                    )
+                full_response = _reran
+            elif not _dsml_name:
+                # The turn ended on a real answer: whatever repeated before
+                # it is over.
+                self._stall_progress()
 
         # A turn that announced an action while plan mode refused its calls
         # says so in the ANSWER, not only in a notice that scrolls past.
@@ -4876,10 +5145,23 @@ class AgentEngine:
         structural issues.  This removes duplicates and ensures the
         conversation can be sent to the API without errors.
 
+        Consecutive user rows are never dropped: a steer typed into a
+        running turn is followed by harness rows (job notes, run notes,
+        steering blocks) from the same drain, and keeping only the newer
+        row removed the typed text from every later request and saved
+        session. Two typed or two harness rows are merged into one
+        (``_merge_user_rows``; a harness merge keeps the mark). A typed
+        and a harness row are kept apart with an assistant filler, each
+        with its own mark (harness_rows), so the harness part never reads
+        as the user's words. Consecutive assistant rows keep the newer one. A history without consecutive same-role rows
+        is left as the same list of the same objects, so its request bytes
+        (and the prefix cache) do not change.
+
         Pinned messages (``msg["_pinned"]``) are never merged away: when a
-        pinned message would be replaced by a newer same-role message, a
-        short opposite-role filler is inserted instead so BOTH survive
-        verbatim and alternation still holds for strict chat templates.
+        pinned message would be replaced by a newer same-role message, or
+        a user row meets a pinned user row, a short opposite-role filler
+        is inserted instead so BOTH survive verbatim and alternation still
+        holds for strict chat templates.
         """
         if len(self.messages) < 2:
             return
@@ -4897,18 +5179,34 @@ class AgentEngine:
         for msg in self.messages[1:]:
             role = msg.get("role")
             if role == cleaned[-1].get("role") and role in ("user", "assistant"):
-                if cleaned[-1].get("_pinned"):
-                    # The older message is pinned — keep it verbatim and
-                    # restore alternation with a filler instead of merging.
+                older_pinned = bool(cleaned[-1].get("_pinned"))
+                if older_pinned or (role == "user" and msg.get("_pinned")):
+                    # A pinned message is kept verbatim: alternation is
+                    # restored with a filler instead of merging.
                     filler_role = "assistant" if role == "user" else "user"
                     cleaned.append({
                         "role": filler_role,
                         "content": "[alternation filler - pinned message "
-                                   "above kept verbatim]",
+                                   + ("above" if older_pinned else "below")
+                                   + " kept verbatim]",
                     })
                     cleaned.append(msg)
+                elif role == "user" and (
+                        is_harness_row(cleaned[-1]) != is_harness_row(msg)):
+                    # Typed and harness text are not merged: one plain
+                    # row would hand the harness part to every reader
+                    # of the user's words, one marked row would hide the
+                    # typed part from them. Both stay, each with its mark.
+                    cleaned.append({
+                        "role": "assistant",
+                        "content": "[alternation filler - the user's message "
+                                   "and the harness note are kept apart]",
+                    })
+                    cleaned.append(msg)
+                elif role == "user":
+                    cleaned[-1] = _merge_user_rows(cleaned[-1], msg)
                 else:
-                    # Consecutive same-role messages: keep the latest
+                    # Consecutive assistant messages: keep the latest
                     # (also keeps a pinned NEWER message automatically).
                     cleaned[-1] = msg
             else:
@@ -5037,7 +5335,9 @@ class AgentEngine:
         stripped (same length and indices, so ``live:<i>`` refs stay valid).
         A ``_steer`` key is the turn's steering tail (_attach_turn_tail):
         rendered at the end of that message's content, the same bytes on
-        every request that carries the message.
+        every request that carries the message. A row with the harness key
+        is copied as a ``HarnessRow``: the mark stays readable to the
+        action classifier, which reads this list, without a key on the wire.
         """
         msgs = self.messages
         if not any(
@@ -5050,6 +5350,8 @@ class AgentEngine:
             if isinstance(m, dict) and any(str(k).startswith("_") for k in m):
                 row = {k: v for k, v in m.items()
                        if not str(k).startswith("_")}
+                if m.get(HARNESS_KEY) is True:
+                    row = HarnessRow(row)
                 tail = m.get("_steer")
                 if tail:
                     row["content"] = self._with_turn_tail(
@@ -5812,7 +6114,7 @@ class AgentEngine:
         if _state_block:
             _summary_msg = f"{_state_block}\n{_summary_msg}"
         self.messages = [
-            {"role": "user", "content": _summary_msg},
+            {"role": "user", "content": _summary_msg, HARNESS_KEY: True},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
         ] + pinned_old + recent
         # `recent` starts with an assistant turn whenever compaction fires right
@@ -5932,7 +6234,8 @@ class AgentEngine:
 
             # Inject as a user message and continue the conversation
             context_msg = "\n\n".join(injected_parts)
-            self.messages.append({"role": "user", "content": context_msg})
+            self.messages.append(
+                {"role": "user", "content": context_msg, HARNESS_KEY: True})
 
             # Stream continuation
             chunks: list[str] = []
@@ -6695,8 +6998,13 @@ class AgentEngine:
     def _note_turn_continuation(self, answer: str) -> None:
         """Record one follow-up note when *answer* announces work that it did
         not do while tasks stay open. Never raises; the latch keeps it to one
-        pending note until the caller calls clear_turn_continuation()."""
+        pending note until the caller calls clear_turn_continuation().
+        H1E: once the stall guard has stopped the session (_stall_guard_stopped
+        is set), no follow-up is produced — the turn that repeats itself is
+        over."""
         if not answer or self._continuation_fired:
+            return
+        if self._stall_guard_stopped:
             return
         try:
             from delfin.agent.turn_continuation import should_continue
@@ -6758,6 +7066,7 @@ class AgentEngine:
             # satisfied — which suppressed the delegation reminder for work
             # that had never delegated anything.
             self._reset_session_fields()
+            self._forget_skill_turn()
             self.session_id = self._fresh_session_id()  # fresh session for new cycle
             self._sync_task_session()
             self._foreign_tasks_shown = False  # new session → notice re-armed
@@ -7216,6 +7525,9 @@ class AgentEngine:
         restored: list[str] = []
         missing: list[str] = []
         drifted: list[str] = []
+        # Not carried, and not left over from whatever this engine held
+        # before: the restored session has no turn behind it.
+        self._forget_skill_turn()
 
         if data.get("mode"):
             restored.append("mode")
@@ -7311,7 +7623,8 @@ class AgentEngine:
             from . import session_store as _ss_ckpt
             _note = _ss_ckpt.consume_crash_recovery_note(self.session_id)
             if _note:
-                self.messages.append({"role": "user", "content": _note})
+                self.messages.append(
+                    {"role": "user", "content": _note, HARNESS_KEY: True})
                 self.messages.append({
                     "role": "assistant",
                     "content": "Understood. I will verify the workspace "

@@ -717,6 +717,11 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
     ("delfin.agent.session_store", "_bundles_path", "bundles"),
     ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
+    # What the user said about themselves, loaded into every prompt. A
+    # run reading the real one would test against the developer's own
+    # self-description, and a run that drove the Send button would write
+    # its fixture sentences into it.
+    ("delfin.agent.user_model", "_default_path", "user_model.json"),
     # The note that says which node the dashboard runs on, and with which
     # token. A run that drove the launcher overwrote it with its own pid,
     # and the launcher's atexit hook then deleted it on the way out --
@@ -735,6 +740,9 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # resolves it: a test or a benchmark attempt that hands a skill over
     # would otherwise add uses to the record the user reads in the panel.
     ("delfin.agent.skill_usage", "_usage_dir", "skills/_usage"),
+    # Skill proposals, patches included: a run that proposes one must not
+    # leave it in the queue the user accepts from.
+    ("delfin.agent.skill_proposals", "_proposals_dir", "skills/_proposals"),
 )
 
 #: Constants that point into the user's real ``~/.delfin`` DELIBERATELY:

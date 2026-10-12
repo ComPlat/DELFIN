@@ -250,7 +250,7 @@ A SMILES goes through the converter named by `smiles_converter`:
 |-------|--------------|
 | `QUICK` | One embedding. Fast, one structure. |
 | `NORMAL` | Multi-seed embedding with force-field refinement. One structure. The fallback when nothing is set. |
-| `MANTA` | Builds the coordination manifold of a metal complex, ranks it, and picks a winner. See *Structure generation*. |
+| `MANTA` | Builds the isomer–conformer ensemble of a metal complex, ranks it, and picks a winner. See *Structure generation*. |
 | `ARCHITECTOR` | The external Architector builder, for metal complexes. |
 | `MOLSIMPLIFY` | The external molSimplify builder, for metal complexes. |
 | `MACE` | The external epic-MACE builder, for metal complexes (hapto ligands included). |
@@ -596,23 +596,23 @@ you want and the report gains an "Experimental properties" section.
 The builder and its funnel. `delfin --define` writes the whole block with its
 defaults; `KEY=?` in a CONTROL file prints a key's own explanation.
 
-**Building the manifold**
+**Building the ensemble**
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `MANTA_QUALITY` | `extreme` | How thorough: `fast`, `normal`, `max`, `extreme` |
 | `MANTA_SEEDS` / `MANTA_NUM_CONFS` | (empty) | Override the seed and conformer counts the quality implies |
 | `MANTA_CONSTRUCTION` | `champion` | The flag set the builder runs with: `champion`, `builder`, `default` |
-| `MANTA_MAX_ISOMERS` | `0` | `0` is the complete manifold; a number shrinks the search, not just the answer |
+| `MANTA_MAX_ISOMERS` | `0` | `0` means no cap on the isomers built; a number shrinks the search, not just the answer |
 | `MANTA_BINDING_MODES` | `yes` | Enumerate binding modes |
 | `MANTA_HAPTO` | `auto` | Hapticity: `auto`, `off` (a hapto SMILES then fails instead of being approximated) |
-| `MANTA_UFF` | `yes` | Force-field refinement of the organic periphery (never at the metal) |
-| `MANTA_DETERMINISTIC` | `yes` | Same SMILES in, same manifold out |
+| `MANTA_UFF` | `yes` | Force-field refinement of the organic periphery (never on a free metal centre) |
+| `MANTA_DETERMINISTIC` | `yes` | Same SMILES in, same ensemble out (on the same commit and environment) |
 | `MANTA_ENV` | (empty) | `KEY=VALUE` pairs passed to the builder verbatim — the escape hatch |
 
 **Gates** (each drops frames that are wrong, never frames that are merely unusual)
 
-The gates are the one deliberate difference between a CONTROL run and `delfin-manta` / the dashboard MANTA button: a pipeline optimises the frames it gets, and a torn frame at the head of the ordering costs a whole DFT chain, so CONTROL switches these on; the command line and the dashboard build the same champion without them and return the full manifold. With all three set to `no` a CONTROL run builds exactly what `delfin-manta` builds.
+The gates are the one deliberate difference between a CONTROL run and `delfin-manta` / the dashboard MANTA button: a pipeline optimises the frames it gets, and a torn frame at the head of the ordering costs a whole DFT chain, so CONTROL switches these on; the command line and the dashboard build the same champion without them and return the full ensemble. With all three set to `no` a CONTROL run builds exactly what `delfin-manta` builds.
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -805,7 +805,7 @@ delfin doctor --scratch /path/to/scratch
 | `delfin-build INPUT` | Build metal complex stepwise using ORCA XTB DOCKER |
 | `delfin-guppy INPUT` | Multi-start sampling with ranked xTB structures (the MANTA builder under its old name) |
 | `delfin-guppy-batch FILE` | The same over every SMILES in a batch file (`--row` for SLURM arrays) |
-| `delfin-manta` | MANTA on its own: the coordination-isomer × conformer manifold from a metal SMILES |
+| `delfin-manta` | MANTA on its own: the isomer–conformer ensemble of a metal SMILES |
 | `delfin-fukui` | Atomic Fukui indices from three ORCA single points |
 | `delfin-step` | Run a single registered step |
 | `delfin-pipeline YAML` | Execute a YAML-defined multi-step pipeline |
@@ -875,7 +875,7 @@ Key options:
 | `--parallel-jobs M` | How many run at once; they share the core budget |
 | `--pal P` | **Total** core budget for all runs together, not per job |
 | `--screen` / `--optimise` / `--refine` | The funnel stages, as in the `MANTA_*` keys |
-| `--max-isomers` / `--rmsd-cutoff` / `--energy-window-kcal` | How much of the manifold survives |
+| `--max-isomers` / `--rmsd-cutoff` / `--energy-window-kcal` | How much of the ensemble survives |
 
 ### delfin-step
 
@@ -1030,7 +1030,7 @@ smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
 |-------|--------------|
 | `QUICK` | One embedding. Fast, one structure. |
 | `NORMAL` | Multi-seed embedding with force-field refinement. One structure. The fallback when nothing decides otherwise. |
-| `MANTA` | Builds the coordination manifold of a metal complex and ranks it down to one geometry — see below. |
+| `MANTA` | Builds the isomer–conformer ensemble of a metal complex and ranks it down to one geometry — see below. |
 | `ARCHITECTOR` | The external Architector builder; needs a metal-containing SMILES. Its lowest-energy structure is used. |
 | `MOLSIMPLIFY` | The external molSimplify builder; needs a metal-containing SMILES. Its first geometry (square planar for CN 4, octahedral for CN 6) is used. |
 | `MACE` | The external epic-MACE builder; needs a metal-containing SMILES. The lowest-energy conformer of its first geometry (octahedral for 6 donor sites, square planar for 4) is used. |
@@ -1043,18 +1043,22 @@ epic-MACE (Chernyshov & Pidko, *J. Chem. Theory Comput.* 2024, 20, 2313; [EPiCs-
 
 ### MANTA
 
-MANTA is DELFIN's own coordination builder: from a metal SMILES it enumerates the
-coordination isomers by symmetry rather than searching for them, seats each one on
-an ideal polyhedron with metal–donor distances from covalent radii, and expands it
-into conformers. **No force field touches the metal** — UFF and MMFF have no
-transition-metal parameters, which is what distorts metal–donor distances and
-L–M–L angles in conventional builders.
+MANTA is DELFIN's deterministic constructor for metal complexes: from a metal SMILES
+it enumerates the coordination isomers as symmetry orbits rather than searching for
+them, seats each one on an ideal polyhedron with metal–donor distances from covalent
+radii, and adds ring-pucker, pose and mirror siblings. The frames emitted for one
+SMILES form its **isomer–conformer ensemble**; a single structure is a frame.
+**No force field acts on a free metal centre** on this path — universal force fields
+have only generic parameters for the metal, which is what distorts metal–donor
+distances and L–M–L angles in conventional builders. Inputs outside the
+constructor's scope, or whose isomers all fail its self-gate, are built by a legacy
+path that minimises UFF over the whole complex.
 
-The manifold then goes through a funnel that the `MANTA_*` keys steer:
+The ensemble then goes through a funnel that the `MANTA_*` keys steer:
 
 <!-- recipe: not-runnable — prose diagram of the MANTA funnel, not a command -->
 ```
-build the manifold → screen (one single point per frame and multiplicity)
+build the ensemble → screen (one single point per frame and multiplicity)
                    → optimise (xTB per survivor)
                    → refine (GOAT or CREST on the best)
                    → winner written to start.txt
@@ -1078,7 +1082,7 @@ If MANTA's refinement already produced a GOAT-optimised winner, the separate
 | `CONVERT SMILES` | Isomer and conformer search (RDKit; deterministic by default) | Thorough exploration |
 | `QUICK CONVERT SMILES` | One conformer | Quick previews |
 | `CONVERT SMILES + UFF` | The same search with force-field refinement | Refined geometries |
-| `MANTA` | The coordination manifold, ranked by GFN2 energy, with isomer navigation in the viewer | Metal complexes |
+| `MANTA` | The isomer–conformer ensemble, ranked by GFN2 energy, with isomer navigation in the viewer | Metal complexes |
 | `BUILD COMPLEX` | Stepwise assembly with ORCA's `%DOCKER` | Metal complexes (submitted as a job) |
 | `ARCHITECTOR` | Every isomer Architector builds, lowest energy first, with isomer navigation | Metal complexes |
 | `MOLSIMPLIFY` | One molSimplify structure per geometry of the coordination number | Metal complexes |
@@ -1102,7 +1106,7 @@ delfin-build input.txt --goat --pal 16
 ### delfin-guppy
 
 MANTA's sampling funnel on the command line, under its old name: it builds the
-manifold, optimises the survivors in parallel with xTB and ranks them by energy.
+ensemble, optimises the survivors in parallel with xTB and ranks them by energy.
 
 ```bash
 delfin-guppy input.txt --runs 20 --parallel-jobs 4
@@ -1188,17 +1192,25 @@ For an ORCA output file the dropdown offers **Print Mode**, **MO Plot** and
 The **Review** tab walks through the frames of one multi-frame XYZ file, or of
 every `*.xyz` in a folder, and lets you rate each frame by eye.
 
-1. Enter the file or folder under **Open** and press **Open**. The files are
-   listed on the left, the frames of the current file below them; rated frames
-   are marked `✓` (pass) or `✗` (block).
-2. The structure is drawn in the dashboard's 3D viewer with its file, position
-   (`frame 3/12`) and label. Move with **Prev** / **Next** or the arrow keys;
-   **Next unrated** (key `N`) jumps to the next frame without a rating.
-3. Rate with **Pass** / **Block** (keys `P` / `B`). Pick one or more categories
-   first (keys `1`–`9`; untick *Several categories* to allow only one) and type
-   a comment if you like. After a rating the next unrated frame is shown.
-   There is also a comment field for the whole file and one for the whole review.
-4. Every rating is written at once to `<folder>/review_<name>.json` (name:
+1. Under **Open a review** enter the file or folder, a **Name** (optional) and,
+   for a new review, the categories (one per line), then press **Open**. The
+   section folds away once a review is open; click its title to open another.
+2. The bar across the top holds **List** (shows or hides the files and frames
+   on the left; rated frames are marked `✓` pass or `✗` block), **Prev** /
+   **Next** / **Next unrated**, which frame is shown and the progress
+   (rated / total, a bar, pass and block counts).
+3. The structure is drawn large in the middle, in the dashboard's 3D viewer.
+   On the right: a large **Pass** and **Block** button, the categories as
+   toggles (a chosen one is coloured), the comment on this frame, a line that
+   says when the rating was saved, and the keys. Pick categories and type a
+   comment first, then rate; the next unrated frame is shown.
+4. Keys (while no text field has the focus; the file and frame lists and the
+   checkboxes do not hold them): `P` pass, `B` block, `1`–`9` categories, `N`
+   next unrated, `←` / `→` previous / next; `Esc` leaves the comment field.
+   A rating key, and a click on **Pass** / **Block**, rates the frame that was
+   on screen at that moment: held down a key rates once, and a second press or
+   click before the next frame has appeared is ignored.
+5. Every rating is written at once to `<folder>/review_<name>.json` (name:
    the **Name** field, else the folder or file name). Opening the same folder
    again resumes where you stopped. Each record holds verdict, categories,
    comment, timestamp, file name, frame index and label, and the sha256 of the
@@ -1206,20 +1218,25 @@ every `*.xyz` in a folder, and lets you rate each frame by eye.
    file has changed since, its old ratings are kept but no longer count. When
    the folder or its parent contains an `index.tsv` with an `id` column (the
    file stem), that row (e.g. the SMILES) is linked to the file and shown.
-5. **Blinded** shuffles all frames of all files in a fixed order (same
+   A comment typed on a frame you have not rated yet is saved as well (under
+   `notes`; it is not a rating and does not count in the progress), shown
+   again when you come back to the frame, exported as a row with an empty
+   verdict, and taken into the rating once you rate the frame.
+6. **Blinded** shuffles all frames of all files in a fixed order (same
    **Seed**, same order), hides file names, labels and findings and shows only
    `structure #k`. The JSON keeps the order and, per record, the anonymous
    number, so every rating maps back to its file and frame.
-6. In the normal mode findings from elsewhere are shown next to a frame when a
+7. In the normal mode findings from elsewhere are shown next to a frame when a
    JSON `{"<file>": {"<frame_index>": ["text", ...]}}` is given under
    **Findings** (default: `findings.json` in the folder; frame indices are
    0-based, the file may be named with or without `.xyz`).
-7. Progress (rated / total, pass and block counts) is shown on the right;
-   **Export CSV** writes `review_<name>.csv`.
+8. Under **More**: a comment on the whole file and on the whole review, and
+   **Export CSV**, which writes `review_<name>.csv`.
 
 The categories are configurable (one per line, **Apply categories**) and are
-stored in the review file. The default list is: bond length,
-angle/hybridisation, contact/clash, coordination polyhedron,
+stored in the review file: a list set before a new review is opened is used by
+it, a resumed review keeps its own until you apply another. The default list
+is: bond length, angle/hybridisation, contact/clash, coordination polyhedron,
 planarity/aromaticity, torn/broken ligand, wrong isomer, other.
 
 To evaluate a review on the command line:

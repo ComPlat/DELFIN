@@ -154,13 +154,13 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
         #
         # beta = angle between the M->D bond and the plane of the donor's OWN conjugated
         # environment (0 deg = metal in plane).  Measured against crystals:
-        #     monodentate 0.9 deg (BETTER than the 3.4 crystals allow)
-        #     bidentate   9.3      tetradentate 15.9   (crystals: 3.7 / 4.8)
+        #     monodentate 0.9 deg (flatter than the crystals themselves)
+        #     bidentate   9.3      tetradentate 15.9   (crystals: a few degrees)
         # The monodentate path is right because it aligns the metal along the lone pair
         # (_donor_and_lp + _rot_align).  THIS path never looks at the donor plane at all --
         # it fits donors rigidly onto ideal vertices, and beta comes out as a by-product.
         # The break is a PATH CHANGE, not physics.  pyramidal_sp2 is our largest INDEPENDENT
-        # defect (15.7 % of our frames vs 1.0 % of crystals; sole hard finding on 37.9 % of
+        # defect (15.7 % of our frames, rare on crystals; sole hard finding on 37.9 % of
         # its firings), and trilatresc2 lost its verdict to exactly this axis (OVAVEO,
         # pyramid_frame_regressed + root_defects_increased).
         #
@@ -413,7 +413,7 @@ _PNICTOGENS = frozenset(("N", "P", "As", "Sb"))
 
 # VSEPR ideal M-D-X angles for a SINGLE-substituent donor that keeps its lone
 # pairs (chalcogen 2-coord ether/thioether/selenoether/selenolate ~100 deg; a
-# pyramidal pnictogen ~107 deg).  CCDC-sane: H2Se 91, R2Se ~96-98, R2Te ~95,
+# pyramidal pnictogen ~107 deg).  Textbook values: H2Se 91, R2Se ~96-98, R2Te ~95,
 # H2O 104.5, R2O ~111, R3N/R3P ~107.
 _DONOR_BEND_DEG = {"O": 109.0, "S": 100.0, "Se": 98.0, "Te": 95.0,
                    "N": 107.0, "P": 100.0, "As": 96.0, "Sb": 95.0}

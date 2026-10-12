@@ -1,10 +1,10 @@
 """delfin/_conformer_rank.py — order the emitted isomer/conformer ensemble so the
 frame most likely to match the experimental (XRD) structure comes first.
 
-Cross-validated 2026-06-12 against ~978k CCDC crystal structures (n=2223+621
-independent ensembles): among the deterministically-enumerated frames for a
+Cross-validated 2026-06-12 against crystal structures (two independent sets of
+ensembles): among the deterministically-enumerated frames for a
 SMILES, ranking by *least steric clash* is the strongest local-geometry predictor
-of the crystallised form (top-3 hit 60-64% vs 56-59% for defect-count scoring).
+of the crystallised form (a higher top-3 hit rate than defect-count scoring).
 Only ONE generated frame matches the crystal; the others are valid alternative
 isomers/conformers — so this re-orders, it never drops or alters any structure.
 
@@ -464,7 +464,7 @@ def rank_isomers(isomers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
         return isomers
     coord_ideal = os.environ.get("DELFIN_RANK_COORD_IDEAL", "0") == "1"
     # Fix B: header-tolerant parsing so the ranker ACTUALLY orders the (headerless) emitted frames
-    # by least clash = most crystal-like first (cross-validated 2026-06-12: top-3 60-64%).  DEFAULT-ON
+    # by least clash = most crystal-like first (cross-validated 2026-06-12).  DEFAULT-ON
     # (2026-07-06): with the strict parser the ranker was a silent no-op on shipped/default builds, so
     # users got ENUMERATION order, not best-first — the champion always set FRAME_RANK_FIX=1, this ships
     # the same proven ordering to everyone (built OFF 50k: frame-0 realism median 0.02, near crystal).
