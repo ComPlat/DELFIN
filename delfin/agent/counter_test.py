@@ -37,6 +37,17 @@ A control is per TEST TARGET, not per file: the SAME node
 and a green run of a different node in the same FILE do not combine into
 a control — that is exactly the "test passes with and without the fix"
 failure this package exists to catch (reviewer s28, probe #1).
+
+KNOWN LIMITATION (QS ruling, condition 1): a NEW test NODE added to an
+existing file is INVISIBLE to ``assess`` — ``changed_files`` carries
+paths, ``test_runs`` carries recorded runs, and neither records a node
+that was never run. If that brand-new node never runs, a red+green on an
+unrelated, already-controlled node in the SAME file can still read as
+``"shown"``. The inputs cannot represent the shape, so no rule-4 wording
+can catch it; the client wiring must carry node-level change info (the
+added test defs the git diff gives, and one run entry per failing/changed
+node — report_flakes.node ids) to make the never-run-new-node case
+representable. This module documents the gap and does not guess.
 """
 
 from __future__ import annotations
@@ -358,8 +369,11 @@ def assess(changed_files: Iterable, test_runs: Iterable) -> Optional[str]:
       green. When NO test file changed (a product-only fix), any
       controlled node stands in for the (pre-existing) counter-test.
     * one sentence naming what is missing otherwise — and a missing
-      control on the fix's own test is NEVER masked by a completed
-      control elsewhere.
+      control on the fix's own test is not masked by a completed control
+      on an unrelated file or an unrelated node (exception: a NEW node
+      added to an existing file that never runs is invisible to both
+      inputs, so a same-file controlled old node can still read as
+      "shown" for it — see the module's KNOWN LIMITATION).
 
     Precedence (documented, not guessed):
     1. a changed test file that no run target covers — the fix's own
