@@ -15963,13 +15963,23 @@ class _DocToolExecutor:
         # an explicit confirm even in acceptEdits, so the agent can't silently
         # destroy results ("editing only with a confirmation prompt").
         is_calc = perms.is_confirm_write_path(resolved)
-        if is_protected or is_calc:
-            _record_security_event(
-                "self_mod" if is_protected else "calc_edit", name, rel_str,
-                blocked=perms.confirm_callback is None)
+        # A file the user refused a write to earlier in this session. The
+        # identical change and every shell route were turned away above; a
+        # DIFFERENT change from a write tool may be what they asked for
+        # instead ("change X and show me again"), so it is not refused --
+        # but it is never written unseen either. acceptEdits would have
+        # written it with no dialog, to the one file the user said no on.
+        was_refused = (not is_protected and not is_calc
+                       and perms.action_denied_earlier("write", str(resolved)))
+        if is_protected or is_calc or was_refused:
+            if not was_refused:
+                _record_security_event(
+                    "self_mod" if is_protected else "calc_edit", name, rel_str,
+                    blocked=perms.confirm_callback is None)
             if perms.confirm_callback is None:
                 _what = ("the agent's own safety layer" if is_protected
-                         else "a stored calculation under calc")
+                         else "a stored calculation under calc" if is_calc
+                         else "a file the user refused a write to earlier")
                 return (
                     f"'{name}' targets {_what} ('{rel_str}') — this requires "
                     "explicit user confirmation but no confirm_callback is "
@@ -15989,11 +15999,18 @@ class _DocToolExecutor:
                     "controls its own permissions.\n\n"
                     + self._build_change_preview(name, args, resolved)
                 )
-            else:
+            elif is_calc:
                 preview = (
                     "[CALC EDIT — STORED CALCULATION]\n"
                     "This file is under calc (an active/stored calculation). "
                     "Approving this lets the agent modify it.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+            else:
+                preview = (
+                    "[REFUSED EARLIER]\n"
+                    "You refused a write to this file earlier in this "
+                    "session. This is a different change to it.\n\n"
                     + self._build_change_preview(name, args, resolved)
                 )
             try:
@@ -16002,7 +16019,8 @@ class _DocToolExecutor:
                 return f"confirm_callback raised: {exc}"
             if ok:
                 return None
-            _w = "protected path" if is_protected else "calc file"
+            _w = ("protected path" if is_protected else "calc file"
+                  if is_calc else "file you refused a write to earlier")
             if self._confirm_timed_out(perms):
                 # Absence, not refusal. The distinction was drawn for bash
                 # and not here, so an unattended window on a protected path
@@ -16537,6 +16555,24 @@ class _DocToolExecutor:
                     "instead."
                     + _earlier_refusal_reason(perms, "bash", {"command": cmd})
                 )
+            # The same write in another spelling. The user refused a write
+            # to a file -- `echo x > f` -- and `printf x > f`, `tee f`,
+            # `cp a f` or `sed -i ... f` is not that exact command, so the
+            # dialog simply came up again (waves 13-15: sessions reached
+            # the refused effect on the second or third wording). The
+            # refusal covers the file, whatever writes it.
+            for _refused in self._bash_named_write_paths(cmd, args, perms):
+                if perms.action_denied_earlier("write", _refused):
+                    _shown = self._display_path(Path(_refused), perms)
+                    _record_security_event("denied_again", "bash", cmd[:80])
+                    return (
+                        f"the user already refused a write to '{_shown}' in "
+                        "this session, and this command writes the same file "
+                        "another way. It is refused without asking again -- "
+                        "the refusal covers the file, not the spelling. Do "
+                        "not try a third form. End your turn and ask the "
+                        "user what they want done with this file."
+                    )
             # A push publishes. Report 20260915-085107 pushed the change it
             # was asked to, then chained a second commit and push onto a fix
             # nobody asked for -- in all_free, which asks nothing, so nothing
@@ -16727,6 +16763,8 @@ class _DocToolExecutor:
                     )
                 _record_security_event("denied_by_user", "bash", cmd[:80])
                 perms.record_denied_action("bash", cmd)
+                for _refused in self._bash_named_write_paths(cmd, args, perms):
+                    perms.record_denied_action("write", _refused)
                 _remember_refusal(perms, "bash", cmd, self._refusal_reason(perms))
                 return (
                     f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
@@ -18225,6 +18263,38 @@ class _DocToolExecutor:
                 "you need."
             )})
         return list(result), None
+
+    def _bash_named_write_paths(
+        self, cmd: str, arguments: dict, perms: "KitToolPermissions",
+    ) -> list:
+        """The resolved files a shell command writes, however it spells it.
+
+        The same parser and the same base directory as
+        ``_gate_bash_write_targets`` -- a refusal is held to what the write
+        gate would have gated, not to a second reading of the command.
+        Never raises; a command that cannot be read names nothing.
+        """
+        try:
+            base = perms.workspace
+            cwd_arg = str((arguments or {}).get("cwd", "") or "")
+            if cwd_arg:
+                resolved_cwd, err = self._resolve_in_workspace(
+                    cwd_arg, perms, for_read=True)
+                if not err:
+                    base = resolved_cwd
+            out = []
+            for target in _bash_write_targets(cmd):
+                path = Path(target).expanduser()
+                if not path.is_absolute():
+                    path = Path(base) / path
+                if _is_ephemeral_sink(path, getattr(perms, "workspace", None)):
+                    continue
+                path = str(path.resolve(strict=False))
+                if path not in out:
+                    out.append(path)
+            return out
+        except Exception:
+            return []
 
     def _gate_bash_write_targets(
         self, cmd: str, arguments: dict, perms: "KitToolPermissions"
