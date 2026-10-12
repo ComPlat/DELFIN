@@ -9870,6 +9870,7 @@ def check_completion_claim(
     changes=(),
     observed=None,
     tests=None,
+    durable_test_runs=None,
     calcs=None,
     window_start: float = 0.0,
     current_fingerprint: Optional[dict] = None,
@@ -9884,11 +9885,14 @@ def check_completion_claim(
     helpers above serve the live call site, _verify_task_completion.
     ``calcs`` is the calc-evidence ledger (Welle 10): the runs the
     session actually observed via get_calc_info, verdicting a calculation
-    task on real work.
+    task on real work. ``durable_test_runs`` is the session's test runs
+    rebuilt from the durable tool trace, across turns: a verified test
+    task says with it whether its own test was ever seen failing.
     """
     from .task_evidence import check_completion_claim as _check
     return _check(subject, description, changes=changes, observed=observed,
-                  tests=tests, calcs=calcs, window_start=window_start,
+                  tests=tests, durable_test_runs=durable_test_runs,
+                  calcs=calcs, window_start=window_start,
                   current_fingerprint=current_fingerprint)
 
 
@@ -21597,12 +21601,26 @@ class _DocToolExecutor:
                 calcs = ledgers.get("calcs")
         except Exception:
             observed, tests, calcs = None, None, None
+        durable_runs = None
+        try:
+            # H1G phase 3: rebuild the DURABLE cross-turn test-run ledger
+            # so a red from an EARLIER turn reaches assess() (the live
+            # per-turn ledger is replaced every turn start). Never raises.
+            # An EMPTY ledger is passed through ([]), so assess can still
+            # name a changed test file no durable run ever covered.
+            if sid:
+                from . import tool_trace as _tt
+                from . import counter_test as _ct
+                durable_runs = _ct.durable_test_runs(_tt.read(sid))
+        except Exception:
+            durable_runs = None
         return check_completion_claim(
             str(task.get("subject", "")),
             str(task.get("description", "")),
             changes=_journal_changes(sid),
             observed=observed,
             tests=tests,
+            durable_test_runs=durable_runs,
             calcs=calcs,
             window_start=_task_ts_epoch(task.get("started_at")),
             current_fingerprint=_current_fingerprint(
