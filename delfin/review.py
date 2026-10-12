@@ -210,8 +210,14 @@ class ReviewSession:
     @classmethod
     def open(cls, source, *, name: str = '', review_path=None, blind: bool = False,
              seed: int = 0, findings_path=None,
-             categories: Iterable[str] | None = None) -> ReviewSession:
-        """Open a multi-frame XYZ file or a folder of them and resume its review."""
+             categories: Iterable[str] | None = None,
+             default_categories: Iterable[str] | None = None) -> ReviewSession:
+        """Open a multi-frame XYZ file or a folder of them and resume its review.
+
+        *categories* replaces the stored list; *default_categories* is used
+        only by a review that has none stored yet, so a list set up before
+        a new review is opened is kept and a resumed review keeps its own.
+        """
         source = Path(source).expanduser()
         if source.is_dir():
             folder = source
@@ -252,7 +258,10 @@ class ReviewSession:
                 meta['index'] = row
         if categories is not None:
             data['categories'] = [c for c in (s.strip() for s in categories) if c]
-        data.setdefault('categories', list(DEFAULT_CATEGORIES))
+        if not data.get('categories') and default_categories is not None:
+            data['categories'] = [c for c in (s.strip() for s in default_categories) if c]
+        if not data.get('categories'):
+            data['categories'] = list(DEFAULT_CATEGORIES)
         data.setdefault('reviews', {})
         data['source'] = source.name
         data.setdefault('created', _now())
