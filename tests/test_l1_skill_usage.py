@@ -170,3 +170,32 @@ def test_resolve_pending_refuses_a_rule_outcome(home):
     # never be recorded; the contract surfaces the bug in tests.
     with pytest.raises(ValueError):
         su.resolve_pending("p", "the user approves all pushes")
+
+
+# --- pending_for_session (resolve-side correlation: which skills THIS
+# --- session invoked as "started") ---
+
+
+def test_pending_for_session_finds_the_sid_tagged_started_skill(home):
+    su.record_use("my-skill", "started", detail="invoked session:sess-1")
+    su.record_use("other-skill", "started", detail="invoked session:sess-2")
+    assert su.pending_for_session("sess-1") == ["my-skill"]
+    assert su.pending_for_session("sess-2") == ["other-skill"]
+
+
+def test_pending_for_session_never_credits_a_different_session(home):
+    # An older period row for THIS skill was started in a different
+    # session; this session must not pick it up as its own.
+    su.record_use("shared-skill", "started", detail="invoked session:sess-old")
+    assert su.pending_for_session("sess-new") == []
+
+
+def test_pending_for_session_ignores_resolved_or_empty_rows(home):
+    su.record_use("done-skill", "started", detail="invoked session:sess-1")
+    su.resolve_pending("done-skill", "success", detail="session green")
+    assert su.pending_for_session("sess-1") == []
+
+
+def test_pending_for_session_empty_sid_returns_nothing(home):
+    su.record_use("no-sid-skill", "started", detail="invoked")
+    assert su.pending_for_session("") == []

@@ -165,6 +165,49 @@ def resolve_pending(name: str, outcome: str, *, detail: str = "",
     return True
 
 
+def pending_for_session(session_id: str) -> list[str]:
+    """Skill names with a pending "started" row tagged for this session.
+
+    Scans every ledger file; a skill (its most recent row, newest
+    first) counts only when that row is "started" AND its ``detail``
+    carries ``session:<session_id>``. This is what lets the session-end
+    path upgrade EXACTLY the skills this session invoked and never an
+    unrelated older pending row from another session (cross-session
+    credit is a fabricated credit). Returns [] on any IO problem.
+    """
+    sid = str(session_id or "").strip()
+    want = f"session:{sid}" if sid else ""
+    names: list[str] = []
+    try:
+        entries = sorted(_usage_dir().glob("*.jsonl"))
+    except Exception:
+        return []
+    for path in entries:
+        stem = path.stem
+        try:
+            _valid_name(stem)
+        except ValueError:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(row, dict) and row.get("skill") == stem:
+                if (row.get("outcome") == "started" and want
+                        and want in str(row.get("detail") or "")):
+                    names.append(stem)
+                break
+    return names
+
+
 def usage_records(name: str) -> list[dict]:
     """One dict per recorded use, newest first: skill, outcome, detail,
     when. Any unreadable line is skipped (never raises)."""
