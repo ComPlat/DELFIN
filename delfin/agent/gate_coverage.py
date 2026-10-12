@@ -301,6 +301,30 @@ def _receiver_text(node: ast.expr) -> Optional[str]:
     return None
 
 
+def _is_temp_source_call(node) -> bool:
+    """Is this expression a tempfile handle-creation source?
+
+    ``tempfile.mkstemp / NamedTemporaryFile / TemporaryFile`` and
+    ``os.fdopen`` (of a mkstemp fd) produce transient staging handles whose
+    reads/writes are not persistent user-data accesses; a sink reached through
+    them is excluded, not an ungated write.
+    """
+    if isinstance(node, ast.Call):
+        f = node.func
+        if isinstance(f, ast.Attribute):
+            mod = f.value
+            if isinstance(mod, ast.Name) and mod.id == "tempfile":
+                return f.attr in ("mkstemp", "NamedTemporaryFile",
+                                  "TemporaryFile", "TemporaryDirectory")
+            if isinstance(mod, ast.Attribute) and isinstance(mod.value, ast.Name) \
+                    and mod.value.id == "_tf":
+                return f.attr in ("mkstemp", "NamedTemporaryFile", "TemporaryFile")
+            if isinstance(mod, ast.Name) and mod.id == "os" \
+                    and f.attr == "fdopen":
+                return True
+    return False
+
+
 def _detect_sink(call: ast.Call) -> Optional[Sink]:
     """Return a Sink if ``call`` touches the filesystem, else None."""
     func = call.func
@@ -599,7 +623,7 @@ class _MethodScan:
     """Sinks, gates and outbound helper edges inside one function/method body."""
 
     __slots__ = ("name", "line", "sinks", "gates", "helper_calls",
-                   "helper_edges", "bindings", "param_names")
+                   "helper_edges", "bindings", "param_names", "temp_sources")
 
     def __init__(self, name: str, line: int):
         self.name = name
@@ -615,6 +639,10 @@ class _MethodScan:
             tuple[str, int, Optional[int], Optional[tuple], tuple[str, ...]]] = []
         # variable name -> canonical path expression it binds (open handles)
         self.bindings: dict[str, str] = {}
+        # variable/handle names bound to a tempfile handle (mkstemp /
+        # NamedTemporaryFile wrapped through os.fdopen / with): reads/writes on
+        # them are transient staging, not ungated user-data writes.
+        self.temp_sources: set[str] = set()
         # positional parameter names, for interprocedural argument->param binding
         self.param_names: list[str] = []
 
@@ -648,6 +676,16 @@ class _BodyVisitor(ast.NodeVisitor):
         pre, fpath = _stmt_ctx(node)
         sink = _detect_sink(node)
         if sink is not None:
+            # A sink on a tempfile staging handle/name (mkstemp bound through
+            # os.fdopen/with / NamedTemporaryFile) is transient, not an ungated
+            # user-data write -- exclude it (its receiver handle OR any path
+            # argument that is such a temp source).
+            if sink.receiver is not None and sink.receiver in self.scan.temp_sources:
+                sink = None
+            elif sink.path_exprs and any(
+                    e in self.scan.temp_sources for e in sink.path_exprs):
+                sink = None
+        if sink is not None:
             self.scan.sinks.append(replace(
                 sink, owner=owner, preorder=pre, forkpath=fpath))
         gate = _is_gate_call(node)
@@ -673,12 +711,15 @@ class _BodyVisitor(ast.NodeVisitor):
         # Bind the exported handle name to the opened path expression so a later
         # file-method sink on that handle resolves to the underlying path.  For
         # ``with open(p) as f`` the path is the open's first argument, not the
-        # whole ``open(p)`` call.
+        # whole ``open(p)`` call.  A tempfile-context handle (``NamedTemporaryFile``
+        # / ``os.fdopen`` of a mkstemp fd) is a transient staging handle.
         for item in node.items:
             if item.optional_vars is not None and isinstance(
                     item.optional_vars, ast.Name):
                 ctx = item.context_expr
-                if (isinstance(ctx, ast.Call) and isinstance(ctx.func, ast.Name)
+                if _is_temp_source_call(ctx):
+                    self.scan.temp_sources.add(item.optional_vars.id)
+                elif (isinstance(ctx, ast.Call) and isinstance(ctx.func, ast.Name)
                         and ctx.func.id == "open" and ctx.args):
                     self.scan.bindings[item.optional_vars.id] = _expr_key(
                         ctx.args[0])
@@ -688,13 +729,24 @@ class _BodyVisitor(ast.NodeVisitor):
 
     def visit_Assign(self, node):
         # `var = open(path)` (or a Path/result the gate checks) makes a handle.
-        if (len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
-                and isinstance(node.value, ast.Call)):
-            recv = _receiver_text(node.value.func) if isinstance(
-                node.value.func, ast.Attribute) else None
-            if recv == "open":
-                self.scan.bindings[node.targets[0].id] = _expr_key(
-                    node.value.args[0]) if node.value.args else ""
+        # `fd, name = tempfile.mkstemp(...)` makes a tempfile handle AND name;
+        # both are transient staging, marked so their later sinks are excluded.
+        if len(node.targets) == 1 and isinstance(node.value, ast.Call):
+            val = node.value
+            if _is_temp_source_call(val):
+                t = node.targets[0]
+                if isinstance(t, ast.Name):
+                    self.scan.temp_sources.add(t.id)
+                elif isinstance(t, ast.Tuple):
+                    for elt in t.elts:
+                        if isinstance(elt, ast.Name):
+                            self.scan.temp_sources.add(elt.id)
+            elif isinstance(node.targets[0], ast.Name):
+                recv = _receiver_text(val.func) if isinstance(
+                    val.func, ast.Attribute) else None
+                if recv == "open":
+                    self.scan.bindings[node.targets[0].id] = _expr_key(
+                        val.args[0]) if val.args else ""
         self.generic_visit(node)
 
 
