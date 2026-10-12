@@ -174,3 +174,44 @@ def test_plan_mode_stays_read_only(ws):
     perms = A.KitToolPermissions(workspace=ws, mode="plan")
     assert A._DocToolExecutor()._run_permission_gate(
         "bash", {"command": "git switch -c pr/x origin/main"}, perms) is not None
+
+
+# -- the settings box says what the gate does ---------------------------------
+
+def _settings_tab(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from delfin.dashboard import tab_settings
+    from delfin.dashboard.context import DashboardContext
+    for n in ("calc", "archive", "office"):
+        (tmp_path / n).mkdir()
+    ctx = DashboardContext(calc_dir=tmp_path / "calc",
+                           archive_dir=tmp_path / "archive",
+                           office_dir=tmp_path / "office")
+    ctx.run_js = lambda _s: None
+    tab, _ = tab_settings.create_tab(ctx)
+
+    def walk(w):
+        yield w
+        for c in getattr(w, "children", ()) or ():
+            yield from walk(c)
+    return list(walk(tab))
+
+
+def test_the_settings_box_names_the_forms_the_gate_approves(tmp_path,
+                                                            monkeypatch):
+    parts = _settings_tab(tmp_path, monkeypatch)
+    text = " ".join(str(w.value) for w in parts
+                    if type(w).__name__ == "HTML"
+                    and "command shapes" in str(w.value))
+    assert text
+    import html as _html
+    plain = _html.unescape(text)
+    for spelling in R.SHAPE_SPELLINGS.values():
+        assert spelling in plain, spelling
+    # Forms the gate does not approve, and promises it does not keep: the
+    # switch writes a branch, and git runs the repository's filters.
+    for absent in ("git show", "git grep", "gate probe", "writes no file",
+                   "runs no other executable"):
+        assert absent not in plain, absent
+    boxes = {w.description for w in parts if type(w).__name__ == "Checkbox"}
+    assert set(R.SHAPE_SPELLINGS.values()) <= boxes
