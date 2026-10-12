@@ -125,3 +125,19 @@ def test_an_unknown_verdict_is_counted_as_an_error(tmp_path, monkeypatch):
 def test_the_run_file_round_trips(tmp_path):
     rows = [_row()]
     assert read_run(_write_run_file(tmp_path, "run_a.jsonl", rows)) == rows
+
+
+def test_the_note_counts_what_its_lines_say():
+    from delfin.agent.benchmark import format_learning_note
+
+    lc = {"per_task": [
+        {"task_id": "t1", "verdict": "mystery", "error": None,
+         "first": {"tool_calls": 6}, "second": {"tool_calls": 4}},
+        {"task_id": "t2", "verdict": "learned", "error": None,
+         "first": {}, "second": {}},
+    ]}
+    note = format_learning_note(lc).splitlines()
+    header, lines = note[0], note[1:]
+    shown = [ln.split(": ", 1)[1].split(" (", 1)[0] for ln in lines]
+    for verdict in ("learned", "no learning", "regressed", "wrong", "error"):
+        assert f"{shown.count(verdict)} {verdict}" in header, (header, shown)
