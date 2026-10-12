@@ -4825,7 +4825,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
 
     _ros_enabled = widgets.Checkbox(
         value=True,
-        description='Enable read-only shapes approval by rule',
+        description='Approve these command forms by rule',
         layout=widgets.Layout(width='340px'),
     )
     _ros_shape_checks: dict[str, widgets.Checkbox] = {}
@@ -4833,8 +4833,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     for _name in (_ros.SHAPE_NAMES if _ros else []):
         _cb = widgets.Checkbox(
             value=True,
-            description=_name,
-            layout=widgets.Layout(width='240px'),
+            description=_ros.SHAPE_SPELLINGS.get(_name, _name),
+            layout=widgets.Layout(width='380px'),
         )
         _ros_shape_checks[_name] = _cb
         _ros_shape_rows.append(
@@ -4843,14 +4843,16 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
 
     _ros_header = widgets.HTML(
         value=(
-            '<b style="font-size:13px;">Read-only command shapes</b><br>'
+            '<b style="font-size:13px;">Command shapes approved by rule</b><br>'
             '<span style="color:#757575;font-size:12px;">'
-            'Commands that match a known read-only shape (git show '
-            '&lt;ref&gt;:&lt;path&gt;, git grep, git apply --check, '
-            'gate probe, …) are approved by rule instead of raising an '
-            'approval dialog. Each shape parses as one program, runs no '
-            'other executable, writes no file and resolves every path '
-            'inside the workspace.</span>'
+            'A command that is exactly one of these forms runs without an '
+            'approval dialog: '
+            + html.escape(', '.join(
+                (_ros.SHAPE_SPELLINGS if _ros else {}).values()))
+            + '. No options; &lt;path&gt; must resolve inside the '
+            'workspace. The switch creates a local branch. git still runs '
+            'the filters and hooks the repository configures, inside the '
+            'shell sandbox.</span>'
         ),
     )
     _ros_box = widgets.VBox(

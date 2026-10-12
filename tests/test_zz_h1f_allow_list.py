@@ -202,7 +202,7 @@ def test_the_settings_box_names_the_forms_the_gate_approves(tmp_path,
     parts = _settings_tab(tmp_path, monkeypatch)
     text = " ".join(str(w.value) for w in parts
                     if type(w).__name__ == "HTML"
-                    and "command shapes" in str(w.value))
+                    and "command shapes" in str(w.value).lower())
     assert text
     import html as _html
     plain = _html.unescape(text)

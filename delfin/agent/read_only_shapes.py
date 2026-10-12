@@ -23,6 +23,20 @@ read-only git rule already decides those).
 
 <path> is one word, relative or absolute, that resolves (links followed)
 to something inside the workspace.
+
+"Harmless" means: no option, so no write and no program named in the
+command. git still runs what the REPOSITORY configures -- hash-object
+and apply --check pass the file through its clean filter, switch runs
+the post-checkout hook, the smudge filter and core.fsmonitor -- exactly
+as the already auto-allowed git status / git add do. A configuration the
+model planted (plain files ``HEAD``, ``config``, ``objects/``, ``refs/``
+or a ``.git`` gitfile in the workspace make it a repository) therefore
+runs a program here without a dialog. What holds that program is the
+shell sandbox every command runs in (bubblewrap, or Landlock: writes
+only beneath the workspace roots, network through the egress proxy).
+Rejected: requiring ``--no-filters`` on hash-object. apply has no such
+option, and git status, reached without a dialog already, runs the same
+filter, so it would close nothing.
 """
 
 from __future__ import annotations
@@ -95,6 +109,14 @@ _SHAPES = (
 
 #: Ordered shape names.
 SHAPE_NAMES: tuple[str, ...] = tuple(name for name, _ in _SHAPES)
+
+#: The spelling each shape approves, as the settings box shows it.
+SHAPE_SPELLINGS: dict[str, str] = {
+    "git_apply_check": "git apply --check <path>",
+    "git_hash_object": "git hash-object <path>",
+    "git_switch_pr": "git switch -c pr/<name> origin/main",
+    "gh_version": "gh --version / gh version",
+}
 
 
 def matches(command: str, workspace: str) -> str:
