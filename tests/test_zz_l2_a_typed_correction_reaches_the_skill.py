@@ -260,6 +260,10 @@ def test_only_the_send_button_tells_the_engine_what_was_typed():
 
 
 def test_the_chat_shows_the_proposed_change_as_a_diff():
-    src = ast.unparse(_fn(_tab_agent(), "_on_tool_use"))
+    # drawn from the result, and only for a stored proposal; the
+    # refusals are pinned in test_a_refused_skill_patch_shows_no_diff
+    src = ast.unparse(_fn(_tab_agent(), "_on_tool_result"))
     at = src.index("tool_name == 'skill_propose_patch'")
-    assert "_build_inline_diff" in src[at:at + 600]
+    assert "_skill_patch_card_html" in src[at:at + 600]
+    card = ast.unparse(_fn(_tab_agent(), "_skill_patch_card_html"))
+    assert "_build_inline_diff" in card

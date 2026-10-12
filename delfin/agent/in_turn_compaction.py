@@ -49,6 +49,7 @@ from __future__ import annotations
 import re
 
 from .compaction_log import compare_loss
+from .harness_rows import HarnessRow
 
 _SUMMARY_HEADER = "[Conversation summary — earlier rounds of this turn compacted]"
 
@@ -69,8 +70,9 @@ _UNLISTED_RE = re.compile(
     r"^  \.\.\. and (\d+) older round\(s\) of this turn, not itemised$")
 
 
-class SummaryRow(dict):
-    """The in-turn summary row ``compact`` creates.
+class SummaryRow(HarnessRow):
+    """The in-turn summary row ``compact`` creates; harness-written, so
+    it is also a ``harness_rows.HarnessRow``.
 
     A plain ``dict`` to every consumer (equality, JSON, the SDK's
     transform, ``turn_history``); the type is what identifies it to the

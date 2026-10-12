@@ -425,6 +425,7 @@ def _display_messages(engine, limit: int = 200) -> list[dict[str, str]]:
     session it ever wrote is called "Untitled" and invisible to
     `session search`.
     """
+    from .harness_rows import history_mark
     out: list[dict[str, str]] = []
     for msg in list(getattr(engine, "messages", []) or [])[-limit:]:
         if not isinstance(msg, dict):
@@ -439,7 +440,9 @@ def _display_messages(engine, limit: int = 200) -> list[dict[str, str]]:
             content = " ".join(p for p in parts if p)
         text = str(content or "").strip()
         if text:
-            out.append({"role": role, "content": text})
+            # Skill learning reads this projection: a harness row keeps
+            # its mark (harness_rows).
+            out.append(history_mark({"role": role, "content": text}, msg))
     return out
 
 
