@@ -1564,8 +1564,8 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
             #     >= 4 partners (metal counted in)       -> tetrahedral, not flat
             #     == 3 partners, period 2 (B,C,N,O,F)    -> planar, metal IN the plane: flat OK
             #     == 3 partners, period 3+ (P,S,Se,As..) -> PYRAMIDAL, not flat
-            # Confirmed by the crystals (58770 of them): S|3 has p50 97.77 degrees -- clearly
-            # below the 120 degrees of a plane -- while N|3 sits at 119.94.
+            # Confirmed by crystal structures: three-partner S sits clearly
+            # below the 120 degrees of a plane, while three-partner N sits at it.
             _sig_tot = len(heavy_nbrs) + _n_metal_nb + _n_h_nb
             _period3 = atom.GetSymbol() not in ("B", "C", "N", "O", "F", "H")
             if (_n_metal_nb

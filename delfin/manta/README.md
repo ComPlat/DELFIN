@@ -74,4 +74,12 @@ MANTA is honest about its boundaries:
 
 ## License & data provenance
 
-LGPL-3.0-or-later. The runtime uses **only open priors** (Cordero and Pyykkö–Atsumi covalent radii, open-database-derived ideal distances) — **no CCDC/CSD/GRIP data ships or is read at runtime**. A mechanical license guard (`scripts/license_guard.py` + CI test) enforces this.
+LGPL-3.0-or-later.
+
+MANTA itself ships **no CCDC/CSD structures, coordinates or fragment libraries and no CSD-derived tables** — apart from the two values named below — and never calls the CSD API. Covalent radii are Cordero et al. (2008), with the Pyykkö–Atsumi radii for multiple bonds and heavy main-group donors; bond-length medians over the Crystallography Open Database (COD, CC0) serve an optional refinement path that is off by default; the metal–ligand distance tables of the legacy path are hand-set typical values, not a database statistic.
+
+**Two exceptions, named:** two construction constants of the shipped configuration are still taken from our own statistics on CSD crystal structures — the five delocalised aromatic bond lengths in `delfin/fffree/aromatic_bond_targets.py` and the donor-plane tolerance `_BETA_BAND` (4.8°) in `assemble_donor_plane.py`. A re-derivation from the COD by the same method reproduces the aromatic lengths to within 0.012 Å (C–C identical); both values will be replaced by COD-derived ones.
+
+A few construction paths that are off in the shipped configuration were calibrated on structure statistics that are not distributed; they read their values from tables named by environment variables and have no value without them. Third-party libraries carry published structure-derived knowledge of their own: RDKit's ETKDG, for example, uses experimental torsion preferences derived from the CSD (Riniker & Landrum, 2015).
+
+Where every non-trivial number comes from is listed in [PROVENANCE.md](PROVENANCE.md). A mechanical license guard (`scripts/license_guard.py` + CI test) blocks CCDC/CSD imports and data files in the tree.
