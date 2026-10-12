@@ -9116,64 +9116,22 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "skill_export",
+            "name": "skill_share",
             "description": (
-                "Export one ACCEPTED skill to a shared folder as a JSON "
-                "bundle (L6). Only an accepted skill "
-                "(~/.delfin/skills/<name>/SKILL.md) may be exported, and "
-                "only by an explicit call. The text is scrubbed before "
-                "anything is written (absolute path / user@host / job id / "
-                "secret blocks and names the line; nothing is silently "
-                "rewritten). target_dir must be a folder inside this "
-                "workspace's write scope. Returns the exact text that "
-                "leaves."
+                "Share a skill as a file: export (name, target_dir) writes "
+                "an accepted skill; import (path) stores a bundle as a "
+                "proposal. Never active until a human accepts."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Skill name, no slash.",
-                    },
-                    "target_dir": {
-                        "type": "string",
-                        "description": (
-                            "Folder to write the bundle into (must be in "
-                            "write scope)."
-                        ),
-                    },
-                    "author": {
-                        "type": "string",
-                        "description": "Author label stored in the bundle.",
-                    },
+                    "action": {"type": "string",
+                               "enum": ["export", "import"]},
+                    "name": {"type": "string"},
+                    "target_dir": {"type": "string"},
+                    "path": {"type": "string"},
                 },
-                "required": ["name", "target_dir"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "skill_import",
-            "description": (
-                "Read a shared skill bundle, verify it and scrub it (L6). "
-                "Does bounded read (regular file only, no symlink/FIFO, "
-                "size cap) + sha256 verification + the same scrub. Unsafe "
-                "text is recorded as status 'blocked' naming the line; a "
-                "clean, hash-verified bundle returns status 'verified' -- "
-                "it becomes a proposal only when a human attaches real "
-                "evidence via the proposal pipeline (source 'shared'), "
-                "never active without accept."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path of the JSON bundle to import.",
-                    },
-                },
-                "required": ["path"],
+                "required": ["action"],
             },
         },
     },
@@ -13786,10 +13744,14 @@ class _DocToolExecutor:
         # scrub -> blocked/verified, never active without a human accept).
         # The executors gate the filesystem paths through the same read /
         # write checks every other tool uses.
-        if name == "skill_export":
-            return self._execute_skill_export(arguments, permissions)
-        if name == "skill_import":
-            return self._execute_skill_import(arguments, permissions)
+        if name == "skill_share":
+            action = str(arguments.get("action") or "").strip().lower()
+            if action == "export":
+                return self._execute_skill_export(arguments, permissions)
+            if action == "import":
+                return self._execute_skill_import(arguments, permissions)
+            return json.dumps({"error": (
+                "skill_share needs action 'export' or 'import'")})
 
         # Sub-agent delegation: spawn an isolated tool-calling loop
         # via the runner the parent OpenAIClient attached.
@@ -21193,7 +21155,7 @@ class _DocToolExecutor:
         """
         if perms is None:
             return json.dumps({"error": (
-                "skill_export requires permissions to be configured")})
+                "skill_share requires permissions to be configured")})
         if effective_mode(perms) == "plan":
             return json.dumps({"error": (
                 "plan mode (read-only) — skill_export rejected. Present "
@@ -21244,7 +21206,7 @@ class _DocToolExecutor:
         """
         if perms is None:
             return json.dumps({"error": (
-                "skill_import requires permissions to be configured")})
+                "skill_share requires permissions to be configured")})
         if effective_mode(perms) == "plan":
             return json.dumps({"error": (
                 "plan mode (read-only) — skill_import rejected. Present "

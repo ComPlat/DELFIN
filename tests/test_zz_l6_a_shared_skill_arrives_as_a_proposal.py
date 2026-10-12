@@ -1,7 +1,7 @@
 """A shared skill leaves through the write gate and arrives as a proposal.
 
-Two tools, ``skill_export`` and ``skill_import``, are what a model can
-actually call; the module behind them is tested elsewhere. These tests go
+One tool, ``skill_share`` with the actions export and import, is what a
+model can actually call; the module behind them is tested elsewhere. These tests go
 through the document executor's ``execute`` with real permissions and read
 what lands on disk.
 
@@ -49,6 +49,10 @@ def box(tmp_path, monkeypatch):
         (d / "SKILL.md").write_text(text, encoding="utf-8")
 
     def call(tool, args, mode="acceptEdits"):
+        """skill_export / skill_import are the two actions of skill_share."""
+        if tool in ("skill_export", "skill_import"):
+            args = {"action": tool.split("_", 1)[1], **args}
+            tool = "skill_share"
         return str(_doc_executor.execute(tool, args, perms(mode)))
 
     return home, ws, skill, call, asked
@@ -63,9 +67,13 @@ def _bundle(ws, name="pick-functional"):
     return ws / "shared" / f"{name}.skill.json"
 
 
-def test_both_tools_are_offered_to_the_model():
+def test_the_tool_is_offered_to_the_model():
     names = {t["function"]["name"] for t in _DOC_TOOLS_OPENAI}
-    assert {"skill_export", "skill_import"} <= names
+    assert "skill_share" in names
+
+
+def test_an_unknown_action_is_an_error_not_a_guess(box):
+    assert "needs action" in box[3]("skill_share", {"action": "publish"})
 
 
 def test_a_chemistry_skill_exports_into_the_workspace(box, monkeypatch, tmp_path):
