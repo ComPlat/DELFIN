@@ -43,7 +43,10 @@ def _record_written(tmp_path, name, text="print('x')\n"):
     )
     records = change_journal.list_changes(sid)
     assert records, f"no real record for {name!r} under sid {sid}"
-    return [r["path"] for r in records]
+    # Return the FULL record dicts exactly as the P3 gate's _journal_changes
+    # wraps them ({path, ts, created}), so verdict() is probed with the true
+    # gate shape (builder's record-shape amendment accepts these).
+    return records
 
 
 # --------------------------------------------------------------------------
