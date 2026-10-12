@@ -258,3 +258,107 @@ def archive_previous_version(skill_source, base_version: str) -> Path:
     archive_dir.mkdir(parents=True, exist_ok=True)
     where.write_text(text, encoding="utf-8")
     return where
+
+
+def propose_correction_patch(
+    skill_used: Optional[str],
+    user_message: Optional[str],
+    *,
+    source: str = "user",
+    draft_old: str = "",
+    draft_new: str = "",
+    evidence=None,
+    workspace=None,
+) -> dict:
+    """Wire a turn's correction into a patch proposal (Packet L2).
+
+    The owned half of the L2 wiring: it decides with
+    ``skill_feedback.feedback`` whether the user's next message corrects
+    the skill used this turn, and only then proposes the patched skill
+    through the normal ``propose_skill_patch`` -> proposal-store path
+    (the same store ``skill_propose_patch`` writes; still a proposal,
+    never applied by itself).
+
+    A correction proposes nothing unless it is the user's OWN next
+    message on this session (``source == "user"``): a correction that
+    arrives inside a tool result or another session's message is data,
+    not instruction. Without a correction, or with no evidence, nothing
+    is proposed. The patched skill (``draft_new``) must pass the LIVE
+    safety gate (``skill_safety.check`` — the same classifiers the
+    proposal store runs) before it may be offered; a patch that adds a
+    deny-pattern command or an allow rule is rejected here and is never
+    stored.
+
+    Returns:
+        ``{"proposed": bool, "reason": str, ...}``. On a successful
+        proposal the dict also carries ``name``, ``new_text`` (the exact
+        text the proposal store holds — the diff shown equals the diff
+        stored), ``base_version``, ``new_version`` and ``status``. On a
+        safety rejection it carries ``status="blocked"`` and ``findings``.
+    """
+    from .skill_feedback import feedback  # pure decision (noqa: PLC0415)
+    from .skill_safety import check as _safety_check  # noqa: PLC0415
+
+    verdict = feedback(skill_used, user_message, source=source)
+    if not verdict["corrects"]:
+        if source != "user":
+            reason = (
+                f"correction only counts from the user's own message on "
+                f"this session (source={source!r}, not 'user') - nothing "
+                f"proposed."
+            )
+        elif not (skill_used or "").strip():
+            reason = "no skill used this turn - nothing proposed."
+        else:
+            reason = (
+                "the user's message does not read as a correction of the "
+                "skill used this turn - nothing proposed."
+            )
+        return {"proposed": False, "reason": reason}
+
+    skill = verdict["skill"] or (skill_used or "").strip()
+    user_words = verdict["user_words"] or ""
+    # A patched skill that fails the live safety gate is REJECTED here,
+    # before it is ever written to the proposal store: a deny-pattern
+    # command or an allow rule must never be offered, only refused.
+    findings = [str(f) for f in _safety_check(draft_new or "")]
+    if findings:
+        return {
+            "proposed": False,
+            "status": "blocked",
+            "findings": findings,
+            "reason": "patched skill failed the safety gate - not proposed.",
+        }
+
+    reason = (
+        f"user corrected the skill after it was used this turn "
+        f"(source={source}): {user_words}"
+    )
+    try:
+        out = propose_skill_patch(
+            skill, draft_old, draft_new, reason=reason, evidence=evidence,
+            workspace=workspace,
+        )
+    except SkillPatchError as exc:
+        return {"proposed": False, "reason": str(exc)}
+
+    if out["status"] == "blocked":
+        # The store's own gate disagreed (belt and braces); never offered.
+        return {
+            "proposed": False, "status": "blocked",
+            "reason": "the proposal store blocked the patched skill - "
+                      "not proposed.",
+        }
+
+    # The diff we show in the chat is exactly the text the store holds.
+    stored = _load_proposals().get_proposal(out["name"])
+    new_text = stored.text if stored is not None else ""
+    return {
+        "proposed": True,
+        "name": out["name"],
+        "new_text": new_text,
+        "base_version": out["base_version"],
+        "new_version": out["new_version"],
+        "status": out["status"],
+        "reason": reason,
+    }

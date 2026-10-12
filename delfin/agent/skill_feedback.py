@@ -53,7 +53,7 @@ def feedback(
     skill_used: Optional[str],
     user_message: Optional[str],
     *,
-    source: str = _USER_SOURCE,
+    source: str = "unknown",
 ) -> dict:
     """Verdict: does the user's next message correct the skill used this turn?
 
@@ -75,7 +75,8 @@ def feedback(
     reads like one. An empty or absent message, or an absent skill,
     proposes nothing.
     """
-    skill = (skill_used or "").strip()
+    skill = skill_used if isinstance(skill_used, str) else ""
+    skill = skill.strip()
     text = user_message if isinstance(user_message, str) else ""
     text = text.strip()
     corrects = bool(skill) and source == _USER_SOURCE and bool(text) and (
