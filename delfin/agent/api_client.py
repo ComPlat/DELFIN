@@ -2187,7 +2187,10 @@ def _bash_write_targets(cmd: str) -> list[str]:
             if dest.startswith("/"):
                 target = Path(dest)
             elif here is None:
-                target = None            # relative cd from the gate's cwd: still inside
+                # Relative to the gate's cwd: kept relative, so the caller
+                # resolves `sub/f` against its own base. Dropping it named
+                # `f` -- a different file -- and `cd .. && > f` an inside one.
+                target = Path(dest)
             else:
                 target = here / dest
             previous, here = here, target
@@ -4242,6 +4245,89 @@ def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
         grants["push"] = 1
     elif new_request:
         grants["push"] = 0
+
+
+#: Marks a ``write:`` refusal that came from a refused SHELL command's
+#: targets, the one kind a later user message may lift.
+_SHELL_WRITE_KIND = "shell_write"
+
+
+def _names_path(text: str, name: str) -> bool:
+    """True when *name* stands in *text* as a path of its own: not part of
+    a longer name (`xout.log`, `out.log.bak`) or of another directory's
+    path (`other/out.log`). A leading `./` and a sentence's full stop are
+    allowed."""
+    return bool(name) and re.search(
+        r"(?<![\w.\-/])(?:\./)?" + re.escape(name) + r"(?![\w/\-]|\.\w)",
+        text) is not None
+
+
+def _lift_shell_write_refusals(perms: Any, content: Any) -> list:
+    """Lift the shell-derived write refusals a user message names; the
+    lifted paths.
+
+    Input: the session's permissions and the content of a message the user
+    typed (a new turn or a steer). A refusal recorded from a refused shell
+    command's write targets is lifted when the text names the file by its
+    absolute path, its workspace-relative path, or its basename when no
+    other shell-derived refusal has that basename. Lifting drops the
+    ``write:`` entry unless a write tool's refused change to the same file
+    also holds it; the exact-command ``bash:`` entry is never dropped.
+
+    Read as narrowly as the push grant: nothing at sub-agent depth (its
+    prompt is the parent model's text), nothing from a harness or
+    other-session message, and only the user's own words of the message
+    (``_classifier_user_texts``). Never raises.
+    """
+    try:
+        if int(getattr(perms, "subagent_depth", 0) or 0) > 0:
+            return []
+        ledger = getattr(perms, "denied_actions", None)
+        if not isinstance(ledger, dict):
+            return []
+        prefix = _SHELL_WRITE_KIND + ":"
+        paths = [k[len(prefix):] for k in ledger if str(k).startswith(prefix)]
+        if not paths:
+            return []
+        text = _message_text(content)
+        if text.lstrip().startswith(_MACHINE_MESSAGE_PREFIXES):
+            return []
+        words = _classifier_user_texts([{"role": "user", "content": text}])
+        if not words:
+            return []
+        # A line opening with a bracket is the harness appending to what
+        # the user typed (an upload list); the user's words end there.
+        text = re.split(r"\n\s*\[", words[-1], maxsplit=1)[0]
+        try:
+            ws = Path(perms.workspace).resolve()
+        except Exception:
+            ws = None
+        basenames = [Path(p).name for p in paths]
+        lifted = []
+        for path in paths:
+            names = [path]
+            if ws is not None:
+                try:
+                    names.append(str(Path(path).relative_to(ws)))
+                except ValueError:
+                    pass
+            base = Path(path).name
+            if basenames.count(base) == 1:
+                names.append(base)
+            if not any(_names_path(text, n) for n in names if n != "."):
+                continue
+            ledger.pop(prefix + path, None)
+            if not any(str(k).startswith(f"write_change:{path}\n")
+                       for k in ledger):
+                ledger.pop(f"write:{path}", None)
+            lifted.append(path)
+        if lifted:
+            _record_security_event(
+                "refusal_lifted", "user", ", ".join(lifted)[:120],
+                blocked=False)
+        return lifted
+    except Exception:
+        return []
 
 
 def _asks_for_push(text: str) -> bool:
@@ -15993,14 +16079,24 @@ class _DocToolExecutor:
         # an explicit confirm even in acceptEdits, so the agent can't silently
         # destroy results ("editing only with a confirmation prompt").
         is_calc = perms.is_confirm_write_path(resolved)
-        if is_protected or is_calc:
-            _record_security_event(
-                "self_mod" if is_protected else "calc_edit", name, rel_str,
-                blocked=perms.confirm_callback is None)
+        # A file the user refused a write to earlier in this session. The
+        # identical change and every shell route were turned away above; a
+        # DIFFERENT change from a write tool may be what they asked for
+        # instead ("change X and show me again"), so it is not refused --
+        # but it is never written unseen either. acceptEdits would have
+        # written it with no dialog, to the one file the user said no on.
+        was_refused = (not is_protected and not is_calc
+                       and perms.action_denied_earlier("write", str(resolved)))
+        if is_protected or is_calc or was_refused:
+            if not was_refused:
+                _record_security_event(
+                    "self_mod" if is_protected else "calc_edit", name, rel_str,
+                    blocked=perms.confirm_callback is None)
             if perms.confirm_callback is None:
                 _what = ("a file git reads as configuration" if _is_gitcfg
                          else "the agent's own safety layer" if is_protected
-                         else "a stored calculation under calc")
+                         else "a stored calculation under calc" if is_calc
+                         else "a file the user refused a write to earlier")
                 return (
                     f"'{name}' targets {_what} ('{rel_str}') — this requires "
                     "explicit user confirmation but no confirm_callback is "
@@ -16028,11 +16124,18 @@ class _DocToolExecutor:
                     "controls its own permissions.\n\n"
                     + self._build_change_preview(name, args, resolved)
                 )
-            else:
+            elif is_calc:
                 preview = (
                     "[CALC EDIT — STORED CALCULATION]\n"
                     "This file is under calc (an active/stored calculation). "
                     "Approving this lets the agent modify it.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+            else:
+                preview = (
+                    "[REFUSED EARLIER]\n"
+                    "You refused a write to this file earlier in this "
+                    "session. This is a different change to it.\n\n"
                     + self._build_change_preview(name, args, resolved)
                 )
             try:
@@ -16041,7 +16144,8 @@ class _DocToolExecutor:
                 return f"confirm_callback raised: {exc}"
             if ok:
                 return None
-            _w = "protected path" if is_protected else "calc file"
+            _w = ("protected path" if is_protected else "calc file"
+                  if is_calc else "file you refused a write to earlier")
             if self._confirm_timed_out(perms):
                 # Absence, not refusal. The distinction was drawn for bash
                 # and not here, so an unattended window on a protected path
@@ -16310,6 +16414,10 @@ class _DocToolExecutor:
         _record_security_event("denied_by_user", base, shown)
         if base in ("bash", "bash_background"):
             perms.record_denied_action("bash", str(action.get("command") or ""))
+            for _path in self._bash_named_write_paths(
+                    str(action.get("command") or ""), args, perms):
+                perms.record_denied_action("write", _path)
+                perms.record_denied_action(_SHELL_WRITE_KIND, _path)
         return _refused(reason, by_user=True) + self._said_why(perms)
 
     def _run_permission_gate(
@@ -16576,6 +16684,29 @@ class _DocToolExecutor:
                     "instead."
                     + _earlier_refusal_reason(perms, "bash", {"command": cmd})
                 )
+            # The same write in another spelling. The user refused a write
+            # to a file -- `echo x > f` -- and `printf x > f`, `tee f`,
+            # `cp a f` or `sed -i ... f` is not that exact command, so the
+            # dialog simply came up again (sessions reached the refused
+            # effect on the second or third wording). The refusal covers
+            # the file, whatever writes it. Parsed only while the ledger
+            # holds a refused write: 0.13-0.27 ms per command otherwise.
+            _has_refused_write = any(
+                str(k).startswith("write:")
+                for k in (getattr(perms, "denied_actions", None) or {}))
+            for _refused in (self._bash_named_write_paths(cmd, args, perms)
+                             if _has_refused_write else ()):
+                if perms.action_denied_earlier("write", _refused):
+                    _shown = self._display_path(Path(_refused), perms)
+                    _record_security_event("denied_again", "bash", cmd[:80])
+                    return (
+                        f"the user already refused a write to '{_shown}' in "
+                        "this session, and this command writes the same file "
+                        "another way. It is refused without asking again -- "
+                        "the refusal covers the file, not the spelling. Do "
+                        "not try a third form. End your turn and ask the "
+                        "user what they want done with this file."
+                    )
             # A push publishes. Report 20260915-085107 pushed the change it
             # was asked to, then chained a second commit and push onto a fix
             # nobody asked for -- in all_free, which asks nothing, so nothing
@@ -16796,6 +16927,9 @@ class _DocToolExecutor:
                     )
                 _record_security_event("denied_by_user", "bash", cmd[:80])
                 perms.record_denied_action("bash", cmd)
+                for _refused in self._bash_named_write_paths(cmd, args, perms):
+                    perms.record_denied_action("write", _refused)
+                    perms.record_denied_action(_SHELL_WRITE_KIND, _refused)
                 _remember_refusal(perms, "bash", cmd, self._refusal_reason(perms))
                 return (
                     f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
@@ -18294,6 +18428,123 @@ class _DocToolExecutor:
                 "you need."
             )})
         return list(result), None
+
+    def _bash_named_write_paths(
+        self, cmd: str, arguments: dict, perms: "KitToolPermissions",
+    ) -> list:
+        """The resolved files a shell command writes, however it spells it.
+
+        The same parser and the same base directory as
+        ``_gate_bash_write_targets`` -- a refusal is held to what the write
+        gate would have gated, not to a second reading of the command.
+        Never raises; a command that cannot be read names nothing.
+        """
+        try:
+            base = perms.workspace
+            cwd_arg = str((arguments or {}).get("cwd", "") or "")
+            if cwd_arg:
+                resolved_cwd, err = self._resolve_in_workspace(
+                    cwd_arg, perms, for_read=True)
+                if not err:
+                    base = resolved_cwd
+            out = []
+            targets = list(_bash_write_targets(cmd))
+            # git checkout/restore/apply and patch: the paths the write
+            # gate folds in from patch_targets. UNKNOWABLE names nothing
+            # here -- the write gate refuses that command on its own.
+            try:
+                from . import patch_targets as _pt
+                named = _pt.targets(cmd, str(base))
+                if isinstance(named, list):
+                    targets += named
+            except Exception:
+                pass
+            # A workspace root is where `cp x .` copies INTO, not a file;
+            # recorded, it refused every later copy into the workspace.
+            roots = {str(Path(r).resolve()) for r in (
+                list(perms.all_workspace_roots()) + [perms.workspace])}
+            into = self._copied_into_directory(cmd, Path(base))
+            for target in targets:
+                path = Path(target).expanduser()
+                if not path.is_absolute():
+                    path = Path(base) / path
+                if _is_ephemeral_sink(path, getattr(perms, "workspace", None)):
+                    continue
+                path = str(path.resolve(strict=False))
+                named = into.get(path, [path])
+                for path in named:
+                    if path in roots:
+                        continue
+                    if path not in out:
+                        out.append(path)
+            return out
+        except Exception:
+            return []
+
+    @staticmethod
+    def _copied_into_directory(cmd: str, base: Path) -> dict:
+        """``{resolved directory: [resolved directory/<source basename>]}``
+        for each cp/mv/install in *cmd* whose destination is an existing
+        directory (or is written with a trailing `/`, or given as ``-t``).
+
+        The write gate names the directory; the file such a command writes
+        is the directory joined with each source's basename. A source that
+        is a glob or a variable cannot be named, and its command is left
+        out, so the directory stays the recorded target. Relative paths
+        are read against *base*; after a `cd` the gate's directory differs
+        from this one and no entry matches. Never raises.
+        """
+        import shlex
+        out: dict = {}
+        try:
+            for segment in re.split(r"[;&|]{1,2}|\n", cmd or ""):
+                try:
+                    argv = shlex.split(segment, comments=True)
+                except ValueError:
+                    continue
+                while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+                    argv = argv[1:]
+                if not argv or Path(argv[0]).name not in ("cp", "mv", "install"):
+                    continue
+                takes_value = {"-t", "-S", "--suffix", "--target-directory"}
+                if Path(argv[0]).name == "install":
+                    takes_value |= {"-m", "-o", "-g", "--mode", "--owner",
+                                    "--group"}
+                positional, dest, slash = [], None, False
+                rest = iter(argv[1:])
+                for a in rest:
+                    if a in ("-t", "--target-directory"):
+                        dest = next(rest, None)
+                    elif a.startswith("--target-directory="):
+                        dest = a.split("=", 1)[1]
+                    elif a in takes_value:
+                        next(rest, None)
+                    elif not a.startswith("-"):
+                        positional.append(a)
+                if dest is None:
+                    if len(positional) < 2:
+                        continue
+                    dest, positional = positional[-1], positional[:-1]
+                else:
+                    slash = True
+                if not positional or any(
+                        c in s for s in positional + [dest] for c in "*?[]$`"):
+                    continue
+                slash = slash or dest.endswith("/")
+                d = Path(dest).expanduser()
+                if not d.is_absolute():
+                    d = base / d
+                if not (slash or d.is_dir()):
+                    continue
+                d = d.resolve(strict=False)
+                files = out.setdefault(str(d), [])
+                for src in positional:
+                    f = str(d / Path(src.rstrip("/")).name)
+                    if f not in files:
+                        files.append(f)
+        except Exception:
+            return {}
+        return out
 
     def _gate_bash_write_targets(
         self, cmd: str, arguments: dict, perms: "KitToolPermissions"
@@ -24890,6 +25141,7 @@ class OpenAIClient(_BaseClient):
                 for _steer in self._drain_steer():
                     _grant_push_from(self._permissions, _steer,
                                      new_request=False)
+                    _lift_shell_write_refusals(self._permissions, _steer)
                     api_messages.append({"role": "user", "content": _steer})
                     yield StreamEvent(
                         type="notice", text="\n\n" + _steer_label(_steer) + _steer + "\n")
@@ -25258,6 +25510,7 @@ class OpenAIClient(_BaseClient):
                     api_messages.append({"role": "assistant", "content": _final})
                 for _s in _steer_end:
                     _grant_push_from(self._permissions, _s, new_request=False)
+                    _lift_shell_write_refusals(self._permissions, _s)
                     api_messages.append({"role": "user", "content": _s})
                     yield StreamEvent(
                         type="notice", text="\n\n" + _steer_label(_s) + _s + "\n")

@@ -2581,6 +2581,17 @@ class AgentEngine:
             # Per SESSION, and only the first time: what language this
             # conversation runs in. See _note_session_language.
             self._note_session_language(user_message or "")
+            # A refused shell write the user names again in their own
+            # message is theirs to have: lifted here, at the start of the
+            # turn the message opens, from the text as typed (the turn's
+            # volatile tail is not part of it). A refusal recorded later in
+            # this turn is not lifted by the message that preceded it.
+            try:
+                from .api_client import _lift_shell_write_refusals
+                _lift_shell_write_refusals(
+                    self.kit_permissions, user_message or "")
+            except Exception:
+                pass
             # Per turn: the stray-write note is said once and the next
             # turn may say it again if the work drifts again.
             self._stray_write_noted = False
