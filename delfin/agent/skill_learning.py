@@ -17,6 +17,7 @@ tool chip counts as a tool call.
 
 from __future__ import annotations
 
+import json
 import re
 
 _TOOL_CHIP = re.compile(r'tool-name">([^<]+)<')
@@ -59,26 +60,44 @@ def _result_text(msg: dict) -> str:
     return m.group(1) if m else ""
 
 
-#: A ``<span class="tool-param">ARG</span>`` element in a tool message.
-_TOOL_PARAM = re.compile(r'tool-param">([^<]*)<')
+#: Argument keys whose value is text the call writes or sends, not where
+#: it acts: a model copies tool output into exactly these, so their values
+#: never reach the drafter as the record of a call.
+_CONTENT_ARG_KEYS = frozenset({
+    "content", "new_string", "old_string", "edits", "patch", "payload",
+    "message", "text", "body", "data", "prompt", "description", "input",
+})
 
 
 def _tool_args(msg: dict) -> str:
-    """Short argv of a tool call, never its result body.
+    """Short argv of a tool call, never its result body or written text.
 
-    Tool messages are ``<span class="tool-name">NAME</span> ARG...<details>
-    ...result...</details>``; the argv is the text between the name chip
-    and the result block, plus any ``tool-param`` spans. The result body
-    lives inside ``<details>`` and is excluded here by construction.
+    Tool messages are ``<span class="tool-name">NAME</span> ARG...<details
+    ...>...result...</details>``; the argv is the text between the name
+    chip and the result block (a ``<details`` tag with or without
+    attributes). When that text is a JSON object (the CLI trace form)
+    only the scalar values of keys outside ``_CONTENT_ARG_KEYS`` are kept,
+    as ``key=value``; a JSON-looking argv that does not parse (cut by a
+    length cap) is dropped whole. At most 80 characters.
     """
+    import html as _html
     c = _content(msg)
-    m = re.search(r'tool-name">[^<]*</span>(.*?)(?:<details>|$)', c, re.S)
-    argv = ""
-    if m:
-        frag = m.group(1)
-        params = _TOOL_PARAM.findall(frag)
-        plain = re.sub(r"<[^>]+>", "", frag).strip()
-        argv = " ".join(p for p in (params + [plain]) if p).strip()
+    m = re.search(r'tool-name">[^<]*</span>(.*?)(?:<details\b|$)', c, re.S)
+    if not m:
+        return ""
+    argv = _html.unescape(re.sub(r"<[^>]+>", " ", m.group(1)))
+    argv = " ".join(argv.split())
+    if argv.startswith("{"):
+        try:
+            obj = json.loads(argv)
+        except ValueError:
+            return ""
+        if not isinstance(obj, dict):
+            return ""
+        argv = " ".join(
+            f"{k}={v}" for k, v in obj.items()
+            if str(k).lower() not in _CONTENT_ARG_KEYS
+            and isinstance(v, (str, int, float, bool)))
     return argv[:80]
 
 
