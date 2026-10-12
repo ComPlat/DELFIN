@@ -6558,6 +6558,14 @@ def create_tab(ctx):
             try:
                 from delfin.agent.kit_confirm import KitConfirmBroker
                 broker = KitConfirmBroker()
+                # Every request names the session that raised it: the
+                # engine the tab holds at that moment, so a switch, a
+                # restore, a rebuilt engine and a newly minted id are
+                # followed. Unattributed, one session's expired dialogs
+                # were reported to every other open session as its own.
+                broker.follow_session(
+                    lambda: getattr(state.get("engine"), "session_id", "")
+                    or "")
                 # Wire the "Allow + Permanent" button to the engine's
                 # persist hooks. Bound lazily so it always picks up the
                 # currently-active engine (provider may switch at runtime).

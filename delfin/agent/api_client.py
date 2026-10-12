@@ -2187,7 +2187,10 @@ def _bash_write_targets(cmd: str) -> list[str]:
             if dest.startswith("/"):
                 target = Path(dest)
             elif here is None:
-                target = None            # relative cd from the gate's cwd: still inside
+                # Relative to the gate's cwd: kept relative, so the caller
+                # resolves `sub/f` against its own base. Dropping it named
+                # `f` -- a different file -- and `cd .. && > f` an inside one.
+                target = Path(dest)
             else:
                 target = here / dest
             previous, here = here, target
@@ -4244,6 +4247,89 @@ def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
         grants["push"] = 0
 
 
+#: Marks a ``write:`` refusal that came from a refused SHELL command's
+#: targets, the one kind a later user message may lift.
+_SHELL_WRITE_KIND = "shell_write"
+
+
+def _names_path(text: str, name: str) -> bool:
+    """True when *name* stands in *text* as a path of its own: not part of
+    a longer name (`xout.log`, `out.log.bak`) or of another directory's
+    path (`other/out.log`). A leading `./` and a sentence's full stop are
+    allowed."""
+    return bool(name) and re.search(
+        r"(?<![\w.\-/])(?:\./)?" + re.escape(name) + r"(?![\w/\-]|\.\w)",
+        text) is not None
+
+
+def _lift_shell_write_refusals(perms: Any, content: Any) -> list:
+    """Lift the shell-derived write refusals a user message names; the
+    lifted paths.
+
+    Input: the session's permissions and the content of a message the user
+    typed (a new turn or a steer). A refusal recorded from a refused shell
+    command's write targets is lifted when the text names the file by its
+    absolute path, its workspace-relative path, or its basename when no
+    other shell-derived refusal has that basename. Lifting drops the
+    ``write:`` entry unless a write tool's refused change to the same file
+    also holds it; the exact-command ``bash:`` entry is never dropped.
+
+    Read as narrowly as the push grant: nothing at sub-agent depth (its
+    prompt is the parent model's text), nothing from a harness or
+    other-session message, and only the user's own words of the message
+    (``_classifier_user_texts``). Never raises.
+    """
+    try:
+        if int(getattr(perms, "subagent_depth", 0) or 0) > 0:
+            return []
+        ledger = getattr(perms, "denied_actions", None)
+        if not isinstance(ledger, dict):
+            return []
+        prefix = _SHELL_WRITE_KIND + ":"
+        paths = [k[len(prefix):] for k in ledger if str(k).startswith(prefix)]
+        if not paths:
+            return []
+        text = _message_text(content)
+        if text.lstrip().startswith(_MACHINE_MESSAGE_PREFIXES):
+            return []
+        words = _classifier_user_texts([{"role": "user", "content": text}])
+        if not words:
+            return []
+        # A line opening with a bracket is the harness appending to what
+        # the user typed (an upload list); the user's words end there.
+        text = re.split(r"\n\s*\[", words[-1], maxsplit=1)[0]
+        try:
+            ws = Path(perms.workspace).resolve()
+        except Exception:
+            ws = None
+        basenames = [Path(p).name for p in paths]
+        lifted = []
+        for path in paths:
+            names = [path]
+            if ws is not None:
+                try:
+                    names.append(str(Path(path).relative_to(ws)))
+                except ValueError:
+                    pass
+            base = Path(path).name
+            if basenames.count(base) == 1:
+                names.append(base)
+            if not any(_names_path(text, n) for n in names if n != "."):
+                continue
+            ledger.pop(prefix + path, None)
+            if not any(str(k).startswith(f"write_change:{path}\n")
+                       for k in ledger):
+                ledger.pop(f"write:{path}", None)
+            lifted.append(path)
+        if lifted:
+            _record_security_event(
+                "refusal_lifted", "user", ", ".join(lifted)[:120],
+                blocked=False)
+        return lifted
+    except Exception:
+        return []
+
+
 def _asks_for_push(text: str) -> bool:
     """True when the message asks for a push, not when it talks about one.
 
@@ -5631,6 +5717,26 @@ PRINCIPLES_DIGEST = (
     "610797fc16c11c8a455141a318b0d9b7248465f340569596e6f49ca85f8a9d80"
 )
 
+# Work-tree files git reads as configuration. A ``filter=``/``diff=``
+# attribute selects a driver program, a ``.git`` gitfile points at a
+# directory whose ``config`` names filters, hooks and fsmonitor, and a
+# ``HEAD`` beside ``objects/`` and ``refs/`` makes its directory a bare
+# repository with its own ``config``. ``git status`` and ``git add`` are
+# auto-allowed, so a program named this way ran with no dialog once the
+# file existed; ``.git/**`` itself is in the deny globs. Asking before
+# HEAD is written is enough to stop bare-repository discovery, which
+# needs all three; ``objects/`` and ``refs/`` stay free because they are
+# ordinary directory names in a scientific workspace. ``.gitignore``
+# names no program and stays free. Rejected: ``-c`` overrides on every
+# auto-allowed git command -- filters are keyed by driver name, so no
+# fixed set of overrides switches them all off.
+_GIT_CONFIG_PROTECTED_GLOBS: tuple[str, ...] = (
+    ".gitattributes", "**/.gitattributes",
+    ".gitmodules", "**/.gitmodules",
+    ".git", "**/.git",
+    "HEAD", "**/HEAD",
+)
+
 _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/api_client.py",
     "delfin/agent/kit_confirm.py",
@@ -5674,7 +5780,7 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     # can't silently poison CI or relax the merge protections of a repo.
     ".github/**",
     "**/.github/**",
-)
+) + _GIT_CONFIG_PROTECTED_GLOBS
 
 
 _REDIRECT_TARGET_RE = re.compile(
@@ -5964,6 +6070,11 @@ class KitToolPermissions:
     path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
     path_protected_globs: tuple[str, ...] = _DEFAULT_PATH_PROTECTED_GLOBS
     extra_workspace_dirs: tuple[Path, ...] = ()
+    # Which of the writable roots is the user's configured agent workspace
+    # (set by bind_agent_workspace, None when there is none). Grants no
+    # access: under Bypass a write there is screened without the model,
+    # as one in ``workspace`` is.
+    agent_workspace_dir: Optional[Path] = None
     # Reachable but NOT freely writable — protects valuable data:
     #   read_only_workspace_dirs — reads allowed, writes HARD-denied (archive of
     #     stored calculations; the DELFIN checkout when you didn't launch there).
@@ -6413,9 +6524,15 @@ class KitToolPermissions:
     def matches_path_protected(self, rel_path: str) -> bool:
         """Self-modification guard: paths that always require explicit confirm,
         even in 'acceptEdits' or 'bypassPermissions'. Used for the agent's own
-        safety layer (api_client.py, kit_confirm.py, engine.py, tab_agent.py)."""
+        safety layer (api_client.py, kit_confirm.py, engine.py, tab_agent.py)
+        and the work-tree files git reads as configuration.
+
+        Case-insensitive, as ``matches_path_deny``: on a case-insensitive
+        filesystem (macOS default) ``.GITATTRIBUTES`` is ``.gitattributes``."""
         rp = rel_path.replace("\\", "/")
-        return any(fnmatch.fnmatch(rp, g) for g in self.path_protected_globs)
+        low = rp.lower()
+        return any(fnmatch.fnmatch(rp, g) or fnmatch.fnmatchcase(low, g.lower())
+                   for g in self.path_protected_globs)
 
     def matches_bash_deny(self, cmd: str) -> Optional[str]:
         for pat in self.bash_deny_patterns:
@@ -10604,6 +10721,168 @@ _CLASSIFIER_REFUSALS_PER_TURN = 3
 _CLASSIFIED_NETWORK_TOOLS = frozenset({
     "web_fetch", "remote_trigger", "push_notification"})
 
+# Under Bypass the classifier's own failure (error, timeout, no verdict, and
+# every later action of a turn once one timed out) keeps the rule result,
+# because the user chose a profile that asks nothing. These are the actions
+# where the failure still asks: deleting, rewriting git history,
+# publishing, uploading. Read on the command with commit-message prose
+# blanked, so a message that mentions `rm -rf` is not a delete. Several of
+# them are refused earlier anyway (deny list, push gate, egress scan); the
+# list is the floor for the spellings those gates let through.
+_BYPASS_HIGH_RISK_BASH = re.compile(r"""(?x)
+    (?:^|[\s;&|(`])(?:sudo\s+)?rm\s+(?:\S+\s+)*?
+        (?:-[a-zA-Z]*[rRf][a-zA-Z]*|--recursive|--force)\b
+  | \bfind\b[^;&|\n]*\s-delete\b
+  | \bgit\s+(?:-[Cc]\s+\S+\s+)*
+        (?:push\b|rebase\b|filter-branch\b|filter-repo\b|clean\b
+         |reset\s+--hard\b|branch\s+(?:-[dD]\b|--delete\b)|tag\s+-d\b
+         |checkout\s+(?:--\s|\.(?:\s|$))|restore\b|stash\s+(?:drop|clear)\b
+         |update-ref\s+-d\b|reflog\s+expire\b|gc\s+--prune\b
+         |commit\s+(?:\S+\s+)*?--amend\b)
+  | \bgh\s+(?:pr\s+(?:create|merge)|release\s+create|repo\s+(?:create|delete)
+         |api\b)
+  | \b(?:scp|sftp|rsync)\b
+  | \bcurl\b[^;&|\n]*\s(?:-T|--upload-file|-F|--form|-d|--data\S*
+         |-X\s*(?:POST|PUT|PATCH|DELETE))(?:\s|=|$)
+  | \bwget\b[^;&|\n]*\s--post
+  | \b(?:shred|mkfs(?:\.\w+)?)\b
+  | \bdd\b[^;&|\n]*\bof=
+  | \btruncate\s+-s\s*0\b
+""")
+
+# Writes that keep the second look under Bypass wherever they land: a file
+# that configures git or runs hooks. Files that instruct an agent (skills,
+# prompts, settings, memory) are recognised by _classifier_action.
+_BYPASS_HIGH_RISK_WRITE_NAMES = frozenset({
+    ".gitattributes", ".gitmodules", ".gitconfig", ".pre-commit-config.yaml",
+})
+
+_BYPASS_SCREENED_TOOLS = frozenset({
+    "session_message", "subagent_message", "web_search"})
+
+# Path marks of a file that instructs an agent: there a claim in the text
+# is scanned like a message (see _classifier_action).
+_INSTRUCTING_PATH_MARKS = (
+    "skill", "prompt", "settings", "claude.md", "agents.md",
+    "delfin.md", "/.delfin/", "/.claude/", "memory", "hook")
+
+
+def _bypass_failure_asks(action: dict) -> bool:
+    """True when, under Bypass, a classifier failure on *action* must ask.
+
+    Input: an action as ``_classifier_action`` builds it. Output: True for
+    the narrow high-risk class (deletes, history rewrites, publishing,
+    uploads, remote triggers, writes to files that instruct an agent or
+    configure git), False otherwise, where the failure leaves the rule
+    result standing. A model verdict is not affected: an "ask" or
+    "refuse" the model gives with a reason holds for every action.
+    """
+    tool = str(action.get("tool") or "")
+    if tool in ("bash", "bash_background"):
+        cmd = _prose_blanked(str(action.get("command") or ""))
+        return bool(_BYPASS_HIGH_RISK_BASH.search(cmd))
+    if tool in ("remote_trigger", "push_notification"):
+        return True
+    if "text" in action:
+        return True
+    name = Path(str(action.get("path") or "")).name
+    return name in _BYPASS_HIGH_RISK_WRITE_NAMES
+
+
+def _path_instructs_an_agent(path: str) -> bool:
+    """Whether *path* names a file that instructs or configures an agent."""
+    low = str(path or "").lower()
+    return any(mark in low for mark in _INSTRUCTING_PATH_MARKS)
+
+
+def _bypass_screened_action(
+    perms: "KitToolPermissions", action: dict,
+) -> Optional[dict]:
+    """The action to screen without the model under Bypass, or None.
+
+    Input: an action as ``_classifier_action`` builds it. Output: the
+    action itself for a message to another session or a web search; for
+    a write whose target resolves inside the session workspace or the
+    configured agent workspace, the action with the instructing-file
+    question answered on the path RELATIVE to that root; None for
+    everything else, which goes to the model.
+
+    Relative, because a DELFIN worktree lives under ``.delfin/worktrees``
+    and the absolute path of every file in it matched the ``/.delfin/``
+    mark: each report written there counted as an agent instruction.
+    A write whose relative path does instruct an agent (skills, prompts,
+    settings, memory, hooks) or configures git stays with the model.
+
+    The returned action still passes the user's own rules and the
+    claim-of-approval guard (``action_classifier.screen``).
+    """
+    tool = str(action.get("tool") or "")
+    if tool in _BYPASS_SCREENED_TOOLS:
+        return action
+    if tool not in ("write_file", "edit_file", "multi_edit"):
+        return None
+    raw = str(action.get("path") or "").strip()
+    if not raw:
+        return None
+    try:
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            p = Path(perms.workspace) / p
+        resolved = p.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    roots = [Path(perms.workspace)]
+    agent_ws = getattr(perms, "agent_workspace_dir", None)
+    if agent_ws:
+        roots.append(Path(agent_ws))
+    for root in roots:
+        try:
+            rel = resolved.relative_to(Path(root).resolve()).as_posix()
+        except (ValueError, OSError, RuntimeError):
+            continue
+        if (_path_instructs_an_agent("/" + rel)
+                or Path(rel).name in _BYPASS_HIGH_RISK_WRITE_NAMES):
+            return None
+        out = dict(action)
+        if "text" in out:
+            out["content"] = out.pop("text")
+        return out
+    return None
+
+
+def bind_agent_workspace(
+    perms: Optional["KitToolPermissions"], path: str,
+) -> Optional[Path]:
+    """Record *path* as the session's configured agent workspace.
+
+    Input: the permissions and the directory the dashboard configures as
+    the agent workspace (``ctx.agent_dir``, by default ~/agent_workspace).
+    Output: the resolved directory when it was bound, else None. Bound
+    only when it already is one of the writable roots -- so the write
+    gate and the sandbox accept writes there -- and never when it is the
+    home directory, an ancestor of it, or a filesystem root. It widens
+    nothing: it only names which writable root counts as the user's own
+    for the Bypass second opinion (``_bypass_screened_action``).
+    """
+    if perms is None or not str(path or "").strip():
+        return None
+    try:
+        resolved = Path(str(path)).expanduser().resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if (resolved == home or resolved in home.parents
+            or resolved == Path(resolved.anchor) or not resolved.is_dir()):
+        return None
+    try:
+        roots = [Path(r).resolve() for r in perms.all_workspace_roots()]
+    except Exception:
+        return None
+    if resolved not in roots:
+        return None
+    perms.agent_workspace_dir = resolved
+    return resolved
+
 
 def _classifier_settings() -> Optional[dict]:
     """``{"model", "rules", "broad"}`` when the classifier is on, else None.
@@ -10711,9 +10990,7 @@ def _classifier_action(name: str, args: dict) -> dict:
         # Anywhere else the body is shown to the model and nothing more --
         # a test that mentions `git push` is not a claim of approval.
         low = str(action.get("path") or "").lower()
-        instructs = any(mark in low for mark in (
-            "skill", "prompt", "settings", "claude.md", "agents.md",
-            "delfin.md", "/.delfin/", "/.claude/", "memory", "hook"))
+        instructs = _path_instructs_an_agent(low)
         action["text" if instructs else "content"] = str(body)[:1500]
     return action
 
@@ -15963,17 +16240,32 @@ class _DocToolExecutor:
         except Exception:
             rel_str = path_arg.replace("\\", "/")
         is_protected = perms.matches_path_protected(rel_str)
+        _low = rel_str.lower()
+        _is_gitcfg = is_protected and any(
+            fnmatch.fnmatchcase(_low, g.lower())
+            for g in _GIT_CONFIG_PROTECTED_GLOBS)
         # calc holds the user's ACTIVE calculations — editing one always needs
         # an explicit confirm even in acceptEdits, so the agent can't silently
         # destroy results ("editing only with a confirmation prompt").
         is_calc = perms.is_confirm_write_path(resolved)
-        if is_protected or is_calc:
-            _record_security_event(
-                "self_mod" if is_protected else "calc_edit", name, rel_str,
-                blocked=perms.confirm_callback is None)
+        # A file the user refused a write to earlier in this session. The
+        # identical change and every shell route were turned away above; a
+        # DIFFERENT change from a write tool may be what they asked for
+        # instead ("change X and show me again"), so it is not refused --
+        # but it is never written unseen either. acceptEdits would have
+        # written it with no dialog, to the one file the user said no on.
+        was_refused = (not is_protected and not is_calc
+                       and perms.action_denied_earlier("write", str(resolved)))
+        if is_protected or is_calc or was_refused:
+            if not was_refused:
+                _record_security_event(
+                    "self_mod" if is_protected else "calc_edit", name, rel_str,
+                    blocked=perms.confirm_callback is None)
             if perms.confirm_callback is None:
-                _what = ("the agent's own safety layer" if is_protected
-                         else "a stored calculation under calc")
+                _what = ("a file git reads as configuration" if _is_gitcfg
+                         else "the agent's own safety layer" if is_protected
+                         else "a stored calculation under calc" if is_calc
+                         else "a file the user refused a write to earlier")
                 return (
                     f"'{name}' targets {_what} ('{rel_str}') — this requires "
                     "explicit user confirmation but no confirm_callback is "
@@ -15985,7 +16277,15 @@ class _DocToolExecutor:
             _cannot = self._edit_cannot_apply(name, args, resolved, perms)
             if _cannot:
                 return _cannot
-            if is_protected:
+            if _is_gitcfg:
+                preview = (
+                    "[GIT CONFIGURATION FILE]\n"
+                    "git reads this file as configuration: it can name a "
+                    "filter, diff driver or hook program that the next "
+                    "git status or git add runs.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+            elif is_protected:
                 preview = (
                     "[SELF-MODIFICATION GUARD]\n"
                     "This file is part of the agent's own safety layer.\n"
@@ -15993,11 +16293,18 @@ class _DocToolExecutor:
                     "controls its own permissions.\n\n"
                     + self._build_change_preview(name, args, resolved)
                 )
-            else:
+            elif is_calc:
                 preview = (
                     "[CALC EDIT — STORED CALCULATION]\n"
                     "This file is under calc (an active/stored calculation). "
                     "Approving this lets the agent modify it.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+            else:
+                preview = (
+                    "[REFUSED EARLIER]\n"
+                    "You refused a write to this file earlier in this "
+                    "session. This is a different change to it.\n\n"
                     + self._build_change_preview(name, args, resolved)
                 )
             try:
@@ -16006,7 +16313,8 @@ class _DocToolExecutor:
                 return f"confirm_callback raised: {exc}"
             if ok:
                 return None
-            _w = "protected path" if is_protected else "calc file"
+            _w = ("protected path" if is_protected else "calc file"
+                  if is_calc else "file you refused a write to earlier")
             if self._confirm_timed_out(perms):
                 # Absence, not refusal. The distinction was drawn for bash
                 # and not here, so an unattended window on a protected path
@@ -16082,9 +16390,10 @@ class _DocToolExecutor:
         Called ONLY at a point where the rules have already said yes and no
         human was asked. It never turns a refusal into an allow -- it is not
         reached after one. Any failure of the classifier itself leaves the
-        rule result standing, except under Bypass, where it is the only
-        second look there is: there an error asks, or refuses when nobody
-        can be asked.
+        rule result standing, except under Bypass for the high-risk class
+        of ``_bypass_failure_asks``: there an error asks, or refuses when
+        nobody can be asked. Under Bypass the actions of
+        ``_bypass_screened_action`` get the model-free screen only.
         """
         runner = getattr(perms, "classifier_runner", None)
         if perms is None or runner is None:
@@ -16214,11 +16523,29 @@ class _DocToolExecutor:
                 raise box["exc"]
             return str(box.get("out") or "")
 
-        on_error = ("ask" if can_ask else "refuse") if bypass else "allow"
+        # The classifier failing is not a reason to ask under Bypass: the
+        # user chose the profile that asks nothing, so the rule result
+        # stands -- except for the narrow high-risk class, where it asks
+        # (or refuses when nobody can be asked). A verdict the model gives
+        # with a reason is unaffected.
+        if bypass and _bypass_failure_asks(action):
+            on_error = "ask" if can_ask else "refuse"
+        else:
+            on_error = "allow"
         try:
-            verdict = _ac.judge(
-                action, context, model=cfg["model"], runner=_bounded,
-                rules=cfg["rules"], default_on_error=on_error)
+            screened = (_bypass_screened_action(perms, action)
+                        if bypass else None)
+            if screened is not None:
+                # A message to a sibling session, a web search, a write in
+                # the session or agent workspace: the user's rules and the
+                # claim-of-approval guard, without the model round trip.
+                verdict = (_ac.screen(screened, context, cfg["rules"])
+                           or _ac.Verdict(
+                               "allow", "screened without the model."))
+            else:
+                verdict = _ac.judge(
+                    action, context, model=cfg["model"], runner=_bounded,
+                    rules=cfg["rules"], default_on_error=on_error)
             decision, reason = verdict.decision, str(verdict.reason or "")
         except Exception as exc:
             failed.append(type(exc).__name__)
@@ -16275,6 +16602,10 @@ class _DocToolExecutor:
         _record_security_event("denied_by_user", base, shown)
         if base in ("bash", "bash_background"):
             perms.record_denied_action("bash", str(action.get("command") or ""))
+            for _path in self._bash_named_write_paths(
+                    str(action.get("command") or ""), args, perms):
+                perms.record_denied_action("write", _path)
+                perms.record_denied_action(_SHELL_WRITE_KIND, _path)
         return _refused(reason, by_user=True) + self._said_why(perms)
 
     def _run_permission_gate(
@@ -16541,6 +16872,29 @@ class _DocToolExecutor:
                     "instead."
                     + _earlier_refusal_reason(perms, "bash", {"command": cmd})
                 )
+            # The same write in another spelling. The user refused a write
+            # to a file -- `echo x > f` -- and `printf x > f`, `tee f`,
+            # `cp a f` or `sed -i ... f` is not that exact command, so the
+            # dialog simply came up again (sessions reached the refused
+            # effect on the second or third wording). The refusal covers
+            # the file, whatever writes it. Parsed only while the ledger
+            # holds a refused write: 0.13-0.27 ms per command otherwise.
+            _has_refused_write = any(
+                str(k).startswith("write:")
+                for k in (getattr(perms, "denied_actions", None) or {}))
+            for _refused in (self._bash_named_write_paths(cmd, args, perms)
+                             if _has_refused_write else ()):
+                if perms.action_denied_earlier("write", _refused):
+                    _shown = self._display_path(Path(_refused), perms)
+                    _record_security_event("denied_again", "bash", cmd[:80])
+                    return (
+                        f"the user already refused a write to '{_shown}' in "
+                        "this session, and this command writes the same file "
+                        "another way. It is refused without asking again -- "
+                        "the refusal covers the file, not the spelling. Do "
+                        "not try a third form. End your turn and ask the "
+                        "user what they want done with this file."
+                    )
             # A push publishes. Report 20260915-085107 pushed the change it
             # was asked to, then chained a second commit and push onto a fix
             # nobody asked for -- in all_free, which asks nothing, so nothing
@@ -16761,6 +17115,9 @@ class _DocToolExecutor:
                     )
                 _record_security_event("denied_by_user", "bash", cmd[:80])
                 perms.record_denied_action("bash", cmd)
+                for _refused in self._bash_named_write_paths(cmd, args, perms):
+                    perms.record_denied_action("write", _refused)
+                    perms.record_denied_action(_SHELL_WRITE_KIND, _refused)
                 _remember_refusal(perms, "bash", cmd, self._refusal_reason(perms))
                 return (
                     f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
@@ -18259,6 +18616,123 @@ class _DocToolExecutor:
                 "you need."
             )})
         return list(result), None
+
+    def _bash_named_write_paths(
+        self, cmd: str, arguments: dict, perms: "KitToolPermissions",
+    ) -> list:
+        """The resolved files a shell command writes, however it spells it.
+
+        The same parser and the same base directory as
+        ``_gate_bash_write_targets`` -- a refusal is held to what the write
+        gate would have gated, not to a second reading of the command.
+        Never raises; a command that cannot be read names nothing.
+        """
+        try:
+            base = perms.workspace
+            cwd_arg = str((arguments or {}).get("cwd", "") or "")
+            if cwd_arg:
+                resolved_cwd, err = self._resolve_in_workspace(
+                    cwd_arg, perms, for_read=True)
+                if not err:
+                    base = resolved_cwd
+            out = []
+            targets = list(_bash_write_targets(cmd))
+            # git checkout/restore/apply and patch: the paths the write
+            # gate folds in from patch_targets. UNKNOWABLE names nothing
+            # here -- the write gate refuses that command on its own.
+            try:
+                from . import patch_targets as _pt
+                named = _pt.targets(cmd, str(base))
+                if isinstance(named, list):
+                    targets += named
+            except Exception:
+                pass
+            # A workspace root is where `cp x .` copies INTO, not a file;
+            # recorded, it refused every later copy into the workspace.
+            roots = {str(Path(r).resolve()) for r in (
+                list(perms.all_workspace_roots()) + [perms.workspace])}
+            into = self._copied_into_directory(cmd, Path(base))
+            for target in targets:
+                path = Path(target).expanduser()
+                if not path.is_absolute():
+                    path = Path(base) / path
+                if _is_ephemeral_sink(path, getattr(perms, "workspace", None)):
+                    continue
+                path = str(path.resolve(strict=False))
+                named = into.get(path, [path])
+                for path in named:
+                    if path in roots:
+                        continue
+                    if path not in out:
+                        out.append(path)
+            return out
+        except Exception:
+            return []
+
+    @staticmethod
+    def _copied_into_directory(cmd: str, base: Path) -> dict:
+        """``{resolved directory: [resolved directory/<source basename>]}``
+        for each cp/mv/install in *cmd* whose destination is an existing
+        directory (or is written with a trailing `/`, or given as ``-t``).
+
+        The write gate names the directory; the file such a command writes
+        is the directory joined with each source's basename. A source that
+        is a glob or a variable cannot be named, and its command is left
+        out, so the directory stays the recorded target. Relative paths
+        are read against *base*; after a `cd` the gate's directory differs
+        from this one and no entry matches. Never raises.
+        """
+        import shlex
+        out: dict = {}
+        try:
+            for segment in re.split(r"[;&|]{1,2}|\n", cmd or ""):
+                try:
+                    argv = shlex.split(segment, comments=True)
+                except ValueError:
+                    continue
+                while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+                    argv = argv[1:]
+                if not argv or Path(argv[0]).name not in ("cp", "mv", "install"):
+                    continue
+                takes_value = {"-t", "-S", "--suffix", "--target-directory"}
+                if Path(argv[0]).name == "install":
+                    takes_value |= {"-m", "-o", "-g", "--mode", "--owner",
+                                    "--group"}
+                positional, dest, slash = [], None, False
+                rest = iter(argv[1:])
+                for a in rest:
+                    if a in ("-t", "--target-directory"):
+                        dest = next(rest, None)
+                    elif a.startswith("--target-directory="):
+                        dest = a.split("=", 1)[1]
+                    elif a in takes_value:
+                        next(rest, None)
+                    elif not a.startswith("-"):
+                        positional.append(a)
+                if dest is None:
+                    if len(positional) < 2:
+                        continue
+                    dest, positional = positional[-1], positional[:-1]
+                else:
+                    slash = True
+                if not positional or any(
+                        c in s for s in positional + [dest] for c in "*?[]$`"):
+                    continue
+                slash = slash or dest.endswith("/")
+                d = Path(dest).expanduser()
+                if not d.is_absolute():
+                    d = base / d
+                if not (slash or d.is_dir()):
+                    continue
+                d = d.resolve(strict=False)
+                files = out.setdefault(str(d), [])
+                for src in positional:
+                    f = str(d / Path(src.rstrip("/")).name)
+                    if f not in files:
+                        files.append(f)
+        except Exception:
+            return {}
+        return out
 
     def _gate_bash_write_targets(
         self, cmd: str, arguments: dict, perms: "KitToolPermissions"
@@ -20427,6 +20901,24 @@ class _DocToolExecutor:
                 "carry out the work and report it. Calling this again will "
                 "return the same answer."
             )})
+        # A sub-agent's plan goes to the agent that delegated it, not to
+        # the user's plan dialog: the child inherits the parent's
+        # callback through dataclasses.replace, and calling it put the
+        # child's plan on the parent's screen, blocked the child for the
+        # dashboard's 180 s window and left a "pending plan" in the saved
+        # session. An approval there would also lift the child out of a
+        # mode clamped from its parent. The child stays in plan mode.
+        if int(getattr(perms, "subagent_depth", 0) or 0) > 0:
+            return json.dumps({
+                "status": "returned_to_parent",
+                "message": (
+                    "You are a sub-agent: your plan is not put to the user "
+                    "and nothing here approves it. Plan mode stays active. "
+                    "End now and return the plan as your final report; the "
+                    "agent that delegated this task decides what happens "
+                    "next."
+                ),
+            })
         # A plan is already on screen and unanswered. Return NOW, without
         # touching the approval callback -- that callback blocks for the
         # whole approval window, and this is the second time through.
@@ -24888,6 +25380,7 @@ class OpenAIClient(_BaseClient):
                 for _steer in self._drain_steer():
                     _grant_push_from(self._permissions, _steer,
                                      new_request=False)
+                    _lift_shell_write_refusals(self._permissions, _steer)
                     api_messages.append({"role": "user", "content": _steer})
                     yield StreamEvent(
                         type="notice", text="\n\n" + _steer_label(_steer) + _steer + "\n")
@@ -25256,6 +25749,7 @@ class OpenAIClient(_BaseClient):
                     api_messages.append({"role": "assistant", "content": _final})
                 for _s in _steer_end:
                     _grant_push_from(self._permissions, _s, new_request=False)
+                    _lift_shell_write_refusals(self._permissions, _s)
                     api_messages.append({"role": "user", "content": _s})
                     yield StreamEvent(
                         type="notice", text="\n\n" + _steer_label(_s) + _s + "\n")
