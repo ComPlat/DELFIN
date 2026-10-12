@@ -20,6 +20,8 @@ Controls:
 
 import delfin.agent.self_written as sw
 
+from pathlib import Path
+
 
 def _ws(tmp_path) -> str:
     return str(tmp_path)
@@ -121,3 +123,27 @@ def test_relative_written_path_matches_abs_run(tmp_path):
     key_abs = sw.verdict("bash scripts/setup.sh", written, workspace).key
     assert key_rel == _ws(tmp_path) + "/x.py"
     assert key_abs == _ws(tmp_path) + "/scripts/setup.sh"
+
+def test_real_journal_record_shape_is_accepted(tmp_path, monkeypatch):
+    """The change journal stores records as {path, ts, created} (list_changes
+    echoes them) and _journal_changes(sid) passes those to the gate, which
+    hands verdict() the raw records. A record must be matched by its "path"
+    key, not crash. We drive the REAL writer (change_journal.record_change is
+    what the executor's write path calls) into a redirected home so no real
+    user state is touched (state_paths rule: never touch the real home)."""
+    import delfin.agent.change_journal as cj
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    workspace = _ws(tmp_path)
+    import os
+    x = os.path.join(workspace, "x.py")   # absolute, as record_change stores it
+    (tmp_path / "x.py").write_text("print(1)")
+    cj.record_change("sid-h1b", tool="write_file", path=x,
+                     old_text=None, new_text="print(1)")
+    # the shape _journal_changes feeds the gate:
+    records = [{"path": r["path"], "ts": r["ts"], "created": True}
+               for r in (cj.list_changes("sid-h1b") or []) if r.get("path")]
+    assert any(r["path"] == x for r in records)          # real record present
+    v = sw.verdict("python3 x.py", records, workspace)   # real records, no crash
+    assert v.matched
+    assert v.key == x
