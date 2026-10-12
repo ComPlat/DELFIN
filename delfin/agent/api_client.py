@@ -5716,6 +5716,26 @@ PRINCIPLES_DIGEST = (
     "610797fc16c11c8a455141a318b0d9b7248465f340569596e6f49ca85f8a9d80"
 )
 
+# Work-tree files git reads as configuration. A ``filter=``/``diff=``
+# attribute selects a driver program, a ``.git`` gitfile points at a
+# directory whose ``config`` names filters, hooks and fsmonitor, and a
+# ``HEAD`` beside ``objects/`` and ``refs/`` makes its directory a bare
+# repository with its own ``config``. ``git status`` and ``git add`` are
+# auto-allowed, so a program named this way ran with no dialog once the
+# file existed; ``.git/**`` itself is in the deny globs. Asking before
+# HEAD is written is enough to stop bare-repository discovery, which
+# needs all three; ``objects/`` and ``refs/`` stay free because they are
+# ordinary directory names in a scientific workspace. ``.gitignore``
+# names no program and stays free. Rejected: ``-c`` overrides on every
+# auto-allowed git command -- filters are keyed by driver name, so no
+# fixed set of overrides switches them all off.
+_GIT_CONFIG_PROTECTED_GLOBS: tuple[str, ...] = (
+    ".gitattributes", "**/.gitattributes",
+    ".gitmodules", "**/.gitmodules",
+    ".git", "**/.git",
+    "HEAD", "**/HEAD",
+)
+
 _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/api_client.py",
     "delfin/agent/kit_confirm.py",
@@ -5759,7 +5779,7 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     # can't silently poison CI or relax the merge protections of a repo.
     ".github/**",
     "**/.github/**",
-)
+) + _GIT_CONFIG_PROTECTED_GLOBS
 
 
 _REDIRECT_TARGET_RE = re.compile(
@@ -6494,9 +6514,15 @@ class KitToolPermissions:
     def matches_path_protected(self, rel_path: str) -> bool:
         """Self-modification guard: paths that always require explicit confirm,
         even in 'acceptEdits' or 'bypassPermissions'. Used for the agent's own
-        safety layer (api_client.py, kit_confirm.py, engine.py, tab_agent.py)."""
+        safety layer (api_client.py, kit_confirm.py, engine.py, tab_agent.py)
+        and the work-tree files git reads as configuration.
+
+        Case-insensitive, as ``matches_path_deny``: on a case-insensitive
+        filesystem (macOS default) ``.GITATTRIBUTES`` is ``.gitattributes``."""
         rp = rel_path.replace("\\", "/")
-        return any(fnmatch.fnmatch(rp, g) for g in self.path_protected_globs)
+        low = rp.lower()
+        return any(fnmatch.fnmatch(rp, g) or fnmatch.fnmatchcase(low, g.lower())
+                   for g in self.path_protected_globs)
 
     def matches_bash_deny(self, cmd: str) -> Optional[str]:
         for pat in self.bash_deny_patterns:
@@ -16044,6 +16070,10 @@ class _DocToolExecutor:
         except Exception:
             rel_str = path_arg.replace("\\", "/")
         is_protected = perms.matches_path_protected(rel_str)
+        _low = rel_str.lower()
+        _is_gitcfg = is_protected and any(
+            fnmatch.fnmatchcase(_low, g.lower())
+            for g in _GIT_CONFIG_PROTECTED_GLOBS)
         # calc holds the user's ACTIVE calculations — editing one always needs
         # an explicit confirm even in acceptEdits, so the agent can't silently
         # destroy results ("editing only with a confirmation prompt").
@@ -16062,7 +16092,8 @@ class _DocToolExecutor:
                     "self_mod" if is_protected else "calc_edit", name, rel_str,
                     blocked=perms.confirm_callback is None)
             if perms.confirm_callback is None:
-                _what = ("the agent's own safety layer" if is_protected
+                _what = ("a file git reads as configuration" if _is_gitcfg
+                         else "the agent's own safety layer" if is_protected
                          else "a stored calculation under calc" if is_calc
                          else "a file the user refused a write to earlier")
                 return (
@@ -16076,7 +16107,15 @@ class _DocToolExecutor:
             _cannot = self._edit_cannot_apply(name, args, resolved, perms)
             if _cannot:
                 return _cannot
-            if is_protected:
+            if _is_gitcfg:
+                preview = (
+                    "[GIT CONFIGURATION FILE]\n"
+                    "git reads this file as configuration: it can name a "
+                    "filter, diff driver or hook program that the next "
+                    "git status or git add runs.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+            elif is_protected:
                 preview = (
                     "[SELF-MODIFICATION GUARD]\n"
                     "This file is part of the agent's own safety layer.\n"
@@ -16812,6 +16851,36 @@ class _DocToolExecutor:
                 return self._classifier_second_opinion(perms, name, args, mode)
             if perms.matches_bash_auto_allow(cmd):
                 # The list matches the command's spelling, not its purpose.
+                return self._classifier_second_opinion(perms, name, args, mode)
+            # A command that is EXACTLY one of a few harmless forms is
+            # approved by rule (read_only_shapes): the dialogs they raised
+            # were answered "yes" every time and taught nothing. Reached
+            # only here -- after the deny list, the secret scan and the
+            # refusal ledger -- and the read and write path gates still run
+            # on the command afterwards. A switched-off shape, an unreadable
+            # setting or any failure falls through to the dialog.
+            try:
+                from . import read_only_shapes as _ros
+                from delfin.user_settings import load_settings as _ros_load
+                _ros_cfg = _ros.read_only_shapes_from_payload(_ros_load() or {})
+                # Only for a command that runs in the workspace itself: a
+                # path is judged against the workspace, and a `cwd` would
+                # make it mean something else (another root, another repo).
+                _ros_cwd = str(args.get("cwd") or "").strip()
+                if _ros_cwd and Path(_ros_cwd).resolve(strict=False) == \
+                        Path(perms.workspace).resolve(strict=False):
+                    _ros_cwd = ""
+                _ros_shape = (_ros.matches_with(
+                    cmd, str(perms.workspace),
+                    set(_ros_cfg.get("enabled_shapes") or ()))
+                    if _ros_cfg.get("enabled") and _ros_cwd in ("", ".")
+                    else "")
+            except Exception:
+                _ros_shape = ""
+            if _ros_shape:
+                _record_security_event(
+                    "read_only_shape", "bash",
+                    f"{_ros_shape}: {cmd[:80]}", blocked=False)
                 return self._classifier_second_opinion(perms, name, args, mode)
             # Not auto-allowed. Whenever a per-action approval dialog is
             # wired (the dashboard KitConfirmBroker), ask the user to

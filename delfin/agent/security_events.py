@@ -111,6 +111,7 @@ _KINDS = {
     "mcp_budget":        ("🔌", "MCP tool surface over budget"),
     # The action classifier: a model's second opinion on what the rules let
     # through unseen. It only ever adds friction.
+    "read_only_shape":   ("✅", "Harmless command form approved by rule"),
     "classifier_ask":    ("❓", "Action classifier asked the user"),
     "classifier_refuse": ("🛑", "Action classifier refused an allowed action"),
     "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
