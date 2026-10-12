@@ -256,21 +256,24 @@ def _benchmark_drift_lines() -> list[str]:
 
 
 def _benchmark_learning_lines() -> list[str]:
-    """"Learning" note: did the second run of a pre-registered learning task
-    do better than the first (latest vs previous persisted run)? Empty when
-    fewer than two runs exist, when neither run holds a learning task, or
-    when anything fails (best-effort)."""
+    """"Learning" note: did the second arm of the latest learning
+    measurement do better than the first on the pre-registered learning
+    tasks (:func:`benchmark.latest_learning_pair`, PREREG_W15.md)? Empty
+    when no two run files share a learning state for one of those tasks,
+    or when anything fails (best-effort)."""
     try:
         from delfin.agent import benchmark as bm
-        runs = bm.list_runs()
-        if len(runs) < 2:
+        ids = bm.learning_task_ids()
+        pair = bm.latest_learning_pair(bm.list_runs(), only=ids)
+        if pair is None:
             return []
-        lc = bm.compare_learning(str(runs[-2]), str(runs[-1]))
-        note = bm.format_learning_note(lc, only=bm.learning_task_ids())
+        first, second = pair
+        lc = bm.compare_learning(str(first), str(second))
+        note = bm.format_learning_note(lc, only=ids)
         if not note:
             return []
         lines = ["## Learning (second run vs first, PREREG_W15)"]
-        lines.append(f"- runs: `{runs[-2].name}` → `{runs[-1].name}`")
+        lines.append(f"- runs: `{first.name}` → `{second.name}`")
         lines += [f"- {ln}" for ln in note.splitlines() if ln.strip()]
         return lines
     except Exception:

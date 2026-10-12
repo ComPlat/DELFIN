@@ -3038,6 +3038,41 @@ def learning_task_ids() -> frozenset[str]:
         return frozenset()
 
 
+def latest_learning_pair(
+    runs: list[Path], *, only: Any = None,
+) -> tuple[Path, Path] | None:
+    """The two most recent arms of one learning measurement, or None.
+
+    ``runs`` is oldest first (:func:`list_runs`). The second arm is the
+    newest file holding a row of a task in ``only`` (all tasks when None)
+    with a non-empty ``learning_state``; the first arm is the newest
+    earlier file whose last row of the same task carries the same state.
+    Files in between without such a row -- ordinary runs -- are stepped
+    over.
+    """
+    def _states(path: Path) -> set[tuple[str, str]]:
+        try:
+            rows = read_run(path)
+        except Exception:
+            return set()
+        last: dict[str, str] = {}
+        for r in rows:
+            tid = r.get("task_id")
+            if isinstance(tid, str) and (only is None or tid in only):
+                last[tid] = str(r.get("learning_state") or "")
+        return {(t, s) for t, s in last.items() if s}
+
+    for j in range(len(runs) - 1, 0, -1):
+        second = _states(runs[j])
+        if not second:
+            continue
+        for i in range(j - 1, -1, -1):
+            if _states(runs[i]) & second:
+                return runs[i], runs[j]
+        return None
+    return None
+
+
 def format_learning_note(lc: dict, *, only: Any = None) -> str:
     """Short plain-text rendering of a :func:`compare_learning` result.
 
