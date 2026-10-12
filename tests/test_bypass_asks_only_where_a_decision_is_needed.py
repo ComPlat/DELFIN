@@ -248,7 +248,13 @@ def test_a_file_that_instructs_or_configures_git_keeps_the_second_look(
     target = aw / "skills" / "x" / name
     target.parent.mkdir(parents=True, exist_ok=True)
     _gate(perms, "write_file", {"path": str(target), "content": "x\n"})
-    assert runner.prompts and len(dialog.shown) == 1
+    assert len(dialog.shown) == 1
+    if name == ".gitattributes":
+        # A protected path since #171: the user is asked directly, with
+        # the git-configuration heading, and no model is consulted first.
+        assert "GIT CONFIGURATION FILE" in dialog.shown[0][1]
+    else:
+        assert runner.prompts
 
 
 def test_another_writable_root_is_still_judged(tmp_path):
