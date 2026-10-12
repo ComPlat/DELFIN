@@ -63,10 +63,10 @@ def _is_int(value: Any) -> bool:
 
 
 def _get_int(record: dict, field: str) -> Optional[int]:
-    """An integer field, or None if absent or mistyped (a bool is not an
-    int here)."""
+    """A non-negative integer field, or None if absent, mistyped (a bool
+    is not an int here) or negative."""
     value = record.get(field)
-    return value if _is_int(value) else None
+    return value if _is_int(value) and value >= 0 else None
 
 
 def _samples(record: dict, field: str) -> Optional[list[int]]:
@@ -76,7 +76,7 @@ def _samples(record: dict, field: str) -> Optional[list[int]]:
     n = record.get("n_samples")
     if not isinstance(values, list) or not _is_int(n) or len(values) != n:
         return None
-    if not all(_is_int(v) for v in values):
+    if not all(_is_int(v) and v >= 0 for v in values):
         return None
     return list(values)
 
@@ -89,15 +89,16 @@ def _validate(record: Any, which: str) -> Optional[str]:
     if record.get("unmeasured") is True:
         return (f"{which} run is unmeasured (the request never reached the "
                 "model); a non-run is not a measurement")
-    if not isinstance(record.get("task_id"), str):
-        return f"{which} record has no string task_id"
+    task_id = record.get("task_id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        return f"{which} record has no non-empty string task_id"
     if not isinstance(record.get("success"), bool):
         return f"{which} record has no bool success"
     if _get_int(record, "quality_0_100") is None:
         return f"{which} record has no int quality_0_100"
     for field in ("tool_calls", "input_tokens", "output_tokens"):
         if _get_int(record, field) is None:
-            return (f"{which} record has no int {field} "
+            return (f"{which} record has no non-negative int {field} "
                     "(missing field is an error, never a silent zero)")
     for field in ("duration_s", "cost_usd"):
         value = record.get(field)
@@ -110,7 +111,8 @@ def _validate(record: Any, which: str) -> Optional[str]:
                 "evidence)")
     for _, samples_field in _DECIDING_FIELDS:
         if _samples(record, samples_field) is None:
-            return (f"{which} record has no {samples_field} of {n} ints "
+            return (f"{which} record has no {samples_field} of {n} "
+                    "non-negative ints "
                     "(missing field is an error, never a silent zero)")
     return None
 
