@@ -17691,6 +17691,14 @@ def create_tab(ctx):
                 note_typed_message(user_text)
             except Exception:
                 pass
+            # ...and the only thing that can correct a skill the last
+            # turn used (engine._note_skill_correction).
+            _typing_engine = state.get("engine")
+            if _typing_engine is not None:
+                try:
+                    _typing_engine.note_typed(user_text)
+                except Exception:
+                    pass
         if not state.get("_on_its_own"):
             # Sent by somebody: after an emergency stop this is what lets
             # the session start turns on its own again (_send_on_its_own).
@@ -18354,6 +18362,18 @@ def create_tab(ctx):
                         _append_tool_message(
                             f'<span class="tool-name">$</span> {_e(cmd)}'
                         )
+
+                    elif tool_name == "skill_propose_patch":
+                        # A proposal, shown as what it would change. The
+                        # stored text is the active skill with exactly
+                        # this replacement (and the version line bumped).
+                        _append_tool_message(
+                            '<span class="tool-name">Skill patch '
+                            '(proposal)</span>  <span class="tool-path">'
+                            f'{_e(str(parsed.get("name") or ""))}</span>\n'
+                            + _build_inline_diff(
+                                str(parsed.get("old") or ""),
+                                str(parsed.get("new") or ""), _e))
 
                     elif tool_name in (
                         "Edit", "Write",

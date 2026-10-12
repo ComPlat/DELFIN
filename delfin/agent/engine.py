@@ -1967,6 +1967,103 @@ class AgentEngine:
             return True
         return any(p in ("tests", "test") for p in parts)
 
+    # --- a skill improves while it is used (wave 15, L2) -----------------
+
+    _SKILL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+    def note_typed(self, text: str) -> None:
+        """What a person just typed into this session's input box.
+
+        Called by the surface from the one place the text comes off the
+        keyboard, and read once by the turn it starts. The turn entry
+        point cannot tell by itself: it is also called with job notices,
+        canned replies, the harness's own follow-ups and other sessions'
+        messages, and none of those may count as the user correcting a
+        skill.
+        """
+        self._typed_now = text if isinstance(text, str) else ""
+
+    def _note_skill_use(self, tool_name: str, tool_input: Any) -> None:
+        """Remember which skills this turn loaded (the ``skill`` tool)."""
+        if str(tool_name or "").rsplit("__", 1)[-1] != "skill":
+            return
+        try:
+            args = (json.loads(tool_input) if isinstance(tool_input, str)
+                    else tool_input)
+            name = str((args or {}).get("name") or "")
+        except Exception:
+            return
+        # What _execute_skill accepts as the same name.
+        name = name.strip().lstrip("/").strip()
+        if name.lower().endswith(".md"):
+            name = name[:-3].strip()
+        if not self._SKILL_NAME_RE.fullmatch(name):
+            return
+        used = getattr(self, "_skills_used_turn", None)
+        if not isinstance(used, list):
+            used = self._skills_used_turn = []
+        if name not in used:
+            used.append(name)
+            del used[:-8]
+
+    def _note_skill_correction(self, user_message: str) -> None:
+        """Decide whether this turn opens with a correction of a skill.
+
+        Yes only when all of it holds: a person typed this turn's message
+        (:meth:`note_typed`) and it arrived as typed; it is their own
+        words under the narrow reading the action classifier uses; the
+        turn before loaded a skill that exists; and
+        ``skill_feedback.feedback`` reads the words as a correction.
+        Everything is forgotten first, so a turn nobody typed carries no
+        correction over from the one before.
+        """
+        typed = str(getattr(self, "_typed_now", "") or "").strip()
+        self._typed_now = ""
+        used = list(getattr(self, "_skills_used_turn", None) or [])
+        self._skills_used_turn = []
+        self._skill_correction = None
+        perms = self.kit_permissions
+        if perms is not None:
+            perms.skill_corrections = {}
+        if not typed or not used or typed not in (user_message or ""):
+            return
+        from .api_client import _classifier_user_texts
+        from .skill_feedback import feedback
+        from . import skills as _skills
+        if _classifier_user_texts(
+                [{"role": "user", "content": typed}]) != [typed]:
+            return
+        workspace = getattr(perms, "workspace", None) if perms else None
+        for name in reversed(used):
+            if _skills.get_skill(name, workspace) is None:
+                continue
+            verdict = feedback(name, typed, source="user")
+            if not verdict.get("corrects"):
+                continue
+            self._skill_correction = (name, verdict["user_words"])
+            if perms is not None:
+                # The patch tool reads this: the reason it puts on record
+                # is the user's words, not the model's account of them.
+                perms.skill_corrections = {name: verdict["user_words"]}
+            return
+
+    def _build_skill_correction_block(self) -> str:
+        """Tell the model, once, that its skill was just corrected."""
+        pair = getattr(self, "_skill_correction", None)
+        if not pair:
+            return ""
+        name = pair[0]
+        return (
+            "[Skill correction] The user's message reads as a correction, "
+            f"and the skill '{name}' was used in the turn before it. If "
+            "the correction is about what that skill says to do, propose "
+            f"the fix with skill_propose_patch(name='{name}', old, new, "
+            "evidence). That creates a proposal the user sees as a diff "
+            "and has to accept; the active skill stays as it is, and the "
+            "reason put on record is the user's own words. If the "
+            "correction is about something else, do what the user asked "
+            "and leave the skill alone.")
+
     def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
         """Say it mid-turn when a write lands outside the pinned directory.
 
@@ -2120,6 +2217,8 @@ class AgentEngine:
                       self._build_finished_subagents_block()))
         pairs.append(("budget", self._build_budget_block()))
         pairs.append(("answered", self._build_answered_attention_block()))
+        pairs.append(("skill_correction",
+                      self._build_skill_correction_block()))
         # One-time backend capability notice: reduced surfaces (no tool
         # loop, no verify enforcement, ...) are stated at session start
         # instead of failing silently mid-task. Best-effort — a missing
@@ -2584,6 +2683,9 @@ class AgentEngine:
             # Per turn: the stray-write note is said once and the next
             # turn may say it again if the work drifts again.
             self._stray_write_noted = False
+            # Per turn: does what was just typed correct a skill the turn
+            # before it used? Judged here, where a real turn begins.
+            self._note_skill_correction(user_message or "")
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -3133,6 +3235,7 @@ class AgentEngine:
                     # Order matters: the stray check reads the pin, so it
                     # must see the pin as it was BEFORE this write set it.
                     self._note_stray_write(event.tool_name, event.tool_input)
+                    self._note_skill_use(event.tool_name, event.tool_input)
                     self._maybe_pin_project_dir(
                         event.tool_name, event.tool_input)
                     if on_tool_use:

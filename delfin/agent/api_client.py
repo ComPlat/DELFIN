@@ -5992,6 +5992,10 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # Skill name -> the user's own words, for the turn that opened with
+    # the user correcting a skill the turn before it used. Set by the
+    # engine (_note_skill_correction), read by skill_propose_patch.
+    skill_corrections: dict = field(default_factory=dict)
     pre_tool_hook: Optional[Callable[[str, dict], None]] = None
     post_tool_hook: Optional[Callable[[str, dict, str], None]] = None
     # Structured-question UI binding. Receives the full ask_user_question
@@ -20268,6 +20272,37 @@ class _DocToolExecutor:
                 "Present the plan first; propose the patch after "
                 "approval.")})
         from .skill_patch import SkillPatchError, propose_skill_patch
+        # A patch that answers the user's correction of this skill: the
+        # reason on record is what the user said, and the replacement is
+        # safety-checked before anything is stored.
+        from .skill_patch import _normalise_name, propose_correction_patch
+        _corrected = getattr(perms, "skill_corrections", None)
+        _words = (_corrected.get(_normalise_name(
+            str(arguments.get("name") or "")))
+            if isinstance(_corrected, dict) else None)
+        if isinstance(_words, str) and _words.strip():
+            got = propose_correction_patch(
+                str(arguments.get("name") or ""), _words, source="user",
+                draft_old=arguments.get("old") or "",
+                draft_new=arguments.get("new") or "",
+                evidence=arguments.get("evidence") or [],
+                workspace=getattr(perms, "workspace", None))
+            if not got.get("proposed"):
+                return json.dumps({
+                    "error": got.get("reason") or "not proposed",
+                    "findings": got.get("findings") or [],
+                }, ensure_ascii=False)
+            return json.dumps({
+                "status": "ok",
+                "proposed": got["name"],
+                "base_version": got["base_version"],
+                "new_version": got["new_version"],
+                "proposal_status": got["status"],
+                "reason_on_record": got["reason"],
+                "note": ("Proposed as a new version in answer to the "
+                         "user's correction — the active skill is "
+                         "unchanged until a human accepts the proposal."),
+            }, ensure_ascii=False)
         try:
             out = propose_skill_patch(
                 arguments.get("name") or "",

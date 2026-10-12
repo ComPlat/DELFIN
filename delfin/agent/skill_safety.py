@@ -132,6 +132,16 @@ _TEXT_RULES: tuple[tuple[str, re.Pattern, str], ...] = (
                 r"|--dangerously[a-z-]*|—dangerously[a-z-]*"),
      "approval bypass: the text tells the agent to approve or remember an "
      "approval instead of asking ({snippet!r})"),
+    ("allow-rule",
+     # A standing allowance, in words or in the rule syntax itself. A
+     # skill is read by the model, not by the gate, so the text grants
+     # nothing -- but it would teach the agent to expect a grant, and a
+     # permission rule has no business in a recipe.
+     re.compile(r"(?i)\b(?:always\s+allow(?:s|ed)?"
+                r"|allow(?:s|ed)?\s+(?:everything|anything|all\b)"
+                r"|(?:Bash|Edit|Write|Read|WebFetch)\([^)\n]{0,120}\))"),
+     "allow rule: the text states a standing allowance or a permission "
+     "rule ({snippet!r})"),
     ("permission-mode-bypass",
      re.compile(r"(?i)\b(?:bypassPermissions|acceptEdits"
                 r"|set\s+the\s+mode\s+to\s+(?:bypass|accept)"
