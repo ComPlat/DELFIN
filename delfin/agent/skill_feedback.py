@@ -28,20 +28,65 @@ Security (waves 14/15; this is a memory-poisoning surface):
   command or a command that is not auto-allowable is refused.
 * Nothing here activates a skill; only a human accepting a proposal does.
 
-The correction heuristic is ``skill_learning._looks_like_correction`` —
-the canonical marker list the codebase already uses for
-"this user message reads as a course correction". Reused here verbatim so
-the two recognition surfaces stay consistent; the only thing added is the
-scope (a skill was used), the user's own words, and the source gate.
+The markers are ``skill_learning.CORRECTION_MARKERS``, the list the
+codebase already uses for "this user message reads as a course
+correction". Two things are narrower here than there, because here a
+match puts the user's words on record against a skill:
+
+* only the user's own prose is read: fenced and inline code, quoted
+  spans ("...", '...', „...“, «...»), ``>`` quote lines and pasted
+  output (indented lines, tracebacks, ``...Error:`` lines) are dropped
+  first. A pasted ``ValueError: wrong number of atoms`` or a quoted
+  reviewer sentence is not the user saying the skill was wrong.
+* a marker is a whole word: "anders" does not match "anderson"; a German
+  inflection ending (falsch -> falsche, falschen) and "-ly" still match.
+
+Measured on 17 realistic lines (German and English): 6 false positives
+and 2 false negatives with the substring reading, 2 and 2 with this one.
+The two left are semantic ("Instead of a summary, could you also...",
+"Kannst du die Ergebnisse anders darstellen?") and need more than a
+word list; the steering note they cause tells the model to leave the
+skill alone when the correction is about something else.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
-from .skill_learning import _looks_like_correction
+from .skill_learning import CORRECTION_MARKERS
 
 __all__ = ["feedback", "patched_skill_safe"]
+
+_CODE_RE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
+_QUOTED_RE = re.compile(
+    r'"[^"\n]{0,400}"'
+    r"|(?<![^\W_])'[^'\n]{0,400}'(?![^\W_])"
+    r"|„[^“”\n]{0,400}[“”]"
+    r"|“[^”\n]{0,400}”"
+    r"|‘[^’\n]{0,400}’"
+    r"|«[^»\n]{0,400}»"
+    r"|»[^«\n]{0,400}«")
+_PASTED_LINE_RE = re.compile(
+    r"^(?:[ \t]{2,}\S|\t|\s*>"
+    r"|\s*Traceback \(most recent call last\)"
+    r"|\s*File \"[^\"]*\", line \d"
+    r"|\s*[\w.]*(?:Error|Exception|Warning|FATAL|ERROR|WARNING)\b\s*:)")
+_MARKER_RE = re.compile("|".join(
+    r"(?<![^\W\d_])" + re.escape(m)
+    + (r"(?:e[nmrs]?|ly)?(?![^\W\d_])" if m[-1].isalpha() else "")
+    for m in sorted(CORRECTION_MARKERS, key=len, reverse=True)))
+
+
+def _own_words(text: str) -> str:
+    """The text with code, quotes and pasted output taken out."""
+    text = _QUOTED_RE.sub(" ", _CODE_RE.sub(" ", text))
+    return "\n".join(line for line in text.splitlines()
+                     if not _PASTED_LINE_RE.match(line))
+
+
+def _reads_as_correction(text: str) -> bool:
+    return bool(_MARKER_RE.search(_own_words(text).lower()))
 
 # A correction is recognised only for a real user message. Tool results,
 # files, web pages and other sessions' messages are data, never
@@ -80,7 +125,7 @@ def feedback(
     text = user_message if isinstance(user_message, str) else ""
     text = text.strip()
     corrects = bool(skill) and source == _USER_SOURCE and bool(text) and (
-        _looks_like_correction(text)
+        _reads_as_correction(text)
     )
     if not corrects:
         return {"corrects": False, "skill": None, "user_words": None}
