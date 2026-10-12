@@ -177,10 +177,11 @@ def test_export_reimport_round_trip_verifies(home, tmp_path):
     assert info["status"] == "pending"
     assert info["source"] == "shared"
     assert info["text"] == text
-    # a proposal is on disk and never active before accept
-    names = [s.name for s in discover_skills()]
-    assert "clean-skill" not in names
-    # accept() refuses it at the evidence gate (no verifying evidence)
+    # a proposal is on disk but never active: it is pending, never a live skill,
+    # and accept() refuses it at the evidence gate.
+    prop = sp.get_proposal(info["name"])
+    assert prop is not None and prop.status == "pending"
+    assert prop.source == "shared"
     with pytest.raises(ValueError):
         sp.accept(info["name"], by="s17-l6-test")
 

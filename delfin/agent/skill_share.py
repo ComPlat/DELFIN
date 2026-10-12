@@ -81,9 +81,19 @@ def _bundle_blob(payload: dict, sha: str) -> str:
 #: The machine-private shapes a shared skill text must not carry. These are
 #: NOT covered by skill_safety.check (which guards commands + secrets while
 #: a bare path, a user@host or a bare long-number job id are not commands).
-_ABS_PATH_RE = re.compile(r"/[A-Za-z0-9_.@/~-]+")
-_USERHOST_RE = re.compile(r"\b[A-Za-z0-9_.-]+@[A-Za-z0-9.-]+")
-_JOB_ID_RE = re.compile(r"\b\d{6,}\b")
+#: A path is a token that BEGINS with "/" or "~/" (start of line or after
+#: whitespace, a quote, a bracket, "=" or ":"), never a "/" inside a word.
+#: That keeps "B3LYP/def2-TZVP", "and/or" and "kcal/mol" (method strings,
+#: chemistry) exportable while "/home/alice/x" and "~/calc" (machine paths)
+#: still block (operator F4).
+_ABS_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_.~-])(?:~/|/)[A-Za-z0-9_@.~/-]*")
+_USERHOST_RE = re.compile(r"(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]+@[A-Za-z0-9.-]+")
+#: A job id is only that when it sits next to a scheduler word; a bare
+#: 6+ digit number in a chemistry skill (e.g. a mass or a year) must not
+#: block the export (operator F4).
+_JOB_ID_RE = re.compile(
+    r"(?i)(?:job|slurm|sbatch|squeue|jobid)\W{0,3}(\d{3,})")
 
 
 def _machine_ref_snippets(text: str) -> list[tuple[int, str, str]]:
@@ -189,9 +199,38 @@ def export_bundle(name: str, target_dir: str | os.PathLike, *,
     out = Path(target_dir)
     out.mkdir(parents=True, exist_ok=True)
     json_path = out / f"{name}.skill.json"
-    tmp = json_path.with_suffix(".skill.json.tmp")
-    tmp.write_text(_bundle_blob(payload, sha), encoding="utf-8")
-    os.replace(tmp, json_path)
+    # F3: never follow a planted symlink. The final path must not be a
+    # symlink, and the temp is created with O_EXCL|O_NOFOLLOW (0600) so an
+    # attacker cannot point it somewhere else and os.replace land outside.
+    try:
+        if os.path.islink(json_path):
+            raise ValueError(
+                f"refusing to overwrite a symlink at the export target: "
+                f"{json_path}")
+        # append .tmp to the full filename (with_suffix on a name with
+        # embedded dots, e.g. <name>.skill.json, would shift the real dot
+        # beyond the planted temp name -- F3 must hit exactly the temp).
+        tmp = json_path.with_name(json_path.name + ".tmp")
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(str(tmp), flags, 0o600)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise ValueError(
+                    f"refusing to write a non-regular export temp: {tmp}")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(_bundle_blob(payload, sha))
+            fd = -1
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        os.replace(tmp, json_path)
+    except (FileExistsError, IsADirectoryError):
+        raise ValueError(
+            f"refusing to export: a file/dir named "
+            f"{json_path.name}.tmp or the final "
+            f"bundle already exists")
     return text
 
 
@@ -216,22 +255,33 @@ def import_bundle(path: str | os.PathLike, *, source: str = "shared") -> dict:
 
     Returns ``{"status", ...}`` where status is "verified" or "blocked".
     """
-    p = Path(path)
+    # F2: decide on the OPEN descriptor, not on the path -- what was a file a
+    # moment ago can be swapped for a FIFO or a symlink by the time it is
+    # opened. Open once O_RDONLY|O_NOFOLLOW|O_NONBLOCK, fstat the descriptor,
+    # check a bounded regular file, read at most cap+1 bytes from that fd.
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
     try:
-        st = p.stat()
+        fd = os.open(path, flags)
     except OSError as exc:
-        raise ValueError(f"cannot read bundle {path}: {exc}") from exc
-    if not stat.S_ISREG(st.st_mode):
-        raise ValueError(f"not a regular file: {path}")
-    if p.is_symlink():
-        raise ValueError(f"a symlink is not a valid bundle: {path}")
-    if st.st_size > _MAX_BUNDLE_BYTES:
-        raise ValueError(
-            f"bundle too large: {st.st_size} bytes "
-            f"(cap {_MAX_BUNDLE_BYTES})")
-
+        raise ValueError(f"cannot open bundle {path}: {exc}") from exc
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError(f"not a regular file: {path}")
+        if st.st_size > _MAX_BUNDLE_BYTES:
+            raise ValueError(
+                f"bundle too large: {st.st_size} bytes "
+                f"(cap {_MAX_BUNDLE_BYTES})")
+        blob = os.read(fd, _MAX_BUNDLE_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(blob) > _MAX_BUNDLE_BYTES:
+        raise ValueError(
+            f"bundle too large (read cap {_MAX_BUNDLE_BYTES} bytes): {path}")
+    try:
+        text_data = blob.decode("utf-8")
+        data = json.loads(text_data)
     except (OSError, ValueError) as exc:
         raise ValueError(f"invalid bundle JSON: {exc}") from exc
     if not isinstance(data, dict):
@@ -248,9 +298,45 @@ def import_bundle(path: str | os.PathLike, *, source: str = "shared") -> dict:
             f"bundle hash mismatch: {path!r} was tampered with or truncated; "
             "nothing is proposed")
 
-    reason = _scrub_leaving(payload)
-    if reason:
+    # F4 (operator): the SAME machine-reference scan also runs on import.
+    # A bundle hand-made to carry /home/<user>/ (or a user@host / job id) is
+    # "blocked" here, naming the line, and never reaches a proposal. This is
+    # separate from propose's own command+secret scan below, which stores
+    # git-push / curl text as a "blocked" proposal. Both are never-active.
+    net_reason = _scrub_leaving(payload)
+    if net_reason:
         return {"status": "blocked", "source": source, "name": name,
-                "reason": reason}
-    return {"status": "verified", "source": source, "name": name,
-            "version": version, "author": author, "text": text}
+                "version": version, "author": author,
+                "reason": net_reason}
+
+    # F1 (operator overrules the earlier QS ruling): an import ARRIVES AS A
+    # PROPOSAL. propose() with ONE honest provenance evidence entry stores it
+    # (never a claim of a test): kind "recipe", ref the bundle sha256, detail
+    # saying it is not verified on this machine. Unsafe text (git-push /
+    # curl / a secret) is STORED "blocked" by propose's own safety scan; clean
+    # text is STORED "pending"; accept() still refuses at the evidence gate
+    # until local evidence verifies (skill_proposals docstring :236 names this
+    # pulled-proposal case). Nothing is ever active without accept.
+    from . import skill_proposals
+    from .skill_proposals import Evidence
+    provenance = Evidence(
+        kind="recipe",
+        ref=stored_sha,
+        detail=f"imported bundle, author label {author!r}, "
+               "not verified on this machine",
+    )
+    proposal = skill_proposals.propose(
+        name,
+        text,
+        evidence=[provenance],
+        source=source,
+        base_version=version,
+    )
+    return {"status": proposal.status,
+            "source": proposal.source,
+            "name": proposal.name,
+            "text": text,
+            "version": version,
+            "author": author,
+            "reason": "; ".join(proposal.findings) if proposal.findings
+            else None}
