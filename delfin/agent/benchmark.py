@@ -2875,6 +2875,149 @@ def ab_compare(
     }
 
 
+def compare_learning(
+    run_a: str,
+    run_b: str,
+    *,
+    runs_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Per-task learning verdict: did the SECOND run of a task beat the first?
+
+    ``run_a`` is the FIRST run in time, ``run_b`` the SECOND — each a full
+    path, a filename, or a bare run id resolved against the runs directory
+    (the same resolution :func:`ab_compare` uses). A learning comparison is
+    first-versus-second across TWO runs separated in time (two run files);
+    two rows of the same task within ONE file are replicates of that
+    snapshot and are the same-snapshot spread, not learning. The LAST row
+    is a run's representative per task (the same convention
+    :func:`compare_runs` uses).
+
+    For every task present in BOTH runs the FIRST representative row is
+    thrown through
+    :func:`delfin.agent.pack.benchmark.learning_metric.learning_verdict`
+    with the SECOND, so the verdict per task is one of
+    ``error | wrong | learned | no_learning | regressed`` (PREREG_W15.md).
+    Keeps ``learning_metric`` pure: THIS caller decides which record is
+    first and which is second. Returns::
+
+        {run_a, run_b, per_task: [{task_id, verdict, error, first, second}],
+         summary: {n_learned, n_no_learning, n_regressed, n_wrong, n_error,
+                   n_only_in_a, n_only_in_b, only_in_a, only_in_b}}
+
+    A task seen in only one run is excluded from ``per_task`` (it has no
+    counterpart to judge) and reported in the summary as ``only_in_a`` /
+    ``only_in_b``.
+    """
+    from .pack.benchmark import learning_metric as _learning_metric
+
+    base = runs_dir or _DEFAULT_RUNS_DIR
+    path_a = _resolve_run_path(run_a, base)
+    path_b = _resolve_run_path(run_b, base)
+    rec_a = read_run(path_a)
+    rec_b = read_run(path_b)
+
+    rows_a: dict[str, list[dict]] = {}
+    for r in rec_a:
+        tid = r.get("task_id")
+        if isinstance(tid, str):
+            rows_a.setdefault(tid, []).append(r)
+    rows_b: dict[str, list[dict]] = {}
+    for r in rec_b:
+        tid = r.get("task_id")
+        if isinstance(tid, str):
+            rows_b.setdefault(tid, []).append(r)
+
+    overlap = sorted(set(rows_a) & set(rows_b))
+    only_a = sorted(set(rows_a) - set(rows_b))
+    only_b = sorted(set(rows_b) - set(rows_a))
+
+    stats: dict[str, int] = {"n_learned": 0, "n_no_learning": 0,
+                             "n_regressed": 0, "n_wrong": 0, "n_error": 0}
+    per_task: list[dict[str, Any]] = []
+    for tid in overlap:
+        first = rows_a[tid][-1]
+        second = rows_b[tid][-1]
+        out = _learning_metric.learning_verdict(first, second)
+        verdict = str(out.get("verdict") or "error")
+        if f"n_{verdict}" in stats:
+            stats[f"n_{verdict}"] += 1
+        else:
+            stats["n_error"] += 1
+        evidence = out.get("evidence") or {}
+        per_task.append({
+            "task_id": tid,
+            "verdict": verdict,
+            "error": out.get("error"),
+            "first": evidence.get("first"),
+            "second": evidence.get("second"),
+        })
+    per_task.sort(key=lambda p: str(p["task_id"]))
+
+    summary = {
+        **stats,
+        "n_only_in_a": len(only_a),
+        "n_only_in_b": len(only_b),
+        "only_in_a": only_a,
+        "only_in_b": only_b,
+    }
+    return {
+        "run_a": str(path_a),
+        "run_b": str(path_b),
+        "per_task": per_task,
+        "summary": summary,
+    }
+
+
+_LEARNING_TASKS_PATH = _DEFAULT_TASKS_PATH.parent / "tasks_w15_learning.yaml"
+
+
+def learning_task_ids() -> frozenset[str]:
+    """The ids of the pre-registered learning tasks (PREREG_W15.md).
+
+    A learning verdict is only meaningful for a task whose setup lets a
+    learned skill or a memory help the second time; on any other task
+    "fewer tool calls" between two runs is ordinary run-to-run spread.
+    Empty when the suite cannot be read.
+    """
+    try:
+        return frozenset(t.id for t in _load_one(_LEARNING_TASKS_PATH))
+    except Exception:
+        return frozenset()
+
+
+def format_learning_note(lc: dict, *, only: Any = None) -> str:
+    """Short plain-text rendering of a :func:`compare_learning` result.
+
+    ``only`` restricts the note to these task ids (the pre-registered
+    learning tasks); the counts are recomputed over what is shown, so the
+    header never counts a task the lines below leave out. Empty string
+    when nothing is left to show.
+    """
+    rows = [p for p in (lc.get("per_task") or [])
+            if only is None or p.get("task_id") in only]
+    if not rows:
+        return ""
+    order = ("learned", "no_learning", "regressed", "wrong", "error")
+    counts = {v: 0 for v in order}
+    for p in rows:
+        v = str(p.get("verdict") or "error")
+        counts[v if v in counts else "error"] += 1
+    lines = ["second run vs first: " + ", ".join(
+        f"{counts[v]} {v.replace('_', ' ')}" for v in order)]
+    for p in rows:
+        v = str(p.get("verdict") or "error")
+        first, second = p.get("first") or {}, p.get("second") or {}
+        if v in ("error",) or not first or not second:
+            detail = str(p.get("error") or "no comparable record")
+        else:
+            detail = (f"tool calls {first.get('tool_calls')}→"
+                      f"{second.get('tool_calls')}, tokens "
+                      f"{first.get('tokens_total')}→"
+                      f"{second.get('tokens_total')}")
+        lines.append(f"{p.get('task_id')}: {v.replace('_', ' ')} ({detail})")
+    return "\n".join(lines)
+
+
 def format_ab_note(ab: dict) -> str:
     """Short plain-text rendering of an :func:`ab_compare` result — the
     "Benchmark drift" note for the eval report (and chat)."""

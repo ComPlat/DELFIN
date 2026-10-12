@@ -255,6 +255,28 @@ def _benchmark_drift_lines() -> list[str]:
         return []
 
 
+def _benchmark_learning_lines() -> list[str]:
+    """"Learning" note: did the second run of a pre-registered learning task
+    do better than the first (latest vs previous persisted run)? Empty when
+    fewer than two runs exist, when neither run holds a learning task, or
+    when anything fails (best-effort)."""
+    try:
+        from delfin.agent import benchmark as bm
+        runs = bm.list_runs()
+        if len(runs) < 2:
+            return []
+        lc = bm.compare_learning(str(runs[-2]), str(runs[-1]))
+        note = bm.format_learning_note(lc, only=bm.learning_task_ids())
+        if not note:
+            return []
+        lines = ["## Learning (second run vs first, PREREG_W15)"]
+        lines.append(f"- runs: `{runs[-2].name}` → `{runs[-1].name}`")
+        lines += [f"- {ln}" for ln in note.splitlines() if ln.strip()]
+        return lines
+    except Exception:
+        return []
+
+
 def build_report(
     *,
     outcomes: list[Any] | None = None,
@@ -319,6 +341,9 @@ def build_report(
     drift = _benchmark_drift_lines()
     if drift:
         lines += drift + [""]
+    learning = _benchmark_learning_lines()
+    if learning:
+        lines += learning + [""]
     if drafts:
         lines.append("## Draft tasks scaffolded (review before committing)")
         lines += [f"- `{d}`" for d in drafts]
