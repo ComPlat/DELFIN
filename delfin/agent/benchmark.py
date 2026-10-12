@@ -3087,16 +3087,22 @@ def format_learning_note(lc: dict, *, only: Any = None) -> str:
         return ""
     order = ("learned", "no_learning", "regressed", "wrong", "error")
     counts = {v: 0 for v in order}
-    for p in rows:
+
+    def _shown(p: dict) -> str:
         v = str(p.get("verdict") or "error")
-        counts[v if v in counts else "error"] += 1
+        return v if v in counts else "error"
+
+    for p in rows:
+        counts[_shown(p)] += 1
     lines = ["second run vs first: " + ", ".join(
         f"{counts[v]} {v.replace('_', ' ')}" for v in order)]
     for p in rows:
-        v = str(p.get("verdict") or "error")
+        v = _shown(p)
         first, second = p.get("first") or {}, p.get("second") or {}
-        if v in ("error",) or not first or not second:
-            detail = str(p.get("error") or "no comparable record")
+        if v == "error" or not first or not second:
+            detail = str(p.get("error")
+                         or f"no comparable record (verdict "
+                            f"{p.get('verdict')!r})")
         else:
             detail = (f"median tool calls {first.get('tool_calls')}→"
                       f"{second.get('tool_calls')}, tokens "
