@@ -976,6 +976,60 @@ def shell_escape(engine, command: str) -> list[str]:
     return TerminalAgent._shell_lines(out)
 
 
+def shell_escape_result(engine, command: str) -> dict:
+    """`!cmd` through the agent's gate, as fields rather than lines.
+
+    Input: the engine and the command after the `!`. Output: a dict with
+    ``command``, ``stdout``, ``stderr`` (escape sequences and C0 controls
+    removed, tabs and newlines kept), ``exit_code`` (None when nothing
+    ran), ``refused`` (the gate's reason, "" when it let the command
+    through) and ``error`` ("" or why nothing could run). Never raises.
+
+    The same executor call as shell_escape, so the same gate. For a
+    surface that renders the streams itself -- the dashboard puts them
+    in preformatted blocks -- where shell_escape's lines would have to be
+    parsed back apart, and its 200-line cap is the terminal's choice.
+
+    stdout and stderr arrive on separate pipes, so their interleaving is
+    not recoverable here; each keeps its own order. Merging them with
+    2>&1 would change the command the user approved.
+    """
+    command = str(command or "").strip()
+    run = {"command": command, "stdout": "", "stderr": "",
+           "exit_code": None, "refused": "", "error": ""}
+    if not command:
+        return run
+    executor = getattr(engine, "run_gated_bash", None)
+    if not callable(executor):
+        run["error"] = ("! is not available on this backend — it runs "
+                        "through the same gate the agent uses, and this one "
+                        "has none")
+        return run
+    try:
+        out = executor(command)
+    except Exception as exc:
+        run["error"] = str(exc)
+        return run
+    import json
+
+    text = str(out or "")
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        payload = None
+    if not isinstance(payload, dict):
+        run["stdout"] = rr.strip_control(text)
+        return run
+    if payload.get("error"):
+        run["refused"] = str(payload["error"])
+        return run
+    run["stdout"] = rr.strip_control(str(payload.get("stdout", "") or ""))
+    run["stderr"] = rr.strip_control(str(payload.get("stderr", "") or ""))
+    code = payload.get("exit_code")
+    run["exit_code"] = code if isinstance(code, int) else None
+    return run
+
+
 class TerminalAgent:
     """Reads, runs one turn, renders it, repeats.
 
