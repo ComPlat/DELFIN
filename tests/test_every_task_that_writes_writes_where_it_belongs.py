@@ -229,8 +229,14 @@ def test_the_counts_still_match_what_was_measured():
     # science 18 -> 20 on 2026-10-11: two wave-14 tasks --
     # tasks_w14_U5_dsml_leak.yaml and tasks_w14_U6_refusal_form.yaml. Each
     # has a setup script and writes only into its fixture workspace.
+    #
+    # science 20 -> 22 and other 50 -> 52 on 2026-10-12: the four
+    # pre-registered learning tasks (tasks_w15_learning.yaml, wave 15b, L5).
+    # Two are classed science, the two office-like ones fall under other.
+    # Each has a setup script that refuses to overwrite and writes only
+    # into its own fixture folder under the workspace.
     assert counts == {"office": 13, "behavior": 16, "generic_project": 15,
-                      "science": 20, "chemistry": 5, "other": 50}, counts
+                      "science": 22, "chemistry": 5, "other": 52}, counts
 
 
 # ---------------------------------------------------------------------------
