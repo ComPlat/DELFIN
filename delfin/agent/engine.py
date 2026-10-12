@@ -2591,6 +2591,17 @@ class AgentEngine:
             # Per SESSION, and only the first time: what language this
             # conversation runs in. See _note_session_language.
             self._note_session_language(user_message or "")
+            # A refused shell write the user names again in their own
+            # message is theirs to have: lifted here, at the start of the
+            # turn the message opens, from the text as typed (the turn's
+            # volatile tail is not part of it). A refusal recorded later in
+            # this turn is not lifted by the message that preceded it.
+            try:
+                from .api_client import _lift_shell_write_refusals
+                _lift_shell_write_refusals(
+                    self.kit_permissions, user_message or "")
+            except Exception:
+                pass
             # Per turn: the stray-write note is said once and the next
             # turn may say it again if the work drifts again.
             self._stray_write_noted = False
@@ -2931,6 +2942,9 @@ class AgentEngine:
         # identically.
         _turn_error = ""
         _turn_tool_calls = 0
+        # len(chunks) at the latest tool call: the text after it is what
+        # the turn ENDS with, judged by the continuation detector.
+        _chunks_at_last_tool = 0
         # Tool NAMES this turn — evidence input for the claim-grounding
         # guard (a lookup tool used this turn grounds quantity claims).
         _turn_tool_names: list[str] = []
@@ -3125,6 +3139,7 @@ class AgentEngine:
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
                     _turn_tool_calls += 1
+                    _chunks_at_last_tool = len(chunks)
                     _turn_tool_names.append(event.tool_name)
                     # Evidence for the functional-claim guard: record WHAT
                     # was executed, not just that some tool ran. Held here
@@ -3668,6 +3683,7 @@ class AgentEngine:
             self._record_context_usage(full_response)
 
             # Progressive disclosure: NEED_CONTEXT detection (Feature 1)
+            _answer_streamed = full_response
             if self._progressive_disclosure:
                 full_response = self._handle_need_context(
                     full_response, user_message, memory_context,
@@ -3687,7 +3703,16 @@ class AgentEngine:
             # latch, re-armed only by clear_turn_continuation(), so this
             # block alone can never loop; the caller additionally caps how
             # many follow-ups run in a row.
-            self._note_turn_continuation(full_response)
+            #
+            # Judged on the text after the turn's last tool call: narration
+            # written before a call ("Let me first verify ...") is joined
+            # into full_response, and judging it drew 8 false notes in 10
+            # (report 20261012-082746). A NEED_CONTEXT re-answer replaces
+            # the text, so then the replacement is judged.
+            self._note_turn_continuation(
+                "".join(chunks[_chunks_at_last_tool:])
+                if _turn_tool_calls and full_response is _answer_streamed
+                else full_response)
         elif self._stop_requested:
             # Stop before any answer text — during thinking, or before the
             # first token. The message appended at the top of this turn has

@@ -363,6 +363,32 @@ class PromptLoader:
         for key in stale:
             self._prompt_state.pop(key, None)
 
+    def _user_model_section(self, session_key: str, role_id: str) -> str:
+        """The user-model block for this build, fixed per session.
+
+        What the user said about themselves, at its own 200-token ceiling
+        so it never competes with the memory budget. The selection is
+        taken at the session's first build and kept under
+        ``(session_key, "")`` -- shared by every role of the session and
+        cleared with the rest by ``reset_session_prompt_state`` -- so a
+        line typed mid-session does not move the system prompt (which
+        precedes the whole history) until the next session; a forget or
+        the off switch still drops lines (see ``session_block``). Without
+        a session key the store is read fresh. "" when off, empty,
+        unreadable, or when the "memory" section is skipped.
+        """
+        if self._should_skip_section("memory", role_id):
+            return ""
+        state = (self._prompt_state.setdefault((session_key, ""), {})
+                 if session_key else {})
+        try:
+            from .user_model import session_block
+            block, state["user_model"] = session_block(
+                state.get("user_model"), max_tokens=200)
+        except Exception:
+            return ""
+        return block
+
     def _cached_read(self, path: Path) -> str:
         key = str(path)
         if key not in self._cache:
@@ -1989,6 +2015,13 @@ class PromptLoader:
                             f"--- Relevant Playbook ---\n{relevant_playbook}")
                         injected.append("playbook")
 
+            # User model (see _user_model_section): the Code mode and the
+            # terminal run this branch, the other roles the one below.
+            _user_block = self._user_model_section(session_key, role_id)
+            if _user_block:
+                add("user_model", self.LAYER_VOLATILE, _user_block)
+                injected.append("user_model")
+
             if self._should_inject_memory(role_id, session_key, memory_context):
                 if not self._should_skip_section("memory", role_id):
                     add("memory", self.LAYER_VOLATILE,
@@ -2396,6 +2429,12 @@ class PromptLoader:
                 add("external_memory", self.LAYER_VOLATILE,
                     f"--- Folder Conventions (remembered) ---\n{ext_mem}")
                 injected.append("external_memory")
+
+        # User model (see _user_model_section).
+        _user_block = self._user_model_section(session_key, role_id)
+        if _user_block:
+            add("user_model", self.LAYER_VOLATILE, _user_block)
+            injected.append("user_model")
 
         # Provider profile (success rates, failures, playbooks)
         profile_ctx = self._load_profile_context(mode_id)
