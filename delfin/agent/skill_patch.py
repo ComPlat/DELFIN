@@ -264,7 +264,7 @@ def propose_correction_patch(
     skill_used: Optional[str],
     user_message: Optional[str],
     *,
-    source: str = "user",
+    source: str = "unknown",
     draft_old: str = "",
     draft_new: str = "",
     evidence=None,
@@ -282,12 +282,14 @@ def propose_correction_patch(
     A correction proposes nothing unless it is the user's OWN next
     message on this session (``source == "user"``): a correction that
     arrives inside a tool result or another session's message is data,
-    not instruction. Without a correction, or with no evidence, nothing
-    is proposed. The patched skill (``draft_new``) must pass the LIVE
-    safety gate (``skill_safety.check`` — the same classifiers the
-    proposal store runs) before it may be offered; a patch that adds a
-    deny-pattern command or an allow rule is rejected here and is never
-    stored.
+    not instruction. The default ``source`` is ``"unknown"`` — fail-closed,
+    so an omitted source proposes nothing (every legitimate caller passes
+    ``source="user"`` explicitly). Without a correction, or with no
+    evidence, nothing is proposed. The patched skill (``draft_new``) must
+    pass the LIVE safety gate (``skill_safety.check`` — the same
+    classifiers the proposal store runs) before it may be offered; a patch
+    that adds a deny-pattern command or an allow rule is rejected here
+    and is never stored.
 
     Returns:
         ``{"proposed": bool, "reason": str, ...}``. On a successful

@@ -109,6 +109,24 @@ def test_correction_inside_another_sessions_message_proposes_nothing(isolated):
     assert out["proposed"] is False
 
 
+def test_omitted_source_proposes_nothing(isolated):
+    # Fail-closed at the glue boundary too: an OMITTED source must not
+    # silently inherit the user's identity (the pure feedback fix guards
+    # skill_feedback.feedback; this pins the same invariant at
+    # propose_correction_patch, whose default source is "unknown").
+    # A correction-looking message with no source proposes nothing.
+    text = "That's wrong — revert the whole thing."
+    out = skill_patch.propose_correction_patch(
+        "tune", text,
+        draft_old="Raise", draft_new="Lower",
+        evidence=[{"kind": "test", "ref": "a"}],
+        workspace=str(isolated["ws"]),
+    )
+    assert out["proposed"] is False
+    # the report names the source gate, never a clarification request.
+    assert "source" in out["reason"].lower()
+
+
 # --- 2. a patch adding a deny-pattern command / allow rule is rejected --
 
 def test_patch_adding_a_deny_command_is_rejected(isolated):
