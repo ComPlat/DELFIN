@@ -58,6 +58,8 @@ def _get_int(record: dict, field: str) -> Optional[int]:
 
 def _validate(record: dict, which: str) -> Optional[str]:
     """Validate one run record; return an error string or None if valid."""
+    if not isinstance(record, dict):
+        return f"{which} record is not a dict"
     unmeasured = record.get("unmeasured")
     if unmeasured is True:
         return (f"{which} run is unmeasured (the request never reached the "
@@ -66,7 +68,8 @@ def _validate(record: dict, which: str) -> Optional[str]:
         return f"{which} record has no string task_id"
     if not isinstance(record.get("success"), bool):
         return f"{which} record has no bool success"
-    if not isinstance(record.get("quality_0_100"), int):
+    q = record.get("quality_0_100")
+    if isinstance(q, bool) or not isinstance(q, int):
         return f"{which} record has no int quality_0_100"
     for field in ("tool_calls", "input_tokens", "output_tokens"):
         if _get_int(record, field) is None:
@@ -95,6 +98,14 @@ def learning_verdict(first: dict, second: dict) -> dict:
     whatever it saved. Equality on every efficiency proxy is
     ``no_learning``. See PREREG_W15.md for the fixed rules.
     """
+    if not isinstance(first, dict):
+        return {"verdict": "error", "evidence": {},
+                "error": "first record is not a dict "
+                         "(missing field is an error, never a silent zero)"}
+    if not isinstance(second, dict):
+        return {"verdict": "error", "evidence": {},
+                "error": "second record is not a dict "
+                         "(missing field is an error, never a silent zero)"}
     err_first = _validate(first, "first")
     err_second = _validate(second, "second")
     err = err_first or err_second
