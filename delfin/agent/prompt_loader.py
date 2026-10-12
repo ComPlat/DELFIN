@@ -2397,6 +2397,20 @@ class PromptLoader:
                     f"--- Folder Conventions (remembered) ---\n{ext_mem}")
                 injected.append("external_memory")
 
+        # User model -- what the user said about themselves in earlier
+        # sessions, at its OWN fixed token ceiling so it never competes
+        # with the memory budget spent above. Every role, every mode; the
+        # module answers "" when it is off, empty or unreadable, and the
+        # block goes whenever the "memory" section is skipped.
+        try:
+            from .user_model import prompt_block as _user_model_block
+            _user_block = _user_model_block(max_tokens=200)
+        except Exception:
+            _user_block = ""
+        if _user_block and not self._should_skip_section("memory", role_id):
+            add("user_model", self.LAYER_VOLATILE, _user_block)
+            injected.append("user_model")
+
         # Provider profile (success rates, failures, playbooks)
         profile_ctx = self._load_profile_context(mode_id)
         if self._should_inject_profile_context(role_id, session_key, profile_ctx):

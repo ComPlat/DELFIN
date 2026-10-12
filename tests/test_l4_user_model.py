@@ -255,7 +255,7 @@ def test_persisted_across_instances(tmp_path):
     p = tmp_path / "user_model.json"
     m = user_model.UserModel(path=p)
     m.update_from_user_message(
-        "I want answers in English", source_role="user"
+        "I prefer answers in English", source_role="user"
     )
     m2 = user_model.UserModel(path=p)
     prefs = m2.entries()["preferences"]

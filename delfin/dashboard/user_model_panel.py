@@ -98,3 +98,94 @@ def forget_everything(path: Optional[str] = None) -> dict:
     except Exception as exc:  # pragma: no cover - defensive
         return {"removed": 0, "error": str(exc)}
     return {"removed": removed}
+
+
+def add_entry(text: str, path: Optional[str] = None) -> dict:
+    """"Add": one line the user types into the panel about themselves.
+
+    It goes through the store's own intake, so the panel can add nothing
+    a typed chat message could not: one short line, a recognised field,
+    nothing permission-shaped.
+    """
+    try:
+        model = _user_model(path)
+        before = model.entries()
+        added = model.update_from_user_message(str(text or "")) != before
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"added": False, "error": str(exc)}
+    if not added:
+        return {"added": False, "error": (
+            "not stored: one short line about yourself (role, expertise, "
+            "preference, working style, standing correction), and nothing "
+            "that reads like a permission, a path or a mode")}
+    return {"added": True}
+
+
+def build_widget(path: Optional[str] = None):
+    """The panel as a widget: the entries, add, forget one, forget all."""
+    import ipywidgets as widgets
+
+    view = widgets.HTML()
+    status = widgets.HTML()
+    pick = widgets.Dropdown(
+        options=[], description="Entry:",
+        layout=widgets.Layout(width="520px"))
+    new_line = widgets.Text(
+        placeholder="e.g. I am a computational chemist",
+        layout=widgets.Layout(width="520px"))
+    add_btn = widgets.Button(description="Add")
+    forget_btn = widgets.Button(description="Forget this")
+    all_btn = widgets.Button(
+        description="Forget everything", button_style="warning")
+    refresh_btn = widgets.Button(description="Refresh")
+
+    def _refresh(*_):
+        rows = [r for r in collect_rows(path) if r["field"] != "error"]
+        view.value = (
+            "<pre style='white-space:pre-wrap;margin:0'>"
+            + render(path) + "</pre>")
+        pick.options = [
+            (f"{r['field']}: {r['value'][:60]}", (r["field"], r["index"]))
+            for r in rows]
+
+    def _say(result: dict, ok: str):
+        err = result.get("error")
+        status.value = (
+            f"<span style='color:#d32f2f;'>{escape(str(err))}</span>"
+            if err else f"<span style='color:#2e7d32;'>{escape(ok)}</span>")
+
+    def _add(_):
+        result = add_entry(new_line.value, path)
+        if result.get("added"):
+            new_line.value = ""
+        _say(result, "Stored.")
+        _refresh()
+
+    def _forget(_):
+        if pick.value is None:
+            return
+        field, index = pick.value
+        _say(forget_entry(field, index, path), "Forgotten.")
+        _refresh()
+
+    def _forget_all(_):
+        result = forget_everything(path)
+        _say(result, f"Forgot {result.get('removed', 0)} entries.")
+        _refresh()
+
+    add_btn.on_click(_add)
+    forget_btn.on_click(_forget)
+    all_btn.on_click(_forget_all)
+    refresh_btn.on_click(_refresh)
+    _refresh()
+    return widgets.VBox([
+        widgets.HTML(
+            "<b>User model</b> &mdash; what you said about yourself, "
+            "loaded into every new session. It is a description: it "
+            "grants the agent nothing. Stored only in your own "
+            "<code>~/.delfin/user_model.json</code>."),
+        view,
+        widgets.HBox([new_line, add_btn]),
+        widgets.HBox([pick, forget_btn, all_btn, refresh_btn]),
+        status,
+    ])

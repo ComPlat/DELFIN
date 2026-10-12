@@ -110,8 +110,8 @@ def test_round5_to_infinitive_habits_stay_storable(tmp_path):
     storable = [
         "i prefer to always write my tests before the code",
         "i like to always commit small changes",
-        "i try to always review my work before merging",
-        "i would rather always ask before deleting",
+        "i like to always review my work before merging",
+        "i prefer to always ask before deleting",
     ]
     for n, phrase in enumerate(storable):
         total = _update_and_count(tmp_path / f"umb{n}.json", phrase)

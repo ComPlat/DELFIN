@@ -17681,6 +17681,16 @@ def create_tab(ctx):
             threading.Thread(target=_run_escape, daemon=True,
                              name="dashboard-shell-escape").start()
             return
+        if button is not None and not state.get("_on_its_own"):
+            # Off the keyboard: the Send button is the one caller that
+            # passes itself. Canned replies, retries, quick actions and
+            # what the session sends on its own all arrive with None, and
+            # none of them is the user describing themselves.
+            try:
+                from delfin.agent.user_model import note_typed_message
+                note_typed_message(user_text)
+            except Exception:
+                pass
         if not state.get("_on_its_own"):
             # Sent by somebody: after an emergency stop this is what lets
             # the session start turns on its own again (_send_on_its_own).
