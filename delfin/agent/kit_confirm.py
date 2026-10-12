@@ -85,7 +85,10 @@ class KitConfirmBroker:
         #: The session this broker belongs to, stamped on every request
         #: it parks in the inbox. Set by whoever builds the broker; "" is
         #: honest about not knowing rather than claiming someone else's.
-        self.session_id = ""
+        #: ``follow_session`` replaces the fixed value with a source read
+        #: at request time.
+        self._session_id = ""
+        self._session_source: Optional[Any] = None
         # When a window expired with nobody answering, the moment it did.
         # Until it is cleared (a real decision) or a window has passed,
         # further requests are not made to wait again: the answer would be
@@ -110,6 +113,45 @@ class KitConfirmBroker:
         self._toast: Any = None
 
     # -- public API --------------------------------------------------------
+
+    @property
+    def session_id(self) -> str:
+        """The id stamped on a request raised now.
+
+        Input: none. Output: the source's current value when
+        ``follow_session`` bound one, else the value last assigned.
+        A source that raises or returns nothing yields "" (unattributed),
+        never the previous session's id.
+        """
+        source = getattr(self, "_session_source", None)
+        if source is None:
+            return str(getattr(self, "_session_id", "") or "")
+        try:
+            return str(source() or "")
+        except Exception:
+            return ""
+
+    @session_id.setter
+    def session_id(self, value: str) -> None:
+        self._session_id = str(value or "")
+
+    def follow_session(self, source: Optional[Any]) -> None:
+        """Read the session id from *source* at each request.
+
+        Input: a zero-argument callable returning the current session
+        id, or None to return to the assigned value. Semantics: the
+        dashboard builds one broker per tab and keeps it across engine
+        rebuilds, session switches, restores and the engine minting a
+        new id; a value copied once at construction is wrong after the
+        first of these. Reading at request time costs one attribute
+        lookup per approval.
+
+        Rejected: stamping inside ``set_kit_confirm_callback`` (the tab
+        also passes the callback to the engine constructor, and a copied
+        id goes stale the same way); wrapping ``callback`` per engine
+        (the gate reads ``last_timed_out`` off ``callback.__self__``).
+        """
+        self._session_source = source
 
     @property
     def last_timed_out(self) -> bool:

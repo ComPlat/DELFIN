@@ -48,7 +48,7 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 | **Spectroscopy** | 🔬 both | UV-Vis absorption, IR vibrational spectra, AFP (absorption/fluorescence/phosphorescence) plots |
 | **Ensemble NMR** | 🧪 organic | CREST → CENSO → c2anmr → ANMR Boltzmann-weighted ensemble shieldings/couplings |
 | **Hyperpolarizability** | 🔬 both | Static and frequency-dependent β tensors for NLO materials (organic and organometallic) |
-| **Structure Generation** | 🔬 both | SMILES→3D for organics (RDKit/Open Babel) AND metal complexes (MANTA, DELFIN's own force-field-free coordination builder; Architector; stepwise ORCA/xTB `%DOCKER` assembly) |
+| **Structure Generation** | 🔬 both | SMILES→3D for organics (RDKit/Open Babel) AND metal complexes (MANTA, DELFIN's own deterministic coordination constructor; Architector; stepwise ORCA/xTB `%DOCKER` assembly) |
 | **Conformer Sampling** | 🔬 both | MANTA multi-start sampling with energy ranking, CREST conformer search, XTB-GOAT global optimization |
 | **ML Potentials** | 🔬 both | 8 backends (ANI-2x, AIMNet2, MACE, CHGNet, M3GNet, SchNetPack, NequIP, ALIGNN) for fast energy/force evaluation |
 | **Crystal Structure Generation** | 🧱 solid state | Genarris integration for random organic crystal generation with configurable space groups (generation, not lattice-energy ranking) |
@@ -411,7 +411,7 @@ smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
 |-------|--------------|----------|
 | `QUICK` | One ETKDGv3 embedding; for metals it tries stk → RDKit → unsanitised → Open Babel and returns on the first success. One structure. | Quick previews |
 | `NORMAL` | RDKit ETKDG with multi-seed embedding and optional UFF refinement (RDKit / Open Babel). One structure. **This is the default when nothing is set.** | Organic molecules |
-| `MANTA` | DELFIN's own coordination builder: the enumerated coordination-isomer × conformer manifold, then screening, optimisation and refinement down to one geometry. | Metal complexes |
+| `MANTA` | DELFIN's own deterministic constructor: the isomer–conformer ensemble of the complex, then screening, optimisation and refinement down to one geometry. | Metal complexes |
 | `ARCHITECTOR` | [architector](https://github.com/lanl/Architector) automated 3D generation; needs a metal-containing SMILES. | Metal complexes, instant preview |
 | `MOLSIMPLIFY` | [molSimplify](https://molsimplify.mit.edu/), one structure per geometry of the coordination number; needs a metal-containing SMILES. | Metal complexes |
 | `MACE` | [epic-MACE](https://github.com/EPiCs-group/epic-mace) (Chernyshov & Pidko, JCTC 2024): every stereomer of the geometries that fit the donor sites, ten conformers each; runs in its own Python 3.7 environment. | Metal complexes, hapto ligands |
@@ -424,19 +424,19 @@ For many SMILES at once -- a list of `ID;SMILES` lines, up to hundreds of thousa
 
 ### MANTA
 
-MANTA is DELFIN's force-field-free coordination-structure engine — *construct, don't search*. From a transition-metal SMILES it enumerates the coordination isomers by Burnside–Pólya counting over the donor set and the coordination polyhedron, seats each isomer on an ideal polyhedron with metal–donor distances from covalent radii, and expands each into conformers. **No force field touches the metal**: UFF and MMFF have no transition-metal parameters, which is what systematically distorts M–D lengths and L–M–L angles in conventional builders.
+MANTA is DELFIN's deterministic constructor for metal complexes — *construct, don't search*. From a transition-metal SMILES it enumerates the coordination isomers as symmetry orbits (Burnside–Pólya counting over the donor arms and the coordination polyhedron), seats each isomer on an ideal polyhedron with metal–donor distances from covalent radii, and adds ring-pucker, pose and mirror siblings. The frames emitted for one SMILES form its **isomer–conformer ensemble**. **No force field acts on a free metal centre** on this path: universal force fields have only generic parameters for the metal, which is what distorts M–D lengths and L–M–L angles in conventional builders; force fields relax only free ligands and, with metal and donors fixed, ring puckers. Inputs outside the constructor's scope, or whose isomers all fail its self-gate, are built by a legacy path that minimises UFF over the whole complex. See [delfin/manta/README.md](delfin/manta/README.md).
 
-The manifold then goes through a funnel that `CONTROL.txt` steers:
+The ensemble then goes through a funnel that `CONTROL.txt` steers:
 
 <!-- recipe: not-runnable — prose diagram of the MANTA funnel, not a command -->
 ```
-build manifold → screen (one single point per frame and multiplicity)
+build ensemble → screen (one single point per frame and multiplicity)
                → optimise (xTB per survivor)
                → refine (GOAT or CREST on the best)
                → winner written to start.txt
 ```
 
-The ranked unit is a (frame, multiplicity) pair, not a frame. The `MANTA_*` block in `CONTROL.txt` steers how thorough the construction is, which gates filter the manifold, what the screen and the optimisation use, whether GOAT or CREST refines the winner, and how long the whole thing may take. `delfin --define` writes the block with its defaults. `delfin-manta` runs the builder on its own.
+The ranked unit is a (frame, multiplicity) pair, not a frame. The `MANTA_*` block in `CONTROL.txt` steers how thorough the construction is, which gates filter the ensemble, what the screen and the optimisation use, whether GOAT or CREST refines the winner, and how long the whole thing may take. `delfin --define` writes the block with its defaults. `delfin-manta` runs the builder on its own.
 
 **What MANTA is for:** starting geometries, not production geometries. The output is a constructive geometry of roughly force-field quality — correct in topology and coordination, not xTB- or DFT-accurate.
 
@@ -446,7 +446,7 @@ The ranked unit is a (frame, multiplicity) pair, not a frame. The `MANTA_*` bloc
 
 - **CREST** — conformer-rotamer ensemble generation and sorting
 - **xTB-GOAT** — gradient-based global optimisation
-- **MANTA sampling** — multi-start sampling with parallel xTB optimisation and energy-ranked trajectories (`delfin-guppy`, `delfin-guppy-batch` for a batch of SMILES)
+- **GUPPY sampling (MANTA ensemble + xTB ranking)** — the MANTA ensemble optimised in parallel with xTB and ranked by energy (`delfin-guppy`, `delfin-guppy-batch` for a batch of SMILES)
 
 ---
 
@@ -648,7 +648,7 @@ Excited-state dynamics has no subcommand of its own: set `ESD_modul=yes` in `CON
 |---------|--------------|
 | `delfin-voila` | Launch the dashboard as a standalone web app |
 | `delfin-agent` | The AI agent in the terminal (`chat`, `run`, `init`, `doctor`, `session`, `approvals`, `scheduler`, …) |
-| `delfin-manta` | MANTA: the coordination-isomer × conformer manifold from a metal SMILES |
+| `delfin-manta` | MANTA: the isomer–conformer ensemble of a metal SMILES |
 | `delfin-guppy [input.txt]` | Multi-start sampling with repeated xTB optimisation and ranked trajectories (`--runs`, `--parallel-jobs`, `--pal`, `--refine`, `--screen`, `--max-isomers`, …) |
 | `delfin-guppy-batch` | The same over every SMILES in a batch file (`--row` for SLURM arrays) |
 | `delfin-build [input.txt]` | Build metal complexes stepwise from SMILES using ORCA's `%DOCKER` (`--goat`, `--no-ligand-goat`, `--dry-run`, …) |
@@ -702,7 +702,7 @@ delfin/
   co2/                     # CO2 coordinator
 
   # ── Structure generation ──
-  manta/                   # the coordination-structure engine (~90 modules)
+  manta/                   # the coordination-structure engine (~120 modules)
   cli_manta.py             # the delfin-manta CLI
   smiles_converter.py      # SMILES→3D entry points, orchestrates delfin.manta
   guppy_sampling.py        # multi-start sampling, ranking and refinement funnel

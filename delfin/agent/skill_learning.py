@@ -137,17 +137,21 @@ def _is_tool_green(msg: dict, name: str | None) -> bool:
     return False
 
 
+#: What makes a user message read as a course correction, lower case.
+#: skill_feedback matches the same list as whole words.
+CORRECTION_MARKERS = (
+    "no, ", "nein", "falsch", "wrong", "not what i meant",
+    "i meant", "stattdessen", "instead", "revert", "undo",
+    "please revert", "undo that", "rollback", "that's not",
+    "das ist falsch", "das war falsch", "ich meinte",
+    "nicht so", "anders", "stop, ", "halt,",
+)
+
+
 def _looks_like_correction(text: str) -> bool:
     """Does a user message read as a course correction?"""
     t = text.lower()
-    markers = (
-        "no, ", "nein", "falsch", "wrong", "not what i meant",
-        "i meant", "stattdessen", "instead", "revert", "undo",
-        "please revert", "undo that", "rollback", "that's not",
-        "das ist falsch", "das war falsch", "ich meinte",
-        "nicht so", "anders", "stop, ", "halt,",
-    )
-    return any(m in t for m in markers)
+    return any(m in t for m in CORRECTION_MARKERS)
 
 
 def _users_own_words(msg: dict) -> list:

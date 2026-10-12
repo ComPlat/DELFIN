@@ -1977,6 +1977,120 @@ class AgentEngine:
             return True
         return any(p in ("tests", "test") for p in parts)
 
+    # --- a skill improves while it is used ---------------------------------
+
+    _SKILL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+    def note_typed(self, text: str) -> None:
+        """What a person just typed into this session's input box.
+
+        Called by the surface from the one place the text comes off the
+        keyboard, and read once by the turn it starts. The turn entry
+        point cannot tell by itself: it is also called with job notices,
+        canned replies, the harness's own follow-ups and other sessions'
+        messages, and none of those may count as the user correcting a
+        skill.
+        """
+        self._typed_now = text if isinstance(text, str) else ""
+
+    def _forget_skill_turn(self) -> None:
+        """Drop the skills the last turn loaded and any correction of them.
+
+        Called where one conversation ends and another begins on this
+        engine (a new cycle, a restored session). The per-turn reset in
+        :meth:`_note_skill_correction` only runs at the next turn, which
+        is then already the other conversation's: without this, a
+        correction typed there was put on record against a skill only the
+        previous conversation had used.
+        """
+        self._typed_now = ""
+        self._skills_used_turn = []
+        self._skill_correction = None
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and hasattr(perms, "skill_corrections"):
+            perms.skill_corrections = {}
+
+    def _note_skill_use(self, tool_name: str, tool_input: Any) -> None:
+        """Remember which skills this turn loaded (the ``skill`` tool)."""
+        if str(tool_name or "").rsplit("__", 1)[-1] != "skill":
+            return
+        try:
+            args = (json.loads(tool_input) if isinstance(tool_input, str)
+                    else tool_input)
+            name = str((args or {}).get("name") or "")
+        except Exception:
+            return
+        # What _execute_skill accepts as the same name.
+        name = name.strip().lstrip("/").strip()
+        if name.lower().endswith(".md"):
+            name = name[:-3].strip()
+        if not self._SKILL_NAME_RE.fullmatch(name):
+            return
+        used = getattr(self, "_skills_used_turn", None)
+        if not isinstance(used, list):
+            used = self._skills_used_turn = []
+        if name not in used:
+            used.append(name)
+            del used[:-8]
+
+    def _note_skill_correction(self, user_message: str) -> None:
+        """Decide whether this turn opens with a correction of a skill.
+
+        Yes only when all of it holds: a person typed this turn's message
+        (:meth:`note_typed`) and it arrived as typed; it is their own
+        words under the narrow reading the action classifier uses; the
+        turn before loaded a skill that exists; and
+        ``skill_feedback.feedback`` reads the words as a correction.
+        Everything is forgotten first, so a turn nobody typed carries no
+        correction over from the one before.
+        """
+        typed = str(getattr(self, "_typed_now", "") or "").strip()
+        self._typed_now = ""
+        used = list(getattr(self, "_skills_used_turn", None) or [])
+        self._skills_used_turn = []
+        self._skill_correction = None
+        perms = self.kit_permissions
+        if perms is not None:
+            perms.skill_corrections = {}
+        if not typed or not used or typed not in (user_message or ""):
+            return
+        from .api_client import _classifier_user_texts
+        from .skill_feedback import feedback
+        from . import skills as _skills
+        if _classifier_user_texts(
+                [{"role": "user", "content": typed}]) != [typed]:
+            return
+        workspace = getattr(perms, "workspace", None) if perms else None
+        for name in reversed(used):
+            if _skills.get_skill(name, workspace) is None:
+                continue
+            verdict = feedback(name, typed, source="user")
+            if not verdict.get("corrects"):
+                continue
+            self._skill_correction = (name, verdict["user_words"])
+            if perms is not None:
+                # The patch tool reads this: the reason it puts on record
+                # is the user's words, not the model's account of them.
+                perms.skill_corrections = {name: verdict["user_words"]}
+            return
+
+    def _build_skill_correction_block(self) -> str:
+        """Tell the model, once, that its skill was just corrected."""
+        pair = getattr(self, "_skill_correction", None)
+        if not pair:
+            return ""
+        name = pair[0]
+        return (
+            "[Skill correction] The user's message reads as a correction, "
+            f"and the skill '{name}' was used in the turn before it. If "
+            "the correction is about what that skill says to do, propose "
+            f"the fix with skill_propose_patch(name='{name}', old, new, "
+            "evidence). That creates a proposal the user sees as a diff "
+            "and has to accept; the active skill stays as it is, and the "
+            "reason put on record is the user's own words. If the "
+            "correction is about something else, do what the user asked "
+            "and leave the skill alone.")
+
     def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
         """Say it mid-turn when a write lands outside the pinned directory.
 
@@ -2130,6 +2244,8 @@ class AgentEngine:
                       self._build_finished_subagents_block()))
         pairs.append(("budget", self._build_budget_block()))
         pairs.append(("answered", self._build_answered_attention_block()))
+        pairs.append(("skill_correction",
+                      self._build_skill_correction_block()))
         # One-time backend capability notice: reduced surfaces (no tool
         # loop, no verify enforcement, ...) are stated at session start
         # instead of failing silently mid-task. Best-effort — a missing
@@ -2399,11 +2515,6 @@ class AgentEngine:
             session_id=str(getattr(self, "session_id", "") or ""),
         )
 
-    #: An unattributed request older than this is somebody else's. Long
-    #: enough for a user who stepped away from their own session, short
-    #: enough that yesterday's inbox is not read as today's work.
-    _APPROVAL_REMINDER_MAX_AGE_S = 3600.0
-
     def _remind_of_waiting_approvals(self) -> None:
         """Tell the turn about an approval that expired while nobody was there.
 
@@ -2425,25 +2536,18 @@ class AgentEngine:
             pending = _att.list_pending("confirm_pending") or []
         except Exception:
             return
-        # Only what this turn could act on. An entry names its session
-        # since 2026-09-18; one that predates that says nothing, so it
-        # counts only while it is recent. Without this a fresh session
-        # that had said "Hallo" was told seven requests were waiting for
-        # it, all from sessions that had ended hours before, and spent a
-        # turn working that out.
-        import time as _time
+        # Only what this turn could act on: entries naming this session.
+        # An unattributed entry is not this session's -- it stays in the
+        # user's inbox (/attention) and is not shown to the model. Every
+        # broker stamps its session now; an entry without one comes from
+        # an older build or a request raised with no engine, and cannot be
+        # shown to be ours. Counting recent ones as ours (the earlier
+        # rule, 1 h) told one dashboard session another's expired
+        # edit_file dialog was waiting for it, and it acted on it.
         mine = str(getattr(self, "session_id", "") or "")
-        now = _time.time()
 
         def _is_mine(ev: dict) -> bool:
-            owner = str(ev.get("session_id") or "")
-            if owner:
-                return owner == mine
-            try:
-                age = now - float(ev.get("created_at") or 0.0)
-            except (TypeError, ValueError):
-                return False
-            return 0 <= age <= self._APPROVAL_REMINDER_MAX_AGE_S
+            return bool(mine) and str(ev.get("session_id") or "") == mine
 
         pending = [e for e in pending if _is_mine(e)]
         seen = self.__dict__.setdefault("_reminded_approvals", set())
@@ -2605,6 +2709,9 @@ class AgentEngine:
             # Per turn: the stray-write note is said once and the next
             # turn may say it again if the work drifts again.
             self._stray_write_noted = False
+            # Per turn: does what was just typed correct a skill the turn
+            # before it used? Judged here, where a real turn begins.
+            self._note_skill_correction(user_message or "")
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -3158,6 +3265,7 @@ class AgentEngine:
                     # Order matters: the stray check reads the pin, so it
                     # must see the pin as it was BEFORE this write set it.
                     self._note_stray_write(event.tool_name, event.tool_input)
+                    self._note_skill_use(event.tool_name, event.tool_input)
                     self._maybe_pin_project_dir(
                         event.tool_name, event.tool_input)
                     if on_tool_use:
@@ -6793,6 +6901,7 @@ class AgentEngine:
             # satisfied — which suppressed the delegation reminder for work
             # that had never delegated anything.
             self._reset_session_fields()
+            self._forget_skill_turn()
             self.session_id = self._fresh_session_id()  # fresh session for new cycle
             self._sync_task_session()
             self._foreign_tasks_shown = False  # new session → notice re-armed
@@ -7251,6 +7360,9 @@ class AgentEngine:
         restored: list[str] = []
         missing: list[str] = []
         drifted: list[str] = []
+        # Not carried, and not left over from whatever this engine held
+        # before: the restored session has no turn behind it.
+        self._forget_skill_turn()
 
         if data.get("mode"):
             restored.append("mode")

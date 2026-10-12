@@ -1182,6 +1182,14 @@ class SubagentPreset:
 # out or persists (subagent, orchestrate, cron_create, remember, task_create,
 # publish_report, the worktree moves). A reader reaching for read_section
 # instead of read_file is not the failure this guards against.
+#
+# Every entry must also pass the plan-mode gate, because these presets run
+# in plan mode and the list is what the delegate is offered: a listed tool
+# the mode refuses is an offer withdrawn on the first call. Hence absent:
+# project_introspect (runs the workspace's interpreter) and web_fetch (an
+# arbitrary host and URL data), both refused in plan mode. web_search and
+# subagent_message pass for a delegate (api_client._PLAN_DELEGATE_TOOLS).
+# Pinned by tests/test_an_explore_child_can_search.py.
 _READ_ONLY_TOOLS: tuple[str, ...] = (
     "calc_summary",
     "check_environment",
@@ -1198,7 +1206,6 @@ _READ_ONLY_TOOLS: tuple[str, ...] = (
     "list_files",
     "list_sections",
     "notebook_read",
-    "project_introspect",
     "read_document",
     "read_file",
     "read_section",
@@ -1208,7 +1215,6 @@ _READ_ONLY_TOOLS: tuple[str, ...] = (
     "task_get",
     "task_list",
     "view_image",
-    "web_fetch",
     "web_search",
 )
 
@@ -2744,6 +2750,15 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
         narrowed = _narrow_allowed_tools(parent_perms, preset_tools)
     except Exception:
         narrowed = None
+    # Plan mode admits web_search for a delegate whose list names it
+    # (api_client._PLAN_DELEGATE_TOOLS). A parent in plan mode may not
+    # search, so its delegate is not handed the search either -- the same
+    # never-more-than-the-parent rule _clamp_child_mode applies to the mode.
+    if (narrowed is not None
+            and (getattr(parent_perms, "mode", "") or "") == "plan"
+            and "web_search" in narrowed):
+        narrowed = (frozenset(narrowed - {"web_search"})
+                    or frozenset({_PRESET_ALLOWS_NOTHING}))
     try:
         extra = {"subagent_depth": depth}
         if narrowed is not None:
