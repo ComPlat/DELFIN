@@ -1,74 +1,60 @@
-"""Probe: the H1G phase-3 wiring test SEEN green against the patched copy.
+"""Green-flip probe: the H1G phase-3 wiring red test, SEEN green on the patch.
 
-Runs the same scenarios as tests/test_zz_h1g_wiring_red.py, but first inserts
-the shadow package at .gate/px/h1g_pkg (fresh origin/main task_evidence.py +
-api_client.py WITH the wiring applied, plus the branch's counter_test) at the
-front of sys.path. This is the builder-side proof the operator's patch turns
-the red test green: the red test itself fails against the un-wired code
-(TypeError: unexpected keyword 'durable_test_runs'); here the keyword exists
-and the note surfaces the sentence.
+Runs the EXACT test module `tests/test_zz_h1g_wiring_red.py` — which feeds
+REAL tool_trace-shaped entries `{tool:"bash", input:{command}, output, ok, ts}`
+through `counter_test.durable_test_runs` and into
+`task_evidence.check_completion_claim(durable_test_runs=...)` — but with the
+patched shadow package (`.gate/px/h1g_pkg`: origin/main task_evidence.py +
+api_client.py WITH the wiring applied, plus the F1-F5-corrected
+counter_test.py) at the front of sys.path, so `from delfin.agent import ...`
+resolves to the patched copies. Every red-test function that must go green is
+run from the shadow; the green only surfaces if the operator's patch delivers
+the `durable_test_runs=` keyword AND the F1-F5 fix makes a real trace-run map
+onto the changed counter-test. This is the "seen going green once" evidence
+for the operator build: the red test goes RED now (TypeError on the
+un-wired signature), GREEN here against the patched+i corrected shadow.
 """
+import importlib.util
 import sys
 from pathlib import Path
 
-_SHADOW = str(Path(__file__).resolve().parents[1] / ".gate" / "px" / "h1g_pkg")
+_ROOT = Path(__file__).resolve().parents[1]
+_SHADOW = str(_ROOT / ".gate" / "px" / "h1g_pkg")
+_RED_TEST = _ROOT / "tests" / "test_zz_h1g_wiring_red.py"
 
 
-def _load_shadow():
+def _load_red_under_shadow():
+    """Insert the shadow at the front of sys.path, clear delfin from
+    sys.modules so the import machinery re-searches and picks up the patched
+    shadow copy, then import the red test module through importlib."""
     if _SHADOW not in sys.path:
         sys.path.insert(0, _SHADOW)
-    # Force a fresh import of the shadow package: clear every delfin module
-    # so the import machinery re-searches sys.path and picks up .gate/px/h1g_pkg.
     for mod in list(sys.modules):
         if mod == "delfin" or mod.startswith("delfin."):
             del sys.modules[mod]
-    from delfin.agent import task_evidence as te  # noqa: F401
-    return te
+    spec = importlib.util.spec_from_file_location(
+        "test_zz_h1g_wiring_red_shadow", str(_RED_TEST))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
-def _changes(*paths):
-    return [{"path": p, "ts": 0.0, "created": True} for p in paths]
-
-
-def _green_run(target):
-    return {"tool": "run_tests", "command": target, "exit_code": 0,
-            "status": "ok", "passed": 1, "failed": 0, "ts": 100.0}
-
-
-def _claim(te, *, runs):
-    return te.check_completion_claim(
-        "run the tests for the fix",
-        "",
-        changes=_changes("delfin/agent/thing.py", "tests/test_thing.py"),
-        tests=[_green_run("tests/test_thing.py::test_x")],
-        durable_test_runs=runs,
-        window_start=0.0,
+def test_green_flip_runs_the_red_test_against_the_shadow():
+    """The same scenarios the red test asserts RED on the un-wired code pass
+    GREEN on the patched shadow — the operator-applied wiring + F1-F5 fix."""
+    mod = _load_red_under_shadow()
+    # The red test defines seven ``test_*`` functions (grep confirms 7); the
+    # green flip must flip EVERY one of them, not a subset — any of the 7
+    # that fails raises here, and `ran == 7` confirms none were skipped.
+    ran = 0
+    for name in dir(mod):
+        if name.startswith("test_") and callable(getattr(mod, name)):
+            fn = getattr(mod, name)
+            if getattr(fn, "__module__", None) == mod.__name__:
+                fn()
+                ran += 1
+    assert ran == 7, (
+        f"expected all 7 red scenarios to green-flip against the shadow, "
+        f"got {ran}"
     )
-
-
-def test_shadow_imports_patched_signature():
-    te = _load_shadow()
-    # The signature now takes the keyword (it did not before the patch).
-    assert "durable_test_runs" in te.check_completion_claim.__code__.co_varnames
-
-
-def test_green_even_with_durable_runs_surfaces_sentence():
-    te = _load_shadow()
-    res = _claim(te, runs=[{"target": "tests/test_thing.py::test_x",
-                            "red": False, "green": True}])
-    assert res["verdict"] == "verified"
-    assert "never seen failing" in (res.get("note") or ""), res
-
-
-def test_controlled_fix_not_perturbed_by_wiring():
-    te = _load_shadow()
-    res = _claim(te, runs=[{"target": "tests/test_thing.py::test_x",
-                            "red": True, "green": True}])
-    assert res["verdict"] == "verified"
-    assert "never seen failing" not in (res.get("note") or ""), res
-
-
-def test_changed_never_run_test_names_the_test():
-    te = _load_shadow()
-    res = _claim(te, runs=[])
-    assert "changed but never run" in (res.get("note") or ""), res
