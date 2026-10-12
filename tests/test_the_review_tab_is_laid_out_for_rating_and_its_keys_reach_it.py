@@ -188,3 +188,68 @@ def test_the_viewer_follows_the_width_of_its_column(folder, monkeypatch):
     assert seen["width"] == "100%"
     for field in (panel.path_input, panel.findings_input, panel.name_input):
         assert field.layout.max_width == "100%"
+
+
+# ---------------------------------------------------------------- a comment on a frame not yet rated
+def test_a_comment_on_an_unrated_frame_is_kept_shown_again_resumed_and_exported(folder):
+    import csv
+    import json
+    panel = ReviewPanel(folder)
+    panel.open(str(folder))
+    panel.note_input.value = "odd ring"                    # a_01.xyz frame 0, not rated
+    panel.handle_key("right")
+    assert panel.note_input.value == ""
+    panel.handle_key("left")
+    assert panel.note_input.value == "odd ring"
+    data = json.loads(panel.session.review_path.read_text())
+    assert data["notes"]["a_01.xyz"]["0"]["note"] == "odd ring"
+    assert panel.session.progress()["rated"] == 0          # a comment is not a rating
+    again = ReviewPanel(folder)
+    again.open(str(folder))
+    again.session.go(0)
+    again.refresh()
+    assert again.note_input.value == "odd ring"
+    rows = list(csv.DictReader(open(again.export(), encoding="utf-8")))
+    assert [(r["file"], r["frame"], r["verdict"], r["note"]) for r in rows] == [
+        ("a_01.xyz", "0", "", "odd ring")]
+    assert rv.summarize(again.session.data)["rated"] == 0
+    again.handle_key("b")                                  # rating takes the comment along
+    rec = again.session.record("a_01.xyz", 0)
+    assert rec["note"] == "odd ring" and "history" not in rec
+    assert "a_01.xyz" not in again.session.data.get("notes", {})
+
+
+def test_a_comment_on_an_unrated_frame_is_kept_in_blinded_mode(folder):
+    panel = ReviewPanel(folder)
+    panel.blind_cb.value = True
+    panel.seed_input.value = 3
+    panel.open(str(folder))
+    shown = panel.session.current.key
+    panel.note_input.value = "too long"
+    panel.handle_key("right")
+    panel.handle_key("left")
+    assert panel.session.current.key == shown
+    assert panel.note_input.value == "too long"
+    note = panel.session.data["notes"][shown[0]][str(shown[1])]
+    assert note["blind_number"] == 1
+
+
+def test_clearing_the_comment_of_an_unrated_frame_removes_it(folder):
+    panel = ReviewPanel(folder)
+    panel.open(str(folder))
+    panel.note_input.value = "x"
+    panel.note_input.value = ""
+    assert not panel.session.data.get("notes", {}).get("a_01.xyz")
+
+
+# ---------------------------------------------------------------- Pass / Block clicked twice
+def test_pass_and_block_clicks_go_through_the_key_bridge_with_the_shown_position():
+    """A button click carries no data to the kernel; the script takes the click
+    in the capture phase and sends it like the P/B key, with the position on
+    screen, so a second click before the next frame is drawn rates nothing."""
+    js = tab_review._keys_js()
+    assert "addEventListener('click'" in js
+    assert tab_review.PASS_CLASS in js and tab_review.BLOCK_CLASS in js
+    panel = ReviewPanel(Path.cwd())
+    assert tab_review.PASS_CLASS in panel.pass_btn._dom_classes
+    assert tab_review.BLOCK_CLASS in panel.block_btn._dom_classes
