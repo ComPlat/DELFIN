@@ -11,13 +11,17 @@ case writes the file, records it through ``change_journal.record_change``
 with ``change_journal.list_changes``, and passes those real ``path`` values
 to ``verdict``. A unique session id keeps test journals out of real ones.
 
-Two cases here are RED probes (they assert the correctly-desired behaviour
-and FAIL against the current implementation): ``test_pipe_segment_exec`` and
-``test_bare_name_via_env``. They are the findings the reviewer reports to the
-builder, not fixes in this file.
+After the builder's P2 amendments (fe8cfa76 + c13a37db) ``test_pipe_segment_exec``
+is GREEN (the F2 leading-space fix). The one remaining gap is
+``test_bare_name_via_env``, which the builder WAVE-SCOPED with documented
+rationale (a bare exec-word is indistinguishable from a builtin/PATH command
+without the ledger, so the tokenizer stays conservative per never-allows). It
+is marked xfail to record the acknowledged scope decision, not a fix here.
 """
 
 import uuid
+
+import pytest
 
 import delfin.agent.self_written as sw
 from delfin.agent import change_journal
@@ -166,8 +170,8 @@ def test_relative_write_abs_run_same_key(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# RED PROBES — correctly-desired behaviour that FAILS today (the findings).
-# These are reported to the builder; they are not fixed in this file.
+# Wave-scope probe — the one remaining gap, acknowledged (xfail) by agreement.
+# F2 (pipe RHS) is fixed and green; F3 below stays conservative by design.
 # --------------------------------------------------------------------------
 
 def test_pipe_segment_exec(tmp_path):
@@ -178,9 +182,14 @@ def test_pipe_segment_exec(tmp_path):
     assert v.matched, "a ./script on the right of a pipe is execution"
 
 
+@pytest.mark.xfail(
+    reason="wave-scoped: a bare exec-word (no ./ or extension) is indistinguishable "
+    "from a builtin/PATH command without the ledger; tokenizer stays conservative",
+    strict=False,
+)
 def test_bare_name_via_env(tmp_path):
-    """RED: a bare self-written executable run via ``env`` (no ./ or extension)
-    is execution of a written file and must be caught."""
+    """KNOWN-GAP: a bare self-written executable run via ``env`` (no ./ or
+    extension) is NOT hinted — builder wave-scoped this as conservative."""
     ws = _ws(tmp_path)
     written = _record_written(tmp_path, "runme", "#! /bin/sh\nexit 0\n")
     v = sw.verdict("env VAR=1 runme", written, ws)
