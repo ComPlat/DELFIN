@@ -120,3 +120,71 @@ def test_empty_command_or_empty_written_returns_not_matched(tmp_path):
     assert not sw.verdict("", [], workspace).matched
     assert not sw.verdict("python3 x.py", [], workspace).matched
     assert not sw.verdict("", [str(tmp_path / "x.py")], workspace).matched
+
+
+# --- folded-in findings, GREEN after builder amend fe8cfa76 ---
+
+def test_nested_sh_c_python3_fires(tmp_path):
+    """sh -c 'python3 x.py' (the -c string descends with the same tokenizer)."""
+    workspace = _ws(tmp_path)
+    written = _written(tmp_path, "x.py")
+    v = sw.verdict('sh -c "python3 x.py"', written, workspace)
+    assert v.matched
+
+
+def test_nested_sh_c_bash_fires(tmp_path):
+    workspace = _ws(tmp_path)
+    written = _written(tmp_path, "x.sh")
+    v = sw.verdict('sh -c "bash x.sh"', written, workspace)
+    assert v.matched
+
+
+def test_stdin_redir_bash_fires(tmp_path):
+    """bash < x.sh feeds the file as the program -- execution."""
+    workspace = _ws(tmp_path)
+    written = _written(tmp_path, "x.sh")
+    v = sw.verdict("bash < x.sh", written, workspace)
+    assert v.matched
+
+
+def test_cmdsub_bash_fires(tmp_path):
+    """$(bash x.sh) reads AND runs x.sh in a subshell."""
+    workspace = _ws(tmp_path)
+    written = _written(tmp_path, "x.sh")
+    v = sw.verdict('sh -c "$(bash x.sh)"', written, workspace)
+    assert v.matched
+
+
+def test_cmdsub_redir_read_fires(tmp_path):
+    """$(< x.sh) is bash's builtin read-without-cat."""
+    workspace = _ws(tmp_path)
+    written = _written(tmp_path, "x.sh")
+    v = sw.verdict('sh -c "$(< x.sh)"', written, workspace)
+    assert v.matched
+
+
+def test_python_c_runpy_fires(tmp_path):
+    """python3 -c 'import runpy; runpy.run_path(x)' executes the file inside -c."""
+    workspace = _ws(tmp_path)
+    written = _written(tmp_path, "x.py")
+    v = sw.verdict("python3 -c \"import runpy; runpy.run_path('x.py')\"",
+                   written, workspace)
+    assert v.matched
+
+
+def test_cd_relative_then_python3_fires(tmp_path):
+    """cd d && python3 x.py resolves x.py against d (F1 cd-then-run, relative)."""
+    workspace = _ws(tmp_path)
+    (tmp_path / "d").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "d" / "x.py").write_text("import sys\n")
+    written = [str(tmp_path / "d" / "x.py")]
+    v = sw.verdict("cd d && python3 x.py", written, workspace)
+    assert v.matched
+
+
+def test_heredoc_inline_program_not_fp(tmp_path):
+    """A heredoc feeding an inline program (not a self-written file) does NOT fire."""
+    workspace = _ws(tmp_path)
+    written = _written(tmp_path, "x.py")
+    v = sw.verdict("python3 - <<'EOF'\nprint('hi')\nEOF", written, workspace)
+    assert not v.matched
