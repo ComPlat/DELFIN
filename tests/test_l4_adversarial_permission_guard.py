@@ -1,14 +1,10 @@
-"""L4 reviewer (s23) adversarial tests: is_permission_like guard pins (green).
+"""Adversarial tests: is_permission_like guard pins.
 
-These probe the user-model permission guard (delfin/agent/user_model.py:83)
+These probe the user-model permission guard (user_model.is_permission_like)
 with messages that classify to a field (so a zero-width pass is impossible)
 and assert the permission-shaped ones are refused. They pin the behaviors the
 guard already gets right: the adjacent "may write" phrase, the absolute-path
 regex, and (control) a genuine preference still being stored.
-
-Findings against this code (guard false negatives) live in
-tests/test_zz_l4_permission_guard.py -- not committed, reported to the
-builder.
 """
 
 from delfin.agent import user_model

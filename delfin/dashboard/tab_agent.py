@@ -14766,7 +14766,14 @@ def create_tab(ctx):
                         lambda: (_ui_w.click(), _append_system_message(f"'{_ui_wname}' clicked (confirmed).")),
                     )
                     return True
-                _ui_w.click()
+                if _ui_w is send_btn:
+                    # A /ui click is not the person's hand: the send
+                    # handler counts its button argument as a keystroke
+                    # (the user model is fed from it), so this send
+                    # arrives the way every other programmatic one does.
+                    _on_send(None)
+                else:
+                    _ui_w.click()
                 _append_system_message(f"'{_ui_wname}' clicked.")
                 return True
 

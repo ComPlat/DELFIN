@@ -1,13 +1,10 @@
-"""L4 reviewer (s23) adversarial tests: guard pins on the fixed version.
+"""Adversarial tests: a particle between modal and verb.
 
-Second-wave pin (builder fix 52e2738c): the modal-pushed verb layer must
+The modal-pushed verb layer must
 refuse an allowance phrase even when a particle sits between the modal and
 the verb -- "may always push up my changes" is a git-reach grant and must
 not reach the model, the same way "always push to the main branch" is
-caught. This pins the fixed guard's word-pruned modal+verb matching.
-
-Findings against the fixed guard (3 red probes) live uncommitted in
-tests/test_zz_l4_permission_guard2.py and are reported to the builder.
+caught. This pins the guard's word-pruned modal+verb matching.
 """
 
 from delfin.agent import user_model

@@ -1,12 +1,10 @@
-"""Package L4 (phase 2) — adversarial review (reviewer nacht-s22).
-
-Independent adversarial tests on the builder's typed user model
+"""Adversarial tests on the typed user model
 (delfin/agent/user_model.py) and dashboard panel
 (delfin/dashboard/user_model_panel.py).
 
 Target: the invariant "no entry may hold an allow rule, a path grant or a
 mode", plus the user-only-update, bounding and forget guarantees. The
-builder's own tests pin the canonical examples ("the user always allows git
+unit tests pin the canonical examples ("the user always allows git
 push", an absolute path grant, a mode). These tests probe paraphrase evasions
 of the same banned family and the deeper guarantees, checking that a rule
 cannot reach a future session's load in any phrasing.
@@ -30,7 +28,7 @@ def _update_and_count(path, phrase, role="user"):
 # ---- g2: no entry may hold an allow rule / path grant / mode ----------------
 
 def test_skip_confirmation_phrasings_never_stored(tmp_path):
-    # "skip the confirmation" / "without asking" are banned in the builder's
+    # "skip the confirmation" / "without asking" are banned in the module's
     # own deny-list; these are direct paraphrases of the same permission and
     # must not reach the model under ANY phrasing.
     banned = [
@@ -63,23 +61,18 @@ def test_round3_modal_recast_waivers_never_stored(tmp_path):
     for phrase in banned:
         total = _update_and_count(tmp_path / "um.json", phrase)
         assert total == 0, (
-            f"a round-3 modal-recast allow rule reached the model: "
+            f"a modal-recast allow rule reached the model: "
             f"{phrase!r} (stored {total})"
         )
 
 
 def test_round4_matrix_clause_imperative_never_stored(tmp_path):
-    # Reviewer s23 / QS s30 edge, reproduced by me through the real storage
-    # gate (update_from_user_message) against da635ec9: a first-person
+    # Through the real storage gate (update_from_user_message): a first-person
     # PREFERENCE FRAME ("I prefer that ...") fronting an embedded
     # unnamed-subject imperative ("always push to main") reads as a pure
     # first-person habit at user_model.py:142 (tokens contain 'i' and no
-    # second-person token), so the embedded "always push" GRANT reaches the
-    # model. Verified STORED (1 entry) against da635ec9 before pinning.
-    # Red pin: a round-5 fix that recognises a preference-frame "I" as not a
-    # habit subject — or that refuses the embedded always-reach imperative —
-    # turns this green. Also pins the cleaner variants so the fix must cover
-    # the same class, not just the exact wording.
+    # second-person token) would let the embedded "always push" GRANT
+    # reach the model. The variants pin the class, not one wording.
     banned = [
         "i prefer that always push to main when done",
         "i prefer you always push to main",
@@ -88,25 +81,20 @@ def test_round4_matrix_clause_imperative_never_stored(tmp_path):
     for phrase in banned:
         total = _update_and_count(tmp_path / "um.json", phrase)
         assert total == 0, (
-            f"a round-4 matrix-clause allow rule reached the model: "
+            f"a matrix-clause allow rule reached the model: "
             f"{phrase!r} (stored {total})"
         )
 
 
 def test_round5_to_infinitive_habits_stay_storable(tmp_path):
-    # Reviewer s23 / QS s30 over-refusal finding, reproduced by me through the
-    # real storage gate against 041cfe42: round-5's strict verb-local adjacency
-    # (user_model.py:153) exempts first-person ONLY when the subject sits
-    # immediately before the frequency modal. A genuine working-style HABIT
+    # Over-refusal: a strict verb-local adjacency rule (first person only
+    # when the subject sits immediately before the frequency modal) would
+    # refuse a genuine working-style HABIT
     # with a "to" infinitive -- "I prefer TO always write my tests before the
-    # code" -- has a word ("prefer", "to") between "i" and "always", reads as
-    # an agent grant, and is WRONGLY refused (verified stored 0). This is not a
-    # grant: it is the user's own habit/preference and MUST stay storable
-    # (round-4 stored it). Round-6 must separate the "that"-complementizer
-    # GRANT ("I prefer that always push") from the "to"-infinitive HABIT.
-    # Red pin: asserts each habit is STORABLE (total >= 1); round-5 returns 0
-    # for all four, so this is red. A round-6 fix that stops over-refusing the
-    # "prefer to always" class turns it green.
+    # code" -- which has a word ("prefer", "to") between "i" and "always".
+    # It is the user's own habit and must stay storable: the
+    # "that"-complementizer GRANT ("I prefer that always push") is told
+    # from the "to"-infinitive HABIT.
     storable = [
         "i prefer to always write my tests before the code",
         "i like to always commit small changes",
@@ -116,7 +104,7 @@ def test_round5_to_infinitive_habits_stay_storable(tmp_path):
     for n, phrase in enumerate(storable):
         total = _update_and_count(tmp_path / f"umb{n}.json", phrase)
         assert total >= 1, (
-            f"round-5 over-refused a genuine first-person habit: "
+            f"over-refused a genuine first-person habit: "
             f"{phrase!r} (stored {total})"
         )
 

@@ -1,4 +1,4 @@
-"""The dashboard's "User model" panel (package L4, phase 2).
+"""The dashboard's "User model" panel.
 
 The typed user picture (role, expertise, preferences, working style,
 corrections) is visible, editable, and offers "forget this entry" and
@@ -69,8 +69,15 @@ def render(path: Optional[str] = None) -> str:
     return "\n".join(lines)
 
 
-def forget_entry(field: str, index: int, path: Optional[str] = None) -> dict:
+def forget_entry(field: str, index: int, path: Optional[str] = None,
+                 value: Optional[str] = None) -> dict:
     """"Forget this": remove entry ``index`` of ``field``.
+
+    With ``value`` (what the panel showed), the entry is found by that
+    value instead: a line typed in the chat since the panel was drawn
+    moves entries (said again -> newest place; past twelve -> oldest
+    dropped), and the shown index then names a different entry. An
+    entry no longer present is reported, not substituted.
 
     Returns ``{"removed": True}`` on success, ``{"removed": False, "error":
     ...}`` otherwise. Deleting is the store's own ``forget``, so it also
@@ -78,6 +85,11 @@ def forget_entry(field: str, index: int, path: Optional[str] = None) -> dict:
     """
     try:
         model = _user_model(path)
+        if value is not None:
+            want = str(value).casefold()
+            index = next((i for i, e in enumerate(
+                model.entries().get(field, []))
+                if str(e.get("value", "")).casefold() == want), -1)
         ok = model.forget(field, index)
     except Exception as exc:  # pragma: no cover - defensive
         return {"removed": False, "error": str(exc)}
@@ -145,7 +157,8 @@ def build_widget(path: Optional[str] = None):
             "<pre style='white-space:pre-wrap;margin:0'>"
             + render(path) + "</pre>")
         pick.options = [
-            (f"{r['field']}: {r['value'][:60]}", (r["field"], r["index"]))
+            (f"{r['field']}: {r['value'][:60]}",
+             (r["field"], r["index"], r["value"]))
             for r in rows]
 
     def _say(result: dict, ok: str):
@@ -164,8 +177,8 @@ def build_widget(path: Optional[str] = None):
     def _forget(_):
         if pick.value is None:
             return
-        field, index = pick.value
-        _say(forget_entry(field, index, path), "Forgotten.")
+        field, index, value = pick.value
+        _say(forget_entry(field, index, path, value=value), "Forgotten.")
         _refresh()
 
     def _forget_all(_):

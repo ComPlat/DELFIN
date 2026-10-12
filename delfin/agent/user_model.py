@@ -1,4 +1,4 @@
-"""A typed user model that deepens across sessions (package L4).
+"""A typed user model that deepens across sessions.
 
 DELFIN has typed memory but no explicit picture of the user -- role,
 expertise, preferences, working style, corrections. This module adds that
@@ -110,9 +110,17 @@ def _storable(text: Any) -> str:
     line = _one_line(text)
     if not line or len(line) > MAX_ENTRY_CHARS:
         return ""
+    if line[0] in _QUOTE_OPENERS:
+        return ""  # a quotation: somebody else's words, pasted
     if is_permission_like(line):
         return ""
     return line
+
+
+# A line that opens as a quotation (mail/markdown "> ", straight, curly,
+# German and French quote marks) carries somebody else's sentence; "I am
+# the PI" inside one is the reviewer's role, not the user's.
+_QUOTE_OPENERS = frozenset(">\"'“”„‘‚«»")
 
 
 # --- token / permission helpers -------------------------------------------------
@@ -177,8 +185,12 @@ _FREQUENCY_MODALS = frozenset({"always", "whenever", "frequently"})
 _FIRST_PERSON = frozenset({"i", "me", "my", "myself", "mine"})
 _SECOND_PERSON = frozenset({"you", "your", "yourself", "yours"})
 # Absolute path, POSIX or Windows, or a home-relative path.
+# The leading slash must not follow a word character: "kcal/mol",
+# "kJ/mol" and "and/or" are units and words, not paths, and refusing
+# them dropped ordinary preferences ("Ich bevorzuge Ergebnisse in
+# kcal/mol").
 _PATH_RE = re.compile(
-    r"(?:/(?:[^/\s]+/)*[^/\s]+|~/[^\s]+|[A-Za-z]:\\[^\s]+|"
+    r"(?:(?<![\w.~-])/(?:[^/\s]+/)*[^/\s]+|~/[^\s]+|[A-Za-z]:\\[^\s]+|"
     r"\.\.(?:/[^/\s]+)*)"
 )
 
@@ -283,6 +295,9 @@ def is_permission_like(text: str) -> bool:
 _CORRECTION_HINTS = (
     "don't", "do not", "never", "avoid", "stop", "instead", "actually",
     "you should", "you must", "please don't", "not that", "wrong",
+    # A rule for every later turn is a standing correction by itself
+    # ("From now on answer in German" carries no other hint).
+    "from now on", "in future", "ab jetzt", "künftig",
     "nicht", "nie", "niemals", "keine", "immer", "stets", "stattdessen",
 )
 _ROLE_HINTS = (
@@ -527,14 +542,16 @@ class UserModel:
         fields' entries drop first, then earlier fields', so a small model
         always keeps its role/expertise core.
         """
+        return _render(self.select(max_tokens))
+
+    def select(self, max_tokens: int = 150) -> list[tuple[str, str]]:
+        """The ``(field, value)`` pairs ``bounded_load`` renders, in order."""
         ceiling = max(0, int(max_tokens))
-        if ceiling <= 0:
-            return ""
+        used = sum(len(l) + 1 for l in (_HEADER, _FRAME))
+        if ceiling <= 0 or used > ceiling * _CHARS_PER_TOKEN:
+            return []
         fields = self._read()["fields"]
-        lines: list[str] = [_HEADER, _FRAME]
-        used = sum(len(l) + 1 for l in lines)
-        if used > ceiling * _CHARS_PER_TOKEN:
-            return ""
+        picked: list[tuple[str, str]] = []
         # Within a field the newest entry first: what the user said last
         # is what holds, and it must not be the line the ceiling drops.
         for field in FIELDS:
@@ -542,25 +559,55 @@ class UserModel:
                 value = str(entry.get("value", "")).strip()
                 if not value:
                     continue
-                line = f"- {field}: {value}"
-                cost = len(line) + 1
+                cost = len(f"- {field}: {value}") + 1
                 if used + cost > ceiling * _CHARS_PER_TOKEN:
                     continue
-                lines.append(line)
+                picked.append((field, value))
                 used += cost
-        if len(lines) == 2:
-            return ""  # nothing known: no block, not an empty heading
-        return "\n".join(lines) + "\n"
+        return picked
+
+
+def _render(pairs) -> str:
+    """The prompt block for ``pairs``; "" for none (no empty heading)."""
+    if not pairs:
+        return ""
+    lines = [_HEADER, _FRAME] + [f"- {f}: {v}" for f, v in pairs]
+    return "\n".join(lines) + "\n"
+
+
+def session_block(frozen: tuple | None = None, max_tokens: int = 200,
+                  ) -> tuple[str, tuple | None]:
+    """``(block, frozen)`` for one build of a session's prompt.
+
+    ``frozen`` is what the caller kept from the session's first build
+    (``None`` before it). The system prompt is rebuilt every turn and
+    precedes the whole history, so the block is fixed at the first build:
+    a line typed later reaches the next session and leaves this one's
+    prompt byte-identical. A forget and the off switch remove lines at
+    the next build (a one-time cache cost), because a forgotten entry
+    must not keep being sent. Entries are matched case-folded, so a line
+    said again in other case keeps its first spelling here.
+    Rejected: re-reading per build (measured: a typed line moved the
+    dashboard prompt at char 44,540 of 45,298, every later request
+    cold) and a frozen block that ignores a forget.
+    """
+    if not enabled():
+        return "", frozen
+    try:
+        model = UserModel()
+        if frozen is None:
+            frozen = tuple(model.select(max_tokens))
+        held = {(f, str(e.get("value", "")).casefold())
+                for f, bucket in model.entries().items() for e in bucket}
+    except Exception:
+        return "", frozen
+    return _render([(f, v) for f, v in frozen
+                    if (f, v.casefold()) in held]), frozen
 
 
 def prompt_block(max_tokens: int = 200) -> str:
     """The block a new session loads, or "" (off, empty, unreadable)."""
-    if not enabled():
-        return ""
-    try:
-        return UserModel().bounded_load(max_tokens=max_tokens)
-    except Exception:
-        return ""
+    return session_block(None, max_tokens=max_tokens)[0]
 
 
 def note_typed_message(text: str, *, path: Path | str | None = None) -> bool:

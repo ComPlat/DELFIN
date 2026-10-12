@@ -1,4 +1,4 @@
-"""Package L4 (phase 2): the dashboard user-model panel.
+"""The dashboard user-model panel.
 
 The panel is pure functions over the ``UserModel`` store: visible rows,
 an escaped text render, "forget this" and "forget everything", all through
