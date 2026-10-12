@@ -181,18 +181,28 @@ def test_an_auto_accepted_write_is_judged(tmp_path):
 
 # -- the model failing -------------------------------------------------------
 
-def test_an_error_under_bypass_asks(tmp_path):
+def test_an_error_under_bypass_asks_for_a_high_risk_action(tmp_path):
+    dialog = Dialog(True)
+    perms = _perms(tmp_path, "bypassPermissions", Runner(), dialog)
+    before = _seq()
+    assert _bash(perms, "rm -r build") is None
+    assert len(dialog.shown) == 1
+    assert "classifier_error" in _kinds(before)
+
+
+def test_an_error_under_bypass_keeps_the_rule_result_otherwise(tmp_path):
     dialog = Dialog(True)
     perms = _perms(tmp_path, "bypassPermissions", Runner(), dialog)
     before = _seq()
     assert _bash(perms, "python3 build.py") is None
-    assert len(dialog.shown) == 1
+    assert dialog.shown == []
     assert "classifier_error" in _kinds(before)
 
 
 def test_an_error_under_bypass_with_nobody_to_ask_refuses(tmp_path):
     perms = _perms(tmp_path, "bypassPermissions", Runner())
-    assert _bash(perms, "python3 build.py") is not None
+    assert _bash(perms, "rm -r build") is not None
+    assert _bash(perms, "python3 build.py") is None
 
 
 def test_an_error_elsewhere_leaves_the_rule_result_and_is_recorded(tmp_path):
@@ -207,7 +217,7 @@ def test_a_model_that_hangs_is_cut_off(tmp_path, monkeypatch):
     monkeypatch.setattr(A, "_CLASSIFIER_TIMEOUT_S", 0.2)
     perms = _perms(tmp_path, "bypassPermissions", Runner(ALLOW, delay=3.0))
     started = time.monotonic()
-    assert _bash(perms, "python3 build.py") is not None
+    assert _bash(perms, "rm -r build") is not None
     assert time.monotonic() - started < 2.0
 
 
