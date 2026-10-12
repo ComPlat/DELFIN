@@ -60,6 +60,8 @@ __all__ = ['ReviewPanel', 'create_tab']
 PANEL_CLASS = 'delfin-review-panel'
 KEYS_CLASS = 'delfin-review-keys'
 AT_CLASS = 'delfin-review-at-'
+PASS_CLASS = 'delfin-review-pass'
+BLOCK_CLASS = 'delfin-review-block'
 FRAME_WINDOW = 100
 VIEWER_WIDTH = '100%'   # of the middle column; a fixed 720 px ran under the rating column
 VIEWER_HEIGHT = 520
@@ -89,12 +91,30 @@ def _keys_js() -> str:
     each frame it advanced to).  A text field, a text input and a select
     outside the panel keep the keys; the panel's own lists and checkboxes do
     not, so P after a click into the frame list still rates.
+
+    A click on Pass or Block is taken in the capture phase and sent the same
+    way (as ``p`` / ``b`` with the position), and does not reach the
+    button's own handler: a button click carries no data to the kernel, so a
+    second click before the next frame was drawn would rate that frame.
+    Without the script (a plain notebook) the buttons' ``on_click`` rates.
     """
     return (
         "(function(){\n"
         "  if(window.__delfinReviewKeys) return;\n"
         "  window.__delfinReviewKeys=true;\n"
         "  var WANT={ArrowLeft:'left',ArrowRight:'right',p:'p',P:'p',b:'b',B:'b',n:'n',N:'n'};\n"
+        "  function send(panel,key){\n"
+        "    var box=panel.querySelector('." + KEYS_CLASS + "');\n"
+        "    var input=box&&box.querySelector('input, textarea');\n"
+        "    if(!input) return false;\n"
+        "    var at=/(?:^|\\s)" + AT_CLASS + "(\\d+)(?:\\s|$)/.exec(box.className);\n"
+        "    var setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');\n"
+        "    var line=Date.now()+' '+key+(at?' '+at[1]:'');\n"
+        "    if(setter&&setter.set) setter.set.call(input,line); else input.value=line;\n"
+        "    input.dispatchEvent(new Event('input',{bubbles:true}));\n"
+        "    input.dispatchEvent(new Event('change',{bubbles:true}));\n"
+        "    return true;\n"
+        "  }\n"
         "  document.addEventListener('keydown',function(ev){\n"
         "    if(ev.ctrlKey||ev.metaKey||ev.altKey) return;\n"
         "    var panel=document.querySelector('." + PANEL_CLASS + "');\n"
@@ -110,17 +130,20 @@ def _keys_js() -> str:
         "    }\n"
         "    var key=WANT[ev.key]||(/^[1-9]$/.test(ev.key)?ev.key:null);\n"
         "    if(!key) return;\n"
-        "    var box=panel.querySelector('." + KEYS_CLASS + "');\n"
-        "    var input=box&&box.querySelector('input, textarea');\n"
-        "    if(!input) return;\n"
+        "    if(ev.repeat&&key!=='left'&&key!=='right'){ev.preventDefault();return;}\n"
+        "    if(!send(panel,key)) return;\n"
         "    ev.preventDefault();\n"
-        "    if(ev.repeat&&key!=='left'&&key!=='right') return;\n"
-        "    var at=/(?:^|\\s)" + AT_CLASS + "(\\d+)(?:\\s|$)/.exec(box.className);\n"
-        "    var setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');\n"
-        "    var line=Date.now()+' '+key+(at?' '+at[1]:'');\n"
-        "    if(setter&&setter.set) setter.set.call(input,line); else input.value=line;\n"
-        "    input.dispatchEvent(new Event('input',{bubbles:true}));\n"
-        "    input.dispatchEvent(new Event('change',{bubbles:true}));\n"
+        "  },true);\n"
+        "  document.addEventListener('click',function(ev){\n"
+        "    var panel=document.querySelector('." + PANEL_CLASS + "');\n"
+        "    var btn=ev.target&&ev.target.closest&&ev.target.closest('."
+        + PASS_CLASS + ", ." + BLOCK_CLASS + "');\n"
+        "    if(!panel||!btn||!panel.contains(btn)) return;\n"
+        "    var el=btn.tagName==='BUTTON'?btn:btn.querySelector('button');\n"
+        "    if((el&&el.disabled)||btn.disabled) return;\n"
+        "    var key=btn.classList.contains('" + PASS_CLASS + "')?'p':'b';\n"
+        "    if(!send(panel,key)) return;\n"
+        "    ev.preventDefault();ev.stopPropagation();\n"
         "  },true);\n"
         "})();\n"
     )
@@ -194,6 +217,8 @@ class ReviewPanel:
                                   layout=L(width='48%', height='52px'))
         for b in (self.pass_btn, self.block_btn):
             b.add_class('delfin-review-big')
+        self.pass_btn.add_class(PASS_CLASS)
+        self.block_btn.add_class(BLOCK_CLASS)
         self.verdict_html = W.HTML('')
         self.multi_cb = W.Checkbox(value=True, description='Several categories',
                                    indent=False, layout=L(width='170px'))
@@ -536,19 +561,26 @@ class ReviewPanel:
             self._busy = False
 
     def _on_note(self, change):
-        """A changed comment on a frame that is already rated is stored at once."""
+        """A changed comment is stored at once: in the rating, or for an unrated frame in ``notes``."""
         s = self.session
         if self._busy or s is None:
             return
         frame = s.current
         rec = s.record(frame.file, frame.index)
-        if rec is not None and rec.get('note', '') != change['new'].strip():
-            rec['note'] = change['new'].strip()
+        text = change['new'].strip()
+        if rec is None:
+            if text == s.pending_note(frame.file, frame.index):
+                return
+            s.set_pending_note(text)
+        elif rec.get('note', '') != text:
+            rec['note'] = text
             rec['note_updated'] = rv._now()
             s.save()
-            self.saved_html.value = (
-                f'<span style="color:#555;font-size:12px">&#10003; comment saved '
-                f'{datetime.now().strftime("%H:%M:%S")}</span>')
+        else:
+            return
+        self.saved_html.value = (
+            f'<span style="color:#555;font-size:12px">&#10003; comment saved '
+            f'{datetime.now().strftime("%H:%M:%S")}</span>')
 
     def _on_file_comment(self, change):
         if self._busy or self.session is None or self.session.blind:
@@ -573,7 +605,8 @@ class ReviewPanel:
             chosen = set(rec.get('categories', [])) if rec else set()
             for b in self.category_buttons:
                 b.value = b._review_category in chosen
-            self.note_input.value = rec.get('note', '') if rec else ''
+            self.note_input.value = (rec.get('note', '') if rec
+                                     else s.pending_note(frame.file, frame.index))
             meta = s.data['files'].get(frame.file, {})
             self.file_comment.value = '' if s.blind else meta.get('comment', '')
         finally:

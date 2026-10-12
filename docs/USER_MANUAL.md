@@ -1203,9 +1203,9 @@ every `*.xyz` in a folder, and lets you rate each frame by eye.
 4. Keys (while no text field has the focus; the file and frame lists and the
    checkboxes do not hold them): `P` pass, `B` block, `1`–`9` categories, `N`
    next unrated, `←` / `→` previous / next; `Esc` leaves the comment field.
-   A rating key rates the frame that was on screen when it was pressed: held
-   down it rates once, and pressed again before the next frame has appeared
-   it is ignored.
+   A rating key, and a click on **Pass** / **Block**, rates the frame that was
+   on screen at that moment: held down a key rates once, and a second press or
+   click before the next frame has appeared is ignored.
 5. Every rating is written at once to `<folder>/review_<name>.json` (name:
    the **Name** field, else the folder or file name). Opening the same folder
    again resumes where you stopped. Each record holds verdict, categories,
@@ -1214,6 +1214,10 @@ every `*.xyz` in a folder, and lets you rate each frame by eye.
    file has changed since, its old ratings are kept but no longer count. When
    the folder or its parent contains an `index.tsv` with an `id` column (the
    file stem), that row (e.g. the SMILES) is linked to the file and shown.
+   A comment typed on a frame you have not rated yet is saved as well (under
+   `notes`; it is not a rating and does not count in the progress), shown
+   again when you come back to the frame, exported as a row with an empty
+   verdict, and taken into the rating once you rate the frame.
 6. **Blinded** shuffles all frames of all files in a fixed order (same
    **Seed**, same order), hides file names, labels and findings and shows only
    `structure #k`. The JSON keeps the order and, per record, the anonymous
