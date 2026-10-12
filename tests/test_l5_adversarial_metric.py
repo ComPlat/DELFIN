@@ -21,8 +21,6 @@ type guard. The rest pin documented boundary behaviour (no test should flip).
 """
 from __future__ import annotations
 
-import pytest
-
 from delfin.agent.pack.benchmark import learning_metric as lm
 
 VERD = lm.learning_verdict
@@ -47,20 +45,21 @@ def _record(*, task_id="l5_read_the_value_from_file", success=True,
     }
 
 
-# --- 1. bool quality_0_100 is accepted; every other numeric proxy rejects it.
+# --- 1. bool quality_0_100 is rejected like every other numeric proxy.
+# Hardened by the builder (de9be909): was silently coerced to int 1; must now
+# be an error, consistent with tool_calls/input_tokens/output_tokens/duration/cost.
 
-def test_bool_quality_slips_int_guard():
-    """quality_0_100 is a bool, not a real score, yet the metric compares it:
-    _validate (:69) uses a bare isinstance(x, int) which accepts bool (bool is
-    an int in Python), while the identical-shaped tool_calls guard (:71-73)
-    explicitly rejects bools. The bool is silently coerced to 1 in evidence --
-    a record that should be unreadable is scored instead."""
+def test_bool_quality_rejected_like_other_int_fields():
+    """quality_0_100=True is a bool, not a real score; the metric must reject
+    it as an error exactly like the tool_calls guard rejects a bool. Was a
+    silent-coercion gap (surfaced by reviewer s14), now hardened -- the record
+    is unreadable, so it is an error, never scored."""
     first = _record()
     second = _record(quality_0_100=True, tool_calls=3,
                      input_tokens=150, output_tokens=80, duration_s=10.0)
     out = VERD(first, second)
-    assert out["verdict"] == "learned"   # bool quality silently became int 1
-    assert out["evidence"]["second_quality_0_100"] == 1
+    assert out["verdict"] == "error"
+    assert out["error"] and "quality_0_100" in out["error"]
 
 
 # --- 2. non-dict record must be a clean error, not a crash.
@@ -68,15 +67,18 @@ def test_bool_quality_slips_int_guard():
 def test_non_dict_first_record_returns_error_not_raise():
     """A record that is not a dict (here: a list) must yield {"verdict":
     "error"}, per 'a record it cannot read is an error, never a silent zero'
-    -- it must not raise AttributeError."""
-    with pytest.raises(AttributeError):
-        VERD(["not", "a", "record"], _record())
+    -- it must not raise AttributeError. Hardened by the builder (de9be909)."""
+    out = VERD(["not", "a", "record"], _record())
+    assert out["verdict"] == "error"
+    assert out["error"] and "first" in out["error"]
 
 
 def test_none_first_record_returns_error_not_raise():
-    """None as a record must error cleanly, never crash."""
-    with pytest.raises(AttributeError):
-        VERD(None, _record())
+    """None as a record must error cleanly, never crash. Hardened by the
+    builder (de9be909): returns {"verdict":"error"} instead of raising."""
+    out = VERD(None, _record())
+    assert out["verdict"] == "error"
+    assert out["error"] and "first" in out["error"]
 
 
 # --- 3. quality drop under still-true success is evidence-only (locked rule).
