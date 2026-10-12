@@ -4453,6 +4453,24 @@ def _asks_for_push(text: str) -> bool:
     return False
 
 
+def _grant_push_for_request(perms: Any, messages: Any) -> None:
+    """The turn-start push grant, read from the newest user row of the
+    request.
+
+    A row marked as harness (harness_rows) is handed on as HarnessText,
+    which ``_grant_push_from`` ignores: the grant neither fires nor resets
+    on text nobody typed. Its content is a plain ``str`` on a
+    ``HarnessRow``, so without this the text of a harness turn -- a job
+    note, another session's message -- could grant a push.
+    """
+    row = next((m for m in reversed(messages or [])
+                if isinstance(m, dict) and m.get("role") == "user"), None)
+    content = row.get("content") if row is not None else ""
+    if row is not None and _is_harness_row(row) and isinstance(content, str):
+        content = _HarnessText(content)
+    _grant_push_from(perms, content, new_request=True)
+
+
 def _grant_push_from_answer(perms: Any, raw_result: Any) -> None:
     """An answer picked in ask_user_question is the user speaking too.
 
@@ -23864,11 +23882,7 @@ class OpenAIClient(_BaseClient):
         api_messages: list[dict[str, Any]] = []
         # Whether this turn may push is decided by the request it answers.
         try:
-            _grant_push_from(
-                self._permissions,
-                next((m.get("content") for m in reversed(messages or [])
-                      if isinstance(m, dict) and m.get("role") == "user"), ""),
-                new_request=True)
+            _grant_push_for_request(self._permissions, messages)
         except Exception:
             pass
         # Detect reasoning models. Two families today:
