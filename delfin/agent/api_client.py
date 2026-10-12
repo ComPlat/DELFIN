@@ -2187,7 +2187,10 @@ def _bash_write_targets(cmd: str) -> list[str]:
             if dest.startswith("/"):
                 target = Path(dest)
             elif here is None:
-                target = None            # relative cd from the gate's cwd: still inside
+                # Relative to the gate's cwd: kept relative, so the caller
+                # resolves `sub/f` against its own base. Dropping it named
+                # `f` -- a different file -- and `cd .. && > f` an inside one.
+                target = Path(dest)
             else:
                 target = here / dest
             previous, here = here, target
@@ -16289,6 +16292,9 @@ class _DocToolExecutor:
         _record_security_event("denied_by_user", base, shown)
         if base in ("bash", "bash_background"):
             perms.record_denied_action("bash", str(action.get("command") or ""))
+            for _path in self._bash_named_write_paths(
+                    str(action.get("command") or ""), args, perms):
+                perms.record_denied_action("write", _path)
         return _refused(reason, by_user=True) + self._said_why(perms)
 
     def _run_permission_gate(
@@ -18283,7 +18289,18 @@ class _DocToolExecutor:
                 if not err:
                     base = resolved_cwd
             out = []
-            for target in _bash_write_targets(cmd):
+            targets = list(_bash_write_targets(cmd))
+            # git checkout/restore/apply and patch: the paths the write
+            # gate folds in from patch_targets. UNKNOWABLE names nothing
+            # here -- the write gate refuses that command on its own.
+            try:
+                from . import patch_targets as _pt
+                named = _pt.targets(cmd, str(base))
+                if isinstance(named, list):
+                    targets += named
+            except Exception:
+                pass
+            for target in targets:
                 path = Path(target).expanduser()
                 if not path.is_absolute():
                     path = Path(base) / path
