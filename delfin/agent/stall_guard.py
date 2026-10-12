@@ -20,7 +20,10 @@ setting ``agent.stall_guard.repeats``) ends the turn. A different
 ``(kind, fingerprint)`` in between resets the streak, and explicit
 progress (a real tool call, :meth:`StallGuard.note_progress`) resets it
 too, so a turn that is actually making progress is never stopped on a
-stale streak.
+stale streak. A notice with an empty or missing fingerprint is never
+counted toward a stall: without a fingerprint the caller could not prove
+what text it was, and a guard whose job is to detect *identical* text
+must not assume identity it cannot prove.
 """
 
 from __future__ import annotations
@@ -74,12 +77,26 @@ class StallGuard:
         as the previous one increments it; at ``self.repeats`` the turn
         stalls and :data:`STOP` is returned.
         """
+        # A fingerprint that is empty or missing means the caller could not
+        # prove what text this was. The guard exists to detect IDENTICAL text
+        # repeated, so when identity cannot be proven it must never assume
+        # identity: reset the streak and keep going. A non-identifiable
+        # notice also separates two otherwise-identical notices, breaking
+        # their consecutiveness.
+        if fingerprint is None or str(fingerprint).strip() == "":
+            self._last = None
+            self._streak = 0
+            self._stalled = None
+            return CONTINUE
         key = (str(kind), str(fingerprint))
         if key == self._last:
             self._streak += 1
         else:
             self._last = key
             self._streak = 1
+            # A different notice ends any earlier stall: the last advance no
+            # longer decided the turn should end.
+            self._stalled = None
         if self._streak >= self.repeats:
             self._stalled = key
             return STOP
