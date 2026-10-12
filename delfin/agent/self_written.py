@@ -95,70 +95,110 @@ def _split_shell_segments(cmd: str) -> List[str]:
             i += 1
             continue
         if cmd[i:i + 2] in ("||", "&&"):
-            if buf and buf[0].strip():
+            if "".join(buf).strip():
                 segs.append("".join(buf))
             buf = []
             i += 2
             continue
         if c in (";", "\n") or c == "|":
-            if buf and buf[0].strip():
+            if "".join(buf).strip():
                 segs.append("".join(buf))
             buf = []
             i += 1
             continue
         buf.append(c)
         i += 1
-    if buf and buf[0].strip():
+    if "".join(buf).strip():
         segs.append("".join(buf))
     return segs
 
 
-def executed_script_paths(command: str) -> List[str]:
-    """Best-effort list of script files ``command`` would EXECUTE.
+def executed_script_paths(command: str):
+    """Best-effort ``(ref, base)`` pairs a command would EXECUTE.
 
-    Execution POSITION, not mere presence: the argument of ``grep``,
-    ``cat``, ``head``, ``sed`` or ``cp`` is the program's DATA and is not
-    returned. Returns the paths as written in the command (``./x.py``,
-    ``scripts/x.sh``, an absolute path).
+    ``ref`` is a script file in execution position (interpreter + file,
+    ``./x``, ``source x``, ``$(cat x)``); ``base`` is the ``cd``-accumulated
+    directory at that point (``""`` = the workspace root), so ``cd d &&
+    python3 x.py`` resolves ``x.py`` against ``d``. Execution POSITION, not
+    mere presence: the argument of ``grep``, ``cat``, ``head``, ``sed`` or
+    ``cp`` is the program's DATA and is not returned. Conservative: a bare
+    executable word (``env VAR=1 runme``, a chmod +x file run bare) is NOT
+    detected -- distinguishing a written executable from a builtin/PATH
+    command is not safe without the write ledger, and the high-value
+    surfaces (interpreter, wrapper, ``source``, ``$(...)``, ``-c``, stdin
+    redirect) are. Deliberately wave-scoped.
     """
-    out: List[str] = []
+    out: List[tuple] = []
+    cwd = ""
     for seg in _split_shell_segments(command):
+        stripped = seg.strip()
+        if not stripped:
+            continue
         try:
-            toks = shlex.split(seg)
+            toks = shlex.split(stripped)
         except Exception:
             continue
+        if not toks:
+            continue
+        # ``cd <dir>`` changes the base for the FOLLOWING segments
+        # (`cd d && python3 x.py` resolves x.py under d). Does not execute
+        # the dir: no ref recorded, only the cwd for what comes next.
+        if toks[0] == "cd" and len(toks) > 1:
+            cwd = _cd_join(cwd, toks[1])
+            continue
+        base = cwd or ""
         i = 0
         head = True
         pending = False
         while i < len(toks):
             tok = toks[i]
-            base = tok.rsplit("/", 1)[-1]
-            if _SCRIPT_INTERP_RE.match(base):
+            b = tok.rsplit("/", 1)[-1]
+            if _SCRIPT_INTERP_RE.match(b):
                 j = i + 1
                 inline = False
                 while j < len(toks):
                     nt = toks[j]
-                    if nt in ("-m", "-c", "-e", "-"):
+                    if nt == "-c":
+                        # ``sh -c "...python3 x.py..."`` runs the string;
+                        # descend with the SAME tokenizer, plus the runpy
+                        # standard-library loader.
+                        if j + 1 < len(toks):
+                            body = toks[j + 1]
+                            out.extend(executed_script_paths(body))
+                            for m in re.findall(
+                                r"runpy\.run_path\s*\(\s*['\"]([^'\"]+)?['\"]",
+                                body):
+                                out.append((m, base))
                         inline = True
                         break
+                    if nt in ("-m", "-e", "-"):
+                        inline = True
+                        break
+                    if nt == "<":
+                        # ``python3 < x.sh`` feeds x.sh on stdin -> it
+                        # executes. The token after '<' is the file.
+                        if j + 1 < len(toks):
+                            out.append((toks[j + 1], base))
+                        j += 2
+                        continue
                     if nt.startswith("-"):
                         j += 1
                         continue
                     break
                 if not inline and j < len(toks):
-                    out.append(toks[j])
+                    out.append((toks[j], base))
                 i = j + 1
                 head = pending = False
                 continue
-            if _EXEC_WRAPPER_RE.match(base) or base in ("-exec", "-execdir"):
-                if base in ("source", "."):
+            if _EXEC_WRAPPER_RE.match(b) or b in ("-exec", "-execdir"):
+                if b in ("source", "."):
                     # ``source x`` / ``. x`` run x in the current shell; the
                     # target is the immediate next token whatever its name
                     # (`source env.sh`, `. bashrc`). The gate's original
                     # wrapper handling only followed a path-looking token,
                     # so a plain-named sourced file was never flagged.
                     if i + 1 < len(toks):
-                        out.append(toks[i + 1])
+                        out.append((toks[i + 1], base))
                         i += 2
                     else:
                         i += 1
@@ -168,25 +208,58 @@ def executed_script_paths(command: str) -> List[str]:
                 pending = True
                 i += 1
                 continue
-            if _looks_like_a_script_path(tok, base):
+            if _looks_like_a_script_path(tok, b):
                 if head or pending:
-                    out.append(tok)
+                    out.append((tok, base))
                 head = pending = False
                 i += 1
                 continue
             head = False
             i += 1
-    # Command substitution READ: ``sh -c "$(cat payload.py)"`` reads the
-    # file and the shell runs its text. The file named inside $(...) is
-    # executed, not merely displayed.
-    out += re.findall(r"\$\(\s*(?:cat|python3?)\s+([^\s)\"']+)\)", command)
+    # Command substitution READ: ``sh -c "$(cat payload.py)"`` reads
+    # the file and the shell runs its text. The file named inside
+    # $(...) is executed, not merely displayed. Runs AFTER all segments.
+    _cmdsub = re.findall(
+        r"\$\(\s*(?:cat|python3?|bash|sh|source|\.|<)\s*([^\s)\"']+)\)",
+        command,
+    )
+    for m in _cmdsub:
+        out.append((m, cwd or ""))
     return out
 
 
-def _resolve(ref: str, workspace: str) -> str:
-    """Absolute normalised path for an execution ref as written."""
+def _cd_join(cwd: str, target: str) -> str:
+    """Resolve ``cd <target>`` from the accumulated ``cwd`` into a
+    workspace-relative, normalised directory. Handles ``..`` and absolute
+    targets; ``""`` means the workspace root. ``..`` never escapes the
+    workspace (from the root it stays at the root)."""
+    target = (target or "").strip().strip("'\"")
+    if not target or target == "/":
+        return ""
+    if target.startswith("/"):
+        return os.path.normpath(target.lstrip("/"))
+    parts = [p for p in (cwd + "/" + target).split("/") if p and p != "."]
+    out: List[str] = []
+    for p in parts:
+        if p == "..":
+            if out:
+                out.pop()
+        else:
+            out.append(p)
+    return "/".join(out)
+
+
+def _resolve(ref: str, workspace: str, base: str = "") -> str:
+    """Absolute normalised path for an execution ref as written.
+
+    ``base`` is the ``cd``-accumulated directory at the ref's position
+    (``cd d && python3 x.py`` resolves ``x.py`` against ``d``); ``""`` means
+    the workspace root.
+    """
     if ref.startswith("/"):
         return os.path.normpath(ref)
+    if base:
+        return os.path.normpath(os.path.join(workspace, base, ref))
     return os.path.normpath(os.path.join(workspace, ref))
 
 
@@ -219,8 +292,8 @@ def verdict(command: str, written_paths: List[str], workspace: str) -> Verdict:
         _resolve(_path_of(p), workspace) for p in written_paths if _path_of(p)
     )
     resolved: List[str] = []
-    for ref in executed_script_paths(command):
-        r = _resolve(ref, workspace)
+    for ref, base in executed_script_paths(command):
+        r = _resolve(ref, workspace, base)
         if r not in written_norm:
             continue
         if r not in resolved:
