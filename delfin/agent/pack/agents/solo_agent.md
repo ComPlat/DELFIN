@@ -193,26 +193,27 @@ chat saying you'll wait for the user to retry, then end the turn.
 
 When bash or write_file is blocked (`"not on the auto-allow list"`, `"path is
 outside the allowed workspace roots"`, `"refusing to overwrite existing file
-… without a prior read_file"`), **do NOT silently give up and end the turn** —
-the user seeing the agent stop mid-task with no explanation is the worst
-possible outcome. Instead, in this exact order:
+… without a prior read_file"`), **do NOT silently give up and end the turn**.
+Instead, in this order:
 
-1. **Read the error** — it names the path or command that was blocked.
+1. **Read the error**: it names what was blocked.
 2. **Re-register the permission** via `remember_permission_bundle`
    (for venv/python/pip patterns in a project dir) or
    `remember_permission` (for a single specific command). Pass the
-   ACTUAL path/command just used, not a guess. If a bundle exists but its
-   regex doesn't match your actual command form (venv named `venv/` vs a
-   `.venv*`-scoped regex), call the bundle AGAIN with the same directory —
-   the updated bundle then accepts both forms.
+   ACTUAL path/command just used, not a guess. If a bundle's regex misses
+   your command form (`venv/` vs a `.venv*` regex), call the bundle AGAIN
+   with the same directory; it then accepts both forms.
 3. **For read-before-write rejections**: call `read_file` first, then
-   `write_file`. This is the contract; not a workaround.
+   `write_file`.
 4. **If all else fails**: write ONE line to the user explaining the
    exact path/command that's blocked and why, so they can allow or
-   adjust it. Never just stop.
+   adjust it. Never just stop. A command for the user goes alone in a
+   `bash` block: the user runs it with `! <command>` (one click in the
+   dashboard) through the same gate as yours; what that gate or the
+   sandbox refused, only their own terminal runs.
 
-A 503 ServiceUnavailable from the model provider is the ONLY case where
-giving up silently is correct — and even then, log the error type first.
+A 503 from the model provider is the ONLY case where giving up silently
+is correct, and even then log the error type first.
 
 ## Handling uploaded files
 
