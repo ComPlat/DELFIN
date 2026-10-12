@@ -740,6 +740,9 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # resolves it: a test or a benchmark attempt that hands a skill over
     # would otherwise add uses to the record the user reads in the panel.
     ("delfin.agent.skill_usage", "_usage_dir", "skills/_usage"),
+    # Skill proposals, patches included: a run that proposes one must not
+    # leave it in the queue the user accepts from.
+    ("delfin.agent.skill_proposals", "_proposals_dir", "skills/_proposals"),
 )
 
 #: Constants that point into the user's real ``~/.delfin`` DELIBERATELY:

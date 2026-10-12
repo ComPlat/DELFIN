@@ -221,9 +221,12 @@ def test_a_stall_under_bypass_still_refuses_without_waiting(tmp_path,
     monkeypatch.setattr(A, "_CLASSIFIER_TIMEOUT_S", 0.2)
     runner = Runner(ALLOW, delay=1.0)
     perms = _perms(tmp_path, "bypassPermissions", runner)
-    assert _gate(perms, "bash", {"command": "python3 a.py"}) is not None
+    assert _gate(perms, "bash", {"command": "rm -r a"}) is not None
     t0 = time.monotonic()
-    assert _gate(perms, "bash", {"command": "python3 b.py"}) is not None
+    assert _gate(perms, "bash", {"command": "rm -r b"}) is not None
+    # A routine command after the stall keeps the rule result: no wait,
+    # no refusal, no dialog.
+    assert _gate(perms, "bash", {"command": "python3 b.py"}) is None
     assert time.monotonic() - t0 < 0.15
     assert len(runner.prompts) == 1
 

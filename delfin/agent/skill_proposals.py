@@ -67,6 +67,10 @@ class Proposal:
     findings: list[str]
     created: str
     base_version: str = ""
+    # Why the proposal was made, as given by its caller: for a patch that
+    # answers a user's correction, the user's own words. Empty for a
+    # proposal stored before the field existed.
+    reason: str = ""
 
 
 # --------------------------------------------------------------------------
@@ -145,7 +149,7 @@ def _iter_proposal_dirs(root: Path | None = None) -> list[Path]:
 
 
 def propose(name: str, text: str, *, evidence, source: str,
-            base_version: str = "") -> Proposal:
+            base_version: str = "", reason: str = "") -> Proposal:
     """Record a new skill proposal. Invisible until accepted by a human.
 
     Raises ValueError without evidence. A name conflict gets a new name
@@ -168,6 +172,7 @@ def propose(name: str, text: str, *, evidence, source: str,
         findings=findings,
         created=_now(),
         base_version=base_version,
+        reason=str(reason or ""),
     )
     skills_root = _proposals_dir().parent
     # a pending proposal must not shadow a skill that already exists, and

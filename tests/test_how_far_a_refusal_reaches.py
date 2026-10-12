@@ -159,14 +159,17 @@ def test_bash_refusal_locks_only_the_exact_command(tmp_path):
         perms)
     assert variant is not None and "already refused" in variant
 
-    # A MEANINGFULLY different spelling is asked about again. This is the
-    # residual hole the inventory names: "same result, written differently"
-    # is not recognised. Pinned as current behaviour (see .gate/absicht.md).
+    # Another spelling that writes a file the refused command wrote
+    # (engine.py, through git checkout) is refused by the write ledger;
+    # one that writes neither of its files is asked about again.
     perms.confirm_callback = _approve_all
     other = ex._run_permission_gate(
         "bash",
         {"command": "cp engine.py /tmp/y && git checkout abc123 -- engine.py"},
         perms)
+    assert other is not None and "already refused a write" in other
+    other = ex._run_permission_gate(
+        "bash", {"command": "cp engine.py /tmp/y && git log -1"}, perms)
     assert other is None
 
 
