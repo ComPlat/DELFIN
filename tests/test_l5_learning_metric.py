@@ -173,6 +173,25 @@ def test_non_bool_success_is_error():
     assert out["verdict"] == "error"
 
 
+def test_non_dict_record_is_error():
+    """A record that is not a dict (None, a list) is an error, never an
+    AttributeError -- the function promises an error verdict for anything it
+    cannot compare."""
+    first = _record()
+    assert VERD(None, first)["verdict"] == "error"
+    assert VERD(first, [])["verdict"] == "error"
+    assert VERD(first, "x")["verdict"] == "error"
+
+
+def test_bool_quality_is_error():
+    """quality_0_100=True (a bool) is an error like the other numeric
+    fields, not accepted as an int."""
+    first = _record()
+    second = _record(quality_0_100=True)
+    out = VERD(first, second)
+    assert out["verdict"] == "error"
+
+
 def test_unmeasured_run_is_error():
     """A run that never reached the model is not a slower run."""
     first = _record()

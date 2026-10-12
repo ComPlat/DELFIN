@@ -95,6 +95,15 @@ Any strictly-worse proxy with none strictly-better is `regressed`. Mixed (at
 least one better AND at least one worse) is `regressed` — a
 partially-faster-but-partially-slower run is not clean learning.
 
+The threshold is per-proxy strict inequality and nothing else: a proxy is
+`better` when the second run is strictly smaller than the first (`b < a`),
+`worse` when strictly larger (`b > a`); there is NO percentage floor and no
+minimum improvement — a one-unit improvement on one proxy with the other
+three equal counts as `learned`, and a one-unit worsening with the rest
+equal counts as `regressed`. A run that improves one proxy but worsens
+another is `regressed`, because clean learning requires every proxy at or
+better than the first run.
+
 Correctness is decided before any economy proxy is read:
 
 - `second.success is False` → **`wrong`** regardless of efficiency.
