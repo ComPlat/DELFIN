@@ -123,6 +123,20 @@ def test_the_users_words_stay_within_the_old_bound(tmp_path):
     task, earlier = A._classifier_context_users(users)
     assert len(task) + sum(len(e) for e in earlier) <= 5000
     assert task == users[-1][:2000]
+    # The whole prompt for this saturated conversation measured 7697
+    # characters with the first-plus-last-three selection and one fence
+    # per message; it may not grow.
+    assert len(runner.prompts[0]) <= 7697
+
+
+def test_the_earlier_messages_share_one_fence(tmp_path):
+    rows = [_user("ALPHA " * 20), _user("BRAVO " * 20), _user(CURRENT)]
+    runner = Runner()
+    assert _bash(_perms(tmp_path, rows, runner)) is None
+    prompt = runner.prompts[0]
+    assert prompt.count("src: earlier-user-messages") == 1
+    head = prompt.index("src: earlier-user-messages")
+    assert head < prompt.index("ALPHA") and head < prompt.index("BRAVO")
 
 
 def test_a_substantive_first_message_is_kept_after_short_follow_ups(tmp_path):

@@ -10642,6 +10642,31 @@ def _classifier_settings() -> Optional[dict]:
     }
 
 
+# Harness rows that reach the history as user-role text without a bracket:
+# the turn-continuation notes (turn_continuation), the follow-ups the tool
+# loop appends at turn end, the stray-write run note (engine) and the
+# language check with its "[Verify] " prefix removed (engine).
+_CLASSIFIER_HARNESS_OPENERS = (
+    "System note:",
+    "This session's work is in `",
+    "This finished while you were answering.",
+    "You ended your turn by announcing an action",
+    "Continue — there are still OPEN tasks.",
+    "Automatic check, not a message from the user",
+)
+
+# What the classifier is shown of the user's words: the newest message as
+# the task, then earlier ones newest first, within the bound the first-plus-
+# last-three selection had (2000 + 3 x 1000 characters). A first message
+# shorter than _CLASSIFIER_SUBSTANTIVE_CHARS is a greeting or a one-liner
+# and is not carried past the newest ones.
+_CLASSIFIER_USER_CHARS = 5000
+_CLASSIFIER_TASK_CHARS = 2000
+_CLASSIFIER_EARLIER_CHARS = 1000
+_CLASSIFIER_EARLIER_MSGS = 8
+_CLASSIFIER_SUBSTANTIVE_CHARS = 40
+
+
 def _classifier_user_texts(messages) -> list:
     """What the USER typed in this conversation, oldest first.
 
@@ -10649,9 +10674,10 @@ def _classifier_user_texts(messages) -> list:
     user-role entry that carries a tool result, or that opens with a
     bracket or a tag, is the harness or another session speaking (a
     session message renders as "[Message from the session ...", a
-    reminder as "<system-reminder>") and is left out whole. A real
-    message is cut where such a block begins inside it. The error runs
-    towards LESS evidence, which means more asking, never less.
+    reminder as "<system-reminder>") and is left out whole, as is one
+    that opens with a harness note's wording (_CLASSIFIER_HARNESS_OPENERS).
+    A real message is cut where such a block begins inside it. The error
+    runs towards LESS evidence, which means more asking, never less.
     """
     out = []
     for m in messages or ():
@@ -10665,7 +10691,8 @@ def _classifier_user_texts(messages) -> list:
             content = "\n".join(str(b.get("text") or "") for b in content
                                 if isinstance(b, dict))
         text = str(content or "").strip()
-        if not text or text[0] in "[<":
+        if not text or text[0] in "[<" or text.startswith(
+                _CLASSIFIER_HARNESS_OPENERS):
             continue
         cut = re.search(
             r"\n\s*(?:\[Message from|\[UNTRUSTED EXTERNAL CONTENT|<system-)",
@@ -10675,6 +10702,45 @@ def _classifier_user_texts(messages) -> list:
         if text:
             out.append(text)
     return out
+
+
+def _classifier_context_users(users) -> tuple:
+    """``(task, earlier)`` the classifier prompt is built from.
+
+    Input: the user's own texts, oldest first (_classifier_user_texts).
+    ``task`` is the newest one, cut to _CLASSIFIER_TASK_CHARS: in a
+    session of several days the user's first message is not the request
+    the action serves, and the greeting a session opens with was judged
+    as the task for every action of every later day. ``earlier`` holds
+    up to _CLASSIFIER_EARLIER_MSGS of the messages before it, newest
+    first, each cut to _CLASSIFIER_EARLIER_CHARS, until the
+    _CLASSIFIER_USER_CHARS total is reached; short follow-ups ("weiter",
+    "yes") cost their length, so the reach extends back past them. The
+    first message closes the list when it is substantive and room is
+    left: in a short session it is the task.
+
+    Rejected: first plus last three (the defect); a greeting matcher
+    (wording-dependent; length decides as well for "Hallo Session C").
+    """
+    users = [str(u) for u in users or () if str(u or "").strip()]
+    if not users:
+        return "", []
+    task = users[-1][:_CLASSIFIER_TASK_CHARS]
+    room = _CLASSIFIER_USER_CHARS - len(task)
+    earlier: list = []
+    taken = len(users) - 1
+    for i in range(len(users) - 2, -1, -1):
+        if room <= 0 or len(earlier) >= _CLASSIFIER_EARLIER_MSGS:
+            break
+        piece = users[i][:min(_CLASSIFIER_EARLIER_CHARS, room)]
+        earlier.append(piece)
+        room -= len(piece)
+        taken = i
+    first = users[0]
+    if (taken > 0 and room > 0
+            and len(first) >= _CLASSIFIER_SUBSTANTIVE_CHARS):
+        earlier.append(first[:min(_CLASSIFIER_EARLIER_CHARS, room)])
+    return task, earlier
 
 
 def _classifier_action(name: str, args: dict) -> dict:
@@ -16170,9 +16236,10 @@ class _DocToolExecutor:
         if key in state["allowed"]:
             return None
 
+        task, earlier = _classifier_context_users(users)
         context = {
-            "task": users[0][:2000] if users else "",
-            "recent_user": [u[:1000] for u in users[1:][-3:]],
+            "task": task,
+            "recent_user": earlier,
             "recent_calls": list(state["calls"][-6:]),
         }
         state["calls"].append({"tool": base, "args": shown})
@@ -22722,7 +22789,30 @@ class OpenAIClient(_BaseClient):
                     hook()
                 except Exception:
                     pass
+            self._steers_reach_classifier(out)
         return out
+
+    def _steers_reach_classifier(self, steers: list) -> None:
+        """Append delivered steers to the conversation the classifier reads.
+
+        ``classifier_messages`` is bound once per turn to the engine's
+        history, which receives this turn's steers only after the turn
+        has ended; until then an action that a steer asked for was judged
+        against the message before it. The binding is replaced by a new
+        list, so the engine's history is not written. A sub-agent's steer
+        is its parent's text, never the user's, and is not added; a
+        session message delivered as a steer opens with a bracket and is
+        dropped by _classifier_user_texts like any other.
+        """
+        perms = getattr(self, "_permissions", None)
+        if perms is None or int(getattr(perms, "subagent_depth", 0) or 0):
+            return
+        try:
+            bound = list(getattr(perms, "classifier_messages", None) or ())
+            perms.classifier_messages = bound + [
+                {"role": "user", "content": s} for s in steers]
+        except Exception:
+            pass
 
     def _open_task_state(self) -> dict:
         """Tri-state summary of this session's open tasks.
