@@ -717,6 +717,11 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
     ("delfin.agent.session_store", "_bundles_path", "bundles"),
     ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
+    # What the user said about themselves, loaded into every prompt. A
+    # run reading the real one would test against the developer's own
+    # self-description, and a run that drove the Send button would write
+    # its fixture sentences into it.
+    ("delfin.agent.user_model", "_default_path", "user_model.json"),
     # The note that says which node the dashboard runs on, and with which
     # token. A run that drove the launcher overwrote it with its own pid,
     # and the launcher's atexit hook then deleted it on the way out --

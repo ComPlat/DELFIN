@@ -4897,6 +4897,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         ],
         layout=widgets.Layout(padding='8px', gap='6px'),
     )
+    # The user model: visible, editable, forgettable. A tree or a kernel
+    # that cannot build the panel keeps the rest of the section.
+    try:
+        from delfin.dashboard.user_model_panel import (
+            build_widget as _build_user_model_panel)
+        agent_section.children = tuple(agent_section.children) + (
+            _build_user_model_panel(),)
+    except Exception:
+        pass
     _load_agent_settings()
     _load_role_model_settings()
     _load_ros_settings()
