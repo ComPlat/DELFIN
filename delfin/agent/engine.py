@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from . import agent_metrics as _agent_metrics
 from .api_client import StreamEvent, create_client
+from .harness_rows import HARNESS_KEY, HarnessRow, HarnessText
 from .prompt_loader import AVAILABLE_ON_DEMAND, PromptLoader
 
 
@@ -2670,6 +2671,12 @@ class AgentEngine:
         # drop the very evidence ledgers the retry is judged against.
         _is_guard_feedback = str(
             user_message or "").lstrip().startswith("[Verify]")
+        # Who wrote this turn's row (harness_rows): a surface hands a turn
+        # it starts on its own as HarnessText; a correction turn is the
+        # engine's own.
+        _harness_turn = (isinstance(user_message, HarnessText)
+                         or _is_guard_feedback or self._claim_guard_active
+                         or self._dsml_guard_active)
         if (not self._claim_guard_active and not self._dsml_guard_active
                 and not _is_guard_feedback):
             self._claim_guard_corrected = False
@@ -2853,7 +2860,10 @@ class AgentEngine:
         # has to be captured here.
         self._turn_is_bare_greeting = self.is_bare_greeting(user_message)
 
-        self.messages.append(self._build_user_message(user_message, images))
+        _row = self._build_user_message(user_message, images)
+        if _harness_turn:
+            _row[HARNESS_KEY] = True
+        self.messages.append(_row)
         # Sanitize message history: ensure proper user/assistant alternation.
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
@@ -5186,7 +5196,9 @@ class AgentEngine:
         stripped (same length and indices, so ``live:<i>`` refs stay valid).
         A ``_steer`` key is the turn's steering tail (_attach_turn_tail):
         rendered at the end of that message's content, the same bytes on
-        every request that carries the message.
+        every request that carries the message. A row with the harness key
+        is copied as a ``HarnessRow``: the mark stays readable to the
+        action classifier, which reads this list, without a key on the wire.
         """
         msgs = self.messages
         if not any(
@@ -5199,6 +5211,8 @@ class AgentEngine:
             if isinstance(m, dict) and any(str(k).startswith("_") for k in m):
                 row = {k: v for k, v in m.items()
                        if not str(k).startswith("_")}
+                if m.get(HARNESS_KEY) is True:
+                    row = HarnessRow(row)
                 tail = m.get("_steer")
                 if tail:
                     row["content"] = self._with_turn_tail(
@@ -5961,7 +5975,7 @@ class AgentEngine:
         if _state_block:
             _summary_msg = f"{_state_block}\n{_summary_msg}"
         self.messages = [
-            {"role": "user", "content": _summary_msg},
+            {"role": "user", "content": _summary_msg, HARNESS_KEY: True},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
         ] + pinned_old + recent
         # `recent` starts with an assistant turn whenever compaction fires right
@@ -6081,7 +6095,8 @@ class AgentEngine:
 
             # Inject as a user message and continue the conversation
             context_msg = "\n\n".join(injected_parts)
-            self.messages.append({"role": "user", "content": context_msg})
+            self.messages.append(
+                {"role": "user", "content": context_msg, HARNESS_KEY: True})
 
             # Stream continuation
             chunks: list[str] = []
@@ -7464,7 +7479,8 @@ class AgentEngine:
             from . import session_store as _ss_ckpt
             _note = _ss_ckpt.consume_crash_recovery_note(self.session_id)
             if _note:
-                self.messages.append({"role": "user", "content": _note})
+                self.messages.append(
+                    {"role": "user", "content": _note, HARNESS_KEY: True})
                 self.messages.append({
                     "role": "assistant",
                     "content": "Understood. I will verify the workspace "
