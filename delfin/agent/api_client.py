@@ -16722,6 +16722,36 @@ class _DocToolExecutor:
             if perms.matches_bash_auto_allow(cmd):
                 # The list matches the command's spelling, not its purpose.
                 return self._classifier_second_opinion(perms, name, args, mode)
+            # A command that is EXACTLY one of a few harmless forms is
+            # approved by rule (read_only_shapes): the dialogs they raised
+            # were answered "yes" every time and taught nothing. Reached
+            # only here -- after the deny list, the secret scan and the
+            # refusal ledger -- and the read and write path gates still run
+            # on the command afterwards. A switched-off shape, an unreadable
+            # setting or any failure falls through to the dialog.
+            try:
+                from . import read_only_shapes as _ros
+                from delfin.user_settings import load_settings as _ros_load
+                _ros_cfg = _ros.read_only_shapes_from_payload(_ros_load() or {})
+                # Only for a command that runs in the workspace itself: a
+                # path is judged against the workspace, and a `cwd` would
+                # make it mean something else (another root, another repo).
+                _ros_cwd = str(args.get("cwd") or "").strip()
+                if _ros_cwd and Path(_ros_cwd).resolve(strict=False) == \
+                        Path(perms.workspace).resolve(strict=False):
+                    _ros_cwd = ""
+                _ros_shape = (_ros.matches_with(
+                    cmd, str(perms.workspace),
+                    set(_ros_cfg.get("enabled_shapes") or ()))
+                    if _ros_cfg.get("enabled") and _ros_cwd in ("", ".")
+                    else "")
+            except Exception:
+                _ros_shape = ""
+            if _ros_shape:
+                _record_security_event(
+                    "read_only_shape", "bash",
+                    f"{_ros_shape}: {cmd[:80]}", blocked=False)
+                return self._classifier_second_opinion(perms, name, args, mode)
             # Not auto-allowed. Whenever a per-action approval dialog is
             # wired (the dashboard KitConfirmBroker), ask the user to
             # approve THIS command — one click — instead of dead-ending
