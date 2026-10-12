@@ -319,7 +319,9 @@ def test_a_forget_and_the_switch_reach_the_running_session(monkeypatch):
     second = build()
     assert "computational chemist" not in second and "def2-TZVP" in second
     monkeypatch.setenv("DELFIN_USER_MODEL", "off")
-    assert "user model" not in build()
+    # the heading: the Code mode's prompt carries the git log, whose
+    # commit subjects may name the feature
+    assert "--- user model ---" not in build()
 
 
 # --- what the model writes is not what the user typed ---------------------
