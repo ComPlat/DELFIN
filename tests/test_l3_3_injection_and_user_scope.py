@@ -1,4 +1,4 @@
-"""L3 phase-3 guarantees: a hostile saved session changes nothing, and
+"""A hostile saved session changes nothing, and
 another account's sessions are never read.
 
 Two guarantees the task names and that the tool layer needs behind its
@@ -15,8 +15,6 @@ untrusted fence:
 2. Only the user's OWN saved sessions (under Path.home()/.delfin) are ever
    indexed. A session file placed in another account's home (outside the
    index root) is never indexed, never returned by search, never even read.
-
-RED on the previous commit: ``session_index`` does not exist yet.
 """
 
 from __future__ import annotations

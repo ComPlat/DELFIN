@@ -1,4 +1,4 @@
-"""L3 (operator build): what the index opens is decided on the open file.
+"""What the index opens is decided on the open file.
 
 A check on the path followed by a read of the path can be raced: the
 sessions directory is writable by the agent. The read itself must refuse.

@@ -1,15 +1,11 @@
-"""L3 phase-2/3 guarantee: a huge session file does not stall a turn.
+"""A huge session file does not stall a turn.
 
 The prior index (``delfin/agent/session_index.py``) reads every source with a
 whole-file ``p.read_text()`` (``_session_json_documents`` :148,
 ``_archive_documents`` :174): a multi-GB session json or transcript archive
-is read fully into memory and would stall a search. The L3 replacement
-(``delfin.agent.session_index``) must bound every source read to a fixed
-byte cap and return promptly on oversized files -- a search must stay cheap
-no matter how large the transcripts were.
-
-RED on the previous commit: ``session_index`` has no size-bounding code
-(and does not yet exist), so these assertions cannot pass before the build.
+is read fully into memory and would stall a search. Every source read
+must be bounded to a fixed byte cap and return promptly on oversized
+files -- a search must stay cheap no matter how large the transcripts were.
 """
 
 from __future__ import annotations

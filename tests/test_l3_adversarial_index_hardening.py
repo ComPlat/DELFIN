@@ -1,21 +1,14 @@
-"""Adversarial tests against the delivered L3 hardening, s21 reviewer.
-
-The builder (nacht-s16, 44c795c2) hardened ``delfin.agent.session_index``
-(a NEW module) with three rules: regular files only (symlink/FIFO skipped),
-size-gated reads before open, user-only root. The prior index
-(``session_index``) is NOT changed by that commit.
-
-These tests attack the DELIVERED module -- the code under review -- from
-angles the builder's own red tests did not cover:
+"""Adversarial tests against the hardening of ``delfin.agent.session_index``:
+regular files only (symlink/FIFO skipped), bounded reads decided on the
+open descriptor, user-only root.
 
 * ``index_session`` with a path-traversal session id must never touch a
-  file outside the sessions dir (the builder never exercised this input).
+  file outside the sessions dir.
 * a FIFO and a symlink in the TRANSCRIPT ARCHIVE dir (not just the
-  sessions dir -- the builder only put them in agent_sessions) must be
-  skipped by ``_archive_documents`` via ``_safe_read_bytes``.
-* an archive whose on-disk size lies beyond the cap must be skipped, not
-  read (sparse truncate, as the builder's tests do for the json source).
-* a marker that appears only past the read cap of an oversize archive is
+  sessions dir) must be skipped by ``_archive_documents``.
+* an archive whose on-disk size lies beyond the cap is read only from its
+  newest end, never whole (sparse truncate makes the size lie big).
+* a marker in the head of an oversize archive, before the read window, is
   never searchable.
 
 These are the same guarantees the tool surface (protected api_client.py)
@@ -87,8 +80,7 @@ class TestPathTraversalOnIndexSession:
         """``index_session`` must reject a traversal-shaped session id and
         never build a path escaping the sessions dir.
 
-        The builder's own tests never feed index_session an adversarial id;
-        its ``_valid_session_id`` (regex + no ``..``) is the only defence.
+        ``_valid_session_id`` (regex + no ``..``) is the only defence.
         An unguarded implementation would compute
         ``_sessions_dir() / "../secrets/../../etc" + ".json"`` and read it.
         """
@@ -113,9 +105,8 @@ class TestPathTraversalOnIndexSession:
 class TestArchiveDirGuards:
     def test_a_fifo_in_the_archive_dir_is_never_opened(self, recall_env):
         """The archive read path (``_archive_documents``) must skip a FIFO
-        through ``_safe_read_bytes`` -- a FIFO here would otherwise block
-        the turn. The builder's FIFO test only placed one in the sessions
-        dir; the archive dir is a second entry point to the same read."""
+        through ``_safe_read`` -- a FIFO here would otherwise block the
+        turn. The archive dir is a second entry point to the same read."""
         _write_session(recall_env, "good", text="good archive content")
         _write_archive(recall_env, "good", [("user", "archived needle zz")])
         ad = recall_env / "transcript_archive"
@@ -150,9 +141,9 @@ class TestArchiveDirGuards:
 
 class TestOversizeArchiveBound:
     def test_marker_past_the_archive_cap_is_never_searchable(self, recall_env):
-        """An archive whose spelled size lies beyond the read cap is skipped
-        whole, so a marker past the cap is never searchable -- the module
-        must gate size before open (sparse truncate makes stat lie big)."""
+        """An archive larger than the read cap is read only from its newest
+        end, so a marker in its head is never searchable (sparse truncate
+        makes the size lie big)."""
         _write_session(recall_env, "core", text="core text")
         p = _write_archive(recall_env, "big", [("u", "far-marker-5c1d")])
         p.stat()
@@ -161,7 +152,8 @@ class TestOversizeArchiveBound:
         sr.index_session("big")
         hits = sr.search("far-marker-5c1d")
         assert hits == [], (
-            "an oversize archive must be skipped, its far marker not searchable")
+            "a marker before the read window of an oversize archive is "
+            "not searchable")
         # A normal search still works over the small session.
         hits = sr.search("core")
         assert any(h.session_id == "core" for h in hits)

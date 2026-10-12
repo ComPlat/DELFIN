@@ -1,4 +1,4 @@
-"""L3 phase-3 guarantee: a symlink or FIFO in the sessions directory is
+"""A symlink or FIFO in the sessions directory is
 skipped -- never followed, never indexed, never opened (a FIFO must not
 hang a read).
 
@@ -6,13 +6,9 @@ The prior index (``delfin/agent/session_index.py``) enumerates with
 ``d.glob("*.json")`` and reads with ``p.read_text()`` (session_index.py:379,
 :148, :174): a ``*.json`` SYMLINK pointing into another account's directory
 is followed (exfiltration), and a ``*.jsonl`` FIFO blocks ``read_text``
-forever (a stalled turn). These tests pin the guaranteed behaviour of the
-L3 replacement (``delfin.agent.session_index``): enumerate ONLY regular
-files, skip symlinks and non-regular entries, and never open a FIFO.
-
-RED on the previous commit: ``session_index`` does not exist yet, and the
-existing index has no symlink/FIFO guard -- so every assertion here is
-verifying a guarantee the current code does not provide.
+forever (a stalled turn). These tests pin the guarded behaviour:
+enumerate ONLY regular files, skip symlinks and non-regular entries, and
+never block on a FIFO.
 """
 
 from __future__ import annotations

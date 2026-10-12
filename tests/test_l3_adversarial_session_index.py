@@ -1,7 +1,4 @@
-"""Adversarial tests for package L3 ``session_index``.
-
-Reviewer: nacht-s19 (branch agent/s19-l3r1). These tests attack the
-enumeration and hygiene guarantees the builder (nacht-s16) committed to for
+"""Adversarial tests for the enumeration and hygiene guarantees of
 ``delfin.agent.session_index`` — a cross-session search over the USER'S OWN
 saved sessions with explicit bounds:
 
@@ -25,11 +22,6 @@ Because the module derives its sessions directory under ``Path.home()``
 (exactly how ``session_store`` resolves it, and how its own tests redirect it
 to a fixture root, bootstrap the module: ``Path.home`` is monkeypatched to a
 per-test tmp dir so no real ``~/.delfin`` is ever touched.
-
-These tests assume the module's public path the builder named:
-``index_session``, ``backfill_missing``, ``search``. If any fails on import
-because the module is absent, that is EXPECTED until the builder's commit
-lands; re-run against the branch that carries ``delfin/agent/session_index.py``.
 """
 
 import json
@@ -38,14 +30,7 @@ from pathlib import Path
 
 import pytest
 
-try:
-    from delfin.agent import session_index
-    HAS_MODULE = True
-except ImportError:
-    session_index = None
-    HAS_MODULE = False
-
-pytestmark = pytest.mark.skipif(not HAS_MODULE, reason="builder module not yet on branch")
+from delfin.agent import session_index
 
 
 @pytest.fixture()
@@ -55,7 +40,7 @@ def root(tmp_path, monkeypatch):
     The module resolves its SESSIONS dir through the ``session_store``
     module constant (``_SESSIONS_DIR``) and its archive dir through
     ``session_store._transcript_archive_path`` — NOT through ``Path.home``
-    at call time. So we patch those seams (the same seam the builder's own
+    at call time. So we patch those seams (the same seam the other session_index
     tests pin), plus the module's ``_index_path``.
     """
     from delfin.agent import session_store, session_index as sr
