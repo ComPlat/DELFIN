@@ -1192,17 +1192,25 @@ For an ORCA output file the dropdown offers **Print Mode**, **MO Plot** and
 The **Review** tab walks through the frames of one multi-frame XYZ file, or of
 every `*.xyz` in a folder, and lets you rate each frame by eye.
 
-1. Enter the file or folder under **Open** and press **Open**. The files are
-   listed on the left, the frames of the current file below them; rated frames
-   are marked `✓` (pass) or `✗` (block).
-2. The structure is drawn in the dashboard's 3D viewer with its file, position
-   (`frame 3/12`) and label. Move with **Prev** / **Next** or the arrow keys;
-   **Next unrated** (key `N`) jumps to the next frame without a rating.
-3. Rate with **Pass** / **Block** (keys `P` / `B`). Pick one or more categories
-   first (keys `1`–`9`; untick *Several categories* to allow only one) and type
-   a comment if you like. After a rating the next unrated frame is shown.
-   There is also a comment field for the whole file and one for the whole review.
-4. Every rating is written at once to `<folder>/review_<name>.json` (name:
+1. Under **Open a review** enter the file or folder, a **Name** (optional) and,
+   for a new review, the categories (one per line), then press **Open**. The
+   section folds away once a review is open; click its title to open another.
+2. The bar across the top holds **List** (shows or hides the files and frames
+   on the left; rated frames are marked `✓` pass or `✗` block), **Prev** /
+   **Next** / **Next unrated**, which frame is shown and the progress
+   (rated / total, a bar, pass and block counts).
+3. The structure is drawn large in the middle, in the dashboard's 3D viewer.
+   On the right: a large **Pass** and **Block** button, the categories as
+   toggles (a chosen one is coloured), the comment on this frame, a line that
+   says when the rating was saved, and the keys. Pick categories and type a
+   comment first, then rate; the next unrated frame is shown.
+4. Keys (while no text field has the focus; the file and frame lists and the
+   checkboxes do not hold them): `P` pass, `B` block, `1`–`9` categories, `N`
+   next unrated, `←` / `→` previous / next; `Esc` leaves the comment field.
+   A rating key, and a click on **Pass** / **Block**, rates the frame that was
+   on screen at that moment: held down a key rates once, and a second press or
+   click before the next frame has appeared is ignored.
+5. Every rating is written at once to `<folder>/review_<name>.json` (name:
    the **Name** field, else the folder or file name). Opening the same folder
    again resumes where you stopped. Each record holds verdict, categories,
    comment, timestamp, file name, frame index and label, and the sha256 of the
@@ -1210,20 +1218,25 @@ every `*.xyz` in a folder, and lets you rate each frame by eye.
    file has changed since, its old ratings are kept but no longer count. When
    the folder or its parent contains an `index.tsv` with an `id` column (the
    file stem), that row (e.g. the SMILES) is linked to the file and shown.
-5. **Blinded** shuffles all frames of all files in a fixed order (same
+   A comment typed on a frame you have not rated yet is saved as well (under
+   `notes`; it is not a rating and does not count in the progress), shown
+   again when you come back to the frame, exported as a row with an empty
+   verdict, and taken into the rating once you rate the frame.
+6. **Blinded** shuffles all frames of all files in a fixed order (same
    **Seed**, same order), hides file names, labels and findings and shows only
    `structure #k`. The JSON keeps the order and, per record, the anonymous
    number, so every rating maps back to its file and frame.
-6. In the normal mode findings from elsewhere are shown next to a frame when a
+7. In the normal mode findings from elsewhere are shown next to a frame when a
    JSON `{"<file>": {"<frame_index>": ["text", ...]}}` is given under
    **Findings** (default: `findings.json` in the folder; frame indices are
    0-based, the file may be named with or without `.xyz`).
-7. Progress (rated / total, pass and block counts) is shown on the right;
-   **Export CSV** writes `review_<name>.csv`.
+8. Under **More**: a comment on the whole file and on the whole review, and
+   **Export CSV**, which writes `review_<name>.csv`.
 
 The categories are configurable (one per line, **Apply categories**) and are
-stored in the review file. The default list is: bond length,
-angle/hybridisation, contact/clash, coordination polyhedron,
+stored in the review file: a list set before a new review is opened is used by
+it, a resumed review keeps its own until you apply another. The default list
+is: bond length, angle/hybridisation, contact/clash, coordination polyhedron,
 planarity/aromaticity, torn/broken ligand, wrong isomer, other.
 
 To evaluate a review on the command line:
