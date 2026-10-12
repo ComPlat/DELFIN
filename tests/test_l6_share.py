@@ -158,6 +158,36 @@ def test_export_routes_through_the_reused_skill_safety_scan(
     assert not _bundle_path(tmp_path).exists()
 
 
+def test_export_blocked_on_a_userhost_author_label(home, tmp_path):
+    """s17/s29 finding: the author label is also machine identity and must
+    be blocked, naming the author field -- not just the skill text."""
+    _install_accepted(home, text="# A skill\nbody")
+    with pytest.raises(Exception) as exc:
+        ss.export_bundle("shared-skill", str(tmp_path), author="alice@srv")
+    msg = str(exc.value)
+    assert "author" in msg and "alice@srv" in msg
+    assert not _bundle_path(tmp_path).exists()
+
+
+def test_export_blocked_on_an_absolute_path_author(home, tmp_path):
+    _install_accepted(home, text="# A skill\nbody")
+    with pytest.raises(Exception) as exc:
+        ss.export_bundle("shared-skill", str(tmp_path),
+                         author="/home/x/me")
+    assert "author" in str(exc.value)
+    assert not _bundle_path(tmp_path).exists()
+
+
+def test_export_blocked_on_a_machine_ref_in_version(home, tmp_path):
+    """A base_version that names a machine path is blocked on export -- the
+    version field leaves too and is scrubbed (s17/s29 finding)."""
+    _install_accepted(home, text="# A skill\nbody", version="/home/x/base")
+    with pytest.raises(Exception) as exc:
+        ss.export_bundle("shared-skill", str(tmp_path))
+    assert "version" in str(exc.value)
+    assert not _bundle_path(tmp_path).exists()
+
+
 # --------------------------------------------------------------------------
 # import_bundle -- bounds, no proposal of its own
 # --------------------------------------------------------------------------
@@ -196,6 +226,20 @@ def test_import_clean_text_with_an_absolute_path_is_stored_blocked(
     info = ss.import_bundle(bundle)
     assert info["status"] == "blocked"
     assert "/home/alice/refs" in info["reason"] and "line 2" in info["reason"]
+
+
+def test_import_re_scrubs_author_and_version_before_verified(home, tmp_path):
+    """s17/s29 finding, import side: the author and version are re-scrubbed
+    before a bundle is returned "verified" -- a machine ref in either is
+    "blocked", not silently accepted."""
+    bundle = _make_valid_bundle(dirpath=tmp_path, author="alice@srv")
+    info = ss.import_bundle(bundle)
+    assert info["status"] == "blocked"
+    assert "author" in info["reason"]
+    # a clean author still verifies
+    clean = _make_valid_bundle(dirpath=tmp_path, name="shared-skill-clean",
+                               author="kb", version="v1")
+    assert ss.import_bundle(clean)["status"] == "verified"
 
 
 def test_import_never_activates_without_accept(home, tmp_path):

@@ -99,24 +99,46 @@ def _machine_ref_snippets(text: str) -> list[tuple[int, str, str]]:
     return hits
 
 
-def _export_scrub(text: str) -> str:
-    """Return a blocking reason with the line, or "" when clean.
+def _export_scrub(text: str, field: str = "text") -> str:
+    """Return a blocking reason naming the offending line, or "" when clean.
 
     Reuses ``skill_safety.check`` (commands + secrets DELFIN already scans)
-    and adds the targeted machine-private scan. Nothing is rewritten.
+    and adds the targeted machine-reference scan (absolute path / user@host
+    / job id). ``field`` is the bundle field being scanned, so a hit names
+    where the machine identity sits. Nothing is rewritten.
     """
     reasons: list[str] = []
     try:
         from . import skill_safety
         for finding in skill_safety.check(text):
-            reasons.append(f"skill_safety: {finding}")
+            reasons.append(f"{field}: skill_safety: {finding}")
     except Exception as exc:
         # the reused scan must never pass what it could not read
-        reasons.append(f"skill_safety unavailable: {exc!r}")
+        reasons.append(f"{field}: skill_safety unavailable: {exc!r}")
     for line_no, snippet, kind in _machine_ref_snippets(text):
         reasons.append(
-            f"{kind} on line {line_no}: {snippet!r} must not leave this "
-            "machine in a shared skill")
+            f"{kind} on line {line_no} of field {field!r}: "
+            f"{snippet!r} must not leave this machine in a shared skill")
+    return "; ".join(reasons)
+
+
+def _scrub_leaving(payload: dict) -> str:
+    """Block reason for every bundle field that leaves: text, version, author.
+
+    The export's promise is that no machine identity -- an absolute path, a
+    user/host name, a job id or a secret -- leaves in the shared bundle. The
+    bundle carries name, text, version and author; ``name`` is validated at
+    the door (no slash, no leading dot) and the rest are each scrubbed here,
+    field-labelled, so a hit names the field and the line.
+    """
+    reasons: list[str] = []
+    for field in ("text", "version", "author"):
+        value = str(payload.get(field) or "")
+        if not value:
+            continue
+        r = _export_scrub(value, field=field)
+        if r:
+            reasons.append(r)
     return "; ".join(reasons)
 
 
@@ -146,10 +168,6 @@ def export_bundle(name: str, target_dir: str | os.PathLike, *,
             f"~/.delfin/skills/{name}/SKILL.md")
     text = text_path.read_text(encoding="utf-8")
 
-    reason = _export_scrub(text)
-    if reason:
-        raise ValueError(f"export of {name!r} blocked: {reason}")
-
     version = ""
     meta_path = skill_dir / "proposal.json"
     if meta_path.is_file():
@@ -160,6 +178,13 @@ def export_bundle(name: str, target_dir: str | os.PathLike, *,
             version = ""
 
     payload = _payload(name, text, version, (author or "").strip())
+    # scrub EVERY field that leaves (text, version, author), not just text:
+    # an author label "alice@srv" or a version "/home/x/base" is also machine
+    # identity and must not reach the shared bundle (s17/s29 finding).
+    reason = _scrub_leaving(payload)
+    if reason:
+        raise ValueError(f"export of {name!r} blocked: {reason}")
+
     sha = _sha_of(payload)
     out = Path(target_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -223,7 +248,7 @@ def import_bundle(path: str | os.PathLike, *, source: str = "shared") -> dict:
             f"bundle hash mismatch: {path!r} was tampered with or truncated; "
             "nothing is proposed")
 
-    reason = _export_scrub(text)
+    reason = _scrub_leaving(payload)
     if reason:
         return {"status": "blocked", "source": source, "name": name,
                 "reason": reason}
