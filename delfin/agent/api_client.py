@@ -5988,6 +5988,34 @@ _MODE_PIN: "_contextvars.ContextVar[Optional[list]]" = (
     _contextvars.ContextVar("delfin_perm_mode_pin", default=None))
 
 
+#: Per-stream output cap for a command a PERSON typed after `!`. The
+#: model's cap (``max_output_chars``, 12k) exists to protect a context
+#: window; a person reading in a terminal or chat has none, and a cut
+#: sinfo/squeue listing is a wrong listing. Still finite, so one command
+#: cannot hold an unbounded string in the kernel: 4 M characters per
+#: stream is ~60k lines of 64 columns, and beyond it _smart_truncate
+#: marks the cut with its size.
+PERSON_OUTPUT_CHARS = 4_000_000
+
+# Set only by output_for_a_person(), for the thread running that one
+# call. A model turn on another thread with the same permissions object
+# still reads max_output_chars: the attribute is never written.
+_PERSON_OUTPUT: "_contextvars.ContextVar[bool]" = (
+    _contextvars.ContextVar("delfin_person_output", default=False))
+
+
+@contextlib.contextmanager
+def output_for_a_person():
+    """Lift the bash tool's output cap to PERSON_OUTPUT_CHARS for the
+    calls made inside this block on this thread. Changes nothing the
+    gate decides: only how much of the result is kept."""
+    token = _PERSON_OUTPUT.set(True)
+    try:
+        yield
+    finally:
+        _PERSON_OUTPUT.reset(token)
+
+
 @contextlib.contextmanager
 def _pin_permission_mode(perms: Optional["KitToolPermissions"]):
     """Freeze the permission mode for the duration of one tool call."""
@@ -19012,7 +19040,8 @@ class _DocToolExecutor:
 
         out = proc.stdout or ""
         err = proc.stderr or ""
-        cap = perms.max_output_chars
+        cap = (max(PERSON_OUTPUT_CHARS, int(perms.max_output_chars))
+               if _PERSON_OUTPUT.get() else perms.max_output_chars)
         out = _smart_truncate(out, cap, "stdout")
         err = _smart_truncate(err, cap, "stderr")
 
