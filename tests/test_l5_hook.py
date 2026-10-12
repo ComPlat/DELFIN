@@ -134,6 +134,27 @@ def test_task_only_in_one_run_not_judged(tmp_path):
     assert rep["summary"]["n_wrong"] == 0
 
 
+# --- operator F2: an unknown verdict is an error count, never a KeyError -----
+
+
+def test_unknown_verdict_counted_as_error_not_keyerror(tmp_path, monkeypatch):
+    """Operator F2: compare_learning must survive a verdict it has no bucket
+    for. If learning_verdict ever returned a value outside the five, the old
+    stats[f"n_{verdict}"] += 1 raised KeyError; the fixed hook counts the
+    unknown verdict against n_error and does not crash. The decision itself
+    is still surfaced on the per_task row."""
+    from delfin.agent.pack.benchmark import learning_metric as lm
+
+    monkeypatch.setattr(
+        lm, "learning_verdict",
+        lambda first, second: {"verdict": "mystery", "evidence": {}})
+    a = _row()
+    b = _row(tool_calls=5, duration_s=18.0)
+    rep = _report([a], [b], tmp_path)   # must not raise KeyError
+    assert rep["summary"]["n_error"] == 1
+    assert rep["per_task"][0]["verdict"] == "mystery"
+
+
 # --- the hook reads what write_run wrote -------------------------------------
 
 
