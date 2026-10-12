@@ -202,6 +202,12 @@ def verdict(command: str, written_paths: List[str], workspace: str) -> Verdict:
     """
     if not command or not written_paths:
         return Verdict(False)
+    # written_paths is the _journal_changes output -> a list of records
+    # {path, ts, created} (the shape the P3 gate passes), OR a plain list of
+    # path strings. A record is taken by its "path" key.
+    def _path_of(p) -> str:
+        return p.get("path", "") if isinstance(p, dict) else str(p or "")
+
     # The change journal stores each path in the CALLER'S spelling
     # (change_journal.py:398, `Path(str(path))` ---- a relative write such as
     # "x.py" stays relative in list_changes). The command side is resolved
@@ -210,7 +216,7 @@ def verdict(command: str, written_paths: List[str], workspace: str) -> Verdict:
     # other spelling with a different cwd) is MISSED -- the exact case the
     # four waves reported.
     written_norm = set(
-        _resolve(p, workspace) for p in written_paths if p
+        _resolve(_path_of(p), workspace) for p in written_paths if _path_of(p)
     )
     resolved: List[str] = []
     for ref in executed_script_paths(command):
