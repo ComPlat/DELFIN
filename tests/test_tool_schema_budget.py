@@ -204,12 +204,19 @@ _BASELINE_TOKENS = 11_422
 # shown in the chat. Trimmed first -- one-line description naming the
 # kinds, a bare type for the spec -- which leaves 71 tokens, so the budget
 # moves 9_990 -> 10_061.
+# 2026-10-13: skill_share, an accepted skill out as a bundle
+# file and a bundle in as a proposal. It arrived as two tools at 372
+# tokens. Trimmed first -- one tool with an action instead of two, a
+# two-sentence description that keeps "accepted", "proposal" and "never
+# active until a human accepts", bare types, the author label dropped from
+# the schema -- which leaves 112 tokens, so the budget moves
+# 10_061 -> 10_173.
 # 2026-10-13: the method-reviewer preset (pack/agents/*_subagent.md). Its
 # only schema text is its name in the subagent_type enum, which has no
-# shorter spelling; measured 10_059 -> 10_064, so the budget moves
-# 10_061 -> 10_066. The preset's prompt and description are not in the
+# shorter spelling; measured +5 tokens, so the budget moves
+# 10_173 -> 10_178. The preset's prompt and description are not in the
 # schema and cost nothing here.
-_TOKEN_BUDGET = 10_066
+_TOKEN_BUDGET = 10_178
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -220,7 +227,7 @@ _POST_COMPACTION_TOOLS = frozenset({
     "fill_docx_template", "create_docx", "compare_tables", "sum_column",
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
     "session_message", "session_search", "skill_propose_patch",
-    "subagent_message", "show_molecule", "make_plot",
+    "subagent_message", "show_molecule", "make_plot", "skill_share",
 })
 
 

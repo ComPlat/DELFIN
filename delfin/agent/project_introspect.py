@@ -197,6 +197,16 @@ def _scan_manifests(workspace: Path) -> dict[str, dict[str, Any]]:
         if not info["present"]:
             out[name] = info
             continue
+        # A manifest linked to a file elsewhere is a second path the read
+        # gate never saw; its lines (requirements packages, pyproject
+        # dependencies) are returned verbatim, so it is not read.
+        if path.is_symlink():
+            try:
+                path.resolve(strict=True).relative_to(workspace)
+            except (OSError, RuntimeError, ValueError):
+                info["outside_workspace"] = True
+                out[name] = info
+                continue
         try:
             stat = path.stat()
             info["size_bytes"] = stat.st_size
