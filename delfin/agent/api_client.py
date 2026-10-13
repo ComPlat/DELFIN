@@ -3144,7 +3144,7 @@ _GIT_PROGRAM_CONFIG_KEY_RE = re.compile(
     r"|diff\.external|diff\..+\.(?:textconv|command)"
     r"|filter\..+\.(?:clean|smudge|process)|merge\..+\.driver"
     r"|(?:difftool|mergetool)\..+\.cmd|interactive\.difffilter"
-    r"|remote\..+\.(?:uploadpack|receivepack)"
+    r"|remote\..+\.(?:uploadpack|receivepack)|submodule\..+\.update"
     r"|pager\..+|alias\..+|include\.path|includeif\..+\.path)")
 #: ``pager.<cmd>`` takes a boolean as well as a program.
 _GIT_BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "on", "off",
@@ -3166,12 +3166,16 @@ def _git_value_runs(key: str, value: Optional[str]) -> bool:
 
     ``value`` None means unknown and counts as a program. An alias runs a
     program when it starts with ``!`` or carries ``-c``/``--config-env``
-    with a program key; ``pager.<cmd>`` not when it is a boolean."""
+    with a program key; ``pager.<cmd>`` not when it is a boolean;
+    ``submodule.<name>.update`` only as ``!<command>`` (``git submodule
+    update`` runs it; checkout/rebase/merge/none run nothing)."""
     k = key.lower()
     if not _GIT_PROGRAM_CONFIG_KEY_RE.fullmatch(k):
         return False
     if value is None:
         return True
+    if k.startswith("submodule."):
+        return value.lstrip().startswith("!")
     if k.startswith("alias."):
         v = value.lstrip()
         return v.startswith("!") or bool(
@@ -3228,6 +3232,31 @@ def _git_one_command_program_key(words: list) -> Optional[str]:
     return None
 
 
+#: ``git config`` options that take the next word as their value.
+_GIT_CONFIG_OPTS_WITH_VALUE = frozenset({"-f", "--file", "--blob", "--type",
+                                         "--default", "--comment",
+                                         "--value", "--url"})
+
+
+def _git_config_opens_an_editor(words: list) -> bool:
+    """Whether the words after ``git config`` open the file in an editor:
+    ``-e``/``--edit`` anywhere, or ``edit`` as the subcommand (the first
+    word that is neither an option nor an option's value)."""
+    if "-e" in words or "--edit" in words:
+        return True
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in _GIT_CONFIG_OPTS_WITH_VALUE:
+            i += 2
+            continue
+        if w.startswith("-"):
+            i += 1
+            continue
+        return w == "edit"
+    return False
+
+
 def _git_program_config_write(cmd: str) -> Optional[str]:
     """The key, when ``cmd`` sets a git configuration key whose value git
     later runs as a program (``_GIT_PROGRAM_CONFIG_KEY_RE``); else None.
@@ -3242,10 +3271,11 @@ def _git_program_config_write(cmd: str) -> Optional[str]:
     Commit messages are blanked first (``_prose_blanked``); ``sh -c``
     bodies are read too.
 
-    Not seen: a key spelled through a variable (``git config "$k" x``), a
-    configuration file written by other means than ``git config``
-    (``.git/config`` is a deny path; ``~/.gitconfig`` or a file later
-    named by ``GIT_CONFIG_GLOBAL`` is not), and ``git config --edit``.
+    ``git config --edit``/``-e``/``edit`` (any file) counts as a program
+    key: the editor can write any key. A configuration file written by
+    other means is ``_is_git_configuration_file``'s.
+
+    Not seen: a key spelled through a variable (``git config "$k" x``).
     Rejected: asking for every ``git config`` write -- ``user.*``,
     ``color.*``, ``branch.*`` are the common writes and run nothing.
     Cost: one regex scan and one ``shlex.split`` per command."""
@@ -3258,6 +3288,8 @@ def _git_program_config_write(cmd: str) -> Optional[str]:
             words = m.group(1).split()
         if _GIT_CONFIG_READ_WORDS & set(words):
             continue
+        if _git_config_opens_an_editor(words):
+            return "--edit"
         for i, w in enumerate(words):
             if i + 1 < len(words) and _git_value_runs(w, words[i + 1]):
                 return w
@@ -6584,6 +6616,173 @@ _GIT_CONFIG_PROTECTED_GLOBS: tuple[str, ...] = (
     ".git", "**/.git",
     "HEAD", "**/HEAD",
 )
+
+#: Keys whose value names another file git reads: as configuration
+#: (include paths) or as attributes (``core.attributesFile``, which
+#: selects filter and diff drivers). Lower-cased, as git compares them.
+_GIT_FILE_NAMING_KEY_RE = re.compile(
+    r"include\.path|includeif\..+\.path|core\.attributesfile")
+_GIT_CONFIG_SECTION_RE = re.compile(
+    r'^\[\s*([A-Za-z0-9.-]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\](.*)$')
+_GIT_INCLUDE_DEPTH = 10
+
+
+def _git_config_value(raw: str) -> str:
+    """A configuration value as git reads it: double quotes removed,
+    ``\\``-escapes taken literally, ``#``/``;`` outside quotes end it."""
+    out: list = []
+    quoted = False
+    i = 0
+    while i < len(raw):
+        c = raw[i]
+        if c == "\\" and i + 1 < len(raw):
+            out.append(raw[i + 1])
+            i += 2
+            continue
+        if c == '"':
+            quoted = not quoted
+        elif c in "#;" and not quoted:
+            break
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out).strip()
+
+
+def _git_config_file_naming_entries(path: str) -> list:
+    """``(key, value)`` for every ``_GIT_FILE_NAMING_KEY_RE`` key in one
+    configuration file; empty when it cannot be read. Continuation lines
+    are not joined (git allows them; a path value does not need one)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read(1 << 20)
+    except OSError:
+        return []
+    section = ""
+    found: list = []
+    for line in text.splitlines():
+        s = line.strip()
+        m = _GIT_CONFIG_SECTION_RE.match(s)
+        if m:
+            name, sub, rest = m.groups()
+            section = name.lower() + (f".{sub}" if sub is not None else "")
+            s = rest.strip()
+        if not s or s[0] in "#;" or not section:
+            continue
+        name, eq, value = s.partition("=")
+        key = f"{section}.{name.strip()}".lower()
+        if eq and _GIT_FILE_NAMING_KEY_RE.fullmatch(key):
+            found.append((key, _git_config_value(value)))
+    return found
+
+
+def _enclosing_git_dir(path: Path) -> Optional[str]:
+    """The git directory of the repository whose work tree holds ``path``:
+    the nearest ``.git`` directory above it, or the directory a ``.git``
+    file (``gitdir: <dir>``) names. None outside any repository."""
+    d = path.parent
+    for _ in range(64):
+        dot = d / ".git"
+        try:
+            if dot.is_dir():
+                return str(dot)
+            if dot.is_file():
+                with open(dot, "r", encoding="utf-8", errors="replace") as fh:
+                    head = fh.read(4096).strip()
+                if head.startswith("gitdir:"):
+                    g = Path(head[len("gitdir:"):].strip())
+                    return str(g if g.is_absolute() else d / g)
+                return None
+        except OSError:
+            return None
+        if d.parent == d:
+            return None
+        d = d.parent
+    return None
+
+
+def _git_configuration_files(workspace, target: Optional[Path] = None) -> set:
+    """Absolute paths (as named and as resolved) of the files git reads as
+    configuration or attributes for a command in ``workspace``, outside
+    the work-tree names ``_GIT_CONFIG_PROTECTED_GLOBS`` matches.
+
+    Seeds: ``GIT_CONFIG_GLOBAL``, ``GIT_CONFIG_SYSTEM``, ``GIT_CONFIG``,
+    ``~/.gitconfig``, ``$XDG_CONFIG_HOME/git/config`` and ``attributes``
+    (``~/.config`` when unset), ``/etc/gitconfig``, and ``config``,
+    ``config.worktree`` and ``info/attributes`` of the workspace's git
+    directories and of the repository enclosing ``target``. Each
+    configuration file is read for ``include.path``,
+    ``includeIf.<cond>.path`` (relative to the including file, as named
+    and as resolved through a symlink) and ``core.attributesFile``
+    (relative to the workspace), to depth ``_GIT_INCLUDE_DEPTH``. Every
+    seed counts whether or not it exists or git would read it now (the
+    environment of a later command may differ); ``includeIf`` is followed
+    whatever its condition.
+
+    Cost: measured 0.26 ms per write-gate call for a home with two
+    include levels and no repository (stat and read of a few small
+    files, plus the cached ``git rev-parse`` of ``_git_metadata_roots``);
+    reads and the schema are untouched. Rejected: ``git config
+    --list --show-origin`` -- a subprocess per write, and it follows
+    ``includeIf`` only where the condition holds now."""
+    home = Path.home()
+    env = os.environ
+    xdg = Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "git"
+    configs: list = [str(home / ".gitconfig"), str(xdg / "config"),
+                     "/etc/gitconfig"]
+    plain: list = [str(xdg / "attributes")]
+    for var in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG"):
+        v = env.get(var)
+        if v and v != "/dev/null":
+            configs.append(os.path.expanduser(v))
+    git_dirs = list(_git_metadata_roots(workspace))
+    if target is not None:
+        g = _enclosing_git_dir(target)
+        if g:
+            git_dirs.append(g)
+    for g in git_dirs:
+        configs += [os.path.join(g, "config"),
+                    os.path.join(g, "config.worktree")]
+        plain.append(os.path.join(g, "info", "attributes"))
+    seen: set = set()
+    queue = [(c, 0) for c in configs]
+    while queue:
+        cfg, depth = queue.pop()
+        cfg = os.path.abspath(cfg)
+        if cfg in seen:
+            continue
+        seen.add(cfg)
+        if depth >= _GIT_INCLUDE_DEPTH:
+            continue
+        bases = {os.path.dirname(cfg),
+                 os.path.dirname(os.path.realpath(cfg))}
+        for key, value in _git_config_file_naming_entries(cfg):
+            if not value:
+                continue
+            value = os.path.expanduser(value)
+            if key == "core.attributesfile":
+                plain.append(os.path.join(str(workspace), value))
+                continue
+            for b in bases:
+                queue.append((os.path.join(b, value), depth + 1))
+    out: set = set()
+    for p in list(seen) + plain:
+        p = os.path.abspath(p)
+        out.add(p)
+        out.add(os.path.realpath(p))
+    return out
+
+
+def _is_git_configuration_file(resolved: Path, workspace) -> bool:
+    """Whether a write to ``resolved`` writes a file git reads as
+    configuration or attributes (``_git_configuration_files``). Never
+    raises; an error answers False and leaves the other gates."""
+    try:
+        files = _git_configuration_files(workspace, resolved)
+        p = os.path.abspath(str(resolved))
+        return p in files or os.path.realpath(p) in files
+    except Exception:
+        return False
 
 _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/api_client.py",
@@ -17787,6 +17986,12 @@ class _DocToolExecutor:
         _is_gitcfg = is_protected and any(
             fnmatch.fnmatchcase(_low, g.lower())
             for g in _GIT_CONFIG_PROTECTED_GLOBS)
+        # A file the configuration names (global file, XDG file, include
+        # target, attributes file): the same reach as `git config` with a
+        # program key, so the same rule -- asked in every mode.
+        if not is_protected and _is_git_configuration_file(
+                resolved, perms.workspace):
+            is_protected = _is_gitcfg = True
         # calc holds the user's ACTIVE calculations — editing one always needs
         # an explicit confirm even in acceptEdits, so the agent can't silently
         # destroy results ("editing only with a confirmation prompt").
@@ -17802,7 +18007,9 @@ class _DocToolExecutor:
         if is_protected or is_calc or was_refused:
             if not was_refused:
                 _record_security_event(
-                    "self_mod" if is_protected else "calc_edit", name, rel_str,
+                    "git_config_program" if _is_gitcfg
+                    else "self_mod" if is_protected else "calc_edit",
+                    name, rel_str,
                     blocked=perms.confirm_callback is None)
             if perms.confirm_callback is None:
                 _what = ("a file git reads as configuration" if _is_gitcfg
