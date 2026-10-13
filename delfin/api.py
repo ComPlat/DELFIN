@@ -2481,14 +2481,72 @@ class CalcDiff:
     a_n_imag: int | None
     b_n_imag: int | None
     notes: list[str]
+    # Appended with defaults: the JSON keys above keep their order.
+    dispersion_match: bool = True
+    a_dispersion: str | None = None
+    b_dispersion: str | None = None
+    solvent_match: bool = True
+    a_solvent: str | None = None
+    b_solvent: str | None = None
+
+
+#: A functional whose name carries its dispersion: -D/-D3/-D3BJ/-D4
+#: suffixes, VV10 (-V, -NL), the -3c composites, and GFN-xTB.
+_BUILTIN_DISPERSION = r"(?:-D[0-9A-Z()]*|-V|-NL|-3C)$|^(?:GFN|XTB)"
+
+
+def _effective_dispersion(functional, dispersion):
+    """(comparison key, label) of the dispersion a run used.
+
+    A built-in one is keyed "BUILT-IN" whatever the folder also records:
+    a CONTROL default ``disp_corr=D4`` beside r2SCAN-3c is not a second
+    correction, and two r2SCAN-3c runs must compare. ``(None, None)`` is
+    no correction found (no keyword in the folder or the .out echo).
+    """
+    import re as _re
+    f = (functional or "").strip()
+    if f and _re.search(_BUILTIN_DISPERSION, f, _re.IGNORECASE):
+        return "BUILT-IN", f"built into {f}"
+    if not dispersion:
+        return None, None
+    d = str(dispersion).strip().upper().replace("(", "").replace(")", "")
+    return d, d
+
+
+def _dispersion_from_echo(folder) -> str | None:
+    """The dispersion keyword of the ``!`` line the largest .out echoes,
+    read with the indexer's .inp-header reader; ``None`` if absent."""
+    try:
+        import re as _re
+        from delfin.doc_server.calc_indexer import _extract_from_inp_header
+        outs = sorted(Path(folder).glob("*.out"), key=lambda f: f.stat().st_size)
+        if not outs:
+            return None
+        text = outs[-1].read_text(encoding="utf-8", errors="replace")
+        m = _re.search(r"^\s*\|\s*\d+>\s*(!.+)$", text, _re.MULTILINE)
+        if m:
+            return _extract_from_inp_header(m.group(1)).get("inp_dispersion")
+    except Exception:
+        pass
+    return None
 
 
 def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
-    """Diff method/basis/results between two calculation folders.
+    """Diff method/basis/dispersion/solvent/results between two folders.
 
     ``delta_gibbs_kcal`` and ``delta_spe_kcal`` are :math:`(B - A)` in
     kcal/mol; ``None`` if either side lacks the value. ``method_match``
     is ``True`` only when both functionals are non-None and equal.
+    ``dispersion_match`` compares the correction each run used (from
+    DELFIN_Data.json / CONTROL.txt / .inp, else the .out's echoed ``!``
+    line); a functional carrying its own (wB97X-V, *-3c, GFN-xTB, -D3
+    suffixes) counts as built-in on both sides. ``solvent_match``
+    compares the implicit solvent (``None`` = gas phase). Neither is
+    folded into ``method_match``, which callers read as "same
+    functional". The deltas are still returned when a field differs; a
+    note names the field (D3BJ alone moves a butane conformer pair by
+    ~3.5 kcal/mol). Rejected: setting the deltas to None, which would
+    change the return shape for callers that read them as numbers.
     """
     HARTREE_TO_KCAL = 627.5094740631
     rows = compare_across_functionals(
@@ -2507,6 +2565,7 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
             a_spe=None, b_spe=None, delta_spe_kcal=None,
             a_n_imag=None, b_n_imag=None,
             notes=["could not parse one or both folders"],
+            dispersion_match=False, solvent_match=False,
         )
 
     notes: list[str] = []
@@ -2526,6 +2585,22 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
         )
     if not basis_match and a.basis and b.basis:
         notes.append(f"different basis: {a.basis} vs {b.basis}")
+    a_dkey, a_disp = _effective_dispersion(
+        a.functional, a.dispersion or _dispersion_from_echo(folder_a))
+    b_dkey, b_disp = _effective_dispersion(
+        b.functional, b.dispersion or _dispersion_from_echo(folder_b))
+    dispersion_match = a_dkey == b_dkey
+    if not dispersion_match:
+        notes.append(f"different dispersion correction: {a_disp or 'none'} "
+                     f"vs {b_disp or 'none'}")
+    solvent_match = (a.solvent or "").upper() == (b.solvent or "").upper()
+    if not solvent_match:
+        notes.append(f"different solvent: {a.solvent or 'gas phase'} "
+                     f"vs {b.solvent or 'gas phase'}")
+    differing = [name for name, ok in (
+        ("functional", method_match or not (a.functional and b.functional)),
+        ("basis", basis_match or not (a.basis and b.basis)),
+        ("dispersion", dispersion_match), ("solvent", solvent_match)) if not ok]
     if a.n_imag and a.n_imag > 0:
         notes.append(f"A has {a.n_imag} imag freq(s) — not a minimum")
     if b.n_imag and b.n_imag > 0:
@@ -2540,6 +2615,9 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
         if a.single_point is not None and b.single_point is not None
         else None
     )
+    if differing and (delta_g is not None or delta_e is not None):
+        notes.append(f"the energy delta spans different {', '.join(differing)}"
+                     " and is not a comparison of the two structures")
     return CalcDiff(
         folder_a=str(folder_a), folder_b=str(folder_b),
         method_match=method_match, basis_match=basis_match,
@@ -2549,6 +2627,10 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
         a_spe=a.single_point, b_spe=b.single_point, delta_spe_kcal=delta_e,
         a_n_imag=a.n_imag, b_n_imag=b.n_imag,
         notes=notes,
+        dispersion_match=dispersion_match,
+        a_dispersion=a_disp, b_dispersion=b_disp,
+        solvent_match=solvent_match,
+        a_solvent=a.solvent, b_solvent=b.solvent,
     )
 
 
