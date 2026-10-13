@@ -97,6 +97,42 @@ jobs:
         # blocked in C code (a lock, a socket) is interrupted too.
         run: pytest -q -m "not slow" --timeout=300 --timeout-method=signal
 
+  container:
+    # agent.bash_isolation = "container", driven for real. The fast suite
+    # skips the real run where no runtime exists; here Docker and Podman
+    # are installed, and DELFIN_CONTAINER_REAL turns a missing runtime or
+    # image into a failure instead of a skip. One small image, pulled once.
+    name: container isolation (docker, podman)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the package without its chemistry stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-deps -e .
+          pip install pytest pytest-timeout
+
+      - name: Pull the default image for both runtimes
+        run: |
+          docker pull docker.io/library/python:3.11-slim
+          podman pull docker.io/library/python:3.11-slim
+
+      - name: Container isolation tests
+        env:
+          DELFIN_CONTAINER_REAL: docker,podman
+        run: >
+          pytest -q -p no:cacheprovider -rs --timeout=300 --timeout-method=signal
+          tests/test_a_command_can_run_in_a_container.py
+
   reference-env:
     name: reference environment (py3.12, numpy 2.2)
     runs-on: ubuntu-latest

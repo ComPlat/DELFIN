@@ -7,12 +7,12 @@ container when one can run, and otherwise falls back to the existing
 layers with a recorded notice, never to an open shell. Real part: a run
 in whatever runtime this host has, skipped with the reason when none.
 """
+import json
+import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import child_env
 
 from delfin.agent import api_client as A
 from delfin.agent import boundaries as B
@@ -233,35 +233,124 @@ def test_the_doctor_warns_when_the_container_is_not_used(monkeypatch):
 
 
 # -- a real run ----------------------------------------------------------------
+#
+# DELFIN_CONTAINER_REAL names the runtimes that must run here ("docker",
+# "docker,podman"); with it set, a missing runtime or image FAILS. Without
+# it, the run takes whatever runtime this host has and skips with the
+# reason when there is none.
 
-def _real_choice():
+_REQUIRED = [r.strip() for r in os.environ.get("DELFIN_CONTAINER_REAL", "").split(",")
+             if r.strip()]
+
+_PROBE = '''import json, socket, sys
+t = json.load(open("targets.json"))
+out = {}
+for key, path in (("inside", t["inside"]), ("outside", t["outside"])):
+    try:
+        with open(path, "w") as fh:
+            fh.write("x")
+        out[key] = "wrote"
+    except OSError as exc:
+        out[key] = type(exc).__name__
+for key, path in (("secret_file", t["secret_file"]), ("ssh_key", t["ssh_key"])):
+    try:
+        out[key] = open(path).read()
+    except OSError as exc:
+        out[key] = type(exc).__name__
+s = socket.socket()
+s.settimeout(5)
+try:
+    s.connect((t["ip"], 80))
+    out["net"] = "connected"
+except OSError as exc:
+    out["net"] = type(exc).__name__
+print("PROBE " + json.dumps(out))
+'''
+
+
+def _runtimes_to_drive():
+    if _REQUIRED:
+        return _REQUIRED
+    present = [n for n in CE.RUNTIMES if shutil.which(n)]
+    return present[:1] or ["none"]
+
+
+def _drive_probe(tmp_path, monkeypatch):
+    """Run the probe through the real bash executor (gates included) in a
+    private home holding secrets, with the workspace inside that home.
+    The paths reach the command through a data file, so the text gates
+    have nothing to refuse and the isolation is what is measured.
+    Returns (probe result, path written outside the roots)."""
+    real_home = Path.home()
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "id_ed25519").write_text("PRIVATE-KEY")
+    (home / "secret.txt").write_text("SECRET")
+    ws = home / "ws"
+    ws.mkdir()
+    # Rootless Podman keeps its images under the real home's data
+    # directory; that one location is kept, the rest of HOME is private.
+    monkeypatch.setenv("XDG_DATA_HOME",
+                       os.environ.get("XDG_DATA_HOME") or str(real_home / ".local" / "share"))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(A, "_record_security_event", lambda *a, **k: None)
+    outside = tmp_path / "outside.txt"
+    (ws / "targets.json").write_text(json.dumps({
+        "inside": str(ws / "inside.txt"), "outside": str(outside),
+        "secret_file": str(home / "secret.txt"),
+        "ssh_key": str(home / ".ssh" / "id_ed25519"), "ip": "1.1.1.1"}))
+    (ws / "probe.py").write_text(_PROBE)
+    perms = A.KitToolPermissions(workspace=str(ws), mode="bypassPermissions")
+    res = json.loads(A._doc_executor._execute_bash(
+        {"command": "python3 probe.py", "cwd": str(ws)}, perms))
+    line = [ln for ln in str(res.get("stdout", "")).splitlines()
+            if ln.startswith("PROBE ")]
+    assert line, res
+    probe = json.loads(line[0][len("PROBE "):])
+    assert probe["inside"] == "wrote", probe       # the command ran
+    return probe, outside
+
+
+def test_the_probe_passes_the_gates_and_measures_something(tmp_path, monkeypatch):
+    """Control: the same probe with no isolation writes outside and reads
+    the secrets, so a refusal in the container run is the container's."""
+    monkeypatch.setattr(A, "_bash_isolation_argv",
+                        lambda cmd, cwd, perms, **_k: ["/bin/bash", "-c", cmd])
+    probe, outside = _drive_probe(tmp_path, monkeypatch)
+    assert probe["outside"] == "wrote" and outside.exists(), probe
+    assert probe["secret_file"] == "SECRET", probe
+    assert probe["ssh_key"] == "PRIVATE-KEY", probe
+
+
+@pytest.mark.parametrize("runtime", _runtimes_to_drive())
+def test_a_real_container_holds_the_command(runtime, tmp_path, monkeypatch):
+    """In a real container: the write outside the roots fails, the home
+    directory's secrets do not exist, a direct connection fails."""
+    if runtime == "none":
+        pytest.skip("no container runtime (apptainer, singularity, podman, "
+                    "docker) is installed on this host")
+    monkeypatch.setattr(CE, "_settings", lambda: {"runtime": runtime})
     CE.reset()
     choice = CE.choose()
     if not choice.runtime:
+        if _REQUIRED:
+            pytest.fail(f"DELFIN_CONTAINER_REAL requires {runtime}: {choice.reason}")
         pytest.skip(f"no container can run here: {choice.reason}")
-    return choice
+    monkeypatch.setattr(A, "_BASH_ISOLATION_OVERRIDE", "container")
+    seen = []
+    real_argv = A._bash_isolation_argv
+
+    def _spy(*a, **k):
+        argv = real_argv(*a, **k)
+        seen.append(Path(argv[0]).name)
+        return argv
+
+    monkeypatch.setattr(A, "_bash_isolation_argv", _spy)
+    probe, outside = _drive_probe(tmp_path, monkeypatch)
+    assert seen and seen[-1] == runtime, seen
+    assert probe["outside"] != "wrote" and not outside.exists(), probe
+    assert probe["secret_file"] != "SECRET", probe
+    assert probe["ssh_key"] != "PRIVATE-KEY", probe
+    assert probe["net"] != "connected", probe
 
 
-def test_a_real_container_holds_the_command(tmp_path, monkeypatch):
-    if not any(shutil.which(n) for n in CE.RUNTIMES):
-        pytest.skip("no container runtime (apptainer, singularity, podman, "
-                    "docker) is installed on this host")
-    _real_choice()
-    home = Path.home()
-    secret = home / ".delfin_settings.json"
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    outside = tmp_path / "outside.txt"
-    cmd = (f"echo in > {ws}/inside.txt; "
-           f"echo out > {outside} && echo WROTE_OUTSIDE; "
-           f"test -e {secret} && echo SAW_SECRET; "
-           "python3 -c \"import socket;s=socket.socket();s.settimeout(3);"
-           "s.connect(('1.1.1.1',80));print('NET_OPEN')\" 2>/dev/null; true")
-    argv = A._bash_isolation_argv(cmd, ws, _perms(ws), mode="container")
-    assert Path(argv[0]).name in CE.RUNTIMES
-    done = subprocess.run(argv, capture_output=True, text=True, timeout=300,
-                          env=child_env(tmp_path))
-    assert (ws / "inside.txt").read_text().strip() == "in", done.stderr
-    assert not outside.exists() and "WROTE_OUTSIDE" not in done.stdout
-    assert "SAW_SECRET" not in done.stdout
-    assert "NET_OPEN" not in done.stdout
