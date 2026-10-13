@@ -1369,9 +1369,19 @@ Choose with `--provider` / `--model` or `/model`. DELFIN detects each model's re
 | `acceptEdits` | allowed inside the workspace | asks |
 | `bypassPermissions` | allowed, no prompts | no prompts |
 
+A session starts in `default` unless `--permission-mode` or `default_mode` in your permission settings names another level; `plan` applies only when one of them asks for it. `bypassPermissions` needs `--unattended` beside it, in a terminal session, on a `-p` run and on `delfin-agent run` alike, and a `bypassPermissions` default in your settings is never inherited: a terminal session starts in `default` instead, and a `-p` or `run` invocation without `--unattended` is refused (exit 2). With nobody to ask — a `-p` or `run` invocation without `--supervised` — `default` refuses every shell command off the allow-list and allows writes inside the workspace.
+
 Cycle with `/permissions` or Shift+Tab; the cycle deliberately never lands on bypass. Two things hold at **every** level: the sandbox and the deny lists stay in force, and a file that defines the agent's own permissions always requires explicit confirmation.
 
 Settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
+
+### The action watcher
+
+Behind the rules, a small model gives a second opinion on actions the rules allowed without anyone seeing them: everything under `bypassPermissions`, messages to other agents and network calls in every mode, and — when nobody can be asked (`delfin agent run`, `chat -p`, the scheduler) — every auto-allowed action that leaves the workspace, such as `git fetch`. It can only add friction: ask you, or refuse with its reason. Plain reads never reach it. Its state — on or off, model, scope, last failure — is in the start banner and in `/status`.
+
+When the watcher's model fails (one retry on an error, none on a timeout), an action that leaves the workspace is asked about, or held when nobody can be asked; reading, commands on the auto-allow list and writing inside the workspace go on, so a long unattended run keeps working. After three failures in a row the watcher is reported down, and its model is re-tried at most once a minute until it answers again.
+
+`agent.classifier.enabled`, `.model`, `.scope` (`unattended` or `all`) and `.user_rules` in `~/.delfin_settings.json` configure it, `DELFIN_CLASSIFIER=off|on|all` overrides it for one process. A process started from inside an agent session ignores `DELFIN_CLASSIFIER=off`, and the agent cannot edit the settings file.
 
 ### Permission rules
 
