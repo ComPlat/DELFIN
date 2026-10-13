@@ -3126,27 +3126,127 @@ _SEGMENT_ASSIGNMENT_RE = re.compile(r"(?:^|[;&|({])\s*[A-Za-z_]\w*=")
 _SHELL_EXPANSION_CHARS = frozenset("$`*?[]{}")
 
 #: A ``git config`` invocation (any global options before it) and the rest
-#: of its step. ``_git_hook_config_write`` reads the step.
+#: of its step. ``_git_program_config_write`` reads the step.
 _GIT_HOOK_CONFIG_WRITE_RE = re.compile(
     r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+|\s+--[\w-]+(?:=\S+)?)*"
     r"\s+config\b([^;&|\n]*)")
-#: Keys whose value names a program that an auto-allowed ``git commit`` or
-#: ``git status`` runs: the hook directory and the fsmonitor hook.
-_GIT_PROGRAM_CONFIG_KEYS = frozenset({"core.hookspath", "core.fsmonitor"})
+#: Keys whose value git runs as a program (or, for include paths, reads as
+#: more configuration), matched on the lower-cased key: git compares
+#: section and variable names case-insensitively. Subsection names
+#: (``<driver>``, ``<url>``, ``<format>``) are case-sensitive in git; the
+#: match lower-cases them too, which only widens it.
+_GIT_PROGRAM_CONFIG_KEY_RE = re.compile(
+    r"(?:core\.(?:hookspath|fsmonitor|sshcommand|pager|editor|askpass|"
+    r"gitproxy|alternaterefscommand)"
+    r"|sequence\.editor|gpg\.(?:.+\.)?program|credential\.(?:.+\.)?helper"
+    r"|diff\.external|diff\..+\.(?:textconv|command)"
+    r"|filter\..+\.(?:clean|smudge|process)|merge\..+\.driver"
+    r"|(?:difftool|mergetool)\..+\.cmd|interactive\.difffilter"
+    r"|remote\..+\.(?:uploadpack|receivepack)"
+    r"|pager\..+|alias\..+|include\.path|includeif\..+\.path)")
+#: ``pager.<cmd>`` takes a boolean as well as a program.
+_GIT_BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "on", "off",
+                                 "1", "0", ""})
 _GIT_CONFIG_READ_WORDS = frozenset({"--get", "--get-all", "--get-regexp",
                                     "--get-urlmatch", "-l", "--list", "get",
                                     "list", "--unset", "--unset-all", "unset",
                                     "--remove-section", "--show-origin"})
+#: An environment assignment that hands git configuration to every git
+#: command it reaches: ``GIT_CONFIG_PARAMETERS`` (``'k'='v'`` pairs, or the
+#: older ``'k=v'``) and ``GIT_CONFIG_KEY_<n>`` (the key; its value is in
+#: ``GIT_CONFIG_VALUE_<n>``, not read).
+_GIT_CONFIG_ENV_RE = re.compile(r"^(GIT_CONFIG_PARAMETERS|GIT_CONFIG_KEY_\d+)=(.*)$")
+_GIT_CONFIG_PARAM_PAIR_RE = re.compile(r"'([^']*)'(?:='([^']*)')?")
 
 
-def _git_hook_config_write(cmd: str) -> Optional[str]:
-    """The key, when ``cmd`` writes ``core.hooksPath`` or ``core.fsmonitor``
-    with ``git config``; else None.
+def _git_value_runs(key: str, value: Optional[str]) -> bool:
+    """Whether setting ``key`` to ``value`` names a program git runs.
 
-    A write is the key followed by a value, with no read or unset word in
-    the step. Persistent only: ``git -c core.hooksPath=...`` lasts for one
-    command, which the bash gate already sees. Commit messages are blanked
-    first (``_prose_blanked``); ``sh -c`` bodies are read too."""
+    ``value`` None means unknown and counts as a program. An alias runs a
+    program when it starts with ``!`` or carries ``-c``/``--config-env``
+    with a program key; ``pager.<cmd>`` not when it is a boolean."""
+    k = key.lower()
+    if not _GIT_PROGRAM_CONFIG_KEY_RE.fullmatch(k):
+        return False
+    if value is None:
+        return True
+    if k.startswith("alias."):
+        v = value.lstrip()
+        return v.startswith("!") or bool(
+            _git_one_command_program_key(["git", *v.split()]))
+    if k.startswith("pager."):
+        return value.strip().lower() not in _GIT_BOOLEAN_VALUES
+    return True
+
+
+def _git_one_command_program_key(words: list) -> Optional[str]:
+    """The first program key that ``words`` set for one command: ``git -c
+    k=v`` / ``--config-env=k=ENV`` before the subcommand, or a
+    ``GIT_CONFIG_PARAMETERS``/``GIT_CONFIG_KEY_<n>`` assignment anywhere
+    (prefix, ``env``, ``export``). None otherwise."""
+    for i, raw in enumerate(words):
+        tok = raw.rstrip(";&|)")
+        env = _GIT_CONFIG_ENV_RE.match(tok)
+        if env:
+            name, value = env.groups()
+            if name != "GIT_CONFIG_PARAMETERS":
+                if _git_value_runs(value, None):
+                    return value
+                continue
+            for k, v in _GIT_CONFIG_PARAM_PAIR_RE.findall(value):
+                if "=" in k and not v:
+                    k, v = k.split("=", 1)
+                if _git_value_runs(k, v):
+                    return k
+            continue
+        if tok.lstrip("(`").rsplit("/", 1)[-1] != "git":
+            continue
+        j = i + 1
+        while j < len(words) and words[j].startswith("-"):
+            opt = words[j]
+            pair = None
+            if opt in ("-c", "--config-env"):
+                pair = words[j + 1] if j + 1 < len(words) else ""
+                j += 2
+            elif opt.startswith("--config-env="):
+                pair = opt[len("--config-env="):]
+                j += 1
+            elif "=" not in opt and opt in _GIT_GLOBAL_OPTS_WITH_VALUE:
+                j += 2
+                continue
+            else:
+                j += 1
+                continue
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                if opt.startswith("--config-env"):
+                    v = None            # the value is in that variable
+                if _git_value_runs(k, v):
+                    return k
+    return None
+
+
+def _git_program_config_write(cmd: str) -> Optional[str]:
+    """The key, when ``cmd`` sets a git configuration key whose value git
+    later runs as a program (``_GIT_PROGRAM_CONFIG_KEY_RE``); else None.
+
+    Two shapes. Persistent: ``git config [opts] <key> <value>`` with no
+    read or unset word in the step; it reaches every later git command,
+    including the auto-allowed ``git commit``/``git status``. One command:
+    ``git -c``/``--config-env`` before the subcommand, and the
+    ``GIT_CONFIG_PARAMETERS``/``GIT_CONFIG_KEY_<n>`` environment; that git
+    command is often on the auto-allowed read list (``git -c
+    core.pager=... log``) and in bypassPermissions nothing else asks.
+    Commit messages are blanked first (``_prose_blanked``); ``sh -c``
+    bodies are read too.
+
+    Not seen: a key spelled through a variable (``git config "$k" x``), a
+    configuration file written by other means than ``git config``
+    (``.git/config`` is a deny path; ``~/.gitconfig`` or a file later
+    named by ``GIT_CONFIG_GLOBAL`` is not), and ``git config --edit``.
+    Rejected: asking for every ``git config`` write -- ``user.*``,
+    ``color.*``, ``branch.*`` are the common writes and run nothing.
+    Cost: one regex scan and one ``shlex.split`` per command."""
     import shlex
     text = _with_shell_bodies(_prose_blanked(cmd or ""))
     for m in _GIT_HOOK_CONFIG_WRITE_RE.finditer(text):
@@ -3157,8 +3257,18 @@ def _git_hook_config_write(cmd: str) -> Optional[str]:
         if _GIT_CONFIG_READ_WORDS & set(words):
             continue
         for i, w in enumerate(words):
-            if w.lower() in _GIT_PROGRAM_CONFIG_KEYS and i + 1 < len(words):
+            if i + 1 < len(words) and _git_value_runs(w, words[i + 1]):
                 return w
+    if "git" not in text.lower():
+        return None
+    for line in text.split("\n"):
+        try:
+            words = shlex.split(line)
+        except ValueError:
+            words = line.split()
+        key = _git_one_command_program_key(words)
+        if key:
+            return key
     return None
 
 
@@ -6345,6 +6455,13 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/sandbox.py",
     "delfin/agent/kit_settings.py",
     "delfin/user_settings.py",
+    # Who may answer a pending approval, and the code that writes and
+    # checks an answer (approval_guard).
+    "delfin/agent/approval_guard.py",
+    "delfin/agent/file_confirm.py",
+    "delfin/agent/terminal_confirm.py",
+    "delfin/agent/approval_answers.py",
+    "delfin/agent/cli_gate.py",
     # The maintainer's principles, loaded first into every role: an agent
     # that could rewrite them could rewrite what it is for.
     "delfin/agent/pack/shared/principles_addendum.md",
@@ -6618,6 +6735,42 @@ def output_for_a_person():
         yield
     finally:
         _PERSON_OUTPUT.reset(token)
+
+
+#: Set only by gate_dry_run() (``delfin-agent gate explain``), for the
+#: thread running that one call. Read at exactly one point per supported
+#: tool: after its last gate and before its first act (bash: before the
+#: process starts; write_file: before the bytes are written). Every gate
+#: before that point runs unchanged, so the verdict is the executor's own.
+_GATE_DRY_RUN: "_contextvars.ContextVar[bool]" = (
+    _contextvars.ContextVar("delfin_gate_dry_run", default=False))
+
+#: The tools that read _GATE_DRY_RUN. Any other tool would ACT under a
+#: dry run, so gate_explain refuses to explain it.
+GATE_DRY_RUN_TOOLS: frozenset[str] = frozenset({"bash", "write_file"})
+
+#: Marker key of the result a dry-run stop returns.
+GATE_DRY_RUN_KEY = "gate_dry_run"
+
+
+@contextlib.contextmanager
+def gate_dry_run():
+    """Inside this block, on this thread, bash and write_file stop after
+    their last gate and return ``{GATE_DRY_RUN_KEY: true, ...}`` instead
+    of acting. Grants nothing and changes no gate decision."""
+    token = _GATE_DRY_RUN.set(True)
+    try:
+        yield
+    finally:
+        _GATE_DRY_RUN.reset(token)
+
+
+def _dry_run_stop(tool: str, target: str) -> Optional[str]:
+    """The dry-run result, or None when no dry run is active."""
+    if not _GATE_DRY_RUN.get():
+        return None
+    return json.dumps({GATE_DRY_RUN_KEY: True, "tool": tool,
+                       "target": str(target)[:500]})
 
 
 @contextlib.contextmanager
@@ -7582,6 +7735,137 @@ def _reading_alternative_hint(cmd: str) -> str:
         f" NOTE: the READING form of '{first}' is auto-allowed: {alt}. "
         "If that is the question you were asking, ask it that way."
     )
+
+
+#: Inline python: `-c`, or a here-document on stdin (`python3 - <<EOF`,
+#: `python3 <<EOF`). Group 1 is the interpreter word as the model wrote it.
+_INLINE_PYTHON_RE = re.compile(
+    r"^\s*(python(?:\d(?:\.\d+)?)?)\s+(?:-c\b|(?:-\s+)?<<)")
+
+#: A program name that may be echoed into a refusal: no `=`, quote or `$`.
+_PLAIN_PROGRAM_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
+
+
+def _inline_file_route(cmd: str, args: dict,
+                       perms: "KitToolPermissions") -> str:
+    """The file route for inline python, or "" where the gate would refuse it.
+
+    Input: a command refused by the auto-allow tier, its tool args, the
+    permissions that refused it. Output: one line naming
+    ``write_file(path="<name>")`` and ``<interpreter> <name>``, or "".
+
+    Named only when every step is allowed for these permissions: the
+    file is new (write_file refuses an unread overwrite), inside a
+    writable root, not read-only, inside the write scope, and
+    ``<interpreter> <name>`` is auto-allowed. No `cwd`: write_file
+    resolves against the workspace, the command against the cwd, so a
+    relative name would mean two files. The program is not copied into
+    the line (it may be long; the model has it).
+    """
+    match = _INLINE_PYTHON_RE.match(cmd or "")
+    if match is None or str(args.get("cwd") or "").strip() not in ("", "."):
+        return ""
+    interpreter = match.group(1)
+    workspace = Path(perms.workspace)
+    for n in range(1, 10):
+        name = "_inline_check.py" if n == 1 else f"_inline_check_{n}.py"
+        if not (workspace / name).exists():
+            break
+    else:
+        return ""
+    target = (workspace / name).resolve(strict=False)
+    try:
+        if (perms.find_root_for(target) is None
+                or perms.is_read_only_path(target)
+                or not _write_in_scope(target, perms)
+                or not perms.matches_bash_auto_allow(f"{interpreter} {name}")):
+            return ""
+    except Exception:
+        return ""
+    return (
+        f" ROUTE: write the program to a file with write_file(path=\"{name}\""
+        f", content=<the program>) and run `{interpreter} {name}`; the file "
+        "passes the write gate and the script scan, which inline code skips, "
+        "and undo_changes(scope=\"last\") removes it afterwards."
+    )
+
+
+def _allow_list_route(cmd: str, args: dict,
+                      perms: "KitToolPermissions") -> str:
+    """One route for an auto-allow refusal no cause-specific hint covers.
+
+    Input: the refused command, its args, the refusing permissions.
+    Output: "" or one line, computed against these permissions:
+
+    * a chain or pipe with allowed and refused parts: the first refused
+      part by name and the allowed parts, each checked with
+      ``matches_bash_auto_allow``; a refused part that is inline python
+      carries the file route. All parts refused: "" (nothing to run).
+    * a single command whose program is a plain name: the spellings of
+      it (an absolute path where one is on PATH, ``env``, ``nohup``,
+      ``time``, ``sh -c``) that the same check also refuses, and the user
+      as the route -- ``ask_user_question`` only when a question dialog
+      is bound, otherwise the answer text.
+
+    Rejected: suggesting the allowed parts of a pipe as an equivalent
+    (the pipe's meaning is lost; they are named as allowed, not as the
+    same job), and naming spellings without checking them (a user allow
+    pattern can admit one; a listed spelling that runs would be a route
+    past the refusal it annotates).
+    """
+    if "<<" in cmd or "\n" in cmd:
+        return ""
+    try:
+        segments = [s.strip() for s in _split_shell_segments(cmd)]
+    except Exception:
+        return ""
+    segments = [s for s in segments if s]
+    if not segments:
+        return ""
+    if len(segments) > 1:
+        try:
+            verdicts = [(s, perms.matches_bash_auto_allow(s))
+                        for s in segments]
+        except Exception:
+            return ""
+        refused = [s for s, ok in verdicts if not ok]
+        allowed = [s for s, ok in verdicts if ok]
+        if not refused or not allowed:
+            return ""
+        shown = ", ".join(f"`{s[:80]}`" for s in allowed[:4])
+        line = (f" ROUTE: `{refused[0][:120]}` is the part not on the list; "
+                f"{shown} "
+                + ("is allowed as a bash call of its own."
+                   if len(allowed) == 1
+                   else "are allowed as bash calls of their own."))
+        return line + _inline_file_route(refused[0], args, perms)
+    try:
+        words = shlex.split(segments[0])
+    except ValueError:
+        return ""
+    if not words or not _PLAIN_PROGRAM_RE.fullmatch(words[0]):
+        return ""
+    program = words[0]
+    quoted = " ".join(shlex.quote(w) for w in words)
+    spellings = []
+    found = shutil.which(program)
+    if found and found != program:
+        spellings.append(" ".join([shlex.quote(found)] + [
+            shlex.quote(w) for w in words[1:]]))
+    spellings += [f"env {quoted}", f"nohup {quoted}", f"time {quoted}",
+                  f"sh -c {shlex.quote(quoted)}"]
+    try:
+        spellings = [s for s in spellings
+                     if not perms.matches_bash_auto_allow(s)]
+    except Exception:
+        return ""
+    if not spellings:
+        return ""
+    ask = ("ask the user with ask_user_question"
+           if getattr(perms, "ask_user_callback", None) is not None
+           else "say in your answer which command you need and why")
+    shown = ", ".join(f"`{s[:100]}`" for s in spellings)
+    return f" ROUTE: Running it as {shown} is refused the same way; {ask}."
 
 
 def _loop_body(cmd: str) -> "list[str] | None":
@@ -16963,6 +17247,16 @@ class _DocToolExecutor:
         hard-deny, and self-mod-guard / calc explicit-confirm. Shared by
         write_file/edit_file/multi_edit and by every file an apply_patch diff
         touches. Returns an error string to block, or None to allow."""
+        # Where approvals are answered, and the CLI gate's state: refused
+        # for every write tool and every shell write target, granted root
+        # or not, with nobody asked (approval_guard).
+        from . import approval_guard as _approval_guard
+        if _approval_guard.is_answer_room_path(path_arg, perms.workspace):
+            _record_security_event(
+                "approval_self_answer", name, str(path_arg)[:120],
+                blocked=True)
+            return _approval_guard.refusal(
+                f"'{path_arg}' is where pending approvals are answered")
         # for_read=True: recognise every reachable root so the per-tier policy
         # below can fire (deny read-only, confirm calc). The write EXECUTOR
         # re-resolves writable-only — defense in depth.
@@ -17466,6 +17760,19 @@ class _DocToolExecutor:
         if leaked:
             return leaked
 
+        # A pending approval is answered by the person, in every mode and
+        # before anything is asked: a dialog here would ask the person to
+        # approve the agent approving itself (approval_guard).
+        if name == "bash":
+            from . import approval_guard as _approval_guard
+            _answers = _approval_guard.answer_command(
+                _prose_blanked(str(args.get("command", "") or "")))
+            if _answers:
+                _record_security_event(
+                    "approval_self_answer", name,
+                    str(args.get("command", "") or "")[:120], blocked=True)
+                return _approval_guard.refusal(_answers)
+
         if mode == "plan" and not _plan_mode_admits_for_delegate(name, perms):
             return (
                 f"plan mode (read-only) — '{name}' rejected. "
@@ -17771,15 +18078,19 @@ class _DocToolExecutor:
                         "not try a third form. End your turn and ask the "
                         "user what they want done with this file."
                     )
-            # A hook directory or fsmonitor program written into git's
-            # configuration runs from the next auto-allowed `git commit` or
-            # `git status`, in whatever mode that runs -- the same reach as
-            # the work-tree files git reads as configuration
-            # (_GIT_CONFIG_PROTECTED_GLOBS), so the same rule: asked in
-            # every mode, refused with nobody to ask. It also keeps a hook
+            # A git configuration key whose value git runs as a program (a
+            # hook directory, fsmonitor, pager, editor, ssh command,
+            # credential helper, diff/filter/merge driver, `!` alias, an
+            # include path; _GIT_PROGRAM_CONFIG_KEY_RE) runs from the next
+            # auto-allowed `git commit`/`git status`/`git log`, in whatever
+            # mode that runs -- the same reach as the work-tree files git
+            # reads as configuration (_GIT_CONFIG_PROTECTED_GLOBS), so the
+            # same rule: asked in every mode, refused with nobody to ask.
+            # Set for one command (`git -c`, GIT_CONFIG_*) it turns an
+            # auto-allowed read into a program run. It also keeps a hook
             # from changing a remote between the role check and the push
             # (_steps_keep_the_push_url).
-            _hook_key = _git_hook_config_write(cmd)
+            _hook_key = _git_program_config_write(cmd)
             # True once the user approved this command in a dialog of its
             # own (a hook-path write, a merge of a PR with no checks), so
             # the ordinary dialog does not ask a second time.
@@ -17791,16 +18102,16 @@ class _DocToolExecutor:
                 if perms.confirm_callback is None:
                     return (
                         f"blocked: `{_hook_key}` is a git configuration "
-                        "change that names a program the next `git commit` "
-                        "or `git status` runs, and nobody can be asked "
-                        "here. Tell the user the command and why it is "
-                        "needed.")
+                        "change that names a program git runs (a hook, "
+                        "pager, editor, helper, driver or alias), and "
+                        "nobody can be asked here. Tell the user the "
+                        "command and why it is needed.")
                 try:
                     ok = bool(perms.confirm_callback(
                         "bash", {"command": cmd},
                         "[GIT CONFIGURATION]\n"
-                        f"`{_hook_key}` names a program that the next git "
-                        "commit or git status runs.\n\n$ " + cmd))
+                        f"`{_hook_key}` names a program that git runs, "
+                        "here or from a later git command.\n\n$ " + cmd))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if not ok:
@@ -18112,7 +18423,12 @@ class _DocToolExecutor:
                     "on a file the write gate already saw, which is the part "
                     "`-c` skips. Use one of them instead of asking for a "
                     "`-c` allow-pattern."
-                )
+                ) + _inline_file_route(cmd, args, perms)
+            elif _INLINE_PYTHON_RE.match(cmd):
+                # A here-document on python's stdin: `-c` with other
+                # punctuation (29 of 437 auto-allow refusals in the denial
+                # log), and the same file route.
+                hint = _inline_file_route(cmd, args, perms)
             elif re.search(
                     r"\bgit\b[^\n]{0,40}\b(?:worktree\s+add|stash\b|"
                     r"checkout\s+[^\s]+\s+--)", cmd):
@@ -18222,6 +18538,11 @@ class _DocToolExecutor:
                     "take it back — that is why the tool exists, not a "
                     "formality."
                 )
+            else:
+                # The rest: a chain with one refused part, or one program
+                # not on the list. The route names what the same check
+                # allows, and the spellings of the command it refuses too.
+                hint = _allow_list_route(cmd, args, perms)
             return (
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
                 f"(mode={mode}). Do NOT try to work around this block with "
@@ -18669,6 +18990,11 @@ class _DocToolExecutor:
                     old_text if existed else None, str(content))
             except _aw.AppendRejected as exc:
                 return json.dumps({"error": str(exc)})
+
+        # Every gate of this tool has run by here. `gate explain` stops.
+        _dry = _dry_run_stop("write_file", resolved)
+        if _dry is not None:
+            return _dry
 
         if getattr(perms, "mode", "") == "diff_approval":
             return self._stage_pending_change(
@@ -19857,6 +20183,21 @@ class _DocToolExecutor:
         # argument is usually absent, and a record without an absolute
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
+
+        # Every gate of this tool has run by here. `gate explain` stops,
+        # carrying the argv the command would have been started with:
+        # a host that cannot isolate a locked session answers with a
+        # refusal argv instead of the command, which is a refusal too.
+        if _GATE_DRY_RUN.get():
+            try:
+                _would = ([] if _is_git_push(cmd)
+                          and _github_push_plan(cmd, run_cwd) is not None
+                          else _bash_isolation_argv(cmd, run_cwd, perms))
+            except Exception:
+                _would = []
+            _obj = json.loads(_dry_run_stop("bash", cmd) or "{}")
+            _obj["argv_head"] = [str(a) for a in _would[:5]]
+            return json.dumps(_obj)
 
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
@@ -23099,6 +23440,12 @@ def _scrubbed_bash_env() -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in _SECRET_ENV_NAMES
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    # Every process an agent session starts says so: `delfin-agent
+    # approvals approve` and the answer functions refuse under it
+    # (approval_guard). This is the one env every agent child is built
+    # from -- shell tool, background job, test run, external agent CLI.
+    from .approval_guard import ENV_MARKER as _agent_marker
+    env[_agent_marker] = str(os.getpid())
     return env
 
 
@@ -23642,6 +23989,18 @@ def _bash_isolation_argv(
     # command: existing hooks stay readable, new ones cannot be written.
     for g in git_roots:
         args += ["--ro-bind-try", str(Path(g) / "hooks"), str(Path(g) / "hooks")]
+    # Where approvals are answered stays read-only inside a writable root
+    # (a granted ~/.delfin): a command that builds the answer path at run
+    # time is held by the mount, not by reading its text. A room outside
+    # every root is read-only already through the "/" bind.
+    try:
+        from . import approval_guard as _approval_guard
+        _bound = [Path(r) for r in roots]
+        for room in _approval_guard.answer_rooms():
+            if any(room == b or b in room.parents for b in _bound):
+                args += ["--ro-bind-try", str(room), str(room)]
+    except Exception:
+        pass
     args += ["--chdir", str(Path(run_cwd).resolve())]
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])
@@ -27382,6 +27741,89 @@ def _workspace_sandbox(
     return local_perms
 
 
+def _kit_sandbox(
+    cwd: str, permission_mode: str,
+    kit_confirm_callback: Optional[Callable[[str, dict, str], bool]],
+    extra_dirs: list[str] | None, read_only_dirs: list[str] | None,
+    confirm_write_dirs: list[str] | None,
+) -> "KitToolPermissions":
+    """The permissions policy of a KIT-provider client: workspace at
+    ``cwd``, caller then persisted extra dirs, the persisted default mode
+    unless one is passed, the built-in bash allow and deny lists extended
+    by the persisted ones, and the repository's write scope.
+
+    Its own function so that ``delfin-agent capabilities`` and ``gate
+    explain`` build the policy a session gets, not a copy of it.
+    """
+    kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
+
+    # Pull persisted user/repo settings (.delfin-style two-tier
+    # ~/.delfin/settings.json + <repo>/.delfin/settings.json). Defaults
+    # are empty if neither file exists.
+    try:
+        from . import kit_settings as _kit_settings  # local import to avoid cycle
+        persisted = _kit_settings.load(repo_dir=kit_workspace)
+    except Exception:
+        persisted = None
+
+    seen: list[Path] = []
+    # Caller-supplied extra_dirs first (e.g. CLI args), then persisted ones.
+    sources: list[str] = []
+    if extra_dirs:
+        sources.extend(extra_dirs)
+    if persisted is not None:
+        sources.extend(persisted.extra_workspace_dirs)
+    for d in sources:
+        try:
+            p = Path(d).expanduser().resolve()
+        except Exception:
+            continue
+        if p == kit_workspace or p in seen:
+            continue
+        if not p.exists() or not p.is_dir():
+            continue
+        seen.append(p)
+    kit_extra = tuple(seen)
+
+    # Mode: explicit caller arg wins over persisted default_mode.
+    if permission_mode:
+        kit_mode = _map_kit_permission_mode(permission_mode)
+    elif persisted is not None and persisted.default_mode in {
+        "plan", "default", "acceptEdits", "bypassPermissions"
+    }:
+        kit_mode = persisted.default_mode
+    else:
+        kit_mode = "default"
+
+    # Allow/deny patterns: append persisted ones to the built-in defaults.
+    allow_patterns = tuple(_DEFAULT_BASH_AUTO_ALLOW)
+    deny_patterns = tuple(_DEFAULT_BASH_DENY_PATTERNS)
+    if persisted is not None:
+        extra_allow = tuple(p for p in persisted.allow_patterns
+                            if p not in allow_patterns)
+        extra_deny = tuple(p for p in persisted.deny_patterns
+                           if p not in deny_patterns)
+        allow_patterns = allow_patterns + extra_allow
+        deny_patterns = deny_patterns + extra_deny
+    write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
+
+    from . import exchange as _exchange
+    kit_perms = KitToolPermissions(
+        workspace=kit_workspace,
+        mode=kit_mode,
+        confirm_callback=kit_confirm_callback,
+        extra_workspace_dirs=_exchange.with_exchange(kit_workspace,
+                                                     kit_extra),
+        read_only_workspace_dirs=tuple(read_only_dirs or ()),
+        confirm_write_dirs=tuple(confirm_write_dirs or ()),
+        session_read_dirs=_persisted_read_dirs(persisted),
+        bash_auto_allow_patterns=allow_patterns,
+        bash_deny_patterns=deny_patterns,
+        write_allow_globs=write_globs,
+    )
+    return kit_perms
+
+
 def create_client(
     backend: str = "cli",
     provider: str = "claude",
@@ -27425,72 +27867,9 @@ def create_client(
     if provider == "kit":
         from .credentials import load_credential as _load_cred
         kit_key = api_key or _load_cred("KIT_TOOLBOX_API_KEY")
-        kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
-
-        # Pull persisted user/repo settings (.delfin-style two-tier
-        # ~/.delfin/settings.json + <repo>/.delfin/settings.json). Defaults
-        # are empty if neither file exists.
-        try:
-            from . import kit_settings as _kit_settings  # local import to avoid cycle
-            persisted = _kit_settings.load(repo_dir=kit_workspace)
-        except Exception:
-            persisted = None
-
-        seen: list[Path] = []
-        # Caller-supplied extra_dirs first (e.g. CLI args), then persisted ones.
-        sources: list[str] = []
-        if extra_dirs:
-            sources.extend(extra_dirs)
-        if persisted is not None:
-            sources.extend(persisted.extra_workspace_dirs)
-        for d in sources:
-            try:
-                p = Path(d).expanduser().resolve()
-            except Exception:
-                continue
-            if p == kit_workspace or p in seen:
-                continue
-            if not p.exists() or not p.is_dir():
-                continue
-            seen.append(p)
-        kit_extra = tuple(seen)
-
-        # Mode: explicit caller arg wins over persisted default_mode.
-        if permission_mode:
-            kit_mode = _map_kit_permission_mode(permission_mode)
-        elif persisted is not None and persisted.default_mode in {
-            "plan", "default", "acceptEdits", "bypassPermissions"
-        }:
-            kit_mode = persisted.default_mode
-        else:
-            kit_mode = "default"
-
-        # Allow/deny patterns: append persisted ones to the built-in defaults.
-        allow_patterns = tuple(_DEFAULT_BASH_AUTO_ALLOW)
-        deny_patterns = tuple(_DEFAULT_BASH_DENY_PATTERNS)
-        if persisted is not None:
-            extra_allow = tuple(p for p in persisted.allow_patterns
-                                if p not in allow_patterns)
-            extra_deny = tuple(p for p in persisted.deny_patterns
-                               if p not in deny_patterns)
-            allow_patterns = allow_patterns + extra_allow
-            deny_patterns = deny_patterns + extra_deny
-        write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
-
-        from . import exchange as _exchange
-        kit_perms = KitToolPermissions(
-            workspace=kit_workspace,
-            mode=kit_mode,
-            confirm_callback=kit_confirm_callback,
-            extra_workspace_dirs=_exchange.with_exchange(kit_workspace,
-                                                         kit_extra),
-            read_only_workspace_dirs=tuple(read_only_dirs or ()),
-            confirm_write_dirs=tuple(confirm_write_dirs or ()),
-            session_read_dirs=_persisted_read_dirs(persisted),
-            bash_auto_allow_patterns=allow_patterns,
-            bash_deny_patterns=deny_patterns,
-            write_allow_globs=write_globs,
-        )
+        kit_perms = _kit_sandbox(
+            cwd, permission_mode, kit_confirm_callback, extra_dirs,
+            read_only_dirs, confirm_write_dirs)
         return OpenAIClient(
             api_key=kit_key, model=model,
             base_url="https://ki-toolbox.scc.kit.edu/api/v1",

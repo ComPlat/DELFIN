@@ -385,6 +385,8 @@ def answer_waiting(request_id: str, decision: bool, *, by: str = "",
     """
     try:
         from . import file_confirm as _fc
+        # file_confirm.answer refuses inside an agent session
+        # (approval_guard); this goes through it, not around it.
         return bool(_fc.answer(str(request_id), bool(decision),
                                room=_PENDING_DIR, by=str(by or ""),
                                reason=str(reason or "")))
