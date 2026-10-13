@@ -1377,6 +1377,19 @@ Settings, hook commands and MCP servers that come from a checked-out repository 
 
 Every command runs through an allow-list and then, where available, bubblewrap or firejail. Credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, the network is denied by default, and every command is appended to `~/.cache/delfin/agent-audit.jsonl`. `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}` selects the mechanism; when isolation is unavailable the agent says so rather than running unprotected in silence.
 
+### Pushing, pull requests and the git role
+
+A push publishes, so the agent pushes only after you asked for one, one push per request; unattended it does not push unasked, a force push is refused, and a push the remote rejects is reported as failed. Whether it may push onto a repository's default branch (`main`/`master`) or run `gh pr merge` is the repository's **git role**:
+
+| Role | Default branch | `gh pr merge` |
+|------|----------------|---------------|
+| `contributor` (default) | refused: it pushes a branch and gives you the pull-request link | refused: it gives you the link |
+| `maintainer` | allowed, on your request | on your request, pinned to the pull request's head (`--match-head-commit <sha>`) with every check on that head green; `--admin` and `--auto` are refused |
+
+The role is set per repository, in the terminal, inside the repository: `/git role` shows it, `/git role maintainer` or `/git role contributor` sets it. That writes `agent.git_roles` in `~/.delfin_settings.json`, keyed by the normalised URL of `origin` (`github.com/<owner>/<repo>`; a repository without a remote by its path). Repositories without an entry use `agent.git_role`; an entry wins over it in both directions. The agent cannot set either: the settings file is outside every directory it may write. A push to a URL given on the command line, or through `git -C <dir>`, is judged by that repository; a command whose repository cannot be told for certain counts as `contributor`.
+
+If you ask for the pull-request route in a message ("über PR", "per Pull Request", "nicht direkt auf main", "via a PR", "don't push to main"), the agent keeps to it in that repository for the rest of the session, even as maintainer: branch, push the branch, pull-request link. A later message asking for the direct push ("push directly to main", "direkt auf main pushen") lifts it.
+
 ### Subagents
 
 Self-contained work is delegated to an isolated agent with its own tool loop and usually tighter permissions. The parent sees only the final answer.
@@ -1413,7 +1426,7 @@ Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
 | Setup | `/model` `/mode` `/permissions` `/effort` `/doctor` `/init` `/mcp` `/trust` `/tools` `/agents` `/skills` |
 | History | `/session` `/rewind` `/tasks` `/memories` `/plans` |
 | Changes | `/pending` `/approve` `/reject` `/undo-file` |
-| Workspace | `/git` `/bash` `/jobs` `/attention` |
+| Workspace | `/git` (`status` `diff` `log` `branch` `role`) `/bash` `/jobs` `/attention` |
 | DELFIN (dashboard) | `/control key <key> <value>` · `/orca set` · `/calc ls\|read\|info\|tree` · `/analyze energy\|convergence\|errors` · `/recalc check-all\|auto` · `/submit` `/cancel` |
 
 `!` runs a shell command directly. A markdown file in `~/.delfin/commands/` (user-wide) or `<workspace>/.delfin/commands/` (project) becomes a slash command of its own; placeholders `$ARGUMENTS`, `$1`, `$2` are substituted. A **skill** (`~/.delfin/skills/<name>/SKILL.md`) can be invoked by you or chosen by the model; DELFIN ships skills for diagnosing a failed run, recalculating one, setting up TD-DFT and CASSCF, frequency thermochemistry, solvation, and tuning CONTROL.

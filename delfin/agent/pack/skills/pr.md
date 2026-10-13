@@ -17,7 +17,7 @@ their request for that push and that pull request.
    user's to do: they type `! gh auth login`. Do not work around it.
 2. Do the `push` steps first (checks, commit, `git push -u origin <branch>`).
    Never open a pull request from the default branch itself.
-3. Without write access to the repository (agent.git_role is not
+3. Without write access to the repository (its git role is not
    `maintainer` and the push is refused for permissions), use a fork:
    `gh repo fork --remote --remote-name fork`, push the branch to `fork`,
    and open the pull request from there.
@@ -29,6 +29,12 @@ their request for that push and that pull request.
    without the `origin/` prefix).
 5. An open pull request for this branch already exists
    (`gh pr view --json url`): do not open a second one; report its link.
+6. Merging is a maintainer's step, and only on the user's request: wait
+   until every check on the PR's current head is green (`gh pr view <n>
+   --json headRefOid,statusCheckRollup`), then `gh pr merge <n>
+   --match-head-commit <that sha>`. Never `--admin` or `--auto`. A
+   contributor, or a user who asked for the PR route, does not merge from
+   here: give the link.
 
 ## Report
 The pull request link, what it contains, and the check results.

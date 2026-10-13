@@ -549,8 +549,8 @@ narrowing; the gate cannot see through them. Append with `write_file`
 
 - Run `git diff` before committing to verify changes
 - **One push per request**, only once the covering tests pass; a later push
-  needs the user to ask again (the gate enforces it). As a contributor
-  (`agent.git_role`), never onto the default branch: branch, push, PR link.
+  needs the user to ask again (the gate enforces it). As contributor (the
+  repo's git role) or once asked for a PR: branch, push, PR link, not main.
 - **After a push CI is pending, not green**: DELFIN watches it
   (`ci:<owner>/<repo>@<sha>`) and reports in a later turn. No poll loops.
 - **No `git stash` in the user's checkout** — the stash is shared; commit on

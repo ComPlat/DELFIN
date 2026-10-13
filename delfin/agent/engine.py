@@ -7399,6 +7399,14 @@ class AgentEngine:
                                      for k, v in dict(actions).items()}
         except Exception:
             out["denied_actions"] = {}
+        # The pull-request route the user asked for (pr_route_repos) is a
+        # restriction like a denial, not a grant: a resumed session that
+        # dropped it would push onto the default branch the user ruled out.
+        try:
+            routes = getattr(perms, "pr_route_repos", None) or set()
+            out["pr_route_repos"] = sorted(str(k) for k in routes)
+        except Exception:
+            out["pr_route_repos"] = []
         mem = getattr(perms, "refusal_memory", None)
         if mem is not None:
             try:
@@ -7687,6 +7695,13 @@ class AgentEngine:
                 perms.denied_actions.update({str(k): str(v) for k, v in
                                              actions.items()})
                 names.append("denied_actions")
+            except Exception:
+                pass
+        routes = blob.get("pr_route_repos")
+        if isinstance(routes, list):
+            try:
+                perms.pr_route_repos.update(str(k) for k in routes if k)
+                names.append("pr_route_repos")
             except Exception:
                 pass
         mem_blob = blob.get("refusal_memory")
