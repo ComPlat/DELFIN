@@ -233,6 +233,14 @@ def _headline_value(name: str, args: dict) -> str:
     for key in _HEADLINE_ARG.get(_bare_name(name), ()) + _FALLBACK_KEYS:
         value = args.get(key)
         if isinstance(value, (str, int, float)) and str(value).strip():
+            if key == "command" and isinstance(value, str):
+                # The approval dialog masks a credential in a command; the
+                # headline drawn above it printed the same command whole.
+                # Same rule, so the two rows cannot disagree. Commands only:
+                # the rule withholds any line naming auth/token/secret, which
+                # for a file path would hide which file is being touched.
+                from .cli_approve import redact
+                return redact(value)
             return str(value)
     return ""
 
