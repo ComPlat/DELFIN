@@ -2654,6 +2654,37 @@ _MODE_RESTRICTIVENESS = {
 }
 
 
+# Tools that read, run a check or report, and change no file through their
+# own arguments. bash and run_tests are here: what bash writes is gated per
+# command (shell_writes_need_a_person), and run_tests runs pytest.
+#
+# An allow-list, not a list of writers: the catalogue has some twenty tools
+# that write a file (create_docx, fill_series, merge_pdfs, worktree_merge,
+# ...), and a writer added later must not turn a preset that lists it into
+# one that "edits no file". A name missing here only keeps a preset a
+# writer, which is the behaviour every preset had before this list.
+_NON_EDITING_TOOLS = frozenset({
+    "read_file", "read_section", "list_sections", "list_files", "list_docs",
+    "grep_file", "find_definition", "find_references", "search_docs",
+    "read_document", "project_introspect", "view_image", "notebook_read",
+    "exit_plan_mode", "ask_user_question", "report_verdict",
+    "subagent_result", "subagent_message", "check_environment",
+    "list_changes_made", "web_search", "web_fetch", "search_calcs",
+    "get_calc_info", "calc_summary", "history_search", "history_get",
+    "bash", "run_tests",
+})
+
+
+def preset_tools_edit_no_file(tools) -> bool:
+    """True when a preset's tool list is non-empty and holds only tools in
+    ``_NON_EDITING_TOOLS``.
+
+    Empty means no preset-level restriction (``SubagentPreset.tools``), so
+    it is False: general-purpose inherits the parent's writers."""
+    names = {str(t).rsplit("__", 1)[-1] for t in (tools or ())}
+    return bool(names) and names <= _NON_EDITING_TOOLS
+
+
 def _clamp_child_mode(parent_mode: str, preset_mode: str) -> str:
     """Return the more restrictive of the parent's and the preset's mode.
 
@@ -2783,6 +2814,10 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
         # answer the child's own first exit_plan_mode from the parent's
         # pending state -- a plan the user never saw.
         extra["plan_awaiting_approval"] = ""
+        # Only ever switched on: a parent that already refuses unasked
+        # shell writes keeps its child refusing them.
+        if preset_tools_edit_no_file(preset_tools):
+            extra["shell_writes_need_a_person"] = True
         if workspace is not None:
             return dataclasses.replace(
                 parent_perms, mode=mode, workspace=workspace, **extra)
@@ -2794,6 +2829,9 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
         # hole.
         reduced = (
             {"session_allowed_tools": narrowed} if narrowed is not None else {})
+        if (preset_tools_edit_no_file(preset_tools)
+                and hasattr(parent_perms, "shell_writes_need_a_person")):
+            reduced["shell_writes_need_a_person"] = True
         try:
             if workspace is not None:
                 return dataclasses.replace(
