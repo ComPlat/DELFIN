@@ -6737,6 +6737,42 @@ def output_for_a_person():
         _PERSON_OUTPUT.reset(token)
 
 
+#: Set only by gate_dry_run() (``delfin-agent gate explain``), for the
+#: thread running that one call. Read at exactly one point per supported
+#: tool: after its last gate and before its first act (bash: before the
+#: process starts; write_file: before the bytes are written). Every gate
+#: before that point runs unchanged, so the verdict is the executor's own.
+_GATE_DRY_RUN: "_contextvars.ContextVar[bool]" = (
+    _contextvars.ContextVar("delfin_gate_dry_run", default=False))
+
+#: The tools that read _GATE_DRY_RUN. Any other tool would ACT under a
+#: dry run, so gate_explain refuses to explain it.
+GATE_DRY_RUN_TOOLS: frozenset[str] = frozenset({"bash", "write_file"})
+
+#: Marker key of the result a dry-run stop returns.
+GATE_DRY_RUN_KEY = "gate_dry_run"
+
+
+@contextlib.contextmanager
+def gate_dry_run():
+    """Inside this block, on this thread, bash and write_file stop after
+    their last gate and return ``{GATE_DRY_RUN_KEY: true, ...}`` instead
+    of acting. Grants nothing and changes no gate decision."""
+    token = _GATE_DRY_RUN.set(True)
+    try:
+        yield
+    finally:
+        _GATE_DRY_RUN.reset(token)
+
+
+def _dry_run_stop(tool: str, target: str) -> Optional[str]:
+    """The dry-run result, or None when no dry run is active."""
+    if not _GATE_DRY_RUN.get():
+        return None
+    return json.dumps({GATE_DRY_RUN_KEY: True, "tool": tool,
+                       "target": str(target)[:500]})
+
+
 @contextlib.contextmanager
 def _pin_permission_mode(perms: Optional["KitToolPermissions"]):
     """Freeze the permission mode for the duration of one tool call."""
@@ -18955,6 +18991,11 @@ class _DocToolExecutor:
             except _aw.AppendRejected as exc:
                 return json.dumps({"error": str(exc)})
 
+        # Every gate of this tool has run by here. `gate explain` stops.
+        _dry = _dry_run_stop("write_file", resolved)
+        if _dry is not None:
+            return _dry
+
         if getattr(perms, "mode", "") == "diff_approval":
             return self._stage_pending_change(
                 "write_file", resolved,
@@ -20142,6 +20183,21 @@ class _DocToolExecutor:
         # argument is usually absent, and a record without an absolute
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
+
+        # Every gate of this tool has run by here. `gate explain` stops,
+        # carrying the argv the command would have been started with:
+        # a host that cannot isolate a locked session answers with a
+        # refusal argv instead of the command, which is a refusal too.
+        if _GATE_DRY_RUN.get():
+            try:
+                _would = ([] if _is_git_push(cmd)
+                          and _github_push_plan(cmd, run_cwd) is not None
+                          else _bash_isolation_argv(cmd, run_cwd, perms))
+            except Exception:
+                _would = []
+            _obj = json.loads(_dry_run_stop("bash", cmd) or "{}")
+            _obj["argv_head"] = [str(a) for a in _would[:5]]
+            return json.dumps(_obj)
 
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
@@ -27685,6 +27741,89 @@ def _workspace_sandbox(
     return local_perms
 
 
+def _kit_sandbox(
+    cwd: str, permission_mode: str,
+    kit_confirm_callback: Optional[Callable[[str, dict, str], bool]],
+    extra_dirs: list[str] | None, read_only_dirs: list[str] | None,
+    confirm_write_dirs: list[str] | None,
+) -> "KitToolPermissions":
+    """The permissions policy of a KIT-provider client: workspace at
+    ``cwd``, caller then persisted extra dirs, the persisted default mode
+    unless one is passed, the built-in bash allow and deny lists extended
+    by the persisted ones, and the repository's write scope.
+
+    Its own function so that ``delfin-agent capabilities`` and ``gate
+    explain`` build the policy a session gets, not a copy of it.
+    """
+    kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
+
+    # Pull persisted user/repo settings (.delfin-style two-tier
+    # ~/.delfin/settings.json + <repo>/.delfin/settings.json). Defaults
+    # are empty if neither file exists.
+    try:
+        from . import kit_settings as _kit_settings  # local import to avoid cycle
+        persisted = _kit_settings.load(repo_dir=kit_workspace)
+    except Exception:
+        persisted = None
+
+    seen: list[Path] = []
+    # Caller-supplied extra_dirs first (e.g. CLI args), then persisted ones.
+    sources: list[str] = []
+    if extra_dirs:
+        sources.extend(extra_dirs)
+    if persisted is not None:
+        sources.extend(persisted.extra_workspace_dirs)
+    for d in sources:
+        try:
+            p = Path(d).expanduser().resolve()
+        except Exception:
+            continue
+        if p == kit_workspace or p in seen:
+            continue
+        if not p.exists() or not p.is_dir():
+            continue
+        seen.append(p)
+    kit_extra = tuple(seen)
+
+    # Mode: explicit caller arg wins over persisted default_mode.
+    if permission_mode:
+        kit_mode = _map_kit_permission_mode(permission_mode)
+    elif persisted is not None and persisted.default_mode in {
+        "plan", "default", "acceptEdits", "bypassPermissions"
+    }:
+        kit_mode = persisted.default_mode
+    else:
+        kit_mode = "default"
+
+    # Allow/deny patterns: append persisted ones to the built-in defaults.
+    allow_patterns = tuple(_DEFAULT_BASH_AUTO_ALLOW)
+    deny_patterns = tuple(_DEFAULT_BASH_DENY_PATTERNS)
+    if persisted is not None:
+        extra_allow = tuple(p for p in persisted.allow_patterns
+                            if p not in allow_patterns)
+        extra_deny = tuple(p for p in persisted.deny_patterns
+                           if p not in deny_patterns)
+        allow_patterns = allow_patterns + extra_allow
+        deny_patterns = deny_patterns + extra_deny
+    write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
+
+    from . import exchange as _exchange
+    kit_perms = KitToolPermissions(
+        workspace=kit_workspace,
+        mode=kit_mode,
+        confirm_callback=kit_confirm_callback,
+        extra_workspace_dirs=_exchange.with_exchange(kit_workspace,
+                                                     kit_extra),
+        read_only_workspace_dirs=tuple(read_only_dirs or ()),
+        confirm_write_dirs=tuple(confirm_write_dirs or ()),
+        session_read_dirs=_persisted_read_dirs(persisted),
+        bash_auto_allow_patterns=allow_patterns,
+        bash_deny_patterns=deny_patterns,
+        write_allow_globs=write_globs,
+    )
+    return kit_perms
+
+
 def create_client(
     backend: str = "cli",
     provider: str = "claude",
@@ -27728,72 +27867,9 @@ def create_client(
     if provider == "kit":
         from .credentials import load_credential as _load_cred
         kit_key = api_key or _load_cred("KIT_TOOLBOX_API_KEY")
-        kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
-
-        # Pull persisted user/repo settings (.delfin-style two-tier
-        # ~/.delfin/settings.json + <repo>/.delfin/settings.json). Defaults
-        # are empty if neither file exists.
-        try:
-            from . import kit_settings as _kit_settings  # local import to avoid cycle
-            persisted = _kit_settings.load(repo_dir=kit_workspace)
-        except Exception:
-            persisted = None
-
-        seen: list[Path] = []
-        # Caller-supplied extra_dirs first (e.g. CLI args), then persisted ones.
-        sources: list[str] = []
-        if extra_dirs:
-            sources.extend(extra_dirs)
-        if persisted is not None:
-            sources.extend(persisted.extra_workspace_dirs)
-        for d in sources:
-            try:
-                p = Path(d).expanduser().resolve()
-            except Exception:
-                continue
-            if p == kit_workspace or p in seen:
-                continue
-            if not p.exists() or not p.is_dir():
-                continue
-            seen.append(p)
-        kit_extra = tuple(seen)
-
-        # Mode: explicit caller arg wins over persisted default_mode.
-        if permission_mode:
-            kit_mode = _map_kit_permission_mode(permission_mode)
-        elif persisted is not None and persisted.default_mode in {
-            "plan", "default", "acceptEdits", "bypassPermissions"
-        }:
-            kit_mode = persisted.default_mode
-        else:
-            kit_mode = "default"
-
-        # Allow/deny patterns: append persisted ones to the built-in defaults.
-        allow_patterns = tuple(_DEFAULT_BASH_AUTO_ALLOW)
-        deny_patterns = tuple(_DEFAULT_BASH_DENY_PATTERNS)
-        if persisted is not None:
-            extra_allow = tuple(p for p in persisted.allow_patterns
-                                if p not in allow_patterns)
-            extra_deny = tuple(p for p in persisted.deny_patterns
-                               if p not in deny_patterns)
-            allow_patterns = allow_patterns + extra_allow
-            deny_patterns = deny_patterns + extra_deny
-        write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
-
-        from . import exchange as _exchange
-        kit_perms = KitToolPermissions(
-            workspace=kit_workspace,
-            mode=kit_mode,
-            confirm_callback=kit_confirm_callback,
-            extra_workspace_dirs=_exchange.with_exchange(kit_workspace,
-                                                         kit_extra),
-            read_only_workspace_dirs=tuple(read_only_dirs or ()),
-            confirm_write_dirs=tuple(confirm_write_dirs or ()),
-            session_read_dirs=_persisted_read_dirs(persisted),
-            bash_auto_allow_patterns=allow_patterns,
-            bash_deny_patterns=deny_patterns,
-            write_allow_globs=write_globs,
-        )
+        kit_perms = _kit_sandbox(
+            cwd, permission_mode, kit_confirm_callback, extra_dirs,
+            read_only_dirs, confirm_write_dirs)
         return OpenAIClient(
             api_key=kit_key, model=model,
             base_url="https://ki-toolbox.scc.kit.edu/api/v1",
