@@ -626,9 +626,9 @@ def test_git_role_outside_a_repository_says_so(tmp_path):
     "git config remote.origin.pushurl https://github.com/me/beta",
     "git config url.https://github.com/me/beta.pushInsteadOf "
     "git@github.com:me/alpha.git",
-    "git config core.editor true",
+    "git config core.abbrev 12",
     "git config user.name x",
-    "git -c core.hooksPath=h commit -qm x",
+    "git -c user.name=t commit -qm x",
     "git -C . commit -qm x",
     "python3 retarget.py",
     "git fetch --set-upstream https://github.com/me/beta main",
@@ -644,6 +644,18 @@ def test_an_earlier_step_that_may_move_the_push_is_contributor(
     cmd = before + sep + "git push origin main"
     err = _gate(_perms(repos["alpha"]), cmd)
     assert _refused_as_contributor(err), (cmd, err)
+
+
+@pytest.mark.parametrize("before", [
+    "git config core.editor true", "git -c core.hooksPath=h commit -qm x"])
+def test_an_earlier_step_that_sets_a_program_is_refused_before_the_role(
+        repos, before):
+    """A program key set in front of the push is refused by the git
+    configuration rule, which runs before the role is resolved."""
+    _settings(git_role="contributor", git_roles={A_KEY: "maintainer"})
+    err = _gate(_perms(repos["alpha"]), before + " && git push origin main")
+    assert err and err.startswith("blocked:") and \
+        "git configuration" in err, (before, err)
 
 
 @pytest.mark.parametrize("cmd", [
