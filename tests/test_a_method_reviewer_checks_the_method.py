@@ -314,3 +314,65 @@ def test_the_child_reads_both_keyword_lines(tmp_path):
     results = _tool_results(seen[2])
     assert "B3LYP def2-SVP" in results.get("c1_0", "")
     assert "PBE0 D3BJ def2-TZVP" in results.get("c1_1", "")
+
+
+# ---------------------------------------------------------------------------
+# The names the prompt and the list point at exist where they are claimed
+# ---------------------------------------------------------------------------
+
+def test_every_listed_server_tool_is_a_registered_read_only_ops_tool(tmp_path):
+    """Each ``mcp__delfin-ops__*`` entry is a name the ops server registers,
+    and the plan-mode MCP gate admits it for the child. The four-name
+    subset above left three entries (compare_across_functionals,
+    extract_delfin_json, find_orca_errors) unchecked."""
+    import re
+    from delfin.ops_server import server as _srv_mod_path  # noqa: F401
+    src = Path(_srv_mod_path.__file__).read_text(encoding="utf-8")
+    registered = set(re.findall(r'mcp\.tool\(name="([a-z_]+)"\)', src))
+    listed = [t for t in _preset().tools if t.startswith("mcp__")]
+    assert listed
+    child = _child(_workspace(tmp_path))
+    ex = ac._DocToolExecutor()
+    for name in listed:
+        assert name.startswith("mcp__delfin-ops__"), name
+        assert ac._bare_tool_name(name) in registered, name
+        assert ex._gate_mcp_tool(name, {}, child) is None, name
+
+
+def test_every_control_key_the_prompt_names_is_in_the_shipped_template():
+    """The prompt and ``delfin/define.py`` TEMPLATE are two copies of one
+    vocabulary; a key the template does not have sends the child to a
+    line no real CONTROL.txt carries."""
+    import re
+    from delfin.define import TEMPLATE
+    template_keys = {ln.split("=", 1)[0].strip()
+                     for ln in TEMPLATE.splitlines() if "=" in ln}
+    body = _preset().system_prompt
+    block = body[body.index("CONTROL.txt ("):]
+    block = block[:block.index(")")]
+    named = set(re.findall(r"`([A-Za-z_0-9]+)`", block))
+    for key in ("functional", "disp_corr", "main_basisset", "metal_basisset",
+                "aux_jk", "relativity", "ri_jkx", "implicit_solvation_model",
+                "solvent", "multiplicity_0"):
+        assert key in named, key
+    assert named <= template_keys, named - template_keys
+
+
+@pytest.mark.parametrize("term", [
+    # composite methods fix their own basis and dispersion
+    "gfn2", "-3c",
+    # dispersion built into the functional
+    "wb97x-v",
+    # def2 carries an ECP beyond Kr without a keyword
+    "def2-ecp",
+    # the program version decides the defaults
+    "version",
+    # what kind of energy, and on which geometry
+    "gibbs", "//",
+    # open-shell reference
+    "uks",
+    # CONTROL.txt is the request, the .inp what ran
+    "_rel",
+])
+def test_the_pitfalls_that_mislabel_a_mismatch_are_named(term):
+    assert term in _preset().system_prompt.lower(), term
