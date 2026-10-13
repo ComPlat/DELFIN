@@ -183,13 +183,13 @@ def test_a_settings_default_of_bypass_is_refused_without_unattended(
 def test_a_settings_default_of_bypass_is_not_inherited_with_unattended(
         wired, monkeypatch, capsys):
     """Never more than the interactive session with the same flags, which
-    starts in plan: the settings default is not inherited by either."""
+    starts in default: the settings default is not inherited by either."""
     monkeypatch.setattr(agent_cli, "_persisted_default_mode",
                         lambda ws: ("bypassPermissions", "~/s.json"))
     rc = _one_shot(wired, monkeypatch, "--unattended")
     err = capsys.readouterr().err
     assert rc == 0
-    assert _posture() == "plan"
+    assert _posture() == "default"
     assert _Recorder.last.get("permission_mode") != "bypassPermissions"
     assert "~/s.json" in err
 
@@ -324,15 +324,15 @@ def test_without_supervised_a_one_shot_run_binds_no_callback(
     assert _Recorder.instances[-1].bound is None
 
 
-# -- controls: the interactive session is unchanged ------------------------------
+# -- the interactive session: the same rule, the same fallback --------------------
 
-def test_interactive_bypass_without_unattended_starts_in_plan(
+def test_interactive_bypass_without_unattended_starts_in_default(
         wired, monkeypatch, capsys):
     rc = _interactive(wired, monkeypatch,
                       "--permission-mode", "bypassPermissions")
     capsys.readouterr()
     assert rc == 0
-    assert _posture() == "plan"
+    assert _posture() == "default"
 
 
 def test_interactive_bypass_with_unattended_is_bypass(
@@ -345,11 +345,47 @@ def test_interactive_bypass_with_unattended_is_bypass(
     assert _posture() == "bypassPermissions"
 
 
-def test_interactive_settings_bypass_with_unattended_starts_in_plan(
+def test_interactive_settings_bypass_with_unattended_starts_in_default(
         wired, monkeypatch, capsys):
     monkeypatch.setattr(agent_cli, "_persisted_default_mode",
                         lambda ws: ("bypassPermissions", "~/s.json"))
     rc = _interactive(wired, monkeypatch, "--unattended")
+    capsys.readouterr()
+    assert rc == 0
+    assert _posture() == "default"
+
+
+def test_interactive_with_nothing_configured_starts_in_default(
+        wired, monkeypatch, capsys):
+    """Plan only when somebody asks for it; the terminal still asks
+    before every write and command in default (see the gate tests in
+    test_default_mode_asks_or_refuses.py)."""
+    rc = _interactive(wired, monkeypatch)
+    capsys.readouterr()
+    assert rc == 0
+    assert _posture() == "default"
+
+
+def test_interactive_plan_on_the_command_line_is_plan(
+        wired, monkeypatch, capsys):
+    rc = _interactive(wired, monkeypatch, "--permission-mode", "plan")
+    capsys.readouterr()
+    assert rc == 0
+    assert _posture() == "plan"
+
+
+def test_interactive_plan_in_the_settings_is_plan(wired, monkeypatch, capsys):
+    monkeypatch.setattr(agent_cli, "_persisted_default_mode",
+                        lambda ws: ("plan", "~/s.json"))
+    rc = _interactive(wired, monkeypatch)
+    capsys.readouterr()
+    assert rc == 0
+    assert _posture() == "plan"
+
+
+def test_one_shot_plan_on_the_command_line_is_plan(
+        wired, monkeypatch, capsys):
+    rc = _one_shot(wired, monkeypatch, "--permission-mode", "plan")
     capsys.readouterr()
     assert rc == 0
     assert _posture() == "plan"
@@ -409,7 +445,7 @@ def test_run_does_not_inherit_a_settings_bypass_with_unattended(
     rc = _run(wired, monkeypatch, "--unattended")
     err = capsys.readouterr().err
     assert rc == 0
-    assert _posture() == "plan"
+    assert _posture() == "default"
     assert "~/s.json" in err
 
 
