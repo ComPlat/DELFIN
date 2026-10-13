@@ -174,3 +174,26 @@ def test_the_resume_picker_lists_saved_sessions_newest_first(tmp_path):
         found = c.request("sessions.past", {"query": "about older"})["sessions"]
         assert [r["sessionId"] for r in found] == ["aaa1"]
         assert c.request("sessions.past", {"limit": 1})["sessions"][0]["sessionId"] == "ccc3"
+
+
+def test_ctrl_t_shows_or_hides_the_task_list_as_in_the_repl(tmp_path):
+    with WorkerClient(tmp_path) as w:
+        mark = len(w.events)
+        assert w.request("session.toggleTasks") == {"showTasks": True}
+        on, _ = w.wait_for("notice", after=mark)
+        assert on["text"] == "task list on"
+        mark = len(w.events)
+        assert w.request("session.toggleTasks") == {"showTasks": False}
+        off, _ = w.wait_for("notice", after=mark)
+        assert off["text"] == "task list off"
+
+
+def test_the_scripted_tools_turn_has_every_kind_of_result(tmp_path):
+    with WorkerClient(tmp_path) as w:
+        start, end = w.turn("show me the tools")
+        ended = [e for e in w.events[start:end] if e["type"] == "tool.ended"]
+        names = [e["name"] for e in ended]
+        assert names == ["grep_file", "web_fetch", "bash", "write_file", "read_file",
+                         "mcp__delfin-docs__search_docs", "subagent"]
+        blocked = next(e for e in ended if e["name"] == "read_file")
+        assert blocked["meta"]["ok"] is False and "outside the workspace" in blocked["meta"]["error"]

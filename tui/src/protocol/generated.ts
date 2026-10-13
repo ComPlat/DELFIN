@@ -49,6 +49,7 @@ export interface SessionCompletePathParams {
 export interface SessionChoicesParams {
   "what": string
 }
+export interface SessionToggleTasksParams {}
 export interface WorkerRequests {
   "initialize": InitializeParams
   "session.prompt": SessionPromptParams
@@ -61,6 +62,7 @@ export interface WorkerRequests {
   "session.commands": SessionCommandsParams
   "session.completePath": SessionCompletePathParams
   "session.choices": SessionChoicesParams
+  "session.toggleTasks": SessionToggleTasksParams
 }
 export interface InitializeResult {
   "protocolVersion": number
@@ -106,6 +108,9 @@ export interface SessionChoicesResult {
   "current": string
   "choices": Record<string, unknown>[]
 }
+export interface SessionToggleTasksResult {
+  "showTasks": boolean
+}
 export interface WorkerResults {
   "initialize": InitializeResult
   "session.prompt": SessionPromptResult
@@ -118,6 +123,7 @@ export interface WorkerResults {
   "session.commands": SessionCommandsResult
   "session.completePath": SessionCompletePathResult
   "session.choices": SessionChoicesResult
+  "session.toggleTasks": SessionToggleTasksResult
 }
 export interface WorkerReadyEvent {
   "protocolVersion": number

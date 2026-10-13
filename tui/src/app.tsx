@@ -36,6 +36,8 @@ export interface AppProps {
   sentAs?: Map<string, string>
   onQuit: () => void
   onRedraw: () => void
+  /** ctrl+o: the last tool result in full (the session view does it). */
+  onExpand?: () => void
   /** The pause before a key answers a question (approval.tsx); tests set 0. */
   answerPauseMs?: number
 }
@@ -168,6 +170,16 @@ export function App(props: AppProps): JSX.Element {
     if (km.matches("redraw", key)) {
       key.preventDefault()
       props.onRedraw()
+      return
+    }
+    if (km.matches("expand", key)) {
+      key.preventDefault()
+      props.onExpand?.()
+      return
+    }
+    if (km.matches("tasks", key)) {
+      key.preventDefault()
+      if (s && s.state !== "ended") void call("session.toggleTasks", { sessionId: sid() })
       return
     }
     if (km.matches("steer", key)) {

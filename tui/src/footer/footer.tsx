@@ -19,7 +19,8 @@ import { ComposerView, type Composer } from "../composer/composer"
 import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
 import { SPINNER, markdownStyles, type Theme } from "../theme/theme"
-import { ApprovalPanel, approvalRows, fit, type ApprovalUi } from "./approval"
+import { fit } from "../text"
+import { ApprovalPanel, approvalRows, type ApprovalUi } from "./approval"
 
 export const TAIL_MAX = 6
 

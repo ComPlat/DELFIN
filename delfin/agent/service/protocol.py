@@ -71,6 +71,9 @@ REQUESTS: dict[str, dict[str, str]] = {
     "session.commands": {},
     "session.completePath": {"fragment": "string"},
     "session.choices": {"what": "string"},
+    # ctrl+t: show or hide the open task list at the end of each turn, as
+    # in the REPL (its notice says which).
+    "session.toggleTasks": {},
 }
 
 # ---------------------------------------------------------------------------
@@ -98,6 +101,7 @@ RESULTS: dict[str, dict[str, str]] = {
     "session.completePath": {"paths": "[string]"},
     # choices: value, detail? (where a model runs, what it costs)
     "session.choices": {"current": "string", "choices": "[object]"},
+    "session.toggleTasks": {"showTasks": "boolean"},
 }
 
 # ---------------------------------------------------------------------------

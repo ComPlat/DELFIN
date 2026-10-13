@@ -213,7 +213,8 @@ class FakeEngine:
             if on_thinking:
                 on_thinking(text)
 
-        def tool(name: str, args: dict, result: str, *, ok: bool = True) -> None:
+        def tool(name: str, args: dict, result: str, *, ok: bool = True,
+                 error: str = "") -> None:
             if self._stop.is_set():
                 return
             if on_tool_use:
@@ -222,8 +223,10 @@ class FakeEngine:
             if on_tool_result:
                 on_tool_result(name, result)
             if on_tool_result_meta:
-                on_tool_result_meta(name, {"ok": ok, "chars": len(result),
-                                           "truncated": False})
+                meta = {"ok": ok, "chars": len(result), "truncated": False}
+                if error:
+                    meta["error"] = error
+                on_tool_result_meta(name, meta)
 
         def confirm(name: str, args: dict, preview: str) -> bool:
             cb = self.kit_permissions.confirm_callback
@@ -313,6 +316,25 @@ class FakeEngine:
             subprocess.run(["sh", "-c", "echo stray output from a child process"],
                            check=False)
             say("Noise made.")
+        elif "tools" in words:
+            # One of every kind of row the window draws for a tool.
+            tool("grep_file", {"pattern": "FINAL SINGLE POINT ENERGY", "path": "delfin/"},
+                 "delfin/xtb.py:42:        if \"FINAL SINGLE POINT ENERGY\" in line:\n"
+                 "delfin/orca.py:118:    # FINAL SINGLE POINT ENERGY is the last one\n")
+            tool("web_fetch", {"url": "https://www.faccts.de/docs/orca/6.0/manual/"},
+                 "ORCA 6.0 Manual\n" + "".join(f"section {i}: keywords\n" for i in range(1, 41)))
+            tool("bash", {"command": "pytest -q tests/test_xtb.py"},
+                 json.dumps({"exit_code": 1, "stdout": "F..\nFAILED tests/test_xtb.py::test_energy\n"
+                             "1 failed, 2 passed in 0.40s\n", "stderr": ""}))
+            tool("write_file", {"path": "notes/plan.md", "content": "# Plan\n1. fix\n2. test\n"},
+                 "--- /dev/null\n+++ b/notes/plan.md\n@@ -0,0 +1,3 @@\n+# Plan\n+1. fix\n+2. test")
+            tool("read_file", {"path": "/etc/shadow"}, "", ok=False,
+                 error="outside the workspace: /etc/shadow is not readable here")
+            tool("mcp__delfin-docs__search_docs", {"query": "SMD solvation"},
+                 "3 results\nSMD: universal solvation model\nCPCM vs SMD\nSolvent keywords")
+            tool("subagent", {"subagent_type": "explore", "description": "find the energy parsers"},
+                 "Found two parsers: delfin/xtb.py and delfin/orca.py.")
+            say("Every kind of tool row, once.")
         elif "longtool" in words:
             if on_tool_use:
                 on_tool_use("bash", json.dumps({"command": "sleep 20"}))

@@ -70,8 +70,9 @@ const mode = loaded.config.theme === "auto"
   ? await renderer.waitForThemeMode(300).catch(() => null)
   : loaded.config.theme
 const [theme] = createSignal(themeFor(mode, loaded.config.colors))
-const view = startSessionView(renderer, store, theme,
-                              { showThinking: loaded.config.showThinking, replayLimit: REPLAY_LIMIT })
+// `--verbose` shows the thinking, as in chat; tui.json can make it the default.
+const showThinking = loaded.config.showThinking || Boolean(start.verbose)
+const view = startSessionView(renderer, store, theme, { showThinking, replayLimit: REPLAY_LIMIT })
 store.update((d) => {
   d.mayAct = Boolean(hello.mayAct)
   d.host = String(hello.host ?? "")
@@ -92,8 +93,9 @@ async function openFirst(): Promise<string> {
       })
     return resume
   }
+  const { verbose: _verbose, ...settings } = start
   const created = await withReplay(store,
-    () => connection.rpc.request("session.create", { ...start, cwd: String(start.cwd ?? process.cwd()) }),
+    () => connection.rpc.request("session.create", { ...settings, cwd: String(start.cwd ?? process.cwd()) }),
     (answer) => {
       const id = answer.sessionId as string
       store.update((d) => {
@@ -159,6 +161,7 @@ function quit(): void {
 if (current) {
   await render(() => (
     <App renderer={renderer} store={store} keymap={keymap} theme={theme} history={History.load()} sentAs={view.sentAs}
-         client={connection.rpc} onQuit={quit} onRedraw={() => void view.redraw()} />
+         client={connection.rpc} onQuit={quit} onRedraw={() => void view.redraw()}
+         onExpand={() => view.expandLast()} />
   ), renderer)
 }

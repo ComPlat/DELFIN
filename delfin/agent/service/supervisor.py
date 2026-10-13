@@ -55,12 +55,13 @@ SERVICE_REQUESTS = protocol.SERVICE_REQUESTS
 FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
                        "session.status", "session.replay", "session.shutdown",
                        "permission.reply", "session.commands",
-                       "session.completePath", "session.choices"})
+                       "session.completePath", "session.choices",
+                       "session.toggleTasks"})
 
 #: What a watch-only connection may not do.
 ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
                     "session.setMode", "session.shutdown", "permission.reply",
-                    "session.message", "service.shutdown"})
+                    "session.message", "service.shutdown", "session.toggleTasks"})
 
 UNKNOWN_SESSION = protocol.UNKNOWN_SESSION
 WORKER_GONE = protocol.WORKER_GONE

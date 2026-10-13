@@ -50,7 +50,8 @@ export async function mountWindow(options: {
   }
   await render(() => (
     <App renderer={t.renderer} store={store} keymap={new Keymap()} theme={theme} client={client}
-         onQuit={() => { quits++ }} onRedraw={() => {}} answerPauseMs={options.answerPauseMs ?? 0} />
+         onQuit={() => { quits++ }} onRedraw={() => {}} onExpand={() => view.expandLast()}
+         answerPauseMs={options.answerPauseMs ?? 0} />
   ), t.renderer)
   const settle = async () => {
     store.flush()

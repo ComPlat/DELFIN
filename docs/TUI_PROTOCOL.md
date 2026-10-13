@@ -79,6 +79,7 @@ types are generated from that. This page explains what the messages mean.
 | `session.commands` | | `commands[]`: `name`, `summary`, `category`, `takesArgs`, `source` | Every `/command` a line may start with. See "Completion and pickers". |
 | `session.completePath` | `fragment` | `paths[]` | What `@fragment` completes to, under the workspace only. |
 | `session.choices` | `what`: `model`, `effort` or `mode` | `current`, `choices[]`: `value`, `detail?` | What a picker offers. |
+| `session.toggleTasks` | | `showTasks` | ctrl+t: the open task list at the end of each turn, on or off, as in the REPL (a notice says which). |
 
 ### Completion and pickers
 
@@ -328,7 +329,8 @@ closes; the next window attaches to them again.
 Every session request of the worker protocol (`session.prompt`,
 `session.cancel`, `session.setMode`, `session.status`, `session.replay`,
 `session.shutdown`, `permission.reply`, `session.commands`,
-`session.completePath`, `session.choices`) is sent with `sessionId` and
+`session.completePath`, `session.choices`, `session.toggleTasks`) is sent
+with `sessionId` and
 forwarded to that session's worker; its answer comes back unchanged.
 
 Events from the service itself, to every window:

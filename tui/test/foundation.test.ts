@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test"
 import { DEFAULTS, parseConfig } from "../src/config/config"
 import { Keymap, describe as describeKey, parseBinding } from "../src/keymap/keymap"
-import { askedWhat, toolArg, toolSummary } from "../src/scrollback/present"
+import { askedWhat } from "../src/scrollback/present"
 import { applyEvent, emptyState, ensureSession } from "../src/store/state"
 import { createAppStore, type Clock } from "../src/store/store"
 import { RpcClient, RpcError, type Wire } from "../src/transport/rpc"
@@ -156,25 +156,7 @@ describe("the JSON-RPC framing", () => {
   })
 })
 
-describe("what the presenter says about tools and questions", () => {
-  test("a command's envelope becomes its exit code and its last lines", () => {
-    const run = toolSummary(JSON.stringify({ exit_code: 1, stdout: "a\nb\nc\nd\n", stderr: "boom" }), {})
-    expect(run.ok).toBe(false)
-    expect(run.summary).toBe("exit 1 · 5 lines")
-    expect(run.tail).toEqual(["c", "d", "boom"])
-  })
-
-  test("other output becomes its first line, with its true size when cut", () => {
-    expect(toolSummary("212 lines", {}).summary).toBe("212 lines")
-    expect(toolSummary("one\ntwo", { truncated: true, chars: 5400 }).summary).toBe("2 lines · one · 5.4k chars")
-    expect(toolSummary("", { ok: false, error: "no such file" })).toEqual({ summary: "no such file", tail: [], ok: false })
-  })
-
-  test("the argument is the path, the command or the pattern", () => {
-    expect(toolArg({ command: "pytest -q\n--lf" })).toBe("pytest -q")
-    expect(toolArg({ path: "delfin/xtb.py", content: "x" })).toBe("delfin/xtb.py")
-  })
-
+describe("what the presenter says about questions", () => {
   test("an approval is named by its command, its file or its question", () => {
     expect(askedWhat({ kind: "confirm", tool: "bash", preview: "$ make deploy", flags: { shell: true } })).toBe("bash make deploy")
     expect(askedWhat({ kind: "confirm", tool: "edit_file", preview: "--- a/x.py\n+++ b/x.py\n@@", flags: {} })).toBe("edit_file x.py")

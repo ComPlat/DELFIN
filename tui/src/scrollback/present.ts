@@ -11,6 +11,7 @@
 import type { AnyEvent } from "../protocol/generated"
 import type { AppState } from "../store/state"
 import { AnswerBlocks, splitMarkdown } from "./blocks"
+import { resultBody, shortToolName, stripControl, toolHeadline, toolResult } from "./tools"
 import type { Transcript } from "./transcript"
 
 type Fields = Record<string, any>
@@ -22,8 +23,6 @@ export interface PresentOptions {
   shownAs?: (text: string) => string | undefined
 }
 
-const DIFF_TOOLS = new Set(["edit_file", "write_file", "apply_patch", "multi_edit", "str_replace"])
-
 function compact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
@@ -33,42 +32,6 @@ function compact(n: number): string {
 function firstLine(text: string, max = 100): string {
   const line = text.split("\n").map((l) => l.trim()).find((l) => l) ?? ""
   return line.length > max ? line.slice(0, max - 1) + "…" : line
-}
-
-export function toolArg(input: Fields): string {
-  for (const key of ["path", "command", "pattern", "query", "url", "file", "name"]) {
-    const value = input?.[key]
-    if (typeof value === "string" && value.trim()) return firstLine(value, 90)
-  }
-  return ""
-}
-
-/** The one-line result of a tool call, and a short tail when it ran a command. */
-export function toolSummary(output: string, meta: Fields): { summary: string; tail: string[]; ok: boolean } {
-  let ok = meta?.ok !== false && !meta?.error
-  let text = output ?? ""
-  let tail: string[] = []
-  const trimmed = text.trim()
-  if (trimmed.startsWith("{") && trimmed.includes("exit_code")) {
-    try {
-      const run = JSON.parse(trimmed)
-      const code = Number(run.exit_code ?? 0)
-      ok = ok && code === 0
-      const out = String(run.stdout ?? "") + (run.stderr ? `\n${run.stderr}` : "")
-      const lines = out.split("\n").filter((l) => l.trim())
-      tail = lines.slice(-3).map((l) => firstLine(l, 110))
-      return { summary: `exit ${code}${lines.length ? ` · ${lines.length} line${lines.length === 1 ? "" : "s"}` : ""}`, tail, ok }
-    } catch {
-      // not the shell's envelope after all
-    }
-  }
-  const lines = text.split("\n").filter((l) => l.trim())
-  const size = Number(meta?.chars ?? text.length)
-  let summary = lines.length <= 1 ? firstLine(text) || "(no output)"
-    : `${lines.length} lines · ${firstLine(text, 70)}`
-  if (meta?.truncated) summary += ` · ${compact(size)} chars`
-  if (meta?.error) summary = String(meta.error)
-  return { summary, tail, ok }
 }
 
 export class Presenter {
@@ -82,6 +45,7 @@ export class Presenter {
   private bannered = false
   private ended = false
   private lastError = ""
+  private lastOutput: { name: string; output: string } | null = null
   private n = 0
 
   constructor(readonly sessionId: string, private readonly transcript: Transcript,
@@ -148,8 +112,10 @@ export class Presenter {
         break
       }
       case "reasoning.ended":
+        // As the REPL shows it (--verbose): one dim line, whitespace run
+        // together, cut in the middle to the width when it is drawn.
         if (this.options.showThinking && String(e.text ?? "").trim()) {
-          this.add("reasoning", { text: firstLine(String(e.text), 400) })
+          this.add("reasoning", { text: stripControl(String(e.text)).replace(/\s+/g, " ").trim() })
         }
         break
       case "tool.started":
@@ -160,16 +126,14 @@ export class Presenter {
         this.tools.delete(String(e.callId))
         const input = (started.input ?? {}) as Fields
         const output = String(e.output ?? "")
-        if (DIFF_TOOLS.has(String(e.name)) && /^(---|diff --git|\+\+\+|@@)/m.test(output)) {
-          this.add("diff", { name: e.name, path: toolArg(input), text: output, filetype: filetypeOf(toolArg(input)) })
-        } else {
-          const { summary, tail, ok } = toolSummary(output, (e.meta ?? {}) as Fields)
-          this.add("tool", { name: e.name, arg: toolArg(input), summary, tail, ok })
-        }
+        const head = toolHeadline(String(e.name ?? started.name ?? "tool"), input)
+        this.lastOutput = { name: head.name, output }
+        this.add("tool", { name: head.name, arg: head.arg,
+                           result: toolResult(String(e.name ?? ""), output, (e.meta ?? {}) as Fields, input) })
         break
       }
       case "tool.denied":
-        this.add("denied", { name: e.name })
+        this.add("denied", { name: shortToolName(String(e.name ?? "")) })
         break
       case "notice":
         this.add("notice", { text: e.text })
@@ -231,6 +195,17 @@ export class Presenter {
     }
   }
 
+  /** ctrl+o: the last tool result in full, as its output (not its
+   *  packaging) -- what the session forwarded of it. */
+  expandLast(): void {
+    if (!this.lastOutput) {
+      this.add("notice", { text: "nothing to expand yet" })
+      return
+    }
+    const body = stripControl(resultBody(this.lastOutput.output)).replace(/\n+$/, "")
+    this.add("lines", { title: `${this.lastOutput.name}, in full`, lines: body ? body.split("\n") : ["(no output)"] })
+  }
+
   private part(id: string, setTail: (tail: string) => void): AnswerBlocks | null {
     let blocks = this.parts.get(id)
     if (!blocks) {
@@ -251,10 +226,4 @@ export function askedWhat(asked: Fields): string {
   const target = /^\+\+\+ (?:b\/)?(.+)$/m.exec(preview)?.[1] ?? /^--- (?:a\/)?(.+)$/m.exec(preview)?.[1]
   if (target) return `${asked.tool} ${target.trim()}`
   return `${asked.tool} ${firstLine(preview, 70)}`.trim()
-}
-
-export function filetypeOf(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? ""
-  return ({ py: "python", ts: "typescript", tsx: "tsx", js: "javascript", md: "markdown",
-            sh: "bash", json: "json", zig: "zig" } as Record<string, string>)[ext] ?? "text"
 }

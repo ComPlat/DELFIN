@@ -31,7 +31,8 @@ def _start_settings(args: argparse.Namespace) -> dict:
         if value:
             settings[key] = str(value)
     for key, name in (("continue", "continue_session"), ("isolate", "isolate"),
-                      ("noIsolate", "no_isolate"), ("fake", "fake")):
+                      ("noIsolate", "no_isolate"), ("fake", "fake"),
+                      ("verbose", "verbose")):
         if getattr(args, name, False):
             settings[key] = True
     for key, name in (("addDirs", "add_dirs"), ("readDirs", "read_dirs")):

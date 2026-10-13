@@ -29,6 +29,8 @@ export interface SessionView {
   /** A note of the window's own (a config problem, a lost session), as a
    *  row in the scrollback, after what is already queued. */
   note(text: string): void
+  /** ctrl+o: the last tool result of the session in view, in full. */
+  expandLast(): void
   redraw(): Promise<void>
   stop(): void
 }
@@ -48,6 +50,7 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
   const transcript = new Transcript(queue, target, itemWriter(renderer, theme))
   const stopResize = replayOnWidthChange(renderer, transcript, { limit: options.replayLimit })
   let off: (() => void) | null = null
+  let presenter: Presenter | null = null
   const sentAs = new Map<string, string>()
   const shownAs = (text: string) => {
     const shown = sentAs.get(text)
@@ -60,11 +63,13 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
     sentAs,
     show(id) {
       off?.()
-      const presenter = new Presenter(id, transcript, { showThinking: options.showThinking, shownAs })
-      off = store.onBatch((events, draft) => presenter.handle(events, draft))
+      const shown = new Presenter(id, transcript, { showThinking: options.showThinking, shownAs })
+      presenter = shown
+      off = store.onBatch((events, draft) => shown.handle(events, draft))
       store.update((d) => { d.current = id })
     },
     note,
+    expandLast: () => presenter?.expandLast(),
     redraw: () => transcript.replay(options.replayLimit),
     stop() {
       off?.()

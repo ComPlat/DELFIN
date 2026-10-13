@@ -9,12 +9,32 @@
  */
 import { TextAttributes, type CliRenderer } from "@opentui/core"
 import { writeSolidToScrollback } from "@opentui/solid"
-import { For, type JSX } from "solid-js"
-import { diffColors, markdownStyles, type Theme } from "../theme/theme"
+import { For, Show, type JSX } from "solid-js"
+import { fit } from "../text"
+import { markdownStyles, type Theme } from "../theme/theme"
+import type { DiffRow, ToolResult } from "./tools"
 import type { Item } from "./transcript"
-import { commitSurface, diffBlock, isDrawableDiff, markdownBlock } from "./writers"
+import { commitSurface, markdownBlock } from "./writers"
 
 type Fields = Record<string, any>
+
+/** `text` cut in its middle to `max` columns (repl_render.truncate_middle). */
+export function middle(text: string, max: number): string {
+  if (Bun.stringWidth(text) <= max || max < 8) return fit(text, max)
+  const half = Math.floor((max - 1) / 2)
+  const chars = [...text]
+  let head = ""
+  for (const ch of chars) {
+    if (Bun.stringWidth(head + ch) > half) break
+    head += ch
+  }
+  let tail = ""
+  for (let i = chars.length - 1; i >= 0; i--) {
+    if (Bun.stringWidth(chars[i]! + tail) > max - 1 - Bun.stringWidth(head)) break
+    tail = chars[i]! + tail
+  }
+  return `${head}…${tail}`
+}
 
 /** A message longer than this shows its first lines and how many more. */
 export const USER_MAX_LINES = 12
@@ -63,19 +83,22 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
       )
     }
     case "reasoning":
-      return <text fg={t.faint} wrapMode="word">{"  ∴ " + String(f.text ?? "")}</text>
-    case "tool":
+      return <text fg={t.faint} wrapMode="none">{"· " + middle(String(f.text ?? ""), props.width - 2)}</text>
+    case "tool": {
+      const r = (f.result ?? { kind: "text", summary: "", lines: [], ok: true }) as ToolResult
+      const failed = r.kind === "blocked" || (r.kind === "text" && !r.ok)
+      const name = String(f.name ?? "")
       return (
         <box flexDirection="column">
-          <text wrapMode="char">
-            <span style={{ fg: f.ok === false ? t.err : t.ok }}>{"⏺ "}</span>
-            <span style={{ fg: t.text, attributes: TextAttributes.BOLD }}>{String(f.name ?? "")}</span>
-            <span style={{ fg: t.muted }}>{f.arg ? "  " + String(f.arg) : ""}</span>
+          <text wrapMode="none">
+            <span style={{ fg: failed ? t.err : t.ok }}>{"⏺ "}</span>
+            <span style={{ fg: t.text, attributes: TextAttributes.BOLD }}>{name}</span>
+            <span style={{ fg: t.muted }}>{f.arg ? "  " + fit(String(f.arg), props.width - name.length - 5) : ""}</span>
           </text>
-          <text fg={t.muted} wrapMode="char">{"  ⎿  " + String(f.summary ?? "")}</text>
-          <For each={(f.tail ?? []) as string[]}>{(line) => <text fg={t.faint}>{"     " + line}</text>}</For>
+          <ToolResultRows result={r} theme={t} width={props.width} />
         </box>
       )
+    }
     case "denied":
       return (
         <text>
@@ -123,8 +146,11 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
     }
     case "lines":
       return (
-        <box flexDirection="column">
-          <For each={(f.lines ?? []) as string[]}>{(line) => <text fg={t.muted}>{line}</text>}</For>
+        <box flexDirection="column" paddingTop={f.title ? 1 : 0}>
+          <Show when={f.title}>
+            <text fg={t.accentSoft} attributes={TextAttributes.BOLD}>{"  " + String(f.title)}</text>
+          </Show>
+          <For each={(f.lines ?? []) as string[]}>{(line) => <text fg={t.muted} wrapMode="char">{"  " + line}</text>}</For>
         </box>
       )
     default:
@@ -132,12 +158,62 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
   }
 }
 
+/** Under a tool's headline: what it did, then the lines that say most. */
+function ToolResultRows(props: { result: ToolResult; theme: Theme; width: number }): JSX.Element {
+  const t = props.theme
+  const r = props.result
+  const room = Math.max(10, props.width - 6)
+  if (r.kind === "blocked") {
+    return <text fg={t.err} wrapMode="none">{"  ⎿ " + fit(`blocked: ${r.reason}`, props.width - 4)}</text>
+  }
+  if (r.kind === "edit") {
+    const tone = (row: DiffRow) => row.kind === "add" ? t.ok : row.kind === "delete" ? t.err
+      : row.kind === "hunk" || row.kind === "file" ? t.accentSoft : t.faint
+    const bg = (row: DiffRow) => row.kind === "add" ? t.added : row.kind === "delete" ? t.removed : undefined
+    return (
+      <box flexDirection="column">
+        <text wrapMode="none">
+          <span style={{ fg: t.muted }}>{"  ⎿ "}</span>
+          <span style={{ fg: t.text, attributes: TextAttributes.BOLD }}>{fit(`${r.action} ${r.label}`, props.width - 16)}</span>
+          <span style={{ fg: t.muted }}>{" ("}</span>
+          <span style={{ fg: t.ok }}>{`+${r.adds}`}</span>
+          <span style={{ fg: t.err }}>{` -${r.dels}`}</span>
+          <span style={{ fg: t.muted }}>{")"}</span>
+        </text>
+        <For each={r.rows}>
+          {(row) => (
+            <text wrapMode="none">
+              <span>{"      "}</span>
+              <span style={{ fg: tone(row), bg: bg(row) }}>{fit(row.text, room)}</span>
+            </text>
+          )}
+        </For>
+        <Show when={r.omitted > 0}>
+          <text fg={t.faint}>{`      … ${r.omitted} more diff lines (ctrl+o shows the result)`}</text>
+        </Show>
+      </box>
+    )
+  }
+  return (
+    <box flexDirection="column">
+      <text fg={r.ok ? t.muted : t.err} wrapMode="none">{"  ⎿ " + fit(r.summary, props.width - 4)}</text>
+      <For each={r.lines}>{(line) => <text fg={t.faint} wrapMode="none">{"      " + fit(line, room)}</text>}</For>
+    </box>
+  )
+}
+
 /** The strings an item shows, in display order (what a test reads back). */
 export function shownText(item: Item): string {
   const f = item as Fields
   switch (item.kind) {
     case "banner": return [f.head, ...(f.lines ?? [])].join("\n")
-    case "tool": return [f.name, f.arg, f.summary, ...(f.tail ?? [])].filter(Boolean).join("\n")
+    case "tool": {
+      const r = f.result as ToolResult | undefined
+      const rest = !r ? [] : r.kind === "blocked" ? [`blocked: ${r.reason}`]
+        : r.kind === "edit" ? [`${r.action} ${r.label}`, ...r.rows.map((row) => row.text)]
+        : [r.summary, ...r.lines]
+      return [f.name, f.arg, ...rest].filter(Boolean).join("\n")
+    }
     case "lines": return (f.lines as string[]).join("\n")
     default: return String(f.text ?? "")
   }
@@ -149,26 +225,6 @@ export function itemWriter(renderer: CliRenderer, theme: () => Theme) {
     const t = theme()
     if (item.kind === "markdown") {
       await commitSurface(renderer, markdownBlock(String(f.text ?? ""), { styles: markdownStyles(t), marginTop: 1 }))
-      return
-    }
-    if (item.kind === "diff") {
-      writeSolidToScrollback(renderer, () => (
-        <text>
-          <span style={{ fg: t.ok }}>{"⏺ "}</span>
-          <span style={{ fg: t.text, attributes: TextAttributes.BOLD }}>{String(f.name ?? "edit")}</span>
-          <span style={{ fg: t.muted }}>{"  " + String(f.path ?? "")}</span>
-        </text>
-      ))
-      const text = String(f.text ?? "")
-      if (isDrawableDiff(text)) {
-        await commitSurface(renderer, diffBlock(text, {
-          styles: markdownStyles(t), filetype: String(f.filetype ?? "text"), colors: diffColors(t),
-        }))
-      } else {
-        // Never "Error parsing diff" in a transcript: the lines as they are.
-        const lines = text.split("\n")
-        writeSolidToScrollback(renderer, (ctx) => <Row item={{ id: item.id, kind: "lines", lines }} theme={t} width={ctx.width} />)
-      }
       return
     }
     writeSolidToScrollback(renderer, (ctx) => <Row item={item} theme={t} width={ctx.width} />)

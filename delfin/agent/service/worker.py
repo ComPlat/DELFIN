@@ -1185,6 +1185,16 @@ class Worker:
         return {"paths": choices.complete_path(str(params.get("fragment") or ""),
                                                self.workspace)}
 
+    def _m_session_toggleTasks(self, _params: dict) -> dict:
+        """ctrl+t, the REPL's way: the end-of-turn task list on or off."""
+        agent = self.agent
+        with agent.cond:
+            agent._show_tasks = not agent._show_tasks
+            on = agent._show_tasks
+        agent.post(lambda: agent.transcript.chrome(
+            agent.transcript.theme.dim(f"task list {'on' if on else 'off'}")))
+        return {"showTasks": on}
+
     def _m_session_choices(self, params: dict) -> dict:
         try:
             return choices.choices(self.engine, str(params.get("what") or ""))
