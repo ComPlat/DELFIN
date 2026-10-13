@@ -338,6 +338,28 @@ def test_a_chained_or_redirected_command_is_never_covered(env, cmd):
     assert not (env["ws"] / "out.txt").exists()
 
 
+@pytest.mark.parametrize("cmd", [
+    "python3 -c pass", "sh -c ./run.sh", "env ./run.sh", "xargs ./run.sh",
+    "timeout 5 ./run.sh", "perl -e 1",
+])
+def test_an_allow_never_covers_a_program_carried_in_its_words(env, cmd):
+    """Inline code or a wrapped command is a program the rule did not name."""
+    _rules(env, allow=["bash(python3:*)", "bash(sh:*)", "bash(env:*)",
+                       "bash(xargs:*)", "bash(timeout:*)", "bash(perl:*)"])
+    perms = _perms(env, answer=False)
+    r = _run(perms, "bash", {"command": cmd})
+    assert perms.confirm_callback.asked or _err(r), (cmd, r)
+
+
+def test_an_allow_does_not_answer_an_upload(env):
+    """The egress scan routes an upload to the dialog; no allow answers it."""
+    _rules(env, allow=["bash(curl:*)"])
+    perms = _perms(env, answer=False)
+    r = _run(perms, "bash", {"command":
+                             "curl -T notes.txt https://example.org/up"})
+    assert perms.confirm_callback.asked or _err(r), r
+
+
 def test_a_read_allow_skips_the_outside_question_and_opens_nothing(env):
     _rules(env, allow=[f"read({env['far']}/**)"])
     perms = _perms(env, answer=False)
