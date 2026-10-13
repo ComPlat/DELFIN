@@ -523,3 +523,144 @@ def test_interactive_isolated_bypass_asks_nothing(
                           "--unattended"], "")
     assert rc == 0 and h["mode_at_run"] == "bypassPermissions"
     assert "[y/N]" not in capsys.readouterr().out
+
+
+# -- the unattended fallback: the classifier decides off-list commands -------
+
+#: Harmless and off the auto-allow list (asserted in the test).
+_OFF_LIST = "expr 2 + 3"
+
+
+def _fallback_perms(monkeypatch, tmp_path, runner):
+    _host(monkeypatch)
+    monkeypatch.setenv("DELFIN_CLASSIFIER", "on")
+    eng = _Engine(_ws(tmp_path), "bypassPermissions")
+    P.apply_at_start(eng, can_ask=False)
+    perms = eng.kit_permissions
+    assert perms.mode == "default" and perms.unisolated_fallback
+    assert perms.confirm_callback is None
+    assert not perms.matches_bash_auto_allow(_OFF_LIST)
+    perms.classifier_runner = runner
+    return perms
+
+
+def _run(perms, cmd=_OFF_LIST):
+    return A._DocToolExecutor().execute("bash", {"command": cmd}, perms)
+
+
+def test_the_fallback_runs_an_off_list_command_the_classifier_allows(
+        monkeypatch, tmp_path):
+    seen = []
+
+    def _allow(prompt, model):
+        seen.append(prompt)
+        return "DECISION: allow\nREASON: arithmetic, harmless."
+
+    out = _run(_fallback_perms(monkeypatch, tmp_path, _allow))
+    assert seen, "the classifier was not asked"
+    assert "5" in out and "blocked" not in out, out
+
+
+def test_the_fallback_refuses_what_the_classifier_refuses(
+        monkeypatch, tmp_path):
+    def _refuse(prompt, model):
+        return "DECISION: refuse\nREASON: not part of the task."
+
+    out = _run(_fallback_perms(monkeypatch, tmp_path, _refuse))
+    assert "blocked" in out and "not part of the task" in out, out
+    assert "read_file" in out
+
+
+def test_the_fallback_refuses_in_doubt(monkeypatch, tmp_path):
+    def _ask(prompt, model):
+        return "DECISION: ask\nREASON: unclear."
+
+    out = _run(_fallback_perms(monkeypatch, tmp_path, _ask))
+    assert "blocked" in out and "unclear" in out, out
+
+
+def test_the_fallback_refuses_when_the_classifier_raises(
+        monkeypatch, tmp_path):
+    def _down(prompt, model):
+        raise ConnectionError("endpoint down")
+
+    out = _run(_fallback_perms(monkeypatch, tmp_path, _down))
+    assert "blocked" in out and "read_file" in out, out
+
+
+def test_the_fallback_refuses_without_a_classifier(monkeypatch, tmp_path):
+    out = _run(_fallback_perms(monkeypatch, tmp_path, None))
+    assert "blocked" in out and "no action classifier" in out, out
+    assert "read_file" in out
+
+
+def test_the_fallback_keeps_the_hard_refusals(monkeypatch, tmp_path):
+    def _allow(prompt, model):
+        return "DECISION: allow\nREASON: fine."
+
+    perms = _fallback_perms(monkeypatch, tmp_path, _allow)
+    out = _run(perms, "cat ~/.ssh/id_rsa")
+    assert "secret-deny" in out or "blocked" in out or "refused" in out, out
+
+
+def test_without_the_fallback_mark_nothing_changes(monkeypatch, tmp_path):
+    _host(monkeypatch)
+    monkeypatch.setenv("DELFIN_CLASSIFIER", "on")
+    perms = A.KitToolPermissions(workspace=_ws(tmp_path), mode="default")
+    perms.classifier_runner = lambda p, m: "DECISION: allow\nREASON: x."
+    out = _run(perms)
+    assert "auto-allow" in out or "allow_pattern" in out, out
+
+
+# -- the dashboard start: asked in the approval panel ------------------------
+
+def _wait(predicate, seconds=5.0):
+    import time
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+@pytest.mark.parametrize("answer", [True, False])
+def test_the_dashboard_start_asks_in_the_approval_panel(
+        monkeypatch, tmp_path, answer):
+    from delfin.agent.kit_confirm import KitConfirmBroker
+    _host(monkeypatch)
+    broker = KitConfirmBroker(default_timeout_s=10)
+    eng = _Engine(_ws(tmp_path), "bypassPermissions")
+    confirmed = []
+
+    def _ask(question):
+        return broker.callback("bypassPermissions", {"isolation": "none"},
+                               "[NO ISOLATION]\n" + question)
+
+    notes = P.apply_at_start(eng, can_ask=True, ask=_ask, background=True,
+                             on_confirmed=lambda: confirmed.append(1))
+    # Not held: the session runs in default while the panel waits.
+    assert eng.kit_permissions.mode == "default"
+    assert any("approval panel" in n for n in notes), notes
+    assert _wait(lambda: broker.pending_requests())
+    req = broker.pending_requests()[0]
+    assert "[NO ISOLATION]" in req.preview
+    assert "outside the workspace" in req.preview
+    broker.resolve(req, answer)
+    if answer:
+        assert _wait(lambda: confirmed)
+        assert eng.kit_permissions.mode == "bypassPermissions"
+    else:
+        assert not _wait(lambda: confirmed, 0.3)
+        assert eng.kit_permissions.mode == "default"
+
+
+def test_the_dashboard_calls_the_start_check_where_it_builds_and_switches():
+    import inspect
+    from delfin.dashboard import tab_agent
+    src = inspect.getsource(tab_agent)
+    # Engine construction, the chip cycle, a session restore and the
+    # permissions dropdown.
+    assert src.count("_settle_isolation_posture(") >= 5
+    built = src.index("ctx.agent_engine = engine")
+    assert "_settle_isolation_posture(engine)" in src[built:built + 200]
