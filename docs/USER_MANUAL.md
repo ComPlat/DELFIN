@@ -1377,11 +1377,14 @@ Settings, hook commands and MCP servers that come from a checked-out repository 
 
 Rules in `~/.delfin_settings.json` decide single actions in advance, in every level:
 
+<!-- recipe: not-runnable — a settings file excerpt; tests/test_permission_rules_hold_in_the_real_gate.py parses every rule in it -->
 ```json
-"permissions": {
-  "deny":  ["bash(git push)", "read(/data/private/**)", "web_fetch(domain:example.org)"],
-  "ask":   ["write(src/**)", "mcp__github__*"],
-  "allow": ["bash(pytest:*)", "read(/data/shared/**)"]
+{
+  "permissions": {
+    "deny":  ["bash(git push)", "read(/data/private/**)", "web_fetch(domain:example.org)"],
+    "ask":   ["write(src/**)", "mcp__github__*"],
+    "allow": ["bash(pytest:*)", "read(/data/shared/**)"]
+  }
 }
 ```
 

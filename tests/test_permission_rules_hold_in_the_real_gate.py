@@ -125,6 +125,20 @@ def test_a_broken_rule_is_no_rule(text):
     assert isinstance(PR.parse_rule(text), str)
 
 
+def test_the_manual_example_is_a_settings_file_whose_rules_all_parse(env):
+    import re
+    manual = (Path(__file__).resolve().parents[1] / "docs" / "USER_MANUAL.md"
+              ).read_text(encoding="utf-8")
+    block = re.search(r"```json\n(\{\n  \"permissions\".*?)```", manual,
+                      re.DOTALL)
+    assert block, "the permissions example is gone from the manual"
+    env["settings"].write_text(block.group(1))
+    PR._CACHE.clear()
+    rs = PR.load(env["ws"])
+    assert not rs.errors, rs.errors
+    assert len(rs.deny) == 3 and len(rs.ask) == 2 and len(rs.allow) == 2
+
+
 def test_invalid_rules_are_reported_and_grant_nothing(env):
     _rules(env, deny=["frob(x)", "bash(git push)"], allow=["bash(a ; b)"],
            ask="not a list")
