@@ -159,7 +159,16 @@ def test_a_locked_scope_still_asks_before_a_child_searches(tmp_path):
 @pytest.mark.parametrize("preset", sorted(
     n for n, p in S.SUBAGENT_PRESETS.items() if p.mode == "plan"))
 def test_no_plan_preset_offers_a_tool_its_mode_refuses(tmp_path, preset):
+    # A listed ``mcp__<server>__<tool>`` name is judged where the tool loop
+    # sends it: ``_gate_mcp_tool``, not the native ``execute``, which knows
+    # no server tool and would refuse every one of them for being unknown.
     child = _child(tmp_path, preset)
-    refused = [t for t in S.SUBAGENT_PRESETS[preset].tools
-               if _plan_refused(_run(t, {}, child))]
+    ex = A._DocToolExecutor()
+
+    def refused_for(t: str) -> bool:
+        if t.startswith("mcp__"):
+            return ex._gate_mcp_tool(t, {}, child) is not None
+        return _plan_refused(_run(t, {}, child))
+
+    refused = [t for t in S.SUBAGENT_PRESETS[preset].tools if refused_for(t)]
     assert refused == [], (preset, refused)
