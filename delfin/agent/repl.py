@@ -2237,6 +2237,21 @@ class TerminalAgent:
         bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
         if mode:
             bits.append(mode)
+            # Said only when a command is not held by a layer; an
+            # isolated session's line is unchanged. Read once per session:
+            # this line is redrawn several times a second, and the
+            # isolation of a process does not change while it runs.
+            _iso = getattr(self, "_isolation_word", None)
+            if _iso is None:
+                try:
+                    from .isolation_posture import isolation_status
+                    _iso = isolation_status(
+                        self.engine.kit_permissions).short()
+                except Exception:
+                    _iso = ""
+                self._isolation_word = _iso
+            if _iso:
+                bits.append(_iso)
         bits.append(f"↑{tin} {out_bits}")
         if cost > 0:
             bits.append(f"${cost:.4f}")

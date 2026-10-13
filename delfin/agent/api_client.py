@@ -18062,6 +18062,60 @@ class _DocToolExecutor:
                         f"'{cmd[:120]}'. Do NOT retry it or work around it."
                         + self._said_why(perms))
                 _approved_here = True
+            # A command this session promises to confine (locked scope,
+            # forced isolation) on a host where no layer can confine it.
+            # _bash_isolation_argv would refuse it at run time; asked here
+            # instead, in every mode, so a person present decides about
+            # this one command, and with nobody to ask it is refused with
+            # the routes that still work. The approval is for this command
+            # text once (_take_unconfined_approval).
+            _unconfinable = _isolation_refusal_reason(perms)
+            if _unconfinable:
+                _record_security_event("isolation_missing", "bash", cmd[:80],
+                                       blocked=perms.confirm_callback is None)
+                if perms.confirm_callback is None:
+                    return (
+                        f"blocked: {_unconfinable}, so this command cannot "
+                        "run confined, and nobody can be asked to run it "
+                        "unconfined. What works: read_file, write_file, "
+                        "edit_file, list_files and grep, whose gates do not "
+                        "depend on confining a command. A command needs an "
+                        "attended session (it is then asked) or a host "
+                        "with bubblewrap or Landlock; tell the user which "
+                        "command and why.")
+                # Asked even after another dialog approved this command:
+                # that one did not name this consequence.
+                try:
+                    ok = bool(perms.confirm_callback(
+                        "bash", {"command": cmd},
+                        "[NO ISOLATION]\n"
+                        f"{_unconfinable}. If approved, this one command "
+                        "runs unconfined and can write outside the "
+                        "workspace.\n\n$ " + cmd))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval to run this command unconfined TIMED "
+                            "OUT — the user is away, this is not a refusal. "
+                            "Do not run it now.")
+                    perms.record_denied_action("bash", cmd)
+                    _remember_refusal(perms, "bash", cmd,
+                                      self._refusal_reason(perms))
+                    return (
+                        f"user denied running '{cmd[:120]}' unconfined. "
+                        "Do NOT retry it or work around it."
+                        + self._said_why(perms))
+                _approved_here = True
+                try:
+                    approved = getattr(perms, "_unconfined_approved", None)
+                    if approved is None:
+                        approved = set()
+                        setattr(perms, "_unconfined_approved", approved)
+                    approved.add(cmd)
+                except Exception:
+                    pass
             # A push publishes. Report 20260915-085107 pushed the change it
             # was asked to, then chained a second commit and push onto a fix
             # nobody asked for -- in all_free, which asks nothing, so nothing
@@ -23580,6 +23634,74 @@ def set_bash_isolation_override(mode: str) -> None:
     _BASH_ISOLATION_OVERRIDE = str(mode or "")
 
 
+def _bash_isolation_setting() -> tuple[str, str]:
+    """``(mode, source)`` of the shell-isolation mode for this process.
+
+    mode: "auto" (default), "off", "bwrap", or what the setting holds,
+    lower-cased. source: the flag (``--no-isolate``/``--isolate``) when
+    the process override is set, else ``agent.bash_isolation``. One
+    reading for ``_bash_isolation_argv`` and the session status
+    (``isolation_posture``), so the two cannot disagree."""
+    if _BASH_ISOLATION_OVERRIDE:
+        mode = _BASH_ISOLATION_OVERRIDE.strip().lower()
+        return mode, ("--no-isolate" if mode == "off" else "--isolate")
+    try:
+        from delfin.user_settings import load_settings
+        mode = str(((load_settings() or {}).get("agent") or {})
+                   .get("bash_isolation", "auto") or "auto")
+    except Exception:
+        mode = "auto"
+    return mode.strip().lower(), "agent.bash_isolation"
+
+
+_REFUSAL_LOCKED = ("this session is locked to its folder, and neither "
+                   "bubblewrap, Landlock nor Seatbelt can confine a command "
+                   "on this host")
+_REFUSAL_FORCED = ("filesystem isolation is switched on, and neither "
+                   "bubblewrap nor Landlock nor Seatbelt can provide it on "
+                   "this host")
+
+
+def _isolation_refusal_reason(perms, mode: str | None = None) -> str:
+    """Why ``_bash_isolation_argv`` would refuse every command, or "".
+
+    Input: the session's permissions; ``mode`` as the caller would pass it
+    (None reads ``_bash_isolation_setting``). Output: the refusal text for
+    a locked scope or a forced isolation on a host where no layer can
+    confine a command; "" where a command runs (confined, or unconfined by
+    the session's own posture). Same probes and order as
+    ``_bash_isolation_argv``; no announcement, no proxy, no side effect."""
+    try:
+        if mode is None:
+            mode = _bash_isolation_setting()[0]
+        mode = str(mode or "").strip().lower()
+        if getattr(perms, "scope_locked", False):
+            if (_bwrap_functional() or _landlock_functional()
+                    or _seatbelt_functional()):
+                return ""
+            return _REFUSAL_LOCKED
+        if mode == "bwrap" and not shutil.which("bwrap"):
+            if _landlock_functional() or _seatbelt_functional():
+                return ""
+            return _REFUSAL_FORCED
+    except Exception:
+        return ""
+    return ""
+
+
+def _take_unconfined_approval(perms, cmd: str) -> bool:
+    """Consume a one-command approval to run ``cmd`` unconfined.
+
+    Set by the bash gate when the user approved a command that no layer
+    can confine ([NO ISOLATION] dialog); used once, by the next
+    ``_bash_isolation_argv`` for exactly that command text."""
+    approved = getattr(perms, "_unconfined_approved", None)
+    if not approved or cmd not in approved:
+        return False
+    approved.discard(cmd)
+    return True
+
+
 def _handover_hint(resolved, workspace) -> str:
     """A clause naming the shared directory, when the refused path is
     another session's worktree. Otherwise "".
@@ -23756,18 +23878,12 @@ def _bash_isolation_argv(
     workspace roots (the test runner's report directory).
     """
     plain = ["/bin/bash", "-c", cmd]
-    if mode is None and _BASH_ISOLATION_OVERRIDE:
-        # Set once per process by `delfin-agent --isolate`. It comes before
-        # the settings file on purpose: a session-scoped choice must not
-        # have to write a setting that outlives the session making it.
-        mode = _BASH_ISOLATION_OVERRIDE
     if mode is None:
-        try:
-            from delfin.user_settings import load_settings
-            mode = str(((load_settings() or {}).get("agent") or {})
-                       .get("bash_isolation", "auto") or "auto")
-        except Exception:
-            mode = "auto"
+        # The process override (`delfin-agent --isolate/--no-isolate`)
+        # comes before the settings file on purpose: a session-scoped
+        # choice must not have to write a setting that outlives the
+        # session making it.
+        mode = _bash_isolation_setting()[0]
     mode = mode.strip().lower()
     # "auto" (default): hard-isolate ONLY in the unattended/permissive
     # permission mode (bypassPermissions) where no human approves each
@@ -23800,10 +23916,12 @@ def _bash_isolation_argv(
             _announce_isolation_unavailable(perms)
             # A locked scope promises one folder. With nothing on this host
             # able to hold a command to it, the command is not run: a
-            # parser of command text is no containment.
-            return _refusal_argv(
-                "this session is locked to its folder, and neither "
-                "bubblewrap, Landlock nor Seatbelt can confine a command on this host")
+            # parser of command text is no containment -- unless the user
+            # approved this one command unconfined ([NO ISOLATION] in the
+            # bash gate), which is a decision about this command only.
+            if _take_unconfined_approval(perms, cmd):
+                return _in_process_cage(plain, run_cwd)
+            return _refusal_argv(_REFUSAL_LOCKED)
     elif mode == "auto":
         # Wherever this host can actually hold a command, not only in the
         # unattended profile. "auto" used to isolate under bypass and for
@@ -23844,9 +23962,9 @@ def _bash_isolation_argv(
             return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
         if _seatbelt_functional():
             return _seatbelt_argv(plain, perms, extra_write)
-        return _refusal_argv(
-            "filesystem isolation is switched on, and neither bubblewrap "
-            "nor Landlock nor Seatbelt can provide it on this host")
+        if _take_unconfined_approval(perms, cmd):
+            return _in_process_cage(plain, run_cwd)
+        return _refusal_argv(_REFUSAL_FORCED)
     if mode != "bwrap":
         return _in_process_cage(plain, run_cwd)
 

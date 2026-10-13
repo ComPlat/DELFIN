@@ -149,6 +149,7 @@ def _status(ctx, _args: str) -> CommandResult:
         f"provider   {st.get('provider', '?')}",
         f"mode       {st.get('mode', '?')}   role {st.get('role', '?')}",
         f"approval   {_mode(engine) or '(no gate on this backend)'}",
+        f"isolation  {_isolation(engine)}",
         f"workspace  {ctx.workspace}",
         f"session    {st.get('session_id', '') or '(unsaved)'}",
         f"tokens     ↑{st.get('input_tokens', 0)} ↓{st.get('output_tokens', 0)}"
@@ -1751,6 +1752,15 @@ def _help(ctx, args: str) -> CommandResult:
 def _mode(engine) -> str:
     from .repl import permission_mode
     return permission_mode(engine)
+
+
+def _isolation(engine) -> str:
+    """The banner's isolation line, read now (isolation_posture)."""
+    try:
+        from .isolation_posture import isolation_status
+        return isolation_status(getattr(engine, "kit_permissions", None)).line()
+    except Exception:
+        return "unknown"
 
 
 BUILTINS: dict[str, ReplCommand] = {

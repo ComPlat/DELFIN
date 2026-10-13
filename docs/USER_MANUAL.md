@@ -1377,6 +1377,16 @@ Settings, hook commands and MCP servers that come from a checked-out repository 
 
 Every command runs through an allow-list and then, where available, bubblewrap or firejail. Credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, the network is denied by default, and every command is appended to `~/.cache/delfin/agent-audit.jsonl`. `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}` selects the mechanism; when isolation is unavailable the agent says so rather than running unprotected in silence.
 
+Whether a command is held by a filesystem layer (bubblewrap, Landlock or Seatbelt) is shown in the start banner, by `/status` and, when it is not, as `unisolated` in the status line. Without a layer -- none works on the host, or you switched it off with `--no-isolate` or `agent.bash_isolation: "off"` -- what stops a command is a reading of its text, so:
+
+| Start mode | Attended | Nobody to ask (`-p` from a script, a pipe) |
+|------------|----------|---------------------------------------------|
+| `bypassPermissions` | asked once per session; yes keeps it, no starts in `default` | starts in `default`, with a notice on stderr |
+| `acceptEdits` | starts, with a notice | starts, with a notice |
+| `default`, `plan` | unchanged | unchanged |
+
+A session that promises confinement (a locked folder, `--isolate`) on a host with no layer asks before each command it would otherwise refuse (`[NO ISOLATION]`, in every mode); with nobody to ask that command is refused, and the file tools keep working.
+
 ### Pushing, pull requests and the git role
 
 A push publishes, so the agent pushes only after you asked for one, one push per request; unattended it does not push unasked, a force push is refused, and a push the remote rejects is reported as failed. Whether it may push onto a repository's default branch (`main`/`master`) or run `gh pr merge` is the repository's **git role**:

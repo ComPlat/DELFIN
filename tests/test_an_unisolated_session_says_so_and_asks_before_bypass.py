@@ -122,8 +122,10 @@ def test_the_setting_off_is_not_isolated_and_named(monkeypatch):
 def test_a_locked_scope_without_a_layer_refuses_rather_than_runs(
         monkeypatch, tmp_path):
     _host(monkeypatch)
-    perms = A.KitToolPermissions(workspace=_ws(tmp_path), mode="default")
-    perms.scope_locked = True
+    # The office role is one of the carriers of a locked scope.
+    perms = A.KitToolPermissions(workspace=_ws(tmp_path), mode="default",
+                                 agent_role="office_agent")
+    assert perms.scope_locked
     st = P.isolation_status(perms)
     assert st.refuses and not st.isolated
 
@@ -229,6 +231,8 @@ def _one_shot(monkeypatch, tmp_path, run_once, *, mode="bypassPermissions"):
     monkeypatch.setattr(agent_cli, "_save_session", lambda *a, **k: "sess-iso-1")
     monkeypatch.setattr(agent_cli, "_resume_or_create", lambda *a, **k: None)
     monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    # cmd_run moves into --cwd and stays there.
+    monkeypatch.chdir(Path.cwd())
     rc = agent_cli.main(["-p", "do it", "--permission-mode", mode,
                          "--cwd", str(ws)])
     return rc, holder["engine"]
@@ -306,8 +310,9 @@ def test_an_unattended_p_run_without_isolation_completes_a_normal_task(
 # -- a command that cannot be confined ---------------------------------------
 
 def _locked(tmp_path, mode, callback):
-    perms = A.KitToolPermissions(workspace=_ws(tmp_path), mode=mode)
-    perms.scope_locked = True
+    perms = A.KitToolPermissions(workspace=_ws(tmp_path), mode=mode,
+                                 agent_role="office_agent")
+    assert perms.scope_locked
     perms.confirm_callback = callback
     return perms
 
