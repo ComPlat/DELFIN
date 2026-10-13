@@ -13739,9 +13739,9 @@ class _DocToolExecutor:
             return self._execute_skill_propose_patch(
                 arguments, permissions)
 
-        # Skill sharing (L6): export an accepted skill to a shared folder
-        # as a JSON bundle, or import one (bounded read + hash verify +
-        # scrub -> blocked/verified, never active without a human accept).
+        # Skill sharing: export an accepted skill to a folder as a JSON
+        # bundle, or import one as a proposal (bounded read + hash verify +
+        # scrub; never active without a human accept).
         # The executors gate the filesystem paths through the same read /
         # write checks every other tool uses.
         if name == "skill_share":
@@ -21145,7 +21145,7 @@ class _DocToolExecutor:
     ) -> str:
         """Export one ACCEPTED skill to a shared folder as a JSON bundle.
 
-        L6 sharing. Delegates to ``skill_share.export_bundle``: only an
+        Delegates to ``skill_share.export_bundle``: only an
         accepted skill (~/.delfin/skills/<name>/SKILL.md) may be exported,
         by an explicit call, and the text is scrubbed before anything is
         written (an absolute path / user@host / job id / secret blocks and
@@ -21191,18 +21191,14 @@ class _DocToolExecutor:
     def _execute_skill_import(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
-        """Read a shared skill bundle, verify and scrub it (L6).
+        """Import a shared skill bundle as a proposal.
 
-        Delegates to ``skill_share.import_bundle``: bounded read (regular
-        file only -- no symlink, no FIFO -- under a size cap), sha256
-        verification (tampered/truncated refused), and the same scrub.
-        Unsafe text is returned as status "blocked" naming the line; a
-        clean, hash-verified bundle is "verified". import_bundle does NOT
-        create a proposal -- one is made only when a human attaches real
-        evidence via the proposal pipeline (source "shared"), so nothing
-        is ever active without accept. The source path is gated by the
-        standard read check. Read-only, but plan mode still rejects it for
-        symmetry with the other skill tools.
+        The path (relative paths are taken from the workspace) passes the
+        standard read gate first; then ``skill_share.import_bundle``
+        verifies, scrubs and stores it as a pending or blocked proposal of
+        source "shared", never active without a human accept. The result
+        is fenced as untrusted content. Plan mode rejects it: it writes
+        into the proposal store.
         """
         if perms is None:
             return json.dumps({"error": (

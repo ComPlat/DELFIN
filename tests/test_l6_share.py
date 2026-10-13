@@ -1,21 +1,14 @@
-"""Package L6: an approved skill can be shared, and arrives as a proposal.
+"""skill_share.export_bundle / import_bundle through the module API.
 
-L6 exports an ACCEPTED skill (one that lives in ``~/.delfin/skills/<name>/``)
-to a local shared folder as one JSON bundle and imports one back as a
-PROPOSAL (source "shared") that is never active without a human accept.
+* export writes one bundle for an accepted skill and refuses any other;
+* the scrub blocks, naming field and line, an absolute or ``~/`` path, a
+  user@host and a job id next to a scheduler word, in text, author and
+  version, while method strings (``B3LYP/def2-TZVP``, ``kcal/mol``) pass;
+* a symlink planted at the temp name is not followed;
+* import refuses a symlink, a changed hash and an oversize bundle, and a
+  clean bundle is stored as a pending proposal that accept() refuses.
 
-Design rules (task + QS ruling nacht-s29):
-* no PR path, no network;
-* the export scrub REUSES ``skill_safety.check`` (the command + secret scan
-  DELFIN already has) on top of a *targeted* absolute-path / user@host /
-  job-id scan (those are not covered by the generic scan);
-* an import MUST pass non-empty evidence so the safety gate inside propose()
-  runs and unsafe text is STORED as status "blocked" (never active). The
-  default evidence is a NON-fabricated provenance record -- kind "recipe",
-  ref = the bundle's sha256 -- not a fake green test/calc/job run;
-* the accepted skill home and the proposal store are resolved per call from
-  ``Path.home()`` so a redirected HOME redirects them and no test ever
-  touches the real ``~/.delfin``.
+HOME is redirected so the skills tree and proposal store are in tmp.
 """
 import json
 from pathlib import Path
@@ -132,7 +125,7 @@ def test_export_blocked_on_absolute_home_path_names_the_line(home, tmp_path):
 
 
 def test_export_chemistry_method_strings_and_plain_numbers_pass(home, tmp_path):
-    """Operator F4: a path is a token that BEGINS with / or ~/, never a "/"
+    """A path is a token that BEGINS with / or ~/, never a "/"
     inside a word, and a job id is only next to a scheduler word. So a
     chemistry skill mentioning B3LYP/def2-TZVP, kcal/mol, and/or and a bare
     6-digit number must EXPORT, while a real /home path, a ~/ path, and a
@@ -185,21 +178,21 @@ def test_export_routes_through_the_reused_skill_safety_scan(
 
     monkeypatch.setattr(real_ss, "check", fake_check)
     _install_accepted(home, text="# A skill\nbody")
-    with pytest.raises(Exception) as exc:
+    with pytest.raises(Exception):
         ss.export_bundle("shared-skill", str(tmp_path))
     assert calls, "export must consult the reused skill_safety scan"
     assert not _bundle_path(tmp_path).exists()
 
 
 def test_export_refuses_a_planted_symlink_at_the_temp_name(home, tmp_path):
-    """Operator F3: the export temp is created with O_EXCL|O_NOFOLLOW (0600),
+    """The export temp is created with O_EXCL|O_NOFOLLOW (0600),
     so a symlink planted at the temp name is NOT followed -- the write would
     otherwise land outside (os.replace'd into an attacker's path). A planted
     symlink at the temp name must be refused, never followed."""
     _install_accepted(home, text="# S\nA clean body\n", name="sym-skill")
     tmp = tmp_path / "sym-skill.skill.json.tmp"
     tmp.symlink_to(tmp_path / "outside.txt")
-    with pytest.raises(Exception) as exc:
+    with pytest.raises(Exception):
         ss.export_bundle("sym-skill", str(tmp_path))
     # refusal: nothing was written THROUGH the symlink (outside.txt stays
     # absent) and no bundle landed; the planted symlink itself is left
@@ -210,7 +203,7 @@ def test_export_refuses_a_planted_symlink_at_the_temp_name(home, tmp_path):
 
 
 def test_import_refuses_a_symlink_via_the_open_descriptor(home, tmp_path):
-    """Operator F2: the bundle read decides on the OPEN descriptor
+    """The bundle read decides on the OPEN descriptor
     (O_RDONLY|O_NOFOLLOW|O_NONBLOCK + fstat), not on a check-then-use of the
     path -- a symlink is refused even if the path stats as a regular file."""
     target = tmp_path / "real_bundle.txt"
@@ -223,7 +216,7 @@ def test_import_refuses_a_symlink_via_the_open_descriptor(home, tmp_path):
 
 
 def test_export_blocked_on_a_userhost_author_label(home, tmp_path):
-    """s17/s29 finding: the author label is also machine identity and must
+    """The author label is also machine identity and must
     be blocked, naming the author field -- not just the skill text."""
     _install_accepted(home, text="# A skill\nbody")
     with pytest.raises(Exception) as exc:
@@ -244,7 +237,7 @@ def test_export_blocked_on_an_absolute_path_author(home, tmp_path):
 
 def test_export_blocked_on_a_machine_ref_in_version(home, tmp_path):
     """A base_version that names a machine path is blocked on export -- the
-    version field leaves too and is scrubbed (s17/s29 finding)."""
+    version field leaves too and is scrubbed."""
     _install_accepted(home, text="# A skill\nbody", version="/home/x/base")
     with pytest.raises(Exception) as exc:
         ss.export_bundle("shared-skill", str(tmp_path))
@@ -257,11 +250,8 @@ def test_export_blocked_on_a_machine_ref_in_version(home, tmp_path):
 # --------------------------------------------------------------------------
 
 def test_import_clean_bundle_is_stored_pending_never_active(home, tmp_path):
-    """Operator F1 (overrules the earlier QS ruling): import_bundle calls
-    propose(source="shared") with ONE honest provenance evidence entry, so a
-    clean, hash-verified bundle is STORED as a pending proposal. It is never
-    active without a human accept, and there is no separate "verified"
-    status -- the hash check is a precondition, not an approval."""
+    """A clean, hash-verified bundle is stored as a pending proposal of
+    source "shared"; it is not discovered, and accept() refuses it."""
     bundle = _make_valid_bundle(dirpath=tmp_path)
     info = ss.import_bundle(bundle)
     assert info["status"] == "pending"
@@ -271,11 +261,13 @@ def test_import_clean_bundle_is_stored_pending_never_active(home, tmp_path):
     assert prop is not None and prop.status == "pending"
     assert prop.source == "shared"
     assert "shared-skill" not in [s.name for s in discover_skills()]
+    with pytest.raises(ValueError, match="no verifying evidence"):
+        sp.accept("shared-skill", by="tester")
 
 
-def test_import_unsafe_text_is_stored_blocked_naming_the_line(home, tmp_path):
+def test_import_unsafe_text_is_blocked_naming_the_line(home, tmp_path):
     """Unsafe text (git push) is recorded by import_bundle itself as status
-    "blocked", naming the line -- the package's "stored blocked" outcome.
+    "blocked", naming the line.
     No proposal is created and nothing is active."""
     bundle = _make_valid_bundle(
         dirpath=tmp_path, text="# S\n```bash\ngit push origin main\n```\n")
@@ -286,7 +278,7 @@ def test_import_unsafe_text_is_stored_blocked_naming_the_line(home, tmp_path):
     assert "shared-skill" not in [s.name for s in discover_skills()]
 
 
-def test_import_clean_text_with_an_absolute_path_is_stored_blocked(
+def test_import_clean_text_with_an_absolute_path_is_blocked(
         home, tmp_path):
     bundle = _make_valid_bundle(dirpath=tmp_path,
                                 text="# S\nuses /home/alice/refs\n")
@@ -296,34 +288,17 @@ def test_import_clean_text_with_an_absolute_path_is_stored_blocked(
 
 
 def test_import_re_scrubs_author_and_version_before_proposal(home, tmp_path):
-    """s17/s29 finding, import side: the author and version are re-scrubbed
+    """Import side: the author and version are re-scrubbed
     before a bundle is proposed -- a machine ref in either is "blocked",
     not silently accepted into a proposal."""
     bundle = _make_valid_bundle(dirpath=tmp_path, author="alice@srv")
     info = ss.import_bundle(bundle)
     assert info["status"] == "blocked"
     assert "author" in info["reason"]
-    # a clean author still stores a pending proposal (F1)
+    # a clean author still stores a pending proposal
     clean = _make_valid_bundle(dirpath=tmp_path, name="shared-skill-clean",
                                author="kb", version="v1")
     assert ss.import_bundle(clean)["status"] == "pending"
-
-
-def test_import_never_activates_without_accept(home, tmp_path):
-    """Operator F1 red test: after import a proposal exists on disk with source
-    "shared" (stored pending), but it is never active and accept() refuses it
-    at the evidence gate until local evidence verifies."""
-    bundle = _make_valid_bundle(dirpath=tmp_path)
-    stored = ss.import_bundle(bundle)
-    assert stored["status"] == "pending"
-    assert "shared-skill" not in [s.name for s in discover_skills()]
-    prop = sp.get_proposal("shared-skill")
-    assert prop is not None and prop.status == "pending"
-    assert prop.source == "shared"
-    # accept() refuses the recipe-only provenance at the evidence gate:
-    # nothing is active without real local evidence.
-    with pytest.raises(Exception):
-        sp.accept("shared-skill", by="test-user")
 
 
 def test_import_detects_a_tampered_hash(home, tmp_path):
@@ -333,17 +308,6 @@ def test_import_detects_a_tampered_hash(home, tmp_path):
     with pytest.raises(Exception):
         ss.import_bundle(bundle)
     assert sp.get_proposal("shared-skill") is None
-
-
-def test_import_refuses_a_symlink(home, tmp_path):
-    real = _make_valid_bundle(dirpath=tmp_path, name="real-target")
-    link = tmp_path / "linked.skill.json"
-    try:
-        link.symlink_to(real)
-    except OSError:
-        pytest.skip("symlinks unavailable on this filesystem")
-    with pytest.raises(Exception):
-        ss.import_bundle(link)
 
 
 def test_import_refuses_an_oversize_bundle(home, tmp_path, monkeypatch):

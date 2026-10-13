@@ -1,37 +1,30 @@
-"""Share an approved skill as a local JSON bundle; import it as a PROPOSAL.
+"""Share an accepted skill as a local JSON bundle; import one as a proposal.
 
-Package L6. The problem: what one user's DELFIN learned stays with that user.
-This module lets an *accepted* skill (one that lives in ``~/.delfin/skills/
-<name>/``) be exported to a shared folder on disk and imported by another
-DELFIN as a PROPOSAL (source "shared") -- never active until a human accepts
-it. Part (a) of the sharing plan only: no PR path, no network.
+Input of ``export_bundle``: the name of an accepted skill (a live
+``~/.delfin/skills/<name>/SKILL.md``) and a target folder. Output: one file
+``<name>.skill.json`` carrying ``{name, text, version, author, sha256}``,
+where ``sha256`` covers the canonical payload. No network and no bulk path:
+every export names one skill.
 
-The export is opt-in per skill (every item is named explicitly), and the
-bundle is one JSON file carrying ``{name, text, version, author, sha256}``
-where ``sha256`` covers the canonical payload so any tamper is detected on
-import. Nothing is silently rewritten:
+Input of ``import_bundle``: the path of such a file. Output: a proposal in
+``~/.delfin/skills/_proposals`` with source "shared", or status "blocked"
+with the reasons and nothing stored. An import is never active: it becomes
+a skill only through a human ``skill_proposals.accept``, and its provenance
+entry (evidence kind "shared") never verifies, so local evidence has to be
+attached first.
 
-* ``export_bundle`` runs the scrub BEFORE writing and BLOCKS -- naming the
-  line -- when the text carries something machine-private or unsafe. It
-  REUSES DELFIN's own ``skill_safety.check`` (the command + secret scan, the
-  same one ``skill_proposals.propose`` runs) on top of a small targeted scan
-  for an absolute path, a user@host, or a job id -- those shapes are not
-  covered by the generic scan. A finding on either side blocks the export.
+The sha256 proves integrity (the file was not changed after export), not
+origin: anyone can write a bundle with a matching hash. The author is a
+label the bundle carries, recorded as such.
 
-* ``import_bundle`` does a bounded read (regular file only -- no symlink, no
-  FIFO -- under a size cap) and verifies the sha256 of the bundle payload,
-  then runs the same scrub. A text that trips git-push / curl / an absolute
-  path / a secret is RECORDED as status "blocked", naming the line -- that
-  blocked outcome is the package's "stored blocked" result, never a live
-  skill. A clean, hash-verified bundle returns status "verified" but does NOT
-  create a proposal: it becomes one only when a human attaches REAL evidence
-  via ``skill_proposals.propose(source="shared")``. No test/calc/job ref is
-  ever invented, accept's evidence gate (skill_proposals.py:315) is
-  untouched, and nothing is active without a human ``accept``.
+Both directions run the same scrub on every field and block, naming the
+field and line, rather than rewrite: ``skill_safety.check`` (commands and
+secrets) plus a scan for what names a machine (an absolute or ``~/`` path,
+``user@host``, a job id next to a scheduler word) and for control
+characters. The name must be one ``discover_skills`` would load.
 
-Paths are resolved per call from ``Path.home()`` (never at import time), so a
-redirected HOME redirects the live skills tree and the proposal store and no
-test ever touches the real ``~/.delfin``.
+Paths are resolved per call from ``Path.home()``, so a redirected HOME
+redirects the skills tree and the proposal store.
 """
 from __future__ import annotations
 
@@ -104,13 +97,13 @@ def _bundle_blob(payload: dict, sha: str) -> str:
 #: whitespace, a quote, a bracket, "=" or ":"), never a "/" inside a word.
 #: That keeps "B3LYP/def2-TZVP", "and/or" and "kcal/mol" (method strings,
 #: chemistry) exportable while "/home/alice/x" and "~/calc" (machine paths)
-#: still block (operator F4).
+#: still block.
 _ABS_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9_.~-])(?:~/|/)[A-Za-z0-9_@.~/-]*")
 _USERHOST_RE = re.compile(r"(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]+@[A-Za-z0-9.-]+")
 #: A job id is only that when it sits next to a scheduler word; a bare
 #: 6+ digit number in a chemistry skill (e.g. a mass or a year) must not
-#: block the export (operator F4).
+#: block the export.
 _JOB_ID_RE = re.compile(
     r"(?i)(?:job|slurm|sbatch|squeue|jobid)\W{0,3}(\d{3,})")
 
@@ -231,7 +224,7 @@ def export_bundle(name: str, target_dir: str | os.PathLike, *,
     payload = _payload(name, text, version, (author or "").strip())
     # scrub EVERY field that leaves (text, version, author), not just text:
     # an author label "alice@srv" or a version "/home/x/base" is also machine
-    # identity and must not reach the shared bundle (s17/s29 finding).
+    # identity and must not reach the shared bundle.
     reason = _scrub_leaving(payload)
     if reason:
         raise ValueError(f"export of {name!r} blocked: {reason}")
@@ -240,7 +233,7 @@ def export_bundle(name: str, target_dir: str | os.PathLike, *,
     out = Path(target_dir)
     out.mkdir(parents=True, exist_ok=True)
     json_path = out / f"{name}.skill.json"
-    # F3: never follow a planted symlink. The final path must not be a
+    # Never follow a planted symlink. The final path must not be a
     # symlink, and the temp is created with O_EXCL|O_NOFOLLOW (0600) so an
     # attacker cannot point it somewhere else and os.replace land outside.
     try:
@@ -250,7 +243,7 @@ def export_bundle(name: str, target_dir: str | os.PathLike, *,
                 f"{json_path}")
         # append .tmp to the full filename (with_suffix on a name with
         # embedded dots, e.g. <name>.skill.json, would shift the real dot
-        # beyond the planted temp name -- F3 must hit exactly the temp).
+        # beyond the planted temp name).
         tmp = json_path.with_name(json_path.name + ".tmp")
         flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
                  | getattr(os, "O_NOFOLLOW", 0))
@@ -276,27 +269,21 @@ def export_bundle(name: str, target_dir: str | os.PathLike, *,
 
 
 def import_bundle(path: str | os.PathLike, *, source: str = "shared") -> dict:
-    """Read a shared skill bundle, verify it, and scrub it.
+    """Read a shared skill bundle, verify and scrub it, store it as a proposal.
 
-    import_bundle does NOT create a proposal (QS ruling, corrected). It is a
-    bound + integrity + safety gate:
+    * bounded read: one ``O_NOFOLLOW | O_NONBLOCK`` open, ``fstat`` on the
+      descriptor, regular file only, at most ``_MAX_BUNDLE_BYTES``;
+    * the sha256 must match the payload, else ValueError and nothing is
+      stored; the name must be a loadable skill name, else ValueError;
+    * a scrub finding returns status "blocked" with the reasons and stores
+      nothing;
+    * otherwise ``skill_proposals.propose(source=...)`` stores it, pending
+      (or blocked by propose's own safety scan), under a free name and
+      without ``base_version``, so it never patches a local skill.
 
-    * bounded read: regular file only (no symlink, no FIFO) under a strict
-      size cap; the bundle sha256 must match the payload -- a tampered or
-      truncated bundle raises and proposes nothing;
-    * scrub: the same scan as export (skill_safety.check reused for
-      commands/secrets + the targeted machine-private net). A text that
-      trips git-push / curl / an absolute path / a secret is RECORDED here as
-      status "blocked", naming the line -- that blocked outcome is the
-      package's "stored blocked" result, never a live skill;
-    * a clean, hash-verified bundle returns status "verified" (with the
-      bundle fields) and becomes a proposal ONLY when a human attaches real
-      evidence via ``skill_proposals.propose(source=...)`` -- no fabricated
-      ref, accept's evidence gate untouched, nothing active without accept.
-
-    Returns ``{"status", ...}`` where status is "verified" or "blocked".
+    Returns ``{"status", "source", "name", "version", "author", ...}``.
     """
-    # F2: decide on the OPEN descriptor, not on the path -- what was a file a
+    # Decide on the OPEN descriptor, not on the path -- what was a file a
     # moment ago can be swapped for a FIFO or a symlink by the time it is
     # opened. Open once O_RDONLY|O_NOFOLLOW|O_NONBLOCK, fstat the descriptor,
     # check a bounded regular file, read at most cap+1 bytes from that fd.
@@ -340,7 +327,7 @@ def import_bundle(path: str | os.PathLike, *, source: str = "shared") -> dict:
             "nothing is proposed")
     _check_name(name, "import")
 
-    # F4 (operator): the SAME machine-reference scan also runs on import.
+    # The SAME machine-reference scan also runs on import.
     # A bundle hand-made to carry /home/<user>/ (or a user@host / job id) is
     # "blocked" here, naming the line, and never reaches a proposal. This is
     # separate from propose's own command+secret scan below, which stores
@@ -351,16 +338,12 @@ def import_bundle(path: str | os.PathLike, *, source: str = "shared") -> dict:
                 "version": version, "author": author,
                 "reason": net_reason}
 
-    # F1 (operator overrules the earlier QS ruling): an import ARRIVES AS A
-    # PROPOSAL. propose() with ONE honest provenance evidence entry stores it
-    # (never a claim of a test): kind "shared", ref the bundle sha256, detail
-    # saying it is not verified on this machine. The kind matters: "recipe"
-    # verifies in any workspace that has a verify recipe, whatever its ref,
-    # so a bundle would have been acceptable with no check at all. Unsafe text (git-push /
-    # curl / a secret) is STORED "blocked" by propose's own safety scan; clean
-    # text is STORED "pending"; accept() still refuses at the evidence gate
-    # until local evidence verifies (skill_proposals docstring :236 names this
-    # pulled-proposal case). Nothing is ever active without accept.
+    # An import arrives as a proposal with one provenance entry: kind
+    # "shared", ref the bundle sha256, detail naming the author label and
+    # that nothing was verified here. evidence.verify_evidence never counts
+    # kind "shared", so accept() refuses until local evidence verifies.
+    # Rejected: kind "recipe" -- it verifies in any workspace that has a
+    # verify recipe, whatever its ref, so a bundle would pass with no check.
     from . import skill_proposals
     from .skill_proposals import Evidence
     provenance = Evidence(

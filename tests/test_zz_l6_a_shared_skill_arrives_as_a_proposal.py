@@ -88,7 +88,7 @@ def test_a_chemistry_skill_exports_into_the_workspace(box, monkeypatch, tmp_path
     assert json.loads(_bundle(ws).read_text())["text"] == CHEM
 
 
-def test_an_export_outside_the_workspace_is_asked_about_and_a_no_writes_nothing(
+def test_an_export_outside_the_workspace_is_refused_and_writes_nothing(
         box, tmp_path):
     _, _, skill, call, asked = box
     skill("pick-functional", CHEM)
@@ -191,7 +191,7 @@ def test_an_import_never_touches_a_skill_of_the_same_name(box):
     assert skill_proposals.get_proposal(info["name"]).base_version == ""
 
 
-def test_a_bundle_with_a_command_that_sends_data_out_is_stored_blocked(box):
+def test_a_bundle_with_a_command_that_sends_data_out_is_blocked(box):
     home, ws, _, call, _ = box
     import hashlib
     payload = {"name": "helper", "text": "# Helper\n\n```bash\ngit push origin main\n```\n",

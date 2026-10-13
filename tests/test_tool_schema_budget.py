@@ -204,7 +204,7 @@ _BASELINE_TOKENS = 11_422
 # shown in the chat. Trimmed first -- one-line description naming the
 # kinds, a bare type for the spec -- which leaves 71 tokens, so the budget
 # moves 9_990 -> 10_061.
-# 2026-10-13 (wave 15b, L6): skill_share, an accepted skill out as a bundle
+# 2026-10-13: skill_share, an accepted skill out as a bundle
 # file and a bundle in as a proposal. It arrived as two tools at 372
 # tokens. Trimmed first -- one tool with an action instead of two, a
 # two-sentence description that keeps "accepted", "proposal" and "never

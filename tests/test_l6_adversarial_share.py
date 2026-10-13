@@ -1,18 +1,14 @@
-"""L6 adversarial tests (reviewer nacht-s17, phase 2).
+"""skill_share against hostile input: tokens, download commands, a FIFO.
 
-Attacks the corrected phase-2 contract (QS s29 ruling, no-proposal import):
-  * export_bundle blocks an accepted skill whose text carries a token, an
-    absolute path, a user@host or a job id; nothing is written;
-  * import_bundle stores "blocked" (naming the line) for git push /
-    curl-to-host text, refuses a symlink / FIFO / oversize bundle, and a
-    tampered hash;
-  * nothing ever becomes active without a human accept.
+* an export whose text carries a token is blocked and writes nothing;
+* an import whose text downloads and runs something is blocked, naming
+  the command and the line;
+* a FIFO is refused without blocking on the open;
+* an export re-imports as a pending proposal that accept() refuses;
+* a machine reference in the version field blocks the import.
 
-The reused scan is skill_safety.check -> the memory-store redaction, on top
-of the module's own targeted absolute-path / user@host / job-id net. Token
-and command shapes are assembled at runtime so the test source holds no
-literal secret-shaped string. These tests probe the explicit phase-3 red-test
-shapes the builder's suite left uncovered (export token, import curl, FIFO).
+Token and command shapes are assembled at runtime so the test source holds
+no literal secret-shaped string.
 """
 import hashlib
 import json
@@ -70,7 +66,7 @@ def _make_valid_bundle(dirpath, *, name="shared-skill", text="# A skill\nbody",
 
 
 # --------------------------------------------------------------------------
-# export: a token must block (phase-3 red test, absent from builder's suite)
+# export: a token must block
 # --------------------------------------------------------------------------
 
 def _token_shapes():
@@ -89,8 +85,7 @@ def _token_shapes():
 
 @pytest.mark.parametrize("kind", ["aws", "provider", "pat"])
 def test_export_blocked_when_text_carries_a_token(home, tmp_path, kind):
-    """An export carrying a token must be blocked (task phase-3), nothing
-    written."""
+    """An export carrying a token is blocked; nothing is written."""
     token_line = _token_shapes()[kind]
     _install_accepted(home, text=f"# S\n{token_line}\n")
     with pytest.raises(Exception):
@@ -99,7 +94,7 @@ def test_export_blocked_when_text_carries_a_token(home, tmp_path, kind):
 
 
 # --------------------------------------------------------------------------
-# import: curl / wget to a host must be stored blocked (phase-3 red test)
+# import: curl / wget to a host is blocked
 # --------------------------------------------------------------------------
 
 def _download_commands():
@@ -112,13 +107,14 @@ def _download_commands():
 
 
 @pytest.mark.parametrize("bad_command_idx", [0, 1])
-def test_import_with_download_cmd_is_stored_blocked(home, tmp_path,
+def test_import_with_download_cmd_is_blocked(home, tmp_path,
                                                      bad_command_idx):
     bad = _download_commands()[bad_command_idx]
     bundle = _make_valid_bundle(dirpath=tmp_path,
                                 text=f"# S\n```bash\n{bad}\n```\n")
     info = ss.import_bundle(bundle)
     assert info["status"] == "blocked"
+    assert bad.split()[0] in info["reason"] and "line 3" in info["reason"]
 
 
 # --------------------------------------------------------------------------
@@ -142,24 +138,6 @@ def test_import_refuses_a_fifo(home, tmp_path):
 # the abs-path scan is not slipped by surrounding text / unicode look-alikes
 # --------------------------------------------------------------------------
 
-def test_export_abs_path_is_named_and_blocked(home, tmp_path):
-    """Confirm the phase-3 /home/<user>/ case: both the block and the named
-    line hold, even when the path is embedded in a full sentence."""
-    _install_accepted(home, text="# S\nread /home/alice/refs now\n")
-    with pytest.raises(Exception) as exc:
-        ss.export_bundle("shared-skill", str(tmp_path))
-    assert "/home/alice/refs" in str(exc.value)
-    assert not _bundle_path(tmp_path).exists()
-
-
-def test_import_home_abs_path_in_text_is_stored_blocked(home, tmp_path):
-    bundle = _make_valid_bundle(dirpath=tmp_path,
-                                text="# S\nuses /home/bob/env.json\n")
-    info = ss.import_bundle(bundle)
-    assert info["status"] == "blocked"
-    assert "/home/bob/env.json" in info["reason"]
-
-
 # --------------------------------------------------------------------------
 # round-trip: a block-free accepted skill exports a bundle that re-verifies
 # --------------------------------------------------------------------------
@@ -171,9 +149,7 @@ def test_export_reimport_round_trip_verifies(home, tmp_path):
     assert out == text
     bundle = _bundle_path(tmp_path, "clean-skill")
     info = ss.import_bundle(bundle)
-    # operator L6 F1 ruling (a): an import ARRIVES AS A PROPOSAL. A clean
-    # bundle is stored as a 'pending' proposal (source 'shared'); there is no
-    # separate 'verified' status — a hash mismatch raises and stores nothing.
+    # a clean bundle is stored as a pending proposal of source 'shared'
     assert info["status"] == "pending"
     assert info["source"] == "shared"
     assert info["text"] == text
@@ -183,67 +159,12 @@ def test_export_reimport_round_trip_verifies(home, tmp_path):
     assert prop is not None and prop.status == "pending"
     assert prop.source == "shared"
     with pytest.raises(ValueError):
-        sp.accept(info["name"], by="s17-l6-test")
+        sp.accept(info["name"], by="tester")
 
 
-def test_import_refuses_a_symlinked_bundle(home, tmp_path):
-    real = _make_valid_bundle(dirpath=tmp_path, name="real-target")
-    link = tmp_path / "linked.skill.json"
-    scraped = False
-    try:
-        link.symlink_to(real)
-    except OSError:
-        scraped = True
-        pytest.skip("symlinks unavailable on this filesystem")
-    if not scraped:
-        with pytest.raises(Exception):
-            ss.import_bundle(link)
 # --------------------------------------------------------------------------
-# author / version scrub (finding s17, fix bd4568f7): machine identity in the
-# author or version bundle field must BLOCK on export AND re-scrub on import
+# the version field is re-scrubbed on import
 # --------------------------------------------------------------------------
-
-def test_export_blocked_when_author_carries_userhost(home, tmp_path):
-    """A user@host in the author label blocks the export, naming the field,
-    and nothing is written (phase-2 'user or host name BLOCKS')."""
-    _install_accepted(home)
-    with pytest.raises(Exception) as err:
-        ss.export_bundle("shared-skill", str(tmp_path), author="alice@srv")
-    assert "author" in str(err.value)
-    assert not _bundle_path(tmp_path).exists()
-
-
-def test_export_blocked_when_author_carries_absolute_path(home, tmp_path):
-    """An absolute path in the author label blocks the export."""
-    _install_accepted(home)
-    with pytest.raises(Exception) as err:
-        ss.export_bundle("shared-skill", str(tmp_path), author="/home/x/me")
-    assert "author" in str(err.value)
-    assert not _bundle_path(tmp_path).exists()
-
-
-def test_export_blocked_when_version_carries_machine_ref(home, tmp_path):
-    """A machine ref in the version (from proposal.json base_version) blocks
-    the export naming the field."""
-    _install_accepted(home)
-    meta = json.loads((_live_dir(home, "shared-skill") / "proposal.json").read_text("utf-8"))
-    meta["base_version"] = "/home/x/base"
-    (_live_dir(home, "shared-skill") / "proposal.json").write_text(json.dumps(meta), "utf-8")
-    with pytest.raises(Exception) as err:
-        ss.export_bundle("shared-skill", str(tmp_path))
-    assert "version" in str(err.value)
-    assert not _bundle_path(tmp_path).exists()
-
-
-@pytest.mark.parametrize("author", ["alice@srv", "/home/x/me"])
-def test_import_rescrubs_author_never_verified(home, tmp_path, author):
-    """A hash-valid bundle whose author carries machine identity is re-scrubbed
-    on import: status 'blocked' (never 'verified', never active)."""
-    bundle = _make_valid_bundle(tmp_path, author=author)
-    info = ss.import_bundle(bundle)
-    assert info["status"] == "blocked"
-    assert "shared-skill" not in [s.name for s in discover_skills()]
-
 
 def test_import_rescrubs_version_never_verified(home, tmp_path):
     """A hash-valid bundle whose version carries machine identity is re-scrubbed
