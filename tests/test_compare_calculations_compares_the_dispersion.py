@@ -152,6 +152,9 @@ def test_different_dispersion_physics_is_a_mismatch(tmp_path, fa, da, fb, db):
     ("B3LYP", "D3", "B3LYP", "D3ZERO"),        # ORCA's D3 is D3zero
     ("B3LYP", "D3BJ", "B3LYP", "D3(BJ)"),
     ("B3LYP-D3BJ", "", "B3LYP", "D3BJ"),
+    ("XTB2", "", "GFN2-xTB", ""),             # ORCA's alias of GFN2-xTB
+    ("XTB", "", "GFN2-xTB", ""),
+    ("XTB1", "", "GFN1-xTB", ""),
 ])
 def test_one_correction_spelled_two_ways_matches(tmp_path, fa, da, fb, db):
     a = _run(tmp_path / "a", functional=fa, disp=da)
