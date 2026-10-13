@@ -1,0 +1,20 @@
+{
+  "name": "@delfin/tui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "spike": "bun spike/inline.tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentui/core": "0.6.4",
+    "@opentui/solid": "0.6.4",
+    "solid-js": "1.9.12",
+    "web-tree-sitter": "0.25.10"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "@xterm/headless": "6.0.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -142,11 +142,64 @@ The phased implementation plan is in [TUI_PLAN.md](TUI_PLAN.md).
 - **Tests**: OpenTUI's headless test renderer with text-frame snapshots, a
   fake event stream for UI tests, and pytest for the service.
 
+## Phase 0 findings (2026-10-13)
+
+**Decision: GO.** We build on OpenTUI 0.6.4 + SolidJS in split-footer mode,
+using a native library built from source with one patch until upstream fixes
+issue #1630.
+
+The spike (`tui/spike/inline.tsx`) runs a scripted session: two agent turns
+with tool rows, a highlighted diff, an approval panel, a streamed markdown
+answer, the agent view (the footer grows close to full height), a session
+switch, and a 1,000-line replay. Afterwards the scrollback was captured from
+each terminal and checked: every expected row present exactly once and in
+order.
+
+| Terminal | Prebuilt OpenTUI | Patched OpenTUI |
+|---|---|---|
+| tmux 3.4 (also over SSH) | all rows kept | all rows kept |
+| xterm.js 6.0 (VS Code, JupyterLab, browser shells) | 14 rows lost when the footer grows | all rows kept |
+| VTE 0.76 (GNOME Terminal) | all rows kept | all rows kept |
+| XTerm 390 | all rows kept | all rows kept |
+
+- **The patch:** `tui/patches/opentui-v0.6.4-footer-growth-linefeeds.patch`
+  grows the footer with line feeds instead of `CSI n S`.
+  `tui/scripts/build-opentui-native.sh` builds and installs it. Re-run the
+  script after every `bun install`.
+- **Speed:** a 1,000-line replay takes 400–480 ms; idle CPU use is zero.
+- **Resize:** shrinking the terminal from 110 to 80 or 90 columns mid-run
+  re-wrapped the whole session correctly, including over SSH.
+- **Exit:** the exit is clean. The footer disappears and the transcript stays.
+- **Keys** behave correctly in tmux: ←, shift+tab, esc, and ← with text typed.
+
+Lessons the implementation must follow:
+
+1. **Render on demand, and run live while scrollback output is queued.**
+   Demand-only rendering stalls on a burst of commits. Always-on rendering
+   costs CPU and never lets `renderer.idle()` resolve.
+2. **`resize` also fires when the footer changes height.** Only a change of
+   terminal width may trigger the clear-and-replay. Anything else would wipe
+   scrollback for nothing.
+3. **Solid's JSX compiler collapses runs of spaces in literal text.**
+   Significant spacing must be written as string expressions.
+4. **Never exit the process from `onDestroy`.** OpenTUI flushes queued
+   scrollback after destroy. Exiting early drops it.
+5. **The diff renderer rejects hunks whose line counts are wrong.** Validate
+   diffs, and fall back to plain text.
+6. **Markdown heading styles need one key per level**
+   (`markup.heading.1` … `.6`).
+7. **The live tail in the footer must be rendered as markdown.** Raw source
+   such as `| --- |` looks broken.
+8. **OpenTUI bundles no Python tree-sitter grammar.** Phase 4 registers
+   Python, plus ORCA/shell where available.
+9. **Colours over SSH:** truecolour is only detected when `COLORTERM` reaches
+   the remote host. Otherwise output falls back to 256 colours.
+
 ## Risks
 
 - **OpenTUI's inline mode is young.** Its native path dates from 2026-03, and
-  bug #1630 loses scrollback rows when the footer grows in xterm-like
-  terminals. The spike decides.
+  bug #1630 is patched locally (see "Phase 0 findings"). The patch has to be
+  rebuilt for each OpenTUI upgrade until upstream fixes the bug.
 - **HPC login nodes** have process reapers, several login nodes and a shared
   NFS `$HOME`. The event log and resumable sessions mitigate this. Sessions
   survive logout exactly as well as tmux does on that cluster.
