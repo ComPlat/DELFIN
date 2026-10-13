@@ -21614,7 +21614,7 @@ class _DocToolExecutor:
             observed, tests, calcs = None, None, None
         durable_runs = None
         try:
-            # H1G phase 3: rebuild the DURABLE cross-turn test-run ledger
+            # Rebuild the DURABLE cross-turn test-run ledger
             # so a red from an EARLIER turn reaches assess() (the live
             # per-turn ledger is replaced every turn start). Never raises.
             # An EMPTY ledger is passed through ([]), so assess can still

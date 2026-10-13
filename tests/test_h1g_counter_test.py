@@ -1,19 +1,10 @@
-"""H1G: counter_test.assess — does a fix name its counter-test?
+"""counter_test.assess on hand-made run records.
 
-The review problem: a test that passes with and without the fix, or a
-guard tested only in the direction "it fires". ``counter_test.assess``
-decides, from the turn's changed files and recorded test runs, whether a
-control run is on record — the SAME test target seen RED before the
-change and GREEN after — and returns the one report line when it is not.
-
-The four shapes the package mandates, one per class:
-  * green-only                        -> "no control run: test X was never seen failing"
-  * red-then-green (same target)      -> "shown"
-  * changed no product file           -> None (adds nothing)
-  * test changed but never run        -> "no control run: test X was changed but never run"
-plus two reviewer-driven probes:
-  * a red and a green on DIFFERENT nodes in the same file are NOT a control
-  * a red from a PREVIOUS turn (durable ledger) + green in this turn IS a control
+Shapes: green only -> "was never seen failing"; red then green on one
+target -> "shown"; no product file changed -> None; a changed test that
+never ran -> "was changed but never run"; a red and a green on different
+nodes of one file are no control; a red from an earlier turn plus a green
+now is a control.
 """
 
 from delfin.agent.counter_test import assess
@@ -50,7 +41,7 @@ class TestRedThenGreen:
         assert assess(changed, runs) == "shown"
 
     def test_red_from_previous_turn_green_this_turn(self):
-        # Reviewer s27 case (b): the red was recorded in a PREVIOUS turn.
+        # The red was recorded in a PREVIOUS turn.
         # The durable ledger (tool_trace) carries it; the caller puts it
         # into test_runs, so assess sees red-before + green-now.
         changed = ["delfin/agent/thing.py"]
@@ -73,7 +64,7 @@ class TestRedThenGreen:
 
 
 class TestRedAndGreenOnDifferentNodesIsNotAControl:
-    """Reviewer s28 probe #1: per-node, not per-file."""
+    """Per node, not per file."""
 
     def test_red_on_one_node_green_on_another_same_file(self):
         # A red run of test_a and a green run of test_b in the SAME file

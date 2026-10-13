@@ -1,16 +1,9 @@
-"""H1G phase 3: durable test_runs reconstruction (counter_test.durable_test_runs).
+"""counter_test.durable_test_runs: test runs rebuilt from the tool trace.
 
-The verify step's live test ledger (``_observe_test_evidence``) is
-PER-TURN and replaced at every turn start, so the "seen red before the
-change" observation may live in a PREVIOUS turn. ``assess`` needs that
-cross-turn red to decide a control. ``durable_test_runs`` rebuilds the
-run records from the DURABLE tool_trace so a red from an earlier turn is
-inside what ``assess`` sees.
-
-Covered here: the pure reconstruction — per-run records, the red/green
-split, the dropping of non-test and evidence-less entries, deterministic
-timestamps, and the end-to-end durable control (red turn + green turn ->
-``shown``).
+The live per-turn test ledger is replaced at every turn start, so a red
+run from an earlier turn is only in the durable trace. Covered: the
+red/green split, dropping entries that ran no test, timestamps, and the
+chain durable -> normalize -> assess on command shapes the trace holds.
 """
 
 from delfin.agent import counter_test as ct
@@ -117,7 +110,7 @@ def test_now_pins_timestamps():
 # --------------------------------------------------------------------------
 
 def test_durable_red_then_green_node_in_changed_test_is_shown():
-    # The phase-3 payoff: a red run in an EARLIER turn (only visible via
+    # A red run in an EARLIER turn (only visible via
     # the durable trace) plus a green run this turn, on the fix's own
     # changed counter-test node, must read as a completed control.
     changed = ["delfin/agent/thing.py", "tests/test_thing.py"]

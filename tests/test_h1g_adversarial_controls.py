@@ -1,23 +1,16 @@
-"""H1G phase-2 adversarial controls: the fix's own counter-test decides.
+"""counter_test.assess: a control counts on the fix's own changed test.
 
-S28's three QS-confirmed findings (A, B, C) converge on one root: the
-phase-2 `assess` returned "shown" for a red+green on ANY target, so a
-fix whose own counter-test was only ever green (or never run) was masked
-by a completed control on an UNRELATED target or an unrelated
-same-file node. The mandate: a control counts only on the fix's own
-changed counter-test (node-level); a whole-file target is never a
-completed control.
-
-These tests pin the fixed behaviour: each asserts the fix's green-only /
-unrun counter-test is NOT masked, and a whole-file red+green does NOT
-read as "shown".
+A completed control on an unrelated file or on another node of the same
+file must not stand for the fix's own test that was only seen green or
+never ran. A whole-file red plus green counts only on a changed test
+file.
 """
 
 from delfin.agent.counter_test import assess
 
 
 class TestUnrelatedTargetDoesNotMask:
-    """Finding C: a controlled UNRELATED file cannot mask a green-only
+    """A controlled UNRELATED file cannot mask a green-only
     fix. changed test_thing.py (its ::test_a ran green only) + an
     unrelated test_other.py::test_b that is red+green -> the fix is NOT
     shown; its own test is named as never-seen-failing."""
@@ -48,7 +41,7 @@ class TestUnrelatedTargetDoesNotMask:
 
 
 class TestSameFileOtherNodeDoesNotMask:
-    """Finding A: a red+green on an OLD node in the SAME file must not
+    """A red+green on an OLD node in the SAME file must not
     mask the fix's NEW counter-test node that is only green (never red)
     -- the "passes with and without the fix" anti-pattern."""
 
@@ -67,7 +60,7 @@ class TestSameFileOtherNodeDoesNotMask:
 
     def test_whole_file_control_does_not_mask_new_node_green_only(self):
         # A whole-file red+green (single aggregate) is ambiguous and the
-        # green-only NEW node still owns the verdict (findings A + B).
+        # green-only NEW node still owns the verdict.
         changed = ["delfin/agent/thing.py", "tests/test_thing.py"]
         runs = [
             {"target": "tests/test_thing.py", "red": True, "green": True},
@@ -80,7 +73,7 @@ class TestSameFileOtherNodeDoesNotMask:
 
 
 class TestWholeFileProtocol:
-    """Finding B: a whole-file target (no ::node) is never a completed
+    """A whole-file target (no ::node) is never a completed
     control -- it cannot say which node carried the red."""
 
     def test_whole_file_single_aggregate_not_shown(self):
@@ -92,16 +85,15 @@ class TestWholeFileProtocol:
 
     def test_whole_file_red_green_in_scope_is_a_control(self):
         # In-scope (test file changed): a whole-file red+green on the fix's
-        # own changed counter-test IS a completed control (operator F3 /
-        # s27 round-2: whole-file red then file passing later = control).
+        # own changed counter-test IS a completed control.
         changed = ["delfin/agent/thing.py", "tests/test_thing.py"]
         runs = [{"target": "tests/test_thing.py", "red": True, "green": True}]
         result = assess(changed, runs)
         assert result == "shown"
 
     def test_whole_file_green_only_still_never_seen_failing(self):
-        # Regression guard: the whole-file green-only shape that phase-2
-        # already sentenced stays sentenced.
+        # Regression guard: the whole-file green-only shape stays
+        # sentenced.
         changed = ["delfin/agent/thing.py", "tests/test_thing.py"]
         runs = [{"target": "tests/test_thing.py", "green": True}]
         assert assess(changed, runs) == (
