@@ -88,12 +88,13 @@ _MAX_QUERY_CHARS = 2000
 
 
 def _known_secret_values() -> list[str]:
-    """The values of every credential DELFIN holds (store + well-known env),
-    for an exact-match egress check. Never raises; short values ignored."""
+    """The values of every credential DELFIN holds (file, keyring and
+    well-known env), for an exact-match egress check and for scrub_secrets
+    on every tool result. Never raises; short values ignored."""
     out: list[str] = []
     try:
-        from .credentials import _WELL_KNOWN_KEYS, _read_store
-        for val in (_read_store() or {}).values():
+        from .credentials import _WELL_KNOWN_KEYS, held_secret_values
+        for val in held_secret_values():
             if isinstance(val, str) and len(val) >= 12:
                 out.append(val)
         for name in _WELL_KNOWN_KEYS:

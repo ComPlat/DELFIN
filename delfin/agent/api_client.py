@@ -2800,6 +2800,22 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"(?=[^;|&]*\s(?:~|\$\{?HOME\}?|/))"
     r"(?=[^;|&]*\s-(?:delete\b|(?:exec|execdir|ok|okdir)\s+"
     r"(?:rm|rmdir|unlink|shred|truncate|dd)\b))",
+    # Reading the OS credential store, where DELFIN keeps API keys when
+    # agent.credentials.store selects it. The keyring is read by the DELFIN
+    # process only; a command that prints an entry hands the key to the
+    # transcript. Command position for the CLIs (a grep for the word
+    # stays free), anywhere for the Python call and the D-Bus service name.
+    # Not a boundary on its own: the sandbox unsets DBUS_SESSION_BUS_ADDRESS
+    # and the socket guard refuses the bus socket; an obfuscated python -c
+    # is caught there, not here.
+    r"""(?:^|[;|&`(])[\s'\"]*(?:sudo\s+)?(?:/\S*/)?"""
+    r"(?:secret-tool\s+(?:lookup|search)|"
+    r"security\s+(?:find-(?:generic|internet)-password|dump-keychain)|"
+    r"keyring\s+get)\b",
+    r"\bpython[\w.]*\s+(?:-\S+\s+)*-m\s+keyring\b",
+    r"\bkeyring\s*\.\s*get_(?:password|credential)\b",
+    r"\borg\.freedesktop\.secrets\b",
+    r"\bGet-StoredCredential\b",
 )
 
 # Bash patterns that are auto-approved in mode="default" without callback.

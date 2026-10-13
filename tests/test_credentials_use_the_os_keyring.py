@@ -37,9 +37,9 @@ OTHER = "sk-other-9876543210fedcbaQRS"
 def _keyring_module(monkeypatch):
     """The real ``keyring`` package where installed, else a stand-in."""
     try:
-        import keyring  # noqa: F401
-        import keyring.backend  # noqa: F401
-        return sys.modules["keyring"]
+        import keyring.backend
+        import keyring.errors
+        return keyring
     except ImportError:
         pass
     pkg = types.ModuleType("keyring")
@@ -530,7 +530,9 @@ def test_no_tool_route_returns_a_stored_secret(keyring_with, home, tmp_path):
         ("bash", {"command": "cat leak.txt", "description": "read"}),
     ):
         raw = _doc_executor.execute(name, args, perms)
-        assert SECRET not in _redact_tool_result(raw), name
+        shown = _redact_tool_result(raw)
+        assert "[redacted:credential]" in shown, name
+        assert SECRET not in shown, name
     for cmd in (
         "secret-tool lookup service delfin username A_KEY",
         "security find-generic-password -s delfin -a A_KEY -w",

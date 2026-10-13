@@ -1359,6 +1359,31 @@ Choose with `--provider` / `--model` or `/model`. DELFIN detects each model's re
 
 **A model that cannot call tools is refused.** Every non-trivial action is a tool call, so such a model could only talk. Small models automatically get a shorter prompt and a reduced tool surface.
 
+### API keys
+
+```bash
+delfin-agent credentials set KIT_TOOLBOX_API_KEY   # input hidden, never echoed
+delfin-agent credentials list                      # masked, with the store each key is in
+delfin-agent credentials migrate                   # move file entries into the OS keyring
+delfin-agent credentials delete KIT_TOOLBOX_API_KEY
+```
+
+A key is looked up in this order: the environment variable, the operating system's credential store (macOS Keychain, Secret Service on Linux, Windows Credential Manager), then `~/.delfin/credentials.json` (mode 0600). The OS store is used through the optional `keyring` package: `pip install "delfin-complat[keyring]"`.
+
+Where `set` writes is `agent.credentials.store` in `~/.delfin_settings.json` — a workspace settings file cannot choose it:
+
+| Value | Writes go to |
+|-------|--------------|
+| `auto` (default) | the keyring when a secure backend answers in time, otherwise the file |
+| `keyring` | the keyring only; with none usable the key is not stored and the command says why |
+| `file` | the 0600 file |
+
+Every keyring call is bounded: 3 s without a terminal and display (a cluster node, a job, the dashboard), 60 s at a desktop terminal so an unlock dialog can be answered. A keyring that does not answer is not asked again for the rest of the process, so a headless run never waits on a prompt nobody sees. Backends that are not a secure store (keyring's `fail` and `null` backends, the plaintext and encrypted-file backends of `keyrings.alt`) are not used.
+
+Nothing moves on its own. Keys already in the file keep working after the setting changes; `credentials migrate [NAME ...]` copies each into the keyring, reads it back, and removes it from the file only when the read-back is equal. A name whose keyring entry holds a different value is reported and left alone. `~/.delfin/credentials.keyring.json` records which names are in the keyring — names only, never a value.
+
+The agent's own tools read neither store: the credentials file is on the deny list, commands that print a keyring entry (`secret-tool lookup`, `security find-generic-password`, `keyring get`, `python -m keyring`, `keyring.get_password`) are refused, sandboxed commands get no session bus, and every tool result is scrubbed of the exact value of every stored key before the model sees it.
+
 ### Permissions
 
 | Level | Writes | Shell |
