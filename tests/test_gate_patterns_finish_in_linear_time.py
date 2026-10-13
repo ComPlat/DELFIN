@@ -214,14 +214,15 @@ def test_the_old_patterns_were_exponential():
 # --- capabilities: directory names, not secrets -----------------------------
 
 def test_capabilities_lists_the_paths_the_sandbox_masks(tmp_path):
-    """``capabilities()["masked_home_dirs"]`` reads the public tuple; the
-    sandbox masks from the same object, so the report cannot drift from
-    the mounts. Code scanning traced the old report back to a variable
-    named for secrets and flagged ``--json`` output as a leak of one;
-    the values were always directory names."""
+    """``capabilities()["masked_home_dirs"]`` reads a public literal in
+    boundaries.py, pinned here equal (same entries, same order) to the
+    list the sandbox masks, so the report cannot drift from the mounts.
+    Code scanning traced the old report -- and an alias of the same
+    object -- back to a variable named for secrets and flagged
+    ``--json`` output as a leak of one; the values are directory names."""
     from delfin.agent import boundaries, sandbox
-    assert sandbox._HOME_SECRET_DIRS is sandbox.MASKED_HOME_ENTRIES
+    assert boundaries.MASKED_HOME_ENTRIES == tuple(sandbox._HOME_SECRET_DIRS)
     caps = boundaries.capabilities(cwd=tmp_path)
-    assert caps["masked_home_dirs"] == list(sandbox.MASKED_HOME_ENTRIES)
+    assert caps["masked_home_dirs"] == list(sandbox._HOME_SECRET_DIRS)
     src = Path(boundaries.__file__).read_text(encoding="utf-8")
     assert "_HOME_SECRET_DIRS" not in src

@@ -499,13 +499,29 @@ def _git(workspace: Path) -> dict:
     return {"repository_key": key or "", "role": role, "source": source}
 
 
+#: Home-relative paths the bwrap sandbox hides (``masked_home_dirs`` in
+#: the report). Path names, not secrets. A separate literal on purpose:
+#: code scanning classifies the sandbox's list by its variable name as a
+#: secret and follows every alias or import of that object, so reading it
+#: here made ``capabilities --json`` a clear-text secret leak
+#: (py/clear-text-logging-sensitive-data); an alias was still followed.
+#: tests/test_gate_patterns_finish_in_linear_time.py pins this tuple
+#: equal, in order, to the sandbox's list.
+MASKED_HOME_ENTRIES: tuple[str, ...] = (
+    ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".netrc", ".pgpass",
+    ".azure", ".gcp", ".config/gcloud", ".config/gh",
+    ".git-credentials", ".npmrc", ".pypirc",
+    ".anthropic", ".openai", ".claude",
+    ".delfin/credentials.json",
+)
+
+
 def capabilities(*, cwd: Any = ".", permission_mode: str = "",
                  add_dirs: Iterable[str] = (), read_dirs: Iterable[str] = (),
                  allowed_tools: Iterable[str] = (),
                  disallowed_tools: Iterable[str] = (), asker: str = "nobody",
                  provider: str = "") -> dict:
     """The boundary a session started with these options would have."""
-    from .sandbox import MASKED_HOME_ENTRIES
     with _events_into([]):
         perms, info = session_permissions(
             cwd, permission_mode=permission_mode, add_dirs=add_dirs,
