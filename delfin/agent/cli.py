@@ -1027,6 +1027,14 @@ def _startup_banner(engine, report, workspace: Path,
                     "isolation  off — neither bubblewrap, Landlock nor "
                     "Seatbelt works here, so a command the agent runs can "
                     "write outside the workspace")
+        # The model second opinion behind the rules: whether it runs, on
+        # which model and scope, and its last failure.
+        try:
+            from .api_client import watcher_status_line
+            lines.append("watcher    " + watcher_status_line(
+                getattr(engine, "kit_permissions", None)))
+        except Exception:
+            pass
     else:
         # Not decoration: without a permissions object the write and shell
         # tools refuse, and a user staring at a silent agent deserves the

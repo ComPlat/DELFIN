@@ -1311,7 +1311,20 @@ class AgentEngine:
             "total_cost_usd": self.cost_usd + _dl.session.cost_usd,
             "cycle_complete": self.is_cycle_complete,
             "session_id": self.session_id,
+            # The model second opinion: switch, model, scope, last failure.
+            "watcher": self._watcher_status(),
         }
+
+    def _watcher_status(self) -> str:
+        """``api_client.watcher_status_line`` for this session, or ""."""
+        try:
+            perms = self.kit_permissions
+            if perms is None:
+                return ""
+            from .api_client import watcher_status_line
+            return watcher_status_line(perms)
+        except Exception:
+            return ""
 
     def _refresh_context_window(self, *, background: bool = False) -> None:
         """Size the compaction budget to the ACTIVE model's real context.

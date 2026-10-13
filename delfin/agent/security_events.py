@@ -128,6 +128,9 @@ _KINDS = {
     "classifier_ask":    ("❓", "Action classifier asked the user"),
     "classifier_refuse": ("🛑", "Action classifier refused an allowed action"),
     "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
+    "classifier_held":   ("⏸️", "Held: watcher could not judge, nobody to ask"),
+    "classifier_down":   ("🔌", "Action watcher down"),
+    "classifier_up":     ("🔁", "Action watcher answers again"),
 }
 
 
