@@ -586,6 +586,23 @@ def test_a_broken_rule_is_named_at_startup(env):
     assert "bash(a;b)" in notes, notes
 
 
+def test_a_rule_naming_no_tool_is_named_at_startup(env):
+    """A misspelt tool on the deny list stops nothing; say so."""
+    import argparse
+    from delfin.agent import cli as agent_cli
+    _rules(env, deny=["web_serach", "mcp__srv__x"], allow=["read_file"])
+    engine = type("E", (), {"client": type("C", (), {"model": "m"})(),
+                            "provider": "kit", "backend": "api",
+                            "workspace": env["ws"]})()
+    args = argparse.Namespace(
+        backend="", provider="", model="", mode="", cwd=str(env["ws"]),
+        effort="", permission_mode="", settings_defaults=False,
+        allowed_tools="", disallowed_tools="")
+    notes = "\n".join(agent_cli._bounding_notices(args, engine))
+    assert "web_serach" in notes, notes
+    assert "mcp__srv__x" not in notes and "read_file" not in notes, notes
+
+
 def test_no_rules_no_startup_line(env):
     import argparse
     from delfin.agent import cli as agent_cli
