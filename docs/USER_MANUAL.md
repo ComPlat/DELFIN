@@ -1535,8 +1535,9 @@ A prompt piped to `delfin-agent --output-format stream-json` on stdin works like
 | `--cwd DIR` | The workspace. Your home directory, a parent of it, a system directory and a missing directory are refused (exit 2) |
 | `--session ID` / `--session latest` | Continue a saved session; `latest` is this workspace's last one, or the newest on the machine when the workspace has none. The `session_id` is in the `result` line |
 | `--mode`, `--provider`, `--model`, `--bare` | As in an interactive session |
+| `--supervised` | A step that needs a person is written to the approvals directory instead of being refused, and the run waits up to 300 s for the answer (`delfin-agent approvals`). The stream reports it as a `permission_request` |
 
-**Taken only by an interactive session today.** On a `-p` run these flags are accepted and not applied: `--supervised`, `--unattended`, `--add-dir`, `--read-dir`, `--isolate`, `--no-isolate`, `--continue`, `--resume`, `--fork-session`, `--confirm-timeout` (`--add-dir` and `--read-dir` are still checked, and a refused path stops the run). In particular a `-p` run with `--session ID --fork-session` continues — and saves over — the original session, and `--add-dir` grants nothing (directories in your permission settings still apply). Give a `-p` run a workspace that holds everything it must write, and resume by explicit `--session`.
+**The same set-up as an interactive session.** A `-p` run applies `--add-dir`, `--read-dir`, `--isolate`, `--no-isolate`, `--session`, `--continue`, `--resume ID`, `--fork-session` (a copy; the original is left untouched), `--supervised` and `--confirm-timeout` exactly as a terminal session does. A bare `--resume` (the picker) needs a terminal and exits 2.
 
 #### What a driver sees
 
@@ -1546,33 +1547,49 @@ A prompt piped to `delfin-agent --output-format stream-json` on stdin works like
 | `tool_use` | `name`, `input` | A tool call. A report, not a request: the call is not held until the driver has read it |
 | `notice` | `text` | Harness speech: a retry, the tool-round cap, a budget stop. Never part of the answer |
 | `wait` | `text` | The endpoint has not answered yet ("waiting for the model … Ns"). Each one replaces the one before |
-| `result` | `text`, `tool_calls`, `input_tokens`, `output_tokens`, `error`, `session_id` | Always the last line; `error` is empty unless the turn failed |
+| `permission_request` | `request_id`, `tool`, `shown`, `preview`, `answered_by`, `mode`, `approvals_dir` | A step is waiting for a person (`--supervised` only). `answered_by` is always `"human"`: the line says who decides, it does not ask the driver to. `request_id` is the id `delfin-agent approvals` shows; `approvals_dir` is `true` when the question is in the approvals directory; `shown` is the command or path, `preview` what the person sees |
+| `permission_denied` | `tool`, `reason_code`, `needs_approval`, `text` | The permission gate refused a call. `reason_code` is stable (below); `needs_approval` is `true` when a person could have allowed it; `text` is the gate's own sentence |
+| `result` | `schema_version`, `stop_reason`, `denials`, `files_changed`, `text`, `tool_calls`, `input_tokens`, `output_tokens`, `error`, `session_id` | Always the last line. `--output-format json` prints the same object without `type` |
+
+Credential-looking values in `shown`, `preview` and `text` are masked the way the approval prompt masks them (`TOKEN=<redacted>`).
+
+| `result` key | Meaning |
+|--------------|---------|
+| `schema_version` | `1`. Raised when a key changes meaning or is removed; a new key does not raise it |
+| `stop_reason` | Why the turn ended: `done`, `error`, `needs_approval`, `refused`, `max_turns`, `budget` or `timeout` (exit codes below) |
+| `denials` | Every refusal of the turn in order, `[{"tool": ..., "reason_code": ...}]`, including one the model then worked around |
+| `files_changed` | Files the write tools (`write_file`, `edit_file`, `apply_patch`, the document writers) changed, relative to the workspace. A file a shell command wrote is not listed |
+| `error` | Empty unless the turn failed |
 
 | State | How to tell |
 |-------|-------------|
 | Running | `text` and `tool_use` lines arrive |
 | Waiting for the model | The newest line is a `wait` |
-| Waiting for an approval | Not reachable on a `-p` run: a step that would ask is refused instead (below). An interactive session — in a terminal, also one you run in a pty, or in the dashboard — publishes the question it waits on; `delfin-agent approvals watch` prints one line per new one |
-| Finished | A `result` line, then exit 0 |
-| Failed | A `result` line with a non-empty `error`, then exit 1 |
+| Waiting for an approval | With `--supervised`: the newest line is a `permission_request`. Without it a step that would ask is refused instead (below). An interactive session — in a terminal, also one you run in a pty, or in the dashboard — publishes the question it waits on; `delfin-agent approvals watch` prints one line per new one |
+| Finished | A `result` line; `stop_reason` and the exit code say how |
 | Refused before starting | No JSON at all; the reason on stderr, exit 2 or 3 |
 
-A tool call that is refused (a write in `plan`, a step that would have to ask, a path outside the workspace, a tool you disallowed) does not end the turn: the refusal goes back to the model as the tool's result, and the model carries on or says why it stopped. The stream has no event of its own for it today; the `tool_use` line is there, the outcome is in the model's text.
+A tool call that is refused (a write in `plan`, a step that would have to ask, a path outside the workspace, a tool you disallowed) does not end the turn: the refusal goes back to the model as the tool's result, and the model carries on or says why it stopped. The stream reports it as a `permission_denied` line, emitted where the gate decides. `reason_code` is either a kind from the dashboard's Containment panel (`deny_pattern`, `secret_path`, `self_mod`, `egress`, `denied_by_user`, `approval_timeout`, …) or one of the refusals the panel does not record: `not_allowlisted` (a shell command outside the auto-allow list, nobody to ask), `needs_approval` (a dialog was required and none is bound), `plan_mode`, `role_denied`, `session_denied` (`--allowed-tools` / `--disallowed-tools`), `blocked_by_hook`, `backend_denied` (an external CLI backend's own gate, which gives no category).
 
-| Exit code | Meaning |
-|-----------|---------|
-| 0 | The turn ran; includes refusals and a budget or tool-round stop |
-| 1 | The turn failed (`error` in the `result` line), or the agent's principles file was changed and it refused to start |
-| 2 | Usage error, a workspace or `--add-dir`/`--read-dir` path refused, a start-up question nobody can answer from a pipe, or nothing on stdin |
-| 3 | The engine could not be built (provider, key or model) |
-| 130 | Interrupted (SIGINT) |
+| Exit code | `stop_reason` | Meaning |
+|-----------|---------------|---------|
+| 0 | `done` | The turn finished. A refusal the model worked around in a later tool call is in `denials` and does not change this |
+| 1 | `error` | The turn failed (`error` in the `result` line) or the engine stopped it (a loop breaker, the context limit, a stop); also: the agent's principles file was changed and it refused to start |
+| 4 | `needs_approval` | The turn's last tool call was refused, and a person could have allowed it (nobody could be asked, or the approval window expired) |
+| 5 | `refused` | The turn's last tool call was refused by a rule no approval lifts (a secret path, the deny list), or the person answered no |
+| 6 | `max_turns` | `--max-turns` was reached |
+| 7 | `budget` | `--max-budget-usd`, the session's turn ceiling or the per-turn cost limit was reached |
+| 8 | `timeout` | `--max-run-seconds` was reached |
+| 2 | — | Usage error, a workspace or `--add-dir`/`--read-dir` path refused, a start-up question nobody can answer from a pipe, or nothing on stdin |
+| 3 | — | The engine could not be built (provider, key or model) |
+| 130 | — | Interrupted (SIGINT) |
 
 Keep a wall-clock limit of your own and start the process in its own process group, so that a stop ends whatever it started.
 
 #### The security contract
 
 - **A driver never answers an approval itself.** It may show a pending question to its human — `delfin-agent approvals ls`, `show REQUEST_ID` with the whole preview — and pass the human's decision on with `approve`, `deny --reason` or `answer`. The approvals directory takes an answer from any process of your user, so this is a rule for the driver to keep, not a lock that keeps it; an answer given to a terminal session from outside it is recorded as a security event.
-- **`bypassPermissions` drops the asking, not the boundary.** The workspace roots, the deny lists, the sandbox and the confirmation for files that define the agent's own permissions stay in force; reading outside the roots is refused. An interactive session accepts it only together with `--unattended`, and does not inherit it from your settings. A `-p` run does not have that check today: it takes `--permission-mode bypassPermissions` as given, and a `bypassPermissions` default from your settings when you pass no mode — another reason to always pass one.
+- **`bypassPermissions` drops the asking, not the boundary.** The workspace roots, the deny lists, the sandbox and the confirmation for files that define the agent's own permissions stay in force; reading outside the roots is refused. Every session — terminal, `-p` and `delfin-agent run` — accepts it only together with `--unattended` and never inherits it from your settings: without the flag a `-p` or `run` invocation exits 2; with it, a settings default of bypass starts in `default`.
 - **Isolation is on by default.** With `agent.bash_isolation: "auto"` every shell command runs under bubblewrap, else Landlock, else Seatbelt, whichever this host can run, in every permission mode; its network goes only through DELFIN's egress proxy to the allowed domains. Where none of the three works, an attended command runs without filesystem isolation and a bypass run says so.
 - **A caged command is not asked about.** In `default` and `acceptEdits`, a shell command that is not on the auto-allow list runs without a question when bubblewrap holds it and Landlock can confine its reads. It must pass every other check, and the network must not be `open`. It reads only the session's folders, the system and toolchain paths (`/usr`, `/etc`, `/opt`, the environments on `PATH`) and nothing else of your home directory. It runs with git metadata, `.github`, `.gitattributes`/`.gitmodules`, the agent's own settings and source, and calc read-only, and it cannot submit SLURM jobs. Commands that name a network client, git/gh, a package manager, a job scheduler, a signal, sudo or a deletion are still asked about, and so are commands that write a file from their own text (here-document, `tee`, a redirect of `cat`/`printf`/`echo`). Hosts without both bubblewrap and Landlock keep asking. `agent.caged_commands_run_unasked: false` restores the question everywhere.
 - **Nothing a driver passes widens what the agent may do.** The tool lists only narrow; the flags write no setting; settings, hooks and MCP servers from a checked-out repository wait for `/trust`; and the permission settings live outside every directory the agent may write.
@@ -1602,6 +1619,10 @@ try:
             print("waiting:", event["text"])
         elif kind == "notice":
             print("notice:", event["text"].strip())
+        elif kind == "permission_request":
+            print("waiting for a person:", event["request_id"], event["shown"])
+        elif kind == "permission_denied":
+            print("refused:", event["tool"], event["reason_code"])
         elif kind == "result":
             result = event
     code = proc.wait(timeout=1200)
@@ -1610,10 +1631,11 @@ except subprocess.TimeoutExpired:
     code = proc.wait()
 if result is None:
     print("refused before starting:", proc.stderr.read().strip(), "exit", code)
-elif result["error"]:
-    print("failed:", result["error"], "exit", code)
+elif result["stop_reason"] != "done":
+    print("stopped:", result["stop_reason"], result["denials"], "exit", code)
 else:
-    print(result["text"], "session", result["session_id"])
+    print(result["text"], "changed", result["files_changed"],
+          "session", result["session_id"])
 ```
 
 The `wait` timeout covers only the time after the stream ended; a driver that must bound the whole run reads the lines in a thread, or kills the process group from a timer.
