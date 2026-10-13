@@ -16,7 +16,8 @@ with Claude Code's way of working with sessions: one window, an agent view on
 |---|---|
 | Stack | TypeScript on Bun, OpenTUI + SolidJS (OpenCode's stack). |
 | Screen | Inline. Finished output goes into the terminal's own scrollback; only a footer (composer, status, running tools, approvals, menus) is live. OpenTUI `screenMode: "split-footer"`; blueprint: `opencode mini` (`anomalyco/opencode`, `packages/tui/src/mini/`). |
-| Look and feel | Must look good and feel smooth: no flicker, no torn lines, responsive while the agent works. |
+| Look and feel | Must look good and feel smooth: no flicker, no torn lines, responsive while the agent works. "DELFIN blue, restrained": neutral text, with the logo's steel blue (`#6290C0`) as the single accent; green, amber and red only for state; truecolor with a fallback; the light or dark variant follows the terminal. |
+| Resize | Re-wrap by replay, like `opencode mini`. After a resize settles, the screen and the terminal's scrollback are cleared and the session is reprinted at the new width (capped at a configurable number of turns). |
 | Sessions | Every session is part of the agent view from the moment it starts; there is no "backgrounding" step. Sessions keep running when the window closes, and the next window re-attaches. A session left idle (waiting for your next message) and unattached sleeps after about an hour and wakes when you reply. |
 | Agent view | `←` on an empty prompt. A Claude Code-style list grouped into Needs input / Working / Done. It covers every session on this machine across projects, plus other open DELFIN sessions (dashboard, `delfin-agent chat`) as read-only rows. |
 | Switching | A labelled divider, then a replay of the selected session's last few turns into the scrollback. Nothing is erased. |
@@ -126,28 +127,7 @@ name, as `repl.run_turn` does today.
 
 ## Milestones
 
-0. **Spike** (go/no-go for OpenTUI's inline mode). A split-footer prototype
-   with a growing footer, streaming markdown into the scrollback, resize, and a
-   1,000-line replay. Tested in GNOME Terminal, tmux, SSH, a macOS terminal
-   and the VS Code terminal. Fall back to Ink + React only if a blocker cannot
-   be worked around.
-1. **Service and protocol** (Python): supervisor, workers, event log,
-   attach/replay, the permission round trip, and the `delfin-agent tui`
-   launcher. Tested with pytest and a scripted client.
-2. **TUI core, one session**:
-   - composer with history, `@` and `/` completion, and paste;
-   - streaming answer, tool rows and diffs;
-   - approvals and the status line;
-   - keys, palette and slash commands.
-3. **Agent view and many sessions**:
-   - the grouped list, with open / peek / stop / new;
-   - divider + replay;
-   - needs-input notifications;
-   - other DELFIN sessions.
-4. **Polish and shipping**:
-   - theme, replay on resize, idle sleep;
-   - HPC tests on bwUniCluster;
-   - compiled binaries (`bun build --compile`, glibc ≥ 2.17, macOS ≥ 13).
+The phased implementation plan is in [TUI_PLAN.md](TUI_PLAN.md).
 
 ## Defaults chosen (change any of them)
 
