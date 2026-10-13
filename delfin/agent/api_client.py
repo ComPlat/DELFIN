@@ -12720,6 +12720,21 @@ def _decode_exact(data: "Optional[bytes]") -> "Optional[str]":
         return None
 
 
+class _PayloadHit(str):
+    """The script-payload scan's reason text, carrying the file it refused
+    (``path``; None for an inline ``-c`` payload). A str, so every caller
+    that formats or logs the reason is unchanged; the file is what the
+    refusal names as the session's own, rather than a second parse of the
+    command that may land on a different file of the same command."""
+
+    path: "Path | None"
+
+    def __new__(cls, text: str, path: "Path | None" = None):
+        obj = super().__new__(cls, text)
+        obj.path = path
+        return obj
+
+
 class _DocToolExecutor:
     """Lazy-loaded local executor for doc and calc search tools."""
 
@@ -15986,8 +16001,8 @@ class _DocToolExecutor:
         except Exception:
             base_dir = Path(perms.workspace)
 
-        def _resolve(ref: str) -> tuple[str, str] | None:
-            """(label, contents) for a script path, or None to skip it."""
+        def _resolve(ref: str) -> tuple[str, str, Path] | None:
+            """(label, contents, path) for a script path, or None to skip it."""
             try:
                 p = Path(ref)
                 if not p.is_absolute():
@@ -15999,18 +16014,18 @@ class _DocToolExecutor:
                     # The project's own committed code, unmodified. See
                     # _is_reviewed_project_file for why that is the line.
                     return None
-                return ref, p.read_text(encoding="utf-8", errors="replace")
+                return ref, p.read_text(encoding="utf-8", errors="replace"), p
             except Exception:
                 return None
 
-        sources: list[tuple[str, str]] = []
+        sources: list[tuple[str, str, Path | None]] = []
         for ref in self._referenced_script_paths(cmd):
             got = _resolve(ref)
             if got is not None:
                 sources.append(got)
         try:
             for src in (_inline_payload.extract_c_payloads(cmd) or []):
-                sources.append(("the inline python payload", src))
+                sources.append(("the inline python payload", src, None))
                 eff = _inline_payload.analyze_payload(src, base_dir)
                 for mod in eff.local_modules:
                     got = _resolve(mod)
@@ -16019,10 +16034,10 @@ class _DocToolExecutor:
         except Exception:
             pass
 
-        for ref, text in sources:
+        for ref, text, path in sources:
             hit = perms.matches_bash_deny(text)
             if hit:
-                return f"{ref} contains deny-pattern {hit!r}"
+                return _PayloadHit(f"{ref} contains deny-pattern {hit!r}", path)
             for tok in set(re.findall(
                 r"(?<![A-Za-z0-9_])(?:~|\$HOME|/)[^\s;|&<>()`'\"]+", text)):
                 try:
@@ -16034,7 +16049,8 @@ class _DocToolExecutor:
                 rel = (str(rp.relative_to(root)).replace("\\", "/")
                        if root is not None else str(rp).replace("\\", "/"))
                 if perms.matches_path_deny(rel):
-                    return f"{ref} references a secret path ({tok!r})"
+                    return _PayloadHit(
+                        f"{ref} references a secret path ({tok!r})", path)
         return None
 
     # Outbound data-transfer signatures. These flag EXFILTRATION shapes
@@ -16862,18 +16878,41 @@ class _DocToolExecutor:
                 perms.record_denied_action(_SHELL_WRITE_KIND, _path)
         return _refused(reason, by_user=True) + self._said_why(perms)
 
-    def _self_written_exec(self, cmd: str, perms) -> "object | None":
-        """The verdict when ``cmd`` executes a file this session wrote, else
-        None. Reads the session's write journal. It decides nothing: the
-        caller uses it to word a refusal that was already made."""
+    @staticmethod
+    def _own_written_file(path: "Path | None", perms) -> "Path | None":
+        """``path`` resolved, when its current bytes are the ones this
+        session last wrote to it (newest change-journal record of the file,
+        ``post_hash`` equal to the file's sha256), else None.
+
+        Input: the file the payload scan refused. Only the session's own
+        journal (``perms.task_session_id``) is read; the journal is on disk,
+        so a restarted session with the same id still knows its writes. A
+        file overwritten afterwards by anyone else -- the user, a bash
+        redirect -- no longer holds the session's content and is not
+        called its own. It decides nothing: the caller only words a
+        refusal that was already made. Never raises.
+        """
         try:
-            from . import self_written as _sw
             sid = str(getattr(perms, "task_session_id", "") or "")
-            if not sid:
+            if path is None or not sid:
                 return None
-            v = _sw.verdict(cmd, _journal_changes(sid),
-                            str(getattr(perms, "workspace", "") or ""))
-            return v if (v and v.matched) else None
+            from . import change_journal as _cj
+            ws = Path(str(getattr(perms, "workspace", "") or "."))
+            target = path.resolve()
+            post = None
+            for rec in _cj.list_changes(sid) or []:
+                rp = Path(str(rec.get("path", "") or ""))
+                if not str(rp):
+                    continue
+                if not rp.is_absolute():
+                    rp = ws / rp
+                if rp.resolve() == target:
+                    post = rec.get("post_hash")
+            if not post or not target.is_file():
+                return None
+            if _cj.sha256_bytes(target.read_bytes()) != post:
+                return None
+            return target
         except Exception:
             return None
 
@@ -17108,27 +17147,31 @@ class _DocToolExecutor:
                 # and, the second time for the same file, end the attempts.
                 # Running a self-written script is otherwise untouched: this
                 # only adds words to a refusal that already happened.
-                own = self._self_written_exec(cmd, perms)
+                own = self._own_written_file(
+                    getattr(payload_hit, "path", None), perms)
                 if own is None:
                     return refusal
-                if perms.action_denied_earlier("self_written", own.key):
+                shown = self._display_path(own, perms)[:200]
+                if perms.action_denied_earlier("self_written", str(own)):
                     return (
-                        f"{refusal} This is '{own.key}', a file this session "
-                        "wrote, and it was already refused once for its "
-                        "content. Spelling the run another way does not "
-                        "change what the file contains. Stop here and tell "
-                        "the user what the script was meant to do and what "
-                        "the scan objects to."
+                        f"{refusal} '{shown}' is a file this session wrote, "
+                        "and it was already refused once for its content. "
+                        "Spelling the run another way does not change what "
+                        "the file contains. Stop here and tell the user what "
+                        "the script was meant to do and what the scan "
+                        "objects to."
                     )
-                perms.record_denied_action("self_written", own.key)
+                perms.record_denied_action("self_written", str(own))
                 return (
-                    f"{refusal} This is '{own.key}', a file this session "
-                    "wrote: what was refused is its content, not running "
-                    "your own script. Change the file so the named pattern "
-                    "is gone (text that only quotes a command belongs in a "
-                    "data file the script reads), or use the tool that "
-                    "exists for the job. Running the same file through "
-                    "another command will be refused again."
+                    f"{refusal} '{shown}' is a file this session wrote: what "
+                    "was refused is its content, not running your own "
+                    "script. If the script does not need what the scan "
+                    "names, take it out, or use the tool that exists for the "
+                    "job. If it does need it, do not reach the same "
+                    "operation another way (another spelling, a variable, a "
+                    "second file): tell the user what the script is meant "
+                    "to do and what the scan objects to. Running this file "
+                    "through another command is refused again."
                 )
             # Outbound data-transfer (exfiltration) detection. Always surfaced
             # in the containment panel; hard-blocked in the unattended mode and
