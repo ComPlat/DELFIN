@@ -74,6 +74,8 @@ _NOT_EXERCISED_HERE = {
     # the store it needs set up under a redirected HOME.
     "skill_propose_patch": "tests/test_skill_patch_tool.py — needs an "
                            "active skill and the proposal store",
+    "skill_share": "tests/test_zz_l6_a_shared_skill_arrives_as_a_proposal.py "
+                   "— needs an accepted skill and the proposal store",
     "session_search": "tests/test_session_search_end_to_end.py — needs an "
                       "indexed session archive",
     # Side effects that leave the machine.
