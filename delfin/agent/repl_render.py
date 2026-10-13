@@ -328,6 +328,79 @@ def _envelope_carrying(output: str) -> str | None:
     return value if value.strip() else None
 
 
+_CARRYING_KEY_RE = re.compile(
+    r'"(' + "|".join(_CARRYING_FIELDS) + r')"\s*:\s*"')
+
+
+def _cut_envelope_carrying(output: str) -> "tuple[str, bool] | None":
+    """The carrying field of a one-line JSON envelope that was CUT short.
+
+    The engine forwards the first 2000 characters of a result to the
+    screen. A shell envelope longer than that is no longer valid JSON,
+    so ``_envelope_carrying`` declined it and the transcript showed the
+    cut packaging -- ``{"exit_code": 0, "elapsed_s": …`` -- for every
+    command with more than about 1.9 kB of output.
+
+    Returns ``(value, complete)``: ``complete`` when the string literal
+    closes inside the slice (only later envelope fields were cut), False
+    when the output itself was cut. None when the text is not an object
+    prefix, or names no carrying field, or more than one.
+    """
+    if "\n" in output or not output.lstrip().startswith("{"):
+        return None
+    keys = list(_CARRYING_KEY_RE.finditer(output))
+    if len(keys) != 1:
+        return None
+    start = keys[0].end()
+    i, n = start, len(output)
+    complete = False
+    while i < n:
+        ch = output[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == '"':
+            complete = True
+            break
+        i += 1
+    literal = output[start:min(i, n)]
+    # A cut can land inside an escape (\\u00e or a lone backslash); back
+    # off until the literal decodes. At most six characters: \\uXXXX.
+    for trim in range(0, 7):
+        try:
+            value = json.loads('"' + literal[:len(literal) - trim] + '"')
+            break
+        except ValueError:
+            continue
+    else:
+        return None
+    if not value.strip():
+        return None
+    return value, complete
+
+
+def result_body(output: str) -> str:
+    """A result as its output, not its packaging -- for Ctrl+O."""
+    output = output or ""
+    carrying = _envelope_carrying(output)
+    if carrying is not None:
+        return carrying
+    cut = _cut_envelope_carrying(output)
+    if cut is not None:
+        value, complete = cut
+        return value if complete else (
+            value.rstrip("\n") + "\n… (cut for display)")
+    return output
+
+
+def _result_head(output: str, width: int) -> list[str]:
+    """The first few non-empty lines, for output whose end is not here."""
+    lines = [ln.rstrip() for ln in output.splitlines() if ln.strip()]
+    budget = max(_MIN_WIDTH, width) - 6
+    return ["      " + truncate_middle(_WS_RE.sub(" ", ln).strip(), budget)
+            for ln in lines[:_RESULT_TAIL_LINES]]
+
+
 def _result_tail(output: str, width: int) -> list[str]:
     """The last few non-empty lines of a result, ready to print."""
     if not output or not output.strip():
@@ -632,6 +705,26 @@ def tool_result_line(name: str, output: str, *, meta: dict | None = None,
         if tail:
             return "\n".join(theme.dim(t) for t in tail)
         return "  ⎿ " + theme.dim("(no output)")
+
+    cut = _cut_envelope_carrying(output)
+    if cut is not None:
+        value, complete = cut
+        value = strip_control(value)
+        if complete:
+            # Only fields after the output were cut: its end is here.
+            tail = _result_tail(value, width)
+            if tail:
+                return "\n".join(theme.dim(t) for t in tail)
+        else:
+            # The output itself was cut, so its last lines are not here
+            # and the last lines that ARE here would pass for them.
+            shown = len([ln for ln in value.splitlines() if ln.strip()])
+            head = _result_head(value, width)
+            more = max(0, shown - len(head))
+            return "\n".join(
+                [theme.dim(h) for h in head]
+                + [theme.dim(f"      … {more}+ more lines, cut for display "
+                             "(ctrl+o shows what was kept)")])
 
     lines = len(output.rstrip("\n").splitlines())
     exact = "chars" in meta and int(meta.get("chars") or 0) >= len(output)

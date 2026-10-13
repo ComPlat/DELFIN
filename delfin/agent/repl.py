@@ -1558,7 +1558,8 @@ class TerminalAgent:
             self.transcript.chrome(self.transcript.theme.dim(
                 "nothing to expand yet"))
             return
-        for line in rr.strip_control(self._last_result_text).splitlines():
+        body = rr.result_body(self._last_result_text)
+        for line in rr.strip_control(body).splitlines():
             self.transcript.chrome("  " + line)
 
     # -- what a typed line means ------------------------------------------
@@ -3907,7 +3908,14 @@ class TerminalAgent:
                                 decoder.buffer = newer
                                 decoder.cursor = len(newer)
                             selected = None
-                    elif kind in (rk.STEER, rk.EXPAND, rk.TASKS):
+                    elif kind == rk.EXPAND:
+                        # The result is still there after the turn ends,
+                        # which is when there is time to read it. At the
+                        # idle prompt this key emptied nothing and showed
+                        # nothing; the box keeps what was typed.
+                        _clear_box(decoder)
+                        self._expand_last_result()
+                    elif kind in (rk.STEER, rk.TASKS):
                         # Turn-time keys. There is no turn here, and the
                         # decoder has already taken the line into the
                         # event — so without this branch Ctrl+G emptied

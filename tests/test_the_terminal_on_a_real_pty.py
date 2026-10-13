@@ -162,6 +162,18 @@ def test_a_result_cut_for_display_says_so_and_shows_its_head(chat):
     stripped = [r.strip() for r in rows]
     assert "1" in stripped and "2" in stripped, text
     assert "more" in text and "ctrl+o" in text.lower(), text
+    assert "100" not in stripped, "the head is three lines, not the slice"
+    # The line points at Ctrl+O, so Ctrl+O at the idle prompt must show
+    # what was kept -- as output lines, not as the envelope.
+    session.send("draft", 0.3)
+    session.send("\x0f", 1.0)
+    assert session.wait_for("idle", 10) == "idle"
+    after = [r.strip() for r in session.screen().text()]
+    assert "100" in after, "\n".join(session.visible())
+    assert '"exit_code"' not in "\n".join(after)
+    assert session.visible()[-3].startswith("> draft"), (
+        "the typed draft did not survive Ctrl+O:\n"
+        + "\n".join(session.visible()[-4:]))
 
 
 # ---------------------------------------------------------------------------
