@@ -13,8 +13,13 @@ text; a command that assembles its words at run time is not read. So:
 
 * ``bypassPermissions`` asks nothing per command. Attended, the session
   asks once (one dialog per process) and keeps bypass on yes. Unattended,
-  or on no, it starts in ``default`` with a notice: the run continues, and
-  each command outside the auto-allow list is asked or refused there.
+  or on no, it starts in ``default`` with a notice and the permissions
+  marked ``unisolated_fallback``: the run continues, and a command outside
+  the auto-allow list is asked, or with nobody to ask judged by the action
+  classifier and refused unless it allows
+  (``api_client._unisolated_fallback_verdict``). The dashboard asks in its
+  approval panel on a thread (``background=True``) and runs in default
+  until the answer.
 * ``acceptEdits`` starts as asked, with the notice: file writes stay inside
   the workspace through the path gates, and commands are still asked.
 * ``default`` and ``plan`` start as asked: every command is asked anyway.
@@ -35,6 +40,7 @@ Cost: the three probes are cached per process; one settings read.
 from __future__ import annotations
 
 import sys
+import threading
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -136,14 +142,24 @@ def _record(detail: str, *, blocked: bool) -> None:
 
 
 def apply_at_start(engine, *, can_ask: bool,
-                   ask: Optional[Callable[[str], bool]] = None) -> list[str]:
+                   ask: Optional[Callable[[str], bool]] = None,
+                   background: bool = False,
+                   on_confirmed: Optional[Callable[[], None]] = None,
+                   ) -> list[str]:
     """Settle the starting permission mode against the isolation status.
 
     Input: the constructed engine (its ``kit_permissions.mode`` is the mode
     asked for); ``can_ask`` whether a person can answer now; ``ask`` the
     yes/no question (default: the terminal). Output: notice lines for the
     banner or stderr, empty where nothing needs saying. Side effect: the
-    mode is lowered to ``default`` when bypass is not confirmed. A backend
+    mode is lowered to ``default`` when bypass is not confirmed, and the
+    permissions are marked ``unisolated_fallback``.
+
+    ``background`` (the dashboard): the question goes to ``ask`` on a
+    thread of its own and the session runs in ``default`` meanwhile; a yes
+    raises it back to bypass (when nothing changed the mode since) and
+    calls ``on_confirmed``. The approval panel answers on the UI thread,
+    which a question asked on that same thread would hold. A backend
     without a permissions object has no mode and is left alone.
     """
     global _BYPASS_CONFIRMED
@@ -162,12 +178,47 @@ def apply_at_start(engine, *, can_ask: bool,
         return []
     if _BYPASS_CONFIRMED:
         return [head + "; bypassPermissions confirmed for this session"]
+    question = (
+        f"Isolation is NOT active: {status.reason}. In bypassPermissions "
+        "no command is asked, and a command that builds its words at "
+        "run time can write outside the workspace, read what the "
+        "account can read and reach the network.")
+    if can_ask and background and ask is not None:
+        _lower(perms)
+        _record(f"bypassPermissions without isolation awaits confirmation; "
+                f"running in {_FALLBACK_MODE} ({status.reason})",
+                blocked=True)
+
+        def _later() -> None:
+            global _BYPASS_CONFIRMED
+            try:
+                ok = bool(ask(question))
+            except Exception:
+                ok = False
+            if not ok or str(getattr(perms, "mode", "")) != _FALLBACK_MODE:
+                return
+            _BYPASS_CONFIRMED = True
+            perms.unisolated_fallback = False
+            setter = getattr(engine, "set_kit_permission_mode", None)
+            try:
+                if not (callable(setter) and setter(_RISKY_MODE)):
+                    perms.mode = _RISKY_MODE
+            except Exception:
+                perms.mode = _RISKY_MODE
+            _record("bypassPermissions without isolation confirmed by the "
+                    f"user ({status.reason})", blocked=False)
+            if on_confirmed is not None:
+                try:
+                    on_confirmed()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_later, daemon=True,
+                         name="isolation-confirm").start()
+        return [head + "; bypassPermissions waits for your confirmation in "
+                       f"the approval panel, and runs in {_FALLBACK_MODE} "
+                       "until then"]
     if can_ask:
-        question = (
-            f"Isolation is NOT active: {status.reason}. In bypassPermissions "
-            "no command is asked, and a command that builds its words at "
-            "run time can write outside the workspace, read what the "
-            "account can read and reach the network.")
         try:
             ok = bool((ask or _ask_terminal)(question))
         except Exception:
@@ -180,21 +231,25 @@ def apply_at_start(engine, *, can_ask: bool,
         why = "not confirmed"
     else:
         why = "nobody can confirm it here"
-    _set_mode(perms, _FALLBACK_MODE)
+    _lower(perms)
     _record(f"bypassPermissions without isolation {why}; started in "
             f"{_FALLBACK_MODE} ({status.reason})", blocked=True)
     return [head + f"; bypassPermissions {why}, so this session runs in "
                    f"{_FALLBACK_MODE}: reads, workspace writes and the "
-                   "auto-allowed commands go through, any other command is "
-                   "asked, or refused with nobody to ask"]
+                   "auto-allowed commands go through; any other command is "
+                   "asked, or with nobody to ask judged by the action "
+                   "classifier and refused unless it allows"]
 
 
-def _set_mode(perms, mode: str) -> None:
-    """On the permissions object, not through
-    ``engine.set_kit_permission_mode``: that one tells a running turn the
-    user switched mid-turn, and before the first turn nobody switched."""
+def _lower(perms) -> None:
+    """Default mode and the fallback mark, on the permissions object.
+
+    Not through ``engine.set_kit_permission_mode``: that one tells a
+    running turn the user switched mid-turn, and before the first turn
+    nobody switched."""
     try:
-        perms.mode = mode
+        perms.mode = _FALLBACK_MODE
+        perms.unisolated_fallback = True
     except Exception:
         pass
 

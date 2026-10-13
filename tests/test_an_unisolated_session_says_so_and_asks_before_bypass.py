@@ -600,7 +600,8 @@ def test_the_fallback_keeps_the_hard_refusals(monkeypatch, tmp_path):
 
     perms = _fallback_perms(monkeypatch, tmp_path, _allow)
     out = _run(perms, "cat ~/.ssh/id_rsa")
-    assert "secret-deny" in out or "blocked" in out or "refused" in out, out
+    # Refused by the secret-deny tier, before the classifier is reached.
+    assert "secret-deny" in out and "auto-allow list" not in out, out
 
 
 def test_without_the_fallback_mark_nothing_changes(monkeypatch, tmp_path):
