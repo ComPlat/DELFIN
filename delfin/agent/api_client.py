@@ -3450,9 +3450,11 @@ _MCP_BASH_TOOL_BASES: frozenset[str] = frozenset({
 _MCP_BASH_CMD_KEYS: tuple[str, ...] = ("command", "cmd", "script", "code")
 
 # `git push` in a shell command, with any `-C dir` / `-c k=v` / `--flag`
-# ahead of the subcommand.
+# ahead of the subcommand. Each option has exactly one parse: a second
+# `\s+-c\s+\S+` alternative (already inside `-[Cc]`) gave every `-c` two,
+# and `git -c ! -c ! ...` without `push` took 2**n steps to reject.
 _GIT_PUSH_RE = re.compile(
-    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+|\s+-c\s+\S+"
+    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+"
     r"|\s+--[\w-]+(?:=\S+)?)*\s+push\b")
 # A user message that asks for a push ("push", "pushen", "puschen"), and
 # one that says not to. The word alone was the test once, and "der Push
@@ -3526,7 +3528,7 @@ _GIT_PROGRAM_CONFIG_KEY_RE = re.compile(
     r"|diff\.external|diff\..+\.(?:textconv|command)"
     r"|filter\..+\.(?:clean|smudge|process)|merge\..+\.driver"
     r"|(?:difftool|mergetool)\..+\.cmd|interactive\.difffilter"
-    r"|remote\..+\.(?:uploadpack|receivepack)"
+    r"|remote\..+\.(?:uploadpack|receivepack)|submodule\..+\.update"
     r"|pager\..+|alias\..+|include\.path|includeif\..+\.path)")
 #: ``pager.<cmd>`` takes a boolean as well as a program.
 _GIT_BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "on", "off",
@@ -3548,12 +3550,16 @@ def _git_value_runs(key: str, value: Optional[str]) -> bool:
 
     ``value`` None means unknown and counts as a program. An alias runs a
     program when it starts with ``!`` or carries ``-c``/``--config-env``
-    with a program key; ``pager.<cmd>`` not when it is a boolean."""
+    with a program key; ``pager.<cmd>`` not when it is a boolean;
+    ``submodule.<name>.update`` only as ``!<command>`` (``git submodule
+    update`` runs it; checkout/rebase/merge/none run nothing)."""
     k = key.lower()
     if not _GIT_PROGRAM_CONFIG_KEY_RE.fullmatch(k):
         return False
     if value is None:
         return True
+    if k.startswith("submodule."):
+        return value.lstrip().startswith("!")
     if k.startswith("alias."):
         v = value.lstrip()
         return v.startswith("!") or bool(
@@ -3610,6 +3616,31 @@ def _git_one_command_program_key(words: list) -> Optional[str]:
     return None
 
 
+#: ``git config`` options that take the next word as their value.
+_GIT_CONFIG_OPTS_WITH_VALUE = frozenset({"-f", "--file", "--blob", "--type",
+                                         "--default", "--comment",
+                                         "--value", "--url"})
+
+
+def _git_config_opens_an_editor(words: list) -> bool:
+    """Whether the words after ``git config`` open the file in an editor:
+    ``-e``/``--edit`` anywhere, or ``edit`` as the subcommand (the first
+    word that is neither an option nor an option's value)."""
+    if "-e" in words or "--edit" in words:
+        return True
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in _GIT_CONFIG_OPTS_WITH_VALUE:
+            i += 2
+            continue
+        if w.startswith("-"):
+            i += 1
+            continue
+        return w == "edit"
+    return False
+
+
 def _git_program_config_write(cmd: str) -> Optional[str]:
     """The key, when ``cmd`` sets a git configuration key whose value git
     later runs as a program (``_GIT_PROGRAM_CONFIG_KEY_RE``); else None.
@@ -3624,10 +3655,11 @@ def _git_program_config_write(cmd: str) -> Optional[str]:
     Commit messages are blanked first (``_prose_blanked``); ``sh -c``
     bodies are read too.
 
-    Not seen: a key spelled through a variable (``git config "$k" x``), a
-    configuration file written by other means than ``git config``
-    (``.git/config`` is a deny path; ``~/.gitconfig`` or a file later
-    named by ``GIT_CONFIG_GLOBAL`` is not), and ``git config --edit``.
+    ``git config --edit``/``-e``/``edit`` (any file) counts as a program
+    key: the editor can write any key. A configuration file written by
+    other means is ``_is_git_configuration_file``'s.
+
+    Not seen: a key spelled through a variable (``git config "$k" x``).
     Rejected: asking for every ``git config`` write -- ``user.*``,
     ``color.*``, ``branch.*`` are the common writes and run nothing.
     Cost: one regex scan and one ``shlex.split`` per command."""
@@ -3640,6 +3672,8 @@ def _git_program_config_write(cmd: str) -> Optional[str]:
             words = m.group(1).split()
         if _GIT_CONFIG_READ_WORDS & set(words):
             continue
+        if _git_config_opens_an_editor(words):
+            return "--edit"
         for i, w in enumerate(words):
             if i + 1 < len(words) and _git_value_runs(w, words[i + 1]):
                 return w
@@ -6066,7 +6100,29 @@ def _mcp_call_refusal(fn_name: str, fn_args: dict,
     if hook_block is not None:
         return json.dumps({"error": "blocked_by_hook",
                            "reason": hook_block[:1200]})
-    gate_block = _doc_executor._gate_mcp_tool(fn_name, fn_args, permissions)
+    # The user's permission rules, as at execute(): deny refuses, ask asks,
+    # and the call is bound for the allow answers inside the gate.
+    asked = False
+    rule_hit = (_permission_rule_hit(permissions, fn_name, fn_args)
+                if fn_name.startswith("mcp__") else None)
+    if rule_hit is not None and rule_hit[0] == "deny":
+        _record_security_event("permission_rule_deny", fn_name,
+                               rule_hit[1].text[:120])
+        return json.dumps({"error": _permission_rule_deny_text(
+            fn_name, rule_hit[1])})
+    if rule_hit is not None:
+        refusal = _doc_executor._ask_by_rule(permissions, fn_name,
+                                             fn_args, rule_hit[1])
+        if refusal is not None:
+            return json.dumps({"error": refusal})
+        asked = True
+    token = _RULE_CALL.set({"name": fn_name, "args": fn_args,
+                            "asked": asked})
+    try:
+        gate_block = _doc_executor._gate_mcp_tool(
+            fn_name, fn_args, permissions)
+    finally:
+        _RULE_CALL.reset(token)
     if gate_block is not None:
         return json.dumps({"error": gate_block})
     return None
@@ -6589,6 +6645,123 @@ def _tool_denied_for_session(
     return _session_tool_refusal(name, allowed, denied)
 
 
+# --- Structured permission rules (permission_rules.py) ----------------------
+# deny and ask are decided once per call at the entry points (execute,
+# _mcp_call_refusal, cli_gate.decide); a deny on a path a tool resolves
+# itself is re-checked in _check_read_access and _gate_write_path. allow is
+# consulted only where the gate would otherwise ask (_rule_answers), so it
+# cannot reach a refusal that comes before that point.
+#
+# The call being decided, for _rule_answers: {"name", "args", "asked"}.
+# "asked" is True when an ask rule already put THIS call to the user and
+# they approved it, so the ordinary dialog for the same call is not raised
+# a second time. Set around one dispatch and reset after it; a nested
+# execute() sets its own. A worker thread sees None, which answers nothing.
+_RULE_CALL: "_contextvars.ContextVar[Optional[dict]]" = (
+    _contextvars.ContextVar("delfin_permission_rule_call", default=None))
+
+
+def _permission_rules(perms):
+    """(module, RuleSet) for ``perms``' workspace, or (None, None)."""
+    try:
+        from . import permission_rules as _pr
+        return _pr, _pr.load(getattr(perms, "workspace", None))
+    except Exception:
+        return None, None
+
+
+def _permission_rule_hit(perms, name: str, args: dict):
+    """("deny"|"ask", Rule) for this call, or None."""
+    if perms is None:
+        return None
+    pr, rs = _permission_rules(perms)
+    if rs is None:
+        return None
+    try:
+        return pr.friction(rs, name, args if isinstance(args, dict) else {},
+                           perms.workspace)
+    except Exception:
+        return None
+
+
+def _rule_source(rule) -> str:
+    return str(getattr(rule, "source", "") or "the settings file")
+
+
+def _permission_rule_deny_text(name: str, rule) -> str:
+    return (f"'{_bare_tool_name(name)}' is refused by the permission rule "
+            f"`{rule.text}` (deny, {_rule_source(rule)}). The rules are the "
+            "user's and cannot be changed from inside the session. Do not "
+            "reach the same effect another way; tell the user what you "
+            "needed it for.")
+
+
+def _rule_denies_path(perms, kind: str, path) -> Optional[str]:
+    """The refusal for a deny rule on a path a tool resolved, or None."""
+    pr, rs = _permission_rules(perms)
+    if rs is None or not rs.deny:
+        return None
+    try:
+        rule = pr.denies_path(rs, kind, path, perms.workspace)
+    except Exception:
+        return None
+    if rule is None:
+        return None
+    _record_security_event("permission_rule_deny", kind,
+                           f"{rule.text}: {path}"[:160])
+    return (f"{kind} denied: '{path}' is refused by the permission rule "
+            f"`{rule.text}` (deny, {_rule_source(rule)}), in every mode and "
+            "whatever is approved. Do not reach it through another tool.")
+
+
+def _rule_answers(perms, site: str, name: str, target=None) -> Optional[str]:
+    """The rule that answers the question at ``site`` for the call being
+    decided, or None to ask as before.
+
+    Called only at a point where the gate would put a question to the user
+    (or refuse because nobody can be asked): the ordinary command dialog
+    ("bash"), a read outside the roots ("read"), the default-mode write
+    dialog ("write") and a side-effecting MCP tool ("tool"). Every hard
+    refusal of those paths comes before these points. A site answers only
+    for a call of its own kind, so an allowed command answers no read
+    question it raises, and a sub-agent call answers nothing for its
+    children."""
+    call = _RULE_CALL.get()
+    if call is None or perms is None:
+        return None
+    cname = str(call.get("name") or "")
+    bare = _bare_tool_name(cname)
+    try:
+        from . import permission_rules as _pr
+    except Exception:
+        return None
+    shell = bare in ("bash", "bash_background")
+    if site == "bash" and not shell:
+        return None
+    if site == "read" and (shell or bare in _pr.WRITE_TOOLS):
+        return None
+    if site == "write" and bare not in _pr.WRITE_TOOLS:
+        return None
+    if site == "tool" and cname != name:
+        return None
+    if call.get("asked"):
+        return "the ask rule the user approved for this call"
+    _, rs = _permission_rules(perms)
+    if rs is None:
+        return None
+    try:
+        rule = _pr.allows(rs, site, cname, call.get("args") or {},
+                          perms.workspace, target)
+    except Exception:
+        return None
+    if rule is None:
+        return None
+    _record_security_event("permission_rule_allow", bare,
+                           f"{rule.text}: {target or ''}"[:160],
+                           blocked=False)
+    return rule.text
+
+
 def unknown_tool_names(
     names: Any, tools: Optional[list[dict[str, Any]]] = None
 ) -> list[str]:
@@ -6829,6 +7002,173 @@ _GIT_CONFIG_PROTECTED_GLOBS: tuple[str, ...] = (
     "HEAD", "**/HEAD",
 )
 
+#: Keys whose value names another file git reads: as configuration
+#: (include paths) or as attributes (``core.attributesFile``, which
+#: selects filter and diff drivers). Lower-cased, as git compares them.
+_GIT_FILE_NAMING_KEY_RE = re.compile(
+    r"include\.path|includeif\..+\.path|core\.attributesfile")
+_GIT_CONFIG_SECTION_RE = re.compile(
+    r'^\[\s*([A-Za-z0-9.-]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\](.*)$')
+_GIT_INCLUDE_DEPTH = 10
+
+
+def _git_config_value(raw: str) -> str:
+    """A configuration value as git reads it: double quotes removed,
+    ``\\``-escapes taken literally, ``#``/``;`` outside quotes end it."""
+    out: list = []
+    quoted = False
+    i = 0
+    while i < len(raw):
+        c = raw[i]
+        if c == "\\" and i + 1 < len(raw):
+            out.append(raw[i + 1])
+            i += 2
+            continue
+        if c == '"':
+            quoted = not quoted
+        elif c in "#;" and not quoted:
+            break
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out).strip()
+
+
+def _git_config_file_naming_entries(path: str) -> list:
+    """``(key, value)`` for every ``_GIT_FILE_NAMING_KEY_RE`` key in one
+    configuration file; empty when it cannot be read. Continuation lines
+    are not joined (git allows them; a path value does not need one)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read(1 << 20)
+    except OSError:
+        return []
+    section = ""
+    found: list = []
+    for line in text.splitlines():
+        s = line.strip()
+        m = _GIT_CONFIG_SECTION_RE.match(s)
+        if m:
+            name, sub, rest = m.groups()
+            section = name.lower() + (f".{sub}" if sub is not None else "")
+            s = rest.strip()
+        if not s or s[0] in "#;" or not section:
+            continue
+        name, eq, value = s.partition("=")
+        key = f"{section}.{name.strip()}".lower()
+        if eq and _GIT_FILE_NAMING_KEY_RE.fullmatch(key):
+            found.append((key, _git_config_value(value)))
+    return found
+
+
+def _enclosing_git_dir(path: Path) -> Optional[str]:
+    """The git directory of the repository whose work tree holds ``path``:
+    the nearest ``.git`` directory above it, or the directory a ``.git``
+    file (``gitdir: <dir>``) names. None outside any repository."""
+    d = path.parent
+    for _ in range(64):
+        dot = d / ".git"
+        try:
+            if dot.is_dir():
+                return str(dot)
+            if dot.is_file():
+                with open(dot, "r", encoding="utf-8", errors="replace") as fh:
+                    head = fh.read(4096).strip()
+                if head.startswith("gitdir:"):
+                    g = Path(head[len("gitdir:"):].strip())
+                    return str(g if g.is_absolute() else d / g)
+                return None
+        except OSError:
+            return None
+        if d.parent == d:
+            return None
+        d = d.parent
+    return None
+
+
+def _git_configuration_files(workspace, target: Optional[Path] = None) -> set:
+    """Absolute paths (as named and as resolved) of the files git reads as
+    configuration or attributes for a command in ``workspace``, outside
+    the work-tree names ``_GIT_CONFIG_PROTECTED_GLOBS`` matches.
+
+    Seeds: ``GIT_CONFIG_GLOBAL``, ``GIT_CONFIG_SYSTEM``, ``GIT_CONFIG``,
+    ``~/.gitconfig``, ``$XDG_CONFIG_HOME/git/config`` and ``attributes``
+    (``~/.config`` when unset), ``/etc/gitconfig``, and ``config``,
+    ``config.worktree`` and ``info/attributes`` of the workspace's git
+    directories and of the repository enclosing ``target``. Each
+    configuration file is read for ``include.path``,
+    ``includeIf.<cond>.path`` (relative to the including file, as named
+    and as resolved through a symlink) and ``core.attributesFile``
+    (relative to the workspace), to depth ``_GIT_INCLUDE_DEPTH``. Every
+    seed counts whether or not it exists or git would read it now (the
+    environment of a later command may differ); ``includeIf`` is followed
+    whatever its condition.
+
+    Cost: measured 0.26 ms per write-gate call for a home with two
+    include levels and no repository (stat and read of a few small
+    files, plus the cached ``git rev-parse`` of ``_git_metadata_roots``);
+    reads and the schema are untouched. Rejected: ``git config
+    --list --show-origin`` -- a subprocess per write, and it follows
+    ``includeIf`` only where the condition holds now."""
+    home = Path.home()
+    env = os.environ
+    xdg = Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "git"
+    configs: list = [str(home / ".gitconfig"), str(xdg / "config"),
+                     "/etc/gitconfig"]
+    plain: list = [str(xdg / "attributes")]
+    for var in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG"):
+        v = env.get(var)
+        if v and v != "/dev/null":
+            configs.append(os.path.expanduser(v))
+    git_dirs = list(_git_metadata_roots(workspace))
+    if target is not None:
+        g = _enclosing_git_dir(target)
+        if g:
+            git_dirs.append(g)
+    for g in git_dirs:
+        configs += [os.path.join(g, "config"),
+                    os.path.join(g, "config.worktree")]
+        plain.append(os.path.join(g, "info", "attributes"))
+    seen: set = set()
+    queue = [(c, 0) for c in configs]
+    while queue:
+        cfg, depth = queue.pop()
+        cfg = os.path.abspath(cfg)
+        if cfg in seen:
+            continue
+        seen.add(cfg)
+        if depth >= _GIT_INCLUDE_DEPTH:
+            continue
+        bases = {os.path.dirname(cfg),
+                 os.path.dirname(os.path.realpath(cfg))}
+        for key, value in _git_config_file_naming_entries(cfg):
+            if not value:
+                continue
+            value = os.path.expanduser(value)
+            if key == "core.attributesfile":
+                plain.append(os.path.join(str(workspace), value))
+                continue
+            for b in bases:
+                queue.append((os.path.join(b, value), depth + 1))
+    out: set = set()
+    for p in list(seen) + plain:
+        p = os.path.abspath(p)
+        out.add(p)
+        out.add(os.path.realpath(p))
+    return out
+
+
+def _is_git_configuration_file(resolved: Path, workspace) -> bool:
+    """Whether a write to ``resolved`` writes a file git reads as
+    configuration or attributes (``_git_configuration_files``). Never
+    raises; an error answers False and leaves the other gates."""
+    try:
+        files = _git_configuration_files(workspace, resolved)
+        p = os.path.abspath(str(resolved))
+        return p in files or os.path.realpath(p) in files
+    except Exception:
+        return False
+
 _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/api_client.py",
     "delfin/agent/kit_confirm.py",
@@ -6840,6 +7180,13 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/sandbox.py",
     "delfin/agent/kit_settings.py",
     "delfin/user_settings.py",
+    # Who may answer a pending approval, and the code that writes and
+    # checks an answer (approval_guard).
+    "delfin/agent/approval_guard.py",
+    "delfin/agent/file_confirm.py",
+    "delfin/agent/terminal_confirm.py",
+    "delfin/agent/approval_answers.py",
+    "delfin/agent/cli_gate.py",
     # The maintainer's principles, loaded first into every role: an agent
     # that could rewrite them could rewrite what it is for.
     "delfin/agent/pack/shared/principles_addendum.md",
@@ -7115,6 +7462,42 @@ def output_for_a_person():
         _PERSON_OUTPUT.reset(token)
 
 
+#: Set only by gate_dry_run() (``delfin-agent gate explain``), for the
+#: thread running that one call. Read at exactly one point per supported
+#: tool: after its last gate and before its first act (bash: before the
+#: process starts; write_file: before the bytes are written). Every gate
+#: before that point runs unchanged, so the verdict is the executor's own.
+_GATE_DRY_RUN: "_contextvars.ContextVar[bool]" = (
+    _contextvars.ContextVar("delfin_gate_dry_run", default=False))
+
+#: The tools that read _GATE_DRY_RUN. Any other tool would ACT under a
+#: dry run, so gate_explain refuses to explain it.
+GATE_DRY_RUN_TOOLS: frozenset[str] = frozenset({"bash", "write_file"})
+
+#: Marker key of the result a dry-run stop returns.
+GATE_DRY_RUN_KEY = "gate_dry_run"
+
+
+@contextlib.contextmanager
+def gate_dry_run():
+    """Inside this block, on this thread, bash and write_file stop after
+    their last gate and return ``{GATE_DRY_RUN_KEY: true, ...}`` instead
+    of acting. Grants nothing and changes no gate decision."""
+    token = _GATE_DRY_RUN.set(True)
+    try:
+        yield
+    finally:
+        _GATE_DRY_RUN.reset(token)
+
+
+def _dry_run_stop(tool: str, target: str) -> Optional[str]:
+    """The dry-run result, or None when no dry run is active."""
+    if not _GATE_DRY_RUN.get():
+        return None
+    return json.dumps({GATE_DRY_RUN_KEY: True, "tool": tool,
+                       "target": str(target)[:500]})
+
+
 @contextlib.contextmanager
 def _pin_permission_mode(perms: Optional["KitToolPermissions"]):
     """Freeze the permission mode for the duration of one tool call."""
@@ -7238,6 +7621,10 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # The watcher's health for the whole session (not per turn):
+    # consecutive failed model calls, down/up, last failure, pending user
+    # notices. See _watcher_record.
+    classifier_health: dict = field(default_factory=dict)
     # Skill name -> the user's own words, for the turn that opened with
     # the user correcting a skill the turn before it used. Set by the
     # engine (_note_skill_correction), read by skill_propose_patch.
@@ -7913,16 +8300,239 @@ class KitToolPermissions:
         return False
 
 
+# Blanking of sed regex bodies, in linear time.
+#
+# The three substitutions below replace these patterns, applied with
+# re.sub in this order:
+#
+#   s:  (?<![\w])s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1([a-zA-Z0-9]*)
+#         -> " s " + flags
+#   /:  /(?:\\.|[^/])*/                  -> " "
+#   \c: \\(.)(?:\\.|(?!\1).)*\1          -> " "
+#
+# Each body loop reads a backslash both as the start of an escape and as
+# a plain character, so ``\a\a\a...`` has 2**n parses, and a body with no
+# closing delimiter took 2**n steps to reject (code scanning py/redos;
+# 30 repetitions held the gate for minutes). An unambiguous rewrite such
+# as (?:\\.|[^\\D])* rejects quickly but ends some bodies elsewhere:
+# ``s/x\\/y/z/`` is s|x\\|y|z under the old pattern and s|x\\/y|z| under
+# the rewrite, which changes what the gate blanks. The functions below
+# reproduce the old pattern's choice exactly.
+#
+# Which end the old pattern chooses. Python's engine tries the parses
+# depth first, escape before plain character, and returns the first whose
+# continuation succeeds; whether a continuation succeeds depends only on
+# the position the body ends at, so revisiting a position never changes
+# the answer, and the order of FIRST visits decides. Following that order
+# with the greedy tokenisation g (escape whenever the next character is
+# not a newline; terminal at the first unescaped D, a newline the body
+# cannot hold, or the end), the candidate ends -- all positions of D, as
+# the continuation starts with D -- are tried in this order:
+#
+#   1. the terminal of g, if it is D;
+#   2. if g's last token is an escaped backslash and the terminal is D:
+#      every candidate of a body starting just after that D (the parse
+#      reading ``\`` + ``\D`` instead of ``\\`` + ``D``), recursively;
+#   3. each D inside g, last first. Every D before the terminal is the
+#      second character of an escape token (a D at a token start would
+#      be the terminal), and reading that backslash as a plain character
+#      ends the body at the D.
+#
+# When D is the backslash, a backslash is never a plain character, so 2.
+# and 3. do not exist; instead the body may stop at the start of each
+# escape token on g (stopping is tried after escaping), last first.
+#
+# Every other node of the search tree is a position already visited or a
+# character that is not D. For the single-body patterns the first
+# candidate always succeeds; ``s///`` needs the second body to close too.
+# Cost: one regex walk (C speed) per body start, memoised per delimiter.
+# Equivalence with the old patterns is asserted on every string literal
+# in tests/, every string of length <= 7 over s / \ a newline x, and
+# 60000 random strings (tests/test_gate_patterns_finish_in_linear_time.py).
+
+_SED_WORD_CHAR_RE = re.compile(r"\w")
+_SED_FLAGS_RE = re.compile(r"[a-zA-Z0-9]*")
+_SED_ESCAPE_RE = re.compile(r"\\[^\n]")
+
+
+class _SedBody:
+    """Delimited sed bodies with delimiter *delim* in *text*.
+
+    ``end(start)`` is where the old pattern's single body
+    ``(?:\\.|(?!D).)*`` (``(?:\\.|[^/])*`` with *newline_plain*) followed
+    by D closes when it starts at *start*, or -1. ``ends(start)`` yields
+    the candidate ends of the first ``s`` body in the old pattern's
+    order."""
+
+    def __init__(self, text: str, delim: str, newline_plain: bool = False):
+        self.text = text
+        self.delim = delim
+        plain = "\\\\" + ("" if newline_plain else "\\n") + re.escape(delim)
+        # Escape, plain character, and (unless the backslash is the
+        # delimiter) a backslash that cannot escape. The three are
+        # disjoint, so the loop has one parse; group 1 is the last token.
+        bare = "" if delim == "\\" else r"|\\(?=\n|\Z)"
+        self._token = re.compile(r"(?:(\\[^\n])|[^" + plain + "]" + bare + ")*")
+        self._end: dict[int, int] = {}
+
+    def _walk(self, start: int) -> tuple[int, int, bool]:
+        """(terminal, start of the last escape token or -1, whether the
+        last token is an escaped backslash)."""
+        m = self._token.match(self.text, start)
+        stop = m.end()
+        return stop, m.start(1), m.end(1) == stop and m.group(1) == "\\\\"
+
+    def end(self, start: int) -> int:
+        hit = self._end.get(start)
+        if hit is None:
+            stop, last_escape, _ = self._walk(start)
+            text, delim = self.text, self.delim
+            if stop < len(text) and text[stop] == delim:
+                hit = stop
+            elif delim != "\\":
+                hit = text.rfind(delim, start, stop)
+            else:
+                # The delimiter is the backslash: the body may stop at any
+                # escape token's start, the last one first.
+                hit = last_escape
+            self._end[start] = hit
+        return hit
+
+    def ends(self, start: int):
+        text, delim = self.text, self.delim
+        regions = []
+        while True:
+            stop, _, last_is_backslash = self._walk(start)
+            closed = stop < len(text) and text[stop] == delim
+            if closed:
+                yield stop
+            regions.append((start, stop))
+            if closed and delim != "\\" and last_is_backslash:
+                start = stop + 1
+                continue
+            break
+        if delim == "\\":
+            # Every escape token starts with the delimiter; stopping there
+            # is tried after the escape, the last token first.
+            low, stop = regions[0]
+            starts = [m.start() for m in _SED_ESCAPE_RE.finditer(text, low, stop)]
+            yield from reversed(starts)
+            return
+        while regions:
+            low, pos = regions.pop()
+            while True:
+                pos = text.rfind(delim, low, pos)
+                if pos < 0:
+                    break
+                yield pos
+
+
+def _line_end(text: str, pos: int) -> int:
+    nl = text.find("\n", pos)
+    return len(text) if nl < 0 else nl
+
+
+def _sed_blank_substitutions(text: str) -> str:
+    """``re.sub(<s pattern above>, lambda m: " s " + m.group(2), text)``.
+    A start needs two delimiters before the line ends; with two, the old
+    pattern always matched (the first is reachable by plain characters,
+    the second likewise), so the check only skips hopeless starts."""
+    out: list[str] = []
+    bodies: dict[str, _SedBody] = {}
+    n, last, i, nl = len(text), 0, 0, -1
+    while True:
+        i = text.find("s", i)
+        if i < 0 or i + 1 >= n:
+            break
+        delim = text[i + 1]
+        if delim == "\n" or (i and _SED_WORD_CHAR_RE.match(text[i - 1])):
+            i += 1
+            continue
+        if nl < i + 2:
+            nl = _line_end(text, i + 2)
+        first = text.find(delim, i + 2, nl)
+        if first < 0 or text.find(delim, first + 1, nl) < 0:
+            i += 1
+            continue
+        body = bodies.get(delim)
+        if body is None:
+            body = bodies[delim] = _SedBody(text, delim)
+        close = -1
+        for mid in body.ends(i + 2):
+            close = body.end(mid + 1)
+            if close >= 0:
+                break
+        if close < 0:
+            i += 1
+            continue
+        flags = _SED_FLAGS_RE.match(text, close + 1)
+        out.append(text[last:i])
+        out.append(" s " + flags.group())
+        last = i = flags.end()
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _sed_blank_slash_regexes(text: str) -> str:
+    """``re.sub(r"/(?:\\.|[^/])*/", " ", text)``."""
+    out: list[str] = []
+    body = _SedBody(text, "/", newline_plain=True)
+    last = i = 0
+    while True:
+        i = text.find("/", i)
+        if i < 0:
+            break
+        close = body.end(i + 1)
+        if close < 0:
+            i += 1
+            continue
+        out.append(text[last:i])
+        out.append(" ")
+        last = i = close + 1
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _sed_blank_custom_regexes(text: str) -> str:
+    """``re.sub(r"\\\\(.)(?:\\\\.|(?!\\1).)*\\1", " ", text)``: sed's
+    ``\\cREGEXc`` address. A start needs its delimiter before the line
+    ends; with one, the old pattern always matched."""
+    out: list[str] = []
+    bodies: dict[str, _SedBody] = {}
+    n, last, i, nl = len(text), 0, 0, -1
+    while True:
+        i = text.find("\\", i)
+        if i < 0 or i + 1 >= n:
+            break
+        delim = text[i + 1]
+        if nl < i + 2:
+            nl = _line_end(text, i + 2)
+        if delim == "\n" or text.find(delim, i + 2, nl) < 0:
+            i += 1
+            continue
+        body = bodies.get(delim)
+        if body is None:
+            body = bodies[delim] = _SedBody(text, delim)
+        close = body.end(i + 2)
+        if close < 0:
+            i += 1
+            continue
+        out.append(text[last:i])
+        out.append(" ")
+        last = i = close + 1
+    out.append(text[last:])
+    return "".join(out)
+
+
 def _sed_script_writes(cmd: str) -> bool:
     """True when a sed script in *cmd* holds a command that writes a file
     or runs one: ``w``/``W`` (write), ``e`` (execute), or the ``s///w``
     and ``s///e`` flags. Regex bodies are blanked first, so a letter in a
     pattern (``/wait/p``) is not read as a command."""
     body = re.sub(r"^\s*sed\b", "", cmd, count=1)
-    body = re.sub(r"(?<![\w])s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1([a-zA-Z0-9]*)",
-                  lambda m: " s " + m.group(2), body)
-    body = re.sub(r"/(?:\\.|[^/])*/", " ", body)
-    body = re.sub(r"\\(.)(?:\\.|(?!\1).)*\1", " ", body)
+    body = _sed_blank_substitutions(body)
+    body = _sed_blank_slash_regexes(body)
+    body = _sed_blank_custom_regexes(body)
     # A flag set after s///, or a command letter standing alone.
     if re.search(r"\bs [a-zA-Z0-9]*[we]", body):
         return True
@@ -12020,6 +12630,175 @@ _CLASSIFIER_REFUSALS_PER_TURN = 3
 _CLASSIFIED_NETWORK_TOOLS = frozenset({
     "web_fetch", "remote_trigger", "push_notification"})
 
+# The watcher failing. A model error is retried once after this pause (a
+# dropped connection, a 502 from the proxy); a timeout is not, it has
+# already cost _CLASSIFIER_TIMEOUT_S. After _CLASSIFIER_BREAKER_FAILURES
+# consecutive failed model calls in a session the watcher is "down": the
+# user is told once, and the model is probed at most once per
+# _CLASSIFIER_PROBE_INTERVAL_S until it answers. Counted per model call,
+# not per action: a skipped call while down is not new evidence.
+_CLASSIFIER_RETRY_DELAY_S = 0.5
+_CLASSIFIER_BREAKER_FAILURES = 3
+_CLASSIFIER_PROBE_INTERVAL_S = 60.0
+_classifier_clock = time.monotonic
+
+# Commands that reach the network or another machine with no operator a
+# text gate can see. Several are on the default auto-allow list (git
+# fetch/pull); they are what "leaves the workspace" means for a command
+# outside Bypass.
+_LEAVING_BASH = re.compile(r"""(?x)
+    (?:^|[\s;&|(`])
+    (?:git\s+(?:-[Cc]\s+\S+\s+)*
+         (?:fetch|pull|clone|push|ls-remote|submodule|remote\s+update)\b
+     | curl\b | wget\b | ssh\b | scp\b | sftp\b | rsync\b | nc\b | ncat\b
+     | telnet\b | ftp\b | gh\b | huggingface-cli\b
+     | pip3?\s+(?:install|download)\b
+     | python\S*\s+-m\s+pip\s+(?:install|download)\b
+     | (?:conda|mamba|micromamba)\s+(?:install|create|update)\b)
+""")
+
+# Gated tools that run inside the workspace and send nothing out; under
+# Bypass they reach the second opinion with every other gated tool.
+_WORKSPACE_LOCAL_TOOLS = frozenset({"run_tests", "make_plot"})
+
+
+def _leaves_workspace(
+    perms: "KitToolPermissions", action: dict, bypass: bool,
+) -> bool:
+    """Whether *action* reaches beyond the session workspace.
+
+    Input: an action as ``_classifier_action`` builds it, the session's
+    permissions and whether the mode is Bypass. Output: True for a network
+    or remote tool, a message to another agent, a write outside the
+    session and agent workspace or into a file that instructs an agent or
+    configures git, the high-risk command class, a command that reaches
+    the network (_LEAVING_BASH), and under Bypass a command the default
+    auto-allow list does not cover; False for workspace work.
+
+    Decides what a watcher failure does (_classifier_second_opinion): a
+    leaving action asks, or is refused when nobody can be asked; workspace
+    work keeps the rule result. The Bypass rule makes a session whose
+    watcher is down fall back to what default mode runs unasked. Unknown
+    tools count as leaving.
+    """
+    tool = str(action.get("tool") or "")
+    if tool in ("bash", "bash_background"):
+        cmd = _prose_blanked(str(action.get("command") or ""))
+        if _BYPASS_HIGH_RISK_BASH.search(cmd) or _LEAVING_BASH.search(cmd):
+            return True
+        if bypass:
+            try:
+                return not perms.matches_bash_auto_allow(
+                    str(action.get("command") or ""))
+            except Exception:
+                return True
+        return False
+    if tool in ("write_file", "edit_file", "multi_edit"):
+        return _bypass_screened_action(perms, action) is None
+    return tool not in _WORKSPACE_LOCAL_TOOLS
+
+
+def _watcher_health(perms) -> dict:
+    """The session's watcher record on *perms*, created on first use."""
+    health = getattr(perms, "classifier_health", None)
+    if not isinstance(health, dict):
+        health = {}
+        try:
+            perms.classifier_health = health
+        except Exception:
+            pass
+    health.setdefault("failures", 0)
+    health.setdefault("down", False)
+    health.setdefault("last_failure", "")
+    health.setdefault("last_attempt_at", None)
+    health.setdefault("notices", [])
+    return health
+
+
+def _watcher_record(perms, ok: bool, reason: str = "") -> None:
+    """Count one model call's outcome; open or close the breaker.
+
+    A success resets the count and, when the watcher was down, queues the
+    notice that it answers again. A failure stores its reason and, at the
+    _CLASSIFIER_BREAKER_FAILURES-th in a row, marks the watcher down and
+    queues the notice once.
+    """
+    health = _watcher_health(perms)
+    if ok:
+        health["failures"] = 0
+        if health["down"]:
+            health["down"] = False
+            health["notices"].append(
+                "Action watcher answers again: actions that leave the "
+                "workspace are judged as before.")
+            _record_security_event("classifier_up", "classifier", "",
+                                   blocked=False)
+        return
+    health["failures"] = int(health["failures"]) + 1
+    health["last_failure"] = " ".join(str(reason or "").split())[:160]
+    try:
+        health["last_failure_wall"] = time.strftime("%H:%M:%S")
+    except Exception:
+        pass
+    if not health["down"] and health["failures"] >= _CLASSIFIER_BREAKER_FAILURES:
+        health["down"] = True
+        health["down_since"] = health.get("last_failure_wall", "")
+        health["notices"].append(
+            f"Action watcher down: {health['failures']} model calls in a "
+            f"row failed (last: {health['last_failure']}). Reading, "
+            "commands on the auto-allow list and writing inside the "
+            "workspace go on; actions that leave the workspace are asked "
+            "about, or held when nobody can be asked, until it answers "
+            f"again (re-tried at most every "
+            f"{_CLASSIFIER_PROBE_INTERVAL_S:.0f} s).")
+        _record_security_event("classifier_down", "classifier",
+                               health["last_failure"], blocked=True)
+
+
+def drain_watcher_notices(perms) -> list:
+    """The watcher notices queued since the last drain, oldest first.
+
+    Shown to the user by the tool loop; each is returned exactly once.
+    """
+    if perms is None:
+        return []
+    health = getattr(perms, "classifier_health", None)
+    if not isinstance(health, dict) or not health.get("notices"):
+        return []
+    out = list(health["notices"])
+    health["notices"].clear()
+    return out
+
+
+def watcher_status_line(perms) -> str:
+    """One line: the watcher's switch, model, scope and last failure.
+
+    Input: the session's permissions (or None). Output: e.g. "on ·
+    kit.deepseek-v4-flash · scope unattended · no failure", "DOWN since
+    12:03:11 · ... · last failure: ...", or "off (...)" with the reason.
+    Never raises.
+    """
+    try:
+        if perms is None or getattr(perms, "classifier_runner", None) is None:
+            return "off (no model connection on this backend)"
+        cfg = _classifier_settings()
+        if cfg is None:
+            env = os.environ.get("DELFIN_CLASSIFIER", "").strip().lower()
+            why = ("DELFIN_CLASSIFIER=off" if env in ("off", "0", "false", "no")
+                   else "agent.classifier.enabled is false")
+            return f"off ({why})"
+        scope = "all" if cfg.get("broad") else "unattended"
+        health = getattr(perms, "classifier_health", None) or {}
+        last = str(health.get("last_failure") or "")
+        when = str(health.get("last_failure_wall") or "")
+        state = (f"DOWN since {health.get('down_since') or '?'}"
+                 if health.get("down") else "on")
+        tail = (f"last failure{(' ' + when) if when else ''}: {last}"
+                if last else "no failure")
+        return f"{state} · {cfg.get('model')} · scope {scope} · {tail}"
+    except Exception as exc:                              # noqa: BLE001
+        return f"unknown ({type(exc).__name__})"
+
 # Under Bypass the classifier's own failure (error, timeout, no verdict, and
 # every later action of a turn once one timed out) keeps the rule result,
 # because the user chose a profile that asks nothing. These are the actions
@@ -12195,7 +12974,13 @@ def _classifier_settings() -> Optional[dict]:
     (2026-10-11) -- and the broad scope pays that on every action.
     ``DELFIN_CLASSIFIER=off|on|all`` overrides switch and scope for one
     process: the settings file is one per account and read by every
-    session on it.
+    session on it. In a process an agent session started
+    (``action_classifier.AGENT_SESSION_ENV`` set) "off" is ignored: the
+    agent would otherwise switch its own watcher off by starting a nested
+    DELFIN. "on"/"all" still apply there, they only add judging. The
+    settings file is a protected write path (``.delfin_settings.json`` in
+    _DEFAULT_PATH_PROTECTED_GLOBS) and lives in the home directory, which
+    is no writable root, so ``enabled: false`` stays the user's switch.
     """
     try:
         from delfin.user_settings import load_settings
@@ -12206,8 +12991,10 @@ def _classifier_settings() -> Optional[dict]:
     enabled = bool(cfg.get("enabled", True))
     broad = str(cfg.get("scope") or "").strip().lower() == "all"
     env = os.environ.get("DELFIN_CLASSIFIER", "").strip().lower()
+    from .action_classifier import AGENT_SESSION_ENV as _agent_marker
     if env in ("off", "0", "false", "no"):
-        enabled = False
+        if not str(os.environ.get(_agent_marker, "") or "").strip():
+            enabled = False
     elif env in ("on", "1", "true", "yes"):
         enabled = True
     elif env == "all":
@@ -14260,6 +15047,9 @@ class _DocToolExecutor:
         # from this decision (see ``tool_unavailable_reason``), never the
         # other way round.
         session_refusal = _tool_denied_for_session(permissions, name)
+        # The user's permission rules (permission_rules.py): deny refuses
+        # here, in every mode; ask is put to the user just before dispatch.
+        rule_hit = _permission_rule_hit(permissions, name, arguments)
         if permissions is not None and _tool_denied_for_role(auth_role, name):
             from . import action_protocol as _action_protocol
             if (_action_protocol.role_uses_action_protocol(auth_role)
@@ -14288,6 +15078,11 @@ class _DocToolExecutor:
                 f"{session_refusal}. The list was set when the session "
                 "started and cannot be changed from inside it."
             )})
+        elif rule_hit is not None and rule_hit[0] == "deny":
+            _record_security_event("permission_rule_deny", name,
+                                   rule_hit[1].text[:120])
+            result = json.dumps({"error": _permission_rule_deny_text(
+                name, rule_hit[1])})
         elif (getattr(permissions, "mode", "") == "plan"
                 and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
                 and not _plan_mode_admits_for_delegate(name, permissions)
@@ -14331,7 +15126,8 @@ class _DocToolExecutor:
             # call the schema cannot accept is answered with its shape.
             result = json.dumps({"error": _malformed})
         else:
-            result = self._dispatch(name, arguments, permissions)
+            result = self._dispatch_under_rules(
+                name, arguments, permissions, rule_hit)
 
         # Track mtime after a successful read so the write tools can verify
         # the file hasn't changed since the agent last read it. read_document
@@ -14675,6 +15471,64 @@ class _DocToolExecutor:
             extra={"job_id": job_id, "exit_code": exit_code,
                    "event": "completed", "observed_by": name},
         ))
+
+    def _ask_by_rule(self, perms: "KitToolPermissions", name: str,
+                     args: dict, rule) -> Optional[str]:
+        """Put a call an ask rule names to the user. None when approved,
+        else the refusal. With nobody to ask it is refused: an ask rule
+        only adds friction, in every mode."""
+        bare = _bare_tool_name(name)
+        if bare in ("bash", "bash_background"):
+            body = f"$ {(args or {}).get('command') or ''}"
+        else:
+            body = f"{name}\n" + _preview_args(args or {})
+        shown = body[:120]
+        _record_security_event("permission_rule_ask", bare,
+                               f"{rule.text}: {shown}"[:160],
+                               blocked=perms.confirm_callback is None)
+        if perms.confirm_callback is None:
+            return (f"'{bare}' meets the permission rule `{rule.text}` (ask, "
+                    f"{_rule_source(rule)}) and nobody can be asked here, so "
+                    "it is refused. Tell the user what the call is for.")
+        preview = ("[PERMISSION RULE: ask]\n"
+                   f"Your rule `{rule.text}` ({_rule_source(rule)}) asks "
+                   f"before this call.\n\n{body}")
+        self._clear_refusal_reason(perms)
+        try:
+            ok = bool(perms.confirm_callback(name, args or {}, preview))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        if ok:
+            return None
+        if self._confirm_timed_out(perms):
+            return (f"approval for '{bare}' (asked by the rule `{rule.text}`) "
+                    "TIMED OUT — the user is away, this is NOT a denial. Do "
+                    "not retry it now; say what is waiting for them.")
+        _record_security_event("denied_by_user", bare, shown)
+        return (f"user denied '{bare}' (asked by the rule `{rule.text}`). Do "
+                "NOT retry it or reach the same effect another way."
+                + self._said_why(perms))
+
+    def _dispatch_under_rules(
+        self, name: str, arguments: dict,
+        permissions: Optional["KitToolPermissions"], rule_hit,
+    ) -> str:
+        """``_dispatch`` with the permission-rule call bound (_RULE_CALL),
+        after the question an ask rule adds."""
+        asked = False
+        if (permissions is not None and rule_hit is not None
+                and rule_hit[0] == "ask"):
+            refusal = self._ask_by_rule(permissions, name, arguments,
+                                        rule_hit[1])
+            if refusal is not None:
+                return json.dumps({"error": refusal})
+            asked = True
+        token = _RULE_CALL.set({"name": name, "args": arguments,
+                                "asked": asked})
+        try:
+            return self._dispatch(name, arguments, permissions)
+        finally:
+            _RULE_CALL.reset(token)
 
     def _dispatch(
         self,
@@ -17435,6 +18289,11 @@ class _DocToolExecutor:
                 "These are never readable, regardless of mode or confirm."
             )
 
+        # A deny rule of the user's on this path, as resolved by the tool.
+        _rule_refusal = _rule_denies_path(perms, "read", resolved)
+        if _rule_refusal:
+            return _rule_refusal
+
         # Inside any allowed root: free read. Checked BEFORE the refusal
         # ledger on purpose — if the user has since granted the directory
         # (extra_dir / "Erlaubte Verzeichnisse"), that later, explicit
@@ -17481,6 +18340,12 @@ class _DocToolExecutor:
         # ask ME"), not a blanket grant an unattended process inherits
         # from a settings file. A headless run that needs to reach outside
         # has to be configured to, and the message says how.
+        #
+        # An allow rule of the user's (permission_rules) answers this one
+        # read and opens nothing for the session: the grant below is what
+        # a click in the dialog says it does, and no dialog was shown.
+        if _rule_answers(perms, "read", "read_file", resolved):
+            return None
         if perms.confirm_callback is None:
             return (
                 f"read denied: '{label or resolved}' is outside the allowed "
@@ -17722,12 +18587,25 @@ class _DocToolExecutor:
         hard-deny, and self-mod-guard / calc explicit-confirm. Shared by
         write_file/edit_file/multi_edit and by every file an apply_patch diff
         touches. Returns an error string to block, or None to allow."""
+        # Where approvals are answered, and the CLI gate's state: refused
+        # for every write tool and every shell write target, granted root
+        # or not, with nobody asked (approval_guard).
+        from . import approval_guard as _approval_guard
+        if _approval_guard.is_answer_room_path(path_arg, perms.workspace):
+            _record_security_event(
+                "approval_self_answer", name, str(path_arg)[:120],
+                blocked=True)
+            return _approval_guard.refusal(
+                f"'{path_arg}' is where pending approvals are answered")
         # for_read=True: recognise every reachable root so the per-tier policy
         # below can fire (deny read-only, confirm calc). The write EXECUTOR
         # re-resolves writable-only — defense in depth.
         resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             return err
+        _rule_refusal = _rule_denies_path(perms, "write", resolved)
+        if _rule_refusal:
+            return _rule_refusal
         if not _write_in_scope(resolved, perms):
             _record_security_event(
                 "out_of_write_scope", name, self._display_path(resolved, perms),
@@ -17807,6 +18685,12 @@ class _DocToolExecutor:
         _is_gitcfg = is_protected and any(
             fnmatch.fnmatchcase(_low, g.lower())
             for g in _GIT_CONFIG_PROTECTED_GLOBS)
+        # A file the configuration names (global file, XDG file, include
+        # target, attributes file): the same reach as `git config` with a
+        # program key, so the same rule -- asked in every mode.
+        if not is_protected and _is_git_configuration_file(
+                resolved, perms.workspace):
+            is_protected = _is_gitcfg = True
         # calc holds the user's ACTIVE calculations — editing one always needs
         # an explicit confirm even in acceptEdits, so the agent can't silently
         # destroy results ("editing only with a confirmation prompt").
@@ -17822,7 +18706,9 @@ class _DocToolExecutor:
         if is_protected or is_calc or was_refused:
             if not was_refused:
                 _record_security_event(
-                    "self_mod" if is_protected else "calc_edit", name, rel_str,
+                    "git_config_program" if _is_gitcfg
+                    else "self_mod" if is_protected else "calc_edit",
+                    name, rel_str,
                     blocked=perms.confirm_callback is None)
             if perms.confirm_callback is None:
                 _what = ("a file git reads as configuration" if _is_gitcfg
@@ -17904,8 +18790,12 @@ class _DocToolExecutor:
         # hatch; writing has no such list, so refusing would leave every
         # unattended run unable to produce anything. A head-less caller
         # picks its own mode, and the sandbox still bounds where it writes.
+        # An allow rule of the user's answers this dialog, for a write tool
+        # and a path the rule names; the second opinion below still looks,
+        # as it does for every write nobody was asked about.
         if (effective_mode(perms) == "default"
-                and perms.confirm_callback is not None):
+                and perms.confirm_callback is not None
+                and not _rule_answers(perms, "write", name, resolved)):
             _cannot = self._edit_cannot_apply(name, args, resolved, perms)
             if _cannot:
                 return _cannot
@@ -17952,11 +18842,24 @@ class _DocToolExecutor:
 
         Called ONLY at a point where the rules have already said yes and no
         human was asked. It never turns a refusal into an allow -- it is not
-        reached after one. Any failure of the classifier itself leaves the
-        rule result standing, except under Bypass for the high-risk class
-        of ``_bypass_failure_asks``: there an error asks, or refuses when
-        nobody can be asked. Under Bypass the actions of
+        reached after one. Under Bypass the actions of
         ``_bypass_screened_action`` get the model-free screen only.
+
+        Which actions are judged: everything under Bypass, messages to
+        other agents and network tools in every mode, every auto-allowed
+        command and auto-accepted edit in the broad scope, and in a
+        session nobody can be asked in, also every auto-allowed action that
+        leaves the workspace (``_leaves_workspace``: ``git fetch``, a write
+        to a granted directory).
+
+        The watcher failing (error after one retry, timeout, no verdict, or
+        a call skipped while it is down): an action that leaves the
+        workspace asks, or is refused when nobody can be asked, with a
+        reason that says what still works; workspace work keeps the rule
+        result. Such a refusal is not cached and does not count towards
+        the three-refusals lockout -- it says nothing about the agent.
+        ``_watcher_record`` keeps the session's failure count and opens the
+        breaker after ``_CLASSIFIER_BREAKER_FAILURES``.
         """
         runner = getattr(perms, "classifier_runner", None)
         if perms is None or runner is None:
@@ -17994,13 +18897,20 @@ class _DocToolExecutor:
                 "refused in this turn, so nothing but reading runs until "
                 "the user has answered. End your turn and tell the user "
                 "what you were trying to do.")
+        can_ask = perms.confirm_callback is not None
+        try:
+            leaves = _leaves_workspace(perms, action, bypass)
+        except Exception:
+            leaves = True
         if not (bypass or cfg.get("broad")
                 or base in ("session_message", "subagent_message")
-                or base in _CLASSIFIED_NETWORK_TOOLS):
+                or base in _CLASSIFIED_NETWORK_TOOLS
+                or (leaves and not can_ask)):
             # The frequent paths -- an auto-allowed command, an
-            # auto-accepted edit -- are judged only in the broad scope.
+            # auto-accepted edit -- are judged only in the broad scope,
+            # or, with nobody to ask, when they leave the workspace.
             return None
-        can_ask = perms.confirm_callback is not None
+        health = _watcher_health(perms)
         try:
             key = hashlib.sha256(json.dumps(
                 [base, args], sort_keys=True, default=str).encode(
@@ -18054,48 +18964,66 @@ class _DocToolExecutor:
         }
         state["calls"].append({"tool": base, "args": shown})
         failed: list = []
+        called: list = []
 
         def _bounded(prompt: str, model: str) -> str:
             # The runner is the client's; the bound is the gate's, so a
             # runner that hangs cannot hold an action for minutes. After
-            # one timeout the rest of the turn does not wait again: the
-            # error behaviour applies at once (user rules and the claim
-            # guard still run, they need no model).
-            if state.get("stalled"):
-                failed.append("stalled")
+            # one timeout in a turn, or while the watcher is down, the
+            # model is not waited for again until the probe interval has
+            # passed: the error behaviour applies at once (user rules and
+            # the claim guard still run, they need no model).
+            last = health.get("last_attempt_at")
+            recent = (last is not None and _classifier_clock() - last
+                      < _CLASSIFIER_PROBE_INTERVAL_S)
+            if (health.get("down") or state.get("stalled")) and recent:
+                failed.append("down" if health.get("down") else "stalled")
                 raise TimeoutError(
-                    "no verdict: the model timed out earlier in this turn")
-            box: dict = {}
+                    "no verdict: the watcher is down" if health.get("down")
+                    else "no verdict: the model timed out earlier in this "
+                    "turn")
+            for attempt in (1, 2):
+                health["last_attempt_at"] = _classifier_clock()
+                called.append(attempt)
+                box: dict = {}
 
-            def _work() -> None:
-                try:
-                    box["out"] = runner(prompt, model)
-                except BaseException as exc:      # noqa: BLE001
-                    box["exc"] = exc
+                def _work() -> None:
+                    try:
+                        box["out"] = runner(prompt, model)
+                    except BaseException as exc:      # noqa: BLE001
+                        box["exc"] = exc
 
-            worker = threading.Thread(
-                target=_work, name="action-classifier", daemon=True)
-            worker.start()
-            worker.join(_CLASSIFIER_TIMEOUT_S)
-            if worker.is_alive():
-                failed.append("timeout")
-                state["stalled"] = True
-                raise TimeoutError(
-                    f"no verdict within {_CLASSIFIER_TIMEOUT_S:.0f} s")
-            if "exc" in box:
-                failed.append(type(box["exc"]).__name__)
-                raise box["exc"]
-            return str(box.get("out") or "")
+                worker = threading.Thread(
+                    target=_work, name="action-classifier", daemon=True)
+                worker.start()
+                worker.join(_CLASSIFIER_TIMEOUT_S)
+                if worker.is_alive():
+                    failed.append("timeout")
+                    state["stalled"] = True
+                    raise TimeoutError(
+                        f"no verdict within {_CLASSIFIER_TIMEOUT_S:.0f} s")
+                if "exc" in box:
+                    if attempt == 1:
+                        # One short retry: a dropped connection or a 502
+                        # from the proxy is usually gone a moment later.
+                        time.sleep(_CLASSIFIER_RETRY_DELAY_S)
+                        continue
+                    failed.append(type(box["exc"]).__name__)
+                    raise box["exc"]
+                return str(box.get("out") or "")
+            raise TimeoutError("no verdict")      # pragma: no cover
 
-        # The classifier failing is not a reason to ask under Bypass: the
-        # user chose the profile that asks nothing, so the rule result
-        # stands -- except for the narrow high-risk class, where it asks
-        # (or refuses when nobody can be asked). A verdict the model gives
+        # The watcher failing. An action that leaves the workspace asks,
+        # or is refused when nobody can be asked: the second look was the
+        # only one it would get. Workspace work keeps the rule result in
+        # every mode -- the rules, the write gate and the sandbox confine
+        # it, the change journal can take it back, and stopping it would
+        # stop a long unattended run on a proxy hiccup. In the broad scope
+        # attended, that is most of what reaches the model: an outage must
+        # not turn each auto-allowed command into a dialog, and the user
+        # sees every step in the transcript. A verdict the model gives
         # with a reason is unaffected.
-        if bypass and _bypass_failure_asks(action):
-            on_error = "ask" if can_ask else "refuse"
-        else:
-            on_error = "allow"
+        on_error = ("ask" if can_ask else "refuse") if leaves else "allow"
         try:
             screened = (_bypass_screened_action(perms, action)
                         if bypass else None)
@@ -18114,13 +19042,37 @@ class _DocToolExecutor:
         except Exception as exc:
             failed.append(type(exc).__name__)
             decision, reason = on_error, f"classifier error: {exc}"
-        if failed or reason.startswith(_ac.ERROR_PREFIX):
+        watcher_failed = bool(failed) or reason.startswith(_ac.ERROR_PREFIX)
+        if called:
+            # Only a real model call is evidence about the watcher; a call
+            # skipped while it is down or stalled is not counted again.
+            _watcher_record(perms, not watcher_failed, reason)
+        if watcher_failed:
             _record_security_event(
                 "classifier_error", base, f"{shown}: {reason[:120]}",
                 blocked=decision != "allow")
         reason = " ".join(reason.split())[:300]
         if not reason.endswith((".", "!", "?")):
             reason += "."
+
+        if watcher_failed and decision == "refuse":
+            # Nobody to ask and an action that leaves the workspace: held,
+            # not judged. Not cached, not counted towards the lockout.
+            _record_security_event(
+                "classifier_held", base, f"{shown}: {reason[:120]}")
+            down = bool(health.get("down"))
+            return (
+                f"'{base}' ({shown}) was not run: the action watcher (the "
+                "model's second opinion behind the permission rules) could "
+                f"not judge it -- {reason} Nobody can be asked here, so an "
+                "action that leaves the workspace waits. "
+                + ("The watcher is down; it is re-tried at most every "
+                   f"{_CLASSIFIER_PROBE_INTERVAL_S:.0f} s and this lifts by "
+                   "itself when it answers. " if down else "")
+                + "Still working: reading, planning, commands on the "
+                "auto-allow list and writing inside the workspace -- carry "
+                "on with that, and name this step in your report if it is "
+                "still needed.")
 
         if decision == "allow":
             state["allowed"].add(key)
@@ -18143,11 +19095,19 @@ class _DocToolExecutor:
                     f"{action['message'][:1200]}")
         else:
             body = f"{base} -> {shown}"
-        preview = (
-            "[ACTION CLASSIFIER -- SECOND OPINION]\n"
-            "The permission rules allow this action. The classifier is not "
-            "sure your request covers it:\n"
-            f"  {reason}\n\n{body}")
+        if watcher_failed:
+            preview = (
+                "[ACTION CLASSIFIER -- SECOND OPINION]\n"
+                "The permission rules allow this action, and it leaves the "
+                "workspace. The action watcher could not judge it"
+                + (" (the watcher is down)" if health.get("down") else "")
+                + f":\n  {reason}\n\n{body}")
+        else:
+            preview = (
+                "[ACTION CLASSIFIER -- SECOND OPINION]\n"
+                "The permission rules allow this action. The classifier is "
+                "not sure your request covers it:\n"
+                f"  {reason}\n\n{body}")
         try:
             ok = bool(perms.confirm_callback(base, args, preview))
         except Exception as exc:
@@ -18224,6 +19184,19 @@ class _DocToolExecutor:
         leaked = _leaked_call_markup(name, args)
         if leaked:
             return leaked
+
+        # A pending approval is answered by the person, in every mode and
+        # before anything is asked: a dialog here would ask the person to
+        # approve the agent approving itself (approval_guard).
+        if name == "bash":
+            from . import approval_guard as _approval_guard
+            _answers = _approval_guard.answer_command(
+                _prose_blanked(str(args.get("command", "") or "")))
+            if _answers:
+                _record_security_event(
+                    "approval_self_answer", name,
+                    str(args.get("command", "") or "")[:120], blocked=True)
+                return _approval_guard.refusal(_answers)
 
         if mode == "plan" and not _plan_mode_admits_for_delegate(name, perms):
             return (
@@ -18855,6 +19828,22 @@ class _DocToolExecutor:
                 # Asked above, with the whole command shown, after every
                 # hard tier and the publish readiness check.
                 return None
+            # An allow rule of the user's (permission_rules) answers the
+            # dialog below -- and the head-less refusal after it, which is
+            # the same question with nobody there -- for one simple command
+            # its words cover. Every hard tier above has already run; the
+            # second opinion looks, as it does for the auto-allow list.
+            # Not for a push nobody asked for: head-less, that one reaches
+            # this point to be refused here, and the refusal is the
+            # one-request rule, not a question. Not for a command the
+            # egress scan flagged either: an upload is sent to this dialog
+            # for the person to see, and a rule naming the command is not
+            # a decision about the data it sends.
+            _ungranted_push = (_is_git_push(cmd)
+                               and not (perms.push_grants or {}).get("push"))
+            if (not _ungranted_push and egress is None
+                    and _rule_answers(perms, "bash", "bash")):
+                return self._classifier_second_opinion(perms, name, args, mode)
             if (mode in ("default", "diff_approval", "acceptEdits")
                     and perms.confirm_callback is not None):
                 _cwd = str(args.get("cwd") or "").strip()
@@ -19321,6 +20310,11 @@ class _DocToolExecutor:
             # Nobody is asked here; the second opinion is the one look.
             return self._classifier_second_opinion(
                 perms, name, args or {}, mode)
+        # An allow rule of the user's naming this tool answers the question
+        # below (and its head-less refusal); the second opinion still looks.
+        if _rule_answers(perms, "tool", name):
+            return self._classifier_second_opinion(
+                perms, name, args or {}, mode)
         if perms.confirm_callback is None:
             _record_security_event("mcp_side_effect", name, base, blocked=True)
             return (
@@ -19485,6 +20479,11 @@ class _DocToolExecutor:
                     old_text if existed else None, str(content))
             except _aw.AppendRejected as exc:
                 return json.dumps({"error": str(exc)})
+
+        # Every gate of this tool has run by here. `gate explain` stops.
+        _dry = _dry_run_stop("write_file", resolved)
+        if _dry is not None:
+            return _dry
 
         if getattr(perms, "mode", "") == "diff_approval":
             return self._stage_pending_change(
@@ -20673,6 +21672,21 @@ class _DocToolExecutor:
         # argument is usually absent, and a record without an absolute
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
+
+        # Every gate of this tool has run by here. `gate explain` stops,
+        # carrying the argv the command would have been started with:
+        # a host that cannot isolate a locked session answers with a
+        # refusal argv instead of the command, which is a refusal too.
+        if _GATE_DRY_RUN.get():
+            try:
+                _would = ([] if _is_git_push(cmd)
+                          and _github_push_plan(cmd, run_cwd) is not None
+                          else _bash_isolation_argv(cmd, run_cwd, perms))
+            except Exception:
+                _would = []
+            _obj = json.loads(_dry_run_stop("bash", cmd) or "{}")
+            _obj["argv_head"] = [str(a) for a in _would[:5]]
+            return json.dumps(_obj)
 
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
@@ -23915,6 +24929,14 @@ def _scrubbed_bash_env() -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in _SECRET_ENV_NAMES
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    # Every process an agent session starts says so: `delfin-agent
+    # approvals approve` and the answer functions refuse under it
+    # (approval_guard), and a nested DELFIN ignores DELFIN_CLASSIFIER=off
+    # (_classifier_settings; action_classifier.AGENT_SESSION_ENV is the
+    # same name). This is the one env every agent child is built from --
+    # shell tool, background job, test run, external agent CLI.
+    from .approval_guard import ENV_MARKER as _agent_marker
+    env[_agent_marker] = str(os.getpid())
     return env
 
 
@@ -24458,6 +25480,18 @@ def _bash_isolation_argv(
     # command: existing hooks stay readable, new ones cannot be written.
     for g in git_roots:
         args += ["--ro-bind-try", str(Path(g) / "hooks"), str(Path(g) / "hooks")]
+    # Where approvals are answered stays read-only inside a writable root
+    # (a granted ~/.delfin): a command that builds the answer path at run
+    # time is held by the mount, not by reading its text. A room outside
+    # every root is read-only already through the "/" bind.
+    try:
+        from . import approval_guard as _approval_guard
+        _bound = [Path(r) for r in roots]
+        for room in _approval_guard.answer_rooms():
+            if any(room == b or b in room.parents for b in _bound):
+                args += ["--ro-bind-try", str(room), str(room)]
+    except Exception:
+        pass
     args += ["--chdir", str(Path(run_cwd).resolve())]
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])
@@ -27331,6 +28365,13 @@ class OpenAIClient(_BaseClient):
                     yield StreamEvent(
                         type="notice", text="\n\n" + _run_note + "\n")
 
+                # The watcher went down or answers again: for the user.
+                # The model learns it from the refusal text of each held
+                # action, so the history gets nothing here.
+                for _w_note in drain_watcher_notices(self._permissions):
+                    yield StreamEvent(
+                        type="notice", text="\n\n" + _w_note + "\n")
+
                 # Mid-session memory nudge (package 7): after enough WORK
                 # (tool calls AND produced text) since the last nudge, ask
                 # once per user turn whether anything is worth keeping.
@@ -28198,6 +29239,89 @@ def _workspace_sandbox(
     return local_perms
 
 
+def _kit_sandbox(
+    cwd: str, permission_mode: str,
+    kit_confirm_callback: Optional[Callable[[str, dict, str], bool]],
+    extra_dirs: list[str] | None, read_only_dirs: list[str] | None,
+    confirm_write_dirs: list[str] | None,
+) -> "KitToolPermissions":
+    """The permissions policy of a KIT-provider client: workspace at
+    ``cwd``, caller then persisted extra dirs, the persisted default mode
+    unless one is passed, the built-in bash allow and deny lists extended
+    by the persisted ones, and the repository's write scope.
+
+    Its own function so that ``delfin-agent capabilities`` and ``gate
+    explain`` build the policy a session gets, not a copy of it.
+    """
+    kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
+
+    # Pull persisted user/repo settings (.delfin-style two-tier
+    # ~/.delfin/settings.json + <repo>/.delfin/settings.json). Defaults
+    # are empty if neither file exists.
+    try:
+        from . import kit_settings as _kit_settings  # local import to avoid cycle
+        persisted = _kit_settings.load(repo_dir=kit_workspace)
+    except Exception:
+        persisted = None
+
+    seen: list[Path] = []
+    # Caller-supplied extra_dirs first (e.g. CLI args), then persisted ones.
+    sources: list[str] = []
+    if extra_dirs:
+        sources.extend(extra_dirs)
+    if persisted is not None:
+        sources.extend(persisted.extra_workspace_dirs)
+    for d in sources:
+        try:
+            p = Path(d).expanduser().resolve()
+        except Exception:
+            continue
+        if p == kit_workspace or p in seen:
+            continue
+        if not p.exists() or not p.is_dir():
+            continue
+        seen.append(p)
+    kit_extra = tuple(seen)
+
+    # Mode: explicit caller arg wins over persisted default_mode.
+    if permission_mode:
+        kit_mode = _map_kit_permission_mode(permission_mode)
+    elif persisted is not None and persisted.default_mode in {
+        "plan", "default", "acceptEdits", "bypassPermissions"
+    }:
+        kit_mode = persisted.default_mode
+    else:
+        kit_mode = "default"
+
+    # Allow/deny patterns: append persisted ones to the built-in defaults.
+    allow_patterns = tuple(_DEFAULT_BASH_AUTO_ALLOW)
+    deny_patterns = tuple(_DEFAULT_BASH_DENY_PATTERNS)
+    if persisted is not None:
+        extra_allow = tuple(p for p in persisted.allow_patterns
+                            if p not in allow_patterns)
+        extra_deny = tuple(p for p in persisted.deny_patterns
+                           if p not in deny_patterns)
+        allow_patterns = allow_patterns + extra_allow
+        deny_patterns = deny_patterns + extra_deny
+    write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
+
+    from . import exchange as _exchange
+    kit_perms = KitToolPermissions(
+        workspace=kit_workspace,
+        mode=kit_mode,
+        confirm_callback=kit_confirm_callback,
+        extra_workspace_dirs=_exchange.with_exchange(kit_workspace,
+                                                     kit_extra),
+        read_only_workspace_dirs=tuple(read_only_dirs or ()),
+        confirm_write_dirs=tuple(confirm_write_dirs or ()),
+        session_read_dirs=_persisted_read_dirs(persisted),
+        bash_auto_allow_patterns=allow_patterns,
+        bash_deny_patterns=deny_patterns,
+        write_allow_globs=write_globs,
+    )
+    return kit_perms
+
+
 def create_client(
     backend: str = "cli",
     provider: str = "claude",
@@ -28241,72 +29365,9 @@ def create_client(
     if provider == "kit":
         from .credentials import load_credential as _load_cred
         kit_key = api_key or _load_cred("KIT_TOOLBOX_API_KEY")
-        kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
-
-        # Pull persisted user/repo settings (.delfin-style two-tier
-        # ~/.delfin/settings.json + <repo>/.delfin/settings.json). Defaults
-        # are empty if neither file exists.
-        try:
-            from . import kit_settings as _kit_settings  # local import to avoid cycle
-            persisted = _kit_settings.load(repo_dir=kit_workspace)
-        except Exception:
-            persisted = None
-
-        seen: list[Path] = []
-        # Caller-supplied extra_dirs first (e.g. CLI args), then persisted ones.
-        sources: list[str] = []
-        if extra_dirs:
-            sources.extend(extra_dirs)
-        if persisted is not None:
-            sources.extend(persisted.extra_workspace_dirs)
-        for d in sources:
-            try:
-                p = Path(d).expanduser().resolve()
-            except Exception:
-                continue
-            if p == kit_workspace or p in seen:
-                continue
-            if not p.exists() or not p.is_dir():
-                continue
-            seen.append(p)
-        kit_extra = tuple(seen)
-
-        # Mode: explicit caller arg wins over persisted default_mode.
-        if permission_mode:
-            kit_mode = _map_kit_permission_mode(permission_mode)
-        elif persisted is not None and persisted.default_mode in {
-            "plan", "default", "acceptEdits", "bypassPermissions"
-        }:
-            kit_mode = persisted.default_mode
-        else:
-            kit_mode = "default"
-
-        # Allow/deny patterns: append persisted ones to the built-in defaults.
-        allow_patterns = tuple(_DEFAULT_BASH_AUTO_ALLOW)
-        deny_patterns = tuple(_DEFAULT_BASH_DENY_PATTERNS)
-        if persisted is not None:
-            extra_allow = tuple(p for p in persisted.allow_patterns
-                                if p not in allow_patterns)
-            extra_deny = tuple(p for p in persisted.deny_patterns
-                               if p not in deny_patterns)
-            allow_patterns = allow_patterns + extra_allow
-            deny_patterns = deny_patterns + extra_deny
-        write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
-
-        from . import exchange as _exchange
-        kit_perms = KitToolPermissions(
-            workspace=kit_workspace,
-            mode=kit_mode,
-            confirm_callback=kit_confirm_callback,
-            extra_workspace_dirs=_exchange.with_exchange(kit_workspace,
-                                                         kit_extra),
-            read_only_workspace_dirs=tuple(read_only_dirs or ()),
-            confirm_write_dirs=tuple(confirm_write_dirs or ()),
-            session_read_dirs=_persisted_read_dirs(persisted),
-            bash_auto_allow_patterns=allow_patterns,
-            bash_deny_patterns=deny_patterns,
-            write_allow_globs=write_globs,
-        )
+        kit_perms = _kit_sandbox(
+            cwd, permission_mode, kit_confirm_callback, extra_dirs,
+            read_only_dirs, confirm_write_dirs)
         return OpenAIClient(
             api_key=kit_key, model=model,
             base_url="https://ki-toolbox.scc.kit.edu/api/v1",
