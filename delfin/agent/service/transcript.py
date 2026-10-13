@@ -134,14 +134,17 @@ class ProtocolTranscript:
 
     def render(self, item) -> None:
         kind = getattr(item, "kind", "")
+        if kind == "call":
+            # Something to say in stream order (the worker's post): an
+            # approval asked or settled, a state change. Run outside this
+            # lock: it may take the broker's, which an asking thread holds
+            # while it takes this one.
+            fn = (getattr(item, "data", None) or {}).get("fn")
+            if callable(fn):
+                fn()
+            return
         with self._lock:
-            if kind == "call":
-                # Something to say in stream order (the worker's post):
-                # an approval asked or settled, a state change.
-                fn = (getattr(item, "data", None) or {}).get("fn")
-                if callable(fn):
-                    fn()
-            elif kind == "text":
+            if kind == "text":
                 self._text_delta(item.text)
             elif kind == "thinking":
                 self._reasoning_delta(item.text)

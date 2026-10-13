@@ -27,9 +27,9 @@ def test_a_turn_arrives_in_order_and_ends_idle(tmp_path):
     with WorkerClient(tmp_path) as w:
         start, end = w.turn("hello there")
         types = w.types(start, end + 1)
-        # Busy from the moment the prompt is taken, before it is shown.
-        assert types[:3] == ["session.state", "user.message", "turn.started"]
-        assert w.events[start]["state"] == "running"
+        # Shown the moment it arrives; busy once the loop takes it.
+        assert types[:3] == ["user.message", "session.state", "turn.started"]
+        assert w.events[start + 1]["state"] == "running"
         assert types[-1] == "turn.ended"
         order = ["reasoning.started", "reasoning.ended", "tool.started",
                  "tool.ended", "text.started", "text.ended"]

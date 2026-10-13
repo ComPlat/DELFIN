@@ -111,6 +111,21 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
         """Nothing for the main thread: a window answers (module doc)."""
         return None
 
+    # -- closing: refused for good -----------------------------------------------
+    closed = False
+
+    def close(self) -> list[tc.ConfirmRequest]:
+        """Refuse everything open and everything asked from now on, for the
+        rest of the process: unlike an abort, no new turn lifts it."""
+        self.closed = True
+        return self.abort_all()
+
+    def reset_abort(self) -> None:
+        # A turn that starts while the session closes must not reopen the
+        # gate the shutdown just closed (its question would wait forever).
+        if not self.closed:
+            super().reset_abort()
+
     def _enqueue(self, req: tc.ConfirmRequest) -> tc.ConfirmRequest:
         req = super()._enqueue(req)
         if req.resolved:              # refused on arrival by an abort

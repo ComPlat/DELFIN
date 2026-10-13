@@ -84,8 +84,7 @@ _TRACE = os.environ.get("DELFIN_TUI_TRACE", "").strip() not in ("", "0")
 #: Fields that identify things; never rewritten by the redactor.
 _IDENTIFIERS = frozenset({"type", "session", "seq", "ts", "turnId", "partId",
                           "callId", "requestId", "sessionId", "source",
-                          "kind", "state", "decision", "by", "options",
-                          "flags"})
+                          "kind", "state", "decision", "by", "flags"})
 
 
 class SessionRefused(Exception):
@@ -266,8 +265,23 @@ def _whole_message(_read_line, first: str, *, cont: str = "") -> str:
 
 def _agent_class():
     """``TerminalAgent`` subclass, built on first use (the import is heavy)."""
+    import signal
+
     from .. import repl_keys as rk
     from ..repl import HarnessText, RenderItem, TerminalAgent, TurnResult
+
+    class _Lines(list):
+        """``queued`` as the REPL loop takes from it: each line it takes
+        is the next line in progress (what a cancel can refer to)."""
+
+        def __init__(self, on_take: Callable[[], None]):
+            super().__init__()
+            self._on_take = on_take
+
+        def pop(self, index=-1):
+            item = super().pop(index)
+            self._on_take()
+            return item
 
     class ProtocolAgent(TerminalAgent):
         """TerminalAgent whose keyboard is a request and whose screen is
@@ -279,14 +293,18 @@ def _agent_class():
         * ``idle``  -- the loop waits at the prompt: a prompt goes to the
           ``inbox`` and is read as the next line;
         * ``busy``  -- inside ``turn()``: a prompt is queued behind the turn
-          (or steered into it);
+          (or steered into it while the engine's turn is live);
         * neither   -- between: a line is being handled, or a turn just
           ended and its follow-up is being decided. A prompt is queued,
           which also drops the automatic follow-up, as a line typed
           during the turn does in the REPL.
+
+        Every prompt is shown (``user.message``) when it arrives, so the
+        window sees messages in the order they were sent; lines read from
+        the inbox are therefore not shown again when the loop takes them.
         """
 
-        def __init__(self, engine, *, broker, opts, emit):
+        def __init__(self, engine, *, broker, opts, emit, checkpoint=True):
             self._emit = emit
             super().__init__(engine, opts, out=_Sink(), err=_Sink(),
                              read_line=self._read_next, broker=broker)
@@ -294,25 +312,36 @@ def _agent_class():
             self._stdin = _NoTerminal()
             self.lock = threading.Lock()
             self.cond = threading.Condition(self.lock)
-            #: (text, already shown) per line for the idle read.
-            self.inbox: deque[tuple[str, bool]] = deque()
+            self.queued = _Lines(self._took_line)
+            #: Lines for the idle read, oldest first.
+            self.inbox: deque[str] = deque()
             self.idle = True
             self.busy = False
-            #: Esc: ends the turn that runs or is about to start; holds
-            #: until that turn is over or the loop is back at the prompt.
+            #: Which line the loop is working on; a cancel names one.
+            self.line_gen = 0
+            #: Esc: ends the turn that runs, or the one about to start for
+            #: the line ``cancel_gen``; never a line sent after it.
             self.cancel_requested = False
+            self.cancel_gen = -1
             #: No automatic follow-up (length, outage, announced work)
             #: until the user sends something again.
             self.followups_off = False
             self.closing = threading.Event()
             self.leave_reason = ""
+            self.leave_code = 0
             #: Set by a prompt, a cancel or shutdown: ends the wait during
             #: an endpoint outage the way a key press ends it in the REPL.
             self.wake = threading.Event()
             self._turn_seq = 0
             self._next_source = "user"
-            #: The line just read was shown already (it was queued).
+            #: The line just read was shown when it arrived.
             self._shown_already = False
+            #: The next turn is a wake-up (a finished job, a message), not
+            #: a follow-up: a queued line does not drop it.
+            self._wake_turn = False
+            #: Steers routed into the running turn (to take back unread).
+            self._steered = 0
+            self._checkpoint = checkpoint
             self._post_lock = threading.Lock()
             self._pumping = False
             self._state_lock = threading.Lock()
@@ -323,30 +352,68 @@ def _agent_class():
             if self.leave_reason == "shutdown":
                 # Asked to end: the way ctrl+d at the prompt ends a session.
                 return EOFError()
-            # The window is gone: the REPL's way out when its terminal is
-            # gone -- run() stops the turn, refuses every question, ends
-            # what the session started, under the leave deadline.
-            return rk.TerminalLeft("closed", 0)
+            # The window is gone, or a signal: the REPL's way out when its
+            # terminal is gone -- run() stops the turn, refuses every
+            # question, ends what the session started, under the deadline.
+            return rk.TerminalLeft(self.leave_reason or "closed",
+                                   self.leave_code or 129)
+
+        def leave_now(self) -> None:
+            """Unwind the loop wherever it waits -- a long tool call, a
+            ``!command`` -- the way a hangup does in the REPL: its SIGHUP
+            handler raises TerminalLeft on the main thread, and the leave
+            runs under the REPL's deadline. Only while that handler is in
+            place; outside the loop the worker's own handler takes it."""
+            try:
+                if signal.getsignal(signal.SIGHUP) == self._on_leave_signal:
+                    signal.pthread_kill(threading.main_thread().ident,
+                                        signal.SIGHUP)
+            except (AttributeError, ValueError, OSError):
+                pass
 
         # -- input: requests instead of the keyboard -------------------------
+        def _took_line(self) -> None:
+            with self.cond:
+                self.line_gen += 1
+
         def _line_ready(self) -> bool:
             with self.cond:
                 if self.queued and not self.closing.is_set():
                     # Queued after the loop last looked for queued lines and
-                    # before it came here: read it now, as already shown.
-                    self.inbox.appendleft((self.queued.pop(0), True))
+                    # before it came here: they are older than anything the
+                    # inbox holds, and were shown when they arrived.
+                    stranded = list(self.queued)
+                    del self.queued[:]
+                    self.inbox.extendleft(reversed(stranded))
                 if self.closing.is_set() or self.inbox:
                     return True
                 came_back = not self.idle
                 self.idle = True
                 self.cancel_requested = False
+                self.cancel_gen = -1
                 self.followups_off = False
             if came_back:
+                self._back_at_the_prompt()
                 self.refresh_state()
             with self.cond:
                 if not (self.closing.is_set() or self.inbox):
                     self.cond.wait(_IDLE_WAIT_S)
                 return self.closing.is_set() or bool(self.inbox)
+
+        def _back_at_the_prompt(self) -> None:
+            """What a cancel armed for the line before ends here: the
+            refusal of questions, and the engine's stop request (a stop
+            left armed ends the next ``!command`` with 130)."""
+            if self.closing.is_set() or self.broker is None:
+                return
+            try:
+                self.broker.reset_abort()
+            except Exception:
+                pass
+            try:
+                self.engine.clear_stop()
+            except Exception:
+                pass
 
         def _read_next(self, _prompt: str = "") -> str:
             with self.cond:
@@ -355,7 +422,13 @@ def _agent_class():
                     self.cond.wait(_IDLE_WAIT_S)
                 if self.closing.is_set():
                     raise self._leave()
-                text, self._shown_already = self.inbox.popleft()
+                text = self.inbox.popleft()
+                # The rest waits behind it, in order, like lines typed
+                # during the turn it starts.
+                self.queued.extend(self.inbox)
+                self.inbox.clear()
+                self._shown_already = True
+                self.line_gen += 1
                 self.idle = False
             self.refresh_state()
             return text
@@ -365,15 +438,13 @@ def _agent_class():
             if woke:
                 with self.cond:
                     self.idle = False
-                    # A prompt that arrived while the wake was being
-                    # decided goes after the turn the wake starts.
-                    moved = [text for text, shown in self.inbox if not shown]
-                    self.queued.extend(text for text, _shown in self.inbox)
+                    self.line_gen += 1
+                    self._wake_turn = True
+                    # A prompt that arrived while the wake was decided goes
+                    # after the turn the wake starts (it was shown already).
+                    self.queued.extend(self.inbox)
                     self.inbox.clear()
                 self._next_source = "harness"
-                for text in moved:
-                    self._emit("user.message", text=text.strip(),
-                               source="queued")
                 self.refresh_state()
             return woke
 
@@ -388,7 +459,11 @@ def _agent_class():
 
         def _show_user_input(self, text: str, *, queued: bool = False) -> None:
             if self._shown_already:
+                # A line from the inbox: shown when it arrived.
                 self._shown_already = False
+                return
+            if queued and (self.queued or self.inbox):
+                # A follow-up that a line sent meanwhile drops (turn()).
                 return
             source = "harness" if (queued or self._next_source == "harness") \
                 else "user"
@@ -396,6 +471,10 @@ def _agent_class():
             cleaned = str(text or "").strip()
             if cleaned:
                 self._emit("user.message", text=cleaned, source=source)
+
+        def _checkpoint_session(self) -> None:
+            if self._checkpoint:
+                super()._checkpoint_session()
 
         # -- the stream: the turn's output and what other threads say --------
         def post(self, fn: Callable[[], None]) -> None:
@@ -433,19 +512,40 @@ def _agent_class():
                         pass
 
         # -- a turn, bracketed by events ------------------------------------
+        def _begin_turn_resets_the_abort(self) -> None:
+            # The REPL lifts an abort at every turn start. Not for a turn
+            # that starts while the session closes or is being cancelled:
+            # the refusal that shutdown or Esc just put in place must hold,
+            # or the turn's question waits with nobody to answer it.
+            # Checked and reset under the lock a cancel sets its flag and
+            # refuses under: either the reset comes first and the cancel's
+            # refusal follows it, or the cancel comes first and there is no
+            # reset. (The broker never takes this lock, so the order holds.)
+            with self.cond:
+                if self.closing.is_set() or self.cancel_requested:
+                    return
+                super()._begin_turn_resets_the_abort()
+
         def turn(self, prompt: str):
             harness = isinstance(prompt, HarnessText)
             with self.cond:
                 if self.closing.is_set():
                     return TurnResult(error="the session is closing")
+                wake, self._wake_turn = self._wake_turn, False
+                if harness and not wake and (self.queued or self.inbox):
+                    # A follow-up: a line sent while it was being set up goes
+                    # first, and the follow-up is dropped -- as the REPL drops
+                    # it for a line typed during the turn.
+                    return TurnResult()
                 self.busy = True
                 self.idle = False
-                skip = self.cancel_requested
+                skip = self.cancel_requested and self.cancel_gen == self.line_gen
                 if skip:
                     self.followups_off = True
                 elif not harness:
                     # Something the user sent: its own follow-ups may run.
                     self.followups_off = False
+                self._steered = 0
             self.wake.clear()
             self._own_stream()
             self._turn_seq += 1
@@ -471,6 +571,7 @@ def _agent_class():
             finally:
                 self._release_stream()
                 self.transcript.finish()
+                late = self._take_back_steers()
                 after = self._status()
                 self._emit(
                     "turn.ended", turnId=turn_id,
@@ -480,10 +581,41 @@ def _agent_class():
                     costUsd=round(max(0.0, after[2] - before[2]), 6),
                     toolCalls=self.transcript.tool_calls,
                     error=error or None)
+                if late:
+                    self._emit("notice", text=(
+                        "A message sent into the turn arrived after it had "
+                        "ended; it goes out next."))
                 with self.cond:
                     self.busy = False
                     self.cancel_requested = False
+                    if late and not self.closing.is_set():
+                        self.queued[:0] = late
                 self.refresh_state()
+
+        def _take_back_steers(self) -> list[str]:
+            """Messages steered into this turn that it never read: they would
+            surface in the next, unrelated turn. Plain text only -- a
+            session's mail (HarnessText) is the REPL's to deliver."""
+            if not self._steered:
+                return []
+            out: list[str] = []
+            client = getattr(self.engine, "client", None)
+            drain = getattr(client, "_drain_steer", None)
+            try:
+                if callable(drain):
+                    leftovers = list(drain(delivered=False) or ())
+                    for text in leftovers:
+                        if isinstance(text, HarnessText):
+                            client.push_steer(text)
+                        else:
+                            out.append(str(text))
+                else:
+                    fallback = getattr(self.engine, "drain_undelivered_steers", None)
+                    if callable(fallback):
+                        out = [str(t) for t in fallback() or ()]
+            except Exception:
+                return []
+            return [t for t in out if t.strip()]
 
         def _status(self) -> tuple[int, int, float]:
             try:
@@ -514,9 +646,11 @@ def _agent_class():
         def state(self) -> str:
             return self._state or "idle"
 
-        # -- follow-ups: none once the user said stop, or the session ends --
+        # -- follow-ups: none once the user said stop or sent something, or
+        # -- the session ends ------------------------------------------------
         def _follow_ups_off(self) -> bool:
-            return self.closing.is_set() or self.followups_off
+            return (self.closing.is_set() or self.followups_off
+                    or bool(self.queued) or bool(self.inbox))
 
         def _continue_after_length(self, answered_prompt: str) -> str:
             if self._follow_ups_off():
@@ -544,8 +678,7 @@ def _agent_class():
             deadline = time.monotonic() + max(0.0, float(timeout))
             while True:
                 with self.cond:
-                    interrupted = (self._follow_ups_off() or bool(self.queued)
-                                   or bool(self.inbox))
+                    interrupted = self._follow_ups_off()
                 if interrupted:
                     return "\x1b"
                 left = deadline - time.monotonic()
@@ -563,6 +696,8 @@ def _agent_class():
             except Exception:
                 delivered = False
             if delivered:
+                with self.cond:
+                    self._steered += 1
                 self.post(lambda: self._emit("user.message", text=text,
                                              source="steer"))
             return delivered
@@ -771,7 +906,7 @@ class Worker:
             session_id=sid, session_key=key)
         self._bind_broker(key)
         self.agent = _agent_class()(
-            engine, broker=self.broker, emit=emit,
+            engine, broker=self.broker, emit=emit, checkpoint=save,
             opts=ReplOptions(cwd=workspace, session_name=name, banner=""))
         # Turn ids stay unique in the session's log across resumes.
         self.agent._turn_seq = self.log.turns
@@ -860,7 +995,7 @@ class Worker:
     def header(self) -> dict[str, Any]:
         """A ``session.info`` event as the session is now (for replays)."""
         event = {"type": "session.info", "session": self.emitter.session_id,
-                 "ts": round(time.time(), 3)}
+                 "seq": 0, "ts": round(time.time(), 3)}
         event.update({k: v for k, v in self.info().items() if v is not None})
         return self.emitter.redactor.event(event)
 
@@ -894,17 +1029,22 @@ class Worker:
                 self.writer.send(protocol.result(msg_id, {"closing": True}))
             self.shutdown("shutdown")
             return
+        # Answers carry what events carry -- a pending question's preview,
+        # a persisted pattern, an error naming the command -- so they go
+        # through the same redactor.
+        clean = self.emitter.redactor.value
         try:
             value = getattr(self, "_m_" + method.replace(".", "_"))(params)
         except _Refusal as exc:
-            self.writer.send(protocol.error(msg_id, exc.code, str(exc)))
+            self.writer.send(protocol.error(msg_id, exc.code, clean(str(exc))))
             return
         except Exception as exc:                    # noqa: BLE001
-            self.writer.send(protocol.error(msg_id, protocol.INTERNAL_ERROR,
-                                            f"{type(exc).__name__}: {exc}"))
+            self.writer.send(protocol.error(
+                msg_id, protocol.INTERNAL_ERROR,
+                clean(f"{type(exc).__name__}: {exc}")))
             return
         if msg_id is not None:
-            self.writer.send(protocol.result(msg_id, value))
+            self.writer.send(protocol.result(msg_id, clean(value)))
 
     def _m_initialize(self, params: dict) -> dict:
         version = int(params.get("protocolVersion", 0) or 0)
@@ -918,8 +1058,10 @@ class Worker:
                 "pending": [self.broker.describe(r) for r in self.broker.pending()]}
 
     def _m_session_prompt(self, params: dict) -> dict:
-        text = str(params.get("text") or "")
-        if not text.strip():
+        # Stripped as the REPL strips a typed line: "  !ls" is a shell
+        # escape at the prompt and in the queue alike.
+        text = str(params.get("text") or "").strip()
+        if not text:
             raise _Refusal(protocol.INVALID_PARAMS, "empty prompt")
         how = str(params.get("how") or "queue")
         if how not in ("queue", "steer"):
@@ -928,12 +1070,17 @@ class Worker:
         with agent.cond:
             if agent.closing.is_set():
                 raise _Refusal(protocol.NOT_ALLOWED, "the session is closing")
-            if agent.busy and how == "steer":
+            # Steered only while the engine's turn is live: once it has
+            # finished, a steer would surface in the next, unrelated turn.
+            if how == "steer" and agent.busy and agent._turn_active.is_set():
                 route = "steer"
-            elif agent.idle and not agent.inbox:
-                agent.inbox.append((text, False))
+            elif agent.idle:
+                agent.inbox.append(text)
                 agent.cond.notify_all()
                 route = "next"
+                # Shown now, under the lock: before the loop can take it and
+                # announce the turn it starts.
+                self.emitter.emit("user.message", text=text, source="user")
             else:
                 # During a turn, or between a turn and its follow-up: like
                 # a line typed during the turn, it goes before any
@@ -942,33 +1089,45 @@ class Worker:
                 route = "queued"
         agent.wake.set()
         if route == "steer":
-            if agent.steer_text(text.strip()):
+            if agent.steer_text(text):
                 return {"accepted": True, "steered": True}
             with agent.cond:
                 agent.queued.append(text)
             route = "queued"
         if route == "queued":
             agent.post(lambda: self.emitter.emit(
-                "user.message", text=text.strip(), source="queued"))
+                "user.message", text=text, source="queued"))
             return {"accepted": True, "queued": True}
         return {"accepted": True}
 
     def _m_session_cancel(self, _params: dict) -> dict:
+        """Esc: the turn that runs stops; a line just taken (or sent and not
+        yet read) does not start its turn; no automatic follow-up runs.
+        Lines sent after the cancel are not touched by it, and what it
+        arms ends when the loop is back at the prompt."""
         agent = self.agent
+        refused: list = []
         with agent.cond:
-            running = agent.busy or not agent.idle or bool(agent.inbox)
-            if running:
+            in_turn = agent.busy
+            starting = not agent.idle and not agent.busy
+            unread = agent.idle and bool(agent.inbox)
+            stopping = in_turn or starting or unread
+            if stopping:
                 agent.cancel_requested = True
                 agent.followups_off = True
-        refused: list = []
-        if running or self.broker.pending():
-            # Every open question is refused, and so is every one the
-            # ending turn still asks (until the next turn starts).
-            refused = self.broker.abort_all()
-        if running:
+                # The line the cancel is about: the one in progress, or the
+                # first one waiting at the prompt (read next).
+                agent.cancel_gen = agent.line_gen + (1 if unread else 0)
+            if in_turn or self.broker.pending():
+                # Every open question is refused, and so is every one the
+                # ending turn still asks (lifted at the prompt). Under the
+                # lock: a turn starting now must not lift it (see
+                # ProtocolAgent._begin_turn_resets_the_abort).
+                refused = self.broker.abort_all()
+        if in_turn:
             agent._stop_engine()
         agent.wake.set()
-        return {"stopping": running, "refused": len(refused)}
+        return {"stopping": stopping, "refused": len(refused)}
 
     def _m_session_setMode(self, params: dict) -> dict:
         mode = str(params.get("mode") or "")
@@ -1013,15 +1172,16 @@ class Worker:
         return {"applied": landed, "message": message}
 
     # -- lifecycle -------------------------------------------------------------------
-    def shutdown(self, reason: str) -> None:
+    def shutdown(self, reason: str, code: int = 0) -> None:
         """End the session: no next turn, every question refused (now and
-        from any thread still to ask), the loop out by the way ``reason``
-        calls for (``ProtocolAgent._leave``)."""
+        from any thread still to ask -- for good, see ProtocolBroker.close),
+        the loop out by the way ``reason`` calls for (``_leave``)."""
         agent = self.agent
         with agent.cond:
             if agent.closing.is_set():
                 return
             agent.leave_reason = reason
+            agent.leave_code = code
             agent.closing.set()
             agent.inbox.clear()
             # A stop that must hold, like a cancel's: the engine clears a
@@ -1030,10 +1190,14 @@ class Worker:
             agent.cond.notify_all()
         agent.wake.set()
         try:
-            self.broker.abort_all()
+            self.broker.close()
         except Exception:
             pass
         agent._stop_engine()
+        if reason != "shutdown":
+            # Nobody is left to wait for: a tool call or a !command must not
+            # keep the session -- and its saved state -- waiting.
+            agent.leave_now()
 
     def _read_requests(self) -> None:
         def bad(problem: str) -> None:
@@ -1046,8 +1210,8 @@ class Worker:
         except Exception as exc:                    # noqa: BLE001
             print(f"worker: request reader failed: {exc}", file=sys.stderr)
         finally:
-            # The window side went away (EOF): end the session cleanly.
-            self.shutdown("eof")
+            # The window side went away (EOF): a hangup, for the session.
+            self.shutdown("eof", 129)
 
     def _look_around(self) -> None:
         """Every tick: posture or model changes; during a turn also usage,
@@ -1113,6 +1277,24 @@ class Worker:
                          daemon=True).start()
         threading.Thread(target=self._look_around, name="look-around",
                          daemon=True).start()
+        import signal
+
+        def outside_the_loop(signum, _frame) -> None:
+            # Before the loop installs its handlers and after it restores
+            # them: end the loop when it runs, but never kill the process
+            # mid-save. No lock: the main thread may hold one right now;
+            # the loop sees the flag at its next look (_IDLE_WAIT_S).
+            agent = self.agent
+            if not agent.closing.is_set():
+                agent.leave_reason = agent.leave_reason or "signal"
+                agent.leave_code = agent.leave_code or 128 + int(signum)
+                agent.closing.set()
+
+        for sig in (signal.SIGHUP, signal.SIGTERM):
+            try:
+                signal.signal(sig, outside_the_loop)
+            except (ValueError, OSError):
+                pass
         code = 0
         try:
             code = int(self.agent.run() or 0)
@@ -1169,6 +1351,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--fake-save", action="store_true",
                    help="save a fake session to the session store at the end "
                         "(tests of the save path)")
+    p.add_argument("--fake-pause", type=float, default=0.0,
+                   help="wait this long during a (fake) outage instead of the "
+                        "REPL's 60 s and more (tests of the wait)")
     return p.parse_args(argv)
 
 
@@ -1248,6 +1433,9 @@ def main(argv: list[str] | None = None) -> int:
                          cont=cont, tick=0.0)
 
     _repl.read_block_wakeable = _read_without_sleep
+    if args.fake and args.fake_pause > 0:
+        _repl.TerminalAgent._ENDPOINT_PAUSE_S = (args.fake_pause,) * 3
+        _repl.TerminalAgent._ENDPOINT_PAUSE_CEIL_S = args.fake_pause
 
     def refuse(reason: str, code: int) -> int:
         writer.send(protocol.event({"type": "session.ended", "session": "",

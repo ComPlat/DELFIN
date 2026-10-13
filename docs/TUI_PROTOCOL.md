@@ -53,8 +53,10 @@ types are generated from that. This page explains what the messages mean.
      ctrl+d at the prompt ends a terminal session. A running turn is told
      to stop first.
    - The client's end of the pipe closing, or SIGTERM: the way a closed
-     terminal ends a session. Background shells and MCP servers end too,
-     and the process is gone within the REPL's leave deadline (10 s).
+     terminal ends a session -- a hangup, exit code 129 (143 for SIGTERM).
+     It does not wait for a running tool call or `!command`. Background
+     shells and MCP servers end too, and the process is gone within the
+     REPL's leave deadline (10 s).
    - `/exit` sent as a prompt.
 
    `session.ended.reason` says which: `shutdown`, `eof`, `exit`, `signal`
@@ -81,27 +83,38 @@ REPL's ways of typing several lines into one prompt (a `"""` block, a
 trailing backslash) do not apply. Where it goes depends on what the session
 is doing when it arrives:
 
-- **At the prompt:** it is handled next (`{accepted}`).
+- **At the prompt:** it is handled next (`{accepted}`); several sent at
+  once are handled in the order sent.
 - **During a turn:** it is queued and goes out when the turn ends
   (`{accepted, queued}`), or, with `how: "steer"`, it goes into the running
-  turn (`{accepted, steered}`). A backend that takes nothing mid-turn gets
-  it queued instead.
+  turn (`{accepted, steered}`). A steer is taken only while the model's turn
+  is live; after that, and on a backend that takes nothing mid-turn, it is
+  queued instead. A steer the turn never read (it ended first) goes out as
+  the next message, with a notice saying so.
 - **Between a turn and an automatic follow-up** (a continuation after the
   token limit, waiting out an endpoint outage, announced work): it is
   queued and goes before the follow-up, which is dropped. A message
   therefore also ends the wait during an outage at once.
 - **While the session closes:** refused with -32003.
 
-A queued message is shown once, as `user.message {source: "queued"}` when
-it is queued, and not again when it runs.
+The text is stripped first, as a typed line is (`"  !ls"` is a shell
+escape). Every message is shown once, when it arrives: `user.message` with
+`source: "user"` at the prompt, `"queued"` behind a turn, `"steer"` into
+one. It is not shown again when it runs.
 
 ### Cancelling
 
-`session.cancel` ends the turn that is running, or the one about to start
-from a prompt just sent. A tool call already running finishes first. It
-also stops the automatic follow-ups of that turn, including the wait during
-an outage. Every open approval is refused, and so is every one the ending
-turn still asks. `stopping` is false when nothing was running.
+`session.cancel` ends the turn that is running, or keeps the turn of the
+line in progress (one just sent and not started yet) from starting. A tool
+call already running finishes first. It also stops the automatic follow-ups
+of that turn, including the wait during an outage. Every open approval is
+refused, and so is every one the ending turn still asks.
+
+A cancel names what is in progress when it arrives, nothing later: a
+message sent after it runs normally, and what it put in place (the refusal
+of questions, the engine's stop request) ends when the session is back at
+the prompt. A running `!command` or `/command` cannot be cancelled, as in
+the REPL. `stopping` is false when nothing was running.
 
 ### Replay
 
@@ -109,7 +122,8 @@ A turn starts at its `turn.started`, together with the messages sent right
 before it, which are what started it. A message queued or steered while an
 earlier turn ran stays inside that turn, where it happened, and does not
 count as a turn of its own. The first event of a replay is a `session.info`
-as the session is now (current approval and model), whatever the log holds.
+as the session is now (current approval and model), whatever the log holds;
+it is made for the replay and carries `seq: 0`.
 
 ## Events
 
@@ -171,8 +185,10 @@ carry their final values.
 **Credentials.** Every event except the live stream of the model's own words
 (`text.delta`, `reasoning.delta`) and plain numbers goes through the secret
 redactor before it is sent or kept: the exact values of the credentials
-DELFIN holds, and anything shaped like a credential. A token in a command or
-a tool's output therefore never reaches the window or the event log. The
+DELFIN holds, and anything shaped like a credential. So does every result
+and error message (an open question's preview in `initialize`, a persisted
+pattern, an error naming the command). A token in a command or a tool's
+output therefore never reaches the window or the event log. The
 identifiers (`session`, `callId`, `requestId`, …) are left alone.
 
 ## Approvals

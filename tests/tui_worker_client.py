@@ -31,16 +31,19 @@ class WorkerClient:
     """One worker process; requests, responses and the events it emitted."""
 
     def __init__(self, tmp_path: Path, *args: str, fake: bool = True,
-                 delay: float = 0.003, initialize: bool = True):
+                 delay: float = 0.003, initialize: bool = True,
+                 env: dict[str, str] | None = None):
         self.home = tmp_path / "child_home"
         self.scratch = scratch = tmp_path / "child_scratch"
         self.workspace = tmp_path / "workspace"
         for d in (self.home, scratch / ".delfin", self.workspace):
             d.mkdir(parents=True, exist_ok=True)
+        extra_env = dict(env or {})
         env = dict(os.environ)
         env.update(HOME=str(self.home), DELFIN_SCRATCH_STATE=str(scratch),
                    PYTHONPATH=os.pathsep.join(
                        [str(REPO), env.get("PYTHONPATH", "")]).rstrip(os.pathsep))
+        env.update(extra_env)
         cmd = [sys.executable, "-m", "delfin.agent.service.worker",
                "--cwd", str(self.workspace), *args]
         if fake:

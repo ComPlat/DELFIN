@@ -148,7 +148,7 @@ def test_the_window_going_away_ends_the_session_cleanly(tmp_path):
     w = WorkerClient(tmp_path)
     w.turn("hello")
     w.proc.stdin.close()            # the window side hangs up: EOF
-    assert w.ended() == 0
+    assert w.ended() == 129         # a hangup, as for a closed terminal
     assert w.events[-1]["type"] == "session.ended"
     assert w.events[-1]["reason"] == "eof"
 
@@ -160,7 +160,7 @@ def test_the_window_going_away_mid_turn_ends_it_within_the_deadline(tmp_path):
     w.wait_for("text.started", after=start)
     began = time.monotonic()
     w.proc.stdin.close()
-    assert w.ended() == 0
+    assert w.ended() == 129
     assert time.monotonic() - began < 15
     assert w.events[-1]["type"] == "session.ended"
 

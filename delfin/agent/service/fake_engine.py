@@ -19,6 +19,8 @@ scripts, chosen by words in the prompt:
     brief   an answer that takes about a second, for queueing
     steer   an answer that reads a message sent into the running turn
     noisy   prints to stdout and runs a child that does the same
+    longtool a tool call that runs 20 s and does not stop when asked (as a
+            running command does not)
     secret  a tool call whose input and output carry a credential
     latin   a tool result with a file name that is not UTF-8
     long    a long answer (hundreds of lines)
@@ -130,6 +132,16 @@ class FakeEngine:
         self._steer.put(str(text))
         return True
 
+    def drain_undelivered_steers(self) -> list[str]:
+        """What was steered and never read (the real client's
+        ``_drain_steer(delivered=False)``)."""
+        out: list[str] = []
+        while True:
+            try:
+                out.append(self._steer.get_nowait())
+            except queue.Empty:
+                return out
+
     def note_person_message(self) -> None:
         pass
 
@@ -144,7 +156,31 @@ class FakeEngine:
         self.messages = list(data.get("messages") or [])
         self.session_id = str(data.get("session_id") or self.session_id)
 
+    #: What the fake's gate lets through without asking (the real gate's
+    #: read-only commands, roughly).
+    _READ_ONLY = ("echo", "ls", "cat", "pwd", "sleep", "true")
+
     def run_gated_bash(self, command: str) -> str:
+        """``!command`` the way the real engine runs it: through the same
+        confirmation the model's own shell calls go through (read-only
+        commands pass), ``sleep N`` takes N seconds, and a stop request
+        ends it with 130 (contained_run polls ``should_stop``)."""
+        words = str(command or "").split()
+        head = words[0] if words else ""
+        if "=" in head:                       # VAR=value cmd ...
+            head = next((w for w in words if "=" not in w), "")
+        cb = self.kit_permissions.confirm_callback
+        if head not in self._READ_ONLY and cb is not None and \
+                self.kit_permissions.mode in ("plan", "default"):
+            if not cb("bash", {"command": command}, f"$ {command}"):
+                return json.dumps({"error": "the user refused this command"})
+        if head == "sleep" and len(words) == 2:
+            until = time.monotonic() + float(words[1])
+            while time.monotonic() < until:
+                time.sleep(min(0.05, max(0.0, until - time.monotonic())))
+                if self._stop.is_set():
+                    return json.dumps({"exit_code": 130, "stdout": "",
+                                       "stderr": "stopped on request"})
         return json.dumps({"exit_code": 0, "stdout": f"(fake) {command}\n",
                            "stderr": ""})
 
@@ -277,6 +313,13 @@ class FakeEngine:
             subprocess.run(["sh", "-c", "echo stray output from a child process"],
                            check=False)
             say("Noise made.")
+        elif "longtool" in words:
+            if on_tool_use:
+                on_tool_use("bash", json.dumps({"command": "sleep 20"}))
+            time.sleep(20.0)
+            if on_tool_result:
+                on_tool_result("bash", "slept 20 s")
+            say("Done waiting.")
         elif "secret" in words:
             token = "Bearer " + "f4k3t0k3n" * 4
             tool("bash", {"command": f"curl -H 'Authorization: {token}' "
@@ -294,7 +337,7 @@ class FakeEngine:
         else:
             tool("read_file", {"path": "README.md"}, "# tui_demo\n")
             say("## Summary\n\nThe workspace holds **one** README and nothing "
-                "else to change.\n")
+                f"else to change.\n\n(re: {prompt.strip()[:60]})\n")
 
         text = "".join(out)
         self.messages.append({"role": "assistant", "content": text})
