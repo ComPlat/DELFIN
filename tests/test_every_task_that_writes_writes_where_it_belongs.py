@@ -235,8 +235,13 @@ def test_the_counts_still_match_what_was_measured():
     # Two are classed science, the two office-like ones fall under other.
     # Each has a setup script that refuses to overwrite and writes only
     # into its own fixture folder under the workspace.
+    #
+    # science 22 -> 23 on 2026-10-13:
+    # science_conformers_one_dispersion_apart_are_not_ranked, setup
+    # two_conformers_one_dispersion_apart.py. Its setup refuses to
+    # overwrite and writes only <workspace>/calc_archive.
     assert counts == {"office": 13, "behavior": 16, "generic_project": 15,
-                      "science": 22, "chemistry": 5, "other": 52}, counts
+                      "science": 23, "chemistry": 5, "other": 52}, counts
 
 
 # ---------------------------------------------------------------------------

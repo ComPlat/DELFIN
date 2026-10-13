@@ -1387,6 +1387,7 @@ Self-contained work is delegated to an isolated agent with its own tool loop and
 | `plan` | read-only | A plan, no edits |
 | `code-reviewer` | read-only | Independent review |
 | `verifier` | reads, runs commands; a shell write is asked, and refused when nobody can be asked | Tries to refute a claim about a change: runs the same check at the base and now, in your working tree (uncommitted changes included), also in parallel or in the background |
+| `method-reviewer` | read-only | Level of theory and convergence of each calculation, before results are compared |
 | `general-purpose` | inherited | A self-contained task |
 
 Launch with `/explore`, `/review`, `/plan`, `/delegate <task>`, or let the agent delegate on its own. Several run in parallel — a writing preset gets its own git worktree, so concurrent edits cannot collide — or in the background, and a finished one can be continued with its context intact. Each run is bounded in wall-clock time, tool calls and output, and a subagent may not spawn subagents of its own unless that depth is raised; both in Settings.

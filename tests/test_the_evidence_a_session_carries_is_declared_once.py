@@ -200,6 +200,9 @@ _NOT_CARRIED = {
     #    has no turn behind it, so its first message corrects no skill --
     #    the direction that proposes less --
     "_typed_now", "_skills_used_turn", "_skill_correction",
+    # The stall guard counts identical turn endings of THIS run; a resumed
+    # session starts with a clean count and no stop.
+    "_stall_guard", "_stall_guard_stopped",
     # -- one-shot per turn: the terminal sets it for THIS turn's fresh
     #    start; a resumed session has no turn behind it --
     "start_fresh",

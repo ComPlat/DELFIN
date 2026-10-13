@@ -65,13 +65,48 @@ def render_preview(name: str) -> str:
     if p is None:
         return f"(proposal '{name}' not found)"
     findings = "\n".join(f"- {f}" for f in (p.findings or []))
+    # The evidence detail is where a shared bundle names its author label
+    # and says nothing was checked here; "from shared" alone tells the
+    # reviewer neither.
+    evidence = "\n".join(
+        f"- {getattr(e, 'kind', '?')}: "
+        f"{getattr(e, 'detail', '') or getattr(e, 'ref', '')}"
+        for e in (p.evidence or []))
     return (
         f"--- Skill proposal: {p.name} (status: {p.status}, "
         f"from {p.source}) ---\n"
         f"{p.text}\n"
+        f"--- Evidence ---\n"
+        f"{evidence if evidence else '(none)'}\n"
         f"--- Security findings ---\n"
         f"{findings if findings else '(none)'}\n"
     )
+
+
+#: Evidence kinds that can verify on this machine. "shared" (an imported
+#: bundle's provenance) and anything unknown never do; evidence.py is the
+#: authority, this only avoids offering a button that cannot succeed.
+_VERIFIABLE_KINDS = frozenset({"test", "calc", "job", "recipe"})
+
+
+def accept_blocker(name: str) -> str:
+    """Why a pending proposal cannot be accepted at all, or "".
+
+    Decided from the evidence kinds alone, without running a check: a
+    proposal none of whose entries is of a verifiable kind is refused by
+    accept() in every workspace. Whether a verifiable entry passes is
+    left to accept() itself; its refusal is shown on the click.
+    """
+    p = _proposals_module().get_proposal(name)
+    if p is None or p.status != "pending":
+        return ""
+    evs = list(p.evidence or [])
+    if any(getattr(e, "kind", "") in _VERIFIABLE_KINDS for e in evs):
+        return ""
+    what = "; ".join(str(getattr(e, "detail", "") or getattr(e, "kind", ""))
+                     for e in evs) or "no evidence"
+    return ("cannot be accepted: no evidence checked on this machine "
+            f"({what})")
 
 
 def available_actions(name: str) -> list[str]:
@@ -82,7 +117,7 @@ def available_actions(name: str) -> list[str]:
     if p.status == "blocked":
         return ["reject"]
     if p.status == "pending":
-        return ["accept", "reject"]
+        return ["reject"] if accept_blocker(name) else ["accept", "reject"]
     return []  # accepted / rejected: decided already
 
 
@@ -133,15 +168,24 @@ def build_buttons(name: str, *, on_change=None):
     save. Accept calls ``skill_proposals.accept`` directly; Reject
     asks for a reason (an empty reason does NOT save — the archive
     should never say "no" without saying why) and calls ``.reject``.
-    A ``blocked`` proposal gets NO accept button. ``on_change`` runs
-    after a successful save so the caller can refresh its panels.
+    A ``blocked`` proposal, and one ``accept_blocker`` names, gets NO
+    accept button; the row says why. A click that accept() refuses shows
+    the reason in the row instead of raising. ``on_change`` runs after a
+    successful save so the caller can refresh its panels.
     """
     import ipywidgets as _widgets
     actions = set(available_actions(name))
     children = []
+    # Where the refusal of an accept is shown; a ValueError raised inside
+    # a click handler reaches no one.
+    note = _widgets.HTML(value=escape(accept_blocker(name)))
     if "accept" in actions:
         def _on_accept(_btn):
-            accept_proposal(name, by="dashboard-user")
+            try:
+                accept_proposal(name, by="dashboard-user")
+            except ValueError as exc:
+                note.value = escape(f"not accepted: {exc}")
+                return
             if on_change is not None:
                 on_change()
         accept_btn = _widgets.Button(
@@ -170,6 +214,7 @@ def build_buttons(name: str, *, on_change=None):
                 f"Reject skill proposal '{name}' — moved to rejected/"))
         reject_btn.on_click(_on_reject)
         children.extend([reason_box, reject_btn])
+    children.append(note)
     return _widgets.HBox(children)
 
 
@@ -203,6 +248,9 @@ def format_panel_html(limit: int = 20) -> str:
             buttons += ("<b style='color:#2e7d32'>[Accept]</b> ")
         if "reject" in actions:
             buttons += "<b style='color:#888'>[Reject]</b>"
+        blocker = accept_blocker(r["name"])
+        if blocker:
+            buttons += f" <span style='color:#d32f2f'>{escape(blocker)}</span>"
         findings = "; ".join(r["findings"])
         findings_html = (
             f" <span style='color:#d32f2f'>⚠ {escape(findings)}</span>"
@@ -289,4 +337,5 @@ def _usage_section_html() -> str:
 __all__ = [
     "collect_rows", "render_preview", "available_actions",
     "accept_proposal", "reject_proposal", "format_panel_html",
+    "accept_blocker",
 ]
