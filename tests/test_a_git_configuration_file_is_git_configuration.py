@@ -86,6 +86,8 @@ def _perms(ws, mode, answer=None):
     if answer is not None:
         def _cb(name, args, preview=""):
             perms.asked.append(str(preview))
+            if answer == "all but git":
+                return "GIT CONFIGURATION" not in str(preview)
             return answer
         perms.confirm_callback = _cb
     return perms
@@ -95,17 +97,34 @@ def _run(perms, tool, args):
     return A._DocToolExecutor().execute(tool, args, perms)
 
 
-def _assert_git_config_gate(ws, tool, args, mode):
-    attended = _perms(ws, mode, answer=False)
+def _read_baseline(perms, ws, read):
+    # Writes to an existing file need a read baseline first; without it the
+    # refusal would be the baseline's, not the one under test.
+    for rel in read:
+        if (ws / rel).exists():
+            _run(perms, "read_file", {"path": rel})
+
+
+def _assert_git_config_gate(ws, tool, args, mode, read=()):
+    # Attended: every other dialog (the command itself in default mode) is
+    # approved; the git-configuration one is shown and refused, and that
+    # alone must keep the write out.
+    attended = _perms(ws, mode, answer="all but git")
+    _read_baseline(attended, ws, read)
     out = _run(attended, tool, args)
-    assert attended.asked, (tool, args, mode, out)
-    assert "GIT CONFIGURATION" in attended.asked[0], (
-        tool, args, mode, attended.asked)
+    assert any("GIT CONFIGURATION" in p for p in attended.asked), (
+        tool, args, mode, attended.asked, out)
+    assert "exit_code" not in out, (tool, args, mode, out)
     headless = _perms(ws, mode)
+    _read_baseline(headless, ws, read)
     out = _run(headless, tool, args)
     low = out.lower()
-    assert "git" in low and "configuration" in low and (
-        "refused" in low or "blocked" in low), (tool, args, mode, out)
+    assert "exit_code" not in out and "error" in low, (tool, args, mode, out)
+    if tool != "bash" or mode == "bypassPermissions":
+        # A headless shell write in default/acceptEdits is refused earlier,
+        # as any unlisted command is; elsewhere this gate is the refusal.
+        assert "git" in low and "configuration" in low and (
+            "refused" in low or "blocked" in low), (tool, args, mode, out)
 
 
 # Relative to the workspace ``work`` (``repo/`` -- to the repository).
@@ -130,20 +149,24 @@ def test_write_file_is_asked_in_every_mode(work, repo, rel, mode):
     assert not target.exists() or "p.sh" not in target.read_text()
 
 
+NESTED = ("inc/nested.cfg",)
+
+
 @pytest.mark.parametrize("mode", MODES)
 def test_edit_and_patch_routes_are_asked(work, mode):
     _assert_git_config_gate(
         work, "edit_file",
         {"path": "inc/nested.cfg", "old_string": "ui = auto",
-         "new_string": "ui = auto\n[core]\n\tpager = ./p.sh"}, mode)
+         "new_string": "ui = auto\n[core]\n\tpager = ./p.sh"}, mode, read=NESTED)
     _assert_git_config_gate(
         work, "multi_edit",
         {"path": "inc/nested.cfg",
          "edits": [{"old_string": "ui = auto", "new_string": "ui = never"}]},
-        mode)
+        mode, read=NESTED)
     patch = ("--- a/inc/nested.cfg\n+++ b/inc/nested.cfg\n"
              "@@ -1,2 +1,3 @@\n [color]\n \tui = auto\n+[core]\n")
-    _assert_git_config_gate(work, "apply_patch", {"patch": patch}, mode)
+    _assert_git_config_gate(work, "apply_patch", {"diff": patch}, mode,
+                            read=NESTED)
     assert (work / "inc" / "nested.cfg").read_text() == \
         "[color]\n\tui = auto\n"
 
@@ -187,9 +210,14 @@ SHELL_WRITES = [
 @pytest.mark.parametrize("cmd", SHELL_WRITES)
 def test_the_shell_routes_are_asked(work, cmd, mode):
     (work / "plain.cfg").write_text("[color]\n\tui = auto\n")
-    _assert_git_config_gate(work, "bash", {"command": cmd}, mode)
-    assert "pager" not in (work / "inc" / "extra.cfg").read_text()
+    _assert_git_config_gate(work, "bash", {"command": cmd}, mode,
+                            read=("inc/extra.cfg", "inc/nested.cfg"))
+    assert (work / "inc" / "extra.cfg").read_text() == \
+        "[include]\n\tpath = \"nested.cfg\"\n"
+    assert (work / "inc" / "nested.cfg").read_text() == \
+        "[color]\n\tui = auto\n"
     assert not (work / "cond.cfg").exists()
+    assert not (work / "my.attributes").exists()
 
 
 GIT_CONFIG_FILE_COMMANDS = [
