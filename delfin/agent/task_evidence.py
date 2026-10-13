@@ -512,7 +512,9 @@ def check_completion_claim(
                              f"{len(fresh_green)} green run(s)")
                 if durable_test_runs is not None:
                     try:
-                        written = [entry["path"] for entry in changes
+                        # The journal records carry their stamps: a test
+                        # changed after its red run is no control.
+                        written = [entry for entry in changes
                                    if isinstance(entry, dict)
                                    and entry.get("path")]
                         _line = counter_test.assess(

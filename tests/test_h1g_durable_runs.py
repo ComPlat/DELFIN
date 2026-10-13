@@ -149,3 +149,69 @@ def test_green_only_durable_node_is_not_shown():
     test_runs = ct.normalize_test_runs(runs)
     assert ct.assess(changed, test_runs).startswith(
         "no control run: test tests/test_thing.py::test_new was never")
+
+
+# --------------------------------------------------------------------------
+# command shapes and order against the journal
+# --------------------------------------------------------------------------
+
+_CHANGED = ["/ws/pkg/thing.py", "/ws/tests/test_thing.py"]
+_RED = ("FAILED tests/test_thing.py::test_a - assert 1 == 2\n"
+        "1 failed, 1 passed in 0.1s")
+
+
+def _line(entries, changed=_CHANGED):
+    return ct.assess(changed, ct.normalize_test_runs(
+        ct.durable_test_runs(entries)))
+
+
+def test_a_class_node_keeps_its_whole_id():
+    assert _line([
+        _entry(output="FAILED tests/test_thing.py::TestA::test_b - x\n"
+                      "1 failed in 0.1s", ok=False, ts=1.0),
+        _entry(input_="pytest tests/test_thing.py::TestA::test_b",
+               output="1 passed in 0.1s", ts=2.0),
+    ]) == "shown"
+
+
+def test_a_quoted_selection_behind_a_pipe_is_one_target():
+    cmd = ("set -o pipefail; pytest tests/test_thing.py -k "
+           "'test_a or test_c' 2>&1 | tail -5")
+    assert _line([
+        _entry(input_=cmd, output=_RED, ok=False, ts=1.0),
+        _entry(input_=cmd, output="1 passed, 1 deselected in 0.1s", ts=2.0),
+    ]) == "shown"
+
+
+def test_a_green_that_deselects_the_red_node_is_no_control():
+    line = _line([
+        _entry(output=_RED, ok=False, ts=1.0),
+        _entry(input_="pytest tests/test_thing.py --deselect "
+                      "tests/test_thing.py::test_a",
+               output="1 passed, 1 deselected in 0.1s", ts=2.0),
+    ])
+    assert line.startswith("no control run:"), line
+
+
+def test_a_test_edited_then_seen_red_again_is_a_control():
+    changed = [{"path": "/ws/pkg/thing.py", "ts": 0.5},
+               {"path": "/ws/tests/test_thing.py", "ts": 0.5},
+               {"path": "/ws/tests/test_thing.py", "ts": 2.0}]
+    entries = [_entry(output=_RED, ok=False, ts=1.0),
+               _entry(output=_RED, ok=False, ts=3.0),
+               _entry(output="2 passed in 0.1s", ts=4.0)]
+    assert _line(entries, changed) == "shown"
+    assert "changed after it was seen failing" in _line(
+        [entries[0], entries[2]], changed)
+
+
+def test_an_errors_only_run_tests_result_is_no_red():
+    import json as _json
+    err = {"tool": "run_tests", "input": _json.dumps(
+        {"target": "tests/test_thing.py"}), "ok": True, "ts": 1.0,
+        "output": _json.dumps({"status": "failed", "exit_code": 1,
+                               "summary": {"passed": 0, "failed": 0,
+                                           "errors": 1},
+                               "failures": [{"node_id":
+                                   "tests/test_thing.py::test_a"}]})}
+    assert ct.durable_test_runs([err]) == []
