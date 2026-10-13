@@ -6725,6 +6725,14 @@ class KitToolPermissions:
     bash_max_timeout_s: int = 600
     max_output_chars: int = 12_000
     confirm_callback: Optional[Callable[[str, dict, str], bool]] = None
+    # Set on a delegate whose preset lists no file-editing tool (verifier).
+    # A shell write it names (redirect, touch, cp, git checkout --, ...)
+    # still goes to ``confirm_callback`` when there is one; with none it is
+    # REFUSED instead of allowed. Without it, default mode with no callback
+    # -- delfin agent run, the benchmark, the scheduler -- let such a
+    # delegate write inside the workspace, which its tool list and prompt
+    # both say it does not do. See _gate_bash_write_targets.
+    shell_writes_need_a_person: bool = False
     # The model-based second opinion behind the rules (action_classifier).
     # ``classifier_runner(prompt, model) -> str`` is attached by the client
     # that owns a model connection. None -- tests, head-less callers, a
@@ -9574,6 +9582,28 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "skill_share",
+            "description": (
+                "Share a skill as a file: export (name, target_dir) writes "
+                "an accepted skill; import (path) stores a bundle as a "
+                "proposal. Never active until a human accepts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string",
+                               "enum": ["export", "import"]},
+                    "name": {"type": "string"},
+                    "target_dir": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "exit_plan_mode",
             "description": (
                 "Submit the finished plan for approval. ONLY in 'plan' mode, "
@@ -10328,6 +10358,7 @@ def check_completion_claim(
     changes=(),
     observed=None,
     tests=None,
+    durable_test_runs=None,
     calcs=None,
     window_start: float = 0.0,
     current_fingerprint: Optional[dict] = None,
@@ -10342,11 +10373,14 @@ def check_completion_claim(
     helpers above serve the live call site, _verify_task_completion.
     ``calcs`` is the calc-evidence ledger (Welle 10): the runs the
     session actually observed via get_calc_info, verdicting a calculation
-    task on real work.
+    task on real work. ``durable_test_runs`` is the session's test runs
+    rebuilt from the durable tool trace, across turns: a verified test
+    task says with it whether its own test was ever seen failing.
     """
     from .task_evidence import check_completion_claim as _check
     return _check(subject, description, changes=changes, observed=observed,
-                  tests=tests, calcs=calcs, window_start=window_start,
+                  tests=tests, durable_test_runs=durable_test_runs,
+                  calcs=calcs, window_start=window_start,
                   current_fingerprint=current_fingerprint)
 
 
@@ -14189,6 +14223,20 @@ class _DocToolExecutor:
         if name == "skill_propose_patch":
             return self._execute_skill_propose_patch(
                 arguments, permissions)
+
+        # Skill sharing: export an accepted skill to a folder as a JSON
+        # bundle, or import one as a proposal (bounded read + hash verify +
+        # scrub; never active without a human accept).
+        # The executors gate the filesystem paths through the same read /
+        # write checks every other tool uses.
+        if name == "skill_share":
+            action = str(arguments.get("action") or "").strip().lower()
+            if action == "export":
+                return self._execute_skill_export(arguments, permissions)
+            if action == "import":
+                return self._execute_skill_import(arguments, permissions)
+            return json.dumps({"error": (
+                "skill_share needs action 'export' or 'import'")})
 
         # Sub-agent delegation: spawn an isolated tool-calling loop
         # via the runner the parent OpenAIClient attached.
@@ -19710,6 +19758,18 @@ class _DocToolExecutor:
                     path = Path(base) / path
                 if _is_ephemeral_sink(path, getattr(perms, "workspace", None)):
                     continue
+                if (getattr(perms, "shell_writes_need_a_person", False)
+                        and perms.confirm_callback is None):
+                    _record_security_event(
+                        "shell_write_unasked", "bash", cmd[:80], blocked=True)
+                    return json.dumps({"error": (
+                        f"blocked: this command would write to '{target}', "
+                        "and this delegate edits no file: with nobody to "
+                        "ask, a write is refused rather than allowed. Run "
+                        "the check without writing (git show <base>:<path>, "
+                        "output to stdout) and report what you could not "
+                        "run."
+                    )})
                 stale = self._bash_target_needs_a_read(path, perms)
                 if stale is not None:
                     return stale
@@ -21762,6 +21822,93 @@ class _DocToolExecutor:
                      "unchanged until a human accepts the proposal."),
         }, ensure_ascii=False)
 
+    def _execute_skill_export(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Export one ACCEPTED skill to a shared folder as a JSON bundle.
+
+        Delegates to ``skill_share.export_bundle``: only an
+        accepted skill (~/.delfin/skills/<name>/SKILL.md) may be exported,
+        by an explicit call, and the text is scrubbed before anything is
+        written (an absolute path / user@host / job id / secret blocks and
+        names the line; nothing is rewritten). ``target_dir`` must be in
+        this workspace's write scope -- gated like every other writing
+        tool. Writes, so plan mode rejects it.
+        """
+        if perms is None:
+            return json.dumps({"error": (
+                "skill_share requires permissions to be configured")})
+        if effective_mode(perms) == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — skill_export rejected. Present "
+                "the plan first.")})
+        name = str(arguments.get("name") or "").strip()
+        target_dir = str(arguments.get("target_dir") or "")
+        if not name or not target_dir:
+            return json.dumps({"error": (
+                "skill_export needs 'name' and a 'target_dir'")})
+        if "/" in name or "\\" in name or name.startswith("."):
+            return json.dumps({"error": f"invalid skill name: {name!r}"})
+        # The gate decides about the FILE that is written, at the place it
+        # is written: a relative folder is taken from the workspace (not
+        # from wherever the process happens to stand), and the bundle's own
+        # path is what is asked about, not only the folder around it.
+        folder = Path(target_dir).expanduser()
+        if not folder.is_absolute():
+            folder = Path(perms.workspace) / folder
+        bundle_path = folder / f"{name}.skill.json"
+        gate_err = self._gate_write_path(
+            str(bundle_path), perms, "skill_export", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+        try:
+            from .skill_share import export_bundle
+            text = export_bundle(name, str(folder),
+                                 author=str(arguments.get("author") or ""))
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+        return json.dumps({"status": "ok", "name": name,
+                           "exported_text": text}, ensure_ascii=False)
+
+    def _execute_skill_import(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Import a shared skill bundle as a proposal.
+
+        The path (relative paths are taken from the workspace) passes the
+        standard read gate first; then ``skill_share.import_bundle``
+        verifies, scrubs and stores it as a pending or blocked proposal of
+        source "shared", never active without a human accept. The result
+        is fenced as untrusted content. Plan mode rejects it: it writes
+        into the proposal store.
+        """
+        if perms is None:
+            return json.dumps({"error": (
+                "skill_share requires permissions to be configured")})
+        if effective_mode(perms) == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — skill_import rejected. Present "
+                "the plan first.")})
+        path = str(arguments.get("path") or "")
+        if not path:
+            return json.dumps({"error": "skill_import needs a 'path'"})
+        bundle = Path(path).expanduser()
+        if not bundle.is_absolute():
+            bundle = Path(perms.workspace) / bundle
+        denied = self._check_read_access(
+            perms, bundle, label="skill_import")
+        if denied is not None:
+            return json.dumps({"error": denied})
+        try:
+            from .skill_share import import_bundle
+            info = import_bundle(str(bundle))
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+        # The bundle was written by someone else. What it says -- the skill
+        # text, the author label, the reasons of a block -- reaches the
+        # model fenced as outside content, never as the harness speaking.
+        return _wrap_untrusted(json.dumps(info, ensure_ascii=False))
+
     # ------- Plan-mode roundtrip ------------------------------------------
 
     _VALID_POST_PLAN_MODES = ("default", "acceptEdits", "bypassPermissions")
@@ -22199,8 +22346,15 @@ class _DocToolExecutor:
             check = self._check_completion(task_id, perms)
             if check is not None:
                 fields["verified"] = check["verdict"]
-                if check.get("detail"):
-                    fields["verify_note"] = str(check["detail"])[:200]
+                # A verified verdict may carry a note (a test task whose
+                # test was never seen failing): it is kept on the task
+                # beside the detail.
+                kept = [str(check.get("detail") or "")]
+                if check["verdict"] == "verified":
+                    kept.append(str(check.get("note") or ""))
+                kept_text = "; ".join(t for t in kept if t)
+                if kept_text:
+                    fields["verify_note"] = kept_text[:200]
         try:
             task = self._task_store(perms).update(task_id, **fields)
         except KeyError as exc:
@@ -22223,6 +22377,10 @@ class _DocToolExecutor:
             )
         elif check is not None and check["verdict"] == "unchecked":
             payload["verified"] = "unchecked"
+        elif check is not None and check["verdict"] == "verified" \
+                and check.get("note"):
+            # Information, not a condition: the task stays verified.
+            payload["note"] = "[task-verify] " + str(check["note"]) + "."
         return json.dumps(payload, ensure_ascii=False)
 
     def _check_completion(
@@ -22255,12 +22413,26 @@ class _DocToolExecutor:
                 calcs = ledgers.get("calcs")
         except Exception:
             observed, tests, calcs = None, None, None
+        durable_runs = None
+        try:
+            # Rebuild the DURABLE cross-turn test-run ledger
+            # so a red from an EARLIER turn reaches assess() (the live
+            # per-turn ledger is replaced every turn start). Never raises.
+            # An EMPTY ledger is passed through ([]), so assess can still
+            # name a changed test file no durable run ever covered.
+            if sid:
+                from . import tool_trace as _tt
+                from . import counter_test as _ct
+                durable_runs = _ct.durable_test_runs(_tt.read(sid))
+        except Exception:
+            durable_runs = None
         return check_completion_claim(
             str(task.get("subject", "")),
             str(task.get("description", "")),
             changes=_journal_changes(sid),
             observed=observed,
             tests=tests,
+            durable_test_runs=durable_runs,
             calcs=calcs,
             window_start=_task_ts_epoch(task.get("started_at")),
             current_fingerprint=_current_fingerprint(

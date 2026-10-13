@@ -2481,14 +2481,158 @@ class CalcDiff:
     a_n_imag: int | None
     b_n_imag: int | None
     notes: list[str]
+    # Appended with defaults: the JSON keys above keep their order.
+    # dispersion_match is None when either side's correction could not
+    # be read; a_/b_dispersion is then None, and "none" means a keyword
+    # line was read and names no correction.
+    dispersion_match: bool | None = True
+    a_dispersion: str | None = None
+    b_dispersion: str | None = None
+    solvent_match: bool = True
+    a_solvent: str | None = None
+    b_solvent: str | None = None
+    a_solvation: str | None = None   # CPCM / SMD / ALPB ..., None = gas or unread
+    b_solvation: str | None = None
+
+
+#: An ORCA dispersion keyword -> the correction it selects. ORCA's D3 is
+#: zero damping, so D3 and D3ZERO are one correction.
+_DISPERSION_KEYWORDS = {
+    "D2": "D2", "D3": "D3", "D3ZERO": "D3", "D3BJ": "D3BJ", "D4": "D4",
+    "NL": "VV10", "SCNL": "VV10",
+}
+
+
+def _dispersion_keyword(token) -> str | None:
+    t = str(token or "").strip().upper().replace("(", "").replace(")", "")
+    return _DISPERSION_KEYWORDS.get(t)
+
+
+def _builtin_dispersion(name) -> str | None:
+    """The correction a method name carries, or None.
+
+    Input: a functional / method token (``wB97X-D3``, ``B3LYP-D3BJ``,
+    ``wB97M-V``, ``r2SCAN-3c``, ``GFN2-xTB``). Output: the correction
+    as a label comparable with a separate keyword -- ``B3LYP-D3`` and
+    ``B3LYP D3`` both give ``D3``; ``-V``/``-NL`` give ``VV10``; ``-D``
+    gives ``D2`` (wB97X-D: ``D2(CHG)``, Chai-Head-Gordon damping). A -3c
+    composite and GFN-xTB carry a correction fitted to that one method
+    (with gCP/SRB terms for the 3c), so they are labelled by their own
+    name and equal only to themselves. Rejected: one "built-in" key for
+    every such name, which made wB97X-V equal wB97X-D3BJ and r2SCAN-3c
+    equal B97-3c. Only the suffixes in ``_DISPERSION_KEYWORDS`` count, so
+    a solvent token such as ``CPCM(N,N-DIMETHYLFORMAMIDE)`` is not read
+    as one. ORCA's ``XTB``/``XTB2`` are GFN2-xTB and ``XTB1`` GFN1-xTB.
+    """
+    import re as _re
+    n = str(name or "").strip()
+    u = n.upper()
+    if not u:
+        return None
+    m = _re.fullmatch(r"(?:XTB|GFN)([0-2])?(?:-XTB)?", u)
+    if m and (m.group(1) or u == "XTB"):
+        return f"built into GFN{m.group(1) or '2'}-xTB"
+    if u.startswith(("GFN", "XTB")) or u.endswith("-3C"):
+        return f"built into {n}"
+    m = _re.search(r"-(D[0-9A-Z()]*|V|NL)$", u)
+    if not m:
+        return None
+    s = m.group(1)
+    if s in ("V", "NL"):
+        return "VV10"
+    if s == "D":
+        return "D2(CHG)" if u.startswith("WB97X") else "D2"
+    return _dispersion_keyword(s)
+
+
+def _keyword_lines_of(folder) -> tuple[list[str] | None, bool]:
+    """(the ``!`` keywords of the run, whether ``smd true`` is set).
+
+    Read from the input block the largest .out echoes (``|  N> ...``,
+    every ``!`` line), else from the .inp of the same stem, else the
+    first .inp. ``None`` keywords: no ``!`` line could be read, which is
+    not the same as a line without a dispersion keyword.
+    """
+    import re as _re
+    try:
+        d = Path(folder)
+        outs = sorted(d.glob("*.out"), key=lambda f: f.stat().st_size)
+        lines: list[str] = []
+        if outs:
+            text = outs[-1].read_text(encoding="utf-8", errors="replace")
+            lines = _re.findall(r"^\s*\|\s*\d+>\s*(.*)$", text, _re.MULTILINE)
+        if not any(ln.lstrip().startswith("!") for ln in lines):
+            inps = sorted(d.glob("*.inp"))
+            if outs and (d / (outs[-1].stem + ".inp")).is_file():
+                inps.insert(0, d / (outs[-1].stem + ".inp"))
+            lines = (inps[0].read_text(encoding="utf-8", errors="replace")
+                     .splitlines() if inps else [])
+        kws = [kw for ln in lines if ln.lstrip().startswith("!")
+               for kw in ln.lstrip()[1:].split()]
+        smd = any(_re.search(r"\bsmd\s+true\b", ln, _re.IGNORECASE)
+                  for ln in lines)
+        if not any(ln.lstrip().startswith("!") for ln in lines):
+            return None, smd
+        return kws, smd
+    except Exception:
+        return None, False
+
+
+def _dispersion_of(functional, recorded, keywords) -> str | None:
+    """The correction a run used: one the method name carries, else a
+    dispersion keyword on its ``!`` line, else the folder's record
+    (DELFIN_Data.json / CONTROL.txt), else ``"none"`` if a ``!`` line was
+    read, else ``None`` (unknown). A recorded default such as ``D4``
+    beside r2SCAN-3c is not a second correction."""
+    for name in [functional, *(keywords or [])]:
+        got = _builtin_dispersion(name)
+        if got:
+            return got
+    for kw in keywords or []:
+        got = _dispersion_keyword(kw)
+        if got:
+            return got
+    if recorded:
+        return _dispersion_keyword(recorded) or str(recorded).strip().upper()
+    return "none" if keywords is not None else None
+
+
+def _solvation_of(keywords, smd, recorded) -> str | None:
+    """CPCM / SMD / CPCMC / ALPB / DDCOSMO from the ``!`` line, SMD when
+    the echoed ``%cpcm`` block sets ``smd true``, else the folder's
+    record; None if neither names one."""
+    import re as _re
+    model = None
+    for kw in keywords or []:
+        m = _re.match(r"(cpcmc|cpcm|smd|alpb|ddcosmo)(?:\(.*\))?$", kw, _re.IGNORECASE)
+        if m:
+            model = m.group(1).upper()
+            break
+    model = model or (str(recorded).strip().upper() or None if recorded else None)
+    if smd and model in (None, "CPCM"):
+        model = "SMD"
+    return model
 
 
 def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
-    """Diff method/basis/results between two calculation folders.
+    """Diff method/basis/dispersion/solvent/results between two folders.
 
     ``delta_gibbs_kcal`` and ``delta_spe_kcal`` are :math:`(B - A)` in
     kcal/mol; ``None`` if either side lacks the value. ``method_match``
     is ``True`` only when both functionals are non-None and equal.
+    ``dispersion_match`` compares the correction each run used, as a
+    label: one the method name carries (``-D3`` -> D3, ``-V`` -> VV10,
+    a -3c composite or GFN-xTB -> its own name), else the ``!``
+    keywords echoed in the .out (or the .inp), else the folder's
+    record; it is ``None`` when either side has none of these, so an
+    unread run never claims a match. ``solvent_match`` compares the
+    implicit solvent (``None`` = gas phase) and, for one solvent, the
+    model (CPCM vs SMD, ``smd true`` in ``%cpcm`` counting as SMD). Neither is
+    folded into ``method_match``, which callers read as "same
+    functional". The deltas are still returned when a field differs; a
+    note names the field (D3BJ alone moves a butane conformer pair by
+    ~3.5 kcal/mol). Rejected: setting the deltas to None, which would
+    change the return shape for callers that read them as numbers.
     """
     HARTREE_TO_KCAL = 627.5094740631
     rows = compare_across_functionals(
@@ -2507,6 +2651,7 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
             a_spe=None, b_spe=None, delta_spe_kcal=None,
             a_n_imag=None, b_n_imag=None,
             notes=["could not parse one or both folders"],
+            dispersion_match=None, solvent_match=False,
         )
 
     notes: list[str] = []
@@ -2526,6 +2671,49 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
         )
     if not basis_match and a.basis and b.basis:
         notes.append(f"different basis: {a.basis} vs {b.basis}")
+    a_kws, a_smd = _keyword_lines_of(folder_a)
+    b_kws, b_smd = _keyword_lines_of(folder_b)
+    a_disp = _dispersion_of(a.functional, a.dispersion, a_kws)
+    b_disp = _dispersion_of(b.functional, b.dispersion, b_kws)
+    dispersion_match: bool | None
+    if a_disp is None or b_disp is None:
+        dispersion_match = None
+        unread = " and ".join(s for s, v in (("A", a_disp), ("B", b_disp))
+                              if v is None)
+        notes.append(f"dispersion correction of {unread} could not be read: "
+                     "not known whether the energy delta spans one")
+    else:
+        dispersion_match = a_disp.upper() == b_disp.upper()
+        if not dispersion_match:
+            notes.append(f"different dispersion correction: {a_disp} vs {b_disp}")
+    a_solv = b_solv = None
+    if a.solvent or b.solvent:
+        try:
+            from delfin.doc_server.calc_indexer import method_parts_of_folder as _mp
+        except Exception:
+            _mp = None
+        def _rec(folder):
+            try:
+                return _mp(folder).get("solvation") if _mp else None
+            except Exception:
+                return None
+        a_solv = _solvation_of(a_kws, a_smd, _rec(folder_a)) if a.solvent else None
+        b_solv = _solvation_of(b_kws, b_smd, _rec(folder_b)) if b.solvent else None
+    solvent_match = (a.solvent or "").upper() == (b.solvent or "").upper()
+    if not solvent_match:
+        notes.append(f"different solvent: {a.solvent or 'gas phase'} "
+                     f"vs {b.solvent or 'gas phase'}")
+    elif a_solv and b_solv and a_solv != b_solv:
+        # Same solvent, different model: SMD adds non-electrostatic
+        # terms CPCM lacks, several kcal/mol on a solvation free energy.
+        solvent_match = False
+        notes.append(f"different solvation model: {a_solv}({a.solvent}) "
+                     f"vs {b_solv}({b.solvent})")
+    differing = [name for name, ok in (
+        ("functional", method_match or not (a.functional and b.functional)),
+        ("basis", basis_match or not (a.basis and b.basis)),
+        ("dispersion", dispersion_match is not False),
+        ("solvent", solvent_match)) if not ok]
     if a.n_imag and a.n_imag > 0:
         notes.append(f"A has {a.n_imag} imag freq(s) — not a minimum")
     if b.n_imag and b.n_imag > 0:
@@ -2540,6 +2728,9 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
         if a.single_point is not None and b.single_point is not None
         else None
     )
+    if differing and (delta_g is not None or delta_e is not None):
+        notes.append(f"the energy delta spans different {', '.join(differing)}"
+                     " and is not a comparison of the two structures")
     return CalcDiff(
         folder_a=str(folder_a), folder_b=str(folder_b),
         method_match=method_match, basis_match=basis_match,
@@ -2549,6 +2740,11 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
         a_spe=a.single_point, b_spe=b.single_point, delta_spe_kcal=delta_e,
         a_n_imag=a.n_imag, b_n_imag=b.n_imag,
         notes=notes,
+        dispersion_match=dispersion_match,
+        a_dispersion=a_disp, b_dispersion=b_disp,
+        solvent_match=solvent_match,
+        a_solvent=a.solvent, b_solvent=b.solvent,
+        a_solvation=a_solv, b_solvation=b_solv,
     )
 
 
