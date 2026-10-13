@@ -32,6 +32,11 @@ _SIBLINGS = ("existence of the same relative path in the repository's own "
              ".delfin/worktrees, after the gate passed and the file was "
              "missing; reached from the not-found message")
 _GITIGNORE = "reads <workspace>/.gitignore; root is perms.workspace"
+_GREP_WALK = ("files of the walk of search_path, which _check_read_access "
+              "gated; a file symlink whose target leaves the searched folder "
+              "is skipped and one to a secret name is skipped, before "
+              "_looks_binary or open; os.walk does not follow directory "
+              "links. The walk itself is a flow the scan does not follow")
 
 #: (executor, function holding the access, sink kind) -> why it needs no
 #: gate.  Each was driven through the real executor in a tmp workspace.
@@ -56,6 +61,9 @@ EXPLAINED = {
         "follow); an outside path and a symlink to outside are refused",
     ("_execute_run_tests", "_git_metadata_roots", "subprocess.run"):
         "git rev-parse in perms.workspace",
+    ("_execute_grep_file", "_looks_binary", "open"): _GREP_WALK,
+    ("_execute_grep_file", "_looks_binary", "read"): _GREP_WALK,
+    ("_execute_grep_file", "_execute_grep_file", "open"): _GREP_WALK,
     ("_execute_apply_patch", "_execute_apply_patch", "read_bytes"):
         "pre-images under perms.workspace, read after _run_permission_gate "
         "ran _gate_write_path on every file of the diff; both sit under "
@@ -64,14 +72,7 @@ EXPLAINED = {
 }
 
 #: Executor -> why it is still flagged.
-OPEN = {
-    "_execute_grep_file":
-        "real on main: a file symlink in the workspace is read through to "
-        "its target outside (driven: grep_file(path='.') returned the "
-        "outside line). The fix is PR #188. The per-file opens come from a "
-        "walk of the gated folder, which the scan does not follow; once "
-        "#188 is merged they move to EXPLAINED",
-}
+OPEN: dict[str, str] = {}
 
 #: Flagged only with a pending change to the completion check, which reads
 #: the session's own tool trace (harness state, not a model path).  Allowed
