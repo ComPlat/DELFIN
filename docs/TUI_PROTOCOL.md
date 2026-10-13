@@ -40,7 +40,7 @@ types are generated from that. This page explains what the messages mean.
 1. The worker starts and emits `worker.ready`, `session.info` and
    `session.state {idle}`.
 2. The client sends `initialize {protocolVersion}`. Nothing else is accepted
-   before it. A version mismatch is refused with code -32001.
+   before it but `session.shutdown`, so a session still starting can be ended. A version mismatch is refused with code -32001.
    - The result carries the session info, the current state, and every
      approval still waiting.
    - A window that attaches later sends `initialize` again, and then

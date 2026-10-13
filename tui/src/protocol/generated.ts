@@ -421,6 +421,7 @@ export interface SessionCreateResult {
   "session": Record<string, unknown>
   "state": string
   "pending": Record<string, unknown>[]
+  "events": Record<string, unknown>[]
 }
 export interface SessionAttachResult {
   "session": Record<string, unknown>

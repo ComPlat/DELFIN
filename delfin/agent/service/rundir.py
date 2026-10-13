@@ -152,6 +152,50 @@ def remove_run_file(pid: int) -> None:
             pass
 
 
+def roster_file(host: str | None = None) -> Path:
+    """Which sessions a host's service runs (``<host>.roster``): beside the
+    run file, but never read as one."""
+    return run_file(host).with_name(f"{host or hostname()}.roster")
+
+
+def _looks_like_the_service(pid: int) -> bool:
+    """Whether ``pid`` runs the agent service: a run file outlives a
+    crashed service, and its pid may since belong to anything."""
+    if sys.platform.startswith("linux"):
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            return False
+        return b"delfin.agent.service.supervisor" in cmdline
+    import subprocess
+    try:
+        out = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "delfin.agent.service.supervisor" in out.stdout
+
+
+def service_pid() -> int:
+    """The pid of this host's agent service while one runs -- starting,
+    serving or stopping, answering or not -- else 0. Its run file is
+    written before it listens and removed after it stopped listening."""
+    info = read_run_file()
+    try:
+        pid = int((info or {}).get("pid", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    if pid <= 0:
+        return 0
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return 0
+    except PermissionError:
+        return 0                                  # not ours, whatever it is
+    return pid if _looks_like_the_service(pid) else 0
+
+
 def other_hosts() -> list[dict]:
     """Run files of services on other hosts (other login nodes)."""
     here = hostname()
@@ -163,7 +207,9 @@ def other_hosts() -> list[dict]:
             data = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        if isinstance(data, dict):
+        # A run file names its host and pid; anything else in the folder
+        # (a roster from before rosters had their own name) is not one.
+        if isinstance(data, dict) and data.get("host") and data.get("pid"):
             found.append(data)
     return found
 

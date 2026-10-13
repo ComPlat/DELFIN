@@ -204,8 +204,11 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
               "pid": "integer", "host": "string", "mayAct": "boolean",
               "sessions": "[object]"},
     "sessions.list": {"sessions": "[object]", "elsewhere": "[object]"},
+    # events: what the session said since its worker started, up to the
+    # point the window is subscribed at (later events arrive live).
     "session.create": {"sessionId": "string", "session": "object",
-                       "state": "string", "pending": "[object]"},
+                       "state": "string", "pending": "[object]",
+                       "events": "[object]"},
     "session.attach": {"session": "object", "state": "string",
                        "pending": "[object]", "events": "[object]",
                        "summary": "object"},

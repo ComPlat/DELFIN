@@ -59,31 +59,56 @@ def start_service(*, idle_exit_s: float | None = None) -> subprocess.Popen:
 
 def ensure_service(*, timeout: float = START_TIMEOUT_S,
                    idle_exit_s: float | None = None) -> dict:
-    """The service's hello: from the one running here, or from a new one."""
-    hello = client.reachable()
+    """The service's hello: from the one running here, or from a new one.
+
+    A service that holds the host but does not answer yet is waited for:
+    one that is starting answers soon, one that is stopping (`service
+    stop` a moment ago) is gone soon, and a new one is started then. One
+    that refuses this window's protocol version, or never answers, is
+    named, with how to end it -- never stopped from here, its sessions may
+    be at work.
+    """
+    deadline = time.monotonic() + timeout
+    hello, why = client.probe()
     if hello is not None:
         return hello
-    rundir.ensure_runtime_dir()
-    proc = start_service(idle_exit_s=idle_exit_s)
-    deadline = time.monotonic() + timeout
+    if why.startswith("it speaks another protocol"):
+        raise ServiceDidNotStart(_running_but(why))
+    proc: subprocess.Popen | None = None
+    started = 0.0
     while time.monotonic() < deadline:
-        hello = client.reachable(timeout=1.0)
+        if not rundir.service_pid() and (proc is None or proc.poll() is not None) \
+                and time.monotonic() - started > 1.0:
+            if proc is not None and proc.returncode not in (0, None):
+                raise ServiceDidNotStart(
+                    f"the agent service exited ({proc.returncode}) before it "
+                    f"answered; its log: {service_log()}\n{_log_tail()}")
+            # None runs (or the one that did has left): start one. A start
+            # that loses the race for the lock exits 0 and is looked past;
+            # the winner writes its run file within a second.
+            rundir.ensure_runtime_dir()
+            proc = start_service(idle_exit_s=idle_exit_s)
+            started = time.monotonic()
+        hello, why = client.probe(timeout=1.0)
         if hello is not None:
             return hello
-        code = proc.poll()
-        if code is not None:
-            # Another window may have started one at the same moment, and
-            # this one left because the lock was taken: look once more.
-            hello = client.reachable(timeout=2.0)
-            if hello is not None:
-                return hello
-            raise ServiceDidNotStart(
-                f"the agent service exited ({code}) before it answered; "
-                f"its log: {service_log()}\n{_log_tail()}")
+        if why.startswith("it speaks another protocol"):
+            raise ServiceDidNotStart(_running_but(why))
         time.sleep(0.1)
+    pid = rundir.service_pid()
+    if pid:
+        raise ServiceDidNotStart(_running_but(why or "it does not answer"))
     raise ServiceDidNotStart(f"the agent service did not answer within "
                              f"{timeout:.0f} s; its log: {service_log()}\n"
                              f"{_log_tail()}")
+
+
+def _running_but(why: str) -> str:
+    pid = rundir.service_pid()
+    who = f" (pid {pid})" if pid else ""
+    return (f"an agent service runs on this host{who}, but {why}. "
+            "`delfin-agent service stop` ends it -- its sessions save and can "
+            "be resumed -- then start the window again.")
 
 
 def _log_tail(lines: int = 12) -> str:

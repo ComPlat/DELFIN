@@ -59,7 +59,7 @@ from typing import Any, Callable
 
 from . import choices, protocol
 from .approvals import ProtocolBroker
-from .eventlog import EventLog, log_path, service_dir
+from .eventlog import REPLAY_BUDGET_BYTES, EventLog, log_path, service_dir
 from .transcript import ProtocolTranscript
 
 #: How often the look-around thread looks. Also how long a cancel that
@@ -1015,7 +1015,9 @@ class Worker:
             self.writer.send(protocol.error(msg_id, protocol.INVALID_PARAMS,
                                             problem))
             return
-        if method != "initialize" and not self._initialized:
+        # A shutdown is taken at any time: the service ends a worker that is
+        # still starting the same way as one that runs.
+        if method not in ("initialize", "session.shutdown") and not self._initialized:
             self.writer.send(protocol.error(msg_id, protocol.NOT_ALLOWED,
                                             "initialize first"))
             return
@@ -1156,7 +1158,8 @@ class Worker:
 
     def _m_session_replay(self, params: dict) -> dict:
         turns = int(params.get("turns", 0) or 0)
-        return {"events": self.log.replay(turns, header=self.header())}
+        return {"events": self.log.replay(turns, header=self.header(),
+                                          max_bytes=REPLAY_BUDGET_BYTES)}
 
     def _m_permission_reply(self, params: dict) -> dict:
         from .approvals import InvalidAnswer, UnknownRequest

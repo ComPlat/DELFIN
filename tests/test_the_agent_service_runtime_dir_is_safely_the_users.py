@@ -79,6 +79,10 @@ def test_services_on_other_login_nodes_are_found_by_their_run_files(runtime):
     here = rundir.write_run_file({"pid": 1, "host": rundir.hostname()})
     other = here.parent / "login2.json"
     other.write_text('{"pid": 77, "host": "login2"}')
+    # Rosters sit beside the run files and are never taken for one: not
+    # today's (<host>.roster), nor one an older service left (.roster.json).
+    rundir.roster_file().write_text('{"pid": 1, "sessions": []}')
+    (here.parent / f"{rundir.hostname()}.roster.json").write_text('{"pid": 1, "sessions": []}')
     assert [h["host"] for h in rundir.other_hosts()] == ["login2"]
 
 

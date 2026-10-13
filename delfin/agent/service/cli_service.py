@@ -14,6 +14,10 @@ import time
 
 from . import client, launcher, rundir
 
+#: How long a service that does not answer gets to end after SIGTERM
+#: before SIGKILL: its sessions save within the service's own grace.
+UNANSWERING_TERM_WAIT_S = 45.0
+
 
 def _start_settings(args: argparse.Namespace) -> dict:
     """What the TUI's first session starts with: chat's flags, as given."""
@@ -108,8 +112,26 @@ def cmd_service(args: argparse.Namespace) -> int:
     action = getattr(args, "action", "status") or "status"
     if action == "logs":
         return _logs(int(getattr(args, "lines", 40) or 40))
-    hello = client.reachable()
+    try:
+        return _service(action)
+    except client.ServiceError as exc:
+        # Refused (this shell is an agent session's own: watch only), or
+        # the service went away in between: said, not a traceback.
+        print(f"ERROR: the agent service refused: {exc.message}", file=sys.stderr)
+        return 1
+
+
+def _service(action: str) -> int:
+    hello, why = client.probe()
     if hello is None:
+        pid = rundir.service_pid()
+        if pid:
+            print(f"an agent service runs on {rundir.hostname()} (pid {pid}), "
+                  f"but {why or 'it does not answer'}")
+            if action == "stop":
+                return _stop_unanswering(pid)
+            print("  `delfin-agent service stop` ends it (its sessions save)")
+            return 1
         print(f"no agent service runs on {rundir.hostname()}")
         for other in rundir.other_hosts():
             print(f"  one runs on {_plain(other.get('host'), 60)} "
@@ -142,20 +164,58 @@ def cmd_service(args: argparse.Namespace) -> int:
 
 
 def _stop() -> int:
+    pid = rundir.service_pid()
     with client.ServiceClient(client="delfin-agent service") as svc:
         reply = svc.request("service.shutdown")
     n = int(reply.get("sessions", 0) or 0)
     print(f"stopping the agent service ({n} session{'s' * (n != 1)} end and "
           "are saved)...", flush=True)
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline:
-        if client.reachable(timeout=1.0) is None:
-            print("stopped")
-            return 0
-        time.sleep(0.5)
-    print("the service still answers after 60 s; see `delfin-agent service logs`",
+    # Stopped when the process is gone, not when it stops listening: it
+    # stops listening first, and its sessions take a while to save.
+    if _gone(pid, 60):
+        print("stopped")
+        return 0
+    print("the service still runs after 60 s; see `delfin-agent service logs`",
           file=sys.stderr)
     return 1
+
+
+def _stop_unanswering(pid: int) -> int:
+    """A service that does not say hello (another version, or stuck) ends
+    by signal: SIGTERM first, which ends and saves its sessions when its
+    loop still runs; SIGKILL when it does not react. A worker whose
+    service is gone ends on its own and saves (a hangup)."""
+    import signal
+
+    print(f"ending it: SIGTERM to {pid}...", flush=True)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        print("stopped")
+        return 0
+    if _gone(pid, UNANSWERING_TERM_WAIT_S):
+        print("stopped")
+        return 0
+    print("it did not react: SIGKILL (its sessions end and save on their own)",
+          flush=True)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if _gone(pid, 10):
+        print("stopped")
+        return 0
+    print(f"pid {pid} still runs; see `delfin-agent service logs`", file=sys.stderr)
+    return 1
+
+
+def _gone(pid: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not pid or rundir.service_pid() != pid:
+            return True
+        time.sleep(0.25)
+    return False
 
 
 def _logs(lines: int) -> int:

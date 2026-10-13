@@ -130,8 +130,27 @@ class ServiceClient:
 
 def reachable(path: Path | None = None, timeout: float = 2.0) -> dict | None:
     """The service's hello when one answers on this host, else None."""
+    return probe(path, timeout)[0]
+
+
+def probe(path: Path | None = None, timeout: float = 2.0) -> tuple[dict | None, str]:
+    """``(hello, "")`` when the service answers; ``(None, why)`` when not.
+
+    ``why`` tells nothing listening (``"none"``) from a service that is
+    there and does not say hello: one of another protocol version (an
+    update with the old service still running), or one that does not
+    answer at all.
+    """
     try:
         with ServiceClient(path, timeout=timeout, client="probe") as svc:
-            return dict(svc.hello)
-    except (OSError, ServiceError, TimeoutError, ValueError):
-        return None
+            return dict(svc.hello), ""
+    except (FileNotFoundError, ConnectionRefusedError):
+        return None, "none"
+    except ServiceError as exc:
+        if exc.code == protocol.VERSION_MISMATCH:
+            return None, f"it speaks another protocol version ({exc.message})"
+        return None, f"it refused the hello ({exc.message})"
+    except (TimeoutError, socket.timeout):
+        return None, f"it did not answer within {timeout:.0f} s"
+    except (OSError, ValueError) as exc:
+        return None, f"it could not be reached ({exc})"

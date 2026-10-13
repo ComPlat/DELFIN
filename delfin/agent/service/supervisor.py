@@ -65,9 +65,14 @@ ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
 UNKNOWN_SESSION = protocol.UNKNOWN_SESSION
 WORKER_GONE = protocol.WORKER_GONE
 
-#: A window that reads this far behind is dropped (it can attach again and
-#: replay); a stuck window must not make the service hold its output.
-CLIENT_BACKLOG_BYTES = 64 * 1024 * 1024
+#: A window that stays this far behind for CLIENT_STUCK_S is dropped (it
+#: can attach again and replay): a stuck window must not make the service
+#: hold its output. A burst -- two replays asked at once -- is not stuck:
+#: a window that reads catches up within a second.
+CLIENT_BACKLOG_BYTES = 32 * 1024 * 1024
+CLIENT_STUCK_S = 15.0
+#: Behind by this much, a window is dropped at once.
+CLIENT_BACKLOG_HARD_BYTES = 256 * 1024 * 1024
 
 #: Windows at once; more is a runaway process, not a person.
 MAX_CLIENTS = 128
@@ -80,6 +85,15 @@ CREATE_TIMEOUT_S = 180.0
 
 #: How long the sessions get to end and save when the service stops.
 SHUTDOWN_GRACE_S = 20.0
+
+#: How long a forwarded request may wait for its session's answer. Every
+#: one is answered at once except a model list (session.choices: the
+#: provider is asked) and a replay of a long log.
+FORWARD_TIMEOUT_S = 120.0
+
+#: The service keeps this much of each session in memory (the replay
+#: budget), so an attach never reads the log in the event loop.
+REPLAY_BUDGET_BYTES = eventlog.REPLAY_BUDGET_BYTES
 
 
 LINUX = sys.platform.startswith("linux")
@@ -120,6 +134,26 @@ def _peer_pid(sock: socket.socket) -> int:
     return 0
 
 
+def _environ_of(pid: int) -> bytes | None:
+    """The environment of ``pid`` (one of the user's own processes), or
+    None when it cannot be read. Linux reads /proc; macOS asks ps, which
+    shows the environment of the user's own processes (-E)."""
+    if LINUX:
+        try:
+            return Path(f"/proc/{pid}/environ").read_bytes()
+        except OSError:
+            return None
+    import subprocess
+    try:
+        out = subprocess.run(["ps", "-wwE", "-o", "command=", "-p", str(pid)],
+                             capture_output=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    return out.stdout
+
+
 class WorkerFailed(Exception):
     def __init__(self, code: int, message: str):
         super().__init__(message)
@@ -146,7 +180,15 @@ class Session:
         self.subscribers: dict["Client", int] = {}    # client -> last seq replayed
         self._next_id = 0
         self._waiting: dict[int, asyncio.Future] = {}
-        self._early: list[dict] = []                  # events before initialize
+        self._early: list[dict] = []                  # events before it was registered
+        #: The highest sequence number read from the worker. What the
+        #: service knows (state, open questions) is exactly the events up
+        #: to here: a replay is cut here and a window subscribed here, so
+        #: what it is told and what it is shown always agree.
+        self.seen_seq = 0
+        #: The newest durable events, whole turns, within the replay
+        #: budget: what an attach replays (see ``replay``).
+        self.recent = eventlog.RecentEvents(REPLAY_BUDGET_BYTES)
         self.done = asyncio.get_running_loop().create_future()
 
     # -- talking to the worker ------------------------------------------------------
@@ -215,36 +257,43 @@ class Session:
                 self.done.set_result(self.proc.returncode)
             self.supervisor.session_ended(self)
 
-    def on_event(self, message: dict, event: dict) -> None:
+    def apply(self, event: dict, *, count_cost: bool = True) -> bool:
+        """What ``event`` changes in the service's view of the session;
+        True when the summary changed."""
         kind = str(event.get("type") or "")
-        self.last_activity = time.time()
-        changed = False
         if kind == "session.state":
             self.state = str(event.get("state") or self.state)
-            changed = True
-        elif kind == "session.info":
+            return True
+        if kind in ("session.info", "session.updated"):
             self.info.update({k: v for k, v in event.items()
                               if k not in ("type", "session", "seq", "ts")})
-            changed = True
-        elif kind == "session.updated":
-            self.info.update({k: v for k, v in event.items()
-                              if k not in ("type", "session", "seq", "ts")})
-            changed = True
-        elif kind == "permission.asked":
+            return True
+        if kind == "permission.asked":
             self.pending[str(event.get("requestId"))] = event
-            changed = True
-        elif kind == "permission.resolved":
-            changed = self.pending.pop(str(event.get("requestId")), None) is not None
-        elif kind == "turn.ended":
-            self.cost += float(event.get("costUsd") or 0.0)
-            changed = True
-        elif kind == "session.ended":
+            return True
+        if kind == "permission.resolved":
+            return self.pending.pop(str(event.get("requestId")), None) is not None
+        if kind == "turn.ended":
+            if count_cost:
+                self.cost += float(event.get("costUsd") or 0.0)
+            return True
+        if kind == "session.ended":
             self.ended_reason = str(event.get("reason") or "")
+        return False
+
+    def on_event(self, message: dict, event: dict) -> None:
+        self.last_activity = time.time()
+        changed = self.apply(event)
+        seq = event.get("seq")
+        if isinstance(seq, int) and seq > self.seen_seq:
+            self.seen_seq = seq
+            self.recent.add(event)
         if not self.id:
+            # Not registered yet (still starting): the create answer
+            # carries these (Supervisor._m_session_create).
             self._early.append(event)
             return
         data = protocol.encode(message)
-        seq = event.get("seq")
         for client, replayed in list(self.subscribers.items()):
             if isinstance(seq, int) and seq <= replayed:
                 continue                     # already in that window's replay
@@ -274,9 +323,28 @@ class Session:
         return event
 
     def replay(self, turns: int) -> list[dict]:
-        path = eventlog.log_path(self.id)
-        return eventlog.tail_turns(eventlog.read_events(path), turns,
-                                   header=self.header())
+        """The last ``turns`` turns (0: all the service holds), up to the
+        last event it has read -- the same point ``pending`` and ``state``
+        stand at -- from memory, never from the log in the event loop."""
+        events = eventlog.tail_turns(self.recent.events(), turns, header=self.header())
+        if self.recent.dropped and (turns <= 0 or turns > self.recent.turns()):
+            # Older turns did not fit the replay budget: say so, where they
+            # would have been (right after the header).
+            events.insert(1, {**eventlog.OLDER_LEFT_OUT, "session": self.id,
+                              "ts": round(time.time(), 3)})
+        return events
+
+    async def load_history(self) -> None:
+        """What the log already held when this service took the session
+        on (a resumed session's earlier turns), merged under the events
+        read live since. Read on a thread: a long log must not stall the
+        service."""
+        try:
+            older = await asyncio.to_thread(eventlog.read_events,
+                                            eventlog.log_path(self.id))
+        except Exception:
+            return
+        self.recent.merge_older(older)
 
 
 class Client:
@@ -291,6 +359,8 @@ class Client:
         self.peer_pid = peer_pid
         self.greeted = False
         self.closed = False
+        self.name = ""                    # what it said it is, in its hello
+        self._stuck_check: asyncio.TimerHandle | None = None
 
     def send(self, message: dict) -> None:
         self.send_bytes(protocol.encode(message))
@@ -304,16 +374,37 @@ class Client:
             self.close()
             return
         transport = self.writer.transport
+        if transport is None:
+            return
+        behind = transport.get_write_buffer_size()
+        if behind > CLIENT_BACKLOG_HARD_BYTES:
+            self.close(abort=True)
+        elif behind > CLIENT_BACKLOG_BYTES and self._stuck_check is None:
+            self._stuck_check = asyncio.get_running_loop().call_later(
+                CLIENT_STUCK_S, self._still_behind)
+
+    def _still_behind(self) -> None:
+        self._stuck_check = None
+        transport = self.writer.transport
         if transport is not None and \
                 transport.get_write_buffer_size() > CLIENT_BACKLOG_BYTES:
-            self.close()
+            # Dropped, backlog and all: a plain close would keep the whole
+            # backlog in memory until the window read it.
+            self.close(abort=True)
 
-    def close(self) -> None:
+    def close(self, *, abort: bool = False) -> None:
         if self.closed:
             return
         self.closed = True
+        if self._stuck_check is not None:
+            self._stuck_check.cancel()
+            self._stuck_check = None
         try:
-            self.writer.close()
+            transport = self.writer.transport
+            if abort and transport is not None:
+                transport.abort()
+            else:
+                self.writer.close()
         except Exception:
             pass
         self.supervisor.client_gone(self)
@@ -332,11 +423,27 @@ class Supervisor:
         self.quiet_since = time.monotonic()
         self._spawned = 0
         self.stopping: asyncio.Event | None = None
+        #: Set once the service begins to stop, by any path, even before
+        #: serve() runs (an emergency stop noticed while starting up): no
+        #: session starts from here on and nothing acts.
+        self.closing = False
+        self._creating = 0                # session.create calls in flight
+        #: The tasks the service runs (requests, readers, connections):
+        #: what has to end before it is gone.
+        self._tasks: set[asyncio.Task] = set()
         self.server: asyncio.base_events.Server | None = None
+
+    def spawn(self, coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     # -- the socket -----------------------------------------------------------------------
     async def serve(self, path: Path) -> None:
         self.stopping = asyncio.Event()
+        if self.closing:
+            self.stopping.set()
         try:
             path.unlink()                       # stale: the lock is ours
         except FileNotFoundError:
@@ -348,10 +455,11 @@ class Supervisor:
         finally:
             os.umask(old)
         os.chmod(path, 0o600)
-        idle = asyncio.create_task(self._watch_idle())
+        idle = self.spawn(self._watch_idle())
         try:
             await self.stopping.wait()
         finally:
+            self.closing = True
             idle.cancel()
             self.server.close()
             await self.end_all_sessions()
@@ -361,6 +469,19 @@ class Supervisor:
                 path.unlink()
             except FileNotFoundError:
                 pass
+            self._remove_roster()
+            await self._settle_tasks()
+
+    async def _settle_tasks(self) -> None:
+        """Let what the service still runs end before the loop closes:
+        requests whose window is gone, readers of ended workers."""
+        others = [t for t in self._tasks if t is not asyncio.current_task()]
+        if others:
+            _done, pending = await asyncio.wait(others, timeout=2.0)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=1.0)
 
     async def _accept(self, reader: asyncio.StreamReader,
                       writer: asyncio.StreamWriter) -> None:
@@ -378,6 +499,10 @@ class Supervisor:
         client = Client(self, reader, writer, not self._from_an_agent(pid), pid)
         self.clients.add(client)
         self.quiet_since = time.monotonic()
+        connection = asyncio.current_task()
+        if connection is not None:
+            self._tasks.add(connection)
+            connection.add_done_callback(self._tasks.discard)
         try:
             while not client.closed:
                 try:
@@ -400,7 +525,7 @@ class Supervisor:
                 # Each request runs on its own, so a slow session never holds
                 # a window's other requests; requests to one session still
                 # reach it in the order they came (request() writes first).
-                asyncio.create_task(self._dispatch(client, message))
+                self.spawn(self._dispatch(client, message))
         finally:
             client.close()
 
@@ -417,21 +542,19 @@ class Supervisor:
         or Seatbelt mask the socket's directory as a "session door"
         (api_client._session_doors), like the tmux and screen sockets."""
         if pid <= 0:
-            return False                      # the platform cannot say
+            return True                       # who it is cannot be told: watch only
         workers = {s.proc.pid for s in [*self.sessions.values(), *self.starting]}
         p, hops = pid, 0
         while p > 1 and hops < 64:
             if p in workers:
                 return True
             p, hops = _ppid(p), hops + 1
-        if not LINUX:
-            return False                      # no /proc: the ancestry only
         try:
             from ..approval_guard import ENV_MARKER
-            environ = Path(f"/proc/{pid}/environ").read_bytes()
         except ImportError:
             return False
-        except OSError:
+        environ = _environ_of(pid)
+        if environ is None:
             return True                       # unreadable: fail closed
         return f"{ENV_MARKER}=".encode() in environ
 
@@ -466,6 +589,10 @@ class Supervisor:
                         "this connection comes from an agent session's own "
                         "process: it may watch, not act (only the user "
                         "answers, sends and ends)")
+        if self.closing and method in ACTING and method != "service.shutdown":
+            # Its connections stay open while the sessions end and save; a
+            # session started now would outlive the service.
+            return fail(protocol.NOT_ALLOWED, "the agent service is stopping")
         try:
             if method in FORWARDED:
                 return answer(await self._forward(method, params))
@@ -489,7 +616,12 @@ class Supervisor:
         if session is None:
             raise _Refusal(UNKNOWN_SESSION, f"no session {sid!r} here")
         rest = {k: v for k, v in params.items() if k != "sessionId"}
-        return await session.request(method, rest)
+        try:
+            return await session.request(method, rest, timeout=FORWARD_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            raise _Refusal(protocol.INTERNAL_ERROR,
+                           f"the session did not answer {method} within "
+                           f"{FORWARD_TIMEOUT_S:.0f} s") from None
 
     async def _m_hello(self, client: Client, params: dict) -> dict:
         version = int(params.get("protocolVersion", 0) or 0)
@@ -498,6 +630,7 @@ class Supervisor:
                            f"the service speaks protocol {protocol.PROTOCOL_VERSION},"
                            f" this window {version}")
         client.greeted = True
+        client.name = str(params.get("client") or "")[:64]
         return {"protocolVersion": protocol.PROTOCOL_VERSION,
                 "serviceVersion": SERVICE_VERSION, "pid": os.getpid(),
                 "host": rundir.hostname(), "mayAct": client.may_act,
@@ -537,7 +670,23 @@ class Supervisor:
         return out
 
     async def _m_session_create(self, client: Client, params: dict) -> dict:
-        args = [*self.worker_cmd, "--cwd", str(Path(params["cwd"]).expanduser())]
+        cwd = Path(str(params["cwd"])).expanduser()
+        if not str(params["cwd"]).strip() or not cwd.is_absolute():
+            # A relative folder would be taken relative to the service's
+            # own working directory ($HOME), not the window's.
+            raise _Refusal(protocol.INVALID_PARAMS, "cwd must be an absolute path")
+        if not cwd.is_dir():
+            raise _Refusal(protocol.INVALID_PARAMS, f"no such folder: {cwd}")
+        if self.closing:
+            raise _Refusal(protocol.NOT_ALLOWED, "the agent service is stopping")
+        self._creating += 1
+        try:
+            return await self._create(client, params, cwd)
+        finally:
+            self._creating -= 1
+
+    async def _create(self, client: Client, params: dict, cwd: Path) -> dict:
+        args = [*self.worker_cmd, "--cwd", str(cwd)]
         for key, flag in (("name", "-n"), ("model", "--model"),
                           ("provider", "--provider"), ("effort", "--effort"),
                           ("mode", "--mode"), ("permissionMode", "--permission-mode"),
@@ -572,8 +721,12 @@ class Supervisor:
             os.close(log_fd)
         session = Session(self, proc, dict(params))
         self.starting.add(session)
-        asyncio.create_task(session.read())
+        self.spawn(session.read())
         try:
+            if self.closing:
+                # The service began to stop while the worker started; it
+                # ends with the rest (end_all_sessions takes `starting`).
+                raise _Refusal(protocol.NOT_ALLOWED, "the agent service is stopping")
             init = await session.request("initialize",
                                          {"protocolVersion": protocol.PROTOCOL_VERSION,
                                           "client": "delfin-agent service"},
@@ -584,34 +737,50 @@ class Supervisor:
                 proc.kill()
             reason = session.ended_reason or str(exc) or "the session did not start"
             raise _Refusal(WORKER_GONE, reason) from None
-        self.starting.discard(session)
+        # The worker's state at its answer, then what it said after it (read
+        # since, in order): the answer is older than those events.
         session.id = str(init["session"]["sessionId"])
         session.info.update(init.get("session") or {})
         session.state = str(init.get("state") or "idle")
-        for asked in init.get("pending") or []:
-            session.pending[str(asked.get("requestId"))] = asked
+        session.pending = {str(a.get("requestId")): a for a in init.get("pending") or []}
+        for event in session._early:
+            session.apply(event, count_cost=False)
+        first_live = min((int(e.get("seq", 0) or 0) for e in session._early
+                          if int(e.get("seq", 0) or 0) > 0), default=0)
+        session._early = []
+        self.starting.discard(session)
         self.sessions[session.id] = session
         self._write_roster()
-        if params.get("attach", True):
-            session.subscribers[client] = self._last_seq(session)
-        self.broadcast_summary(session)
+        if params.get("resume") or params.get("continue") or params.get("fork"):
+            # The turns of the session before this worker: for the replay.
+            await session.load_history()
+        # What the worker has said since it started -- in the answer, since
+        # the window cannot place an event of a session it has not heard of
+        # yet -- and from there on, live.
+        events = [e for e in session.recent.events()
+                  if first_live and int(e.get("seq", 0) or 0) >= first_live]
+        if params.get("attach", True) and not client.closed:
+            session.subscribers[client] = session.seen_seq
+        if self.closing:
+            # Registered: end_all_sessions ends it with the others.
+            raise _Refusal(protocol.NOT_ALLOWED, "the agent service is stopping")
+        # Every window hears of it -- after the creator has its answer.
+        asyncio.get_running_loop().call_soon(self.broadcast_summary, session)
         return {"sessionId": session.id, "session": session.info,
-                "state": session.state, "pending": list(session.pending.values())}
-
-    def _last_seq(self, session: Session) -> int:
-        events = eventlog.read_events(eventlog.log_path(session.id))
-        return max((int(e.get("seq", 0) or 0) for e in events), default=0)
+                "state": session.state, "pending": list(session.pending.values()),
+                "events": events}
 
     async def _m_session_attach(self, client: Client, params: dict) -> dict:
         session = self.sessions.get(str(params["sessionId"]))
         if session is None:
             raise _Refusal(UNKNOWN_SESSION, f"no session {params['sessionId']!r} here")
-        # Read and subscribe in one step of the event loop: every event the
-        # worker sends from here on is either in this replay (and dropped by
-        # its sequence number) or arrives live.
+        # The replay ends at the last event the service has read, where its
+        # state and open questions stand, and the window is subscribed right
+        # there, in the same step of the loop: every later event arrives
+        # live, none twice, and what the answer says agrees with what it
+        # shows.
         events = session.replay(int(params.get("turns", 0) or 0))
-        last = max((int(e.get("seq", 0) or 0) for e in events), default=0)
-        session.subscribers[client] = last
+        session.subscribers[client] = session.seen_seq
         return {"session": session.info, "state": session.state,
                 "pending": list(session.pending.values()), "events": events,
                 "summary": session.summary()}
@@ -635,13 +804,19 @@ class Supervisor:
         return {"pid": os.getpid(), "host": rundir.hostname(),
                 "startedAt": round(self.started_at, 3),
                 "sessions": [s.summary() for s in self.sessions.values()],
-                "windows": len(self.clients),
+                # TUI windows, not this request or other probes.
+                "windows": sum(1 for c in self.clients
+                               if c.greeted and c.name == "delfin-tui"),
                 "socket": str(rundir.socket_path())}
 
     async def _m_service_shutdown(self, _client: Client, _params: dict) -> dict:
-        assert self.stopping is not None
-        asyncio.get_running_loop().call_soon(self.stopping.set)
-        return {"stopping": True, "sessions": len(self.sessions)}
+        count = len(self.sessions) + len(self.starting)
+        # Closing now, so a request already on its way (a create sent right
+        # behind this) is refused; stopping on the next step, after this
+        # answer is out.
+        self.closing = True
+        asyncio.get_running_loop().call_soon(self.stop)
+        return {"stopping": True, "sessions": count}
 
     # -- sessions ---------------------------------------------------------------------------
     def broadcast_summary(self, session: Session) -> None:
@@ -673,13 +848,29 @@ class Supervisor:
 
     async def end_all_sessions(self) -> None:
         """Every session ends the way a window's shutdown ends it, and saves;
-        what does not end in time gets SIGTERM, then SIGKILL."""
-        sessions = [*self.sessions.values(), *self.starting]
-        for session in sessions:
+        what does not end in time gets SIGTERM, then SIGKILL. A session
+        still starting when the service began to stop is waited for and
+        ended too, so no worker outlives the service."""
+        self.closing = True
+        for _round in range(5):
+            sessions = [*self.sessions.values(), *self.starting]
+            if not sessions:
+                if not self._creating:
+                    return
+                # A create between its checks and its worker: let it get to
+                # one or the other (it sees `closing`), then look again.
+                await asyncio.sleep(0.05)
+                continue
+            await self._end(sessions)
+
+    async def _end(self, sessions: list[Session]) -> None:
+        async def ask(session: Session) -> None:
             try:
                 await session.request("session.shutdown", timeout=5)
             except Exception:
                 pass
+        # All at once: each may take its time, and the grace is shared.
+        await asyncio.gather(*(ask(s) for s in sessions))
         await self._wait_for(sessions, SHUTDOWN_GRACE_S)
         for session in sessions:
             if session.proc.returncode is None:
@@ -705,7 +896,7 @@ class Supervisor:
         """Which sessions run here: for `service status`, and for a later
         service to say which ones ended when this one did."""
         try:
-            path = rundir.run_file().with_suffix(".roster.json")
+            path = rundir.roster_file()
             from .. import state_paths
             state_paths.ensure_dir(path.parent)
             state_paths.write_text_atomic(path, json.dumps(
@@ -715,6 +906,14 @@ class Supervisor:
         except Exception:
             pass
 
+    def _remove_roster(self) -> None:
+        """Every session ended with the service and saved: nothing for a
+        later service to report (a crash leaves the roster behind)."""
+        try:
+            rundir.roster_file().unlink()
+        except OSError:
+            pass
+
     async def _watch_idle(self) -> None:
         assert self.stopping is not None
         while True:
@@ -722,10 +921,13 @@ class Supervisor:
             if self.sessions or self.starting or self.clients:
                 continue
             if time.monotonic() - self.quiet_since >= self.idle_exit_s:
-                self.stopping.set()
+                self.stop()
                 return
 
     def stop(self) -> None:
+        """Stop, from any path: a request, a signal, the emergency stop, the
+        idle timer. Before serve() runs too: it stops at once then."""
+        self.closing = True
         if self.stopping is not None:
             self.stopping.set()
 

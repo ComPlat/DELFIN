@@ -22,12 +22,18 @@ from __future__ import annotations
 import json
 import os
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any
 
 from .protocol import DURABLE_EVENTS, encode
 
 SERVICE_DIR_ENV = "DELFIN_AGENT_SERVICE_DIR"
+
+#: The most event bytes a replay carries (an attach, a create, a
+#: session.replay): the newest whole turns that fit. Every reader bounds
+#: its lines (protocol.MAX_LINE_BYTES), so an answer must stay well below.
+REPLAY_BUDGET_BYTES = 16 * 1024 * 1024
 
 
 def service_dir() -> Path:
@@ -72,7 +78,7 @@ def read_events(path: Path) -> list[dict]:
 
 
 def tail_turns(events: list[dict], turns: int,
-               header: dict | None = None) -> list[dict]:
+               header: dict | None = None, max_bytes: int = 0) -> list[dict]:
     """The events from the start of the ``turns``-th last turn onwards.
 
     A turn starts at its ``turn.started`` -- together with the messages
@@ -84,6 +90,11 @@ def tail_turns(events: list[dict], turns: int,
     first turn is long gone: ``header`` when given (the session as it is
     now), else the latest ``session.info`` in the log. ``turns <= 0``
     returns everything.
+
+    ``max_bytes`` bounds the events (the header aside): the newest whole
+    turns that fit, with a notice in front when older ones were left out.
+    Every reader bounds its lines, so an answer that carries a replay must
+    stay well below that.
     """
     events = [e for e in events if e.get("type") != "session.info"] \
         if header is not None else events
@@ -98,9 +109,91 @@ def tail_turns(events: list[dict], turns: int,
             while start > 0 and events[start - 1].get("type") == "user.message":
                 start -= 1
     picked = events[start:]
+    if max_bytes > 0:
+        window = RecentEvents(max_bytes)
+        for event in picked:
+            if event is not info:
+                window.add(event)
+        if window.dropped:
+            picked = [OLDER_LEFT_OUT, *window.events()]
     if info is not None:
         picked = [info, *[e for e in picked if e is not info]]
     return picked
+
+
+#: Where a replay leaves out turns that did not fit its budget.
+OLDER_LEFT_OUT = {"type": "notice", "ts": 0,
+                  "text": "(older turns of this session are not shown here; "
+                          "`delfin-agent report` has them all)"}
+
+
+class RecentEvents:
+    """The newest durable events of one session within a byte budget,
+    beginning at the start of a turn where one fits: what an attach
+    replays, kept in memory so no attach reads the log in the event loop."""
+
+    def __init__(self, budget: int):
+        self.budget = int(budget)
+        self._events: deque[tuple[dict, int]] = deque()
+        self._bytes = 0
+        #: Older events were let go to stay within the budget.
+        self.dropped = False
+
+    def add(self, event: dict) -> None:
+        size = len(encode(event))
+        self._events.append((event, size))
+        self._bytes += size
+        self._trim()
+
+    def merge_older(self, older: list[dict]) -> None:
+        """Put the events that came before the first one held in front
+        (a resumed session's log), newest kept when they do not all fit."""
+        held = [e for e, _ in self._events]
+        cutoff = int(held[0].get("seq", 0) or 0) if held else 0
+
+        def earlier(event: dict) -> bool:
+            seq = int(event.get("seq", 0) or 0)
+            return seq > 0 and (not held or seq < cutoff)
+
+        before = sorted(filter(earlier, older), key=lambda e: int(e.get("seq", 0) or 0))
+        if not before:
+            return
+        sized = [(e, len(encode(e))) for e in before]
+        self._events.extendleft(reversed(sized))
+        self._bytes += sum(size for _, size in sized)
+        self._trim()
+
+    def _trim(self) -> None:
+        if self._bytes <= self.budget:
+            return
+        events = self._events
+        while self._bytes > self.budget and len(events) > 1:
+            _, size = events.popleft()
+            self._bytes -= size
+            self.dropped = True
+        # Start at a turn (its turn.started, with the messages that sent
+        # it): a replay that opens mid-turn shows a tool row without the
+        # question that led to it. A single turn larger than the budget is
+        # kept from wherever it fits.
+        start = self._first_turn_start()
+        for _ in range(start):
+            _, size = events.popleft()
+            self._bytes -= size
+
+    def _first_turn_start(self) -> int:
+        messages = 0
+        for i, (event, _) in enumerate(self._events):
+            kind = event.get("type")
+            if kind == "turn.started":
+                return i - messages
+            messages = messages + 1 if kind == "user.message" else 0
+        return 0
+
+    def events(self) -> list[dict]:
+        return [e for e, _ in self._events]
+
+    def turns(self) -> int:
+        return sum(1 for e, _ in self._events if e.get("type") == "turn.started")
 
 
 class EventLog:
@@ -171,9 +264,9 @@ class EventLog:
                     self._fail(exc)
         return event
 
-    def replay(self, turns: int = 0,
-               header: dict | None = None) -> list[dict[str, Any]]:
-        return tail_turns(read_events(self.path), turns, header)
+    def replay(self, turns: int = 0, header: dict | None = None,
+               max_bytes: int = 0) -> list[dict[str, Any]]:
+        return tail_turns(read_events(self.path), turns, header, max_bytes)
 
     def close(self) -> None:
         with self._lock:
