@@ -233,6 +233,20 @@ def test_an_inp_without_a_dft_method_leaves_control_in_place(tmp_path):
         "PBE0", "def2-SVP", "D4")
 
 
+def test_an_xtb_inp_sorting_first_does_not_hide_the_dft_inp(tmp_path):
+    """XTB.inp sorts before initial.inp; the index reads the header that
+    names a functional, as method_parts_of_folder does."""
+    name = "xtb_and_dft"
+    rec, _ = _record(tmp_path, name, _template_control(),
+                     geometry=_TXT_ORGANIC,
+                     XTB__inp="! XTB2 OPT ALPB(DMF)\n* xyz 0 1\n*\n",
+                     initial__inp="! B3LYP def2-TZVP D3BJ\n* xyz 0 1\n*\n")
+    parts = ci.method_parts_of_folder(tmp_path / "calc" / name)
+    assert (rec["functional"], rec["basis_set"], rec["dispersion"]) == (
+        parts["functional"], parts["basis"], parts["dispersion"]) == (
+        "B3LYP", "def2-TZVP", "D3BJ")
+
+
 def test_delfin_data_json_wins_over_the_inp_header(tmp_path):
     rec, _ = _record(
         tmp_path, "json_inp", _template_control(), geometry=_TXT_ORGANIC,

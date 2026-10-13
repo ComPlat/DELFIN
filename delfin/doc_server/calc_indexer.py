@@ -507,6 +507,11 @@ def _extract_from_inp_header(text: str) -> dict[str, Any]:
     return rec
 
 
+# Record field -> .inp header field that, when present, overrides the
+# CONTROL.txt value (not a DELFIN_Data.json one).
+_INP_STATED = {"functional": "inp_functional", "basis_set": "inp_basis",
+               "dispersion": "inp_dispersion"}
+
 _KNOWN_DISPERSION = frozenset({"d2", "d3", "d3bj", "d3zero", "d4", "d3(bj)", "d3(zero)"})
 _NO_SOLVENT = frozenset({"", "none", "no", "gas", "gasphase", "gas phase", "vacuum", "vac", "false", "off"})
 
@@ -527,8 +532,9 @@ def method_parts_of_folder(d) -> dict:
     """functional, basis, dispersion and solvent from what the folder holds.
 
     The four a total energy is only comparable within. Read in the order
-    the index uses -- DELFIN_Data.json, CONTROL.txt, the .inp header --
-    and each field from the first source that has it. A solvent of
+    the index uses: DELFIN_Data.json first; functional, basis and
+    dispersion then from the .inp header (what ran) before CONTROL.txt;
+    the solvent from CONTROL.txt before the .inp. A solvent of
     "none" is the gas phase and comes back as None, so two gas-phase
     runs compare and a CPCM run compares with neither.
     """
@@ -538,6 +544,7 @@ def method_parts_of_folder(d) -> dict:
     parts: dict = {"functional": None, "basis": None, "solvent": None,
                    "dispersion": None, "solvation": None}
     seen_solvent = False
+    ctrl: dict = {}
     try:
         if (d / "DELFIN_Data.json").is_file():
             rec = _extract_from_delfin_data(_json.loads((d / "DELFIN_Data.json").read_text(encoding="utf-8")))
@@ -560,13 +567,13 @@ def method_parts_of_folder(d) -> dict:
                 if "=" in line and not line.startswith("#") and not line.startswith("-"):
                     k, _, v = line.partition("=")
                     kv[k.strip()] = v.strip()
-            parts["basis"] = parts["basis"] or rec.get("basis_set") or None
-            parts["functional"] = parts["functional"] or rec.get("functional") or None
+            ctrl = {"basis": rec.get("basis_set") or None,
+                    "functional": rec.get("functional") or None,
+                    "dispersion": (rec.get("dispersion")
+                                   or _clean_dispersion(kv.get("dispersion_correction")))}
             if not seen_solvent and "solvent" in kv:
                 parts["solvent"] = _clean_solvent(kv.get("solvent"))
                 seen_solvent = True
-            parts["dispersion"] = (parts["dispersion"] or rec.get("dispersion")
-                                   or _clean_dispersion(kv.get("dispersion_correction")))
             parts["solvation"] = parts["solvation"] or (rec.get("solvation") or None)
     except Exception:
         pass
@@ -585,6 +592,8 @@ def method_parts_of_folder(d) -> dict:
                     break
     except Exception:
         pass
+    for key, value in ctrl.items():
+        parts[key] = parts[key] or value
     return parts
 
 
@@ -684,6 +693,8 @@ def _scan_calc_dir(
                     print(f"  [warn] {d.name}/DELFIN_Data.json: {exc}",
                           file=sys.stderr)
 
+        from_json = {k for k in _INP_STATED if rec.get(k)}
+
         if has_control and "index_source" not in rec:
             try:
                 text = (d / "CONTROL.txt").read_text(encoding="utf-8")
@@ -703,19 +714,29 @@ def _scan_calc_dir(
                 pass
 
         if has_inp and not rec.get("orca_keywords"):
-            # Read first .inp for ORCA keywords
-            for inp_file in sorted(d.glob("*.inp"))[:1]:
+            # ORCA keywords from the first .inp whose header names a DFT
+            # functional (XTB.inp, XTB_GOAT.inp sort before initial.inp),
+            # else from the first .inp, as method_parts_of_folder reads them.
+            first = None
+            for inp_file in sorted(d.glob("*.inp")):
                 try:
-                    text = inp_file.read_text(encoding="utf-8")[:500]
-                    rec.update(_extract_from_inp_header(text))
+                    header = _extract_from_inp_header(
+                        inp_file.read_text(encoding="utf-8", errors="replace")[:500])
                 except Exception:
-                    pass
+                    continue
+                first = first or header
+                if header.get("inp_functional"):
+                    first = header
+                    break
+            rec.update(first or {})
 
-        # Fill functional/basis from .inp if still missing
-        if not rec.get("functional") and rec.get("inp_functional"):
-            rec["functional"] = rec["inp_functional"]
-        if not rec.get("basis_set") and rec.get("inp_basis"):
-            rec["basis_set"] = rec["inp_basis"]
+        # What the .inp header states wins over CONTROL.txt: DELFIN
+        # rewrites every .inp from CONTROL at run time, so they differ only
+        # when CONTROL was edited after the run, and the .inp is then what
+        # produced the outputs here. DELFIN_Data.json still wins.
+        for field, inp_key in _INP_STATED.items():
+            if rec.get(inp_key) and field not in from_json:
+                rec[field] = rec[inp_key]
 
         # List .out files present
         out_files = sorted(p.name for p in d.glob("*.out")
