@@ -928,6 +928,7 @@ def _write_co2_control_for_occupier(occ_dir: Path, args: Dict) -> None:
         f"charge={args.get('charge', 0)}",
         f"multiplicity={args.get('multiplicity', 2)}",
         f"broken_sym={args.get('broken_sym', '')}",
+        "method=OCCUPIER",
         "------------------------------------",
         f"functional={args.get('functional', 'PBE0')}",
         f"disp_corr={args.get('disp_corr', '')}",

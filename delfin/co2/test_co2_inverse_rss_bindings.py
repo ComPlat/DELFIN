@@ -736,3 +736,32 @@ def test_main_rejects_generator_source_without_smiles(tmp_path, monkeypatch):
                                  "dissoc_distance": "6.0"})
     with pytest.raises(ValueError, match="architector.*manta_smiles"):
         mod.main()
+
+
+def test_write_occupier_control_includes_method_key(tmp_path):
+    """The occupancy-search CONTROL must carry method=OCCUPIER.
+
+    run_OCCUPIER's read_control_file treats ``method`` as a required key;
+    a missing value raises "Missing required CONTROL values for: method"
+    and aborts the FoB search before any OCCUPIER.txt is produced. This
+    regression test pins the key that _write_co2_control_for_occupier
+    must emit so the adduct occupancy search actually runs.
+    """
+    from delfin.co2 import CO2_Coordinator6 as mod
+    occ_dir = tmp_path / "adduct_occupier"
+    occ_dir.mkdir()
+    args = {"charge": 0, "multiplicity": 2, "broken_sym": "",
+            "functional": "PBE0", "disp_corr": "D4", "ri_jkx": "true",
+            "aux_jk": "def2/J", "main_basisset": "def2-SVP",
+            "PAL": 4, "maxcore": 1000, "initial_guess": "",
+            "initial_sequence": "", "even_seq": "", "odd_seq": "",
+            "implicit_solvation_model": "", "solvent": "",
+            "calc_potential_method": "", "maxiter_occupier": "",
+            "parallel_workflows": "auto", "orca_parallel_strategy": "auto",
+            "pal_jobs": ""}
+    mod._write_co2_control_for_occupier(occ_dir, args)
+    ctrl = (occ_dir / "CONTROL.txt").read_text(encoding="utf-8")
+    assert "method=OCCUPIER" in ctrl, (
+        "occupancy-search CONTROL must set method=OCCUPIER (run_OCCUPIER "
+        "requires it); got:\n" + ctrl)
+
