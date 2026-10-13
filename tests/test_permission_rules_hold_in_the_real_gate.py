@@ -53,13 +53,13 @@ def env(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     (ws / "src").mkdir(parents=True)
     (ws / "src" / "a.py").write_text("x = 1\n")
-    (ws / "notes.txt").write_text("inside\n")
+    (ws / "notes.txt").write_text("NOTES_BODY\n")
     run = ws / "run.sh"
-    run.write_text("#!/bin/sh\necho RAN\n")
+    run.write_text("#!/bin/sh\necho RUN_MARKER\n")
     run.chmod(0o755)
     far = tmp_path / "far"
     far.mkdir()
-    (far / "data.txt").write_text("OUTSIDE\n")
+    (far / "data.txt").write_text("FAR_MARKER\n")
     PR._CACHE.clear()
     security_events.clear()
     return {"home": home, "settings": settings, "ws": ws, "far": far,
@@ -178,9 +178,9 @@ def test_a_read_deny_holds_for_the_tool_and_the_shell(env, mode):
     _rules(env, deny=["read(notes.txt)"])
     perms = _perms(env, mode=mode, answer=True)
     r = _run(perms, "read_file", {"path": "notes.txt"})
-    assert "read(notes.txt)" in _err(r) and "inside" not in r, r
+    assert "read(notes.txt)" in _err(r) and "NOTES_BODY" not in r, r
     r = _run(perms, "bash", {"command": "cat notes.txt"})
-    assert "read(notes.txt)" in _err(r) and "inside" not in r, r
+    assert "read(notes.txt)" in _err(r) and "NOTES_BODY" not in r, r
 
 
 @pytest.mark.parametrize("mode", ["default", "acceptEdits", "bypassPermissions"])
@@ -249,7 +249,7 @@ def test_an_ask_rule_asks_in_every_mode(env, mode):
     _rules(env, ask=["read(notes.txt)"])
     perms = _perms(env, mode=mode, answer=True)
     r = _run(perms, "read_file", {"path": "notes.txt"})
-    assert "inside" in r, r
+    assert "NOTES_BODY" in r, r
     assert len(perms.confirm_callback.asked) == 1
     assert "read(notes.txt)" in perms.confirm_callback.asked[0][2]
 
@@ -259,7 +259,7 @@ def test_an_ask_declined_or_unanswerable_refuses(env, mode):
     _rules(env, ask=["read(notes.txt)"])
     perms = _perms(env, mode=mode, answer=False)
     r = _run(perms, "read_file", {"path": "notes.txt"})
-    assert _err(r) and "inside" not in r, r
+    assert _err(r) and "NOTES_BODY" not in r, r
     r = _run(_perms(env, mode=mode), "read_file", {"path": "notes.txt"})
     assert "nobody can be asked" in _err(r), r
 
@@ -269,7 +269,7 @@ def test_an_approved_ask_is_not_asked_twice(env):
     _rules(env, ask=["bash(./run.sh)"])
     perms = _perms(env, answer=True)
     r = _run(perms, "bash", {"command": "./run.sh"})
-    assert "RAN" in r, r
+    assert "RUN_MARKER" in r, r
     assert len(perms.confirm_callback.asked) == 1
 
 
@@ -309,13 +309,13 @@ def test_a_bash_allow_skips_the_question(env):
     _rules(env, allow=["bash(./run.sh:*)"])
     perms = _perms(env, answer=False)
     r = _run(perms, "bash", {"command": "./run.sh --flag"})
-    assert "RAN" in r, r
+    assert "RUN_MARKER" in r, r
     assert not perms.confirm_callback.asked
 
 
 def test_a_bash_allow_also_answers_with_nobody_to_ask(env):
     _rules(env, allow=["bash(./run.sh)"])
-    assert "RAN" in _run(_perms(env), "bash", {"command": "./run.sh"})
+    assert "RUN_MARKER" in _run(_perms(env), "bash", {"command": "./run.sh"})
 
 
 def test_a_bash_allow_without_wildcard_is_exact(env):
@@ -342,7 +342,7 @@ def test_a_read_allow_skips_the_outside_question_and_opens_nothing(env):
     _rules(env, allow=[f"read({env['far']}/**)"])
     perms = _perms(env, answer=False)
     r = _run(perms, "read_file", {"path": str(env["far"] / "data.txt")})
-    assert "OUTSIDE" in r, r
+    assert "FAR_MARKER" in r, r
     assert not perms.confirm_callback.asked
     assert perms.session_read_dirs == ()
 
@@ -417,12 +417,12 @@ def test_an_allow_cannot_lift_a_hard_refusal(env, case, attended):
     far = env["far"]
     allow = allow or [f"read({far}/**)", f"write({far}/**)"]
     _rules(env, allow=allow)
-    (env["ws"] / ".env").write_text("SECRET=1\n")
+    (env["ws"] / ".env").write_text("SECRET_MARKER=1\n")
     (env["ws"] / "delfin" / "agent").mkdir(parents=True)
     (env["ws"] / "delfin" / "agent" / "api_client.py").write_text("orig\n")
     if label in ("git config program", "unrequested push"):
         _git_repo(env)
-    args = {k: (v.format(far=far) if isinstance(v, str) else v)
+    args = {k: (v.replace("{far}", str(far)) if isinstance(v, str) else v)
             for k, v in args.items()}
     perms = _perms(env, mode=mode, answer=False if attended else None,
                    lock_workspace=(label == "locked scope"))
@@ -432,7 +432,7 @@ def test_an_allow_cannot_lift_a_hard_refusal(env, case, attended):
     asked = perms.confirm_callback.asked if attended else []
     # Refused, or put to the person (who said no): never let through unseen.
     assert _err(r) or asked, (label, r)
-    assert "SECRET" not in r and "OUTSIDE" not in r and "RAN" not in r
+    assert "SECRET_MARKER" not in r and "FAR_MARKER" not in r and "RUN_MARKER" not in r
     assert not (far / "new.txt").exists()
     assert (env["ws"] / "src").is_dir()
     assert not (env["ws"] / ".delfin" / "settings.json").exists()
@@ -487,9 +487,13 @@ def test_no_write_route_reaches_the_settings_file(env, mode):
             "python3 -c \"import pathlib; pathlib.Path.home().joinpath("
             f"'{name}').write_text('{{}}')\"")}),
     ]
+    granted = json.loads(before)["permissions"]
     for tool, args in attempts:
         _run(perms, tool, args)
-        assert target.read_text() == before, (tool, args)
+        # The gate's own settings read may merge shipped defaults into the
+        # file (user_settings.load_settings); the rules must be untouched.
+        assert json.loads(target.read_text())["permissions"] == granted, (
+            tool, args)
 
 
 def test_the_settings_file_name_is_a_protected_path(env):

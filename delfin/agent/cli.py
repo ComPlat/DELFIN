@@ -1358,6 +1358,17 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
                          "reachable on this backend, so they are unchanged")
             notes.append(f"{line}; {_BARE_NOT_SKIPPED} still run")
 
+    # Permission rules that are not in force: a broken deny or ask is a
+    # protection the user believes they have, a broken allow grants nothing.
+    try:
+        from . import permission_rules
+        where = (getattr(engine, "workspace", None)
+                 or getattr(args, "cwd", "") or Path.cwd())
+        for line in permission_rules.error_lines(permission_rules.load(where)):
+            notes.append(f"permissions {line}")
+    except Exception:
+        pass
+
     return notes
 
 
