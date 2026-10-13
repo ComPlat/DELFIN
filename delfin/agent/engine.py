@@ -1028,12 +1028,20 @@ class AgentEngine:
             return False
         return bool(getattr(client, "EFFORT_PER_REQUEST", False))
 
-    def set_kit_permission_mode(self, mode: str) -> bool:
+    def set_kit_permission_mode(self, mode: str, *,
+                                announce: bool = True) -> bool:
         """Switch the KIT permission mode at runtime.
 
         Accepts 'plan', 'default', 'acceptEdits', 'bypassPermissions'.
         Returns True on success, False if no KIT permissions are bound or
         the mode is unknown.
+
+        ``announce=False`` sets the mode without the mid-turn note. For
+        the posture a launch resolves before any turn: the first turn's
+        prompt already states it, and the note told the model the USER
+        had switched it mid-turn, which also cost the first turn a
+        second model request (measured on the pty, one typed line, two
+        requests).
         """
         perms = self.kit_permissions
         if perms is None:
@@ -1051,7 +1059,7 @@ class AgentEngine:
         # Delivered on the same rail as steering and finished jobs, so it
         # lands between tool rounds and again if the turn ends without
         # one.
-        if previous and previous != mode:
+        if announce and previous and previous != mode:
             self._tell_the_running_turn(
                     f"[permissions] The user switched this session from "
                     f"'{previous}' to '{mode}' just now, mid-turn. That is "
