@@ -11,119 +11,43 @@ upload when someone can be asked.
 
 Every request in this file goes to a listener on 127.0.0.1; a host name
 like ``allowed.test`` reaches it through the proxy's injected connector.
+
+This file runs on every host. The tests that start a child under a real
+kernel layer (socket guard, Landlock ABI 4, a bubblewrap network
+namespace) need that layer and live in
+test_a_sandboxed_command_reaches_the_network_through_its_proxy.py.
 """
 from __future__ import annotations
 
 import base64
-import hashlib
-import http.server
-import io
 import os
-import shutil
 import socket
-import subprocess
 import sys
 import threading
 import types
 import urllib.error
 import urllib.request
-import zipfile
-from pathlib import Path
 
 import pytest
 
-from conftest import child_env
+import _egress_test_support as ES
 from delfin.agent import api_client as A
 from delfin.agent import egress_proxy as EP
 from delfin.agent import landlock_exec as LL
 from delfin.agent import socket_guard as SG
 
-HELPER = str(Path(A.__file__).with_name("landlock_exec.py"))
-needs_guard = pytest.mark.skipif(not SG.available(),
-                                 reason="needs seccomp user notification")
-
-
-# -- a local web: a page, an upload sink, a package index -------------------
-
-def _wheel() -> tuple[str, bytes]:
-    name = "tinypkg-0.1-py3-none-any.whl"
-    files = {
-        "tinypkg/__init__.py": b"VALUE = 42\n",
-        "tinypkg-0.1.dist-info/METADATA":
-            b"Metadata-Version: 2.1\nName: tinypkg\nVersion: 0.1\n",
-        "tinypkg-0.1.dist-info/WHEEL":
-            b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\n"
-            b"Tag: py3-none-any\n",
-    }
-    record = []
-    for path, data in files.items():
-        digest = base64.urlsafe_b64encode(
-            hashlib.sha256(data).digest()).rstrip(b"=").decode()
-        record.append(f"{path},sha256={digest},{len(data)}")
-    record.append("tinypkg-0.1.dist-info/RECORD,,")
-    files["tinypkg-0.1.dist-info/RECORD"] = ("\n".join(record) + "\n").encode()
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        for path, data in files.items():
-            zf.writestr(path, data)
-    return name, buf.getvalue()
+HELPER = ES.HELPER
+_perms = ES.perms_in
 
 
 @pytest.fixture
 def web():
-    wheel_name, wheel = _wheel()
-    seen = []
-
-    class H(http.server.BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.0"
-
-        def _send(self, body: bytes, ctype="text/plain"):
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_GET(self):
-            seen.append(("GET", self.headers.get("Host"), self.path))
-            if self.path.rstrip("/") == "/simple/tinypkg":
-                self._send(f'<a href="/files/{wheel_name}">{wheel_name}</a>'.encode(),
-                           "text/html")
-            elif self.path == f"/files/{wheel_name}":
-                self._send(wheel, "application/octet-stream")
-            else:
-                self._send(f"hello {self.headers.get('Host')}".encode())
-
-        def do_POST(self):
-            n = int(self.headers.get("Content-Length") or 0)
-            self.rfile.read(n)
-            seen.append(("POST", self.headers.get("Host"), self.path))
-            self._send(f"got {n}".encode())
-
-        def log_message(self, *a):
-            pass
-
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    srv.seen = seen
-    yield srv
-    srv.shutdown()
+    yield from ES.serve_web()
 
 
 @pytest.fixture
 def proxy(web, monkeypatch):
-    refused = []
-    p = EP.EgressProxy(
-        allowed_domains=["allowed.test"], allowed_ports=[web.server_address[1]],
-        connector=lambda h, port, t: socket.create_connection(("127.0.0.1", port), timeout=t),
-        on_refusal=refused.append, upload_ask_bytes=1024 * 1024)
-    p.refused = refused
-    monkeypatch.setattr(EP, "_PROXY", p)
-    monkeypatch.setattr(EP, "_settings", lambda: {"mode": "proxy"})
-    monkeypatch.setattr(EP, "_MODE_AT_START", None)
-    monkeypatch.setattr(EP, "_ENDPOINT_HOSTS", set())
-    yield p
-    p.close()
+    yield from ES.session_proxy(web, monkeypatch)
 
 
 class _Asker:
@@ -134,13 +58,6 @@ class _Asker:
     def __call__(self, name, args, preview):
         self.asked.append((name, dict(args), preview))
         return self.answer
-
-
-def _perms(tmp_path, mode="default", asker=None):
-    ws = tmp_path / "ws"
-    ws.mkdir(exist_ok=True)
-    return A.KitToolPermissions(workspace=str(ws), mode=mode,
-                                confirm_callback=asker)
 
 
 def _via(proxy, perms, url, data=None, method=None):
@@ -321,90 +238,8 @@ def test_a_token_without_a_session_keeps_the_old_answer(proxy, web):
     assert _via(proxy, perms, f"http://unknown.test:{port}/").startswith("403")
 
 
-# -- the kernel layer: a child cannot go around the proxy -------------------
-
-_PROBE = r'''
-import socket, sys, urllib.request, urllib.error
-port = int(sys.argv[1])
-def get(url, data=None):
-    try:
-        return urllib.request.urlopen(urllib.request.Request(url, data=data),
-                                      timeout=10).read().decode().split()[0]
-    except urllib.error.HTTPError as e:
-        return f"HTTP{e.code}"
-    except Exception as e:
-        return "error"
-def tcp(host, p):
-    s = socket.socket(); s.settimeout(3)
-    try:
-        s.connect((host, p)); return "connected"
-    except OSError as e:
-        return "refused"
-print(tcp("127.0.0.1", port), get(f"http://allowed.test:{port}/"),
-      get(f"http://evil.test:{port}/"))
-'''
-
-
-def _run(argv, ws, tmp_path, extra_env=None):
-    env = child_env(tmp_path)
-    env.update(extra_env or {})
-    return subprocess.run(argv, cwd=str(ws), env=env, capture_output=True,
-                          text=True, timeout=240)
-
-
-@needs_guard
-@pytest.mark.parametrize("mode", ["default", "acceptEdits", "plan", "bypassPermissions"])
-def test_a_child_python_cannot_connect_directly_in_any_mode(proxy, web, tmp_path,
-                                                            monkeypatch, mode):
-    monkeypatch.setattr(A, "_record_security_event", lambda *a, **k: None)
-    if not (A._bwrap_functional() or A._landlock_functional()):
-        pytest.skip("needs bubblewrap or Landlock for the default isolation")
-    perms = _perms(tmp_path, mode=mode)
-    probe = Path(perms.workspace) / "probe.py"
-    probe.write_text(_PROBE)
-    argv = A._bash_isolation_argv(
-        f"{sys.executable} {probe} {web.server_address[1]}", perms.workspace, perms)
-    out = _run(argv, perms.workspace, tmp_path)
-    assert out.stdout.split() == ["refused", "hello", "HTTP403"], out
-
-
-def _helper_argv(proxy, perms, ws, extra):
-    return [sys.executable, "-I", HELPER, "--fs", "0", "--net", "proxy",
-            "--proxy-socket", proxy.socket_path,
-            "--proxy-token-file", proxy.token_file_for(perms),
-            "--allow-socket", "/", *extra, "--"]
-
-
-@pytest.mark.skipif(LL.abi_version() < 4, reason="needs Landlock ABI 4 (TCP connect)")
-def test_landlock_tcp_holds_the_child_to_the_proxy_without_the_socket_guard(
-        proxy, web, tmp_path):
-    perms = _perms(tmp_path)
-    ws = Path(perms.workspace)
-    (ws / "probe.py").write_text(_PROBE)
-    argv = _helper_argv(proxy, perms, ws, ["--guard", "0"]) + [
-        sys.executable, str(ws / "probe.py"), str(web.server_address[1])]
-    out = _run(argv, ws, tmp_path)
-    assert out.stdout.split() == ["refused", "hello", "HTTP403"], out
-
-
-@pytest.mark.skipif(shutil.which("bwrap") is None or not A._bwrap_functional(),
-                    reason="needs a working bubblewrap")
-def test_a_network_namespace_reaches_the_proxy_without_the_socket_guard(
-        proxy, web, tmp_path):
-    """bubblewrap without seccomp user notification used to mean no network
-    at all (--unshare-net, proxy unreachable): pip and git broke. The
-    forwarder now runs inside the namespace."""
-    perms = _perms(tmp_path)
-    ws = Path(perms.workspace)
-    (ws / "probe.py").write_text(_PROBE)
-    proxy_dir = os.path.dirname(proxy.socket_path)
-    argv = (["bwrap", "--dev-bind", "/", "/", "--proc", "/proc", "--unshare-net",
-             "--ro-bind", proxy_dir, proxy_dir, "--die-with-parent"]
-            + _helper_argv(proxy, perms, ws, ["--guard", "0", "--netns", "1"])
-            + [sys.executable, str(ws / "probe.py"), str(web.server_address[1])])
-    out = _run(argv, ws, tmp_path)
-    assert out.stdout.split() == ["refused", "hello", "HTTP403"], out
-
+# -- the kernel layer: how the bubblewrap path wires the proxy in ----------
+# The runs under the real layers are in the sandbox network test file.
 
 def test_the_bubblewrap_path_without_the_guard_binds_the_proxy_in(tmp_path, monkeypatch):
     monkeypatch.setattr(A, "_bwrap_functional", lambda: True)
@@ -553,56 +388,3 @@ def test_a_session_cannot_loosen_the_network_mode_it_started_with(monkeypatch):
     assert EP.network_mode() == "proxy"
     current["mode"] = "none"
     assert EP.network_mode() == "none"
-
-
-# -- a normal unattended run keeps working ----------------------------------
-
-@needs_guard
-def test_an_unattended_run_installs_fetches_and_calls_its_model(
-        proxy, web, tmp_path, monkeypatch):
-    if not (A._bwrap_functional() or A._landlock_functional()):
-        pytest.skip("needs bubblewrap or Landlock for the default isolation")
-    monkeypatch.setattr(A, "_record_security_event", lambda *a, **k: None)
-    port = web.server_address[1]
-    index = f"http://pypi.test:{port}/simple"
-    monkeypatch.setenv("PIP_INDEX_URL", index)
-    EP.note_endpoint(f"http://models.test:{port}/v1")
-    perms = _perms(tmp_path, mode="bypassPermissions")
-    ws = Path(perms.workspace)
-
-    git = shutil.which("git")
-    remote = ws / "remote.git"
-    clone = ws / "clone"
-    if git:
-        subprocess.run([git, "init", "-q", "--bare", str(remote)], check=True,
-                       env=child_env(tmp_path))
-        seed = ws / "seed"
-        subprocess.run([git, "init", "-q", str(seed)], check=True, env=child_env(tmp_path))
-        (seed / "f").write_text("x")
-        for cmd in (["add", "f"], ["-c", "user.name=t", "-c", "user.email=t@t",
-                                   "commit", "-qm", "m"],
-                    ["push", "-q", str(remote), "HEAD:refs/heads/main"]):
-            subprocess.run([git, "-C", str(seed), *cmd], check=True, env=child_env(tmp_path))
-        subprocess.run([git, "clone", "-q", str(remote), str(clone)], check=True,
-                       env=child_env(tmp_path))
-
-    model = ws / "model.py"
-    model.write_text(
-        "import sys, urllib.request\n"
-        "r = urllib.request.urlopen(urllib.request.Request(sys.argv[1], "
-        "data=b'{\"messages\": []}'), timeout=10)\n"
-        "print('model', r.read().decode())\n")
-    cmd = (f"{sys.executable} -m pip install -q --no-cache-dir --target {ws}/site "
-           f"tinypkg && {sys.executable} -c 'import sys; sys.path.insert(0, \"{ws}/site\"); "
-           f"import tinypkg; print(\"pkg\", tinypkg.VALUE)' && "
-           f"{sys.executable} {model} http://models.test:{port}/v1/chat")
-    if git:
-        cmd += f" && {git} -C {clone} fetch -q origin && echo fetched"
-    argv = A._bash_isolation_argv(cmd, ws, perms)
-    out = _run(argv, ws, tmp_path, {"PIP_INDEX_URL": index,
-                                    "PIP_TRUSTED_HOST": "pypi.test",
-                                    "PIP_DISABLE_PIP_VERSION_CHECK": "1"})
-    assert out.returncode == 0, (out.stderr, web.seen, proxy.refused)
-    assert "pkg 42" in out.stdout and "model got 16" in out.stdout, out
-    if git:
-        assert "fetched" in out.stdout, out
