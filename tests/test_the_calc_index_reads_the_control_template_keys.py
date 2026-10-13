@@ -140,6 +140,22 @@ def test_without_a_structure_the_basis_comes_from_the_inp(tmp_path):
     assert rec["basis_set"] == "ZORA-def2-SVP"
 
 
+def test_a_geometry_outside_the_folder_is_not_read(tmp_path):
+    """input_file naming a path out of the calc folder (or a symlink out
+    of it) is not opened; the basis then comes from nowhere."""
+    outside = tmp_path / "outside.xyz"
+    outside.write_text(_XYZ_RU, encoding="utf-8")
+    rec, _ = _record(tmp_path, "escape",
+                     _template_control(input_file="../../outside.xyz"))
+    assert rec["basis_set"] == ""
+    d = tmp_path / "calc" / "escape"
+    (d / "input.txt").symlink_to(outside)
+    assert ci._metals_in(d, {"input_file": "input.txt"}) is None
+    (d / "input.txt").unlink()
+    (d / "input.txt").write_text(_XYZ_RU, encoding="utf-8")
+    assert ci._metals_in(d, {"input_file": "input.txt"}) == ["Ru"]
+
+
 def test_the_legacy_basis_set_key_is_still_read(tmp_path):
     rec, _ = _record(tmp_path, "legacy",
                      "NAME = x\nfunctional = B3LYP\nbasis_set = def2-TZVP\n")

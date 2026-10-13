@@ -323,8 +323,56 @@ def _outcome_of(completed, exit_code) -> str:
 
 
 
-def _extract_from_control_txt(text: str) -> dict[str, Any]:
-    """Extract searchable fields from a CONTROL.txt file."""
+# The CONTROL.txt keys read below, as delfin.define.TEMPLATE writes them
+# (pinned against TEMPLATE in
+# tests/test_the_calc_index_reads_the_control_template_keys.py).
+CONTROL_TEMPLATE_KEYS = (
+    "input_file", "NAME", "SMILES", "charge", "multiplicity_0",
+    "implicit_solvation_model", "solvent", "functional", "disp_corr",
+    "relativity", "main_basisset", "main_basisset_rel",
+    "metal_basisset", "metal_basisset_rel",
+)
+
+
+def _metals_in(folder: Path | None, kv: dict) -> list[str] | None:
+    """The transition metals of the structure, as delfin.utils.
+    search_transition_metals reads them from an XYZ geometry, or from the
+    bracket atoms of a SMILES; None when no structure is readable (no
+    SMILES in CONTROL, no geometry file inside *folder*)."""
+    from delfin.utils import _TM_LIST, search_transition_metals
+    smiles = [kv.get("SMILES", "")]
+    if folder is not None:
+        geom = folder / (kv.get("input_file") or "input.txt")
+        try:
+            if geom.is_file() and geom.resolve().is_relative_to(folder.resolve()):
+                lines = [ln.strip() for ln in geom.read_text(
+                    encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+                if lines and lines[0].isdigit():
+                    return search_transition_metals(str(geom))
+                if lines:
+                    smiles.append(lines[0])
+        except OSError:
+            pass
+    smiles = [s for s in smiles if s.strip()]
+    if not smiles:
+        return None
+    return sorted({m for s in smiles
+                   for m in re.findall(r"\[\d*([A-Z][a-z]?)", s) if m in _TM_LIST})
+
+
+def _extract_from_control_txt(text: str, folder: Path | None = None) -> dict[str, Any]:
+    """Extract searchable fields from a CONTROL.txt file.
+
+    Level of theory from the define.TEMPLATE keys: ``functional``,
+    ``disp_corr``, ``main_basisset``, ``metal_basisset``; for a structure
+    with a 4d/5d/4f/5f metal the ``*_rel`` basis values and the
+    ``relativity`` Hamiltonian, chosen as delfin.utils.set_main_basisset
+    and select_rel_and_aux choose them (``relativity`` alone does not
+    switch the basis). The atoms come from ``SMILES`` or the geometry file
+    ``input_file`` inside *folder*; with neither, the template basis stays
+    empty and the .inp header supplies it. The non-template ``basis_set``
+    key remains the fallback (the benchmark fixtures write it).
+    """
     rec: dict[str, Any] = {}
     kv: dict[str, str] = {}
     for line in text.splitlines():
@@ -342,7 +390,20 @@ def _extract_from_control_txt(text: str) -> dict[str, Any]:
     # CONTROL.txt "method" is the DELFIN workflow method (classic/OCCUPIER/...),
     # NOT the DFT functional.  We store it separately.
     rec["workflow_method"] = kv.get("method", "")
-    rec["basis_set"] = kv.get("basis_set", "")
+    rec["functional"] = kv.get("functional", "")
+    rec["dispersion"] = _clean_dispersion(kv.get("disp_corr")) or ""
+    rec["multiplicity"] = kv.get("multiplicity_0", "")
+    metals = _metals_in(folder, kv)
+    main, metal, relativity = "", "", ""
+    if metals is not None:
+        from delfin.utils import _rel_method_token, _should_use_rel
+        suffix = "_rel" if _should_use_rel(metals) else ""
+        main = kv.get(f"main_basisset{suffix}", "")
+        metal = kv.get(f"metal_basisset{suffix}", "") if metals else ""
+        relativity = _rel_method_token(kv) if suffix else ""
+    rec["basis_set"] = main or kv.get("basis_set", "")
+    rec["metal_basis"] = metal
+    rec["relativity"] = relativity
 
     modules = []
     if _is_yes(kv.get("IMAG")):
@@ -396,6 +457,7 @@ _KNOWN_BASIS = {
     "6-31g*", "6-31g**", "6-311g**", "6-31+g*", "6-311+g(2d,p)",
     "sto-3g", "def2-svp(d)",
     "sarc-dkh-tzvp", "sarc-zora-tzvp", "x2c-tzvp", "x2c-svp",
+    "zora-def2-svp", "zora-def2-tzvp", "zora-def2-tzvpp",
     "vdzp",
 }
 
@@ -475,7 +537,7 @@ def method_parts_of_folder(d) -> dict:
     try:
         if (d / "CONTROL.txt").is_file():
             text = (d / "CONTROL.txt").read_text(encoding="utf-8")
-            rec = _extract_from_control_txt(text)
+            rec = _extract_from_control_txt(text, d)
             kv: dict = {}
             for line in text.splitlines():
                 line = line.strip()
@@ -487,7 +549,8 @@ def method_parts_of_folder(d) -> dict:
             if not seen_solvent and "solvent" in kv:
                 parts["solvent"] = _clean_solvent(kv.get("solvent"))
                 seen_solvent = True
-            parts["dispersion"] = parts["dispersion"] or _clean_dispersion(kv.get("dispersion_correction"))
+            parts["dispersion"] = (parts["dispersion"] or rec.get("dispersion")
+                                   or _clean_dispersion(kv.get("dispersion_correction")))
             parts["solvation"] = parts["solvation"] or (rec.get("solvation") or None)
     except Exception:
         pass
@@ -608,7 +671,7 @@ def _scan_calc_dir(
         if has_control and "index_source" not in rec:
             try:
                 text = (d / "CONTROL.txt").read_text(encoding="utf-8")
-                rec.update(_extract_from_control_txt(text))
+                rec.update(_extract_from_control_txt(text, d))
                 rec["index_source"] = "CONTROL.txt"
             except Exception:
                 pass
@@ -616,7 +679,7 @@ def _scan_calc_dir(
             # Supplement from CONTROL if DELFIN_Data didn't have metadata
             try:
                 text = (d / "CONTROL.txt").read_text(encoding="utf-8")
-                ctrl_rec = _extract_from_control_txt(text)
+                ctrl_rec = _extract_from_control_txt(text, d)
                 for k, v in ctrl_rec.items():
                     if k not in rec or not rec[k]:
                         rec[k] = v
@@ -802,6 +865,8 @@ def _build_search_text(rec: dict[str, Any]) -> str:
         rec.get("aux_basis", ""),
         rec.get("ri_method", ""),
         rec.get("dispersion", ""),
+        rec.get("metal_basis", ""),
+        rec.get("relativity", ""),
         rec.get("solvation", ""),
         rec.get("solvent", ""),
         rec.get("xtb_method", ""),
