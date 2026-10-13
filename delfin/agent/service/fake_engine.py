@@ -7,15 +7,21 @@ without an API key, without network and without spending anything.
 ``FakeEngine`` stands where ``AgentEngine`` stands and plays one of a few
 scripts, chosen by words in the prompt:
 
-    edit   a file edit that needs approval (write tool, with a diff)
-    bash   a shell command that needs approval
-    plan   a plan put up for approval
-    ask    a multiple-choice question for the user
-    fail   the turn ends with an error
-    slow   a slow answer, for cancelling and queueing
-    steer  an answer that reads a message sent into the running turn
-    noisy  prints to stdout and runs a child that does the same
-    long   a long answer (hundreds of lines)
+    edit    a file edit that needs approval (write tool, with a diff)
+    bash    a shell command that needs approval
+    plan    a plan put up for approval
+    ask     a multiple-choice question for the user (``multi``: several
+            answers allowed)
+    fail    the turn ends with an error
+    outage  the turn ends on an endpoint outage, which the session waits
+            out before it continues on its own
+    slow    a slow answer (a few seconds), for cancelling
+    brief   an answer that takes about a second, for queueing
+    steer   an answer that reads a message sent into the running turn
+    noisy   prints to stdout and runs a child that does the same
+    secret  a tool call whose input and output carry a credential
+    latin   a tool result with a file name that is not UTF-8
+    long    a long answer (hundreds of lines)
     (anything else: a short answer after one read-only tool call)
 
 It honours the same callbacks, stop and steer paths and status counters the
@@ -87,9 +93,12 @@ class FakeEngine:
                         "mode": mode, "session_id": self.session_id}
 
     # -- the surface the worker and TerminalAgent use --------------------------
-    def set_kit_permission_mode(self, mode: str) -> bool:
+    def set_kit_permission_mode(self, mode: str, *, announce: bool = True) -> bool:
         self.kit_permissions.mode = mode
         return True
+
+    def clear_turn_continuation(self) -> None:
+        self.pending_turn_continuation = None
 
     def set_kit_confirm_callback(self, callback) -> bool:
         self.kit_permissions.confirm_callback = callback
@@ -217,14 +226,38 @@ class FakeEngine:
             else:
                 say("Plan rejected; staying in plan mode.")
         elif "ask" in words:
+            # The payload the real engine hands the callback
+            # (api_client._execute_ask_user_question, normalised).
             cb = self.kit_permissions.ask_user_callback
-            reply = cb({"question": "Which solvent model?",
-                        "options": ["CPCM", "SMD", "none"]}) if cb else {}
+            multi = "multi" in words
+            reply = cb({
+                "question": ("Which properties should be computed?" if multi
+                             else "Which solvent model?"),
+                "header": "Properties" if multi else "Solvent",
+                "options": ([{"label": "IR", "description": "frequencies"},
+                             {"label": "NMR", "description": "shieldings"},
+                             {"label": "UV-Vis", "description": "TD-DFT"}]
+                            if multi else
+                            [{"label": "CPCM", "description": "conductor-like"},
+                             {"label": "SMD", "description": "density-based"},
+                             {"label": "none", "description": "gas phase"}]),
+                "multiSelect": multi}) if cb else {}
             picked = (reply or {}).get("answers") or ["(no answer)"]
-            say(f"Using {picked[0]}.")
+            say(f"Using {', '.join(picked)}.")
+        elif "outage" in words:
+            # Worded like the gateway's own outage, which the REPL waits
+            # out (api_client._INFRA_EXHAUSTION_MARKERS).
+            raise RuntimeError("the endpoint is temporarily unavailable "
+                               "(fake outage)")
         elif "slow" in words:
             self.delay = max(self.delay, 0.05)
-            say("Working through a long calculation step by step. " * 12, step=4)
+            say("Working through a long calculation step by step. " * 4, step=4)
+        elif "brief" in words:
+            say("One moment. ")
+            until = time.monotonic() + 1.0
+            while time.monotonic() < until and not self._stop.is_set():
+                time.sleep(0.02)
+            say("Done.")
         elif "steer" in words:
             say("Starting on the task. ")
             deadline = time.monotonic() + 5.0
@@ -244,6 +277,17 @@ class FakeEngine:
             subprocess.run(["sh", "-c", "echo stray output from a child process"],
                            check=False)
             say("Noise made.")
+        elif "secret" in words:
+            token = "Bearer " + "f4k3t0k3n" * 4
+            tool("bash", {"command": f"curl -H 'Authorization: {token}' "
+                                     "https://example.invalid/api"},
+                 f"request sent with Authorization: {token}")
+            say("Done.")
+        elif "latin" in words:
+            import os as _os
+            name = _os.fsdecode(b"caf\xe9.xyz")
+            tool("list_dir", {"path": "."}, f"{name}\nREADME.md")
+            say(f"Found {name!r}.")
         elif "long" in words:
             say("".join(f"- line {i:03d} of a long answer\n" for i in range(1, 301)),
                 step=200)

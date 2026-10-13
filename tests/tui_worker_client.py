@@ -33,7 +33,7 @@ class WorkerClient:
     def __init__(self, tmp_path: Path, *args: str, fake: bool = True,
                  delay: float = 0.003, initialize: bool = True):
         self.home = tmp_path / "child_home"
-        scratch = tmp_path / "child_scratch"
+        self.scratch = scratch = tmp_path / "child_scratch"
         self.workspace = tmp_path / "workspace"
         for d in (self.home, scratch / ".delfin", self.workspace):
             d.mkdir(parents=True, exist_ok=True)
@@ -55,7 +55,8 @@ class WorkerClient:
         self._responses: dict[Any, dict] = {}
         self._cond = threading.Condition()
         self._next_id = 0
-        threading.Thread(target=self._read, daemon=True).start()
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
         if initialize:
             self.init_result = self.request("initialize", {"protocolVersion": 1})
 
@@ -134,6 +135,8 @@ class WorkerClient:
             return ""
 
     def close(self, timeout: float = 20.0) -> int:
+        """Shut the session down and wait until every event it sent is in
+        ``events`` (the reader has seen EOF), so a test may look at the last."""
         if self.proc.poll() is None:
             try:
                 self.request("session.shutdown", timeout=timeout)
@@ -144,12 +147,34 @@ class WorkerClient:
             except Exception:
                 pass
             try:
-                return self.proc.wait(timeout=timeout)
+                self.proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(timeout=5)
                 raise
+        self._reader.join(timeout=10)
         return self.proc.returncode
+
+    def ended(self, timeout: float = 20.0) -> int:
+        """Wait for the process to end on its own; then as ``close``."""
+        self.proc.wait(timeout=timeout)
+        self._reader.join(timeout=10)
+        return self.proc.returncode
+
+    def log_path(self) -> Path:
+        """The session's event log: under the scratch state, as every
+        ``~/.delfin`` sink of a child the suite starts."""
+        session = self.init_result["session"]["sessionId"]
+        return (self.scratch / ".delfin" / "agent_service" / "sessions"
+                / f"{session}.jsonl")
+
+    def text_of(self, start: int, end: int) -> str:
+        return "".join(e["text"] for e in self.events[start:end]
+                       if e["type"] == "text.ended")
+
+    def states(self, start: int = 0) -> list[str]:
+        return [e["state"] for e in self.events[start:]
+                if e["type"] == "session.state"]
 
     def __enter__(self) -> "WorkerClient":
         return self

@@ -17,11 +17,21 @@ changes who answers:
 
 Nothing is ever answered on the user's behalf. A request with no window
 attached waits; ``timeout_s`` stays 0, as it is for a terminal.
+
+The REPL answers on its main thread, which takes each request off the
+queue (``take``) and holds the turn's output until it is answered. Here a
+window answers from the protocol's reader thread instead, so ``take``
+never hands anything to the main thread: it keeps streaming the turn --
+and any other thread's output -- while a question is open. What the
+broker announces goes through ``emit`` in stream order (the worker queues
+it behind the turn's output), so a question never arrives ahead of the
+tool call it is about.
 """
 
 from __future__ import annotations
 
 import itertools
+import secrets
 import threading
 from typing import Any, Callable
 
@@ -48,18 +58,45 @@ def _preview(req: tc.ConfirmRequest) -> str:
         return rr.strip_control(req.preview or "")
 
 
+def _choices(payload: dict) -> list[tuple[str, str]]:
+    """``(label, description)`` per option of an ask_user_question.
+
+    The engine sends ``{"label", "description"}`` objects (plain strings are
+    accepted too); a window shows the label and answers with it, which is
+    what ``delfin-agent approvals`` and the model expect.
+    """
+    out: list[tuple[str, str]] = []
+    for option in (payload.get("options") or [])[:9]:
+        if isinstance(option, dict):
+            label = str(option.get("label", "") or "")
+            detail = str(option.get("description", "") or "")
+        else:
+            label, detail = str(option), ""
+        if label:
+            out.append((label, detail))
+    return out
+
+
 class ProtocolBroker(tc.TerminalConfirmBroker):
     """``TerminalConfirmBroker`` whose questions are answered by a window."""
 
     def __init__(self, emit: Emit, *, stop_turn: Callable[[], None] | None = None,
-                 on_waiting: Callable[[bool], None] | None = None, **kwargs):
+                 on_waiting: Callable[[bool], None] | None = None,
+                 on_feedback: Callable[[str], None] | None = None, **kwargs):
         super().__init__(timeout_s=0.0, **kwargs)
         self._emit = emit
         self._stop_turn = stop_turn
         self._on_waiting = on_waiting
+        self._on_feedback = on_feedback
         self._ids = itertools.count(1)
+        # Ids are unique per session, across restarts of its worker: a window
+        # holding an old id must never answer a newer question with it.
+        self._id_prefix = secrets.token_hex(3)
         self._by_id: dict[str, tc.ConfirmRequest] = {}
-        self._ids_lock = threading.Lock()
+        # Held while a request is registered AND announced, and while one is
+        # withdrawn AND announced: "asked" and "resolved" for one request
+        # can then only be emitted in that order.
+        self._ids_lock = threading.RLock()
         self._answered_by = threading.local()
 
     # -- announcing -----------------------------------------------------------
@@ -70,15 +107,23 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
         with self._ids_lock:
             return [r for r in self._by_id.values() if not r.resolved]
 
+    def take(self) -> tc.ConfirmRequest | None:
+        """Nothing for the main thread: a window answers (module doc)."""
+        return None
+
     def _enqueue(self, req: tc.ConfirmRequest) -> tc.ConfirmRequest:
         req = super()._enqueue(req)
         if req.resolved:              # refused on arrival by an abort
             return req
-        rid = f"p{next(self._ids)}"
-        req.protocol_id = rid
+        rid = f"p{self._id_prefix}-{next(self._ids)}"
         with self._ids_lock:
+            req.protocol_id = rid
             self._by_id[rid] = req
-        self._emit("permission.asked", **self.describe(req))
+            self._emit("permission.asked", **self.describe(req))
+        if req.resolved:
+            # An abort landed between queueing and announcing: the window
+            # must hear that this question is already over.
+            self._announce_resolved(req, "abort")
         self._waiting_changed()
         return req
 
@@ -90,6 +135,8 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
                 suggestion = self.suggest_pattern(req.command)
             except Exception:
                 suggestion = ""
+        # Frozen at ask time: "k" persists exactly what the window showed.
+        req.protocol_suggestion = suggestion
         options = tc.options_for(req, suggestion=suggestion)
         fields: dict[str, Any] = {
             "requestId": self.request_id(req),
@@ -110,7 +157,13 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
         if req.kind == tc.ASK:
             payload = req.payload or {}
             fields["question"] = str(payload.get("question", "") or "")
-            fields["choices"] = [str(o) for o in (payload.get("options") or [])][:9]
+            header = str(payload.get("header", "") or "")
+            if header:
+                fields["header"] = header
+            choices = _choices(payload)
+            fields["choices"] = [label for label, _ in choices]
+            fields["choiceDetails"] = [detail for _, detail in choices]
+            fields["multiSelect"] = bool(payload.get("multiSelect", False))
         return fields
 
     # -- every way a request ends ---------------------------------------------
@@ -137,13 +190,18 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
             self.last_refusal_reason = reason
         return decision
 
+    def _audit_dialog(self, req: tc.ConfirmRequest, *, by: str) -> None:
+        # Runs on the asking thread inside the base _wait, before _wait above
+        # copies the reason over: set it here so the audit record has it.
+        reason = str(getattr(req, "protocol_reason", "") or "")
+        if req.decision is False and reason:
+            self.last_refusal_reason = reason
+        super()._audit_dialog(req, by=by)
+
     def _announce_resolved(self, req: tc.ConfirmRequest, by: str) -> None:
         rid = self.request_id(req)
         if not rid:
             return
-        with self._ids_lock:
-            if self._by_id.pop(rid, None) is None:
-                return            # already announced
         decision = req.decision
         if req.kind == tc.CONFIRM:
             word = "approved" if decision is True else "denied"
@@ -155,7 +213,11 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
                 decision.get("answers") else "dismissed"
         if by == "expired":
             word = "expired"
-        self._emit("permission.resolved", requestId=rid, decision=word, by=by)
+        with self._ids_lock:
+            if self._by_id.pop(rid, None) is None:
+                return            # already announced
+            self._emit("permission.resolved", requestId=rid, decision=word,
+                       by=by)
         self._waiting_changed()
 
     def _waiting_changed(self) -> None:
@@ -168,7 +230,7 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
     # -- answering --------------------------------------------------------------
     def answer(self, request_id: str, *, choice: str = "",
                answers: list[str] | None = None,
-               reason: str = "") -> tuple[bool, str]:
+               reason: str = "", persist: bool = False) -> tuple[bool, str]:
         """Apply a window's answer the way the REPL applies a key.
 
         Returns ``(landed, message)``: ``landed`` is False only when the
@@ -186,18 +248,29 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
         try:
             return self._apply(req, choice=str(choice or ""),
                                answers=list(answers or []),
-                               reason=str(reason or ""))
+                               reason=str(reason or ""),
+                               persist=bool(persist))
         finally:
             self._answered_by.value = ""
 
     def _apply(self, req: tc.ConfirmRequest, *, choice: str,
-               answers: list[str], reason: str) -> tuple[bool, str]:
+               answers: list[str], reason: str,
+               persist: bool = False) -> tuple[bool, str]:
         if req.kind == tc.ASK:
-            offered = [str(o) for o in ((req.payload or {}).get("options") or [])]
-            picked = [a for a in answers if a in offered]
-            if len(picked) != len(answers):
+            # Answered with labels; no answers at all is Esc: dismissed.
+            if choice:
+                raise InvalidAnswer("a question is answered with 'answers' "
+                                    "(the chosen labels), not a 'choice'")
+            payload = req.payload or {}
+            offered = [label for label, _ in _choices(payload)]
+            if any(a not in offered for a in answers):
                 raise InvalidAnswer("not one of the offered answers")
-            return self.resolve(req, {"answers": picked}), "answered"
+            if len(set(answers)) != len(answers):
+                raise InvalidAnswer("an answer was given twice")
+            if len(answers) > 1 and not payload.get("multiSelect"):
+                raise InvalidAnswer("this question takes one answer")
+            return self.resolve(req, {"answers": list(answers)}), \
+                ("answered" if answers else "dismissed")
 
         options = tc.options_for(req, suggestion=self._suggestion(req))
         if choice not in {o.key for o in options}:
@@ -211,9 +284,18 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
                 return self.resolve(req, {"approved": True,
                                           "new_mode": "acceptEdits"}), \
                     "approval → acceptEdits"
-            req.protocol_reason = reason
-            return self.resolve(req, {"approved": False, "new_mode": "plan"}), \
-                "plan rejected"
+            if not self.resolve(req, {"approved": False, "new_mode": "plan"}):
+                return False, "the request ended before this answer arrived"
+            if reason.strip() and self._on_feedback is not None:
+                # The plan callback has no room for a reason (the engine
+                # answers the model with "rejected" and the mode); what the
+                # user said goes into the running turn instead, the way a
+                # message steered into it does.
+                try:
+                    self._on_feedback(f"Plan rejected: {reason.strip()}")
+                except Exception:
+                    pass
+            return True, "plan rejected"
 
         # CONFIRM: the keys of TerminalAgent._answer_request.
         if choice == "y":
@@ -232,21 +314,33 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
                     pass
             extra = f" and {len(others)} other request(s)" if others else ""
             return landed, f"aborted{extra}; the turn is ending"
-        # The side effect first, then the answer -- the REPL's order. The
-        # request is approved either way, as in the REPL; the message says
-        # whether the posture or pattern was actually saved.
+        # The answer lands first, the side effect after -- and only when it
+        # landed: an answer from outside that arrives in between must not be
+        # followed by a pattern persisted on top of it.
         if choice == "e":
+            if not self.resolve(req, True):
+                return False, "the request ended before this answer arrived"
             _ok, message = self.accept_edits()
-            return self.resolve(req, True), message
+            return True, message
         if choice == "R":
+            if not self.resolve(req, True):
+                return False, "the request ended before this answer arrived"
             _ok, message = self.persist_read(tc.read_dir_for(req))
-            return self.resolve(req, True), message
+            return True, message
         if choice in ("A", "k"):
+            # The REPL asks a second time before persisting: the pattern is
+            # global and permanent. Over the protocol that second "yes" is the
+            # explicit ``persist`` flag; without it the answer is "just this
+            # once" -- never a pattern the user did not confirm.
             pattern = (self.exact_pattern(req.command) if choice == "A"
-                       else self._suggestion(req))
+                       else str(getattr(req, "protocol_suggestion", "") or ""))
+            if not self.resolve(req, True):
+                return False, "the request ended before this answer arrived"
+            if not persist:
+                return True, "approved just this once (persist was not confirmed)"
             _ok, message = self.persist(pattern) if pattern else \
                 (False, "nothing to persist")
-            return self.resolve(req, True), message
+            return True, message
         if choice == "?":
             raise InvalidAnswer(tc.render_help(req, options))
         raise InvalidAnswer(f"{choice!r} does nothing here")

@@ -58,14 +58,38 @@ REQUESTS: dict[str, dict[str, str]] = {
     "session.replay": {"turns": "integer?"},
     "session.shutdown": {},
     # The answer to a permission.asked event: ``choice`` is one of the
-    # option keys it offered; ``answers`` the chosen texts of a question.
+    # option keys it offered (confirm, plan); ``answers`` the chosen labels
+    # of a question (ask). ``persist`` is the second "yes" the keys that
+    # save a permanent rule (A, k) need; without it they approve once.
     "permission.reply": {"requestId": "string", "choice": "string?",
-                         "answers": "[string]?", "reason": "string?"},
+                         "answers": "[string]?", "reason": "string?",
+                         "persist": "boolean?"},
+}
+
+# ---------------------------------------------------------------------------
+# Results: what each request answers with
+# ---------------------------------------------------------------------------
+
+RESULTS: dict[str, dict[str, str]] = {
+    "initialize": {"protocolVersion": "integer", "pid": "integer",
+                   "session": "object", "state": "string",
+                   "pending": "[object]"},
+    # Exactly one of: started next (accepted only), queued behind the
+    # running turn, or steered into it.
+    "session.prompt": {"accepted": "boolean", "queued": "boolean?",
+                       "steered": "boolean?"},
+    "session.cancel": {"stopping": "boolean", "refused": "integer"},
+    "session.setMode": {"approval": "string"},
+    "session.status": {"state": "string", "approval": "string",
+                       "queued": "integer"},
+    "session.replay": {"events": "[object]"},
+    "session.shutdown": {"closing": "boolean"},
+    "permission.reply": {"applied": "boolean", "message": "string"},
 }
 
 # ---------------------------------------------------------------------------
 # Events: worker -> client (method "event"; every event also carries
-# "session", "seq" and "ts")
+# "session" and "ts", and every durable one a "seq")
 # ---------------------------------------------------------------------------
 
 EVENTS: dict[str, dict[str, str]] = {
@@ -78,11 +102,13 @@ EVENTS: dict[str, dict[str, str]] = {
                      "notices": "[string]"},
     "session.updated": {"approval": "string?", "model": "string?",
                         "effort": "string?", "title": "string?"},
-    # idle | running | needs_input | ended
+    # idle | running | needs_input | ended. "running" covers everything the
+    # session does on its own: a turn, a follow-up, waiting out an outage.
     "session.state": {"state": "string"},
     "session.ended": {"reason": "string", "exitCode": "integer"},
-    # source: user | queued | harness (a turn nobody typed: a finished job,
-    # a message from another session, a continuation)
+    # source: user | queued (sent while a turn ran; goes out after it) |
+    # steer (sent into the running turn) | harness (nobody typed it: a
+    # finished job, a message from another session, a continuation)
     "user.message": {"text": "string", "source": "string"},
     "turn.started": {"turnId": "string", "source": "string"},
     "turn.ended": {"turnId": "string", "durationMs": "integer",
@@ -113,11 +139,16 @@ EVENTS: dict[str, dict[str, str]] = {
     "usage": {"inputTokens": "integer", "outputTokens": "integer",
               "costUsd": "number"},
     # kind: confirm | plan | ask. options are the keys the answer may use,
-    # exactly the ones the terminal REPL offers for the same request.
+    # exactly the ones the terminal REPL offers for the same request. A
+    # question (ask) carries its choices as labels -- the answer names
+    # them -- with a description each, and whether several may be picked.
     "permission.asked": {"requestId": "string", "kind": "string",
                          "tool": "string", "preview": "string",
                          "options": "[object]", "flags": "object",
-                         "question": "string?", "choices": "[string]?",
+                         "question": "string?", "header": "string?",
+                         "choices": "[string]?",
+                         "choiceDetails": "[string]?",
+                         "multiSelect": "boolean?",
                          "suggestion": "string?", "readDir": "string?"},
     # by: client | outside | expired | abort
     "permission.resolved": {"requestId": "string", "decision": "string",
@@ -125,8 +156,9 @@ EVENTS: dict[str, dict[str, str]] = {
 }
 
 #: Events kept in the session's durable log (eventlog.py) and replayed to
-#: a window that attaches later. Deltas, progress ticks and usage samples
-#: are live-only: the ended/turn records carry their final state.
+#: a window that attaches later. Only these carry a sequence number. Deltas,
+#: progress ticks, state changes and usage samples are live-only: the
+#: ended/turn records carry their final state.
 DURABLE_EVENTS = frozenset({
     "session.info", "session.updated", "session.ended",
     "user.message", "turn.started", "turn.ended",
@@ -167,9 +199,18 @@ def encode(message: dict) -> bytes:
 
     ``ensure_ascii`` stays off so text arrives as text; JSON escapes every
     control character, so a newline in a value can never end the line.
+
+    Never raises on content. A file name that is not UTF-8 reaches Python
+    as a lone surrogate (``os.fsdecode``); strict encoding would raise on
+    it and take the session down with one odd file name in a tool result.
+    ``backslashreplace`` writes it as ``\\udcXX`` -- inside a JSON string
+    that is the JSON escape for the same code unit, so the line stays valid
+    JSON and decodes back to what was sent. A value JSON has no type for
+    becomes its text.
     """
-    return (json.dumps(message, ensure_ascii=False, separators=(",", ":"))
-            + "\n").encode("utf-8")
+    return (json.dumps(message, ensure_ascii=False, separators=(",", ":"),
+                       default=str)
+            + "\n").encode("utf-8", errors="backslashreplace")
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +231,7 @@ class LineWriter:
             if self.closed:
                 return False
             try:
-                self._stream.write(data)
+                self._write_all(data)
                 self._stream.flush()
             except (BrokenPipeError, OSError, ValueError):
                 # The reader went away. Later sends are dropped rather than
@@ -198,6 +239,35 @@ class LineWriter:
                 self.closed = True
                 return False
         return True
+
+    def _write_all(self, data: bytes) -> None:
+        """All of ``data``, however many writes that takes.
+
+        An unbuffered stream may take part of a line (a signal arriving
+        mid-write) or, when the far end made the pipe non-blocking, none
+        of it for now; both are waited out instead of cutting the line.
+        """
+        view = memoryview(data)
+        while view:
+            try:
+                n = self._stream.write(view)
+            except BlockingIOError as exc:
+                n = int(getattr(exc, "characters_written", 0) or 0)
+                _wait_writable(self._stream)
+            if n is None:
+                _wait_writable(self._stream)
+                continue
+            view = view[n:]
+
+
+def _wait_writable(stream: IO[bytes], timeout: float = 1.0) -> None:
+    import select
+    import time
+
+    try:
+        select.select([], [stream.fileno()], [], timeout)
+    except (AttributeError, OSError, ValueError):
+        time.sleep(0.01)
 
 
 def read_messages(stream: IO[bytes],
@@ -297,16 +367,23 @@ def _object_schema(spec: dict[str, str], extra: dict | None = None) -> dict:
 
 
 def json_schema() -> dict:
-    """Every request and event as JSON Schema; the TUI's types come from it."""
-    common = {"session": {"type": "string"}, "seq": {"type": "integer"},
-              "ts": {"type": "number"}}
+    """Every request, result and event as JSON Schema; the TUI's types
+    come from it."""
+    common = {"session": {"type": "string"}, "ts": {"type": "number"}}
+
+    def event_schema(type_: str, spec: dict[str, str]) -> dict:
+        extra = {"type": {"const": type_}, **common}
+        if type_ in DURABLE_EVENTS:
+            extra["seq"] = {"type": "integer"}
+        return _object_schema(spec, extra)
+
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "delfin-agent TUI protocol",
         "protocolVersion": PROTOCOL_VERSION,
         "requests": {m: _object_schema(s) for m, s in REQUESTS.items()},
-        "events": {t: _object_schema(s, {"type": {"const": t}, **common})
-                   for t, s in EVENTS.items()},
+        "results": {m: _object_schema(s) for m, s in RESULTS.items()},
+        "events": {t: event_schema(t, s) for t, s in EVENTS.items()},
         "durableEvents": sorted(DURABLE_EVENTS),
     }
 

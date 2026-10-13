@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 
+from delfin.agent.service.protocol import DURABLE_EVENTS
 from tui_worker_client import WorkerClient
 
 
@@ -26,7 +27,9 @@ def test_a_turn_arrives_in_order_and_ends_idle(tmp_path):
     with WorkerClient(tmp_path) as w:
         start, end = w.turn("hello there")
         types = w.types(start, end + 1)
-        assert types[:3] == ["user.message", "turn.started", "session.state"]
+        # Busy from the moment the prompt is taken, before it is shown.
+        assert types[:3] == ["session.state", "user.message", "turn.started"]
+        assert w.events[start]["state"] == "running"
         assert types[-1] == "turn.ended"
         order = ["reasoning.started", "reasoning.ended", "tool.started",
                  "tool.ended", "text.started", "text.ended"]
@@ -58,12 +61,16 @@ def test_the_kept_text_is_exactly_what_was_streamed(tmp_path):
         assert "**one** README" in part["text"]
 
 
-def test_every_event_is_numbered_in_the_order_it_was_sent(tmp_path):
+def test_durable_events_are_numbered_in_the_order_they_were_sent(tmp_path):
     with WorkerClient(tmp_path) as w:
         w.turn("hello")
         w.turn("hello again")
-        seqs = [e["seq"] for e in w.events]
-        assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
+        durable = [e for e in w.events if e["type"] in DURABLE_EVENTS]
+        seqs = [e["seq"] for e in durable]
+        assert seqs == list(range(1, len(seqs) + 1))
+        # Live-only events are never replayed, so they carry no number.
+        assert not any("seq" in e for e in w.events
+                       if e["type"] not in DURABLE_EVENTS)
         session = w.init_result["session"]["sessionId"]
         assert {e["session"] for e in w.events} == {session}
 
@@ -94,3 +101,16 @@ def test_shutdown_ends_the_session_with_a_last_event(tmp_path):
     assert w.close() == 0
     assert w.events[-1]["type"] == "session.ended"
     assert w.events[-1]["exitCode"] == 0
+
+
+def test_a_commands_output_keeps_its_lines_in_one_notice(tmp_path):
+    with WorkerClient(tmp_path) as w:
+        start = len(w.events)
+        w.request("session.prompt", {"text": "/help"})
+        notice, at = w.wait_for("notice", after=start)
+        assert "\n" in notice["text"]
+        # Nothing of /help is split into a second notice.
+        w.wait_for(lambda e: e["type"] == "session.state"
+                   and e["state"] == "idle", after=at)
+        assert [e["type"] for e in w.events[start:]].count("notice") == 1
+        assert not any(e["type"] == "turn.started" for e in w.events[start:])

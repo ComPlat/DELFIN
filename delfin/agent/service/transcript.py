@@ -20,6 +20,7 @@ Grouping rules:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 from collections import defaultdict, deque
@@ -57,6 +58,9 @@ class ProtocolTranscript:
         self._reasoning: tuple[str, list[str]] | None = None
         self._calls: dict[str, deque[str]] = defaultdict(deque)
         self.tool_calls = 0
+        # Lines said inside block(), and the thread whose they are.
+        self._block: list[str] | None = None
+        self._block_owner = 0
 
     # -- turn boundaries (driven by the worker's agent) -----------------------
     def begin_turn(self, turn_id: str) -> None:
@@ -84,11 +88,41 @@ class ProtocolTranscript:
     def chrome(self, line: str) -> None:
         """Harness speech: command output, reports, notes about the turn."""
         text = rr.strip_control(line or "").rstrip()
-        if not text:
-            return
         with self._lock:
+            if self._block is not None and \
+                    threading.get_ident() == self._block_owner:
+                self._block.append(text)
+                return
+            if not text:
+                return
             self._close_parts()
             self._emit("notice", text=text)
+
+    @contextlib.contextmanager
+    def block(self):
+        """What this thread says until the end is ONE notice.
+
+        The REPL prints a command's output line by line (``/help``, ``!ls``),
+        blank lines included; as a notice per line, the blank lines that
+        separate its paragraphs were lost and a window could not tell where
+        one output ended. Collected here, it arrives as one text with its
+        lines as they were.
+        """
+        with self._lock:
+            outer = self._block is not None
+            if not outer:
+                self._block = []
+                self._block_owner = threading.get_ident()
+        try:
+            yield
+        finally:
+            if not outer:
+                with self._lock:
+                    lines, self._block = self._block or [], None
+                    text = "\n".join(lines).strip("\n")
+                    if text.strip():
+                        self._close_parts()
+                        self._emit("notice", text=text)
 
     def transient(self, line: str) -> None:
         text = rr.strip_control(line or "").strip()
@@ -101,7 +135,13 @@ class ProtocolTranscript:
     def render(self, item) -> None:
         kind = getattr(item, "kind", "")
         with self._lock:
-            if kind == "text":
+            if kind == "call":
+                # Something to say in stream order (the worker's post):
+                # an approval asked or settled, a state change.
+                fn = (getattr(item, "data", None) or {}).get("fn")
+                if callable(fn):
+                    fn()
+            elif kind == "text":
                 self._text_delta(item.text)
             elif kind == "thinking":
                 self._reasoning_delta(item.text)
@@ -174,6 +214,12 @@ class ProtocolTranscript:
     def _close_parts(self) -> None:
         self._close_text()
         self._close_reasoning()
+
+    def close_parts(self) -> None:
+        """End the open text or thinking part: what comes next (an approval
+        asked mid-answer) is drawn below it, as a tool call is."""
+        with self._lock:
+            self._close_parts()
 
     def _tool_started(self, item) -> None:
         call_id = self._next_id("c")
