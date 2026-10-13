@@ -487,12 +487,30 @@ def _save_session(engine, repo_root: Path, *, title: str = "") -> str:
     return sid
 
 
-def cmd_run(args: argparse.Namespace) -> int:
+def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
+    """One prompt, one answer, then the session-end stages.
+
+    *prepare*, when given, replaces the plain ``--session`` restore: it is
+    called with the built engine and opens the session itself (``chat -p``
+    passes the interactive session opener and the ``--supervised``
+    binding). False from it is a refusal to start, exit 2. ``run``, the
+    scheduler and the benchmark pass nothing and keep the plain restore.
+    """
     if not args.prompt:
         print("ERROR: prompt is required.", file=sys.stderr)
         return 2
     prompt = " ".join(args.prompt) if isinstance(args.prompt, list) else str(args.prompt)
     repo = Path(args.cwd or os.getcwd()).expanduser().resolve()
+    if prepare is None:
+        # The `run` door: the bypass rule chat -p applies in
+        # _cmd_chat_one_shot, which has already decided the posture.
+        mode, note, refused = _headless_posture(args, repo)
+        if refused:
+            print(note, file=sys.stderr)
+            return 2
+        if note:
+            print(note, file=sys.stderr)
+        args.permission_mode = mode
     if args.cwd:
         os.chdir(repo)
 
@@ -505,7 +523,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     # stderr — stdout carries the answer and nothing else.
     for _note in _bounding_notices(args, engine):
         print(_note, file=sys.stderr)
-    _resume_or_create(engine, args)
+    if prepare is None:
+        _resume_or_create(engine, args)
+    elif not prepare(engine):
+        return 2
     import time as _time
     _t0 = _time.monotonic()
     stream_json = (getattr(args, "output_format", "text") == "stream-json")
@@ -659,7 +680,7 @@ def _persisted_default_mode(workspace: Path) -> tuple[str, str]:
     still returns ``default_mode="default"``, its own fallback, which is
     indistinguishable from a user having written that word down. Asking
     the merged view therefore reports a decision nobody made — and it
-    silently defeated the plan-first default, because resolve_posture
+    silently decided the start posture, because resolve_posture
     correctly honours anything a user configured.
 
     The path travels with the mode because the banner names it. It used
@@ -1380,6 +1401,176 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
     return notes
 
 
+def _apply_launch_grants(args: argparse.Namespace, report) -> None:
+    """Hand the engine only the grants launch_guard accepted.
+
+    It has already refused a credential directory, a parent of the
+    workspace and a forbidden root by name, rather than letting the
+    permissions object drop them silently the way it does. Shared by the
+    interactive and the one-shot half of ``chat``: before, a ``-p`` run
+    checked ``--add-dir``/``--read-dir`` and then granted nothing.
+    """
+    args.extra_dirs = [str(p) for p in report.granted_dirs]
+    args.read_only_dirs = [str(p) for p in report.read_dirs]
+
+
+def _apply_isolation_flags(args: argparse.Namespace) -> str:
+    """Apply ``--isolate`` / ``--no-isolate``; return the line that says so.
+
+    Output: "" when nothing needs saying. The line goes to the banner of
+    an interactive session and to stderr on a one-shot run, because a run
+    without containment should not look like one that has it.
+    """
+    if getattr(args, "no_isolate", False):
+        from .api_client import set_bash_isolation_override
+        set_bash_isolation_override("off")
+        return ("isolation  OFF by request (--no-isolate) — a command the "
+                "agent runs can write outside the workspace")
+    if getattr(args, "isolate", False):
+        import shutil as _shutil
+        from .api_client import set_bash_isolation_override
+        set_bash_isolation_override("bwrap")
+        # Asking for isolation the host cannot give must not be silent.
+        # _bash_isolation_argv falls back to plain /bin/bash when bwrap is
+        # missing — correct, since there is nothing else it can do — but a
+        # flag that promises containment and delivers none without saying
+        # so is the same defect, one layer up.
+        if not _shutil.which("bwrap"):
+            return ("isolation  REQUESTED but unavailable — bubblewrap is "
+                    "not installed here, so commands run unisolated")
+    return ""
+
+
+def _bind_supervised(engine, args: argparse.Namespace) -> bool:
+    """Bind the approvals-directory broker; True when the gate took it.
+
+    No terminal, but somebody is watching the approvals directory.
+    Without this the Self-Modification Guard has no callback and refuses
+    outright, so a headless run cannot touch the agent's own safety layer
+    at all. Asked for explicitly with ``--supervised``: a run nobody is
+    watching keeps the refusal. ``--confirm-timeout`` bounds the wait
+    (0 is the broker's own default).
+    """
+    bind = getattr(engine, "set_kit_confirm_callback", None)
+    if not callable(bind):
+        return False
+    from .file_confirm import FileConfirmBroker
+    file_broker = FileConfirmBroker(
+        session_id=str(getattr(engine, "session_id", "") or ""),
+        timeout_s=float(getattr(args, "confirm_timeout", 0) or 0))
+    if not bind(file_broker.callback):
+        return False
+    print("[supervised] confirmations go to the approvals directory; "
+          "answer with: delfin-agent approvals", file=sys.stderr)
+    return True
+
+
+def _headless_posture(args: argparse.Namespace,
+                      workspace: Path) -> tuple[str, str, bool]:
+    """``(mode, note, refused)`` for a headless run, before any engine.
+
+    Called by ``chat -p`` (and a piped prompt) and by the ``run``
+    subcommand, so both headless doors hold one rule.
+
+    The interactive rule, held for a run nobody watches:
+
+    * ``--permission-mode bypassPermissions`` needs ``--unattended``.
+      A terminal session falls back to ``launch_guard.DEFAULT_MODE``
+      (``default``); a headless run is refused (exit 2), because a
+      fallen-back run would exit 0 having done less than the script
+      asked, and nobody reads the banner.
+    * A settings default of ``bypassPermissions`` is never inherited.
+      Without ``--unattended``: refused. With it: the posture
+      ``launch_guard.resolve_posture`` gives the terminal session
+      (``DEFAULT_MODE``), said on stderr. Taking the settings default
+      there would give a headless run more than an interactive session
+      with the same flags.
+    * Otherwise the flag, or ``""`` when none is passed, so the engine
+      resolves the settings default (or ``default``) exactly as before --
+      the same start posture the terminal now has.
+    """
+    from . import launch_guard
+
+    flag = str(getattr(args, "permission_mode", "") or "").strip()
+    unattended = bool(getattr(args, "unattended", False))
+    if flag == "bypassPermissions" and not unattended:
+        return "", ("REFUSED: --permission-mode bypassPermissions needs "
+                    "--unattended, on a headless run as in a terminal "
+                    "session."), True
+    if flag:
+        return flag, "", False
+    persisted, source = _persisted_default_mode(workspace)
+    if persisted != "bypassPermissions":
+        return "", "", False
+    source = source or "~/.delfin/settings.json"
+    if not unattended:
+        return "", (
+            f"REFUSED: {source} sets default_mode = \"bypassPermissions\", "
+            "and a headless run does not take that default without "
+            "--unattended. "
+            "Pass --permission-mode plan, default or acceptEdits, or "
+            "--permission-mode bypassPermissions --unattended if you mean "
+            "it."), True
+    mode, _why = launch_guard.resolve_posture(
+        flag_mode="", persisted_mode=persisted, unattended_opt_in=True,
+        settings_path=source)
+    return mode, (
+        f"{source} sets default_mode = \"bypassPermissions\"; a settings "
+        f"default of bypass is not inherited, so this run starts in {mode}. "
+        "Pass --permission-mode bypassPermissions --unattended if you mean "
+        "it."), False
+
+
+def _cmd_chat_one_shot(args: argparse.Namespace, report, workspace: Path,
+                       prompt: str) -> int:
+    """``chat -p`` / a piped prompt: the interactive set-up, then ``cmd_run``.
+
+    Input: the parsed flags, the accepted launch report, the workspace and
+    the prompt. Output: ``cmd_run``'s exit code, or 2 when a check refuses
+    before any engine exists.
+
+    The same set-up an interactive session gets, in the same order:
+    grants, isolation flags, posture, then -- with the engine built --
+    ``_open_session`` (``--session``, ``--continue``, ``--resume``,
+    ``--fork-session``, the writer lock) and the ``--supervised`` binding.
+    It used to hand the prompt to ``cmd_run`` before all of it, so a
+    one-shot run got more than a terminal with the same flags.
+
+    A bare ``--resume`` is refused: the picker needs a terminal, and a
+    fresh session in its place is not what was asked for.
+    """
+    if (getattr(args, "resume", None) == ""
+            and not str(getattr(args, "session", "") or "").strip()
+            and not getattr(args, "continue_session", False)
+            and not getattr(args, "new_session", False)):
+        print("REFUSED: --resume without an id needs a terminal to pick "
+              "from; on a -p run pass --resume ID or --continue.",
+              file=sys.stderr)
+        return 2
+    mode, note, refused = _headless_posture(args, workspace)
+    if refused:
+        print(note, file=sys.stderr)
+        return 2
+    _apply_launch_grants(args, report)
+    isolation_note = _apply_isolation_flags(args)
+    for line in (isolation_note, note):
+        if line:
+            print(line, file=sys.stderr)
+    args.permission_mode = mode
+    args.prompt = [prompt]
+    args.session = getattr(args, "session", "") or ""
+    args.json = (getattr(args, "output_format", "text") == "json")
+
+    def _prepare(engine) -> bool:
+        if not _open_session(engine, args, workspace):
+            return False
+        if getattr(args, "supervised", False):
+            _bind_supervised(engine, args)
+        return True
+
+    return cmd_run(args, prepare=_prepare)
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
     """The ``delfin-agent`` front door: a session in the current directory.
 
@@ -1429,10 +1620,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
     # one-shot when there is no terminal to be interactive on.
     one_shot = prompt or (piped and positional)
     if one_shot:
-        args.prompt = [prompt or positional]
-        args.session = getattr(args, "session", "") or ""
-        args.json = (getattr(args, "output_format", "text") == "json")
-        return cmd_run(args)
+        return _cmd_chat_one_shot(args, report, workspace,
+                                  prompt or positional)
 
     if piped:
         print("Nothing on stdin, and no -p. Nothing to do.", file=sys.stderr)
@@ -1455,34 +1644,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
     # from somewhere else.
     _cwd_before = os.getcwd()
     os.chdir(workspace)
-    # Only the grants launch_guard accepted. It has already refused a
-    # credential directory, a parent of the workspace and a forbidden
-    # root by name, rather than letting the permissions object drop them
-    # silently the way it does.
-    args.extra_dirs = [str(p) for p in report.granted_dirs]
-    args.read_only_dirs = [str(p) for p in report.read_dirs]
-    isolation_note = ""
-    if getattr(args, "no_isolate", False):
-        # Deliberately disarmed. Said on screen, because a session running
-        # without containment should not look like one that has it.
-        from .api_client import set_bash_isolation_override
-        set_bash_isolation_override("off")
-        isolation_note = (
-            "isolation  OFF by request (--no-isolate) — a command the "
-            "agent runs can write outside the workspace")
-    elif getattr(args, "isolate", False):
-        import shutil as _shutil
-        from .api_client import set_bash_isolation_override
-        set_bash_isolation_override("bwrap")
-        # Asking for isolation the host cannot give must not be silent.
-        # _bash_isolation_argv falls back to plain /bin/bash when bwrap is
-        # missing — correct, since there is nothing else it can do — but a
-        # flag that promises containment and delivers none without saying
-        # so is the same defect this wave exists to close, one layer up.
-        if not _shutil.which("bwrap"):
-            isolation_note = (
-                "isolation  REQUESTED but unavailable — bubblewrap is not "
-                "installed here, so commands run unisolated")
+    _apply_launch_grants(args, report)
+    isolation_note = _apply_isolation_flags(args)
     try:
         engine = _build_engine(args)
     except Exception as exc:
@@ -1521,22 +1684,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
     # an unattended run and exactly what this command exists to change.
     broker = None
     bind = getattr(engine, "set_kit_confirm_callback", None)
-    if (getattr(args, "supervised", False) and not sys.stdin.isatty()
-            and callable(bind)):
-        # No terminal, but somebody is watching the approvals directory.
-        # Without this the Self-Modification Guard has no callback and
-        # refuses outright, so a headless run cannot touch the agent's
-        # own safety layer at all -- which is most of the work worth
-        # doing there. Asked for explicitly: a run nobody is watching
-        # keeps the refusal.
-        from .file_confirm import FileConfirmBroker
-        file_broker = FileConfirmBroker(
-            session_id=str(getattr(engine, "session_id", "") or ""))
-        if bind(file_broker.callback):
-            broker = None          # no terminal UI to drive
-            print("[supervised] confirmations go to the approvals "
-                  "directory; answer with: delfin-agent approvals",
-                  file=sys.stderr)
+    if getattr(args, "supervised", False) and not sys.stdin.isatty():
+        _bind_supervised(engine, args)    # no terminal UI to drive
     elif sys.stdin.isatty() and callable(bind):
         _sid = str(getattr(engine, "session_id", "") or "")
         _key = _presence_key_for(getattr(args, "session_name", ""), _sid)
@@ -3652,7 +3801,8 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--permission-mode", default="", dest="permission_mode",
                       choices=["", "plan", "default", "acceptEdits",
                                "bypassPermissions"],
-                      help="Start in this approval posture (default: plan)")
+                      help="Start in this approval posture (default: the "
+                           "settings default_mode, else default)")
     chat.add_argument("--confirm-timeout", type=float, default=0.0,
                       dest="confirm_timeout", metavar="SECONDS",
                       help="Let an unanswered question in the terminal expire "
@@ -3756,6 +3906,9 @@ def build_parser() -> argparse.ArgumentParser:
                      choices=["", "plan", "default", "acceptEdits",
                               "bypassPermissions"],
                      help="Approval mode for this turn (default: settings)")
+    run.add_argument("--unattended", action="store_true",
+                     help="Required alongside --permission-mode "
+                          "bypassPermissions, as on chat")
     run.add_argument("--json", action="store_true",
                      help="Emit JSON instead of plain text")
     run.add_argument("-v", "--verbose", action="store_true")
