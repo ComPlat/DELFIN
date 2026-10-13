@@ -2437,6 +2437,26 @@ def cmd_approvals(args: argparse.Namespace) -> int:
 
     action = getattr(args, "approvals_action", "") or "ls"
 
+    if action in ("approve", "deny", "answer"):
+        # Run by an agent's shell (the marker every agent child carries):
+        # the person answers, not the session that waits nor another one.
+        # The gates refuse the command before it runs; this holds where a
+        # spelling got past them. ls / show / watch stay readable.
+        from . import approval_guard as _guard
+        if _guard.inside_agent_session():
+            try:
+                from .api_client import _record_security_event
+                _record_security_event(
+                    "approval_self_answer", "approvals",
+                    f"{action} {args.request_id} from an agent session",
+                    blocked=True)
+            except Exception:
+                pass
+            print(_guard.refusal(
+                "`delfin-agent approvals "
+                f"{action}` was run by an agent session"), file=sys.stderr)
+            return 2
+
     if action == "answer":
         # A choice question (ask_user_question) published by a terminal
         # session. approve/deny is no answer to one: the operator had to
