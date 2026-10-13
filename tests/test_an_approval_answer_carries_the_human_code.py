@@ -61,6 +61,9 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setattr(tc, "_PENDING_DIR",
                         h / ".delfin" / "terminal_confirmations")
     monkeypatch.setattr(cli_gate, "state_dir", lambda: h / ".delfin" / "cli_gate")
+    from delfin.agent import approval_code
+    monkeypatch.setattr(approval_code, "codes_dir",
+                        lambda: h / ".delfin" / "approval_codes")
     return h
 
 
@@ -323,11 +326,13 @@ def test_the_dashboard_row_shows_the_code(home, code_mod):
 
 # -- the command line, as another process ----------------------------------
 
-def _cli(home, tmp_path, *argv):
+def _cli(home, tmp_path, *argv, marker=False):
     env = child_env(tmp_path)
     env["HOME"] = str(home)
     env.pop("DELFIN_SCRATCH_STATE", None)
     env.pop(MARKER, None)
+    if marker:
+        env[MARKER] = "4242"
     # The checkout under test, not whichever delfin the interpreter has
     # installed: the child runs from tmp_path.
     root = str(Path(__file__).resolve().parents[1])
@@ -408,3 +413,161 @@ def test_the_code_reaches_no_file(home, tmp_path, code_mod):
                 if f in text:
                     hits.append((str(p), f))
     assert not hits, hits
+
+
+# -- a run with no terminal: the code file, readable by the person only -----
+
+@pytest.fixture()
+def no_tty(tmp_path, monkeypatch):
+    """A supervised run with no controlling terminal (a batch job)."""
+    monkeypatch.setattr(fc, "_TTY", str(tmp_path / "no-tty" / "tty"))
+
+
+def _code_file(home, rid) -> Path:
+    return home / ".delfin" / "approval_codes" / f"{rid}.code"
+
+
+def _no_tty_request(home):
+    broker = fc.FileConfirmBroker(session_id="batch", timeout_s=60,
+                                  poll_s=0.02)
+    ask = Ask(broker.callback, "write_file", {"path": "api_client.py"},
+              "[SELF-MODIFICATION GUARD] diff")
+    rid = _wait_for(lambda: fc.pending())[0]["id"]
+    path = _wait_for(lambda: _code_file(home, rid) if _code_file(
+        home, rid).exists() else None)
+    return broker, ask, rid, path
+
+
+def test_a_run_with_no_terminal_is_approved_from_the_persons_shell(
+        home, tmp_path, no_tty, code_mod):
+    _, ask, rid, path = _no_tty_request(home)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.parent.stat().st_mode & 0o777 == 0o700
+    proc = _cli(home, tmp_path, "approve", rid)          # no --code typed
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert ask.done.wait(5) and ask.result is True
+    assert not path.exists(), "the code file outlived its request"
+
+
+def test_the_persons_show_names_the_code_and_the_agents_does_not(
+        home, tmp_path, no_tty, code_mod):
+    broker, ask, rid, path = _no_tty_request(home)
+    code = code_mod.display(code_mod.code_for(rid))
+    person = _cli(home, tmp_path, "show", rid)
+    assert code in person.stdout, person.stdout + person.stderr
+    for argv in (("show", rid), ("ls",)):
+        agent = _cli(home, tmp_path, *argv, marker=True)
+        assert code not in agent.stdout + agent.stderr, argv
+    refused = _cli(home, tmp_path, "approve", rid, marker=True)
+    assert refused.returncode == 2
+    assert fc.answer(rid, False, code=code_mod.code_for(rid)) is True
+    assert ask.done.wait(5)
+
+
+def test_an_expired_request_takes_its_code_file_with_it(home, no_tty):
+    broker = fc.FileConfirmBroker(session_id="batch", timeout_s=0.5,
+                                  poll_s=0.02)
+    seen = {}
+
+    def _look():
+        rows = fc.pending()
+        if rows:
+            seen["path"] = _code_file(home, rows[0]["id"])
+            seen["existed"] = seen["path"].exists()
+    ask = Ask(broker.callback, "write_file", {"path": "x"}, "diff")
+    _wait_for(lambda: fc.pending())
+    _look()
+    assert ask.done.wait(5) and ask.result is False
+    assert broker.last_timed_out is True
+    assert seen["existed"] and not seen["path"].exists()
+
+
+@pytest.mark.parametrize("granted", ["none", "the .delfin dir"])
+@pytest.mark.parametrize("isolation", ["off", "auto"])
+def test_no_agent_read_route_reaches_the_code_file(
+        home, tmp_path, no_tty, monkeypatch, code_mod, granted, isolation):
+    monkeypatch.setattr(A, "_BASH_ISOLATION_OVERRIDE", isolation)
+    monkeypatch.setattr(A, "_classifier_settings", lambda: None)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _, ask, rid, path = _no_tty_request(home)
+    code = code_mod.code_for(rid)
+    extra = (home / ".delfin",) if granted != "none" else ()
+    perms = A.KitToolPermissions(workspace=ws.resolve(),
+                                 mode="bypassPermissions",
+                                 extra_workspace_dirs=extra)
+    routes = {
+        "read_file": ("read_file", {"path": str(path)}),
+        "grep_file": ("grep_file", {"path": str(path), "pattern": "."}),
+        "list_files": ("list_files", {"path": str(path.parent)}),
+        "bash cat": ("bash", {"command": f"cat {path}"}),
+        "bash cat via ~": ("bash", {"command":
+                                    f"cat ~/.delfin/approval_codes/{rid}.code"}),
+    }
+    leaked = []
+    for label, (tool, args) in routes.items():
+        out = str(A._doc_executor.execute(tool, args, perms))
+        if code in out or code_mod.display(code) in out:
+            leaked.append(label)
+    assert not leaked, (granted, isolation, leaked)
+    assert fc.answer(rid, False, code=code) is True
+    assert ask.done.wait(5)
+
+
+def test_a_caged_child_cannot_read_the_code_file(home, tmp_path, no_tty,
+                                                 code_mod):
+    """The path built at run time, so no text gate can see it: only the
+    cage stands between the command and the file. Run where bubblewrap or
+    Landlock is functional; the argv checks below hold on every host."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _, ask, rid, path = _no_tty_request(home)
+    code = code_mod.code_for(rid)
+    perms = A.KitToolPermissions(workspace=ws.resolve(),
+                                 mode="bypassPermissions",
+                                 extra_workspace_dirs=(home / ".delfin",))
+    cmd = f"d=approval; cat {home}/.delfin/${{d}}_codes/{rid}.code"
+    ran = []
+    for mode in ("bwrap", "landlock"):
+        try:
+            argv = A._bash_isolation_argv(cmd, ws, perms, mode=mode)
+        except Exception:
+            continue
+        if not argv or argv[0] == "/bin/bash":
+            continue                    # no cage on this host for this mode
+        env = child_env(tmp_path)
+        env["HOME"] = str(home)
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              timeout=60, env=env)
+        ran.append((mode, proc.returncode, proc.stderr[-200:]))
+        assert code not in proc.stdout, (mode, proc.stdout)
+    # The control: the same command uncaged does read it, so a cage that
+    # held is what kept the code out of the output above.
+    plain = subprocess.run(["/bin/bash", "-c", cmd], capture_output=True,
+                           text=True, timeout=60)
+    assert code in plain.stdout, plain.stderr
+    assert fc.answer(rid, False, code=code) is True
+    assert ask.done.wait(5)
+
+
+def test_every_cage_masks_the_code_directory(home, tmp_path, monkeypatch):
+    """Built as on a host with bubblewrap, on any host: the directory is a
+    tmpfs AFTER the binds (a granted ~/.delfin cannot re-expose it), and
+    Landlock hides it."""
+    monkeypatch.setattr(A.shutil, "which",
+                        lambda name, *a, **k: f"/usr/bin/{name}")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    perms = A.KitToolPermissions(workspace=ws.resolve(),
+                                 mode="bypassPermissions",
+                                 extra_workspace_dirs=(home / ".delfin",))
+    codes = str((home / ".delfin" / "approval_codes").resolve())
+    argv = A._bash_isolation_argv("true", ws, perms, mode="bwrap")
+    pairs = list(zip(argv, argv[1:]))
+    masks = [i for i, (a, b) in enumerate(pairs)
+             if a == "--tmpfs" and b == codes]
+    binds = [i for i, (a, b) in enumerate(pairs)
+             if a == "--bind" and b == str((home / ".delfin").resolve())]
+    assert masks and binds and max(masks) > max(binds), argv
+    ll = A._landlock_argv(["true"], perms)
+    assert codes in [b for a, b in zip(ll, ll[1:]) if a == "--hide"], ll
