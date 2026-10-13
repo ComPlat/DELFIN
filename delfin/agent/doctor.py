@@ -1046,8 +1046,31 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("memory store", "_check_memory_store"),
     ("disk space", "_check_disk"),
     ("bash isolation", "_check_bash_isolation"),
+    ("command network", "_check_child_network"),
     ("document backends", "_check_document_backends"),
 )
+
+
+def _check_child_network(ctx: dict) -> list[dict]:
+    """What holds the network of a program a shell command starts.
+
+    The domain rules and the egress scan read the command text; only a
+    kernel layer (socket guard, network namespace, Landlock TCP) holds a
+    script's own sockets to the egress proxy. Reported from
+    ``api_client.child_network_enforcement``, the same probes the shell
+    wrapper picks from. PASS only where the layer holds every connect."""
+    try:
+        from delfin.agent.api_client import child_network_enforcement
+        state = child_network_enforcement()
+    except Exception as exc:
+        return [_row("command network", WARN, f"not verified: {exc}")]
+    if state["enforced"] and not state["partial"]:
+        return [_row("command network", PASS, state["notice"])]
+    fix = ("set agent.sandbox_network.mode = \"proxy\" (the default)"
+           if state["layer"] == "off" else
+           "a kernel with seccomp user notification (Linux 5.6+, x86_64 or "
+           "aarch64), a working bubblewrap, or Landlock ABI 4 (Linux 6.7+)")
+    return [_row("command network", WARN, state["notice"], fix)]
 
 
 def _normalise(row: Any, group: str) -> dict:

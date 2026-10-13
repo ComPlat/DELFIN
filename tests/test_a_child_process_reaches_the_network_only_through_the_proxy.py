@@ -456,6 +456,69 @@ def test_landlock_tcp_alone_is_reported_as_partial(monkeypatch):
     assert "UDP" in state["notice"]
 
 
+def test_an_upload_inside_a_tunnel_is_asked(proxy, web, tmp_path):
+    """HTTPS hides the method; the bytes leaving an admitted tunnel to a
+    host the user let in by answering are counted, and the limit asks."""
+    port = web.server_address[1]
+
+    class Split(_Asker):
+        def __call__(self, name, args, preview):
+            self.asked.append(preview)
+            return "UPLOAD" not in preview
+
+    asker = Split()
+    perms = _perms(tmp_path, asker=asker)
+    token = proxy.token_for(perms)
+    auth = base64.b64encode(f"delfin:{token}".encode()).decode()
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(proxy.socket_path)
+    s.settimeout(10)
+    s.sendall(f"CONNECT unknown.test:{port} HTTP/1.1\r\n"
+              f"Proxy-Authorization: Basic {auth}\r\n\r\n".encode())
+    assert s.recv(4096).startswith(b"HTTP/1.1 200"), asker.asked
+    body = b"x" * (2 * 1024 * 1024)
+    try:
+        s.sendall(b"POST /up HTTP/1.0\r\nHost: unknown.test\r\n"
+                  + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+        reply = s.recv(4096)
+    except OSError:
+        reply = b""
+    s.close()
+    assert not reply.startswith(b"HTTP/1.0 200"), reply
+    # At most upload_ask_bytes leave before the question; the rest does not.
+    assert len(asker.asked) == 2 and "UPLOAD" in asker.asked[1], asker.asked
+
+
+# -- what the session is configured to reach stays reachable ---------------
+
+def test_the_configured_hosts_and_direct_endpoints(monkeypatch, tmp_path):
+    monkeypatch.setattr(EP, "_DIRECT_TCP", {})
+    monkeypatch.setattr(EP, "_GIT_REMOTES", {str(tmp_path): [
+        "https://git.example.test/team/repo.git",
+        "git@ssh.example.test:team/repo.git",
+        "ssh://git@other.example.test:2222/team/repo.git"]})
+    monkeypatch.setattr(EP, "slurm_controllers", lambda: ["10.0.0.1:6817"])
+    monkeypatch.setattr(EP, "_resolve", lambda host, port: [f"{host}:{port}"])
+    for var in [v for v in os.environ if v.upper().endswith("LICENSE_FILE")]:
+        monkeypatch.delenv(var)
+    monkeypatch.setenv("LM_LICENSE_FILE", "27000@lic.example.test:/opt/lic.dat")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://index.example.test/simple")
+    direct = EP.direct_tcp_endpoints(tmp_path)
+    assert {"10.0.0.1:6817", "ssh.example.test:22", "other.example.test:2222",
+            "lic.example.test:0"} <= set(direct), direct
+    hosts = EP.configured_domains(tmp_path)
+    assert "git.example.test" in hosts and "index.example.test" in hosts
+
+
+def test_a_license_server_admits_every_port_of_its_host():
+    import ipaddress
+    sup = SG.Supervisor.__new__(SG.Supervisor)
+    sup.net_mode = "proxy"
+    sup.allowed_tcp = {(ipaddress.ip_address("10.1.2.3"), 0)}
+    assert sup.inet_refusal(ipaddress.ip_address("10.1.2.3"), 41234) == ""
+    assert sup.inet_refusal(ipaddress.ip_address("10.1.2.4"), 41234)
+
+
 # -- the switch belongs to the user -----------------------------------------
 
 def test_a_session_cannot_loosen_the_network_mode_it_started_with(monkeypatch):
@@ -517,8 +580,9 @@ def test_an_unattended_run_installs_fetches_and_calls_its_model(
         cmd += f" && {git} -C {clone} fetch -q origin && echo fetched"
     argv = A._bash_isolation_argv(cmd, ws, perms)
     out = _run(argv, ws, tmp_path, {"PIP_INDEX_URL": index,
+                                    "PIP_TRUSTED_HOST": "pypi.test",
                                     "PIP_DISABLE_PIP_VERSION_CHECK": "1"})
-    assert out.returncode == 0, out
+    assert out.returncode == 0, (out.stderr, web.seen, proxy.refused)
     assert "pkg 42" in out.stdout and "model got 16" in out.stdout, out
     if git:
         assert "fetched" in out.stdout, out

@@ -209,9 +209,19 @@ def test_an_attended_command_is_caged_and_reaches_the_net_through_the_proxy(
     assert any(str(a).endswith("landlock_exec.py") for a in argv), argv
     assert argv[argv.index("--net") + 1] == "proxy", argv
 
-    # And it still lets go when the cage is switched off by name.
+    # With the cage switched off by name and no filesystem layer, the
+    # filesystem is as it is -- and the network is still held by the
+    # socket guard (no --fs policy, --net proxy).
     monkeypatch.setattr(A, "_landlock_functional", lambda: False)
     monkeypatch.setenv(A._PROCESS_CAGE_ENV, "off")
+    argv = A._bash_isolation_argv("ls", tmp_path, perms, mode="auto")
+    assert argv[-4:] == ["--", "/bin/bash", "-c", "ls"], argv
+    assert argv[argv.index("--fs") + 1] == "0", argv
+    assert argv[argv.index("--net") + 1] == "proxy", argv
+
+    # And it lets go entirely when the user set the network open.
+    monkeypatch.setattr(EP, "_MODE_AT_START", None)
+    monkeypatch.setattr(EP, "_settings", lambda: {"mode": "open"})
     assert A._bash_isolation_argv(
         "ls", tmp_path, perms, mode="auto") == ["/bin/bash", "-c", "ls"]
 
@@ -227,9 +237,12 @@ def test_an_isolated_command_under_bubblewrap_runs_the_guard_inside(tmp_path, mo
     assert argv[i + 1:i + 5] == ["--fs", "0", "--net", "proxy"]
     proxy_dir = os.path.dirname(argv[argv.index("--proxy-socket") + 1])
     assert argv[argv.index(proxy_dir) - 1] == "--ro-bind"
+    # Without the guard: a network namespace, and the helper inside it
+    # forwarding to the proxy (it used to be no network at all).
     monkeypatch.setattr(SG, "available", lambda: False)
     argv = A._bash_isolation_argv("ls", tmp_path, perms)
-    assert "--unshare-net" in argv and HELPER not in argv
+    assert "--unshare-net" in argv and HELPER in argv
+    assert argv[argv.index("--netns") + 1] == "1"
 
 
 def test_the_slurm_controller_is_reachable_from_the_sandbox(tmp_path, monkeypatch):

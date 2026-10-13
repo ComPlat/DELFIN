@@ -1377,6 +1377,15 @@ Settings, hook commands and MCP servers that come from a checked-out repository 
 
 Every command runs through an allow-list and then, where available, bubblewrap or firejail. Credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, the network is denied by default, and every command is appended to `~/.cache/delfin/agent-audit.jsonl`. `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}` selects the mechanism; when isolation is unavailable the agent says so rather than running unprotected in silence.
 
+**The network of programs a command starts.** A script or binary the agent runs reaches the network only through DELFIN's egress proxy. The kernel makes the proxy the only way out: the socket guard (seccomp), a network namespace (bubblewrap), or Landlock's TCP restriction (Linux 6.7+, TCP only). The proxy applies the same domain decisions as `web_fetch`:
+
+- Always reachable: PyPI, conda channels, GitHub, and whatever the session is configured to use (its model endpoint, the workspace's git remotes, the pip/conda indexes from the environment and config files, `agent.sandbox_network.allowed_domains`). SSH git remotes, the SLURM controller and license servers named in `*_LICENSE_FILE` are reached directly.
+- Permission rules: `web_fetch(domain:…)` rules deny, ask or allow first.
+- Unknown domains: you are asked when the session has an approval dialog and is not in plan or bypass mode. Otherwise the request is refused, and the message names the domain and the rule that would allow it.
+- Uploads: a request body above `agent.sandbox_network.upload_ask_bytes` (default 1 MiB), or any POST/PUT to an unknown host, is asked. With nobody to ask, an upload to a known host passes and is recorded.
+
+`agent.sandbox_network.mode` is `"proxy"` (default), `"none"` or `"open"`. A session reads it at start and cannot loosen it while it runs. Where the host has none of the three layers, the startup banner, the security panel and `delfin-agent doctor` ("command network") say so.
+
 ### Pushing, pull requests and the git role
 
 A push publishes, so the agent pushes only after you asked for one, one push per request; unattended it does not push unasked, a force push is refused, and a push the remote rejects is reported as failed. Whether it may push onto a repository's default branch (`main`/`master`) or run `gh pr merge` is the repository's **git role**:

@@ -20,8 +20,13 @@ instead of running it unconfined.
     python -I landlock_exec.py --write DIR ... --hide PATH ... \
         [--tmpdir DIR] [--allow-socket DIR ...] [--strict 1] [--fs 0] \
         [--net open|proxy|none] [--proxy-socket PATH] [--allow-tcp IP:PORT ...] \
-        [--deny-socket DIR ...] \
+        [--deny-socket DIR ...] [--proxy-token-file PATH] \
+        [--guard 0] [--netns 1] \
         -- /bin/bash -c CMD
+
+``--guard 0`` leaves out the seccomp supervisor (a host without user
+notification, or a test of the layers below it); ``--netns 1`` says the
+caller already put the command in a network namespace of its own.
 
 Unix sockets are guarded too (``socket_guard``): the command reaches them
 only beneath the write roots, the private temp directory and the cluster's
@@ -70,6 +75,21 @@ class _PathBeneathAttr(ctypes.Structure):
     _pack_ = 1
     _fields_ = [("allowed_access", ctypes.c_uint64),
                 ("parent_fd", ctypes.c_int32)]
+
+
+class _NetRulesetAttr(ctypes.Structure):
+    _fields_ = [("handled_access_fs", ctypes.c_uint64),
+                ("handled_access_net", ctypes.c_uint64)]
+
+
+class _NetPortAttr(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [("allowed_access", ctypes.c_uint64),
+                ("port", ctypes.c_uint64)]
+
+
+_RULE_NET_PORT = 2
+_NET_CONNECT_TCP = 1 << 1
 
 
 _libc = ctypes.CDLL(None, use_errno=True)
@@ -204,6 +224,36 @@ def apply(write: list[str], hide: list[str], read_only: list[str] = ()) -> None:
         os.close(ruleset_fd)
 
 
+def apply_tcp_connect(ports: list[int]) -> None:
+    """Restrict this process's TCP connects to ``ports`` (Landlock ABI 4,
+    Linux 6.7+). Port-level only: the kernel rule names no address, and
+    UDP is not covered. Raises ``_Refused`` when it cannot."""
+    if abi_version() < 4:
+        raise _Refused("Landlock ABI 4 (TCP connect) is not available")
+    attr = _NetRulesetAttr(handled_access_fs=0, handled_access_net=_NET_CONNECT_TCP)
+    fd = _libc.syscall(ctypes.c_long(_SYS_CREATE_RULESET), ctypes.byref(attr),
+                       ctypes.c_size_t(ctypes.sizeof(attr)), ctypes.c_uint32(0))
+    if fd < 0:
+        raise _Refused("landlock_create_ruleset (net) failed: "
+                       f"{os.strerror(ctypes.get_errno())}")
+    try:
+        for port in sorted({int(p) for p in ports if 0 < int(p) < 65536}):
+            rule = _NetPortAttr(allowed_access=_NET_CONNECT_TCP, port=port)
+            if _libc.syscall(ctypes.c_long(_SYS_ADD_RULE), ctypes.c_int(fd),
+                             ctypes.c_int(_RULE_NET_PORT), ctypes.byref(rule),
+                             ctypes.c_uint32(0)) != 0:
+                raise _Refused(f"landlock_add_rule(port {port}) failed: "
+                               f"{os.strerror(ctypes.get_errno())}")
+        if _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+            raise _Refused("prctl(PR_SET_NO_NEW_PRIVS) failed")
+        if _libc.syscall(ctypes.c_long(_SYS_RESTRICT_SELF), ctypes.c_int(fd),
+                         ctypes.c_uint32(0)) != 0:
+            raise _Refused("landlock_restrict_self (net) failed: "
+                           f"{os.strerror(ctypes.get_errno())}")
+    finally:
+        os.close(fd)
+
+
 def _load_socket_guard():
     """socket_guard.py beside this file, loaded by path: under ``python -I``
     the script's directory is not on sys.path, which is the point."""
@@ -282,27 +332,33 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
                  net_mode: str = "open", proxy_socket: str = "",
                  allow_tcp: list[str] | None = None,
                  deny_socket: list[str] | None = None,
-                 read_only: list[str] | None = None) -> int:
+                 read_only: list[str] | None = None,
+                 token_file: str = "", use_guard: bool = True,
+                 netns: bool = False) -> int:
     """Apply the filesystem policy (unless ``use_fs`` is off, inside
     bubblewrap), the socket guard and the network mode, and run the command.
 
     With user notification the command runs as a child under a filter that
-    hands every connect() to the supervisor in this process. Without it,
-    Unix sockets are refused outright and, with a restricted network, inet
-    sockets too; where no filter can be installed at all a strict run
-    refuses the command."""
+    hands every connect() to the supervisor in this process. Without it, a
+    restricted network is held by one of two other layers: a network
+    namespace the caller made (``netns``: bubblewrap --unshare-net, the
+    forwarder inside it is the only way out) or Landlock's TCP connect
+    restriction (ABI 4: only the forwarder's port and the ``allow_tcp``
+    ports). Without any of them Unix sockets are refused outright and a
+    strict run refuses the command."""
     allow_tcp = list(allow_tcp or [])
     restricted = net_mode in ("proxy", "none")
     try:
         sg = _load_socket_guard()
     except Exception:
         sg = None
-    guard = sg is not None and sg.available()
+    guard = use_guard and sg is not None and sg.available()
+    held = restricted and not guard and (netns or abi_version() >= 4)
     forwarder = None
     env_updates: dict[str, str] = {}
-    if net_mode == "proxy" and proxy_socket and guard:
+    if net_mode == "proxy" and proxy_socket and (guard or held):
         try:
-            token_path = os.path.join(os.path.dirname(proxy_socket), "token")
+            token_path = token_file or os.path.join(os.path.dirname(proxy_socket), "token")
             with open(token_path, encoding="utf-8") as fh:
                 token = fh.read().strip()
             forwarder = _Forwarder(proxy_socket)
@@ -315,6 +371,11 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
                       f"({exc}); the command was not run.", file=sys.stderr)
                 return 126
             forwarder = None
+    if held:
+        return _run_held(write, hide, read_only or [], command, strict,
+                         use_fs=use_fs, forwarder=forwarder,
+                         env_updates=env_updates, allow_tcp=allow_tcp,
+                         netns=netns, sg=sg)
     if not guard:
         if restricted and strict:
             print("refused: this host cannot restrict the command's network "
@@ -397,6 +458,49 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
     return _exit_code(status)
 
 
+def _run_held(write, hide, read_only, command, strict, *, use_fs, forwarder,
+              env_updates, allow_tcp, netns, sg) -> int:
+    """The command as a child held by a namespace or Landlock TCP, with the
+    forwarder (when there is one) served from this process."""
+    ports = [int(hp.rpartition(":")[2]) for hp in allow_tcp
+             if hp.rpartition(":")[2].isdigit()]
+    pid = os.fork()
+    if pid == 0:
+        try:
+            if forwarder is not None:
+                forwarder.server.close()
+            if use_fs:
+                apply(write, hide, read_only)
+            elif _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+                raise _Refused("prctl(PR_SET_NO_NEW_PRIVS) failed")
+            if not netns:
+                apply_tcp_connect(ports)
+                # Inside a namespace the mount namespace masks the session
+                # doors; here nothing does, so Unix sockets are refused.
+                try:
+                    if sg is None or not sg.filter_supported():
+                        raise OSError("no seccomp filter for this platform")
+                    sg.install_block_unix_filter(block_inet_datagrams=False)
+                except Exception as exc:
+                    if strict:
+                        raise _Refused(f"the command could not be kept from the "
+                                       f"user's sessions ({exc})")
+            for key in _UNSET_VARS:
+                os.environ.pop(key, None)
+            os.environ.update(env_updates)
+            os.execvp(command[0], command)
+        except BaseException as exc:                # noqa: BLE001 - child must exit
+            try:
+                os.write(2, f"refused: sandbox could not be applied ({exc}); "
+                            "the command was not run.\n".encode())
+            finally:
+                os._exit(126)
+    if forwarder is not None:
+        forwarder.start()
+    _pid, status = os.waitpid(pid, 0)
+    return _exit_code(status)
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--probe"]:
         print(abi_version())
@@ -411,6 +515,9 @@ def main(argv: list[str]) -> int:
     use_fs = True
     net_mode = "open"
     proxy_socket = ""
+    token_file = ""
+    use_guard = True
+    netns = False
     tmpdir = ""
     i = 0
     while i < len(argv) and argv[i] != "--":
@@ -438,6 +545,12 @@ def main(argv: list[str]) -> int:
             net_mode = value if value in ("open", "proxy", "none") else "none"
         elif flag == "--proxy-socket":
             proxy_socket = value
+        elif flag == "--proxy-token-file":
+            token_file = value
+        elif flag == "--guard":
+            use_guard = value != "0"
+        elif flag == "--netns":
+            netns = value == "1"
         else:
             print(f"landlock_exec: unknown option {flag}", file=sys.stderr)
             return 126
@@ -459,7 +572,8 @@ def main(argv: list[str]) -> int:
     return _run_guarded(write, hide, sg_defaults + roots + allow_socket,
                         command, strict, use_fs=use_fs, net_mode=net_mode,
                         proxy_socket=proxy_socket, allow_tcp=allow_tcp,
-                        deny_socket=deny_socket, read_only=read_only)
+                        deny_socket=deny_socket, read_only=read_only,
+                        token_file=token_file, use_guard=use_guard, netns=netns)
 
 
 if __name__ == "__main__":

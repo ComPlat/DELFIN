@@ -244,7 +244,10 @@ class Supervisor:
             return f"cloud metadata / link-local address {ip}"
         if self.net_mode == "open":
             return ""
-        if self.net_mode == "proxy" and (ip, port) in self.allowed_tcp:
+        # An entry with port 0 admits every port of that address (a license
+        # server whose vendor daemon listens on a port of its own).
+        if self.net_mode == "proxy" and ((ip, port) in self.allowed_tcp
+                                         or (ip, 0) in self.allowed_tcp):
             return ""
         return (f"direct connection to {ip}:{port}; the sandbox reaches the "
                 "network through its proxy only")

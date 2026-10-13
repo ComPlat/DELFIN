@@ -609,6 +609,19 @@ _SHARED_LEDGERS = (
 
 
 @pytest.fixture(autouse=True)
+def _each_test_starts_its_own_network_mode(monkeypatch):
+    """``egress_proxy.network_mode`` keeps the first answer of a process
+    as its ceiling (a session cannot loosen it). In the suite one process
+    runs every test, so the ceiling is reset per test."""
+    try:
+        from delfin.agent import egress_proxy as _ep
+        monkeypatch.setattr(_ep, "_MODE_AT_START", None)
+    except Exception:
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_shared_ledgers():
     """Each test gets its own copy of the shared evidence ledgers.
 
