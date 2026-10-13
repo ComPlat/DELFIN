@@ -193,6 +193,29 @@ def _unjson(err: str | None) -> str | None:
     return str(err)
 
 
+#: The CLI's tool names as the native tools the permission rules name.
+_NATIVE_NAMES = {
+    "Read": "read_file", "NotebookRead": "notebook_read", "Grep": "grep_file",
+    "Glob": "list_files", "LS": "list_files", "Write": "write_file",
+    "Edit": "edit_file", "MultiEdit": "multi_edit",
+    "NotebookEdit": "notebook_edit", "Bash": "bash", "WebFetch": "web_fetch",
+    "WebSearch": "web_search",
+}
+
+
+def _native_call(tool: str, args: dict, cwd: str, workspace: str) -> tuple:
+    """(native tool name, arguments) for a CLI tool call; MCP names as
+    they are."""
+    name = _NATIVE_NAMES.get(tool, tool)
+    args = dict(args or {})
+    key = _READ_TOOLS.get(tool) or _WRITE_TOOLS.get(tool)
+    if key and args.get(key):
+        args = {**args, "path": str(_abs(args[key], cwd, workspace))}
+    if name == "bash":
+        args = {"command": str(args.get("command") or ""), "cwd": cwd}
+    return name, args
+
+
 def decide(token: str, event: dict) -> str | None:
     """Why this tool call is refused, or None when it may run.
 
@@ -211,6 +234,21 @@ def decide(token: str, event: dict) -> str | None:
     args = event.get("tool_input") or {}
     cwd = str(event.get("cwd") or state["workspace"])
     err: str | None = None
+
+    # The user's permission rules (permission_rules.py), on the native name
+    # of the call: deny refuses, ask asks through the same relay, and with
+    # nobody to ask an ask refuses. allow is not consulted here -- this
+    # hook only refuses or passes, it never answers a question for the CLI.
+    native, native_args = _native_call(tool, args, cwd, state["workspace"])
+    hit = ac._permission_rule_hit(perms, native, native_args)
+    if hit is not None and hit[0] == "deny":
+        ac._record_security_event("permission_rule_deny", native,
+                                  hit[1].text[:120])
+        return ac._permission_rule_deny_text(native, hit[1])
+    if hit is not None:
+        refusal = ex._ask_by_rule(perms, native, native_args, hit[1])
+        if refusal is not None:
+            return refusal
 
     if tool in _READ_TOOLS:
         raw = args.get(_READ_TOOLS[tool]) or cwd

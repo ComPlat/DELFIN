@@ -581,9 +581,40 @@ def render_request(req: ConfirmRequest, *, theme: rr.Theme | None = None,
     if outside:
         lines.append(theme.dim("│  " + outside))
 
-    keys = "  ".join(f"[{o.key}] {o.label}" for o in options)
-    lines.append("└─ " + rr.truncate_middle(keys, max(20, width - 3)))
+    # What a persisting key saves, on screen before the key is pressed.
+    # It sat behind [?] only, and [k]'s pattern is the one thing about
+    # that answer the person cannot guess from its label.
+    for o in options:
+        if o.key in ("A", "k") and o.detail:
+            lines.append(theme.dim("│  " + rr.truncate_middle(
+                f"[{o.key}] {o.detail}", max(20, width - 4))))
+
+    lines.extend(_key_rows(options, width))
     return "\n".join(lines)
+
+
+def _key_rows(options: list[Option], width: int) -> list[str]:
+    """The answer keys, wrapped between options and never cut inside one.
+
+    One row cut in the middle used to hold them all; at 100 columns a
+    shell request lost "[k]" and half its label to the ellipsis, so the
+    key that persists a pattern was the one not on screen. Rows stay
+    below ``width`` so no terminal wraps them on its own. The first row
+    carries the frame corner; continuation rows are indented under it.
+    """
+    room = max(20, width - 4)
+    rows: list[str] = []
+    current = ""
+    for o in options:
+        item = rr.truncate_middle(f"[{o.key}] {o.label}", room)
+        if current and len(current) + 2 + len(item) > room:
+            rows.append(current)
+            current = item
+        else:
+            current = f"{current}  {item}" if current else item
+    if current:
+        rows.append(current)
+    return ["└─ " + rows[0]] + ["   " + r for r in rows[1:]] if rows else []
 
 
 def render_help(req: ConfirmRequest, options: list[Option]) -> str:
