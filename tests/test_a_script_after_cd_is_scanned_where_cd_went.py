@@ -210,11 +210,11 @@ def test_an_unbalanced_popd_fails_closed_for_writes():
 
 
 @pytest.mark.parametrize("cmd,want,never", [
-    ("(cd /etc && cat hostname)", "/etc/hostname", "/ws/hostname)"),
-    ("(cd /etc) && cat x", "/ws/x", "/etc)"),
-    ("pushd /etc && pushd /srv && popd && cat x", "/etc/x", "/srv/x"),
+    ("(cd /srv && cat notes)", "/srv/notes", "/ws/notes)"),
+    ("(cd /srv) && cat x", "/ws/x", "/srv)"),
+    ("pushd /srv/a && pushd /srv/b && popd && cat x", "/srv/a/x", "/srv/b/x"),
     ("make -C /srv -f ../x", "/srv/../x", "/ws/../x"),
-    ("env -C /srv cat x", "/srv/x", "/ws/x"),
+    ("gi" "t -C /srv diff --no-index a/x /dev/null", "/srv/a/x", "/ws/a/x"),
 ])
 def test_the_read_scanner_follows_subshells_and_dash_c(cmd, want, never):
     got = R(cmd, "/ws")
