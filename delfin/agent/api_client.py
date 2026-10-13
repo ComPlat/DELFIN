@@ -20198,10 +20198,10 @@ class _DocToolExecutor:
                 # at the timeout. subprocess.run killed only bash itself.
                 from . import contained_run as _contained
                 proc = _contained.run(
-                    (_bash_isolation_argv(cmd, run_cwd, perms,
-                                          caged_unasked=True)
-                     if caged_unasked
-                     else _bash_isolation_argv(cmd, run_cwd, perms)),
+                    _bash_isolation_argv(cmd, run_cwd, perms)
+                    if not caged_unasked
+                    else _bash_isolation_argv(cmd, run_cwd, perms,
+                                              caged_unasked=True),
                     cwd=str(run_cwd),
                     env=env,
                     timeout=timeout,
@@ -20367,10 +20367,10 @@ class _DocToolExecutor:
                 workspace=str(perms.workspace),
                 # In the process cage like a foreground command: what the
                 # job starts ends with it, and the job with its kernel.
-                argv=(_bash_isolation_argv(cmd, run_cwd, perms,
-                                           caged_unasked=True)
-                      if caged_unasked
-                      else _bash_isolation_argv(cmd, run_cwd, perms)),
+                argv=_bash_isolation_argv(cmd, run_cwd, perms)
+                if not caged_unasked
+                else _bash_isolation_argv(cmd, run_cwd, perms,
+                                          caged_unasked=True),
                 **({"session_id": _job_sid} if _job_sid else {}),
             )
         except ValueError as exc:
@@ -23847,11 +23847,22 @@ _CAGED_UNASKED_EXCLUDED_RE = re.compile(
     r"|signal\.(?:pthread_kill|raise_signal)|rmtree)\b"
     r"|\.unlink\(|(?:^|\s)-delete\b")
 
+# Authoring a file or a program in the command text: a here-document, or
+# tee / cat / printf / echo writing a file. These have a sanctioned
+# control the refusal names (write_file, then `python3 <file>`), and the
+# file then goes through the write gate and the change journal as a file.
+_CAGED_UNASKED_AUTHORING_RE = re.compile(
+    r"<<|(?:^|[;&|('\"]|\$\()\s*(?:tee|cat|printf|echo)\b[^;&|]*(?:>|\btee\b)"
+    r"|(?:^|[;&|(])\s*tee\b")
+
 
 def _caged_command_names_excluded(cmd: str) -> bool:
     """True when ``cmd`` names anything the caged rule leaves to the
-    existing dialog (``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``)."""
+    existing dialog (``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``), or
+    authors a file in its own text (``_CAGED_UNASKED_AUTHORING_RE``)."""
     if _CAGED_UNASKED_EXCLUDED_RE.search(cmd):
+        return True
+    if _CAGED_UNASKED_AUTHORING_RE.search(cmd):
         return True
     for tok in re.findall(r"[A-Za-z0-9_+.-]+", cmd.lower()):
         tok = tok.lstrip("-")

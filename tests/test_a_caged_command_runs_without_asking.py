@@ -13,7 +13,9 @@ scan and the classifier -- a command runs unasked when
   (b) the native shell executor runs it (an MCP shell runs elsewhere and
       is never admitted);
   (c) its text names no network program, package manager, git/gh, job
-      scheduler, signal, privilege change or deletion.
+      scheduler, signal, privilege change or deletion, and authors no
+      file in its own text (here-document, tee / cat / printf / echo into
+      a file: write_file is the sanctioned control there).
 
 Such a command runs with the session's protected files (git metadata,
 ``.github``, ``.gitattributes``/``.gitmodules``, the agent's own settings
@@ -59,7 +61,7 @@ HARMLESS = [
     'timeout 5 ./run.sh',
     'env FOO=1 ./run.sh',
     'nice ./run.sh',
-    "bash -c 'echo hi > note.txt'",
+    "bash -c 'make all'",
     'make',
     'make all',
     'make -C .',
@@ -85,7 +87,7 @@ HARMLESS = [
     'crest mol.xyz',
     'ORCA=1 ./run.sh',
     'python3 run_analysis.py --plot && ./run.sh',
-    'python3 -c "import sys; print(sys.version_info[:2])" | tee version.txt',
+    'python3 -c "import os; print(os.cpu_count())" | sort',
     'nproc && ./run.sh',
 ]
 
@@ -134,6 +136,13 @@ UNCHANGED = [
     "ls",
     "git status",
     'git commit -m "x"',
+    # A file or program authored in the command text keeps its sanctioned
+    # control (write_file), named by the refusal.
+    "tee out.txt",
+    "printf 'x' > cfg.json",
+    "cat > run.py << 'EOF'\nprint(1)\nEOF",
+    "python3 - <<'EOF'\nimport os\nprint(os.getcwd())\nEOF",
+    "bash -c 'echo hi > note.txt'",
 ]
 
 MODES = ("default", "acceptEdits", "plan", "bypassPermissions")
@@ -298,6 +307,27 @@ def test_the_executor_refuses_an_admission_the_cage_no_longer_holds(
     argv = A._bash_isolation_argv("make", ws, perms, caged_unasked=True)
     out = subprocess.run(argv, capture_output=True, text=True)
     assert out.returncode == 126 and "not run" in out.stderr
+
+
+@pytest.mark.parametrize("tool", ["bash", "bash_background"])
+def test_an_admitted_command_is_built_with_the_overlay(tool, ws, monkeypatch):
+    """Both shell tools hand the admission to the argv builder; an
+    approved or listed command does not get it."""
+    _cage(monkeypatch, "bwrap")
+    seen: list[bool] = []
+
+    def _argv(cmd, run_cwd, perms, mode=None, extra_write=(),
+              caged_unasked=False):
+        seen.append(caged_unasked)
+        return ["/bin/true"]
+
+    monkeypatch.setattr(A, "_bash_isolation_argv", _argv)
+    perms = KitToolPermissions(mode="default", workspace=str(ws))
+    _doc_executor.execute(tool, {"command": "make", "description": "x"},
+                          perms)
+    _doc_executor.execute(tool, {"command": "ls", "description": "x"},
+                          perms)
+    assert seen == [True, False]
 
 
 # -- through the real executor, where bubblewrap works ----------------------
