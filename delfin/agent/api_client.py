@@ -6345,6 +6345,13 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/sandbox.py",
     "delfin/agent/kit_settings.py",
     "delfin/user_settings.py",
+    # Who may answer a pending approval, and the code that writes and
+    # checks an answer (approval_guard).
+    "delfin/agent/approval_guard.py",
+    "delfin/agent/file_confirm.py",
+    "delfin/agent/terminal_confirm.py",
+    "delfin/agent/approval_answers.py",
+    "delfin/agent/cli_gate.py",
     # The maintainer's principles, loaded first into every role: an agent
     # that could rewrite them could rewrite what it is for.
     "delfin/agent/pack/shared/principles_addendum.md",
@@ -16963,6 +16970,16 @@ class _DocToolExecutor:
         hard-deny, and self-mod-guard / calc explicit-confirm. Shared by
         write_file/edit_file/multi_edit and by every file an apply_patch diff
         touches. Returns an error string to block, or None to allow."""
+        # Where approvals are answered, and the CLI gate's state: refused
+        # for every write tool and every shell write target, granted root
+        # or not, with nobody asked (approval_guard).
+        from . import approval_guard as _approval_guard
+        if _approval_guard.is_answer_room_path(path_arg, perms.workspace):
+            _record_security_event(
+                "approval_self_answer", name, str(path_arg)[:120],
+                blocked=True)
+            return _approval_guard.refusal(
+                f"'{path_arg}' is where pending approvals are answered")
         # for_read=True: recognise every reachable root so the per-tier policy
         # below can fire (deny read-only, confirm calc). The write EXECUTOR
         # re-resolves writable-only — defense in depth.
@@ -17465,6 +17482,19 @@ class _DocToolExecutor:
         leaked = _leaked_call_markup(name, args)
         if leaked:
             return leaked
+
+        # A pending approval is answered by the person, in every mode and
+        # before anything is asked: a dialog here would ask the person to
+        # approve the agent approving itself (approval_guard).
+        if name == "bash":
+            from . import approval_guard as _approval_guard
+            _answers = _approval_guard.answer_command(
+                _prose_blanked(str(args.get("command", "") or "")))
+            if _answers:
+                _record_security_event(
+                    "approval_self_answer", name,
+                    str(args.get("command", "") or "")[:120], blocked=True)
+                return _approval_guard.refusal(_answers)
 
         if mode == "plan" and not _plan_mode_admits_for_delegate(name, perms):
             return (
@@ -23099,6 +23129,12 @@ def _scrubbed_bash_env() -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in _SECRET_ENV_NAMES
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    # Every process an agent session starts says so: `delfin-agent
+    # approvals approve` and the answer functions refuse under it
+    # (approval_guard). This is the one env every agent child is built
+    # from -- shell tool, background job, test run, external agent CLI.
+    from .approval_guard import ENV_MARKER as _agent_marker
+    env[_agent_marker] = str(os.getpid())
     return env
 
 
@@ -23642,6 +23678,18 @@ def _bash_isolation_argv(
     # command: existing hooks stay readable, new ones cannot be written.
     for g in git_roots:
         args += ["--ro-bind-try", str(Path(g) / "hooks"), str(Path(g) / "hooks")]
+    # Where approvals are answered stays read-only inside a writable root
+    # (a granted ~/.delfin): a command that builds the answer path at run
+    # time is held by the mount, not by reading its text. A room outside
+    # every root is read-only already through the "/" bind.
+    try:
+        from . import approval_guard as _approval_guard
+        _bound = [Path(r) for r in roots]
+        for room in _approval_guard.answer_rooms():
+            if any(room == b or b in room.parents for b in _bound):
+                args += ["--ro-bind-try", str(room), str(room)]
+    except Exception:
+        pass
     args += ["--chdir", str(Path(run_cwd).resolve())]
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])

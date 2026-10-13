@@ -325,8 +325,33 @@ def test_every_agent_child_carries_the_marker(home, ws):
     assert out.get("exit_code") == 0 and out.get("stdout", "").strip(), out
 
 
-def test_no_room_path_is_widened_inside_the_bwrap_cage(home, ws):
-    """Granted ~/.delfin is writable inside the cage, except the rooms."""
+@pytest.mark.parametrize("mode,attended", [
+    pytest.param("acceptEdits", True, id="acceptEdits"),
+    pytest.param("bypassPermissions", False, id="bypass-unattended"),
+])
+def test_a_spelling_the_gate_cannot_read_meets_the_second_layer(
+        home, ws, monkeypatch, mode, attended):
+    """Isolation off, the subcommand assembled at run time: the gate's
+    text reading sees no answer command, and the CLI the shell starts
+    refuses because it carries the marker."""
+    monkeypatch.setattr(A, "_BASH_ISOLATION_OVERRIDE", "off")
+    rid, req = _pending(home)
+    perms, _ = _perms(ws, mode, attended)
+    cmd = (f"A=appro; {sys.executable} -m delfin.agent.cli "
+           f"${{A}}vals approve {rid}")
+    from delfin.agent import approval_guard
+    assert approval_guard.answer_command(cmd) is None    # the premise
+    out = json.loads(A._doc_executor.execute("bash", {"command": cmd}, perms))
+    assert not req.with_name(f"{rid}.answer.json").exists(), out
+    assert "blocked:" in str(out.get("stderr", "")) + str(out), out
+
+
+def test_no_room_path_is_widened_inside_the_bwrap_cage(
+        home, ws, monkeypatch):
+    """Granted ~/.delfin is writable inside the cage, except the rooms.
+    The argv is built as on a host with bubblewrap, on any host."""
+    monkeypatch.setattr(A.shutil, "which",
+                        lambda name, *a, **k: f"/usr/bin/{name}")
     (home / ".delfin" / "approvals").mkdir(parents=True)
     perms, _ = _perms(ws, "bypassPermissions", False,
                       extra_workspace_dirs=(home / ".delfin",))
