@@ -2635,6 +2635,12 @@ class TerminalAgent:
                     continue
                 if woke:
                     pending = HarnessText(pending)
+                elif not isinstance(pending, HarnessText):
+                    # Read off the keyboard: lifts a stall stop.
+                    try:
+                        self.engine.note_person_message()
+                    except Exception:
+                        pass
                 woke = False
                 pending_prompt = pending          # visible past the try
                 try:
