@@ -247,6 +247,30 @@ def test_an_xtb_inp_sorting_first_does_not_hide_the_dft_inp(tmp_path):
         "B3LYP", "def2-TZVP", "D3BJ")
 
 
+@pytest.mark.parametrize("method", [
+    "B3LYP-D3", "B3LYP-D3BJ", "PBE0-D4", "PBE-D3BJ", "TPSSh-D3BJ",
+    "B97M-V", "wB97X-D", "wB97M-V", "r2SCAN-3c", "B97-3c", "PBEh-3c",
+    "HF-3c", "GFN1-xTB", "GFN2-xTB", "XTB", "XTB1", "XTB2",
+])
+def test_the_inp_header_names_the_method(method):
+    rec = ci._extract_from_inp_header(f"! {method} OPT\n* xyz 0 1\n*\n")
+    assert rec.get("inp_functional") == method
+
+
+def test_an_xtb_header_does_not_override_the_control_functional(tmp_path):
+    """XTB.inp is DELFIN's pre-optimisation; it names a method now, but
+    the run's DFT functional stays the one CONTROL (or a DFT .inp)
+    states."""
+    rec, _ = _record(tmp_path, "xtb_only", _template_control(),
+                     geometry=_TXT_ORGANIC,
+                     XTB__inp="! XTB2 OPT ALPB(DMF)\n* xyz 0 1\n*\n")
+    parts = ci.method_parts_of_folder(tmp_path / "calc" / "xtb_only")
+    assert rec["functional"] == parts["functional"] == "PBE0"
+    rec, _ = _record(tmp_path, "xtb_bare", "NAME = x\n",
+                     XTB__inp="! XTB2 OPT ALPB(DMF)\n* xyz 0 1\n*\n")
+    assert rec["functional"] == "XTB2"
+
+
 def test_delfin_data_json_wins_over_the_inp_header(tmp_path):
     rec, _ = _record(
         tmp_path, "json_inp", _template_control(), geometry=_TXT_ORGANIC,
