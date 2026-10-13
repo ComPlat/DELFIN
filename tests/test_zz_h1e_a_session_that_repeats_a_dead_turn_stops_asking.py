@@ -277,3 +277,42 @@ def test_a_line_typed_in_the_terminal_lifts_a_stop(make):
     agent.run()
     assert calls_per_turn == [2, 2, 1, 2, 2, 1], calls_per_turn
     assert "stops asking" in out.getvalue()
+
+
+def test_the_same_tool_with_other_arguments_is_the_same_dead_ending(make):
+    eng, _ = make(*[_leak().replace("a.txt", f"{n}.txt") for n in "aabbcc"])
+    for i in range(3):
+        eng.stream_response(f"t{i}")
+    assert eng._stall_guard_stopped
+
+
+def test_turns_that_alternate_the_leaked_tool_never_stop(make):
+    """Two calls per dead turn (the leak and its re-request)."""
+    eng, _ = make(*[_leak(tool=t) for t in ["write_file", "bash"] * 3
+                    for _ in range(2)])
+    for i in range(6):
+        eng.stream_response(f"t{i}")
+    assert eng._stall_guard_stopped == ""
+
+
+@pytest.mark.parametrize("raw, stops_after", [(2, 2), ("abc", 3)])
+def test_the_repeats_setting_is_read_and_a_corrupt_one_keeps_the_default(
+        make, raw, stops_after):
+    """A corrupt value used to raise in the engine's int() and the guard
+    was switched off; StallGuard parses it and keeps the default."""
+    import delfin.user_settings as us
+
+    real = us.load_settings
+
+    def load():
+        data = real()
+        data.setdefault("agent", {})["stall_guard"] = {"repeats": raw}
+        return data
+
+    with patch.object(us, "load_settings", load):
+        eng, _ = make(_leak())
+    for i in range(stops_after - 1):
+        eng.stream_response(f"t{i}")
+    assert eng._stall_guard_stopped == ""
+    out = eng.stream_response("last")
+    assert f"{stops_after} turns in a row" in out
