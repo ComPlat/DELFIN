@@ -6455,6 +6455,13 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/sandbox.py",
     "delfin/agent/kit_settings.py",
     "delfin/user_settings.py",
+    # Who may answer a pending approval, and the code that writes and
+    # checks an answer (approval_guard).
+    "delfin/agent/approval_guard.py",
+    "delfin/agent/file_confirm.py",
+    "delfin/agent/terminal_confirm.py",
+    "delfin/agent/approval_answers.py",
+    "delfin/agent/cli_gate.py",
     # The maintainer's principles, loaded first into every role: an agent
     # that could rewrite them could rewrite what it is for.
     "delfin/agent/pack/shared/principles_addendum.md",
@@ -7728,6 +7735,137 @@ def _reading_alternative_hint(cmd: str) -> str:
         f" NOTE: the READING form of '{first}' is auto-allowed: {alt}. "
         "If that is the question you were asking, ask it that way."
     )
+
+
+#: Inline python: `-c`, or a here-document on stdin (`python3 - <<EOF`,
+#: `python3 <<EOF`). Group 1 is the interpreter word as the model wrote it.
+_INLINE_PYTHON_RE = re.compile(
+    r"^\s*(python(?:\d(?:\.\d+)?)?)\s+(?:-c\b|(?:-\s+)?<<)")
+
+#: A program name that may be echoed into a refusal: no `=`, quote or `$`.
+_PLAIN_PROGRAM_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
+
+
+def _inline_file_route(cmd: str, args: dict,
+                       perms: "KitToolPermissions") -> str:
+    """The file route for inline python, or "" where the gate would refuse it.
+
+    Input: a command refused by the auto-allow tier, its tool args, the
+    permissions that refused it. Output: one line naming
+    ``write_file(path="<name>")`` and ``<interpreter> <name>``, or "".
+
+    Named only when every step is allowed for these permissions: the
+    file is new (write_file refuses an unread overwrite), inside a
+    writable root, not read-only, inside the write scope, and
+    ``<interpreter> <name>`` is auto-allowed. No `cwd`: write_file
+    resolves against the workspace, the command against the cwd, so a
+    relative name would mean two files. The program is not copied into
+    the line (it may be long; the model has it).
+    """
+    match = _INLINE_PYTHON_RE.match(cmd or "")
+    if match is None or str(args.get("cwd") or "").strip() not in ("", "."):
+        return ""
+    interpreter = match.group(1)
+    workspace = Path(perms.workspace)
+    for n in range(1, 10):
+        name = "_inline_check.py" if n == 1 else f"_inline_check_{n}.py"
+        if not (workspace / name).exists():
+            break
+    else:
+        return ""
+    target = (workspace / name).resolve(strict=False)
+    try:
+        if (perms.find_root_for(target) is None
+                or perms.is_read_only_path(target)
+                or not _write_in_scope(target, perms)
+                or not perms.matches_bash_auto_allow(f"{interpreter} {name}")):
+            return ""
+    except Exception:
+        return ""
+    return (
+        f" ROUTE: write the program to a file with write_file(path=\"{name}\""
+        f", content=<the program>) and run `{interpreter} {name}`; the file "
+        "passes the write gate and the script scan, which inline code skips, "
+        "and undo_changes(scope=\"last\") removes it afterwards."
+    )
+
+
+def _allow_list_route(cmd: str, args: dict,
+                      perms: "KitToolPermissions") -> str:
+    """One route for an auto-allow refusal no cause-specific hint covers.
+
+    Input: the refused command, its args, the refusing permissions.
+    Output: "" or one line, computed against these permissions:
+
+    * a chain or pipe with allowed and refused parts: the first refused
+      part by name and the allowed parts, each checked with
+      ``matches_bash_auto_allow``; a refused part that is inline python
+      carries the file route. All parts refused: "" (nothing to run).
+    * a single command whose program is a plain name: the spellings of
+      it (an absolute path where one is on PATH, ``env``, ``nohup``,
+      ``time``, ``sh -c``) that the same check also refuses, and the user
+      as the route -- ``ask_user_question`` only when a question dialog
+      is bound, otherwise the answer text.
+
+    Rejected: suggesting the allowed parts of a pipe as an equivalent
+    (the pipe's meaning is lost; they are named as allowed, not as the
+    same job), and naming spellings without checking them (a user allow
+    pattern can admit one; a listed spelling that runs would be a route
+    past the refusal it annotates).
+    """
+    if "<<" in cmd or "\n" in cmd:
+        return ""
+    try:
+        segments = [s.strip() for s in _split_shell_segments(cmd)]
+    except Exception:
+        return ""
+    segments = [s for s in segments if s]
+    if not segments:
+        return ""
+    if len(segments) > 1:
+        try:
+            verdicts = [(s, perms.matches_bash_auto_allow(s))
+                        for s in segments]
+        except Exception:
+            return ""
+        refused = [s for s, ok in verdicts if not ok]
+        allowed = [s for s, ok in verdicts if ok]
+        if not refused or not allowed:
+            return ""
+        shown = ", ".join(f"`{s[:80]}`" for s in allowed[:4])
+        line = (f" ROUTE: `{refused[0][:120]}` is the part not on the list; "
+                f"{shown} "
+                + ("is allowed as a bash call of its own."
+                   if len(allowed) == 1
+                   else "are allowed as bash calls of their own."))
+        return line + _inline_file_route(refused[0], args, perms)
+    try:
+        words = shlex.split(segments[0])
+    except ValueError:
+        return ""
+    if not words or not _PLAIN_PROGRAM_RE.fullmatch(words[0]):
+        return ""
+    program = words[0]
+    quoted = " ".join(shlex.quote(w) for w in words)
+    spellings = []
+    found = shutil.which(program)
+    if found and found != program:
+        spellings.append(" ".join([shlex.quote(found)] + [
+            shlex.quote(w) for w in words[1:]]))
+    spellings += [f"env {quoted}", f"nohup {quoted}", f"time {quoted}",
+                  f"sh -c {shlex.quote(quoted)}"]
+    try:
+        spellings = [s for s in spellings
+                     if not perms.matches_bash_auto_allow(s)]
+    except Exception:
+        return ""
+    if not spellings:
+        return ""
+    ask = ("ask the user with ask_user_question"
+           if getattr(perms, "ask_user_callback", None) is not None
+           else "say in your answer which command you need and why")
+    shown = ", ".join(f"`{s[:100]}`" for s in spellings)
+    return f" ROUTE: Running it as {shown} is refused the same way; {ask}."
 
 
 def _loop_body(cmd: str) -> "list[str] | None":
@@ -17109,6 +17247,16 @@ class _DocToolExecutor:
         hard-deny, and self-mod-guard / calc explicit-confirm. Shared by
         write_file/edit_file/multi_edit and by every file an apply_patch diff
         touches. Returns an error string to block, or None to allow."""
+        # Where approvals are answered, and the CLI gate's state: refused
+        # for every write tool and every shell write target, granted root
+        # or not, with nobody asked (approval_guard).
+        from . import approval_guard as _approval_guard
+        if _approval_guard.is_answer_room_path(path_arg, perms.workspace):
+            _record_security_event(
+                "approval_self_answer", name, str(path_arg)[:120],
+                blocked=True)
+            return _approval_guard.refusal(
+                f"'{path_arg}' is where pending approvals are answered")
         # for_read=True: recognise every reachable root so the per-tier policy
         # below can fire (deny read-only, confirm calc). The write EXECUTOR
         # re-resolves writable-only — defense in depth.
@@ -17611,6 +17759,19 @@ class _DocToolExecutor:
         leaked = _leaked_call_markup(name, args)
         if leaked:
             return leaked
+
+        # A pending approval is answered by the person, in every mode and
+        # before anything is asked: a dialog here would ask the person to
+        # approve the agent approving itself (approval_guard).
+        if name == "bash":
+            from . import approval_guard as _approval_guard
+            _answers = _approval_guard.answer_command(
+                _prose_blanked(str(args.get("command", "") or "")))
+            if _answers:
+                _record_security_event(
+                    "approval_self_answer", name,
+                    str(args.get("command", "") or "")[:120], blocked=True)
+                return _approval_guard.refusal(_answers)
 
         if mode == "plan" and not _plan_mode_admits_for_delegate(name, perms):
             return (
@@ -18262,7 +18423,12 @@ class _DocToolExecutor:
                     "on a file the write gate already saw, which is the part "
                     "`-c` skips. Use one of them instead of asking for a "
                     "`-c` allow-pattern."
-                )
+                ) + _inline_file_route(cmd, args, perms)
+            elif _INLINE_PYTHON_RE.match(cmd):
+                # A here-document on python's stdin: `-c` with other
+                # punctuation (29 of 437 auto-allow refusals in the denial
+                # log), and the same file route.
+                hint = _inline_file_route(cmd, args, perms)
             elif re.search(
                     r"\bgit\b[^\n]{0,40}\b(?:worktree\s+add|stash\b|"
                     r"checkout\s+[^\s]+\s+--)", cmd):
@@ -18372,6 +18538,11 @@ class _DocToolExecutor:
                     "take it back — that is why the tool exists, not a "
                     "formality."
                 )
+            else:
+                # The rest: a chain with one refused part, or one program
+                # not on the list. The route names what the same check
+                # allows, and the spellings of the command it refuses too.
+                hint = _allow_list_route(cmd, args, perms)
             return (
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
                 f"(mode={mode}). Do NOT try to work around this block with "
@@ -23269,6 +23440,12 @@ def _scrubbed_bash_env() -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in _SECRET_ENV_NAMES
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    # Every process an agent session starts says so: `delfin-agent
+    # approvals approve` and the answer functions refuse under it
+    # (approval_guard). This is the one env every agent child is built
+    # from -- shell tool, background job, test run, external agent CLI.
+    from .approval_guard import ENV_MARKER as _agent_marker
+    env[_agent_marker] = str(os.getpid())
     return env
 
 
@@ -23812,6 +23989,18 @@ def _bash_isolation_argv(
     # command: existing hooks stay readable, new ones cannot be written.
     for g in git_roots:
         args += ["--ro-bind-try", str(Path(g) / "hooks"), str(Path(g) / "hooks")]
+    # Where approvals are answered stays read-only inside a writable root
+    # (a granted ~/.delfin): a command that builds the answer path at run
+    # time is held by the mount, not by reading its text. A room outside
+    # every root is read-only already through the "/" bind.
+    try:
+        from . import approval_guard as _approval_guard
+        _bound = [Path(r) for r in roots]
+        for room in _approval_guard.answer_rooms():
+            if any(room == b or b in room.parents for b in _bound):
+                args += ["--ro-bind-try", str(room), str(room)]
+    except Exception:
+        pass
     args += ["--chdir", str(Path(run_cwd).resolve())]
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])
