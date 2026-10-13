@@ -501,6 +501,16 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         return 2
     prompt = " ".join(args.prompt) if isinstance(args.prompt, list) else str(args.prompt)
     repo = Path(args.cwd or os.getcwd()).expanduser().resolve()
+    if prepare is None:
+        # The `run` door: the bypass rule chat -p applies in
+        # _cmd_chat_one_shot, which has already decided the posture.
+        mode, note, refused = _headless_posture(args, repo)
+        if refused:
+            print(note, file=sys.stderr)
+            return 2
+        if note:
+            print(note, file=sys.stderr)
+        args.permission_mode = mode
     if args.cwd:
         os.chdir(repo)
 
@@ -1436,9 +1446,12 @@ def _bind_supervised(engine, args: argparse.Namespace) -> bool:
     return True
 
 
-def _one_shot_posture(args: argparse.Namespace,
+def _headless_posture(args: argparse.Namespace,
                       workspace: Path) -> tuple[str, str, bool]:
-    """``(mode, note, refused)`` for a ``chat -p`` run, before any engine.
+    """``(mode, note, refused)`` for a headless run, before any engine.
+
+    Called by ``chat -p`` (and a piped prompt) and by the ``run``
+    subcommand, so both headless doors hold one rule.
 
     The interactive rule, held for a run nobody watches:
 
@@ -1464,7 +1477,8 @@ def _one_shot_posture(args: argparse.Namespace,
     unattended = bool(getattr(args, "unattended", False))
     if flag == "bypassPermissions" and not unattended:
         return "", ("REFUSED: --permission-mode bypassPermissions needs "
-                    "--unattended, on a -p run as in a terminal session."), True
+                    "--unattended, on a headless run as in a terminal "
+                    "session."), True
     if flag:
         return flag, "", False
     persisted, source = _persisted_default_mode(workspace)
@@ -1474,7 +1488,8 @@ def _one_shot_posture(args: argparse.Namespace,
     if not unattended:
         return "", (
             f"REFUSED: {source} sets default_mode = \"bypassPermissions\", "
-            "and a -p run does not take that default without --unattended. "
+            "and a headless run does not take that default without "
+            "--unattended. "
             "Pass --permission-mode plan, default or acceptEdits, or "
             "--permission-mode bypassPermissions --unattended if you mean "
             "it."), True
@@ -1514,7 +1529,7 @@ def _cmd_chat_one_shot(args: argparse.Namespace, report, workspace: Path,
               "from; on a -p run pass --resume ID or --continue.",
               file=sys.stderr)
         return 2
-    mode, note, refused = _one_shot_posture(args, workspace)
+    mode, note, refused = _headless_posture(args, workspace)
     if refused:
         print(note, file=sys.stderr)
         return 2
@@ -3743,6 +3758,9 @@ def build_parser() -> argparse.ArgumentParser:
                      choices=["", "plan", "default", "acceptEdits",
                               "bypassPermissions"],
                      help="Approval mode for this turn (default: settings)")
+    run.add_argument("--unattended", action="store_true",
+                     help="Required alongside --permission-mode "
+                          "bypassPermissions, as on chat")
     run.add_argument("--json", action="store_true",
                      help="Emit JSON instead of plain text")
     run.add_argument("-v", "--verbose", action="store_true")
