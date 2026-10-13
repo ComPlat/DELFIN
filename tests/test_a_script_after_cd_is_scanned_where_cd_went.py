@@ -154,10 +154,71 @@ class TestAnUnknownDirectory:
         assert "RAN-" not in out, out[:300]
         assert asked and "directory" in asked[0].lower(), asked
 
-    def test_it_is_asked_in_every_mode(self, ws, mode, cmd, monkeypatch):
-        monkeypatch.setenv("SOMEWHERE", str(ws / "sub"))
+    def test_it_is_asked_in_every_mode(self, ws, mode, cmd):
         out, asked = _run(ws, mode, cmd, answer=True)
         assert asked and "directory" in asked[0].lower(), (asked, out[:300])
+
+
+# ---------------------------------------------------------------------------
+# A variable the command's own environment defines is not unknown
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("cmd", [
+    "cd $WORKDIR_T && python3 y.py",
+    'cd "$WORKDIR_T" && python3 y.py',
+    "cd ${WORKDIR_T} && ./y.py",
+    "cd $WORKDIR_T/../sub && bash y.sh",
+    "W=sub; cd $W && python3 y.py",
+    'export W=sub && cd "$W" && python3 y.py',
+    "B=sub; W=$B; cd $W && python3 y.py",
+])
+def test_a_flagged_script_under_a_known_variable_is_refused_unasked(
+        ws, mode, cmd, monkeypatch):
+    monkeypatch.setenv("WORKDIR_T", str(ws / "sub"))
+    out, asked = _run(ws, mode, cmd, answer=None)
+    assert _scan_refused(out), out[:300]
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("cmd", [
+    "cd $WORKDIR_T && python3 clean.py",
+    'cd "${WORKDIR_T}" && python3 clean.py',
+    "W=sub; cd $W && python3 clean.py",
+])
+def test_a_clean_script_under_a_known_variable_runs_unattended(
+        ws, mode, cmd, monkeypatch):
+    """The unattended case: no dialog is possible, and none is needed."""
+    monkeypatch.setenv("WORKDIR_T", str(ws / "sub"))
+    out, asked = _run(ws, mode, cmd, answer=True)
+    assert "RAN-CLEAN" in out, out[:300]
+    assert not any("UNKNOWN DIRECTORY" in a for a in asked), asked
+
+
+@pytest.mark.parametrize("cmd", [
+    # Set by something other than a literal assignment: the environment's
+    # value is not the one cd sees.
+    "W=$(echo sub); cd $W && python3 y.py",
+    "for W in sub; do cd $W && python3 y.py; done",
+    "read W < name.txt; cd $W && python3 y.py",
+    "source env.sh; cd $W && python3 y.py",
+    "W=sub python3 -V; cd $W && python3 y.py",
+    "cd ${W:-sub} && python3 y.py",
+])
+def test_a_variable_set_opaquely_stays_unknown(ws, cmd, monkeypatch):
+    monkeypatch.setenv("W", str(ws / "a"))       # a decoy without y.py
+    out, asked = _run(ws, "bypassPermissions", cmd, answer=None)
+    assert "RAN-" not in out, out[:300]
+    assert "directory" in out.lower(), out[:300]
+
+
+def test_scanners_resolve_a_known_variable(monkeypatch):
+    monkeypatch.setenv("SRVDIR_T", "/srv/data")
+    monkeypatch.delenv("UNSET_T", raising=False)
+    assert "/srv/data/x" in R("cd $SRVDIR_T && cat x", "/ws")
+    assert W("cd $SRVDIR_T && echo y > f") == ["/srv/data/f"]
+    (target,) = W("cd $UNSET_T && echo y > f")
+    assert target.startswith("/<directory"), target
 
 
 def test_an_absolute_script_after_an_unknown_cd_is_scanned_not_asked(ws):
