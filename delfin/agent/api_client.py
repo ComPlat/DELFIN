@@ -3126,27 +3126,127 @@ _SEGMENT_ASSIGNMENT_RE = re.compile(r"(?:^|[;&|({])\s*[A-Za-z_]\w*=")
 _SHELL_EXPANSION_CHARS = frozenset("$`*?[]{}")
 
 #: A ``git config`` invocation (any global options before it) and the rest
-#: of its step. ``_git_hook_config_write`` reads the step.
+#: of its step. ``_git_program_config_write`` reads the step.
 _GIT_HOOK_CONFIG_WRITE_RE = re.compile(
     r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+|\s+--[\w-]+(?:=\S+)?)*"
     r"\s+config\b([^;&|\n]*)")
-#: Keys whose value names a program that an auto-allowed ``git commit`` or
-#: ``git status`` runs: the hook directory and the fsmonitor hook.
-_GIT_PROGRAM_CONFIG_KEYS = frozenset({"core.hookspath", "core.fsmonitor"})
+#: Keys whose value git runs as a program (or, for include paths, reads as
+#: more configuration), matched on the lower-cased key: git compares
+#: section and variable names case-insensitively. Subsection names
+#: (``<driver>``, ``<url>``, ``<format>``) are case-sensitive in git; the
+#: match lower-cases them too, which only widens it.
+_GIT_PROGRAM_CONFIG_KEY_RE = re.compile(
+    r"(?:core\.(?:hookspath|fsmonitor|sshcommand|pager|editor|askpass|"
+    r"gitproxy|alternaterefscommand)"
+    r"|sequence\.editor|gpg\.(?:.+\.)?program|credential\.(?:.+\.)?helper"
+    r"|diff\.external|diff\..+\.(?:textconv|command)"
+    r"|filter\..+\.(?:clean|smudge|process)|merge\..+\.driver"
+    r"|(?:difftool|mergetool)\..+\.cmd|interactive\.difffilter"
+    r"|remote\..+\.(?:uploadpack|receivepack)"
+    r"|pager\..+|alias\..+|include\.path|includeif\..+\.path)")
+#: ``pager.<cmd>`` takes a boolean as well as a program.
+_GIT_BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "on", "off",
+                                 "1", "0", ""})
 _GIT_CONFIG_READ_WORDS = frozenset({"--get", "--get-all", "--get-regexp",
                                     "--get-urlmatch", "-l", "--list", "get",
                                     "list", "--unset", "--unset-all", "unset",
                                     "--remove-section", "--show-origin"})
+#: An environment assignment that hands git configuration to every git
+#: command it reaches: ``GIT_CONFIG_PARAMETERS`` (``'k'='v'`` pairs, or the
+#: older ``'k=v'``) and ``GIT_CONFIG_KEY_<n>`` (the key; its value is in
+#: ``GIT_CONFIG_VALUE_<n>``, not read).
+_GIT_CONFIG_ENV_RE = re.compile(r"^(GIT_CONFIG_PARAMETERS|GIT_CONFIG_KEY_\d+)=(.*)$")
+_GIT_CONFIG_PARAM_PAIR_RE = re.compile(r"'([^']*)'(?:='([^']*)')?")
 
 
-def _git_hook_config_write(cmd: str) -> Optional[str]:
-    """The key, when ``cmd`` writes ``core.hooksPath`` or ``core.fsmonitor``
-    with ``git config``; else None.
+def _git_value_runs(key: str, value: Optional[str]) -> bool:
+    """Whether setting ``key`` to ``value`` names a program git runs.
 
-    A write is the key followed by a value, with no read or unset word in
-    the step. Persistent only: ``git -c core.hooksPath=...`` lasts for one
-    command, which the bash gate already sees. Commit messages are blanked
-    first (``_prose_blanked``); ``sh -c`` bodies are read too."""
+    ``value`` None means unknown and counts as a program. An alias runs a
+    program when it starts with ``!`` or carries ``-c``/``--config-env``
+    with a program key; ``pager.<cmd>`` not when it is a boolean."""
+    k = key.lower()
+    if not _GIT_PROGRAM_CONFIG_KEY_RE.fullmatch(k):
+        return False
+    if value is None:
+        return True
+    if k.startswith("alias."):
+        v = value.lstrip()
+        return v.startswith("!") or bool(
+            _git_one_command_program_key(["git", *v.split()]))
+    if k.startswith("pager."):
+        return value.strip().lower() not in _GIT_BOOLEAN_VALUES
+    return True
+
+
+def _git_one_command_program_key(words: list) -> Optional[str]:
+    """The first program key that ``words`` set for one command: ``git -c
+    k=v`` / ``--config-env=k=ENV`` before the subcommand, or a
+    ``GIT_CONFIG_PARAMETERS``/``GIT_CONFIG_KEY_<n>`` assignment anywhere
+    (prefix, ``env``, ``export``). None otherwise."""
+    for i, raw in enumerate(words):
+        tok = raw.rstrip(";&|)")
+        env = _GIT_CONFIG_ENV_RE.match(tok)
+        if env:
+            name, value = env.groups()
+            if name != "GIT_CONFIG_PARAMETERS":
+                if _git_value_runs(value, None):
+                    return value
+                continue
+            for k, v in _GIT_CONFIG_PARAM_PAIR_RE.findall(value):
+                if "=" in k and not v:
+                    k, v = k.split("=", 1)
+                if _git_value_runs(k, v):
+                    return k
+            continue
+        if tok.lstrip("(`").rsplit("/", 1)[-1] != "git":
+            continue
+        j = i + 1
+        while j < len(words) and words[j].startswith("-"):
+            opt = words[j]
+            pair = None
+            if opt in ("-c", "--config-env"):
+                pair = words[j + 1] if j + 1 < len(words) else ""
+                j += 2
+            elif opt.startswith("--config-env="):
+                pair = opt[len("--config-env="):]
+                j += 1
+            elif "=" not in opt and opt in _GIT_GLOBAL_OPTS_WITH_VALUE:
+                j += 2
+                continue
+            else:
+                j += 1
+                continue
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                if opt.startswith("--config-env"):
+                    v = None            # the value is in that variable
+                if _git_value_runs(k, v):
+                    return k
+    return None
+
+
+def _git_program_config_write(cmd: str) -> Optional[str]:
+    """The key, when ``cmd`` sets a git configuration key whose value git
+    later runs as a program (``_GIT_PROGRAM_CONFIG_KEY_RE``); else None.
+
+    Two shapes. Persistent: ``git config [opts] <key> <value>`` with no
+    read or unset word in the step; it reaches every later git command,
+    including the auto-allowed ``git commit``/``git status``. One command:
+    ``git -c``/``--config-env`` before the subcommand, and the
+    ``GIT_CONFIG_PARAMETERS``/``GIT_CONFIG_KEY_<n>`` environment; that git
+    command is often on the auto-allowed read list (``git -c
+    core.pager=... log``) and in bypassPermissions nothing else asks.
+    Commit messages are blanked first (``_prose_blanked``); ``sh -c``
+    bodies are read too.
+
+    Not seen: a key spelled through a variable (``git config "$k" x``), a
+    configuration file written by other means than ``git config``
+    (``.git/config`` is a deny path; ``~/.gitconfig`` or a file later
+    named by ``GIT_CONFIG_GLOBAL`` is not), and ``git config --edit``.
+    Rejected: asking for every ``git config`` write -- ``user.*``,
+    ``color.*``, ``branch.*`` are the common writes and run nothing.
+    Cost: one regex scan and one ``shlex.split`` per command."""
     import shlex
     text = _with_shell_bodies(_prose_blanked(cmd or ""))
     for m in _GIT_HOOK_CONFIG_WRITE_RE.finditer(text):
@@ -3157,8 +3257,18 @@ def _git_hook_config_write(cmd: str) -> Optional[str]:
         if _GIT_CONFIG_READ_WORDS & set(words):
             continue
         for i, w in enumerate(words):
-            if w.lower() in _GIT_PROGRAM_CONFIG_KEYS and i + 1 < len(words):
+            if i + 1 < len(words) and _git_value_runs(w, words[i + 1]):
                 return w
+    if "git" not in text.lower():
+        return None
+    for line in text.split("\n"):
+        try:
+            words = shlex.split(line)
+        except ValueError:
+            words = line.split()
+        key = _git_one_command_program_key(words)
+        if key:
+            return key
     return None
 
 
@@ -17771,15 +17881,19 @@ class _DocToolExecutor:
                         "not try a third form. End your turn and ask the "
                         "user what they want done with this file."
                     )
-            # A hook directory or fsmonitor program written into git's
-            # configuration runs from the next auto-allowed `git commit` or
-            # `git status`, in whatever mode that runs -- the same reach as
-            # the work-tree files git reads as configuration
-            # (_GIT_CONFIG_PROTECTED_GLOBS), so the same rule: asked in
-            # every mode, refused with nobody to ask. It also keeps a hook
+            # A git configuration key whose value git runs as a program (a
+            # hook directory, fsmonitor, pager, editor, ssh command,
+            # credential helper, diff/filter/merge driver, `!` alias, an
+            # include path; _GIT_PROGRAM_CONFIG_KEY_RE) runs from the next
+            # auto-allowed `git commit`/`git status`/`git log`, in whatever
+            # mode that runs -- the same reach as the work-tree files git
+            # reads as configuration (_GIT_CONFIG_PROTECTED_GLOBS), so the
+            # same rule: asked in every mode, refused with nobody to ask.
+            # Set for one command (`git -c`, GIT_CONFIG_*) it turns an
+            # auto-allowed read into a program run. It also keeps a hook
             # from changing a remote between the role check and the push
             # (_steps_keep_the_push_url).
-            _hook_key = _git_hook_config_write(cmd)
+            _hook_key = _git_program_config_write(cmd)
             # True once the user approved this command in a dialog of its
             # own (a hook-path write, a merge of a PR with no checks), so
             # the ordinary dialog does not ask a second time.
@@ -17791,16 +17905,16 @@ class _DocToolExecutor:
                 if perms.confirm_callback is None:
                     return (
                         f"blocked: `{_hook_key}` is a git configuration "
-                        "change that names a program the next `git commit` "
-                        "or `git status` runs, and nobody can be asked "
-                        "here. Tell the user the command and why it is "
-                        "needed.")
+                        "change that names a program git runs (a hook, "
+                        "pager, editor, helper, driver or alias), and "
+                        "nobody can be asked here. Tell the user the "
+                        "command and why it is needed.")
                 try:
                     ok = bool(perms.confirm_callback(
                         "bash", {"command": cmd},
                         "[GIT CONFIGURATION]\n"
-                        f"`{_hook_key}` names a program that the next git "
-                        "commit or git status runs.\n\n$ " + cmd))
+                        f"`{_hook_key}` names a program that git runs, "
+                        "here or from a later git command.\n\n$ " + cmd))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if not ok:
