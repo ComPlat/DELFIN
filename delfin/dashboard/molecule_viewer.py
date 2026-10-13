@@ -6984,27 +6984,79 @@ def coord_to_xyz(coord_text):
 
 
 def parse_xyz_frames(content):
-    """Parse a multi-frame XYZ file into a list of ``(comment, xyz_block, n_atoms)`` tuples."""
+    """Parse a multi-frame XYZ file into a list of ``(comment, xyz_block, n_atoms)`` tuples.
+
+    Robust against blank lines: stray empty lines may appear before, after or
+    between frames (GOAT and EnAn writers occasionally emit them) and are
+    skipped.  Each frame is framed by its *declared* atom count, so embedded
+    blank lines can never shift the frame structure.  A truncated or malformed
+    frame is skipped rather than returned half-read, and does not halt parsing
+    of the remaining (well-formed) frames.
+    """
     frames = []
-    lines = content.strip().split('\n')
+    if not content:
+        return frames
+    lines = content.split('\n')
+    n = len(lines)
     i = 0
-    while i < len(lines):
+    while i < n:
+        head = lines[i].strip()
+        # Skip stray blank lines wherever they occur.
+        if not head:
+            i += 1
+            continue
         try:
-            n_atoms = int(lines[i].strip())
+            n_atoms = int(head.split()[0])
         except (ValueError, IndexError):
-            break
-        if i + 1 >= len(lines):
-            break
+            # Not an atom-count header: skip this line and keep scanning so a
+            # later, well-formed frame is still recovered.
+            i += 1
+            continue
+        if n_atoms <= 0:
+            i += 1
+            continue
+        if i + 1 >= n:
+            break  # header without a comment line: nothing usable remains
         comment = lines[i + 1].strip()
+        # Collect the atom lines within the *declared* frame span only.  Blank
+        # lines inside the span are skipped; the first non-blank line that is
+        # not a genuine atom row is treated as the start of the next frame (a
+        # truncated frame must never swallow the next frame's header/atoms).
+        frame_end = min(i + 2 + n_atoms, n)
         coord_lines = []
-        for j in range(n_atoms):
-            if i + 2 + j < len(lines):
-                coord_lines.append(lines[i + 2 + j])
-        if len(coord_lines) == n_atoms:
-            xyz_block = '\n'.join(coord_lines)
+        scan = i + 2
+        while len(coord_lines) < n_atoms and scan < frame_end:
+            row = lines[scan].strip()
+            if _is_xyz_atom_line(row):
+                coord_lines.append(lines[scan])
+                scan += 1
+            elif not row:
+                scan += 1
+            else:
+                # Non-blank line that is not an atom row -> next frame's header.
+                break
+        if len(coord_lines) >= n_atoms:
+            xyz_block = '\n'.join(coord_lines[:n_atoms])
             frames.append((comment, xyz_block, n_atoms))
-        i += 2 + n_atoms
+        i = scan
     return frames
+
+
+def _is_xyz_atom_line(line):
+    """True when ``line`` looks like a real XYZ atom row (>= 4 fields, last
+    three parse as floats), tolerating trailing property columns."""
+    if not line:
+        return False
+    parts = line.split()
+    if len(parts) < 4:
+        return False
+    try:
+        float(parts[1])
+        float(parts[2])
+        float(parts[3])
+    except ValueError:
+        return False
+    return True
 
 
 def strip_xyz_header(text):
