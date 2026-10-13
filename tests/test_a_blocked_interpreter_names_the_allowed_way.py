@@ -49,6 +49,17 @@ import pytest
 from delfin.agent.api_client import KitToolPermissions, _doc_executor
 
 
+@pytest.fixture(autouse=True)
+def _no_cage_admission(monkeypatch):
+    """The refusal text under test is the one given where the caged rule
+    does not apply (no bubblewrap cage on the host, or the rule switched
+    off). Where it applies, the command runs inside the cage instead:
+    tests/test_a_caged_command_runs_without_asking.py."""
+    import delfin.agent.api_client as _A
+    monkeypatch.setattr(_A, "_caged_command_may_run_unasked",
+                        lambda *a, **k: False)
+
+
 @pytest.fixture
 def ws():
     with tempfile.TemporaryDirectory(prefix="interp-") as tmp:
