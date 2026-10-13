@@ -202,9 +202,12 @@ def test_a_stall_is_waited_for_once_per_turn(tmp_path, monkeypatch):
     monkeypatch.setattr(A, "_CLASSIFIER_TIMEOUT_S", 0.2)
     runner = Runner(ALLOW, delay=1.0)
     perms = _perms(tmp_path, "acceptEdits", runner)
-    assert _gate(perms, "web_fetch", {"url": "https://example.org/a"}) is None
+    # Unattended, a network call the watcher could not judge is refused
+    # (test_the_watcher_fails_closed_where_nobody_looks); the stall is
+    # still waited for once only.
+    assert _gate(perms, "web_fetch", {"url": "https://example.org/a"})
     t0 = time.monotonic()
-    assert _gate(perms, "web_fetch", {"url": "https://example.org/b"}) is None
+    assert _gate(perms, "web_fetch", {"url": "https://example.org/b"})
     assert time.monotonic() - t0 < 0.15
     assert len(runner.prompts) == 1
     # A new user message is a new turn: the model is asked again.

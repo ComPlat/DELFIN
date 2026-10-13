@@ -280,6 +280,10 @@ def test_the_permission_rules_decide_first(proxy, web, tmp_path, monkeypatch):
     fake = types.SimpleNamespace(load=lambda workspace=None: rules,
                                  friction=friction, allows=allows)
     monkeypatch.setitem(sys.modules, "delfin.agent.permission_rules", fake)
+    # `from . import permission_rules` reads the package attribute first,
+    # which the real module (on main since #204) has already set.
+    import delfin.agent as _agent_pkg
+    monkeypatch.setattr(_agent_pkg, "permission_rules", fake, raising=False)
 
     out = _via(proxy, _perms(tmp_path, mode="bypassPermissions"),
                f"http://allowed.test:{port}/")
@@ -291,6 +295,22 @@ def test_the_permission_rules_decide_first(proxy, web, tmp_path, monkeypatch):
     out = _via(proxy, _perms(tmp_path, mode="bypassPermissions", asker=asker),
                f"http://asked.test:{port}/")
     assert out.startswith("hello asked.test") and len(asker.asked) == 1, out
+
+
+def test_a_real_permission_rule_decides_in_the_proxy(proxy, web, tmp_path,
+                                                     monkeypatch):
+    """The real permission_rules module, read from a settings file: a deny
+    on an allow-listed host refuses even under bypass."""
+    import json
+    from delfin.agent import permission_rules as PR
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"permissions": {
+        "deny": ["web_fetch(domain:allowed.test)"]}}), encoding="utf-8")
+    monkeypatch.setattr(PR, "user_settings_path", lambda: settings)
+    port = web.server_address[1]
+    out = _via(proxy, _perms(tmp_path, mode="bypassPermissions"),
+               f"http://allowed.test:{port}/")
+    assert out.startswith("403") and "web_fetch(domain:allowed.test)" in out, out
 
 
 def test_a_token_without_a_session_keeps_the_old_answer(proxy, web):

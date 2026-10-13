@@ -43,6 +43,8 @@ _KINDS = {
     "unknowable_patch_refused": ("⛔", "Patch from stdin refused (targets unknown)"),
     "secret_path":    ("🔑", "Secret-path access blocked"),
     "script_payload": ("📜", "Script payload blocked"),
+    # A script run after `cd $VAR` / `cd -`: its file is unknown, so unread.
+    "script_dir_unknown": ("📜", "Script in an unknown directory"),
     "self_mod":       ("🛡", "Self-modification guarded"),
     "calc_edit":      ("🧪", "Stored-calculation edit"),
     "read_only_write": ("📕", "Write into a read-only location"),
@@ -84,6 +86,9 @@ _KINDS = {
     # the only place this is ever visible, which is why it is recorded
     # rather than merely allowed.
     "approval_from_outside": ("\U0001f441", "Approved from outside the terminal"),
+    # An agent session reaching for an approval: the answer command, an
+    # answer function, or a write where answers and the CLI gate state live.
+    "approval_self_answer": ("🚫", "Agent tried to answer an approval"),
     "settings_updated": ("🛡", "Settings changed by a security update"),
     "push_unrequested": ("📤", "Push nobody asked for"),
     "pr_create_unrequested": ("📤", "Pull request nobody asked for"),
@@ -93,6 +98,10 @@ _KINDS = {
     "pr_route":       ("🔀", "Direct push or merge refused (PR route requested)"),
     "pr_merge_unpinned": ("🚫", "Merge not pinned to a green PR head"),
     "git_config_program": ("⚙", "Git setting that runs a program"),
+    # The user's permission rules (permission_rules.py).
+    "permission_rule_deny": ("⛔", "Refused by a permission rule"),
+    "permission_rule_ask": ("❓", "Asked by a permission rule"),
+    "permission_rule_allow": ("✅", "Question answered by a permission rule"),
     "auto_verify":    ("🔁", "Auto-verify caught a problem"),
     "auto_verify_exhausted": ("🔁", "Auto-verify gave up"),
     "test_tamper":    ("🧪", "Failing test edited"),
@@ -126,6 +135,9 @@ _KINDS = {
     "classifier_ask":    ("❓", "Action classifier asked the user"),
     "classifier_refuse": ("🛑", "Action classifier refused an allowed action"),
     "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
+    "classifier_held":   ("⏸️", "Held: watcher could not judge, nobody to ask"),
+    "classifier_down":   ("🔌", "Action watcher down"),
+    "classifier_up":     ("🔁", "Action watcher answers again"),
 }
 
 
