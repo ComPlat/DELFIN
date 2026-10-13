@@ -248,7 +248,8 @@ def test_a_new_conversation_or_a_loaded_session_starts_without_a_stop(make):
 def test_a_line_typed_in_the_terminal_lifts_a_stop(make):
     """Driven through the terminal's own loop: the typed line starts a
     dead loop of follow-ups that stops on the third turn; no fourth
-    follow-up goes out, and the next typed line gets its re-request."""
+    follow-up goes out. The next typed line gets its re-request and a
+    fresh count: three more dead turns, then the stop again."""
     import io
 
     from delfin.agent import repl, repl_render as rr
@@ -274,5 +275,5 @@ def test_a_line_typed_in_the_terminal_lifts_a_stop(make):
 
     agent.turn = turn
     agent.run()
-    assert calls_per_turn == [2, 2, 1, 2], calls_per_turn
+    assert calls_per_turn == [2, 2, 1, 2, 2, 1], calls_per_turn
     assert "stops asking" in out.getvalue()
