@@ -342,3 +342,55 @@ def test_driven_without_a_callback_a_writing_preset_keeps_the_contract(
                        subagent_type="general-purpose")
     assert not result.error, result.error
     assert (repo / "planted1.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# A verifier checks the tree the claim is about, not a fresh copy of HEAD
+# ---------------------------------------------------------------------------
+
+def test_the_verifier_is_not_a_writer_for_isolation():
+    """A writer in a fan-out or in the background is moved into a fresh
+    worktree of HEAD, where an uncommitted fix does not exist: the
+    verifier would report on HEAD while answering for the change."""
+    assert SA.preset_tools_edit_no_file(_verifier().tools)
+    assert SA.is_writer_preset("verifier") is False
+    assert SA.auto_isolation_for("verifier", "", background=True) == ""
+    # Unchanged for the presets that write.
+    assert SA.is_writer_preset("general-purpose") is True
+    assert SA.auto_isolation_for("general-purpose", "",
+                                 background=True) == "worktree"
+
+
+def test_a_parallel_pair_of_verifiers_stays_in_the_tree(monkeypatch):
+    from delfin.agent import api_client as ac
+    seen: list = []
+
+    def fake_exec(name, args, permissions=None):
+        seen.append(dict(args))
+        return "{}"
+
+    monkeypatch.setattr(ac._doc_executor, "execute", fake_exec)
+    tcs = [{"id": f"v{i}", "function": {"name": "subagent", "arguments":
+            json.dumps({"subagent_type": t, "description": f"d{i}",
+                        "prompt": "p"})}}
+           for i, t in enumerate(("verifier", "verifier", "general-purpose"))]
+    futures, executor = ac._fan_out_subagents(tcs, permissions=None)
+    for f in futures.values():
+        f.result()
+    executor.shutdown(wait=True)
+    iso = {a["description"]: a.get("isolation", "") for a in seen}
+    assert iso == {"d0": "", "d1": "", "d2": "worktree"}
+
+
+def test_the_verifier_still_runs_on_the_parent_model(monkeypatch):
+    """Routing kept its own rule: a preset that runs commands stays on the
+    parent's model, and leaving the writer class changed only isolation."""
+    monkeypatch.setattr(SA, "_cheap_tier_enabled", lambda: True)
+
+    class _Parent:
+        model = "big"
+        _provider = "kit"
+        _base_url = ""
+
+    assert SA._resolve_subagent_model(_Parent(), "verifier") == (
+        "big", "parent")
