@@ -1439,7 +1439,9 @@ def tool_extract_imaginary_frequencies(folder: str) -> str:
 def tool_compare_calculations(folder_a: str, folder_b: str) -> str:
     """Side-by-side diff of two calculation folders.
 
-    Returns: method/basis match flags, both functionals + bases,
+    Returns: method/basis/dispersion/solvent match flags, both
+    functionals, bases, dispersion corrections, solvents and solvation
+    models (``dispersion_match`` null: a side's correction was unread),
     Gibbs/SPE for each, ``delta_*_kcal`` (B - A in kcal/mol), imag-freq
     counts, and human notes (e.g. "different functional", "B has 1 imag
     freq — not a minimum").

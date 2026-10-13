@@ -700,6 +700,24 @@ class AgentEngine:
         # around the nested call, reset in ``finally``; while it is set, no
         # re-arm and no second DSML check happens.
         self._dsml_guard_active: bool = False
+        # One stall guard per engine (per conversation), fed with how each
+        # turn ended; `agent.stall_guard.repeats` identical dead endings in a
+        # row (default 3) stop the session. StallGuard parses the setting
+        # itself, so a corrupt value falls back to the default instead of
+        # switching the guard off.
+        from delfin.agent.stall_guard import StallGuard
+        _sg_repeats = None
+        try:
+            from delfin import user_settings
+            _sg_repeats = (((user_settings.load_settings().get("agent", {}) or {})
+                            .get("stall_guard", {}) or {}).get("repeats"))
+        except Exception:
+            pass
+        self._stall_guard = StallGuard(
+            repeats=3 if _sg_repeats in (None, "") else _sg_repeats)
+        # Non-empty once the guard has stopped the session: the sentence that
+        # said so. _note_turn_continuation records no follow-up while it is set.
+        self._stall_guard_stopped: str = ""
         self._last_observed_files: set[str] = set()
         self._last_turn_tools: list[str] = []
         self._observed_ledger_available: bool = False
@@ -2027,6 +2045,25 @@ class AgentEngine:
 
     _SKILL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
+    def _stall_progress(self) -> None:
+        """Real progress: a tool ran, a turn ended on an answer, a person
+        sent a message, or a conversation began. The streak of identical
+        turn endings starts over and a stop is lifted."""
+        self._stall_guard_stopped = ""
+        guard = getattr(self, "_stall_guard", None)
+        if guard is not None:
+            guard.note_progress()
+
+    def note_person_message(self) -> None:
+        """A person sent the message that starts the next turn.
+
+        Lifts a stall stop and restarts the dead-turn count. The dashboard
+        reaches it through :meth:`note_typed`; the terminal calls it for
+        every line it read off the keyboard, without :meth:`note_typed`,
+        which also arms skill correction and is wired on the dashboard only.
+        """
+        self._stall_progress()
+
     def note_typed(self, text: str) -> None:
         """What a person just typed into this session's input box.
 
@@ -2038,6 +2075,7 @@ class AgentEngine:
         skill.
         """
         self._typed_now = text if isinstance(text, str) else ""
+        self.note_person_message()
 
     def _forget_skill_turn(self) -> None:
         """Drop the skills the last turn loaded and any correction of them.
@@ -3332,6 +3370,8 @@ class AgentEngine:
                     self._honour_pause()
 
                 elif event.type == "tool_result":
+                    # A tool ran: the dead-turn count starts over.
+                    self._stall_progress()
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
                     # Commit the held command only if it actually ran.
@@ -4029,20 +4069,72 @@ class AgentEngine:
             except Exception:
                 _dsml_name = None
             if _dsml_name and not self._dsml_leak_spent and not self._dsml_guard_active:
-                full_response = self._enforce_dsml_rerun(
-                    full_response, _dsml_name, _dsml_args,
-                    memory_context=memory_context,
-                    on_token=on_token,
-                    on_tool_use=on_tool_use,
-                    on_tool_result=on_tool_result,
-                    on_permission_denied=on_permission_denied,
-                    on_thinking=on_thinking,
-                    thinking_budget=thinking_budget,
-                    max_tokens=max_tokens,
-                    on_notice=on_notice,
-                    on_tool_result_meta=on_tool_result_meta,
-                    on_wait=on_wait,
-                )
+                # Every leak feeds the stall guard. The fingerprint is the
+                # tool, not the wording: the sentences around a leaked call
+                # differ every time, the call that never runs is the same.
+                # On a stop the re-request is skipped; otherwise the turn is
+                # re-requested once as before.
+                _reran = None
+                _guard = getattr(self, "_stall_guard", None)
+                if (_guard is not None and _guard.advance(
+                        "dsml_leak", str(_dsml_name)) == "stop"):
+                    _stopped = (
+                        f"A call to {_dsml_name} was written as text "
+                        f"instead of being made, repeated in "
+                        f"{_guard.repeats} turns in a row; "
+                        "nothing ran. This session stops asking again "
+                        "and sends no further follow-up. To go on, "
+                        "send a message; the call must then be made as "
+                        "a real tool call.")
+                    self._stall_guard_stopped = _stopped
+                    _tail = "\n\n⚠ " + _stopped
+                    _reran = full_response.strip() + _tail
+                    # The note was recorded above, before this check: the
+                    # turn that stops must not leave a follow-up behind.
+                    self.clear_turn_continuation()
+                    # The screen shows what streamed; the next turn's model
+                    # reads the history. The sentence goes to both.
+                    try:
+                        if on_token:
+                            on_token(_tail)
+                    except Exception:
+                        pass
+                    _row = self.messages[-1] if self.messages else None
+                    if (isinstance(_row, dict)
+                            and _row.get("role") == "assistant"
+                            and _row.get("content") == full_response):
+                        _row["content"] = _reran
+                if _reran is None:
+                    _reran = self._enforce_dsml_rerun(
+                        full_response, _dsml_name, _dsml_args,
+                        memory_context=memory_context,
+                        on_token=on_token,
+                        on_tool_use=on_tool_use,
+                        on_tool_result=on_tool_result,
+                        on_permission_denied=on_permission_denied,
+                        on_thinking=on_thinking,
+                        thinking_budget=thinking_budget,
+                        max_tokens=max_tokens,
+                        on_notice=on_notice,
+                        on_tool_result_meta=on_tool_result_meta,
+                        on_wait=on_wait,
+                    )
+                    # A turn is dead only when the re-requested answer was
+                    # the call written as text AGAIN. An answer that came
+                    # back as a real one is how the turn ended, and it ends
+                    # the streak.
+                    try:
+                        from delfin.agent.text_sanitize import (
+                            leaked_tool_call as _still_leaked)
+                        if not _still_leaked(_reran or ""):
+                            self._stall_progress()
+                    except Exception:
+                        pass
+                full_response = _reran
+            elif not _dsml_name:
+                # The turn ended on a real answer: whatever repeated before
+                # it is over.
+                self._stall_progress()
 
         # A turn that announced an action while plan mode refused its calls
         # says so in the ANSWER, not only in a notice that scrolls past.
@@ -6927,8 +7019,10 @@ class AgentEngine:
     def _note_turn_continuation(self, answer: str) -> None:
         """Record one follow-up note when *answer* announces work that it did
         not do while tasks stay open. Never raises; the latch keeps it to one
-        pending note until the caller calls clear_turn_continuation()."""
-        if not answer or self._continuation_fired:
+        pending note until the caller calls clear_turn_continuation(). No note
+        while the stall guard has stopped the session."""
+        if (not answer or self._continuation_fired
+                or getattr(self, "_stall_guard_stopped", "")):
             return
         try:
             from delfin.agent.turn_continuation import should_continue
@@ -6991,6 +7085,7 @@ class AgentEngine:
             # that had never delegated anything.
             self._reset_session_fields()
             self._forget_skill_turn()
+            self._stall_progress()   # the count belongs to the old conversation
             self.session_id = self._fresh_session_id()  # fresh session for new cycle
             self._sync_task_session()
             self._foreign_tasks_shown = False  # new session → notice re-armed
@@ -7452,6 +7547,7 @@ class AgentEngine:
         # Not carried, and not left over from whatever this engine held
         # before: the restored session has no turn behind it.
         self._forget_skill_turn()
+        self._stall_progress()
 
         if data.get("mode"):
             restored.append("mode")
