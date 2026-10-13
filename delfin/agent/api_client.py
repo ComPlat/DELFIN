@@ -3376,7 +3376,20 @@ _ASKS_PR_ROUTE_RE = re.compile(
     r"|\b(?:don'?t|do\s+not|never|no)\s+(?:directly\s+)?push\w*\s+"
     r"(?:directly\s+)?(?:to|onto|into)\s+(?:the\s+)?"
     r"(?:main|master|default\s+branch)\b"
-    r"|\bno\s+direct\s+push",
+    r"|\bno\s+direct\s+push"
+    r"|\b(?:mach|erstell|öffne|oeffne|eröffne|open|create|make|raise|file)"
+    r"\w*\s+(?:bitte\s+|please\s+)?(?:einen?|den|a|an|the)\s+"
+    r"(?:PR|pull[\s-]?request|merge[\s-]?request)\b",
+    re.IGNORECASE)
+# A PR declined in the same message ("nicht über PR", "kein PR nötig",
+# "don't open a PR"): the route is not set. Only fillers may stand between
+# the negation and the PR, so "kein direkter Push, mach einen PR" still asks
+# for the route.
+_DECLINES_PR_RE = re.compile(
+    r"\b(?:nicht|kein\w*|ohne|no|not|never|without"
+    r"|(?:don'?t|do\s+not)(?:\s+\w+)?)\s+"
+    r"(?:(?:über|ueber|per|via|through|by|mit|durch|einen?|a|an|the|any)\s+)"
+    r"{0,2}(?:PR|pull[\s-]?request|merge[\s-]?request)\b",
     re.IGNORECASE)
 _ASKS_DIRECT_PUSH_RE = re.compile(
     r"\bpu(?:sh|sch)\w*\s+(?:\w+\s+){0,3}?(?:direkt|directly|straight)\b"
@@ -3393,7 +3406,8 @@ def _note_pr_route(perms: Any, text: str) -> None:
     routes = getattr(perms, "pr_route_repos", None)
     if not isinstance(routes, set) or not text:
         return
-    asks_route = bool(_ASKS_PR_ROUTE_RE.search(text))
+    asks_route = bool(_ASKS_PR_ROUTE_RE.search(text)
+                      and not _DECLINES_PR_RE.search(text))
     if not asks_route and not _ASKS_DIRECT_PUSH_RE.search(text):
         return
     try:
