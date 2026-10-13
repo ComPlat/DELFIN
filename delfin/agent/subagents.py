@@ -2894,7 +2894,9 @@ def _resolve_subagent_model(
         override = (asked or getattr(preset, "model", "") or "").strip().lower()
         if override == "parent":
             return parent_model, "parent"
-        if is_writer_preset(subagent_type):
+        # Any preset that acts (runs commands or writes) stays on the
+        # parent model, including one that edits no file.
+        if _runs_beyond_plan(subagent_type):
             return parent_model, "parent"
         # Only the CALL may ask for the cheap tier against the user's
         # switch. A definition file that says `model: cheap` is a default,
@@ -3633,9 +3635,24 @@ def _worktree_would_be_voided(parent_perms) -> bool:
 
 
 def is_writer_preset(subagent_type: str) -> bool:
-    """True if a subagent type can WRITE (mutate the workspace) — i.e. its
-    preset is NOT the read-only 'plan' permission profile. Used to auto-isolate
-    parallel writers into separate worktrees so they can't clobber each other."""
+    """True if a subagent type can WRITE (mutate the workspace): its preset
+    is not the read-only 'plan' profile and its tool list is not one of
+    non-editing tools only. Used to auto-isolate parallel and background
+    writers into separate worktrees so they can't clobber each other.
+
+    A preset that edits no file (verifier) is not a writer. Its shell
+    writes are asked, or refused with nobody to ask
+    (``shell_writes_need_a_person``), so it has nothing to clobber; and a
+    worktree of HEAD would hide the uncommitted change it was sent to
+    check. Model routing does not read this predicate
+    (``_runs_beyond_plan``), so such a preset stays on the parent model."""
+    p = SUBAGENT_PRESETS.get((subagent_type or "").strip())
+    return (_runs_beyond_plan(subagent_type)
+            and not preset_tools_edit_no_file(getattr(p, "tools", ())))
+
+
+def _runs_beyond_plan(subagent_type: str) -> bool:
+    """True if a subagent type's preset exists and is not mode 'plan'."""
     p = SUBAGENT_PRESETS.get((subagent_type or "").strip())
     return bool(p) and (p.mode or "").strip().lower() != "plan"
 
