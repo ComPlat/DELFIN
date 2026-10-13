@@ -2421,6 +2421,21 @@ def cmd_skills(args: argparse.Namespace) -> int:
     return 2
 
 
+def _code_file_line(request_id: str) -> str:
+    """"code ABC-DEF ..." for a run with no terminal whose code file this
+    person can read, else "". Never under the agent-session marker: the
+    agent's shell is refused the file, and this is the same refusal."""
+    from . import approval_code as _code
+    from .approval_guard import inside_agent_session
+    if inside_agent_session():
+        return ""
+    code = _code.read_code_file(request_id)
+    if not code:
+        return ""
+    return (f"{_code.display(code)} (the session has no terminal; "
+            "approve/deny read it, no --code needed)")
+
+
 def _approval_code_for(args: argparse.Namespace):
     """The one-time code for answering ``args.request_id`` from here.
 
@@ -2445,6 +2460,13 @@ def _approval_code_for(args: argparse.Namespace):
             break
     if record is None or not record.get("needs_code") or _code.code_for(rid):
         return None
+    # A run with no terminal left its code in the deny-read code file.
+    # Only the person reaches here: cmd_approvals refused the marker first.
+    from .approval_guard import inside_agent_session
+    if not inside_agent_session():
+        from_file = _code.read_code_file(rid)
+        if from_file:
+            return from_file
     try:
         if sys.stdin.isatty():
             typed = _code.normalize(input(
@@ -2560,8 +2582,10 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print(f"tool    {row.get('tool', '')}")
                 print(f"path    {row.get('path', '')}")
                 if row.get("needs_code"):
-                    print("code    shown on that session's terminal; "
-                          "pass it with --code")
+                    print("code    " + (
+                        _code_file_line(row["id"]) or
+                        "shown on that session's terminal; pass it with "
+                        "--code"))
                 print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s"
                       f" of {int(row.get('timeout_s') or 0)}s")
                 print()
@@ -2631,6 +2655,9 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         subject = _ans.preview_line(
             row, max(10, width - len(head) - len(tail)))
         print((head + subject + tail)[:width])
+        code_line = _code_file_line(str(row.get("id") or ""))
+        if code_line:
+            print(f"{'':<25}code {code_line}")
     def _group(heading: str, group_rows: list) -> None:
         if not group_rows:
             return

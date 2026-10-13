@@ -732,6 +732,8 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # the answer in the real directory, where the next session polling
     # there could read a decision nobody made about its own request.
     ("delfin.agent.file_confirm", "requests_dir", "approvals"),
+    # One-time codes of approvals asked by a run with no terminal.
+    ("delfin.agent.approval_code", "codes_dir", "approval_codes"),
     ("delfin.agent.change_journal", "_undo_root", "undo"),
     ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
     ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),

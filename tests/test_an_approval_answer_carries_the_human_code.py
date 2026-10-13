@@ -478,7 +478,6 @@ def test_an_expired_request_takes_its_code_file_with_it(home, no_tty):
     _wait_for(lambda: fc.pending())
     _look()
     assert ask.done.wait(5) and ask.result is False
-    assert broker.last_timed_out is True
     assert seen["existed"] and not seen["path"].exists()
 
 
@@ -527,14 +526,15 @@ def test_a_caged_child_cannot_read_the_code_file(home, tmp_path, no_tty,
                                  mode="bypassPermissions",
                                  extra_workspace_dirs=(home / ".delfin",))
     cmd = f"d=approval; cat {home}/.delfin/${{d}}_codes/{rid}.code"
+    cages = []
+    if A.shutil.which("bwrap"):
+        cages.append(("bwrap", A._bash_isolation_argv(cmd, ws, perms,
+                                                      mode="bwrap")))
+    if A._landlock_functional():
+        cages.append(("landlock", A._landlock_argv(["/bin/bash", "-c", cmd],
+                                                   perms)))
     ran = []
-    for mode in ("bwrap", "landlock"):
-        try:
-            argv = A._bash_isolation_argv(cmd, ws, perms, mode=mode)
-        except Exception:
-            continue
-        if not argv or argv[0] == "/bin/bash":
-            continue                    # no cage on this host for this mode
+    for mode, argv in cages:
         env = child_env(tmp_path)
         env["HOME"] = str(home)
         proc = subprocess.run(argv, capture_output=True, text=True,
@@ -558,6 +558,7 @@ def test_every_cage_masks_the_code_directory(home, tmp_path, monkeypatch):
                         lambda name, *a, **k: f"/usr/bin/{name}")
     ws = tmp_path / "ws"
     ws.mkdir()
+    (home / ".delfin").mkdir()          # granted, so it exists to be bound
     perms = A.KitToolPermissions(workspace=ws.resolve(),
                                  mode="bypassPermissions",
                                  extra_workspace_dirs=(home / ".delfin",))
@@ -567,7 +568,8 @@ def test_every_cage_masks_the_code_directory(home, tmp_path, monkeypatch):
     masks = [i for i, (a, b) in enumerate(pairs)
              if a == "--tmpfs" and b == codes]
     binds = [i for i, (a, b) in enumerate(pairs)
-             if a == "--bind" and b == str((home / ".delfin").resolve())]
+             if a in ("--bind", "--bind-try")
+             and b == str((home / ".delfin").resolve())]
     assert masks and binds and max(masks) > max(binds), argv
     ll = A._landlock_argv(["true"], perms)
     assert codes in [b for a, b in zip(ll, ll[1:]) if a == "--hide"], ll

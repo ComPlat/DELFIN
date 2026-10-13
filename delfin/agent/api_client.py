@@ -6301,6 +6301,12 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # Common SSH private-key names even outside a .ssh/ directory.
     "id_rsa", "id_rsa.*", "id_dsa", "id_ecdsa", "id_ed25519",
     "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
+    # One-time approval codes of runs with no terminal (approval_code):
+    # read by the person's `delfin-agent approvals`, never by an agent.
+    # By name, not under .delfin only: a test or benchmark run redirects
+    # the directory, and the name is DELFIN's own.
+    "approval_codes", "approval_codes/**",
+    "**/approval_codes", "**/approval_codes/**",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -22868,6 +22874,12 @@ def _home_secret_paths() -> list[str]:
             out.append(str((home / rel).resolve()))
         except OSError:
             continue
+    # The approval-code directory, created and at its redirected location.
+    try:
+        from delfin.agent.sandbox import runtime_masked_dirs
+        out += [d for d in runtime_masked_dirs() if d not in out]
+    except Exception:
+        pass
     return out
 
 
@@ -23688,6 +23700,14 @@ def _bash_isolation_argv(
         for room in _approval_guard.answer_rooms():
             if any(room == b or b in room.parents for b in _bound):
                 args += ["--ro-bind-try", str(room), str(room)]
+    except Exception:
+        pass
+    # The approval-code directory is not readable at all, and masked after
+    # every bind so a granted ~/.delfin cannot re-expose it.
+    try:
+        from delfin.agent.sandbox import runtime_masked_dirs
+        for d in runtime_masked_dirs():
+            args += ["--tmpfs", d]
     except Exception:
         pass
     args += ["--chdir", str(Path(run_cwd).resolve())]

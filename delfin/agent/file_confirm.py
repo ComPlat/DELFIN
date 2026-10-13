@@ -370,29 +370,43 @@ def show_code_on_terminal(request_id: str, code: str) -> None:
     terminal (``/dev/tty``), never stdout or stderr, which a supervisor or
     an agent may have redirected into a file.
 
-    Withheld when an agent session started this process: its terminal is
-    that agent's. Without a terminal the request can be answered only
-    where the code is shown -- nowhere -- so it times out; stderr says so,
-    without the code.
+    Without a terminal (a batch or cluster job) the code goes to its
+    deny-read code file (``approval_code.write_code_file``), where
+    ``delfin-agent approvals`` run by the person finds it; stderr names the
+    request, never the code.
+
+    Withheld entirely when an agent session started this process: its
+    terminal and its stderr are that agent's. The request then times out.
     """
     from .approval_guard import inside_agent_session
     line = (f"[approval {request_id}] code {_code.display(code)} -- answer "
             f"with: delfin-agent approvals approve|deny {request_id} "
             f"--code {_code.display(code)}\n")
-    if not inside_agent_session():
+    if inside_agent_session():
+        note = ("started by an agent session, so its code is shown nowhere "
+                "and it will time out")
+    else:
         try:
-            with open("/dev/tty", "w", encoding="utf-8") as tty:
+            with open(_TTY, "w", encoding="utf-8") as tty:
                 tty.write(line)
             return
         except OSError:
             pass
+        if _code.write_code_file(request_id, code) is not None:
+            note = ("no terminal to show its code on; answer it from your "
+                    f"shell: delfin-agent approvals approve|deny {request_id}")
+        else:
+            note = ("no terminal and no code file, so it cannot be answered "
+                    "from outside and will time out")
     try:
-        sys.stderr.write(
-            f"[approval {request_id}] waiting; no terminal of a person to "
-            "show its code on, so it cannot be answered from outside and "
-            "will time out\n")
+        sys.stderr.write(f"[approval {request_id}] waiting; {note}\n")
     except Exception:
         pass
+
+
+#: The controlling terminal. A module attribute so a test can stand in a
+#: run that has none.
+_TTY = "/dev/tty"
 
 
 def _read_answer(path: Path, request_id: str,

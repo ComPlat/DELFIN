@@ -28,6 +28,16 @@ started outside DELFIN. The code is what such a process does not have:
 Guessing: 32**6 = 1.07e9 codes, three tries per request, so a blind
 forger succeeds with p = 2.8e-9 per request and every try is recorded.
 
+A run with no controlling terminal (a batch or cluster job) has no
+screen to show the code on. Its code goes to ``codes_dir()/<id>.code``
+(0700/0600), which every agent read route refuses and every cage masks;
+``delfin-agent approvals`` run by the person (no ``DELFIN_AGENT_SESSION``)
+reads it from there, so such a run stays answerable from another shell.
+The file is deleted when the request is answered or expires. Without any
+isolation a same-account program can read that file: for this case the
+protection is the read gates, the same trust level as an unsigned answer
+file had before the code existed.
+
 What the code does not cover (see ``docs/USER_MANUAL.md``): a process
 that can read the waiting process's memory (``ptrace`` / ``/proc/<pid>/
 mem`` of the same uid: Linux Yama ``ptrace_scope`` >= 1 limits that to
@@ -55,9 +65,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
+import re
 import secrets
+import stat as _stat
 import threading
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
 #: No 0/O, 1/I: the person reads it off one screen and types it on another.
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -103,10 +118,88 @@ def code_for(request_id: str) -> str:
 
 
 def forget(request_id: str) -> None:
-    """Drop a finished request's code. Never raises."""
+    """Drop a finished request's code, and its code file. Never raises."""
     with _LOCK:
         _ISSUED.pop(str(request_id), None)
         _EXEMPT.discard(str(request_id))
+    remove_code_file(request_id)
+
+
+# -- the code file: the human channel of a run with no terminal -------------
+
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def codes_dir() -> Path:
+    """``~/.delfin/approval_codes``. Resolved per call (tests move HOME).
+
+    A deny-read location for every agent route: the path deny globs
+    (read_file, grep/glob, the bash read scan, cli_gate), the command-text
+    gate (``approval_guard``), and the cages (``sandbox._HOME_SECRET_DIRS``:
+    a bubblewrap tmpfs, a Landlock/Seatbelt hide)."""
+    return Path.home() / ".delfin" / "approval_codes"
+
+
+def ensure_codes_dir() -> Optional[Path]:
+    """Create the directory (0700) so a cage built now masks it, rather
+    than skipping a path that appears later. None when it cannot be made."""
+    d = codes_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        os.chmod(d, 0o700)
+        return d
+    except OSError:
+        return None
+
+
+def _code_path(request_id: str) -> Optional[Path]:
+    rid = str(request_id or "")
+    return codes_dir() / f"{rid}.code" if _ID_RE.match(rid) else None
+
+
+def write_code_file(request_id: str, code: str) -> Optional[Path]:
+    """Write *code* for *request_id*, mode 0600, whole. Output: the path,
+    or None where it cannot be written."""
+    path = _code_path(request_id)
+    if path is None or ensure_codes_dir() is None:
+        return None
+    tmp = path.with_name(f".{path.name}.partial")
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="ascii") as fh:
+            fh.write(normalize(code) + "\n")
+        os.chmod(tmp, 0o600)
+        tmp.replace(path)
+        return path
+    except OSError:
+        return None
+
+
+def read_code_file(request_id: str) -> str:
+    """The code in *request_id*'s file, normalised, or "". Only a regular
+    file of this uid, not group/world-accessible, is read."""
+    path = _code_path(request_id)
+    if path is None:
+        return ""
+    try:
+        info = path.lstat()
+        if (not _stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077):
+            return ""
+        return normalize(path.read_text(encoding="ascii", errors="ignore"))
+    except OSError:
+        return ""
+
+
+def remove_code_file(request_id: str) -> None:
+    """Delete *request_id*'s code file. Never raises."""
+    path = _code_path(request_id)
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
 
 
 def normalize(text) -> str:
@@ -198,4 +291,5 @@ def spent(request_id: str) -> bool:
 __all__ = ["ALPHABET", "LENGTH", "MAX_WRONG", "OK", "WRONG", "issue",
            "exempt", "code_for", "forget", "normalize", "display",
            "detail_of", "proof", "sign", "required", "check", "note_wrong",
-           "spent"]
+           "spent", "codes_dir", "ensure_codes_dir", "write_code_file",
+           "read_code_file", "remove_code_file"]
