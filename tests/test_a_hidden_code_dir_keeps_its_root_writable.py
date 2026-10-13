@@ -79,3 +79,73 @@ def test_a_code_file_outside_the_write_roots_stays_unreadable(
                             f"cat {codes}/rid1.code"],
                            capture_output=True, text=True, timeout=60)
     assert "ABCDEF" in plain.stdout, plain.stderr
+
+
+def test_the_hide_is_dropped_only_for_the_code_dir_inside_a_root(
+        tmp_path, monkeypatch):
+    """Argv level, every host: the credential hides are kept as they were."""
+    ws = tmp_path / "ws"
+    codes = ws / "approval_codes"
+    monkeypatch.setattr(approval_code, "codes_dir", lambda: codes)
+    ws.mkdir()
+    hides = A._landlock_hide_paths([str(ws)])
+    assert str(codes.resolve()) not in hides
+    assert str((A.Path.home() / ".ssh").resolve()) in hides
+    assert str(codes.resolve()) in A._landlock_hide_paths(
+        [str(tmp_path / "elsewhere")])
+
+
+# -- where the code directory is ------------------------------------------
+
+@pytest.fixture()
+def unredirected(tmp_path, monkeypatch):
+    """The shipped resolver, a private HOME, no batch job, no /run/user."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    for v in approval_code._BATCH_JOB_VARS:
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setattr(approval_code, "_RUN_USER_FMT",
+                        str(tmp_path / "no-run-user-{uid}"))
+    monkeypatch.setattr(approval_code, "codes_dir",
+                        approval_code._default_codes_dir)
+    return home
+
+
+def _runtime(tmp_path, mode=0o700):
+    rt = tmp_path / "rt"
+    rt.mkdir()
+    rt.chmod(mode)
+    return rt
+
+
+def test_the_code_dir_is_the_private_runtime_dir(tmp_path, monkeypatch,
+                                                  unredirected):
+    rt = _runtime(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(rt))
+    assert approval_code.codes_dir() == rt / "delfin" / "approval_codes"
+
+
+@pytest.mark.parametrize("why", ["unset", "group-readable", "batch job"])
+def test_without_a_private_runtime_dir_it_is_delfins(tmp_path, monkeypatch,
+                                                     unredirected, why):
+    if why == "unset":
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    elif why == "group-readable":
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(_runtime(tmp_path, 0o750)))
+    else:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(_runtime(tmp_path)))
+        monkeypatch.setenv("SLURM_JOB_ID", "1")
+    assert approval_code.codes_dir() == (
+        unredirected / ".delfin" / "approval_codes")
+
+
+def test_a_code_written_without_a_runtime_dir_is_still_read(
+        tmp_path, monkeypatch, unredirected):
+    """The writer had none (another session, a batch job); the reader has
+    one: it also looks in ~/.delfin's."""
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    assert approval_code.write_code_file("rid2", "QRSTUV") is not None
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(_runtime(tmp_path)))
+    assert approval_code.codes_dir() != approval_code.home_codes_dir()
+    assert approval_code.read_code_file("rid2") == "QRSTUV"

@@ -531,8 +531,12 @@ def test_a_caged_child_cannot_read_the_code_file(home, tmp_path, no_tty,
         cages.append(("bwrap", A._bash_isolation_argv(cmd, ws, perms,
                                                       mode="bwrap")))
     if A._landlock_functional():
+        # Without the ~/.delfin grant: Landlock cannot hide a path inside a
+        # root it grants for writing (api_client._landlock_hide_paths).
+        ws_only = A.KitToolPermissions(workspace=ws.resolve(),
+                                       mode="bypassPermissions")
         cages.append(("landlock", A._landlock_argv(["/bin/bash", "-c", cmd],
-                                                   perms)))
+                                                   ws_only)))
     ran = []
     for mode, argv in cages:
         env = child_env(tmp_path)
@@ -571,5 +575,13 @@ def test_every_cage_masks_the_code_directory(home, tmp_path, monkeypatch):
              if a in ("--bind", "--bind-try")
              and b == str((home / ".delfin").resolve())]
     assert masks and binds and max(masks) > max(binds), argv
-    ll = A._landlock_argv(["true"], perms)
+    # Landlock hides it outside the write roots; inside a granted root the
+    # hide would refuse every new file at that root, so it is dropped there
+    # and the read gates hold (approval_code's threat model).
+    ws_only = A.KitToolPermissions(workspace=ws.resolve(),
+                                   mode="bypassPermissions")
+    ll = A._landlock_argv(["true"], ws_only)
     assert codes in [b for a, b in zip(ll, ll[1:]) if a == "--hide"], ll
+    granted = A._landlock_argv(["true"], perms)
+    assert codes not in [b for a, b in zip(granted, granted[1:])
+                         if a == "--hide"], granted

@@ -677,14 +677,15 @@ def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str) -> list[str]:
     if mode != "allowlist":
         return base
     try:
-        from .api_client import (_home_secret_paths, _landlock_functional,
+        from .api_client import (_landlock_hide_paths, _landlock_functional,
                                  _private_tmp_dir)
         from . import landlock_exec as _ll
         if not _landlock_functional():
             return base
+        repo = str(Path(repo_dir).resolve())
         argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
-                "--write", str(Path(repo_dir).resolve())]
-        for h in _home_secret_paths():
+                "--write", repo]
+        for h in _landlock_hide_paths([repo, _private_tmp_dir()]):
             argv += ["--hide", h]
         return argv + ["--tmpdir", _private_tmp_dir(), "--strict", "0", "--"] + base
     except Exception:

@@ -24683,6 +24683,47 @@ def _home_secret_paths() -> list[str]:
     return out
 
 
+def _landlock_hide_paths(write_roots) -> list[str]:
+    """``_home_secret_paths()`` for a Landlock cage with these write roots.
+
+    Landlock only grants, and a rule covers everything beneath its path:
+    ``landlock_exec._grant_except`` hides a path inside a write root by
+    granting that root entry by entry, so the root directory itself loses
+    the right to create files and every new top-level file there is
+    refused. For the approval-code directory (``runtime_masked_dirs`` and
+    ``~/.delfin/approval_codes``) inside a write root that cost is not
+    paid: the hide is dropped for this run, and the read gates (path deny
+    globs, the bash read scan, ``approval_guard``) protect the 0600,
+    short-lived code file there. ``approval_code.codes_dir`` keeps it
+    outside every plausible root where a runtime directory exists. The
+    credential locations keep their behaviour (hidden, at that cost)."""
+    hides = _home_secret_paths()
+    soft: set[str] = set()
+    try:
+        from delfin.agent.sandbox import runtime_masked_dirs
+        soft.update(runtime_masked_dirs())
+    except Exception:
+        pass
+    try:
+        from delfin.agent import approval_code as _ac
+        soft.add(str(_ac.home_codes_dir().resolve()))
+    except Exception:
+        pass
+    roots = []
+    for r in write_roots:
+        try:
+            roots.append(os.path.realpath(str(r)).rstrip("/") or "/")
+        except Exception:
+            continue
+
+    def _inside(path: str) -> bool:
+        real = os.path.realpath(path)
+        return any(real == r or real.startswith(r.rstrip("/") + "/")
+                   for r in roots)
+
+    return [h for h in hides if not (h in soft and _inside(h))]
+
+
 _GIT_ROOTS_CACHE: dict = {}
 
 
@@ -24863,9 +24904,11 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
         roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
     git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
     argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve())]
-    for r in list(roots) + [str(Path(p).resolve()) for p in extra_write] + git_roots:
+    write_roots = (list(roots) + [str(Path(p).resolve()) for p in extra_write]
+                   + git_roots)
+    for r in write_roots:
         argv += ["--write", r]
-    for h in _home_secret_paths():
+    for h in _landlock_hide_paths(write_roots + [_private_tmp_dir()]):
         argv += ["--hide", h]
     # git's hooks would run on the user's next git command. bubblewrap and
     # Seatbelt keep them readable-but-not-writable for free; Landlock cannot
