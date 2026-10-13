@@ -3114,6 +3114,300 @@ def _git_role() -> str:
     return role if role in ("maintainer", "contributor") else "contributor"
 
 
+#: A word in command position in front of a push on its line that changes
+#: which repository it runs in, or runs it more than once or under another
+#: environment, in a way the resolver does not follow. Only one leading
+#: ``cd <dir> &&`` is followed (``_LEADING_CD_RE``).
+_REPO_SHIFTING_WORD_RE = re.compile(
+    r"(?:^|[;&|({!])\s*(?:(?:then|do|else|time)\s+)*"
+    r"(?:cd|pushd|popd|export|source|\.|eval|env|unset|exec|alias|set|for|"
+    r"while|until|select|if|case|xargs|command|builtin)(?=\s|$)")
+_SEGMENT_ASSIGNMENT_RE = re.compile(r"(?:^|[;&|({])\s*[A-Za-z_]\w*=")
+_SHELL_EXPANSION_CHARS = frozenset("$`*?[]{}")
+
+
+def _gh_merge_repo_specs(segment: str) -> Optional[list]:
+    """Repository keys a ``gh pr merge`` names (``-R``, ``--repo``, a PR
+    URL); [] when it names none; None when one cannot be read."""
+    import shlex
+    from . import git_role as _GR
+    try:
+        words = shlex.split(segment)
+    except ValueError:
+        return None
+    host = (os.environ.get("GH_HOST") or "github.com").strip().lower()
+    specs: list = []
+    i = 0
+    while i < len(words):
+        w = words[i]
+        value = None
+        if w in ("-R", "--repo"):
+            value = words[i + 1] if i + 1 < len(words) else ""
+            i += 1
+        elif w.startswith("--repo="):
+            value = w.split("=", 1)[1]
+        elif w.startswith("-R") and len(w) > 2:
+            value = w[2:]
+        elif "://" in w and "/pull/" in w:
+            key = _GR.normalise_remote(w.split("/pull/", 1)[0])
+            if key is None:
+                return None
+            specs.append(key)
+        if value is not None:
+            parts = [p for p in value.strip("/").split("/") if p]
+            if "://" in value or value.startswith("git@"):
+                key = _GR.normalise_remote(value)
+            elif len(parts) == 2:
+                key = _GR.entry_key(f"{host}/{parts[0]}/{parts[1]}")
+            elif len(parts) == 3:
+                key = _GR.entry_key("/".join(parts))
+            else:
+                key = None
+            if key is None:
+                return None
+            specs.append(key)
+        i += 1
+    return specs
+
+
+def _command_repo_keys(cmd: str, args: Any, perms: Any) -> Optional[list]:
+    """The repository keys (``git_role``) the one push or ``gh pr merge``
+    in ``cmd`` acts on; [] when its directory is in no repository; None
+    when it cannot be told.
+
+    Followed: the tool's ``cwd``, one leading ``cd <dir> &&``, every
+    ``git -C <dir>``, the remote or URL ``git push`` names (every push URL
+    of every remote when it names none), ``gh -R``/``--repo``/a PR URL,
+    and ``GH_REPO``. Not followed, therefore None: more than one push or
+    merge in the command, another cd/pushd/loop/xargs/env or an assignment
+    in front of it, ``git -c``/``--git-dir`` or another global option, a
+    shell expansion in the directory or remote, and GIT_DIR and its kin in
+    this process's environment. Rejected: following those shapes the way
+    the shell would. Each is a second interpreter of the line, and a
+    resolver that misreads one unlocks a repository."""
+    from . import git_role as _GR
+    try:
+        if _GR.env_redirects_git():
+            return None
+        text = _with_shell_bodies(cmd)
+        hits = (list(_GIT_PUSH_RE.finditer(text))
+                + list(_GH_PR_MERGE_RE.finditer(text)))
+        if len(hits) != 1:
+            return None
+        m = hits[0]
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        head = text[line_start:m.start() + 1]
+        cd = _LEADING_CD_RE.match(head)
+        if cd and _SHELL_EXPANSION_CHARS & set(cd.group(1)):
+            return None
+        prefix = head[cd.end():] if cd else head
+        if (_REPO_SHIFTING_WORD_RE.search(prefix)
+                or _SEGMENT_ASSIGNMENT_RE.search(prefix)):
+            return None
+        segment = re.split(r"[;&|\n]", text[m.end():], maxsplit=1)[0]
+        where, remote = _push_probe_target(cmd, args, perms.workspace)
+        if m.re is _GIT_PUSH_RE:
+            invocation = m.group(0)
+            if re.search(r"\s-c\s|\s--[\w-]", invocation):
+                return None
+            for d in re.findall(r"\s-C\s+(\S+)", invocation):
+                if _SHELL_EXPANSION_CHARS & set(d):
+                    return None
+            if remote is not None and _SHELL_EXPANSION_CHARS & set(remote):
+                return None
+        else:
+            specs = _gh_merge_repo_specs(segment)
+            if specs is None:
+                return None
+            env_repo = (os.environ.get("GH_REPO") or "").strip()
+            if env_repo and not specs:
+                specs = _gh_merge_repo_specs(f"--repo {env_repo}")
+                if specs is None:
+                    return None
+            if specs:
+                return sorted(set(specs))
+            remote = None
+        where = Path(where)
+        if not where.is_dir():
+            return None
+        if _GR.toplevel(where) is None:
+            return []
+        return _GR.remote_keys(where, remote)
+    except Exception:
+        return None
+
+
+def _git_role_for(cmd: str, args: Any, perms: Any) -> tuple:
+    """(role, keys) for the one push or merge in ``cmd``.
+
+    A directory in no repository keeps the installation role: neither
+    command has anything there to publish."""
+    from . import git_role as _GR
+    keys = _command_repo_keys(cmd, args, perms)
+    if keys == []:
+        return _git_role(), []
+    role, _ = _GR.role_for_keys(keys, fallback=lambda: _git_role())
+    return role, list(keys or [])
+
+
+# A typed request for the pull-request route, and the request for a
+# direct push that lifts it. Read in ``_grant_push_from``, on the same
+# typed-only path as the push grant. The German alternatives are what the
+# user types.
+_ASKS_PR_ROUTE_RE = re.compile(
+    r"\b(?:über|ueber|per|via|through|by|mit|durch)\s+(?:einen?\s+|a\s+"
+    r"|the\s+|den\s+)?(?:PR|pull[\s-]?request|merge[\s-]?request)\b"
+    r"|\bnicht\s+(?:direkt\s+)?(?:auf|in|nach)\s+(?:den\s+|die\s+)?"
+    r"(?:main|master)\b"
+    r"|\bkein\w*\s+direkt\w*\s+pu(?:sh|sch)"
+    r"|\bnicht\s+direkt\s+pu(?:sh|sch)"
+    r"|\b(?:don'?t|do\s+not|never|no)\s+(?:directly\s+)?push\w*\s+"
+    r"(?:directly\s+)?(?:to|onto|into)\s+(?:the\s+)?"
+    r"(?:main|master|default\s+branch)\b"
+    r"|\bno\s+direct\s+push",
+    re.IGNORECASE)
+_ASKS_DIRECT_PUSH_RE = re.compile(
+    r"\bpu(?:sh|sch)\w*\s+(?:\w+\s+){0,3}?(?:direkt|directly|straight)\b"
+    r"|\b(?:direkt|directly|straight)\s+(?:\w+\s+){0,2}?(?:auf|to|onto|into)"
+    r"\s+(?:den\s+|the\s+)?(?:main|master)\b",
+    re.IGNORECASE)
+
+
+def _note_pr_route(perms: Any, text: str) -> None:
+    """Record a typed request for the pull-request route, or the request
+    for a direct push that lifts it, for the repository of the session's
+    workspace ("*" when the workspace is in none). Called only with text
+    the user typed; a message that asks for both keeps the route."""
+    routes = getattr(perms, "pr_route_repos", None)
+    if not isinstance(routes, set) or not text:
+        return
+    asks_route = bool(_ASKS_PR_ROUTE_RE.search(text))
+    if not asks_route and not _ASKS_DIRECT_PUSH_RE.search(text):
+        return
+    try:
+        from . import git_role as _GR
+        key = _GR.repo_key(perms.workspace) or "*"
+    except Exception:
+        key = "*"
+    if asks_route:
+        routes.add(key)
+    else:
+        routes.discard(key)
+        routes.discard("*")
+
+
+def _pr_route_holds(perms: Any, keys: Any) -> bool:
+    routes = getattr(perms, "pr_route_repos", None) or set()
+    return "*" in routes or any(k in routes for k in (keys or ()))
+
+
+def _gh_pr_view(where: Any, repo: Optional[str], pr: str) -> Optional[dict]:
+    """``gh pr view <pr> --json headRefOid,statusCheckRollup``, parsed;
+    None when gh fails. With a remote key gh runs with ``-R <key>`` in the
+    temp directory, so no checkout's configuration is read; without one
+    it runs in ``where``. Tests replace it."""
+    import tempfile
+    argv = ["gh", "pr", "view", str(pr), "--json",
+            "headRefOid,statusCheckRollup"]
+    cwd = str(where)
+    if repo and not str(repo).startswith("/"):
+        argv += ["-R", str(repo)]
+        cwd = tempfile.gettempdir()
+    try:
+        r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+                           timeout=20)
+        if r.returncode != 0:
+            return None
+        data = json.loads(r.stdout or "null")
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+_GREEN_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
+_MERGE_VALUE_OPTS = frozenset({"-R", "--repo", "-t", "--subject", "-b",
+                               "--body", "-F", "--body-file", "-A",
+                               "--author-email"})
+
+
+def _pr_merge_refusal(cmd: str, where: Any, keys: list) -> Optional[str]:
+    """Why a maintainer's granted ``gh pr merge`` may not run, or None.
+
+    It must name the pull request, pin its head (``--match-head-commit
+    <sha>``), pass neither ``--admin`` nor ``--auto``, and the pinned head
+    must be the pull request's current one with every check green, read
+    with ``_gh_pr_view`` (a pull request without checks has none to wait
+    for). Cost: one ``gh pr view`` of at most 20 s, only for a merge that
+    passed every other gate."""
+    import shlex
+    text = _with_shell_bodies(cmd)
+    m = _GH_PR_MERGE_RE.search(text)
+    segment = re.split(r"[;&|\n]", text[m.end():], maxsplit=1)[0] if m else ""
+    try:
+        words = shlex.split(segment)
+    except ValueError:
+        words = []
+    route = ("Merge as a maintainer does: wait until every check on the "
+             "pull request's current head is green (`gh pr view <n> --json "
+             "headRefOid,statusCheckRollup`), then `gh pr merge <n> "
+             "--match-head-commit <that sha>`.")
+    for flag in ("--admin", "--auto"):
+        if flag in words:
+            return (f"blocked: `gh pr merge {flag}` merges past the pull "
+                    f"request's checks. {route}")
+    pin = pr = None
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w == "--match-head-commit":
+            pin = words[i + 1] if i + 1 < len(words) else ""
+            i += 2
+            continue
+        if w.startswith("--match-head-commit="):
+            pin = w.split("=", 1)[1]
+        elif w in _MERGE_VALUE_OPTS:
+            i += 2
+            continue
+        elif not w.startswith("-") and pr is None:
+            pr = w
+        i += 1
+    if not pin or not re.fullmatch(r"[0-9a-fA-F]{7,40}", pin):
+        return ("blocked: a merge is pinned to the head whose checks were "
+                f"read: add `--match-head-commit <sha>`. {route}")
+    if not pr:
+        return f"blocked: name the pull request to merge. {route}"
+    if len(keys) > 1:
+        return ("blocked: this checkout has several remotes; name the "
+                "repository with `-R <owner>/<repo>`.")
+    view = _gh_pr_view(where, keys[0] if keys else None, pr)
+    if not view:
+        return ("blocked: the pull request's head and checks could not be "
+                f"read, so the merge does not run. {route}")
+    head = str(view.get("headRefOid") or "")
+    if not head or not head.lower().startswith(pin.lower()):
+        return (f"blocked: the pull request's head is "
+                f"{head[:12] or 'unknown'}, not {pin[:12]}: it moved since "
+                f"its checks were read. {route}")
+    waiting = []
+    for c in view.get("statusCheckRollup") or []:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or c.get("context") or "check")
+        if "state" in c:
+            ok = str(c.get("state") or "").upper() in _GREEN_CONCLUSIONS
+        else:
+            ok = (str(c.get("status") or "").upper() == "COMPLETED"
+                  and str(c.get("conclusion") or "").upper()
+                  in _GREEN_CONCLUSIONS)
+        if not ok:
+            waiting.append(name)
+    if waiting:
+        return ("blocked: not every check on the head is green yet ("
+                + ", ".join(waiting[:6]) + "). Wait for them -- CI is "
+                "reported in a later turn -- and do not merge past them.")
+    return None
+
+
 def _git_out(cwd: Any, *args: str) -> str:
     """stdout of a read-only git command in ``cwd``; "" when it fails."""
     try:
@@ -4338,6 +4632,7 @@ def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
     text = _message_text(content)
     if text.lstrip().startswith(_MACHINE_MESSAGE_PREFIXES):
         return
+    _note_pr_route(perms, text)
     if _asks_for_push(text):
         grants["push"] = 1
     elif new_request:
@@ -5926,6 +6221,13 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     # the file exists to withhold.
     ".delfin/trusted_workspaces.json",
     "**/.delfin/trusted_workspaces.json",
+    # The user's settings file (user_settings.SETTINGS_FILE_NAME): it holds
+    # the git roles and the approval posture. It lives in the home
+    # directory, which is never a writable root, so the workspace boundary
+    # already refuses it; this keeps the confirm should a root ever hold
+    # one.
+    ".delfin_settings.json",
+    "**/.delfin_settings.json",
     # CI / repo-governance config. Editing a GitHub Actions workflow can run
     # arbitrary code on the runner or weaken the test gate; CODEOWNERS controls
     # required reviews; dependabot pulls dependencies. A write under .github/
@@ -6354,6 +6656,13 @@ class KitToolPermissions:
     # that went through spends it (_after_push). Shared by reference with
     # sub-agents, like denied_actions, so a child is no way to a second one.
     push_grants: dict[str, int] = field(default_factory=dict)
+    # Repository keys (git_role.repo_key; "*" for a workspace in none) the
+    # user asked to reach through a pull request in a typed message
+    # (_note_pr_route): a push onto the default branch and `gh pr merge`
+    # are refused there for the rest of the session, whatever the role,
+    # until a later typed message asks for the direct push. Shared by
+    # reference with sub-agents, whose prompts never change it.
+    pr_route_repos: set = field(default_factory=set)
     #: Asked while a command or a test run is waited on, so Stop reaches
     #: work that is already running. Installed by the engine; None in a
     #: caller that has no session, which behaves exactly as before.
@@ -17289,8 +17598,20 @@ class _DocToolExecutor:
                                              local_only=True)
                 if row is not None:
                     return _push_block_text(row)
+            # The role is the one of the repository the command acts on
+            # (agent.git_roles, else agent.git_role; git_role.py), and a
+            # typed request for the pull-request route holds over it.
+            _route_text = (
+                "The user asked for the pull-request route in this "
+                "repository, and that holds for the rest of the session "
+                "whatever the git role allows: commit on a branch of your "
+                "own (`git switch -c <user>/<topic>`), push that branch "
+                "(`git push -u origin <branch>`), open the pull request "
+                "and give the user its link. Only a later message of "
+                "theirs asking for the direct push lifts this.")
             if _is_gh_pr_merge(cmd):
-                if _git_role() == "contributor":
+                _role, _keys = _git_role_for(cmd, args, perms)
+                if _role == "contributor":
                     _record_security_event("pr_merge_contributor", "bash",
                                            cmd[:80], blocked=True)
                     return ("blocked: `gh pr merge` lands a pull request on "
@@ -17298,6 +17619,11 @@ class _DocToolExecutor:
                             "decision, made on the pull request. Tell the user "
                             "the PR is ready and give them its link; do not "
                             "merge it from here.")
+                if _pr_route_holds(perms, _keys):
+                    _record_security_event("pr_route", "bash", cmd[:80],
+                                           blocked=True)
+                    return ("blocked: `gh pr merge` is not run here. "
+                            + _route_text)
                 if not (perms.push_grants or {}).get("push"):
                     _record_security_event("pr_merge_unrequested", "bash",
                                            cmd[:80], blocked=True)
@@ -17306,26 +17632,41 @@ class _DocToolExecutor:
                             "their last message. Say which PR you would merge "
                             "and whether its checks are green, and let them "
                             "say so." + _handover_line(cmd, "pr_merge_unrequested"))
-            if _is_git_push(cmd) and _git_role() == "contributor":
-                _cwd_arg = str(args.get("cwd") or "").strip()
-                _where = Path(perms.workspace)
-                if _cwd_arg:
-                    _where = (Path(_cwd_arg) if Path(_cwd_arg).is_absolute()
-                              else _where / _cwd_arg)
-                _onto = sorted(_push_targets(cmd, _where)
-                               & _default_branches(_where))
+                _refusal = _pr_merge_refusal(
+                    cmd, _push_probe_target(cmd, args, perms.workspace)[0],
+                    _keys)
+                if _refusal:
+                    _record_security_event("pr_merge_unpinned", "bash",
+                                           cmd[:80], blocked=True)
+                    return _refusal
+            if _is_git_push(cmd):
+                _role, _keys = _git_role_for(cmd, args, perms)
+                _route = _pr_route_holds(perms, _keys)
+                if _role == "contributor" or _route:
+                    _where = _push_probe_target(cmd, args, perms.workspace)[0]
+                    _onto = sorted(_push_targets(cmd, _where)
+                                   & _default_branches(_where))
+                else:
+                    _onto = []
+                if _onto and _route:
+                    _record_security_event("pr_route", "bash", cmd[:80],
+                                           blocked=True)
+                    return (f"blocked: `{_onto[0]}` is the default branch. "
+                            + _route_text)
                 if _onto:
                     _record_security_event("push_default_branch", "bash",
                                            cmd[:80])
+                    _repo = (f"the git role for {', '.join(_keys)}" if _keys
+                             else "the git role for this command's repository")
                     return (
-                        f"blocked: this installation's git role is "
-                        f"contributor, and `{_onto[0]}` is the default branch. "
-                        "Changes reach it through a pull request, not a push: "
-                        "commit on a branch of your own (`git switch -c "
-                        "<user>/<topic>`), push that branch (`git push -u "
-                        "origin <branch>`), and give the user the link to "
-                        "open the pull request. A maintainer sets "
-                        "agent.git_role = maintainer.")
+                        f"blocked: {_repo} is contributor, and `{_onto[0]}` "
+                        "is the default branch. Changes reach it through a "
+                        "pull request, not a push: commit on a branch of "
+                        "your own (`git switch -c <user>/<topic>`), push "
+                        "that branch (`git push -u origin <branch>`), and "
+                        "give the user the link to open the pull request. "
+                        "Only the user changes the role (`/git role "
+                        "maintainer` in that repository).")
             _asked = perms.confirm_callback is not None
             # Opening a pull request publishes the branch. It spends the
             # same one-request grant a push does: the user who asked for a

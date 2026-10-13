@@ -199,6 +199,12 @@ DEFAULT_SETTINGS = {
         # to main/master is refused. "maintainer": pushes to the default
         # branch are allowed, one per user request.
         "git_role": "contributor",
+        # The role per repository, which wins over git_role in both
+        # directions: {"github.com/<owner>/<repo>": "maintainer"}, keyed by
+        # the normalised remote URL (a repository without a remote: its
+        # absolute top-level path). Set with `/git role maintainer` in the
+        # terminal, inside the repository. delfin/agent/git_role.py.
+        "git_roles": {},
         # The address the agent's Co-Authored-By trailer carries. GitHub
         # attaches a co-author to an account by its email, so an address
         # nobody owns renders a line with no avatar that counts for

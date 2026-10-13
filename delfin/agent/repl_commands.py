@@ -969,6 +969,53 @@ _GIT_READ_ONLY: dict[str, str] = {
 }
 
 
+def _git_role(ctx, arg: str) -> CommandResult:
+    """``/git role`` shows, ``/git role maintainer|contributor`` sets, the
+    git role of the repository this session works in.
+
+    Input: the session's workspace and the typed word. Output: the role,
+    the repository key it is stored under (``git_role.repo_key``: origin's
+    normalised URL, or the top-level path of a repository without a
+    remote) and where it came from. Writes ``agent.git_roles[key]`` in the
+    user's settings file; ``agent.git_role`` and every other repository
+    are left as they are. A terminal command and not a tool: the role
+    decides what the agent may publish, so the agent cannot set it.
+    """
+    from . import git_role as GR
+    word = arg.strip().lower()
+    if word and word not in GR.ROLES:
+        return CommandResult(output="usage: /git role [maintainer|contributor]")
+    workspace = Path(getattr(ctx, "workspace", None) or Path.cwd())
+    if GR.toplevel(workspace) is None:
+        return CommandResult(output=(
+            f"{workspace} is not inside a git repository; the installation "
+            f"role ({GR.global_role()}) applies to every repository "
+            "without an entry"))
+    key = GR.repo_key(workspace)
+    if key is None:
+        return CommandResult(output=(
+            "this repository has several remotes and none is called "
+            "origin, so it has no key; add the entry by its remote URL "
+            "under agent.git_roles in ~/.delfin_settings.json"))
+    if word:
+        try:
+            GR.set_role(key, word)
+        except Exception as exc:
+            return CommandResult(output=f"could not save the role: {exc}")
+        return CommandResult(output=(
+            f"git role for {key}: {word} (agent.git_roles). Other "
+            "repositories are unchanged."
+            + (" A push onto the default branch still needs your request, "
+               "one per request; a merge is pinned to a green head."
+               if word == "maintainer" else "")))
+    role, source = GR.role_for_keys([key], fallback=GR.global_role)
+    origin = ("set for this repository" if source == "repository"
+              else "the installation default, agent.git_role")
+    return CommandResult(output=(
+        f"git role for {key}: {role} ({origin}). "
+        "/git role maintainer|contributor sets it for this repository."))
+
+
 def _git(ctx, args: str) -> CommandResult:
     """Read-only git, through the same gate `!` uses.
 
@@ -983,9 +1030,12 @@ def _git(ctx, args: str) -> CommandResult:
     the loop runs it on a worker, so that is where this points.
     """
     sub = (args.strip().split() or [""])[0].lower()
+    if sub == "role":
+        return _git_role(ctx, args.strip()[len("role"):].strip())
     command = _GIT_READ_ONLY.get(sub)
     if command is None:
-        return CommandResult(output="usage: /git status | diff | log | branch")
+        return CommandResult(
+            output="usage: /git status | diff | log | branch | role")
     run = getattr(getattr(ctx, "engine", None), "run_gated_bash", None)
     if not callable(run):
         return CommandResult(output=(
@@ -1766,7 +1816,7 @@ BUILTINS: dict[str, ReplCommand] = {
                     _approve, True),
         ReplCommand("/reject", "changes", "Discard a staged diff",
                     _reject, True),
-        ReplCommand("/git", "workspace", "status | diff | log | branch",
+        ReplCommand("/git", "workspace", "status | diff | log | branch | role",
                     _git, True),
         ReplCommand("/bash", "workspace", "Background jobs: list or kill one",
                     _bash, True),
