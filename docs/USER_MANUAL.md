@@ -1369,13 +1369,71 @@ Choose with `--provider` / `--model` or `/model`. DELFIN detects each model's re
 | `acceptEdits` | allowed inside the workspace | asks |
 | `bypassPermissions` | allowed, no prompts | no prompts |
 
+A session starts in `default` unless `--permission-mode` or `default_mode` in your permission settings names another level; `plan` applies only when one of them asks for it. `bypassPermissions` needs `--unattended` beside it, in a terminal session, on a `-p` run and on `delfin-agent run` alike, and a `bypassPermissions` default in your settings is never inherited: a terminal session starts in `default` instead, and a `-p` or `run` invocation without `--unattended` is refused (exit 2). With nobody to ask — a `-p` or `run` invocation without `--supervised` — `default` refuses every shell command off the allow-list and allows writes inside the workspace.
+
 Cycle with `/permissions` or Shift+Tab; the cycle deliberately never lands on bypass. Two things hold at **every** level: the sandbox and the deny lists stay in force, and a file that defines the agent's own permissions always requires explicit confirmation.
 
 Settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
 
+### The action watcher
+
+Behind the rules, a small model gives a second opinion on actions the rules allowed without anyone seeing them: everything under `bypassPermissions`, messages to other agents and network calls in every mode, and — when nobody can be asked (`delfin agent run`, `chat -p`, the scheduler) — every auto-allowed action that leaves the workspace, such as `git fetch`. It can only add friction: ask you, or refuse with its reason. Plain reads never reach it. Its state — on or off, model, scope, last failure — is in the start banner and in `/status`.
+
+When the watcher's model fails (one retry on an error, none on a timeout), an action that leaves the workspace is asked about, or held when nobody can be asked; reading, commands on the auto-allow list and writing inside the workspace go on, so a long unattended run keeps working. After three failures in a row the watcher is reported down, and its model is re-tried at most once a minute until it answers again.
+
+`agent.classifier.enabled`, `.model`, `.scope` (`unattended` or `all`) and `.user_rules` in `~/.delfin_settings.json` configure it, `DELFIN_CLASSIFIER=off|on|all` overrides it for one process. A process started from inside an agent session ignores `DELFIN_CLASSIFIER=off`, and the agent cannot edit the settings file.
+
+### Permission rules
+
+Rules in `~/.delfin_settings.json` decide single actions in advance, in every level:
+
+<!-- recipe: not-runnable — a settings file excerpt; tests/test_permission_rules_hold_in_the_real_gate.py parses every rule in it -->
+```json
+{
+  "permissions": {
+    "deny":  ["bash(git push)", "read(/data/private/**)", "web_fetch(domain:example.org)"],
+    "ask":   ["write(src/**)", "mcp__github__*"],
+    "allow": ["bash(pytest:*)", "read(/data/shared/**)"]
+  }
+}
+```
+
+| Rule | Means |
+|------|-------|
+| `bash(git push)` | that command, by its words; `bash(pytest:*)` the command with any arguments |
+| `read(<glob>)`, `write(<glob>)` | a path; absolute or `~/…` as written, otherwise relative to the workspace; `*` is one path segment, `**` any number |
+| `web_fetch(domain:example.org)` | `web_fetch` to that host and its subdomains |
+| `mcp__server__tool`, `mcp__server__*`, `mcp__server` | MCP tools |
+| `web_search` (a bare name) | every call of that tool |
+
+- **deny** refuses and **ask** puts the call to you first, at every level, `bypassPermissions` included. An ask with nobody to answer it (an unattended run) is a refusal. deny wins over ask, ask over allow.
+- deny and ask match widely: `bash(git push)` also matches `cd x && git push`, `sh -c 'git push'` and `timeout 5 git --no-pager push`; a read or write rule also matches the paths a shell command names; a rule without `*` covers the directory below it. An unrelated command that merely contains the words is caught too.
+- **allow** only answers a question DELFIN would otherwise ask you about that exact call: the command dialog, a read outside the workspace (that one read; no directory is opened for the session), the write dialog in `default`, an MCP tool with side effects. It never lifts a refusal: secrets, outside-workspace writes, a locked folder, the agent's own configuration and safety files, git settings that name a program, a push or pull request you did not ask for, an upload, a command you refused earlier, the deny patterns, all stay as they are.
+- An allow covers one plain command: a command with `;`, `&`, `|`, `<`, `>`, `` ` ``, `$`, brackets, braces, a backslash or a newline is never covered, nor one that runs another program from its words (`env …`, `xargs …`, `timeout …`, `sudo …`, `python -c …`, `sh -c …`, `perl -e …`). `bash(make)` covers exactly `make`; `bash(make:*)` covers `make test`.
+- A repository can only add friction: `deny` and `ask` in its `.delfin/settings.json` apply, its `allow` is ignored.
+- A rule that cannot be read grants nothing. Broken rules, and rules naming a tool that does not exist, are listed when the terminal starts; a broken deny or ask is marked `ERROR`.
+- `/permissions` in the terminal shows the level, every rule in force with its file, and what is not in force; `/permissions rules` shows the rules alone. You edit the file yourself: the agent cannot write it from any tool or command.
+- On the CLI backend, deny and ask apply to its tools through the same hook that keeps its file boundary; allow is not used there.
+
 ### The shell sandbox
 
 Every command runs through an allow-list and then, where available, bubblewrap or firejail. Credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, the network is denied by default, and every command is appended to `~/.cache/delfin/agent-audit.jsonl`. `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}` selects the mechanism; when isolation is unavailable the agent says so rather than running unprotected in silence.
+
+### Seeing the boundary before a session starts
+
+Two read-only commands answer what a session would be allowed to do, for a person or for a program that drives the agent. Both take the session options `chat` takes (`--permission-mode`, `--cwd`, `--add-dir`, `--read-dir`, `--allowed-tools`, `--disallowed-tools`, `--supervised`, `--provider`), plus `--asker terminal|approvals|nobody` for who could answer a question (default: a terminal on stdin, else the approvals directory with `--supervised`, else nobody), and `--json`. Neither starts a session, changes a permission or writes a setting.
+
+```bash
+delfin-agent capabilities                                    # the boundary, as text
+delfin-agent capabilities --json --permission-mode acceptEdits --add-dir ../data
+delfin-agent gate explain -- rm -rf build                    # allow / ask / refuse, and why
+delfin-agent gate explain --json --asker nobody -- 'echo x > ../out.txt'
+delfin-agent gate explain --tool write_file --path notes/new.md
+```
+
+`capabilities` lists the mode and where it came from, the writable, read-only and readable roots, the deny and protected path globs and the masked home directories (names only, never contents), the shell deny patterns and auto-allow list, the session tool lists, who would be asked, the git role resolved for the workspace's repository, and the isolation layers: which mechanism the agent would actually wrap a command in on this host (`bwrap`, `Landlock`, `Seatbelt`, `none`, or `refused`), and whether bubblewrap, Landlock, Seatbelt, the socket guard, the process cage and the process guard are available here.
+
+`gate explain` asks the permission gate about one `bash` command or one `write_file` and prints the verdict — `allow`, `ask` or `refuse` — with a reason code (`plan_mode`, `deny_pattern`, `secret_path`, `outside_ws`, `not_auto_allowed`, `read_first`, `session_tool_list`, …), the reason text, the questions the gate would put, and for an `ask` what a yes would lead to. It goes through the same gates as a real call and stops after the last one, so nothing is run and nothing is written; the security panel, the audit log, the failure log and the approvals directory are not touched. Put the command after `--`; quote it as one argument to keep its own quoting. An existing `write_file` target counts as read in the session. Limits: only `bash` and `write_file` can be explained; PreToolUse hooks are counted but not run; only the `kit`, `openai` and `ollama` providers run this gate (the `claude` CLI backend has its own hook gate and is refused).
 
 ### Pushing, pull requests and the git role
 
