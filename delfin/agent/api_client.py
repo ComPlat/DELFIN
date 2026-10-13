@@ -1370,6 +1370,10 @@ class _ShellDirWalk:
     def enter(self, segment: str, argv: list) -> tuple:
         words = list(argv)
         depth: list = []             # open substitutions before each word
+        # A here-document body is the program's input, not shell: its
+        # parentheses are code. Only the command line before it counts.
+        if re.search(r"<<(?!<)", segment):
+            segment = segment.split("\n", 1)[0]
         if "(" in segment or ")" in segment:
             try:
                 import shlex as _shlex
@@ -1379,6 +1383,11 @@ class _ShellDirWalk:
             except ValueError:
                 toks = None
             if toks is not None:
+                # The re-split words replace the caller's only when a
+                # subshell or substitution opens or closes here; a `(` in
+                # code (`print(x)`, a here-document line) leaves them as
+                # they were.
+                structural = False
                 words = []
                 for tok in toks:
                     if tok and set(tok) <= {"(", ")"}:
@@ -1390,17 +1399,23 @@ class _ShellDirWalk:
                                         words.pop()
                                         depth.pop()
                                     self.frames.append(("cmd", None))
+                                    structural = True
                                 elif all(w in _SHELL_LEAD_WORDS for w in words):
                                     self.frames.append(("sub", self._state()))
+                                    structural = True
                                 else:
                                     self.frames.append(("plain", None))
                             elif self.frames:
                                 kind, saved = self.frames.pop()
                                 if kind == "sub":
                                     self.pending = saved
+                                structural = structural or kind != "plain"
                         continue
                     words.append(tok)
                     depth.append(sum(1 for k, _ in self.frames if k == "cmd"))
+                if not structural:
+                    words = list(argv)
+                    depth = []
         if not depth:
             inside = sum(1 for k, _ in self.frames if k == "cmd")
             depth = [inside] * len(words)

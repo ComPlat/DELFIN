@@ -43,6 +43,8 @@ _KINDS = {
     "unknowable_patch_refused": ("⛔", "Patch from stdin refused (targets unknown)"),
     "secret_path":    ("🔑", "Secret-path access blocked"),
     "script_payload": ("📜", "Script payload blocked"),
+    # A script run after `cd $VAR` / `cd -`: its file is unknown, so unread.
+    "script_dir_unknown": ("📜", "Script in an unknown directory"),
     "self_mod":       ("🛡", "Self-modification guarded"),
     "calc_edit":      ("🧪", "Stored-calculation edit"),
     "read_only_write": ("📕", "Write into a read-only location"),
