@@ -72,10 +72,26 @@ def _read_line(path: Path, lineno: int) -> str:
     return ""
 
 
+def _stays_in(workspace: Path, path: Path) -> bool:
+    """Whether ``path``, with every symlink resolved, lies in ``workspace``
+    (already resolved). A link is a second path whose target the read gate
+    never saw; ``rglob`` yields a linked file (it only refuses to descend
+    into a linked folder), so a link to a file elsewhere would be read and
+    its matching line returned with no dialog. Fails closed."""
+    try:
+        path.resolve(strict=True).relative_to(workspace)
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _files_in(workspace: Path, *, ext: tuple[str, ...] | None = None) -> list[Path]:
     out: list[Path] = []
     for path in workspace.rglob("*"):
         if not path.is_file():
+            continue
+        # One lstat per file; only a link pays the resolve.
+        if path.is_symlink() and not _stays_in(workspace, path):
             continue
         if ext is not None and path.suffix not in ext:
             continue
@@ -102,7 +118,7 @@ def _jedi_call(
     targets: list[Path]
     if file_hint:
         target = (workspace / file_hint).resolve()
-        if target.is_file():
+        if target.is_file() and _stays_in(workspace, target):
             targets = [target]
         else:
             return []
@@ -146,6 +162,10 @@ def _jedi_call(
                 try:
                     rpath.relative_to(workspace)
                 except ValueError:
+                    continue
+                # jedi follows imports by name and may report a linked
+                # module under its link path; the preview below reads it.
+                if not _stays_in(workspace, rpath):
                     continue
                 key = (str(rpath), int(r.line))
                 if key in seen:
