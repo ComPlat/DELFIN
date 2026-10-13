@@ -210,7 +210,12 @@ def repo(tmp_path):
     return ws
 
 
-def _drive(monkeypatch, tmp_path, ws, streams, **run_kw):
+def _drive(monkeypatch, tmp_path, ws, streams, *, can_ask=True,
+           subagent_type="verifier", **run_kw):
+    """``can_ask=False`` is the parent ``delfin agent run``, the benchmark
+    and the scheduler hand a delegate: permissions with no confirm
+    callback (cli.cmd_chat binds one only for a terminal or --supervised;
+    the dashboard always binds one)."""
     from delfin.agent import mcp_client as M
     from delfin.agent import model_capabilities as mc
     from delfin.agent.api_client import KitToolPermissions, create_client
@@ -228,7 +233,8 @@ def _drive(monkeypatch, tmp_path, ws, streams, **run_kw):
     asked: list = []
     perms = KitToolPermissions(
         workspace=ws, mode="default",
-        confirm_callback=lambda n, a, p: asked.append(n) or False)
+        confirm_callback=((lambda n, a, p: asked.append(n) or False)
+                          if can_ask else None))
     client.set_permissions(perms)
     n = {"i": 0}
 
@@ -239,7 +245,7 @@ def _drive(monkeypatch, tmp_path, ws, streams, **run_kw):
 
     client.client.chat.completions.create = _create
     result = SA.run_subagent(
-        subagent_type="verifier", description="refute the claim",
+        subagent_type=subagent_type, description="refute the claim",
         prompt="Claim: test_claim.py was fixed. Try to refute it.",
         parent_client=client, parent_perms=perms, inherit_context=False,
         **run_kw)
@@ -285,3 +291,54 @@ def test_driven_its_verdict_fills_the_orchestration_ballot(
     result, _ = _drive(monkeypatch, tmp_path, repo, streams,
                        output_schema=SA._ORCH_VERIFY_SCHEMA)
     assert result.structured_output == ballot, result.schema_error
+
+
+# ---------------------------------------------------------------------------
+# With nobody to ask, a shell write by a preset that edits no file is refused
+# ---------------------------------------------------------------------------
+
+_SHELL_WRITES = ("echo x > planted1.txt", "touch planted2.txt",
+                 "cp test_claim.py planted3.txt")
+
+
+def _bash_outputs(result):
+    return [str(tc.get("output") or "") for tc in result.tool_calls
+            if tc["name"].endswith("bash")]
+
+
+def test_driven_without_a_callback_a_shell_write_does_not_land(
+        monkeypatch, tmp_path, repo):
+    """Default mode without a confirm callback lets a write inside the
+    workspace through: right for an unattended parent that may edit, and
+    the opposite of a preset whose tool list holds no file-editing tool.
+    Measured on the base of this change: all three forms landed."""
+    streams = [_tool_round("bash", {"command": c}, f"w{i}")
+               for i, c in enumerate(_SHELL_WRITES)]
+    streams += [
+        _tool_round("bash", {"command": "git show HEAD:test_claim.py"}, "r1"),
+        _tool_round("run_tests", {"target": "test_claim.py"}, "r2"),
+        _final("Verdict: undecided."),
+    ]
+    result, asked = _drive(monkeypatch, tmp_path, repo, streams,
+                           can_ask=False)
+    assert not result.error, result.error
+    for name in ("planted1.txt", "planted2.txt", "planted3.txt"):
+        assert not (repo / name).exists(), name
+    outs = _bash_outputs(result)
+    for out in outs[:3]:
+        assert "edits no file" in out, out
+    # The check itself still runs.
+    assert "def test_claim" in outs[3]
+    assert '"passed": 1' in _outputs(result)["run_tests"]
+
+
+def test_driven_without_a_callback_a_writing_preset_keeps_the_contract(
+        monkeypatch, tmp_path, repo):
+    """The refusal is keyed on the preset, not on the missing callback:
+    an unattended general-purpose delegate still writes in its workspace."""
+    streams = [_tool_round("bash", {"command": "echo x > planted1.txt"}, "w"),
+               _final("done")]
+    result, _ = _drive(monkeypatch, tmp_path, repo, streams, can_ask=False,
+                       subagent_type="general-purpose")
+    assert not result.error, result.error
+    assert (repo / "planted1.txt").exists()
