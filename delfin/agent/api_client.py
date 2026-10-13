@@ -15490,10 +15490,13 @@ class _DocToolExecutor:
         except OSError:
             scan_root = search_path
         links_outside = 0
+        # Decided once, not per file: the only added per-file cost is the
+        # lstat of is_symlink (5000 files, no links: 1.25 s, within 0-4%).
+        walking = search_path.is_dir()
         for fp in _iter_scan_files(search_path, extra_skip):
             if fp.suffix.lower() in _SCAN_SKIP_SUFFIXES:
                 continue
-            if search_path.is_dir() and fp.is_symlink():
+            if walking and fp.is_symlink():
                 try:
                     real = fp.resolve(strict=True)
                 except (OSError, RuntimeError):
