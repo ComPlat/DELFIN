@@ -4587,6 +4587,8 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--read-dir", dest="read_dirs", action="append", default=[])
     tui.add_argument("--isolate", action="store_true")
     tui.add_argument("--no-isolate", action="store_true")
+    # Scripted sessions, no model: for working on the window and its tests.
+    tui.add_argument("--fake", action="store_true", help=argparse.SUPPRESS)
     tui.set_defaults(func=_cmd_tui)
 
     svc = sub.add_parser(

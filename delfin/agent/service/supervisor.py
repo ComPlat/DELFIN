@@ -47,26 +47,9 @@ from . import eventlog, protocol, rundir
 
 SERVICE_VERSION = 1
 
-#: Requests a window sends to the service itself.
-SERVICE_REQUESTS: dict[str, dict[str, str]] = {
-    "hello": {"protocolVersion": "integer", "client": "string?"},
-    "sessions.list": {},
-    # Start a session: a worker with these settings (chat's own flags).
-    "session.create": {"cwd": "string", "name": "string?", "model": "string?",
-                       "provider": "string?", "effort": "string?",
-                       "mode": "string?", "permissionMode": "string?",
-                       "resume": "string?", "continue": "boolean?",
-                       "fork": "boolean?", "addDirs": "[string]?",
-                       "readDirs": "[string]?", "isolate": "boolean?",
-                       "noIsolate": "boolean?", "fake": "boolean?",
-                       "fakeDelay": "number?", "attach": "boolean?"},
-    "session.attach": {"sessionId": "string", "turns": "integer?"},
-    "session.detach": {"sessionId": "string"},
-    # A message for a session elsewhere (dashboard, another terminal).
-    "session.message": {"key": "string", "text": "string"},
-    "service.status": {},
-    "service.shutdown": {},
-}
+#: Requests a window sends to the service itself (the one definition is
+#: protocol.SERVICE_REQUESTS, which the TUI's types are generated from).
+SERVICE_REQUESTS = protocol.SERVICE_REQUESTS
 
 #: Session requests, forwarded to the session's worker (with "sessionId").
 FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
@@ -78,12 +61,18 @@ ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
                     "session.setMode", "session.shutdown", "permission.reply",
                     "session.message", "service.shutdown"})
 
-UNKNOWN_SESSION = -32004
-WORKER_GONE = -32005
+UNKNOWN_SESSION = protocol.UNKNOWN_SESSION
+WORKER_GONE = protocol.WORKER_GONE
 
 #: A window that reads this far behind is dropped (it can attach again and
 #: replay); a stuck window must not make the service hold its output.
 CLIENT_BACKLOG_BYTES = 64 * 1024 * 1024
+
+#: Windows at once; more is a runaway process, not a person.
+MAX_CLIENTS = 128
+
+#: The longest line a window may send before its hello.
+HELLO_LINE_BYTES = 64 * 1024
 
 #: How long a session gets to start (MCP servers, a resumed session).
 CREATE_TIMEOUT_S = 180.0
@@ -92,7 +81,18 @@ CREATE_TIMEOUT_S = 180.0
 SHUTDOWN_GRACE_S = 20.0
 
 
+LINUX = sys.platform.startswith("linux")
+
+
 def _ppid(pid: int) -> int:
+    if not LINUX:
+        import subprocess
+        try:
+            out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                                 capture_output=True, text=True, timeout=2)
+            return int(out.stdout.strip() or 0)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return 0
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
     except OSError:
@@ -105,11 +105,17 @@ def _ppid(pid: int) -> int:
 
 
 def _peer_pid(sock: socket.socket) -> int:
-    if sys.platform.startswith("linux") and hasattr(socket, "SO_PEERCRED"):
-        import struct
-        creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
-                                struct.calcsize("3i"))
-        return struct.unpack("3i", creds)[0]
+    try:
+        if LINUX and hasattr(socket, "SO_PEERCRED"):
+            import struct
+            creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                    struct.calcsize("3i"))
+            return struct.unpack("3i", creds)[0]
+        if sys.platform == "darwin":
+            # SOL_LOCAL (0), LOCAL_PEERPID (2): <sys/un.h>
+            return int(sock.getsockopt(0, 2))
+    except OSError:
+        pass
     return 0
 
 
@@ -362,6 +368,11 @@ class Supervisor:
         if uid is not None and uid != os.getuid():
             writer.close()
             return
+        if len(self.clients) >= MAX_CLIENTS:
+            # A runaway process opening connections must not take the
+            # service -- and the sessions in it -- down with it.
+            writer.close()
+            return
         pid = _peer_pid(sock) if sock is not None else 0
         client = Client(self, reader, writer, not self._from_an_agent(pid), pid)
         self.clients.add(client)
@@ -374,6 +385,8 @@ class Supervisor:
                     break
                 if not line:
                     break
+                if not client.greeted and len(line) > HELLO_LINE_BYTES:
+                    break                     # nobody says hello in megabytes
                 try:
                     message = json.loads(line)
                 except ValueError:
@@ -391,25 +404,35 @@ class Supervisor:
             client.close()
 
     def _from_an_agent(self, pid: int) -> bool:
-        """Whether ``pid`` was started by an agent session: a descendant of
-        one of the workers, or a process carrying the marker every agent
-        child process gets (approval_guard.ENV_MARKER)."""
+        """Whether ``pid`` may have been started by an agent session: a
+        descendant of one of the workers, a process carrying the marker
+        every agent child process gets (approval_guard.ENV_MARKER), or one
+        whose environment cannot be read (a process that made itself
+        unreadable is not a window).
+
+        Best effort by nature: a process of the same user can hide where it
+        came from. What keeps an agent's commands away from this socket is
+        the cage they run in: the bubblewrap process cage, the socket guard
+        or Seatbelt mask the socket's directory as a "session door"
+        (api_client._session_doors), like the tmux and screen sockets."""
         if pid <= 0:
-            return False
+            return False                      # the platform cannot say
         workers = {s.proc.pid for s in [*self.sessions.values(), *self.starting]}
         p, hops = pid, 0
         while p > 1 and hops < 64:
             if p in workers:
                 return True
             p, hops = _ppid(p), hops + 1
+        if not LINUX:
+            return False                      # no /proc: the ancestry only
         try:
             from ..approval_guard import ENV_MARKER
             environ = Path(f"/proc/{pid}/environ").read_bytes()
-            if f"{ENV_MARKER}=".encode() in environ:
-                return True
-        except (OSError, ImportError):
-            pass
-        return False
+        except ImportError:
+            return False
+        except OSError:
+            return True                       # unreadable: fail closed
+        return f"{ENV_MARKER}=".encode() in environ
 
     def client_gone(self, client: Client) -> None:
         self.clients.discard(client)

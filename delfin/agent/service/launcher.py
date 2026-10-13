@@ -94,16 +94,21 @@ def _log_tail(lines: int = 12) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
 
+def tui_root() -> Path:
+    return Path(__file__).resolve().parents[3] / "tui"
+
+
 def tui_command() -> list[str] | None:
     """How to run the terminal UI from this checkout, or None.
 
     Until the TUI ships as one binary (phase 7) it runs from source with
-    Bun: ``tui/src/main.tsx`` next to the ``delfin`` package.
+    Bun: ``tui/src/main.tsx`` next to the ``delfin`` package, started in
+    ``tui/`` -- Bun reads its configuration (the Solid JSX preload) and
+    tsconfig from the working directory.
     """
     import shutil
 
-    root = Path(__file__).resolve().parents[3]
-    main = root / "tui" / "src" / "main.tsx"
+    main = tui_root() / "src" / "main.tsx"
     bun = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun")
     if main.is_file() and Path(bun).is_file():
         return [bun, str(main)]

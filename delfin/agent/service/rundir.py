@@ -5,7 +5,7 @@ The service is one per user and host, like a tmux server:
     /tmp/delfin-<uid>/                   0700, the user's own, never a symlink
         agent.sock                       0600, the service's socket
         lock                             flock'd for the service's lifetime
-    ~/.delfin/agent_service/run/<host>.json   0600: pid, socket, token, version
+    ~/.delfin/agent_service/run/<host>.json   0600: pid, socket, version
 
 Why /tmp and not ~/.delfin: on HPC clusters $HOME is NFS shared by every
 login node, and a Unix socket can only be connected to on the host that
@@ -16,6 +16,13 @@ orphan a service whose whole point is to outlive the window.
 
 The lock does two jobs: a second service on the same host sees it held and
 leaves, and systemd-tmpfiles skips a locked directory when it ages /tmp.
+
+There is no secret in any of these files: every one of them can be read by
+every process of the user, an agent's commands included, so a token here
+would protect nothing. Who may connect is the peer's uid; what a connection
+may do is decided by where it comes from (supervisor._from_an_agent); and an
+agent's commands do not see this directory at all where their cage runs
+(api_client._session_doors).
 """
 
 from __future__ import annotations
@@ -23,7 +30,6 @@ from __future__ import annotations
 import errno
 import json
 import os
-import secrets
 import socket
 import stat
 import struct
@@ -116,10 +122,6 @@ class ServiceLock:
             except OSError:
                 pass
         self._fds.clear()
-
-
-def new_token() -> str:
-    return secrets.token_hex(32)
 
 
 def write_run_file(info: dict) -> Path:

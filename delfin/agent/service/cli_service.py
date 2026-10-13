@@ -27,7 +27,7 @@ def _start_settings(args: argparse.Namespace) -> dict:
         if value:
             settings[key] = str(value)
     for key, name in (("continue", "continue_session"), ("isolate", "isolate"),
-                      ("noIsolate", "no_isolate")):
+                      ("noIsolate", "no_isolate"), ("fake", "fake")):
         if getattr(args, name, False):
             settings[key] = True
     for key, name in (("addDirs", "add_dirs"), ("readDirs", "read_dirs")):
@@ -77,13 +77,22 @@ def cmd_tui(args: argparse.Namespace) -> int:
         return 2
     env = dict(os.environ)
     env["DELFIN_TUI_SOCKET"] = str(rundir.socket_path())
+    # Settings first: the workspace is where `delfin-agent tui` was typed.
     env["DELFIN_TUI_START"] = json.dumps(_start_settings(args))
+    os.chdir(launcher.tui_root())
     sys.stdout.flush()
     sys.stderr.flush()
     # The TUI takes this process (and its terminal) over: no Python stays
     # behind holding the window.
     os.execvpe(command[0], command, env)
     return 0                                     # pragma: no cover
+
+
+def _plain(value: object, width: int = 0) -> str:
+    """Text from a run file or a session, safe to print: one line, no
+    control characters (a forged file must not move the cursor)."""
+    text = "".join(ch if ch.isprintable() else "?" for ch in str(value or ""))
+    return text[:width] if width else text
 
 
 def _age(seconds: float) -> str:
@@ -103,7 +112,8 @@ def cmd_service(args: argparse.Namespace) -> int:
     if hello is None:
         print(f"no agent service runs on {rundir.hostname()}")
         for other in rundir.other_hosts():
-            print(f"  one runs on {other.get('host')} (pid {other.get('pid')}): "
+            print(f"  one runs on {_plain(other.get('host'), 60)} "
+                  f"(pid {_plain(other.get('pid'), 12)}): "
                   "log in there to reach its sessions")
         return 0 if action == "status" else 1
     if action == "stop":
@@ -118,16 +128,16 @@ def cmd_service(args: argparse.Namespace) -> int:
           f"{len(sessions)} session{'s' * (len(sessions) != 1)}, "
           f"{status.get('windows', 0)} window{'s' * (status.get('windows') != 1)}")
     for s in sessions:
-        title = s.get("title") or "(untitled)"
+        title = _plain(s.get("title") or "(untitled)", 28)
         pending = f", {s['pending']} waiting" if s.get("pending") else ""
-        print(f"  {str(s.get('sessionId'))[:8]}  {title[:28]:28}  "
-              f"{s.get('state', '?'):11} {s.get('workspace', '')}{pending}")
+        print(f"  {_plain(s.get('sessionId'), 8)}  {title:28}  "
+              f"{_plain(s.get('state', '?'), 11):11} {_plain(s.get('workspace'))}{pending}")
     elsewhere = listing.get("elsewhere") or []
     if elsewhere:
         print("elsewhere (dashboards, terminals):")
         for e in elsewhere:
-            print(f"  {e.get('key', '')[:12]:12}  {(e.get('title') or '')[:28]:28}  "
-                  f"{e.get('workspace', '')}")
+            print(f"  {_plain(e.get('key'), 12):12}  {_plain(e.get('title'), 28):28}  "
+                  f"{_plain(e.get('workspace'))}")
     return 0
 
 

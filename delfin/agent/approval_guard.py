@@ -85,10 +85,13 @@ _ANSWER_CALL_RE = re.compile(r"\banswer\s*\(|\bimport\b[^\n;]*\banswer\b")
 _IMPORT_RE = re.compile(r"\bimport\b|__import__|importlib")
 
 # The agent service's socket and run files, where a window answers a
-# session's approvals: ``delfin-<uid>/agent.sock`` and ``agent_service/run``
-# joined the same three ways.
+# session's approvals: ``/…/delfin-<uid>/agent.sock`` and
+# ``.delfin/agent_service/run``, joined the same three ways. A literal
+# path only, like the rooms above; what keeps a command away from the
+# socket itself is the cage's session doors (api_client._session_doors).
 _SERVICE_ROOM_RE = re.compile(
-    r"delfin-\d+[\s/,]+agent\.sock\b|agent_service[\s/,]+run(?![\w-])",
+    r"(?<=/)delfin-\d+[\s/,]+agent\.sock\b"
+    r"|\.delfin[\s/,]+agent_service[\s/,]+run(?![\w-])",
     re.IGNORECASE)
 
 # Names only an answer file or an answer location carry: ``<id>.answer

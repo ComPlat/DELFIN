@@ -424,3 +424,59 @@ def test_tui_starts_the_service_and_says_when_the_window_is_not_built(tmp_path, 
             c.request("service.shutdown")
     finally:
         svc.stop()
+
+
+def test_a_command_in_the_agents_cage_cannot_reach_the_service(service):
+    # What keeps an agent's commands away from the socket: the process cage
+    # every command runs in masks the socket's directory, like the tmux and
+    # screen sockets (api_client._session_doors). A process outside the
+    # cage -- the control -- reaches it.
+    probe = service.tmp / "probe.py"
+    probe.write_text(
+        "import socket, sys\n"
+        "s = socket.socket(socket.AF_UNIX)\n"
+        "try:\n"
+        "    s.connect(sys.argv[1]); print('reached')\n"
+        "except OSError as exc:\n"
+        "    print('refused', exc.errno)\n")
+    script = f"{sys.executable} {probe} {service.socket}"
+    caged = (
+        "import json, sys\n"
+        "from delfin.agent import api_client as a\n"
+        "if not a._process_cage_functional():\n"
+        "    print(json.dumps(None)); sys.exit()\n"
+        "print(json.dumps(a._in_process_cage(['/bin/bash', '-c', sys.argv[1]], '/tmp')))\n")
+    out = subprocess.run([sys.executable, "-c", caged, script], env=_env(service),
+                         capture_output=True, text=True, timeout=60)
+    argv = json.loads(out.stdout.strip().splitlines()[-1])
+    if argv is None:
+        pytest.skip("no bubblewrap cage on this host")
+    control = subprocess.run(["/bin/bash", "-c", script], env=_env(service),
+                             capture_output=True, text=True, timeout=60)
+    assert control.stdout.strip() == "reached"
+    inside = subprocess.run(argv, env=_env(service), capture_output=True, text=True,
+                            timeout=60)
+    assert inside.stdout.strip().startswith("refused"), (inside.stdout, inside.stderr[-500:])
+
+
+def test_a_process_that_hides_its_environment_may_not_act(service):
+    # A process that made itself unreadable (non-dumpable) is not a window.
+    a = service.client()
+    sid = service.session(a)
+    probe = r"""
+import ctypes, json, sys
+ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)       # PR_SET_DUMPABLE 0
+sys.path.insert(0, sys.argv[2])
+from delfin.agent.service.client import ServiceClient, ServiceError
+c = ServiceClient(sys.argv[1])
+try:
+    c.request("session.prompt", {"sessionId": sys.argv[3], "text": "hi"})
+    code = "done"
+except ServiceError as exc:
+    code = exc.code
+print(json.dumps({"mayAct": c.hello["mayAct"], "prompt": code}))
+"""
+    run = subprocess.run([sys.executable, "-c", probe, str(service.socket), str(REPO), sid],
+                         env=_env(service), capture_output=True, text=True, timeout=60)
+    got = json.loads(run.stdout.strip().splitlines()[-1])
+    assert got == {"mayAct": False, "prompt": protocol.NOT_ALLOWED}

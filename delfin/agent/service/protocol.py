@@ -155,6 +155,68 @@ EVENTS: dict[str, dict[str, str]] = {
                             "by": "string"},
 }
 
+# ---------------------------------------------------------------------------
+# The service: window -> agent service (supervisor.py)
+# ---------------------------------------------------------------------------
+
+#: Requests a window sends to the service itself. Session requests (above)
+#: are sent to the service too, with "sessionId", and forwarded.
+SERVICE_REQUESTS: dict[str, dict[str, str]] = {
+    "hello": {"protocolVersion": "integer", "client": "string?"},
+    "sessions.list": {},
+    # Start a session: a worker with these settings (chat's own flags).
+    "session.create": {"cwd": "string", "name": "string?", "model": "string?",
+                       "provider": "string?", "effort": "string?",
+                       "mode": "string?", "permissionMode": "string?",
+                       "resume": "string?", "continue": "boolean?",
+                       "fork": "boolean?", "addDirs": "[string]?",
+                       "readDirs": "[string]?", "isolate": "boolean?",
+                       "noIsolate": "boolean?", "fake": "boolean?",
+                       "fakeDelay": "number?", "attach": "boolean?"},
+    "session.attach": {"sessionId": "string", "turns": "integer?"},
+    "session.detach": {"sessionId": "string"},
+    # A message for a session elsewhere (dashboard, another terminal).
+    "session.message": {"key": "string", "text": "string"},
+    "service.status": {},
+    "service.shutdown": {},
+}
+
+SERVICE_RESULTS: dict[str, dict[str, str]] = {
+    "hello": {"protocolVersion": "integer", "serviceVersion": "integer",
+              "pid": "integer", "host": "string", "mayAct": "boolean",
+              "sessions": "[object]"},
+    "sessions.list": {"sessions": "[object]", "elsewhere": "[object]"},
+    "session.create": {"sessionId": "string", "session": "object",
+                       "state": "string", "pending": "[object]"},
+    "session.attach": {"session": "object", "state": "string",
+                       "pending": "[object]", "events": "[object]",
+                       "summary": "object"},
+    "session.detach": {"detached": "boolean"},
+    "session.message": {"sent": "boolean"},
+    "service.status": {"pid": "integer", "host": "string",
+                       "startedAt": "number", "sessions": "[object]",
+                       "windows": "integer", "socket": "string"},
+    "service.shutdown": {"stopping": "boolean", "sessions": "integer"},
+}
+
+#: Events from the service itself, to every window.
+SERVICE_EVENTS: dict[str, dict[str, str]] = {
+    # sessionId, title?, workspace, provider, model, approval, state,
+    # pending (open questions), costUsd, createdAt, lastActivity, pid
+    "session.summary": {"summary": "object"},
+    "session.removed": {"reason": "string", "exitCode": "integer?"},
+}
+
+#: The fields of a session summary (session.summary, sessions.list).
+SESSION_SUMMARY: dict[str, str] = {
+    "sessionId": "string", "title": "string?", "workspace": "string",
+    "provider": "string", "model": "string", "approval": "string",
+    "state": "string", "pending": "integer", "costUsd": "number",
+    "createdAt": "number", "lastActivity": "number", "pid": "integer"}
+
+UNKNOWN_SESSION = -32004
+WORKER_GONE = -32005
+
 #: Events kept in the session's durable log (eventlog.py) and replayed to
 #: a window that attaches later. Only these carry a sequence number. Deltas,
 #: progress ticks, state changes and usage samples are live-only: the
@@ -391,6 +453,15 @@ def json_schema() -> dict:
         "results": {m: _object_schema(s) for m, s in RESULTS.items()},
         "events": {t: event_schema(t, s) for t, s in EVENTS.items()},
         "durableEvents": sorted(DURABLE_EVENTS),
+        "service": {
+            "requests": {m: _object_schema(s) for m, s in SERVICE_REQUESTS.items()},
+            "results": {m: _object_schema(s) for m, s in SERVICE_RESULTS.items()},
+            "events": {t: event_schema(t, s) for t, s in SERVICE_EVENTS.items()},
+            "sessionSummary": _object_schema(SESSION_SUMMARY),
+        },
+        "errors": {name: value for name, value in globals().items()
+                   if name.isupper() and isinstance(value, int)
+                   and -32768 <= value <= -32000},
     }
 
 

@@ -250,13 +250,29 @@ closes; the next window attaches to them again.
   it), one service per host by `flock`. On a cluster, `$HOME` is shared but
   a socket is not: `~/.delfin/agent_service/run/<host>.json` says where a
   service runs, so a window on another login node can say so.
-- **Who:** only the user's own processes (the peer's uid is checked). A
-  process an agent session started -- a descendant of a worker, or one that
-  carries `DELFIN_AGENT_SESSION` -- may watch but not act: `hello` says
-  `mayAct: false`, and it cannot create, prompt, cancel, change modes,
-  answer approvals, send messages or stop the service (-32003). The socket
-  and the run files are also answer locations for the permission gate
-  (`approval_guard`), like the approvals directory.
+- **Who:** only the user's own processes (the peer's uid is checked).
+  Through this socket a window answers approvals and sends prompts, so an
+  agent's own commands must not reach it. Three layers keep them away:
+  1. **The cage.** Every command an agent runs is in the process cage
+     (bubblewrap; the Landlock socket guard where bubblewrap cannot run;
+     Seatbelt on macOS). The cage masks the socket's directory as a
+     "session door", like the tmux and screen sockets, so the command does
+     not see the socket at all (`api_client._session_doors`).
+  2. **Watch-only.** A connection from a process that looks started by an
+     agent session may watch but not act. That is a descendant of a worker,
+     one that carries `DELFIN_AGENT_SESSION`, or, on Linux, one whose
+     environment cannot be read. `hello` says `mayAct: false`, and the
+     connection cannot create, prompt, cancel, change modes, answer
+     approvals, send messages or stop the service (-32003).
+  3. **The gate.** The socket and run files are answer locations for the
+     permission gate (`approval_guard`): a command that names them is
+     refused, like one that names the approvals directory.
+
+  The limit, as for upstream's approval files: on a host where no cage can
+  run, a command that deliberately hides where it came from (detaching and
+  scrubbing its environment) can still connect. No secret would help: there
+  is none the user's window can hold that the user's other processes cannot
+  read.
 - **When it ends:** `service.shutdown` (`delfin-agent service stop`),
   SIGTERM, an emergency stop (`delfin-agent stop-all`), or `--idle-exit`
   seconds (default 900) with no session and no window. Every session gets a
