@@ -370,6 +370,7 @@ Pick the narrowest that fits; `/subagents` prints what each is for.
 | `code-reviewer` | Second opinion on a diff. |
 | `security-reviewer` | A change to gates, permissions, sandbox: what it widens. |
 | `verifier` | Does it break anything; runs a control on the base. |
+| `control` | Tries to refute a claim (check at base and now). |
 | `chemistry-reviewer` | An ORCA input or a methodology choice. |
 | `method-researcher` | Which functional / basis / solvent model, with sources. |
 | `data-extractor` | Finished calculations into one table, with provenance. |

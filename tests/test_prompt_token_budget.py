@@ -210,7 +210,12 @@ def test_role_prompt_within_token_budget(filename, max_tokens):
         # principles INTO the refusal addendum, where the budget sees them
         # (71 tokens, measured). The prompt as a whole got smaller by it:
         # the principles lost ~130 tokens, which the budget does not count.
-        ("solo_agent", "solo", ["solo_agent"], 11555),
+        # 11555 -> 11567 (2026-10-13): one row in the subagent table for
+        # the `control` preset, 16 tokens measured (11551 -> 11567), 4 of
+        # them from slack. A preset the role prompt does not name is one
+        # the model does not reach for; the method itself is in the pack
+        # file, which the head does not carry.
+        ("solo_agent", "solo", ["solo_agent"], 11567),
         ("dashboard_agent", "dashboard", ["dashboard_agent"], 10400),
     ],
 )
