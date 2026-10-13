@@ -42,6 +42,13 @@ export interface PermissionReplyParams {
   "reason"?: string
   "persist"?: boolean
 }
+export interface SessionCommandsParams {}
+export interface SessionCompletePathParams {
+  "fragment": string
+}
+export interface SessionChoicesParams {
+  "what": string
+}
 export interface WorkerRequests {
   "initialize": InitializeParams
   "session.prompt": SessionPromptParams
@@ -51,6 +58,9 @@ export interface WorkerRequests {
   "session.replay": SessionReplayParams
   "session.shutdown": SessionShutdownParams
   "permission.reply": PermissionReplyParams
+  "session.commands": SessionCommandsParams
+  "session.completePath": SessionCompletePathParams
+  "session.choices": SessionChoicesParams
 }
 export interface InitializeResult {
   "protocolVersion": number
@@ -86,6 +96,16 @@ export interface PermissionReplyResult {
   "applied": boolean
   "message": string
 }
+export interface SessionCommandsResult {
+  "commands": Record<string, unknown>[]
+}
+export interface SessionCompletePathResult {
+  "paths": string[]
+}
+export interface SessionChoicesResult {
+  "current": string
+  "choices": Record<string, unknown>[]
+}
 export interface WorkerResults {
   "initialize": InitializeResult
   "session.prompt": SessionPromptResult
@@ -95,6 +115,9 @@ export interface WorkerResults {
   "session.replay": SessionReplayResult
   "session.shutdown": SessionShutdownResult
   "permission.reply": PermissionReplyResult
+  "session.commands": SessionCommandsResult
+  "session.completePath": SessionCompletePathResult
+  "session.choices": SessionChoicesResult
 }
 export interface WorkerReadyEvent {
   "protocolVersion": number
@@ -363,6 +386,11 @@ export interface SessionMessageParams {
   "key": string
   "text": string
 }
+export interface SessionsPastParams {
+  "workspace"?: string
+  "query"?: string
+  "limit"?: number
+}
 export interface ServiceStatusParams {}
 export interface ServiceShutdownParams {}
 export interface ServiceRequests {
@@ -372,6 +400,7 @@ export interface ServiceRequests {
   "session.attach": SessionAttachParams
   "session.detach": SessionDetachParams
   "session.message": SessionMessageParams
+  "sessions.past": SessionsPastParams
   "service.status": ServiceStatusParams
   "service.shutdown": ServiceShutdownParams
 }
@@ -406,6 +435,9 @@ export interface SessionDetachResult {
 export interface SessionMessageResult {
   "sent": boolean
 }
+export interface SessionsPastResult {
+  "sessions": Record<string, unknown>[]
+}
 export interface ServiceStatusResult {
   "pid": number
   "host": string
@@ -425,6 +457,7 @@ export interface ServiceResults {
   "session.attach": SessionAttachResult
   "session.detach": SessionDetachResult
   "session.message": SessionMessageResult
+  "sessions.past": SessionsPastResult
   "service.status": ServiceStatusResult
   "service.shutdown": ServiceShutdownResult
 }

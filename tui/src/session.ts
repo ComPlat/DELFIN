@@ -22,6 +22,8 @@ export interface SessionViewOptions {
 export interface SessionView {
   queue: CommitQueue
   transcript: Transcript
+  /** Prompts sent with pastes put back -> as typed (see App's `sentAs`). */
+  sentAs: Map<string, string>
   /** Put session `id` in view: its events become rows from now on. */
   show(id: string): void
   redraw(): Promise<void>
@@ -39,12 +41,19 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
   const transcript = new Transcript(queue, target, itemWriter(renderer, theme))
   const stopResize = replayOnWidthChange(renderer, transcript, { limit: options.replayLimit })
   let off: (() => void) | null = null
+  const sentAs = new Map<string, string>()
+  const shownAs = (text: string) => {
+    const shown = sentAs.get(text)
+    if (shown !== undefined) sentAs.delete(text)
+    return shown
+  }
   return {
     queue,
     transcript,
+    sentAs,
     show(id) {
       off?.()
-      const presenter = new Presenter(id, transcript, { showThinking: options.showThinking })
+      const presenter = new Presenter(id, transcript, { showThinking: options.showThinking, shownAs })
       off = store.onBatch((events, draft) => presenter.handle(events, draft))
       store.update((d) => { d.current = id })
     },

@@ -16,6 +16,15 @@ import { commitSurface, diffBlock, isDrawableDiff, markdownBlock } from "./write
 
 type Fields = Record<string, any>
 
+/** A message longer than this shows its first lines and how many more. */
+export const USER_MAX_LINES = 12
+
+export function cappedLines(text: string, max: number): string {
+  const lines = text.split("\n")
+  if (lines.length <= max) return text
+  return [...lines.slice(0, max - 1), `… ${lines.length - max + 1} more lines`].join("\n")
+}
+
 /** The marker in front of a message, by who sent it. */
 const SOURCE_MARK: Record<string, string> = {
   user: "❯ ", queued: "❯ ", steer: "↳ ", harness: "◇ ",
@@ -41,11 +50,13 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
       const source = String(f.source ?? "user")
       const tint = source === "harness" ? t.muted : t.bright
       const note = source === "queued" ? "  (queued)" : source === "steer" ? "  (into the turn)" : ""
+      // The marker in a column of its own: every further line, and every
+      // wrapped one, hangs under the first.
       return (
-        <box paddingTop={1}>
-          <text wrapMode="word">
-            <span style={{ fg: t.accent, attributes: TextAttributes.BOLD }}>{SOURCE_MARK[source] ?? "❯ "}</span>
-            <span style={{ fg: tint }}>{String(f.text ?? "")}</span>
+        <box paddingTop={1} flexDirection="row">
+          <text width={2} fg={t.accent} attributes={TextAttributes.BOLD}>{SOURCE_MARK[source] ?? "❯ "}</text>
+          <text flexGrow={1} wrapMode="word">
+            <span style={{ fg: tint }}>{cappedLines(String(f.text ?? ""), USER_MAX_LINES)}</span>
             <span style={{ fg: t.faint }}>{note}</span>
           </text>
         </box>

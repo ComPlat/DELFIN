@@ -57,7 +57,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
-from . import protocol
+from . import choices, protocol
 from .approvals import ProtocolBroker
 from .eventlog import EventLog, log_path, service_dir
 from .transcript import ProtocolTranscript
@@ -70,6 +70,11 @@ _TICK_S = 0.25
 #: How long the idle loop waits for a message before it looks for mail
 #: and finished jobs (the REPL throttles those to every few seconds).
 _IDLE_WAIT_S = 0.5
+
+#: Requests answered on a thread of their own: a provider's model list
+#: can take seconds, and the reader must stay free for the next request --
+#: an Esc never waits behind a picker.
+_SLOW = frozenset({"session.choices"})
 
 #: Live-only events that are not redacted: the model's own stream, which
 #: the REPL shows as it arrives too, and numbers. Everything else -- what
@@ -1021,6 +1026,13 @@ class Worker:
                 self.writer.send(protocol.result(msg_id, {"closing": True}))
             self.shutdown("shutdown")
             return
+        if method in _SLOW:
+            threading.Thread(target=self._answer, args=(msg_id, method, params),
+                             name=f"protocol-{method}", daemon=True).start()
+            return
+        self._answer(msg_id, method, params)
+
+    def _answer(self, msg_id: Any, method: str, params: dict) -> None:
         # Answers carry what events carry -- a pending question's preview,
         # a persisted pattern, an error naming the command -- so they go
         # through the same redactor.
@@ -1162,6 +1174,19 @@ class Worker:
             raise _Refusal(protocol.INVALID_PARAMS, str(exc)) from None
         self.agent.post(self.check_session)
         return {"applied": landed, "message": message}
+
+    def _m_session_commands(self, _params: dict) -> dict:
+        return {"commands": choices.command_list(self.workspace)}
+
+    def _m_session_completePath(self, params: dict) -> dict:
+        return {"paths": choices.complete_path(str(params.get("fragment") or ""),
+                                               self.workspace)}
+
+    def _m_session_choices(self, params: dict) -> dict:
+        try:
+            return choices.choices(self.engine, str(params.get("what") or ""))
+        except ValueError as exc:
+            raise _Refusal(protocol.INVALID_PARAMS, str(exc)) from None
 
     # -- lifecycle -------------------------------------------------------------------
     def shutdown(self, reason: str, code: int = 0) -> None:

@@ -17,7 +17,9 @@ export type Action =
 
 export const DEFAULT_KEYS: Readonly<Record<Action, readonly string[]>> = {
   submit: ["return"],
-  newline: ["shift+return", "alt+return", "ctrl+j"],
+  // ctrl+j arrives as a bare line feed where the terminal does not report
+  // modifiers (no kitty keyboard protocol, e.g. tmux without extended keys).
+  newline: ["shift+return", "alt+return", "ctrl+j", "linefeed"],
   interrupt: ["escape"],
   steer: ["ctrl+g"],
   cycleMode: ["shift+tab"],

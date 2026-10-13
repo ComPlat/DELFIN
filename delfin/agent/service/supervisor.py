@@ -54,7 +54,8 @@ SERVICE_REQUESTS = protocol.SERVICE_REQUESTS
 #: Session requests, forwarded to the session's worker (with "sessionId").
 FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
                        "session.status", "session.replay", "session.shutdown",
-                       "permission.reply"})
+                       "permission.reply", "session.commands",
+                       "session.completePath", "session.choices"})
 
 #: What a watch-only connection may not do.
 ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
@@ -506,6 +507,14 @@ class Supervisor:
         return {"sessions": [s.summary() for s in self.sessions.values()],
                 "elsewhere": self.elsewhere()}
 
+    async def _m_sessions_past(self, _client: Client, params: dict) -> dict:
+        limit = max(1, min(200, int(params.get("limit") or 30)))
+        rows = await asyncio.to_thread(past_sessions, str(params.get("workspace") or ""),
+                                       str(params.get("query") or ""), limit)
+        for row in rows:
+            row["running"] = row["sessionId"] in self.sessions
+        return {"sessions": rows}
+
     def elsewhere(self) -> list[dict]:
         """The other open DELFIN sessions on this machine and the cluster's
         shared home: dashboards and terminal sessions (watch and message)."""
@@ -719,6 +728,28 @@ class Supervisor:
     def stop(self) -> None:
         if self.stopping is not None:
             self.stopping.set()
+
+
+def past_sessions(workspace: str, query: str, limit: int) -> list[dict]:
+    """Saved sessions to resume, newest first: the session store's own
+    listing (scoped to ``workspace``) or its search (``query``)."""
+    from .. import session_store
+
+    if query:
+        rows = session_store.find_sessions(query, limit=limit)
+    else:
+        rows = session_store.list_sessions(limit=limit, workspace=workspace or None)
+    out = []
+    for row in rows[:limit]:
+        out.append({"sessionId": str(row.get("session_id") or ""),
+                    "title": str(row.get("title") or ""),
+                    "workspace": str(row.get("workspace") or ""),
+                    "model": str(row.get("model") or ""),
+                    "provider": str(row.get("provider") or ""),
+                    "updatedAt": float(row.get("updated_at") or 0),
+                    "messages": int(row.get("message_count") or 0),
+                    "costUsd": float(row.get("cost_usd") or 0.0)})
+    return out
 
 
 class _Refusal(Exception):

@@ -76,6 +76,38 @@ types are generated from that. This page explains what the messages mean.
 | `session.replay` | `turns?` | `events[]` | The durable events from the start of the `turns`-th last turn (0 means all). See "Replay". |
 | `session.shutdown` | | `closing` | End the session as described in Lifecycle. |
 | `permission.reply` | `requestId`, `choice?`, `answers?`, `reason?`, `persist?` | `applied`, `message` | Answer an open approval. See "Approvals". |
+| `session.commands` | | `commands[]`: `name`, `summary`, `category`, `takesArgs`, `source` | Every `/command` a line may start with. See "Completion and pickers". |
+| `session.completePath` | `fragment` | `paths[]` | What `@fragment` completes to, under the workspace only. |
+| `session.choices` | `what`: `model`, `effort` or `mode` | `current`, `choices[]`: `value`, `detail?` | What a picker offers. |
+
+### Completion and pickers
+
+The window completes `/commands` and `@paths` while the user types, and
+opens pickers for the model, the effort and the agent mode. The lists are
+the session's:
+
+- `session.commands` lists the commands in the order a typed line tries
+  them: the REPL's builtins, the user's and the workspace's own commands
+  (`.delfin/commands/*.md`), skills, then the subagent shortcuts
+  (`/explore`, `/review`, `/plan`, `/delegate`). A name that an earlier
+  kind already takes is left out, because typing it runs the earlier one.
+  `source` says which kind: `builtin`, `user`, `skill` or `subagent`.
+- `session.completePath` follows the REPL completer's rules: paths under
+  the workspace that start with the fragment (a leading `@` is ignored),
+  directories with a trailing `/`, dot files only when the fragment asks
+  for them, at most 50. Nothing outside the workspace is offered. A
+  fragment ending in `/` lists that folder, so completion can go into
+  one; what was typed before the last `/` is kept as typed.
+- `session.choices` lists the models the session's provider serves (asked
+  from its `/v1/models`, and reused for ten minutes; `detail` says where a
+  model runs and, when it has a price, what it costs), the effort levels,
+  or the agent modes. It is answered on a thread of its own, so a slow
+  model list never holds up the next request.
+
+A pick is applied by sending what the user would type: `/model <name>`,
+`/effort <level>`, `/mode <name>` as a `session.prompt`, so it is queued
+behind a running turn like any typed command. The approval posture is
+`session.setMode`.
 
 ### Prompts
 
@@ -289,12 +321,14 @@ closes; the next window attaches to them again.
 | `session.attach` | `sessionId`, `turns?` | `session`, `state`, `pending[]`, `summary`, `events[]`: the replay of the last `turns` turns (all for 0), then live events. |
 | `session.detach` | `sessionId` | `detached` |
 | `session.message` | `key`, `text` | `sent`: the text goes into that session's inbox, as a message from another session (`session_messages`) |
+| `sessions.past` | `workspace?`, `query?`, `limit?` | `sessions[]`: saved sessions, newest first, with `sessionId`, `title`, `workspace`, `model`, `provider`, `updatedAt`, `messages`, `costUsd` and `running` (whether it runs in this service). `workspace` scopes the list, `query` searches titles and first messages (the session store's own listing and search). |
 | `service.status` | | `pid`, `host`, `startedAt`, `sessions[]`, `windows`, `socket` |
 | `service.shutdown` | | `stopping`, `sessions` |
 
 Every session request of the worker protocol (`session.prompt`,
 `session.cancel`, `session.setMode`, `session.status`, `session.replay`,
-`session.shutdown`, `permission.reply`) is sent with `sessionId` and
+`session.shutdown`, `permission.reply`, `session.commands`,
+`session.completePath`, `session.choices`) is sent with `sessionId` and
 forwarded to that session's worker; its answer comes back unchanged.
 
 Events from the service itself, to every window:

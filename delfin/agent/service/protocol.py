@@ -64,6 +64,13 @@ REQUESTS: dict[str, dict[str, str]] = {
     "permission.reply": {"requestId": "string", "choice": "string?",
                          "answers": "[string]?", "reason": "string?",
                          "persist": "boolean?"},
+    # What the window completes and picks from (choices.py): the session's
+    # /commands, the paths under its workspace for an @fragment, and the
+    # models, efforts or agent modes a picker offers (what: model | effort
+    # | mode). A pick is applied by sending the command, as typed.
+    "session.commands": {},
+    "session.completePath": {"fragment": "string"},
+    "session.choices": {"what": "string"},
 }
 
 # ---------------------------------------------------------------------------
@@ -85,6 +92,12 @@ RESULTS: dict[str, dict[str, str]] = {
     "session.replay": {"events": "[object]"},
     "session.shutdown": {"closing": "boolean"},
     "permission.reply": {"applied": "boolean", "message": "string"},
+    # name, summary, category, takesArgs, source: builtin | user | skill |
+    # subagent -- in the order a typed line tries them.
+    "session.commands": {"commands": "[object]"},
+    "session.completePath": {"paths": "[string]"},
+    # choices: value, detail? (where a model runs, what it costs)
+    "session.choices": {"current": "string", "choices": "[object]"},
 }
 
 # ---------------------------------------------------------------------------
@@ -177,6 +190,11 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "session.detach": {"sessionId": "string"},
     # A message for a session elsewhere (dashboard, another terminal).
     "session.message": {"key": "string", "text": "string"},
+    # Saved sessions to resume, newest first: the session store's, scoped
+    # to a workspace or matched against a query, each with whether it runs
+    # in this service now.
+    "sessions.past": {"workspace": "string?", "query": "string?",
+                      "limit": "integer?"},
     "service.status": {},
     "service.shutdown": {},
 }
@@ -193,6 +211,8 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
                        "summary": "object"},
     "session.detach": {"detached": "boolean"},
     "session.message": {"sent": "boolean"},
+    # sessionId, title, workspace, model, provider, updatedAt, running
+    "sessions.past": {"sessions": "[object]"},
     "service.status": {"pid": "integer", "host": "string",
                        "startedAt": "number", "sessions": "[object]",
                        "windows": "integer", "socket": "string"},

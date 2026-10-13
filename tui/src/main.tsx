@@ -13,6 +13,7 @@ import { createCliRenderer } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { createSignal } from "solid-js"
 import { App } from "./app"
+import { History } from "./composer/history"
 import { loadConfig } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent } from "./protocol/generated"
@@ -142,7 +143,7 @@ function quit(): void {
 
 if (current) {
   await render(() => (
-    <App renderer={renderer} store={store} keymap={keymap} theme={theme}
+    <App renderer={renderer} store={store} keymap={keymap} theme={theme} history={History.load()} sentAs={view.sentAs}
          client={connection.rpc} onQuit={quit} onRedraw={() => void view.redraw()} />
   ), renderer)
 }

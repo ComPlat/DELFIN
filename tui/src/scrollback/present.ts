@@ -17,6 +17,9 @@ type Fields = Record<string, any>
 
 export interface PresentOptions {
   showThinking: boolean
+  /** A message as the user typed it, when this window sent it with its
+   *  pastes put back (the placeholder reads better than the paste). */
+  shownAs?: (text: string) => string | undefined
 }
 
 const DIFF_TOOLS = new Set(["edit_file", "write_file", "apply_patch", "multi_edit", "str_replace"])
@@ -107,7 +110,7 @@ export class Presenter {
         }
         break
       case "user.message":
-        this.add("user", { text: e.text, source: e.source })
+        this.add("user", { text: this.options.shownAs?.(String(e.text ?? "")) ?? e.text, source: e.source })
         break
       case "text.started":
         this.blocks = new AnswerBlocks((block) => this.add("markdown", { text: block }), setTail)

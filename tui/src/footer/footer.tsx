@@ -11,8 +11,9 @@
  * The footer sizes itself to its content (FooterSize); everything it shows
  * comes from the store, so it redraws only when the store changes.
  */
-import { SyntaxStyle, TextAttributes, type CliRenderer, type InputRenderable } from "@opentui/core"
+import { SyntaxStyle, TextAttributes, type CliRenderer } from "@opentui/core"
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
+import { ComposerView, type Composer } from "../composer/composer"
 import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
 import { SPINNER, markdownStyles, type Theme } from "../theme/theme"
@@ -27,8 +28,7 @@ export interface FooterProps {
   session: () => SessionState | null
   connection: () => string
   message: () => string
-  onSubmit: (text: string) => void
-  inputRef?: (input: InputRenderable) => void
+  composer: Composer
   focused: () => boolean
 }
 
@@ -49,8 +49,9 @@ export function approvalRows(asked: Asked | undefined): number {
   return 3 + previewLines(asked).length
 }
 
-export function footerRows(s: SessionState | null, termRows: number, message: string): number {
-  let rows = 4                                   // rule, composer, rule, hints
+export function footerRows(s: SessionState | null, termRows: number, message: string,
+                           composerRows = 1): number {
+  let rows = 3 + composerRows                    // rule, composer, rule, hints
   if (s?.turn) rows += 1
   if (s) rows += tailRows(s.tail)
   rows += approvalRows(s?.pending[0])
@@ -87,7 +88,8 @@ export function Footer(props: FooterProps): JSX.Element {
   const rule = () => "─".repeat(Math.max(1, props.renderer.terminalWidth - 1))
 
   createEffect(() => {
-    props.renderer.footerHeight = footerRows(props.session(), props.renderer.terminalHeight, props.message())
+    props.renderer.footerHeight = footerRows(props.session(), props.renderer.terminalHeight, props.message(),
+                                             props.composer.height())
   })
 
   return (
@@ -113,21 +115,14 @@ export function Footer(props: FooterProps): JSX.Element {
       </Show>
       <Show when={asked()}>{(a: () => Asked) => <Approval asked={a()} theme={t} />}</Show>
       <text fg={t().faint}>{rule()}</text>
-      <box flexDirection="row">
-        <text fg={t().accent} attributes={TextAttributes.BOLD}>{"❯ "}</text>
-        <input
-          ref={(el: InputRenderable) => props.inputRef?.(el)}
-          flexGrow={1}
-          focused={props.focused() && !asked()}
-          placeholder={props.session()?.turn ? "queue a message… (ctrl+g sends it into the turn)" : "ask DELFIN…"}
-          placeholderColor={t().faint}
-          textColor={t().bright}
-          backgroundColor="transparent"
-          focusedBackgroundColor="transparent"
-          cursorColor={t().accent}
-          onSubmit={((value: string) => props.onSubmit(value)) as never}
-        />
-      </box>
+      <ComposerView
+        composer={props.composer}
+        theme={t}
+        focused={() => props.focused() && !asked()}
+        pasteActive={() => props.focused() && !asked()}
+        placeholder={() => props.session()?.turn
+          ? `queue a message… (${props.keymap.label("steer")} sends it into the turn)` : "ask DELFIN…"}
+      />
       <text fg={t().faint}>{rule()}</text>
       <Hints {...props} />
     </box>

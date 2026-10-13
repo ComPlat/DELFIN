@@ -6,9 +6,11 @@
  * (ctrl+d, or ctrl+c twice) never ends a session: it keeps running in the
  * agent service, and the next window attaches to it again.
  */
-import type { CliRenderer, InputRenderable, KeyEvent } from "@opentui/core"
+import type { CliRenderer, KeyEvent } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
 import { createSignal, type JSX } from "solid-js"
+import { createComposer } from "./composer/composer"
+import { History } from "./composer/history"
 import { Footer } from "./footer/footer"
 import type { Keymap } from "./keymap/keymap"
 import type { Asked, SessionState } from "./store/state"
@@ -25,6 +27,11 @@ export interface AppProps {
   keymap: Keymap
   theme: () => Theme
   client: Requester
+  /** The prompt history (in memory only when not given). */
+  history?: History
+  /** A prompt sent with its pastes put back -> the prompt as typed, so the
+   *  scrollback shows the placeholder rather than the whole paste. */
+  sentAs?: Map<string, string>
   onQuit: () => void
   onRedraw: () => void
 }
@@ -44,7 +51,6 @@ export function App(props: AppProps): JSX.Element {
   const [message, setMessage] = createSignal("")
   const [persistFor, setPersistFor] = createSignal<{ asked: Asked; choice: string } | null>(null)
   const [picked, setPicked] = createSignal<number[]>([])
-  let input: InputRenderable | undefined
   let quitArmed = 0
 
   const say = (text: string) => {
@@ -60,6 +66,20 @@ export function App(props: AppProps): JSX.Element {
     }
   }
   const sid = () => store.state.current ?? ""
+
+  const composer = createComposer({
+    request: (method, params) => props.client.request(method, params),
+    sessionId: sid,
+    history: props.history ?? new History(),
+    keymap: props.keymap,
+    say,
+    send: (text, how, shown) => {
+      if (!sid()) return
+      // The session strips the text it shows, as a typed line is stripped.
+      if (shown) props.sentAs?.set(text.trim(), shown)
+      void call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })
+    },
+  })
 
   const reply = async (asked: Asked, params: Record<string, unknown>) => {
     const result = await call("permission.reply", { sessionId: sid(), requestId: asked.requestId, ...params })
@@ -123,7 +143,7 @@ export function App(props: AppProps): JSX.Element {
     void call("session.setMode", { sessionId: sid(), mode: next })
   }
 
-  const draft = () => input?.value ?? ""
+  const draft = () => composer.value()
 
   const onKey = (key: KeyEvent): void => {
     const s = session()
@@ -134,10 +154,15 @@ export function App(props: AppProps): JSX.Element {
       onApprovalKey(asked, key)
       return
     }
-    if (key.ctrl && key.name === "c") {
+    if (key.ctrl && key.name === "c" && !composer.search()) {
+      // The ladder: end the turn; else clear what is typed; else, twice, leave.
       key.preventDefault()
       if (s?.turn) {
         void call("session.cancel", { sessionId: sid() })
+        return
+      }
+      if (draft()) {
+        composer.clear()
         return
       }
       const now = Date.now()
@@ -147,6 +172,10 @@ export function App(props: AppProps): JSX.Element {
       }
       quitArmed = now
       say("ctrl+c again to leave — the sessions keep running in the agent service")
+      return
+    }
+    if (composer.handleKey(key)) {
+      key.preventDefault()
       return
     }
     if (km.matches("quit", key) && !draft()) {
@@ -169,21 +198,13 @@ export function App(props: AppProps): JSX.Element {
       props.onRedraw()
       return
     }
-    if (km.matches("steer", key) && draft().trim()) {
+    if (km.matches("steer", key)) {
       key.preventDefault()
-      const text = draft()
-      if (input) input.value = ""
-      void call("session.prompt", { sessionId: sid(), text, how: "steer" })
+      // Into the running turn; with no turn running it is just sent.
+      if (draft().trim()) composer.submit(s?.turn ? "steer" : undefined)
     }
   }
   useKeyboard(onKey)
-
-  const submit = (value: string) => {
-    const text = value.trim()
-    if (input) input.value = ""
-    if (!text || !sid()) return
-    void call("session.prompt", { sessionId: sid(), text })
-  }
 
   return (
     <Footer
@@ -193,8 +214,7 @@ export function App(props: AppProps): JSX.Element {
       session={session}
       connection={() => store.state.connection}
       message={message}
-      onSubmit={submit}
-      inputRef={(el) => (input = el)}
+      composer={composer}
       focused={() => true}
     />
   )
