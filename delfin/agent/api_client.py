@@ -3125,6 +3125,43 @@ _REPO_SHIFTING_WORD_RE = re.compile(
 _SEGMENT_ASSIGNMENT_RE = re.compile(r"(?:^|[;&|({])\s*[A-Za-z_]\w*=")
 _SHELL_EXPANSION_CHARS = frozenset("$`*?[]{}")
 
+#: A ``git config`` invocation (any global options before it) and the rest
+#: of its step. ``_git_hook_config_write`` reads the step.
+_GIT_HOOK_CONFIG_WRITE_RE = re.compile(
+    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+|\s+--[\w-]+(?:=\S+)?)*"
+    r"\s+config\b([^;&|\n]*)")
+#: Keys whose value names a program that an auto-allowed ``git commit`` or
+#: ``git status`` runs: the hook directory and the fsmonitor hook.
+_GIT_PROGRAM_CONFIG_KEYS = frozenset({"core.hookspath", "core.fsmonitor"})
+_GIT_CONFIG_READ_WORDS = frozenset({"--get", "--get-all", "--get-regexp",
+                                    "--get-urlmatch", "-l", "--list", "get",
+                                    "list", "--unset", "--unset-all", "unset",
+                                    "--remove-section", "--show-origin"})
+
+
+def _git_hook_config_write(cmd: str) -> Optional[str]:
+    """The key, when ``cmd`` writes ``core.hooksPath`` or ``core.fsmonitor``
+    with ``git config``; else None.
+
+    A write is the key followed by a value, with no read or unset word in
+    the step. Persistent only: ``git -c core.hooksPath=...`` lasts for one
+    command, which the bash gate already sees. Commit messages are blanked
+    first (``_prose_blanked``); ``sh -c`` bodies are read too."""
+    import shlex
+    text = _with_shell_bodies(_prose_blanked(cmd or ""))
+    for m in _GIT_HOOK_CONFIG_WRITE_RE.finditer(text):
+        try:
+            words = shlex.split(m.group(1))
+        except ValueError:
+            words = m.group(1).split()
+        if _GIT_CONFIG_READ_WORDS & set(words):
+            continue
+        for i, w in enumerate(words):
+            if w.lower() in _GIT_PROGRAM_CONFIG_KEYS and i + 1 < len(words):
+                return w
+    return None
+
+
 #: The steps that may stand before the one push or merge on a command line
 #: without changing where it goes: ``git`` with no global option and one
 #: of these subcommands.
@@ -17649,6 +17686,49 @@ class _DocToolExecutor:
                         "not try a third form. End your turn and ask the "
                         "user what they want done with this file."
                     )
+            # A hook directory or fsmonitor program written into git's
+            # configuration runs from the next auto-allowed `git commit` or
+            # `git status`, in whatever mode that runs -- the same reach as
+            # the work-tree files git reads as configuration
+            # (_GIT_CONFIG_PROTECTED_GLOBS), so the same rule: asked in
+            # every mode, refused with nobody to ask. It also keeps a hook
+            # from changing a remote between the role check and the push
+            # (_steps_keep_the_push_url).
+            _hook_key = _git_hook_config_write(cmd)
+            _hook_cfg_ok = False
+            if _hook_key:
+                _record_security_event("git_config_program", "bash",
+                                       cmd[:80],
+                                       blocked=perms.confirm_callback is None)
+                if perms.confirm_callback is None:
+                    return (
+                        f"blocked: `{_hook_key}` is a git configuration "
+                        "change that names a program the next `git commit` "
+                        "or `git status` runs, and nobody can be asked "
+                        "here. Tell the user the command and why it is "
+                        "needed.")
+                try:
+                    ok = bool(perms.confirm_callback(
+                        "bash", {"command": cmd},
+                        "[GIT CONFIGURATION]\n"
+                        f"`{_hook_key}` names a program that the next git "
+                        "commit or git status runs.\n\n$ " + cmd))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval for this git configuration change "
+                            "TIMED OUT — the user is away, this is not a "
+                            "refusal. Do not run it now.")
+                    perms.record_denied_action("bash", cmd)
+                    _remember_refusal(perms, "bash", cmd,
+                                      self._refusal_reason(perms))
+                    return (
+                        f"user denied the git configuration change "
+                        f"'{cmd[:120]}'. Do NOT retry it or work around it."
+                        + self._said_why(perms))
+                _hook_cfg_ok = True
             # A push publishes. Report 20260915-085107 pushed the change it
             # was asked to, then chained a second commit and push onto a fix
             # nobody asked for -- in all_free, which asks nothing, so nothing
@@ -17875,6 +17955,9 @@ class _DocToolExecutor:
             # The deny-list + secret scan already ran above, so only
             # non-dangerous, non-auto-allowed commands reach the prompt.
             # Head-less callers (no callback) keep the prose block.
+            if _hook_cfg_ok:
+                # Asked above, with the whole command shown.
+                return None
             if (mode in ("default", "diff_approval", "acceptEdits")
                     and perms.confirm_callback is not None):
                 _cwd = str(args.get("cwd") or "").strip()

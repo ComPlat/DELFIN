@@ -626,7 +626,7 @@ def test_git_role_outside_a_repository_says_so(tmp_path):
     "git config remote.origin.pushurl https://github.com/me/beta",
     "git config url.https://github.com/me/beta.pushInsteadOf "
     "git@github.com:me/alpha.git",
-    "git config core.hooksPath h",
+    "git config core.editor true",
     "git config user.name x",
     "git -c core.hooksPath=h commit -qm x",
     "git -C . commit -qm x",
