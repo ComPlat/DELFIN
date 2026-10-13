@@ -3442,15 +3442,21 @@ _MERGE_VALUE_OPTS = frozenset({"-R", "--repo", "-t", "--subject", "-b",
                                "--author-email"})
 
 
-def _pr_merge_refusal(cmd: str, where: Any, keys: list) -> Optional[str]:
+def _pr_merge_refusal(cmd: str, where: Any, keys: list,
+                      perms: Any = None) -> Optional[str]:
     """Why a maintainer's granted ``gh pr merge`` may not run, or None.
 
     It must name the pull request, pin its head (``--match-head-commit
     <sha>``), pass neither ``--admin`` nor ``--auto``, and the pinned head
     must be the pull request's current one with every check green, read
-    with ``_gh_pr_view`` (a pull request without checks has none to wait
-    for). Cost: one ``gh pr view`` of at most 20 s, only for a merge that
-    passed every other gate."""
+    with ``_gh_pr_view``. A pull request with no checks is not green:
+    nothing tested the head. With a confirm callback outside
+    bypassPermissions the user is asked, saying so; otherwise the merge is
+    refused. Rejected: counting an empty rollup as green (a repository
+    without CI, or checks not yet registered, both read as empty). Cost:
+    one ``gh pr view`` of at most 20 s, only for a merge that passed every
+    other gate. Returns "" when the user approved here, so the caller
+    asks no second time."""
     import shlex
     text = _with_shell_bodies(cmd)
     m = _GH_PR_MERGE_RE.search(text)
@@ -3501,9 +3507,26 @@ def _pr_merge_refusal(cmd: str, where: Any, keys: list) -> Optional[str]:
                 f"{head[:12] or 'unknown'}, not {pin[:12]}: it moved since "
                 f"its checks were read. {route}")
     waiting = []
-    for c in view.get("statusCheckRollup") or []:
-        if not isinstance(c, dict):
-            continue
+    checks = [c for c in (view.get("statusCheckRollup") or [])
+              if isinstance(c, dict)]
+    if not checks:
+        what = (f"pull request {pr} has no checks: nothing has tested its "
+                f"head {head[:12]}")
+        callback = getattr(perms, "confirm_callback", None)
+        if callback is None or getattr(perms, "mode", "") == "bypassPermissions":
+            return (f"blocked: {what}, and nobody can be asked here. Tell "
+                    "the user the pull request is ready, that it has no "
+                    "checks, and give them its link.")
+        try:
+            ok = bool(callback("bash", {"command": cmd},
+                               f"$ {cmd}\n({what}. Merge it anyway?)"))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        if not ok:
+            return (f"blocked: the user did not approve merging {pr}, which "
+                    "has no checks. Do not merge it another way.")
+        return ""
+    for c in checks:
         name = str(c.get("name") or c.get("context") or "check")
         if "state" in c:
             ok = str(c.get("state") or "").upper() in _GREEN_CONCLUSIONS
@@ -17695,7 +17718,10 @@ class _DocToolExecutor:
             # from changing a remote between the role check and the push
             # (_steps_keep_the_push_url).
             _hook_key = _git_hook_config_write(cmd)
-            _hook_cfg_ok = False
+            # True once the user approved this command in a dialog of its
+            # own (a hook-path write, a merge of a PR with no checks), so
+            # the ordinary dialog does not ask a second time.
+            _approved_here = False
             if _hook_key:
                 _record_security_event("git_config_program", "bash",
                                        cmd[:80],
@@ -17728,7 +17754,7 @@ class _DocToolExecutor:
                         f"user denied the git configuration change "
                         f"'{cmd[:120]}'. Do NOT retry it or work around it."
                         + self._said_why(perms))
-                _hook_cfg_ok = True
+                _approved_here = True
             # A push publishes. Report 20260915-085107 pushed the change it
             # was asked to, then chained a second commit and push onto a fix
             # nobody asked for -- in all_free, which asks nothing, so nothing
@@ -17789,11 +17815,13 @@ class _DocToolExecutor:
                             "say so." + _handover_line(cmd, "pr_merge_unrequested"))
                 _refusal = _pr_merge_refusal(
                     cmd, _push_probe_target(cmd, args, perms.workspace)[0],
-                    _keys)
+                    _keys, perms)
                 if _refusal:
                     _record_security_event("pr_merge_unpinned", "bash",
                                            cmd[:80], blocked=True)
                     return _refusal
+                if _refusal == "":
+                    _approved_here = True
             if _is_git_push(cmd):
                 _role, _keys = _git_role_for(cmd, args, perms)
                 _route = _pr_route_holds(perms, _keys)
@@ -17955,8 +17983,9 @@ class _DocToolExecutor:
             # The deny-list + secret scan already ran above, so only
             # non-dangerous, non-auto-allowed commands reach the prompt.
             # Head-less callers (no callback) keep the prose block.
-            if _hook_cfg_ok:
-                # Asked above, with the whole command shown.
+            if _approved_here:
+                # Asked above, with the whole command shown, after every
+                # hard tier and the publish readiness check.
                 return None
             if (mode in ("default", "diff_approval", "acceptEdits")
                     and perms.confirm_callback is not None):
