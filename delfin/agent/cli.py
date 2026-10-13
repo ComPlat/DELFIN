@@ -35,6 +35,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -297,17 +298,45 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     live there.  It is PASSED to the engine only when given: a stub
     engine with a fixed ``stream_response`` signature (the scheduler
     and benchmark test doubles) must keep working, and the return
-    contract stays exactly the five keys the JSON tests pin -- the
-    benchmark runner collects results through this callback instead
-    of a sixth key.
+    contract stays the keys of ``repl.TURN_KEYS`` -- the benchmark
+    runner collects results through this callback instead of a key of
+    its own.
 
     ``on_permission_denied`` (optional) receives ``(tool_name)`` each
-    time the harness refused a call -- same forward-only pattern, so
-    the benchmark can count interventions without a sixth key.
+    time the backend refused a call -- same forward-only pattern, so
+    the benchmark can count interventions without a key of its own.
+
+    The gate's own decisions are collected by a ``turn_outcome``
+    observer for the length of the call: they become
+    ``permission_request`` / ``permission_denied`` events on ``emit``
+    and the ``schema_version`` / ``stop_reason`` / ``denials`` /
+    ``files_changed`` keys of the result.
     """
+    from . import turn_outcome
+
     chunks: list[str] = []
     tool_calls: list[dict] = []
     error = ""
+
+    if emit is not None:
+        # Gate decisions arrive on whichever thread runs the tool; one
+        # line must not be written into the middle of another.
+        _emit_lock = threading.Lock()
+        _raw_emit = emit
+
+        def emit(event: dict) -> None:  # noqa: F811 - the locked wrapper
+            with _emit_lock:
+                _raw_emit(event)
+
+    def _mode() -> str:
+        perms = getattr(engine, "kit_permissions", None)
+        return str(getattr(perms, "mode", "") or "")
+
+    observer = turn_outcome.TurnObserver(
+        emit=emit, mode=_mode,
+        workspace=(getattr(getattr(engine, "kit_permissions", None),
+                           "workspace", None)
+                   or getattr(engine, "repo_dir", None)))
 
     def _forward_tool_result(name: str, output: str) -> None:
         if on_tool_result is not None:
@@ -347,8 +376,16 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         except (json.JSONDecodeError, TypeError):
             inp = {"raw": str(input_json)}
         tool_calls.append({"name": name, "input": inp})
+        observer.saw_tool_use(name)
         if emit is not None:
             emit({"type": "tool_use", "name": name, "input": inp})
+
+    def _on_backend_denied(name: str) -> None:
+        # The CLI backend's gate reports a refusal with a tool name and
+        # no category, so it gets the one code that says exactly that.
+        turn_outcome.denied(name, "backend_denied", "")
+        if on_permission_denied is not None:
+            on_permission_denied(name)
 
     in_before = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_before = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
@@ -394,13 +431,25 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         kwargs["on_wait"] = _on_wait
     if on_tool_result is not None:
         kwargs["on_tool_result"] = _forward_tool_result
-    if on_permission_denied is not None:
-        kwargs["on_permission_denied"] = on_permission_denied
+    # The same probe once more: the backend's refusals are wanted for the
+    # result even when no caller asked for them, but only an engine that
+    # takes the keyword may be handed it.
     try:
-        full_text = engine.stream_response(**kwargs) or ""
-    except Exception as exc:
-        error = str(exc)
-        full_text = ""
+        import inspect as _inspect3
+        _sig3 = _inspect3.signature(engine.stream_response)
+        _takes_denied = ("on_permission_denied" in _sig3.parameters or any(
+            prm.kind is _inspect3.Parameter.VAR_KEYWORD
+            for prm in _sig3.parameters.values()))
+    except (TypeError, ValueError):
+        _takes_denied = True
+    if on_permission_denied is not None or _takes_denied:
+        kwargs["on_permission_denied"] = _on_backend_denied
+    with observer:
+        try:
+            full_text = engine.stream_response(**kwargs) or ""
+        except Exception as exc:
+            error = str(exc)
+            full_text = ""
 
     in_after = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_after = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
@@ -411,6 +460,10 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         "input_tokens": max(0, in_after - in_before),
         "output_tokens": max(0, out_after - out_before),
         "error": error,
+        **observer.summary(
+            error=error,
+            engine_stop_reason=str(
+                getattr(engine, "last_turn_stop_reason", "") or "")),
     }
 
 
@@ -506,6 +559,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     for _note in _bounding_notices(args, engine):
         print(_note, file=sys.stderr)
     _resume_or_create(engine, args)
+    _bind_supervised_approvals(engine, args)
     import time as _time
     _t0 = _time.monotonic()
     stream_json = (getattr(args, "output_format", "text") == "stream-json")
@@ -623,6 +677,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "eval loop",
         lambda: _eval_stage())
 
+    from .repl import TURN_KEYS
     if stream_json:
         # The last line closes the stream and carries the same payload the
         # one-object format prints, so a reader that only wants the answer
@@ -630,12 +685,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         # TURN_KEYS rather than from a second list here: that frozenset is
         # what `_run_once` returns and therefore what both formats promise,
         # and two hand-kept lists would drift into two shapes of one answer.
-        from .repl import TURN_KEYS
         _json_line({"type": "result",
                     **{k: out.get(k) for k in sorted(TURN_KEYS)},
                     "session_id": sid})
     elif args.json:
-        payload = {**out, "session_id": sid}
+        # The same key list as the stream's last line, so the two formats
+        # are one object with and without its "type".
+        payload = {**{k: out.get(k) for k in sorted(TURN_KEYS)},
+                   "session_id": sid}
         print(json.dumps(payload, ensure_ascii=False))
     else:
         if out["text"]:
@@ -648,7 +705,39 @@ def cmd_run(args: argparse.Namespace) -> int:
                 f"{out['output_tokens']}  tools={len(out['tool_calls'])}",
                 file=sys.stderr,
             )
-    return 0 if not out["error"] else 1
+    # One exit code per stop reason (turn_outcome.EXIT_CODES): 0 and 1
+    # keep their meaning for a clean turn and an error; the ceilings and a
+    # turn that ended on a refusal used to exit 0 and now say which.
+    # A result without a stop reason (an injected _run_once) keeps the
+    # old two-way answer.
+    from .turn_outcome import EXIT_CODES
+    reason = out.get("stop_reason") or ("error" if out["error"] else "done")
+    return EXIT_CODES.get(reason, 1)
+
+
+def _bind_supervised_approvals(engine, args: argparse.Namespace) -> bool:
+    """``--supervised`` on a one-shot run: questions go to the approvals
+    directory. True when a broker was bound.
+
+    Without the flag nothing is bound and a call that needs a human is
+    refused, which is what the scheduler and the benchmark rely on. With
+    it the run asks through ``file_confirm.FileConfirmBroker``, whose
+    request id the stream-json ``permission_request`` event carries.
+    Lives outside ``cmd_run`` so that function binds no dialog of its own.
+    """
+    if not getattr(args, "supervised", False):
+        return False
+    bind = getattr(engine, "set_kit_confirm_callback", None)
+    if not callable(bind):
+        return False
+    from .file_confirm import FileConfirmBroker
+    broker = FileConfirmBroker(
+        session_id=str(getattr(engine, "session_id", "") or ""))
+    if not bind(broker.callback):
+        return False
+    print("[supervised] confirmations go to the approvals directory; "
+          "answer with: delfin-agent approvals", file=sys.stderr)
+    return True
 
 
 def _persisted_default_mode(workspace: Path) -> tuple[str, str]:

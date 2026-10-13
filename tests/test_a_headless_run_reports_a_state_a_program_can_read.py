@@ -106,8 +106,17 @@ def headless(monkeypatch, tmp_path):
     home = tmp_path / "home"
     ws = home / "ws"
     ws.mkdir(parents=True)
+    # cmd_run moves into --cwd; monkeypatch puts the process back.
+    monkeypatch.chdir(ws)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    # The session-end outcome stage rewrites the packaged provider-profile
+    # baseline for this provider (provider_profile.save_provider_profile);
+    # a copy takes that write instead of the checkout.
+    from delfin.agent import provider_profile as PP
+    baseline = tmp_path / "learned_profiles.json"
+    baseline.write_bytes(PP._DEFAULT_PATH.read_bytes())
+    monkeypatch.setattr(PP, "_DEFAULT_PATH", baseline)
 
     from delfin.agent import model_capabilities as mc
     caps = mc.ModelCapabilities(model="m", provider="ollama",
@@ -166,7 +175,7 @@ def _types(events) -> list[str]:
 def test_a_refused_call_is_an_event_with_a_reason_code(headless, capsys):
     """Refused, then recovered: the denial is reported, the run is done."""
     rc, _ = headless(["--output-format", "stream-json"], [
-        _call("bash", {"command": 'python3 -c "print(1)"'}),
+        _call("bash", {"command": "./build.sh"}),
         _call("write_file", {"path": "notes.txt", "content": "x\n"}, "c2"),
         _answer(),
     ])
@@ -190,7 +199,7 @@ def test_a_refused_call_is_an_event_with_a_reason_code(headless, capsys):
 def test_a_turn_that_ends_on_an_approvable_refusal_needs_approval(
         headless, capsys):
     rc, _ = headless(["--output-format", "stream-json"], [
-        _call("bash", {"command": 'python3 -c "print(1)"'}),
+        _call("bash", {"command": "./build.sh"}),
         _answer("I need that command approved."),
     ])
     result = _events(capsys)[-1]
@@ -257,7 +266,7 @@ def test_a_secret_in_a_refused_command_never_reaches_the_event(
 
 def test_without_supervised_nobody_is_asked(headless, capsys):
     _, engine = headless(["--output-format", "stream-json"], [
-        _call("bash", {"command": 'python3 -c "print(1)"'}), _answer()])
+        _call("bash", {"command": "./build.sh"}), _answer()])
     assert engine.kit_permissions.confirm_callback is None
     assert "permission_request" not in _types(_events(capsys))
 

@@ -11666,6 +11666,36 @@ def _record_security_event(kind: str, tool: str, detail: str,
         pass
 
 
+def _report_file_changed(path) -> None:
+    """Tell the turn observers a write tool changed ``path``. Never raises.
+
+    Called from the change capture every write tool goes through, so the
+    headless ``files_changed`` lists what the undo journal can see; a file
+    a shell command writes is in neither.
+    """
+    try:
+        from . import turn_outcome
+        turn_outcome.file_changed(str(path))
+    except Exception:
+        pass
+
+
+def _record_gate_refusal(code: str, tool: str, detail: str) -> None:
+    """Report a refusal the containment panel does not record.
+
+    ``code`` is one of ``turn_outcome.LOCAL_REASON_CODES`` (or an existing
+    containment kind the panel deliberately skips at this site). Reaches
+    only the turn observers -- the headless result and stream-json --
+    never the panel or the attention inbox, where a plan-mode refusal is
+    routine noise. Best-effort: never affects the gate's decision.
+    """
+    try:
+        from . import turn_outcome
+        turn_outcome.denied(tool, code, detail)
+    except Exception:
+        pass
+
+
 # --- The action classifier: a model's second opinion behind the rules -------
 # The rules decide first and alone. This runs only where they let an action
 # through that NO HUMAN SAW (Bypass, the bash auto-allow list, an
@@ -13556,6 +13586,7 @@ class _DocToolExecutor:
         """Record the pre-image of a just-applied file change in the undo
         journal (change_journal). Never raises — undo bookkeeping must not
         break the write path it observes."""
+        _report_file_changed(resolved)
         try:
             from . import change_journal as _cj
             rec = _cj.record_change(
@@ -13585,6 +13616,7 @@ class _DocToolExecutor:
 
         Never raises, like its text sibling.
         """
+        _report_file_changed(resolved)
         try:
             from . import change_journal as _cj
             if deleted:
@@ -13930,6 +13962,7 @@ class _DocToolExecutor:
                     _action_protocol.extract_slash_command(name, arguments),
                     role=auth_role, tool_name=name)
             else:
+                _record_gate_refusal("role_denied", name, auth_role)
                 result = json.dumps({"error": (
                     f"Tool '{name}' is not available to the '{auth_role}' role. "
                     "The dashboard guide operates the UI via ACTION: slash-commands "
@@ -13941,6 +13974,7 @@ class _DocToolExecutor:
             # rule the mode check states: report the more permanent reason
             # first. A role denial holds for every session; a session list
             # holds for this whole run; the mode can change within it.
+            _record_gate_refusal("session_denied", name, session_refusal)
             result = json.dumps({"error": (
                 f"Tool '{name}' was excluded from this session — "
                 f"{session_refusal}. The list was set when the session "
@@ -13960,9 +13994,11 @@ class _DocToolExecutor:
             # NEVER use a tool should be told that, not told it is merely
             # the wrong mode. The more permanent reason is more useful.
             # A check_only call is a dry run and stays allowed.
+            _record_gate_refusal("plan_mode", name, "")
             result = json.dumps({"error": _plan_mode_refusal(
                 _bare_tool_name(name))})
         elif block_reason:
+            _record_gate_refusal("blocked_by_hook", name, block_reason[:300])
             result = json.dumps({
                 "error": "blocked_by_hook",
                 "reason": block_reason[:1200],
@@ -16044,6 +16080,8 @@ class _DocToolExecutor:
     ) -> "bool | str":
         """Ask the user about a document write. True, or an error string."""
         if perms.confirm_callback is None:
+            _record_gate_refusal("needs_approval", name,
+                                 str((arguments or {}).get("path") or ""))
             return json.dumps({"error": (
                 f"diff-approval mode: '{name}' changes a document, which "
                 "cannot be staged as a text diff, and no approval dialog is "
@@ -17007,6 +17045,8 @@ class _DocToolExecutor:
         # from a settings file. A headless run that needs to reach outside
         # has to be configured to, and the message says how.
         if perms.confirm_callback is None:
+            _record_gate_refusal("outside_ws", "",
+                                 str(label or resolved))
             return (
                 f"read denied: '{label or resolved}' is outside the allowed "
                 "workspace roots and no confirm callback is configured. "
@@ -18543,6 +18583,10 @@ class _DocToolExecutor:
                 # not on the list. The route names what the same check
                 # allows, and the spellings of the command it refuses too.
                 hint = _allow_list_route(cmd, args, perms)
+            _record_gate_refusal(
+                "not_allowlisted", "bash",
+                f"bash: '{cmd[:120]}' is not on the auto-allow list "
+                f"(mode={mode})")
             return (
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
                 f"(mode={mode}). Do NOT try to work around this block with "
@@ -19442,6 +19486,8 @@ class _DocToolExecutor:
 
         # Always require user confirmation regardless of mode.
         if perms.confirm_callback is None:
+            _record_gate_refusal("needs_approval", "remember_permission",
+                                 f"{kind}: {value}")
             return json.dumps({"error": (
                 "remember_permission needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
@@ -19629,6 +19675,8 @@ class _DocToolExecutor:
         preview = "\n".join(preview_lines)
 
         if perms.confirm_callback is None:
+            _record_gate_refusal("needs_approval",
+                                 "remember_permission_bundle", str(profile))
             return json.dumps({"error": (
                 "remember_permission_bundle needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
