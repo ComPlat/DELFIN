@@ -157,8 +157,10 @@ def test_a_ranking_or_a_wrong_field_fails(answer):
 
 
 def test_the_wrong_field_is_a_violation_not_only_a_miss():
-    res = _score("Die Rechnungen nutzen verschiedene Basissaetze und D3BJ "
-                 "unterscheidet sich, daher nicht vergleichbar.")
+    # No negation near the match: the scorer waives a forbidden match
+    # inside one ("nicht ... vergleichbar" would waive it).
+    res = _score("Ursache der Differenz sind verschiedene Basissaetze und "
+                 "die D3BJ-Korrektur.")
     assert res.violated_signals
 
 
