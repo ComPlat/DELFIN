@@ -2522,13 +2522,16 @@ def _builtin_dispersion(name) -> str | None:
     every such name, which made wB97X-V equal wB97X-D3BJ and r2SCAN-3c
     equal B97-3c. Only the suffixes in ``_DISPERSION_KEYWORDS`` count, so
     a solvent token such as ``CPCM(N,N-DIMETHYLFORMAMIDE)`` is not read
-    as one.
+    as one. ORCA's ``XTB``/``XTB2`` are GFN2-xTB and ``XTB1`` GFN1-xTB.
     """
     import re as _re
     n = str(name or "").strip()
     u = n.upper()
     if not u:
         return None
+    m = _re.fullmatch(r"(?:XTB|GFN)([0-2])?(?:-XTB)?", u)
+    if m and (m.group(1) or u == "XTB"):
+        return f"built into GFN{m.group(1) or '2'}-xTB"
     if u.startswith(("GFN", "XTB")) or u.endswith("-3C"):
         return f"built into {n}"
     m = _re.search(r"-(D[0-9A-Z()]*|V|NL)$", u)
