@@ -15502,9 +15502,33 @@ class _DocToolExecutor:
             return json.dumps({"error": f"Invalid regex: {exc}"})
         extra_skip = _gitignore_skip_dirs(root)
         matches = []
+        # The gate above decided about ``search_path``. A symlink inside it
+        # is a second path: its target was never asked about. A link that
+        # leaves the searched folder is not read (grep_file(path=".") used
+        # to read any file a workspace symlink pointed at, with no dialog),
+        # and a link that stays inside is judged by its target's name, so an
+        # innocently named link to a secret file reads nothing either.
+        try:
+            scan_root = search_path.resolve()
+        except OSError:
+            scan_root = search_path
+        links_outside = 0
+        # Decided once, not per file: the only added per-file cost is the
+        # lstat of is_symlink (5000 files, no links: 1.25 s, within 0-4%).
+        walking = search_path.is_dir()
         for fp in _iter_scan_files(search_path, extra_skip):
             if fp.suffix.lower() in _SCAN_SKIP_SUFFIXES:
                 continue
+            if walking and fp.is_symlink():
+                try:
+                    real = fp.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    continue
+                if real != scan_root and scan_root not in real.parents:
+                    links_outside += 1
+                    continue
+                if perms is not None and _is_secret_path(perms, real):
+                    continue
             # Per-file secret deny. The comment above promised it and the
             # loop never did it: grep_file(path=".") read a workspace-root
             # .env, *.key or credentials.json line by line (review
@@ -15535,7 +15559,12 @@ class _DocToolExecutor:
                 continue
             if len(matches) >= max_results:
                 break
-        return "\n".join(matches) if matches else "No matches found."
+        out = "\n".join(matches) if matches else "No matches found."
+        if links_outside:
+            out += (f"\n[{links_outside} symlink(s) pointing outside the "
+                    "searched folder were not read. Name such a file "
+                    "directly to be asked about it.]")
+        return out
 
     def _execute_list_files(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
