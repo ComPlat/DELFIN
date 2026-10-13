@@ -23861,6 +23861,17 @@ def _bash_isolation_argv(
         except Exception:
             mode = "auto"
     mode = mode.strip().lower()
+    if mode == "container":
+        # A container where one can run (container_exec); otherwise the
+        # layers "auto" picks, with a recorded notice -- never a plain shell.
+        try:
+            from . import container_exec as _ce
+            boxed = _ce.session_argv(cmd, run_cwd, perms, extra_write)
+        except Exception:
+            boxed = None
+        if boxed:
+            return boxed
+        mode = "auto"
     # "auto" (default): hard-isolate ONLY in the unattended/permissive
     # permission mode (bypassPermissions) where no human approves each
     # command — that's where containment matters most. Interactive modes keep

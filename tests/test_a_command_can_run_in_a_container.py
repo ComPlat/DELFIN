@@ -220,6 +220,18 @@ def test_the_doctor_and_banner_name_the_container(monkeypatch):
     assert D._isolation_mechanism() == "container (apptainer)"
 
 
+def test_the_doctor_warns_when_the_container_is_not_used(monkeypatch):
+    from delfin.agent import doctor as D
+    import delfin.user_settings as US
+    monkeypatch.setattr(US, "load_settings",
+                        lambda *a, **k: {"agent": {"bash_isolation": "container"}})
+    monkeypatch.setattr(CE.shutil, "which", lambda _n: None)
+    (row,) = D._check_bash_isolation({})
+    assert row["status"] == "WARN"
+    assert "no container runtime" in row["detail"]
+    assert "fall back" in row["detail"]
+
+
 # -- a real run ----------------------------------------------------------------
 
 def _real_choice():
