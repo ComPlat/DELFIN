@@ -3,8 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "spike": "bun spike/inline.tsx",
-    "typecheck": "tsc --noEmit"
+    "start": "bun src/main.tsx",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "gen-protocol": "bun scripts/gen-protocol.ts",
+    "checks": "spike/run_checks.sh",
+    "spike": "bun spike/inline.tsx"
   },
   "dependencies": {
     "@opentui/core": "0.6.4",

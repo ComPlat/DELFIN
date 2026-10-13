@@ -40,10 +40,21 @@ known_limit() {   # known_limit <label> <why> <command...>: expected to fail
 }
 skip() { skipped=$((skipped + 1)); echo "  SKIP  $1"; }
 
+# The Python that has delfin (the protocol types and the live window need it).
+export DELFIN_PYTHON=${DELFIN_PYTHON:-$( [ -x "$HOME/software/delfin/.venv/bin/python" ] && echo "$HOME/software/delfin/.venv/bin/python" || command -v python3)}
+
 echo "== unit tests and types"
 run "bun test" bun test
 run "typecheck" bun x tsc --noEmit
+run "protocol types match the Python definition" bun scripts/gen-protocol.ts --check
 run "native build is the patched one" scripts/build-opentui-native.sh --check
+
+echo "== the window, live"
+if command -v tmux >/dev/null; then
+  run "delfin-agent tui in tmux shows its snapshot" "$DELFIN_PYTHON" test/e2e/check_tui_tmux.py
+else
+  skip "the live window (no tmux)"
+fi
 
 echo "== xterm.js (headless, live; replies delayed to play a slow link)"
 for latency in 0 300 2000; do

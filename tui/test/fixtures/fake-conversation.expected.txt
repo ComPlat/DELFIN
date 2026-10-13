@@ -1,0 +1,38 @@
+◆ DELFIN  fake/fake-model
+  workspace  /home/user/project
+  approval   default
+
+❯ hello there
+⏺ read_file  README.md
+  ⎿  # tui_demo
+
+Summary
+
+The workspace holds one README and nothing else to change.
+
+(re: hello there)
+  ✓ N.Ns · ↑N ↓N
+
+❯ please edit the parser
+⏺ read_file  delfin/xtb.py
+  ⎿  212 lines
+  ✓ approved: edit_file delfin/xtb.py
+⏺ edit_file  delfin/xtb.py
+ 41       for line in lines:
+ 42           if "FINAL SINGLE POINT ENERGY" in line:
+ 43 -             energy = float(line.split()[3])
+ 43 +             match = _ENERGY_RE.search(line)
+ 44 +             if match is None:
+ 45 +                 raise ValueError(f"no energy on line: {line!r}")
+ 46 +             energy = float(match.group(1))
+ 47               break
+ 48       return energy
+
+The parser now reads the energy with a regular expression.
+  ✓ N.Ns · ↑N ↓N
+
+❯ ask me which solvent
+  ✓ answered: Which solvent model?
+
+Using SMD.
+  ✓ N.Ns · ↑N ↓N

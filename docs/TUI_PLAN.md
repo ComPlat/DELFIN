@@ -322,8 +322,8 @@ without Bun installed.
 |---|---|
 | 0 Spike | done: GO (c35d85e1; exact-row matrix and three startup fixes in phase 0b, see TUI_REWRITE.md) |
 | 1 Protocol and worker | done (b314a988, reviews applied in cc1e12e0) |
-| 2 Supervisor and launcher | – |
-| 3 TUI foundation | – |
+| 2 Supervisor and launcher | built (96789513); reviews running; bwUniCluster logout check is on the checklist |
+| 3 TUI foundation | done: transport, generated protocol types, store, rows, footer, keymap, theme, config; the recorded conversation renders the same headless and live in tmux |
 | 4 One session | – |
 | 5 Agent view | – |
 | 6 Lifecycle | – |

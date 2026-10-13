@@ -1,1 +1,5 @@
 preload = ["@opentui/solid/preload"]
+
+[test]
+# The same JSX transform for tests as for the window: Solid's client build.
+preload = ["@opentui/solid/preload"]

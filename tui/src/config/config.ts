@@ -1,0 +1,106 @@
+/**
+ * The user's TUI settings: `~/.delfin/tui.json` (DELFIN_TUI_CONFIG moves it).
+ *
+ *   {
+ *     "theme": "auto" | "dark" | "light",
+ *     "colors": { "accent": "#6290C0", ... },       // theme token overrides
+ *     "keys": { "steer": ["ctrl+g"], ... },          // keymap overrides
+ *     "replayTurns": 20,                              // turns shown on attach
+ *     "showThinking": false
+ *   }
+ *
+ * A file that cannot be read or does not parse costs its settings, never
+ * the start: the defaults apply and the problem is reported once.
+ */
+import { homedir } from "node:os"
+import { join } from "node:path"
+
+export interface Config {
+  theme: "auto" | "dark" | "light"
+  colors: Record<string, string>
+  keys: Record<string, string[]>
+  replayTurns: number
+  showThinking: boolean
+}
+
+export const DEFAULTS: Config = {
+  theme: "auto",
+  colors: {},
+  keys: {},
+  replayTurns: 20,
+  showThinking: false,
+}
+
+export function configPath(env: Record<string, string | undefined> = process.env): string {
+  return env.DELFIN_TUI_CONFIG || join(env.HOME || homedir(), ".delfin", "tui.json")
+}
+
+export interface Loaded {
+  config: Config
+  problems: string[]
+}
+
+/** Parse a config text; anything unknown or malformed is reported and dropped. */
+export function parseConfig(text: string): Loaded {
+  const problems: string[] = []
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch (error) {
+    return { config: { ...DEFAULTS }, problems: [`not JSON: ${(error as Error).message}`] }
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { config: { ...DEFAULTS }, problems: ["not a JSON object"] }
+  }
+  const src = raw as Record<string, unknown>
+  const config: Config = { ...DEFAULTS, colors: {}, keys: {} }
+  for (const [key, value] of Object.entries(src)) {
+    switch (key) {
+      case "theme":
+        if (value === "auto" || value === "dark" || value === "light") config.theme = value
+        else problems.push(`theme must be "auto", "dark" or "light"`)
+        break
+      case "colors":
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          for (const [token, hex] of Object.entries(value as Record<string, unknown>)) {
+            if (typeof hex === "string" && /^#[0-9a-fA-F]{6}$/.test(hex)) config.colors[token] = hex
+            else problems.push(`colors.${token} must be "#rrggbb"`)
+          }
+        } else problems.push("colors must be an object")
+        break
+      case "keys":
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          for (const [action, keys] of Object.entries(value as Record<string, unknown>)) {
+            const list = typeof keys === "string" ? [keys] : keys
+            if (Array.isArray(list) && list.every((k) => typeof k === "string")) {
+              config.keys[action] = list as string[]
+            } else problems.push(`keys.${action} must be a key or a list of keys`)
+          }
+        } else problems.push("keys must be an object")
+        break
+      case "replayTurns":
+        if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1000) {
+          config.replayTurns = value
+        } else problems.push("replayTurns must be a whole number from 0 to 1000")
+        break
+      case "showThinking":
+        if (typeof value === "boolean") config.showThinking = value
+        else problems.push("showThinking must be true or false")
+        break
+      default:
+        problems.push(`unknown setting ${JSON.stringify(key)}`)
+    }
+  }
+  return { config, problems }
+}
+
+export async function loadConfig(path: string = configPath()): Promise<Loaded> {
+  const file = Bun.file(path)
+  if (!(await file.exists())) return { config: { ...DEFAULTS }, problems: [] }
+  try {
+    const loaded = parseConfig(await file.text())
+    return { config: loaded.config, problems: loaded.problems.map((p) => `${path}: ${p}`) }
+  } catch (error) {
+    return { config: { ...DEFAULTS }, problems: [`${path}: ${(error as Error).message}`] }
+  }
+}
