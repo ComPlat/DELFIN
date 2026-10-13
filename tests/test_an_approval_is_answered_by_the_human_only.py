@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +35,8 @@ from delfin.agent import api_client as A
 from delfin.agent import cli_gate
 from delfin.agent import file_confirm as fc
 from delfin.agent import terminal_confirm as tc
+
+from conftest import child_env
 
 
 MARKER = "DELFIN_AGENT_SESSION"
@@ -366,8 +367,12 @@ def test_no_room_path_is_widened_inside_the_bwrap_cage(
 
 def test_a_human_in_a_plain_shell_still_answers(home, tmp_path):
     rid, req = _pending(home)
-    env = {k: v for k, v in os.environ.items() if k != MARKER}
+    # child_env's private HOME, made the one the request waits in; its
+    # scratch-state redirect would move the room away from the request.
+    env = child_env(tmp_path)
     env["HOME"] = str(home)
+    env.pop("DELFIN_SCRATCH_STATE", None)
+    env.pop(MARKER, None)
     proc = subprocess.run(
         [sys.executable, "-m", "delfin.agent.cli", "approvals", "approve", rid],
         env=env, capture_output=True, text=True, timeout=120, cwd=tmp_path)
