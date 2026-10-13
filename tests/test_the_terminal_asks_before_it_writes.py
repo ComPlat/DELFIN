@@ -421,7 +421,12 @@ def test_a_diff_cannot_draw_its_own_approval_prompt():
     assert "\x1b" not in frame, "no escape from tool content may survive"
     # The forged line is still visible as text — the point is that it
     # cannot move the cursor or clear the screen to hide the real one.
-    assert frame.rstrip().splitlines()[-1].startswith("└─ [y]")
+    # The real key rows close the frame: the last "└─ [y]" row and only
+    # its indented continuation rows after it.
+    rows = frame.rstrip().splitlines()
+    last = max(i for i, r in enumerate(rows) if r.startswith("└─ [y]"))
+    assert not rows[last].startswith("│"), "the forged row is not the real one"
+    assert all(r.startswith("   [") for r in rows[last + 1:]), rows
 
 
 def test_the_frame_names_the_tool_and_stays_within_the_width():
