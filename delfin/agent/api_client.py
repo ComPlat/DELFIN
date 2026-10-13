@@ -1259,7 +1259,382 @@ _BASH_DIR_LISTERS: frozenset[str] = frozenset({"ls", "find", "tree"})
 # `cd X && cat file` reads X/file by a relative name, which the reader
 # check above never sees. The directory changed into is the thing to ask
 # about. A bare `cd` goes home.
-_BASH_DIR_CHANGERS: frozenset[str] = frozenset({"cd", "pushd"})
+_BASH_DIR_CHANGERS: frozenset[str] = frozenset({"cd", "pushd", "popd"})
+
+#: Where a `cd` leads when the gate cannot know: into a variable, a
+#: command substitution, `cd -` with no earlier cd in the command (the
+#: shell's $OLDPWD), `popd` on a stack this command did not build. No
+#: root contains it, so a path reported under it is refused or asked.
+_UNRESOLVED_DIR = Path(
+    "/<directory this command changed into could not be resolved>")
+
+#: Words that may stand before a command without being it (`if cd x;`,
+#: `then (cd y && …)`, `! cd z`).
+_SHELL_LEAD_WORDS: frozenset[str] = frozenset({
+    "if", "then", "elif", "else", "while", "until", "do", "!", "{", "time",
+})
+
+#: Programs whose own option moves the directory for that one command.
+_CHDIR_OPTIONS: dict[str, tuple[str, ...]] = {
+    "git": ("-C",),
+    "make": ("-C", "--directory"),
+    "gmake": ("-C", "--directory"),
+    "env": ("-C", "--chdir"),
+}
+
+
+#: `$NAME` or `${NAME}`; every other `$` form is not resolved.
+_SHELL_VAR_REF = re.compile(
+    r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+#: Every name: the command can set any variable (`source`, `eval`, `.`).
+_ALL_NAMES = frozenset({"*"})
+
+
+def _shell_names_set_opaquely(cmd: str) -> "frozenset | set":
+    """Variable names whose value at a `cd` the gate cannot read off the
+    command: set by anything other than a standalone `NAME=literal`
+    (`for NAME in`, `read NAME`, `declare NAME=`, `printf -v NAME`,
+    `NAME=$(…)`, `W=x prog` …), or written inside single quotes, where
+    `$NAME` is not expanded at all. ``_ALL_NAMES`` when the command runs
+    `source`, `.` or `eval`, which can set any of them.
+
+    Errs one way only: a name listed here is unresolved, and an
+    unresolved cd is asked about or refused. Never raises.
+    """
+    import shlex
+    try:
+        text = cmd or ""
+        ok: dict = {}
+        for seg in _split_shell_segments(text):
+            try:
+                words = shlex.split(seg)
+            except ValueError:
+                return _ALL_NAMES
+            while words and words[0] in _SHELL_LEAD_WORDS:
+                words = words[1:]
+            if words:
+                words[0] = words[0].lstrip("(")
+            if words and Path(words[0]).name in ("source", ".", "eval"):
+                return _ALL_NAMES
+            if words and words[0] == "export":
+                words = words[1:]
+            if words and all(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)
+                             for w in words):
+                for w in words:
+                    name, value = w.split("=", 1)
+                    if "$(" in value or "`" in value:
+                        continue
+                    ok[name] = ok.get(name, 0) + 1
+        out: set = set()
+        for m in _SHELL_VAR_REF.finditer(text):
+            name = m.group(1) or m.group(2)
+            if name in out:
+                continue
+            bare = [b for b in re.finditer(
+                rf"(?<![\w${{]){re.escape(name)}(?!\w)(?!=)", text)]
+            assigned = len(re.findall(
+                rf"(?<![\w$]){re.escape(name)}=", text))
+            quoted = any(f"${name}" in q or f"${{{name}}}" in q
+                         for q in re.findall(r"'[^']*'", text))
+            if bare or quoted or assigned > ok.get(name, 0):
+                out.add(name)
+        return out
+    except Exception:
+        return _ALL_NAMES
+
+
+class _ShellDirWalk:
+    """The directory a shell command is in, followed command by command.
+
+    Input: ``start`` -- where the command begins, or None for "the
+    caller's base" (a relative name then stays relative, which is what the
+    write scanner hands on to a gate that resolves against its own cwd).
+    ``oldpwd`` is where a `cd -` goes before any cd in this command:
+    unresolved by default, because that is the shell's $OLDPWD.
+
+    Per simple command, ``enter(segment, argv)`` returns ``(argv, moved)``:
+    the words with subshell parentheses removed, and True when the
+    command was `cd`/`pushd`/`popd` and has been followed. ``here`` is the
+    directory the command runs in; ``command_dir(argv)`` adds a `-C` of
+    git/make/env for that one command. ``leave()`` after the command
+    closes the subshells it ended, so ``(cd x) && y`` runs y where the
+    command began. ``visited`` lists every directory reached.
+
+    Followed: `cd X`, `cd` (home), `cd ~/X`, `cd $HOME/X`, `cd -`,
+    `pushd X`, `pushd` (swap), `popd`, `( … )`, `$( … )` (a cd inside a
+    substitution does not move the outer shell), and `if`/`then`/`!`/`{`
+    before a cd. `$NAME`/`${NAME}` in a target resolves from ``env`` (the
+    environment the command will run with) and from standalone literal
+    assignments earlier in the command (`W=sub; cd $W`), unless the
+    command may set NAME some other way (_shell_names_set_opaquely).
+    Unresolved: any other `$` form, an unset or opaquely set name, a
+    backquote, `cd -` with no earlier cd, `popd` on an empty stack,
+    `pushd +N`. CDPATH is not read (a relative cd is taken as relative to
+    the current directory).
+
+    One instance per pass over a command; the read scanner, the write
+    scanner and the script content scan each drive their own, so the three
+    agree on where a relative name lands. Rejected: three hand-kept
+    copies of this state machine, which is how `(cd /x && echo > f)` came
+    to be followed by none of them and `popd` by one.
+    """
+
+    def __init__(self, start: "Path | None", oldpwd: "Path | None" = None,
+                 env: "dict | None" = None, cmd: str = ""):
+        self.here = start
+        self.previous = _UNRESOLVED_DIR if oldpwd is None else oldpwd
+        self.stack: list = []
+        self.frames: list = []       # ("sub", saved state) | ("cmd"|"plain", None)
+        self.pending: "tuple | None" = None
+        self.visited: list = [start]
+        # Variables a cd target may name: the environment the command runs
+        # with (_scrubbed_bash_env) and the literal assignments seen so far
+        # (None = assigned something unknowable). Names the command may set
+        # any other way are never resolved (_shell_names_set_opaquely).
+        self.env = dict(env or {})
+        self.vars: dict = {}
+        self.tainted = _shell_names_set_opaquely(cmd) if env is not None else None
+
+    @property
+    def unresolved(self) -> bool:
+        return self.here == _UNRESOLVED_DIR
+
+    def _state(self) -> tuple:
+        return (self.here, self.previous, list(self.stack), dict(self.vars))
+
+    def _expand(self, text: str) -> "str | None":
+        """*text* with `$NAME` / `${NAME}` replaced, or None when any part
+        cannot be known: a substitution, another `$` form, a name the
+        command sets other than by a literal assignment, an unset name."""
+        if "`" in text or "$(" in text:
+            return None
+        if "$" not in text:
+            return text
+        if self.tainted is None:
+            return None
+        if "$" in _SHELL_VAR_REF.sub("", text):
+            return None              # ${X:-y}, $1, $?, ...
+        unknown = False
+
+        def _value(m: "re.Match") -> str:
+            nonlocal unknown
+            name = m.group(1) or m.group(2)
+            if self.tainted is _ALL_NAMES or name in self.tainted:
+                unknown = True
+                return ""
+            value = (self.vars[name] if name in self.vars
+                     else self.env.get(name))
+            if value is None:
+                unknown = True
+                return ""
+            return value
+
+        out = _SHELL_VAR_REF.sub(_value, text)
+        return None if unknown else out
+
+    def _assign(self, words: list) -> None:
+        """Record `NAME=literal` (also after `export`) as the shell will."""
+        if words and words[0] == "export":
+            words = words[1:]
+        for w in words:
+            m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", w, re.S)
+            if m:
+                self.vars[m.group(1)] = self._expand(m.group(2))
+
+    def _target(self, dest: str) -> "Path | None":
+        dest = _home_expanded(dest)
+        if "$" in dest:
+            dest = self._expand(dest)
+            if dest is None:
+                return _UNRESOLVED_DIR
+        if "`" in dest:
+            return _UNRESOLVED_DIR
+        dest = os.path.expanduser(dest)
+        if dest.startswith("/"):
+            return Path(dest)
+        if self.here == _UNRESOLVED_DIR:
+            return _UNRESOLVED_DIR
+        return Path(dest) if self.here is None else self.here / dest
+
+    def _go(self, target: "Path | None") -> None:
+        self.previous, self.here = self.here, target
+        self.visited.append(target)
+
+    def _follow(self, words: list) -> None:
+        name = Path(words[0]).name
+        args = [a for a in words[1:] if a == "-" or not a.startswith("-")]
+        if name == "popd":
+            self._go(self.stack.pop() if self.stack else _UNRESOLVED_DIR)
+            return
+        if name == "pushd":
+            if not args:
+                if self.stack:
+                    top = self.stack.pop()
+                    self.stack.append(self.here)
+                    self._go(top)
+                return
+            if args[0][:1] in "+" or (args[0][:1] == "-" and args[0] != "-"):
+                self._go(_UNRESOLVED_DIR)
+                return
+            self.stack.append(self.here)
+        if args and args[0] == "-":
+            self._go(self.previous)
+            return
+        self._go(self._target(args[0]) if args else
+                 Path(os.path.expanduser("~")))
+
+    def enter(self, segment: str, argv: list) -> tuple:
+        words = list(argv)
+        depth: list = []             # open substitutions before each word
+        # A here-document body is the program's input, not shell: its
+        # parentheses are code. Only the command line before it counts.
+        if re.search(r"<<(?!<)", segment):
+            segment = segment.split("\n", 1)[0]
+        if "(" in segment or ")" in segment:
+            try:
+                import shlex as _shlex
+                lx = _shlex.shlex(segment, posix=True, punctuation_chars="()")
+                lx.whitespace_split = True
+                toks = list(lx)
+            except ValueError:
+                toks = None
+            if toks is not None:
+                # The re-split words replace the caller's only when a
+                # subshell or substitution opens or closes here; a `(` in
+                # code (`print(x)`, a here-document line) leaves them as
+                # they were.
+                structural = False
+                words = []
+                for tok in toks:
+                    if tok and set(tok) <= {"(", ")"}:
+                        for ch in tok:
+                            if ch == "(":
+                                if words and words[-1].endswith("$"):
+                                    words[-1] = words[-1][:-1]
+                                    if not words[-1]:
+                                        words.pop()
+                                        depth.pop()
+                                    self.frames.append(("cmd", None))
+                                    structural = True
+                                elif all(w in _SHELL_LEAD_WORDS for w in words):
+                                    self.frames.append(("sub", self._state()))
+                                    structural = True
+                                else:
+                                    self.frames.append(("plain", None))
+                            elif self.frames:
+                                kind, saved = self.frames.pop()
+                                if kind == "sub":
+                                    self.pending = saved
+                                structural = structural or kind != "plain"
+                        continue
+                    words.append(tok)
+                    depth.append(sum(1 for k, _ in self.frames if k == "cmd"))
+                if not structural:
+                    words = list(argv)
+                    depth = []
+        if not depth:
+            inside = sum(1 for k, _ in self.frames if k == "cmd")
+            depth = [inside] * len(words)
+        lead = 0
+        while lead < len(words) and words[lead] in _SHELL_LEAD_WORDS:
+            lead += 1
+        i = lead
+        while i < len(words) and re.match(
+                r"^[A-Za-z_][A-Za-z0-9_]*=", words[i]):
+            i += 1
+        if (i < len(words) and depth[i] == 0
+                and Path(words[i]).name in _BASH_DIR_CHANGERS):
+            self._follow(words[i:])
+            return words, True
+        # `W=sub` or `export W=sub` on its own sets a shell variable; one
+        # in front of a program (`W=sub prog`) sets it for that program only.
+        rest = words[lead:]
+        if rest and rest[0] == "export":
+            rest = rest[1:]
+        if (rest and not any(depth[lead:]) and all(
+                re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w) for w in rest)):
+            self._assign(words[lead:])
+        return words, False
+
+    def leave(self) -> None:
+        if self.pending is not None:
+            self.here, self.previous, self.stack, self.vars = self.pending
+            self.pending = None
+
+    def command_dir(self, argv: list) -> "Path | None":
+        """Where this one command runs: ``here``, moved by its own `-C`."""
+        words = [w for w in argv
+                 if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
+        if not words:
+            return self.here
+        opts = _CHDIR_OPTIONS.get(Path(words[0]).name)
+        if not opts:
+            return self.here
+        prog = Path(words[0]).name
+        where = self.here
+        rest = words[1:]
+        k = 0
+        while k < len(rest):
+            w = rest[k]
+            dest = None
+            for opt in opts:
+                if w == opt and k + 1 < len(rest):
+                    dest = rest[k + 1]
+                    k += 1
+                elif w.startswith(opt + "=") and opt.startswith("--"):
+                    dest = w[len(opt) + 1:]
+                elif opt == "-C" and w.startswith("-C") and len(w) > 2:
+                    dest = w[2:]
+            k += 1
+            if dest is None:
+                if w in ("-c", "-u", "-f", "--file", "-I", "-o", "-W", "-S"):
+                    k += 1          # the option's own value
+                elif not w.startswith("-") and prog != "make" and prog != "gmake":
+                    break           # git's subcommand, env's program
+                continue
+            saved = self.here
+            self.here = where
+            where = self._target(dest)
+            self.here = saved
+        if where != self.here:
+            self.visited.append(where)
+        return where
+
+
+def _bash_visited_dirs(cmd: str, base: "str | Path") -> list:
+    """Every known directory a command runs a command in, ``base`` first.
+
+    For checks that look at the names in a command without pairing each
+    name with its command (the secret-link test, the locked scope's
+    symlink test): a relative name is tried in each of these, which can
+    only find more. Unresolvable directories are left out; the content
+    scan and the write scanner, which pair names with commands, handle
+    those. Never raises.
+    """
+    import shlex
+    start = Path(base)
+    walk = _ShellDirWalk(start, oldpwd=start, env=_scrubbed_bash_env(), cmd=cmd or "")
+    try:
+        for seg in _split_shell_segments(cmd or ""):
+            walk.leave()
+            try:
+                toks = shlex.split(seg)
+            except ValueError:
+                toks = seg.split()
+            toks, moved = walk.enter(seg, toks)
+            if not moved:
+                walk.command_dir(toks)
+    except Exception:
+        pass
+    out: list = []
+    for d in walk.visited:
+        if d is None or d == _UNRESOLVED_DIR:
+            continue
+        d = d if d.is_absolute() else start / d
+        if d not in out:
+            out.append(d)
+    return out or [start]
 
 
 def _is_system_path(word: str) -> bool:
@@ -1408,7 +1783,14 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
     except Exception:
         pass
     here: "Path | None" = Path(cwd) if cwd is not None else None
-    previous = here
+    # `cd -` before any cd stays where the command began, as it always did
+    # here; an unknown directory stops the resolving of relative names.
+    walk = _ShellDirWalk(here, oldpwd=here, env=_scrubbed_bash_env(), cmd=cmd)
+
+    def _known(where: "Path | None") -> "Path | None":
+        if where is None or where == _UNRESOLVED_DIR or not where.is_absolute():
+            return None
+        return where
 
     def _add(word: str) -> None:
         word = _home_expanded(word)
@@ -1425,6 +1807,77 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
             if not _read_exempt(full):
                 out.append(full)
 
+    def _segment_reads(argv: list, moved: bool) -> None:
+        if moved:
+            # The directory changed into is itself looked at.
+            words = [w for w in argv if w not in _SHELL_LEAD_WORDS
+                     and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
+            name = Path(words[0]).name
+            rest = [a for a in words[1:] if a == "-" or not a.startswith("-")]
+            if name == "popd" or (rest and rest[0] == "-") or (
+                    name == "pushd" and not rest):
+                return
+            dest = _home_expanded(rest[0]) if rest else "~"
+            target = walk.here
+            if target is None or target == _UNRESOLVED_DIR:
+                return
+            if dest.startswith("/") or dest.startswith("~"):
+                if not _read_exempt(os.path.expanduser(dest)):
+                    out.append(dest)
+            elif target.is_absolute() and not _read_exempt(str(target)):
+                out.append(str(target))
+            return
+        while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+            argv = argv[1:]
+        if not argv:
+            return
+        prog = Path(argv[0]).name
+        args = argv[1:]
+        # `sh -c "…"` runs a whole command line: judge that line too,
+        # from where this one is at that point.
+        if prog in _SHELL_PROGRAMS and "-c" in args and _depth < 3:
+            i = args.index("-c")
+            if i + 1 < len(args):
+                out.extend(_bash_outside_reads(
+                    args[i + 1], here, _depth + 1))
+            return
+        # Input redirection reads, whatever the program.
+        for i, a in enumerate(args):
+            if a == "<" and i + 1 < len(args):
+                _add(args[i + 1])
+            elif a.startswith("<") and not a.startswith("<<") and len(a) > 1:
+                _add(a[1:])
+        if prog in _BASH_NO_FILE_PROGRAMS:
+            return
+        skip_next = False
+        for i, a in enumerate(args):
+            if skip_next:
+                skip_next = False
+                continue
+            if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
+                skip_next = True    # the redirection's own target
+                continue
+            if (a.startswith("<") or a.startswith(">")
+                    or (a[:1] in "0123456789&" and ">" in a[:3])):
+                continue
+            if a.startswith("-"):
+                if "=" in a:
+                    _add(a.split("=", 1)[1])
+                continue
+            if prog == "dd" and a.startswith("if="):
+                _add(a[3:])
+                continue
+            if "=" in a.split("/")[0]:
+                continue
+            looks_like_path = ("/" in a or a.startswith("~")
+                               or a.startswith("$HOME")
+                               or a.startswith("${HOME}")
+                               or a in (".", "..")
+                               or prog in _BASH_CONTENT_READERS
+                               or prog in _BASH_DIR_LISTERS)
+            if looks_like_path:
+                _add(a)
+
     try:
         import shlex
         for segment in _shell_segments(cmd):
@@ -1435,74 +1888,16 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                 argv = shlex.split(segment, comments=True)
             except ValueError:
                 argv = [w.strip("\"'") for w in segment.split()]
-            while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
-                argv = argv[1:]
-            if not argv:
-                continue
-            prog = Path(argv[0]).name
-            args = argv[1:]
-            # `sh -c "…"` runs a whole command line: judge that line too,
-            # from where this one is at that point.
-            if prog in _SHELL_PROGRAMS and "-c" in args and _depth < 3:
-                i = args.index("-c")
-                if i + 1 < len(args):
-                    out.extend(_bash_outside_reads(
-                        args[i + 1], here, _depth + 1))
-                continue
-            if prog in _BASH_DIR_CHANGERS:
-                if "-" in args:
-                    here, previous = previous, here
-                    continue
-                dests = [a for a in args if not a.startswith("-")]
-                dest = _home_expanded(dests[0]) if dests else "~"
-                if dest.startswith("$"):
-                    here = None         # unknown: stop resolving relatives
-                    continue
-                target = (Path(os.path.expanduser(dest)) if
-                          (dest.startswith("/") or dest.startswith("~"))
-                          else (here / dest if here is not None else None))
-                if target is not None and not _read_exempt(str(target)):
-                    out.append(dest if (dest.startswith("/")
-                                        or dest.startswith("~"))
-                               else str(target))
-                previous, here = here, target
-                continue
-            # Input redirection reads, whatever the program.
-            for i, a in enumerate(args):
-                if a == "<" and i + 1 < len(args):
-                    _add(args[i + 1])
-                elif a.startswith("<") and not a.startswith("<<") and len(a) > 1:
-                    _add(a[1:])
-            if prog in _BASH_NO_FILE_PROGRAMS:
-                continue
-            skip_next = False
-            for i, a in enumerate(args):
-                if skip_next:
-                    skip_next = False
-                    continue
-                if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
-                    skip_next = True    # the redirection's own target
-                    continue
-                if (a.startswith("<") or a.startswith(">")
-                        or (a[:1] in "0123456789&" and ">" in a[:3])):
-                    continue
-                if a.startswith("-"):
-                    if "=" in a:
-                        _add(a.split("=", 1)[1])
-                    continue
-                if prog == "dd" and a.startswith("if="):
-                    _add(a[3:])
-                    continue
-                if "=" in a.split("/")[0]:
-                    continue
-                looks_like_path = ("/" in a or a.startswith("~")
-                                   or a.startswith("$HOME")
-                                   or a.startswith("${HOME}")
-                                   or a in (".", "..")
-                                   or prog in _BASH_CONTENT_READERS
-                                   or prog in _BASH_DIR_LISTERS)
-                if looks_like_path:
-                    _add(a)
+            argv, moved = walk.enter(segment, argv)
+            # `make -C d`, `env -C d`, `git -C d`: this command's relative
+            # names land in d; the next command is back in ``here``.
+            if not moved:
+                here = _known(walk.command_dir(argv))
+            try:
+                _segment_reads(argv, moved)
+            finally:
+                walk.leave()
+                here = _known(walk.here)
     except Exception:
         return out
     return out
@@ -2041,26 +2436,41 @@ def _bash_symlink_escapes(cmd: str, workspace: Path) -> list[str]:
         # A bare directory name has no slash, so the patterns above miss it.
         # `cd shared && cat x` needs no `..` and names nothing absolute, and
         # every command after it is then evaluated somewhere else entirely.
-        candidates += re.findall(r"(?:^|[;&|]\s*)cd\s+([^\s;&|<>]+)", text)
+        candidates += re.findall(
+            r"(?:^|[;&|(]\s*)(?:cd|pushd)\s+([^\s;&|<>()]+)", text)
+        # A relative name is opened where the shell is at that point:
+        # `cd sub && cat d/link` opens sub/d/link. Each directory the
+        # command moves into is tried (_bash_visited_dirs).
+        # Directories outside the folder are the absolute-path and `..`
+        # checks' to refuse; joining a name to one would report a plain
+        # outside file as a link.
+        bases = [b for b in _bash_visited_dirs(text, ws)
+                 if (os.path.normpath(str(b)) + "/").startswith(str(ws) + "/")]
+        bases = bases or [ws]
         for token in candidates:
             if token in seen:
                 continue
             seen.add(token)
             try:
                 raw = Path(token).expanduser()
-                joined = raw if raw.is_absolute() else (ws / raw)
-                if not (joined.exists() or joined.parent.exists()):
-                    continue
-                resolved = joined.resolve()
             except (OSError, RuntimeError):
                 continue
-            if str(resolved).startswith(_SYSTEM_PATH_PREFIXES):
-                continue
-            if _is_safe_device(resolved) or _is_safe_device(token):
-                continue
-            if resolved == ws or str(resolved).startswith(str(ws) + "/"):
-                continue
-            out.append(f"{token} -> {resolved}")
+            for base in ([ws] if raw.is_absolute() else bases):
+                try:
+                    joined = raw if raw.is_absolute() else (base / raw)
+                    if not (joined.exists() or joined.parent.exists()):
+                        continue
+                    resolved = joined.resolve()
+                except (OSError, RuntimeError):
+                    continue
+                if str(resolved).startswith(_SYSTEM_PATH_PREFIXES):
+                    continue
+                if _is_safe_device(resolved) or _is_safe_device(token):
+                    continue
+                if resolved == ws or str(resolved).startswith(str(ws) + "/"):
+                    continue
+                out.append(f"{token} -> {resolved}")
+                break
     except Exception:
         return out
     return out
@@ -2167,38 +2577,18 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # open direction, and "could not tell where this writes" is a
         # refusal, not a pass.
         here = None
-        previous = None
-        moved = False
-        _UNRESOLVED = Path("/<directory this command changed into could not be resolved>")
+        _env = _scrubbed_bash_env()
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
 
-        def _follow_cd(argv: list) -> None:
-            nonlocal here, previous, moved
-            if any(a == "-" for a in argv[1:]):
-                # `cd -` goes back: to a directory this walk knew, to the
-                # start directory (None, inside) -- or, before any cd in
-                # this command, to the SHELL's $OLDPWD, which nobody here
-                # knows. Only that last one is unresolved.
-                if not moved:
-                    here, previous = _UNRESOLVED, here
-                else:
-                    here, previous = previous, here
-                return
-            moved = True
-            args = [a for a in argv[1:] if not a.startswith("-")]
-            dest = os.path.expanduser(args[0]) if args else os.path.expanduser("~")
-            if "$" in dest or "`" in dest:
-                previous, here = here, _UNRESOLVED
-                return
-            if dest.startswith("/"):
-                target = Path(dest)
-            elif here is None:
-                # Relative to the gate's cwd: kept relative, so the caller
-                # resolves `sub/f` against its own base. Dropping it named
-                # `f` -- a different file -- and `cd .. && > f` an inside one.
-                target = Path(dest)
-            else:
-                target = here / dest
-            previous, here = here, target
+        def _enter(segment: str, argv: list) -> tuple:
+            """Follow one simple command (_ShellDirWalk). A subshell the
+            previous command closed is closed first, so `(cd /x) && > f`
+            writes where the command began. Returns (argv, moved)."""
+            nonlocal here
+            walk.leave()
+            argv, moved_ = walk.enter(segment, argv)
+            here = walk.here
+            return argv, moved_
 
         # Redirections: > file, >> file, 2> file, &> file (not >&1 / &2) --
         # per segment, so the directory a `cd` set applies to them.
@@ -2237,10 +2627,7 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 argv0 = shlex.split(seg, comments=True)
             except ValueError:
                 argv0 = seg.split()
-            while argv0 and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv0[0]):
-                argv0 = argv0[1:]
-            if argv0 and Path(argv0[0]).name in ("cd", "pushd"):
-                _follow_cd(argv0)
+            if _enter(seg, argv0)[1]:
                 continue
             for m in _redirect.finditer(seg):
                 if any(lo <= _off + m.start() < hi for lo, hi in _text):
@@ -2256,7 +2643,7 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 if not tok.startswith("&"):
                     _add(tok)
         here = None
-        previous = None
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
 
         # What an inline python payload would write.
         #
@@ -2281,9 +2668,8 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # Where that pairing cannot be made (the tokeniser fails, or the
         # counts differ) a command that contains a `cd` reports relative
         # targets as unresolved, so the gate refuses rather than guesses.
-        _moved_before = moved
-        here = previous = None
-        moved = False
+        here = None
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
         _c_dirs: list = []           # (payload, directory)
         _doc_dirs: list = []
         _paired = True
@@ -2301,24 +2687,22 @@ def _bash_write_targets(cmd: str) -> list[str]:
             else:
                 _cmds[-1].append(_t)
         for _argv in _cmds:
-            _words = list(_argv)
-            while _words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", _words[0]):
-                _words = _words[1:]
-            if not _words:
+            _, _mv = _enter(" ".join(_argv), list(_argv))
+            if _mv or not _argv:
                 continue
-            if Path(_words[0]).name in ("cd", "pushd"):
-                _follow_cd(_words)
-                continue
+            # `env -C d python3 -c …` starts the interpreter in d.
+            _where = walk.command_dir(_argv)
             for src in _inline_payload.extract_c_payloads(
                     shlex.join(_argv)) or []:
-                _c_dirs.append((src, here))
+                _c_dirs.append((src, _where))
             if (any(re.match(r"(?:[\w./~+-]*/)?python[0-9.]*$", w)
                     for w in _argv)
                     and any(w.startswith("<<") and not w.startswith("<<<")
                             for w in _argv)):
-                _doc_dirs.append(here)
-        _fallback = _UNRESOLVED if (
-            moved or re.search(r"(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)", cmd)) \
+                _doc_dirs.append(_where)
+        _fallback = _UNRESOLVED_DIR if (
+            len(walk.visited) > 1
+            or re.search(r"(?:^|[\s;&|(])(?:cd|pushd|popd)(?:\s|$)", cmd)) \
             else None
         _c_srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
         _docs = _inline_payload.extract_stdin_payloads(
@@ -2336,8 +2720,8 @@ def _bash_write_targets(cmd: str) -> list[str]:
             here = where
             for tok in _inline_payload.analyze_payload(src).writes:
                 _add(tok)
-        here = previous = None
-        moved = _moved_before
+        here = None
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
 
         # Per shell segment: command name + arguments.
         for segment in re.split(r"[;&|]{1,2}|\n", cmd):
@@ -2350,6 +2734,9 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 argv = segment.split()
             if not argv:
                 continue
+            argv, _mv = _enter(segment, argv)
+            if _mv:
+                continue
             # Skip env-var prefixes (FOO=bar cmd ...).
             while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
                 argv = argv[1:]
@@ -2357,9 +2744,6 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 continue
             name = Path(argv[0]).name
             rest = argv[1:]
-            if name in ("cd", "pushd"):
-                _follow_cd(argv)
-                continue
 
             # `cd <dir> && ...` — the destination of the segment's writes.
             if name in ("dd",):
@@ -3781,13 +4165,14 @@ def _steer_label(text: str) -> str:
     return "💬 [you, mid-run]: "
 
 
-def _links_to_a_secret(perms: Any, rel: str) -> bool:
-    """Whether the workspace-relative token *rel* is, or passes through, a
-    symlink that ends at a secret -- a file on the deny list, or a
-    directory that holds one (a link to ~/.ssh itself). Never raises;
-    a token that is not an existing path is not a link."""
+def _links_to_a_secret(perms: Any, rel: str, base: Any = None) -> bool:
+    """Whether the token *rel*, relative to *base* (default: the
+    workspace), is or passes through a symlink that ends at a secret -- a
+    file on the deny list, or a directory that holds one (a link to ~/.ssh
+    itself). Never raises; a token that is not an existing path is not a
+    link."""
     try:
-        base = Path(perms.workspace)
+        base = Path(base if base is not None else perms.workspace)
         p = base / rel
         if not (p.is_symlink() or os.path.lexists(p)):
             return False
@@ -17446,6 +17831,7 @@ class _DocToolExecutor:
         # Relative tokens too. Only /, ~ and $HOME were looked at, so
         # `cat .env`, `head config/server.key` and `sed -n p .netrc` ran
         # without a question in default mode (review 2026-09-16).
+        _dirs = None
         for tok in re.findall(r"(?<![^\s;|&<>()=])(?![-/~$])[^\s;|&<>()`'\"=]+", cleaned):
             rel = tok[2:] if tok.startswith("./") else tok
             if not rel or rel.startswith(("http:", "https:")):
@@ -17463,8 +17849,12 @@ class _DocToolExecutor:
             # symlink in the workspace (`cat ssh-link`, `grep -rn KEY
             # sshdir`) names nothing on the deny list, and cat or a
             # recursive grep follows it (red team LA, 2026-09-26). Only
-            # tokens whose path really goes somewhere else are resolved.
-            if _links_to_a_secret(perms, rel):
+            # tokens whose path really goes somewhere else are resolved --
+            # in every directory the command moves into, since
+            # `cd sub && cat ssh-link` opens sub/ssh-link.
+            if _dirs is None:
+                _dirs = _bash_visited_dirs(cmd, perms.workspace)
+            if any(_links_to_a_secret(perms, rel, d) for d in _dirs):
                 return tok
         return None
 
@@ -17513,56 +17903,108 @@ class _DocToolExecutor:
         interpreter, or what an execution wrapper is handed. Everything
         else in a command line is data.
         """
+        return [ref for kind, ref, _ in self._referenced_scripts_where(cmd, None)
+                if kind == "file"]
+
+    def _segment_scripts(self, toks: list) -> list:
+        """(kind, ref) for what one simple command executes from a file:
+        ``file`` (a script path), ``module`` (``python -m name``: the
+        module's file in the directory the interpreter starts in comes
+        first on sys.path), ``makefile`` (``make``'s ``-f`` value, or
+        "" for the default names)."""
+        out: list = []
+        i = 0
+        while i < len(toks) and toks[i] in _SHELL_LEAD_WORDS:
+            i += 1
+        head = True        # the first token of a segment is the program
+        pending = False    # a wrapper is still looking for its program
+        while i < len(toks):
+            tok = toks[i]
+            base = tok.rsplit("/", 1)[-1]
+            if self._SCRIPT_INTERP_RE.match(base):
+                j = i + 1
+                inline = False
+                while j < len(toks):
+                    nt = toks[j]
+                    if nt == "-m" and base.startswith(("python", "pypy")):
+                        if j + 1 < len(toks):
+                            out.append(("module", toks[j + 1]))
+                        inline = True
+                        break
+                    if nt in ("-m", "-c", "-e", "-"):  # inline → no file
+                        inline = True
+                        break
+                    if nt.startswith("-"):
+                        j += 1
+                        continue
+                    break
+                if not inline and j < len(toks):
+                    out.append(("file", toks[j]))
+                i = j + 1
+                head = pending = False
+                continue
+            if (head or pending) and base in ("make", "gmake"):
+                mk = ""
+                for k in range(i + 1, len(toks)):
+                    if toks[k] in ("-f", "--file", "--makefile") and k + 1 < len(toks):
+                        mk = toks[k + 1]
+                    elif toks[k].startswith("--file=") or toks[k].startswith("--makefile="):
+                        mk = toks[k].split("=", 1)[1]
+                    elif toks[k].startswith("-f") and len(toks[k]) > 2:
+                        mk = toks[k][2:]
+                out.append(("makefile", mk))
+                break
+            # `find … -exec prog {} ;` runs prog, and so does a wrapper.
+            if self._EXEC_WRAPPER_RE.match(base) or base in (
+                    "-exec", "-execdir"):
+                head = False
+                pending = True
+                i += 1
+                continue
+            if self._looks_like_a_script_path(tok, base):
+                if head or pending:
+                    out.append(("file", tok))
+                head = pending = False
+                i += 1
+                continue
+            # A plain word at the head of a segment IS the program --
+            # `grep`, `cat`, `cp`. Everything after it is that
+            # program's data. A wrapper's own flags and arguments
+            # (`timeout 5 …`, `env FOO=1 …`) are stepped over, so the
+            # program it eventually names is still found.
+            head = False
+            i += 1
+        return out
+
+    def _referenced_scripts_where(self, cmd: str, base: "Path | None") -> list:
+        """(kind, ref, directory) for every file the command executes.
+
+        ``directory`` is where that command runs -- after every `cd`,
+        `pushd`, `popd` and subshell before it, and its own `-C`
+        (_ShellDirWalk) -- or ``_UNRESOLVED_DIR`` when the gate cannot
+        know it. ``base`` is where the command starts. Also yields
+        ``("payload", source, directory)`` for each inline `-c` payload,
+        whose local imports resolve in that directory."""
         import shlex
-        out: list[str] = []
+        out: list = []
+        walk = _ShellDirWalk(base, env=_scrubbed_bash_env(), cmd=cmd)
         for seg in _split_shell_segments(cmd):
+            walk.leave()
             try:
                 toks = shlex.split(seg)
             except Exception:
                 continue
-            i = 0
-            head = True        # the first token of a segment is the program
-            pending = False    # a wrapper is still looking for its program
-            while i < len(toks):
-                tok = toks[i]
-                base = tok.rsplit("/", 1)[-1]
-                if self._SCRIPT_INTERP_RE.match(base):
-                    j = i + 1
-                    inline = False
-                    while j < len(toks):
-                        nt = toks[j]
-                        if nt in ("-m", "-c", "-e", "-"):  # module / inline → no file
-                            inline = True
-                            break
-                        if nt.startswith("-"):
-                            j += 1
-                            continue
-                        break
-                    if not inline and j < len(toks):
-                        out.append(toks[j])
-                    i = j + 1
-                    head = pending = False
-                    continue
-                # `find … -exec prog {} ;` runs prog, and so does a wrapper.
-                if self._EXEC_WRAPPER_RE.match(base) or base in (
-                        "-exec", "-execdir"):
-                    head = False
-                    pending = True
-                    i += 1
-                    continue
-                if self._looks_like_a_script_path(tok, base):
-                    if head or pending:
-                        out.append(tok)
-                    head = pending = False
-                    i += 1
-                    continue
-                # A plain word at the head of a segment IS the program --
-                # `grep`, `cat`, `cp`. Everything after it is that
-                # program's data. A wrapper's own flags and arguments
-                # (`timeout 5 …`, `env FOO=1 …`) are stepped over, so the
-                # program it eventually names is still found.
-                head = False
-                i += 1
+            toks, moved = walk.enter(seg, toks)
+            if moved:
+                continue
+            where = walk.command_dir(toks)
+            for kind, ref in self._segment_scripts(toks):
+                out.append((kind, ref, where))
+            try:
+                for src in (_inline_payload.extract_c_payloads(seg) or []):
+                    out.append(("payload", src, where))
+            except Exception:
+                pass
         return out
 
     @staticmethod
@@ -17610,7 +18052,8 @@ class _DocToolExecutor:
             return False
 
     def _scan_bash_script_payloads(
-        self, cmd: str, args: dict, perms: "KitToolPermissions"
+        self, cmd: str, args: dict, perms: "KitToolPermissions",
+        unknown: "list | None" = None,
     ) -> Optional[str]:
         """Apply the deny-list + secret-path scan to the CONTENTS of any script
         the command runs. Reuses the curated patterns (so legitimate code using
@@ -17622,22 +18065,35 @@ class _DocToolExecutor:
         no file to open, which is the only reason it escaped before -- and
         so is any module it imports out of the working directory, because
         `import mymod` executes ``mymod.py`` exactly as running the script
-        would.
+        would. So are the local module of ``python -m name`` and the
+        makefile ``make`` reads.
+
+        A relative script is opened where the shell will be when it runs:
+        after each `cd`/`pushd`/`popd`/subshell before it and the command's
+        own `-C` (_ShellDirWalk). It was opened in the session cwd, so
+        `cd sub && python3 y.py` read ./y.py -- or nothing -- and sub/y.py
+        ran unread in every mode (measured on a2f78524: 17 spellings, all
+        ran). Where that directory cannot be known (`cd $VAR`, `cd -` with
+        no earlier cd), the relative name is appended to ``unknown`` for
+        the caller to ask about, and nothing is scanned in its place.
 
         Returns a reason string, or None. Never raises."""
         try:
+            base_dir = Path(perms.workspace)
             cwd_arg = str(args.get("cwd") or "").strip()
-            base_dir = Path(cwd_arg) if cwd_arg else Path(perms.workspace)
+            if cwd_arg:
+                c = Path(cwd_arg).expanduser()
+                base_dir = c if c.is_absolute() else base_dir / c
         except Exception:
             base_dir = Path(perms.workspace)
 
-        def _resolve(ref: str) -> tuple[str, str, Path] | None:
+        def _resolve(ref: str, where: "Path | None" = None
+                     ) -> tuple[str, str, Path] | None:
             """(label, contents, path) for a script path, or None to skip it."""
             try:
-                p = Path(ref)
+                p = Path(_home_expanded(ref)).expanduser()
                 if not p.is_absolute():
-                    p = base_dir / p
-                p = p.expanduser()
+                    p = (where or base_dir) / p
                 if not p.is_file() or p.stat().st_size > 512_000:
                     return None
                 if self._is_reviewed_project_file(p):
@@ -17648,11 +18104,73 @@ class _DocToolExecutor:
             except Exception:
                 return None
 
+        def _module_file(name: str, where: Path) -> "str | None":
+            """The file `python -m name` runs when it is local to *where*:
+            name.py, or a package's __main__.py. None for anything found
+            elsewhere on sys.path (the stdlib, site-packages)."""
+            rel = Path(*name.split("."))
+            for cand in (rel.with_suffix(".py"), rel / "__main__.py"):
+                if (where / cand).is_file():
+                    return str(where / cand)
+            return None
+
+        def _unknown(ref: str) -> None:
+            if unknown is not None and ref not in unknown:
+                unknown.append(ref)
+
         sources: list[tuple[str, str, Path | None]] = []
-        for ref in self._referenced_script_paths(cmd):
-            got = _resolve(ref)
+        try:
+            refs = self._referenced_scripts_where(cmd, base_dir)
+        except Exception:
+            refs = [("file", r, base_dir)
+                    for r in self._referenced_script_paths(cmd)]
+        for kind, ref, where in refs:
+            # The directory a cd led to that the gate cannot know: the file
+            # that runs is unknown too, unless the command names it
+            # absolutely. Scanning the same name in the start directory
+            # would read a different file and call it checked.
+            lost = where == _UNRESOLVED_DIR
+            if kind == "payload":
+                sources.append(("the inline python payload", ref, None))
+                if lost:
+                    if _inline_payload.analyze_payload(ref, None).opaque:
+                        _unknown("the modules the inline python payload imports")
+                    continue
+                for mod in _inline_payload.analyze_payload(
+                        ref, where).local_modules:
+                    got = _resolve(mod, where)
+                    if got is not None:
+                        sources.append(got)
+                continue
+            if kind == "module":
+                if lost:
+                    _unknown(f"module {ref}")
+                    continue
+                found = _module_file(ref, where)
+                got = _resolve(found, where) if found else None
+                if got is not None:
+                    sources.append((f"module {ref} ({found})",) + got[1:])
+                continue
+            if kind == "makefile":
+                names = [ref] if ref else ["GNUmakefile", "makefile", "Makefile"]
+                if lost and not (ref and Path(_home_expanded(ref)).expanduser()
+                                 .is_absolute()):
+                    _unknown(ref or "Makefile")
+                    continue
+                for name in names:
+                    got = _resolve(name, where)
+                    if got is not None:
+                        sources.append(got)
+                        break
+                continue
+            if lost and not Path(_home_expanded(ref)).expanduser().is_absolute():
+                _unknown(ref)
+                continue
+            got = _resolve(ref, where)
             if got is not None:
                 sources.append(got)
+        # The whole command once more, so a payload the per-command split
+        # missed is still read (scanning twice can only refuse more).
         try:
             for src in (_inline_payload.extract_c_payloads(cmd) or []):
                 sources.append(("the inline python payload", src, None))
@@ -18880,7 +19398,9 @@ class _DocToolExecutor:
                     "Reading or touching .ssh/.env/*.key/credentials via the "
                     "shell is blocked — the read deny-list applies to bash too."
                 )
-            payload_hit = self._scan_bash_script_payloads(cmd, args, perms)
+            _unknown_scripts: list = []
+            payload_hit = self._scan_bash_script_payloads(
+                cmd, args, perms, unknown=_unknown_scripts)
             if payload_hit is not None:
                 _record_security_event("script_payload", "bash", str(payload_hit))
                 refusal = (
@@ -19034,6 +19554,47 @@ class _DocToolExecutor:
                         f"user denied the git configuration change "
                         f"'{cmd[:120]}'. Do NOT retry it or work around it."
                         + self._said_why(perms))
+                _approved_here = True
+            # A script that runs from a directory the gate cannot know
+            # (`cd $VAR && python3 y.py`, `cd - && ./y.sh`) was not read by
+            # the content scan, because the file that runs is not known.
+            # Same rule as above: asked in every mode, refused with nobody
+            # to ask. Scanning `y.py` in the session cwd instead would read
+            # some other file and report it checked.
+            if _unknown_scripts and not _approved_here:
+                _names = ", ".join(_unknown_scripts[:3])
+                _record_security_event("script_dir_unknown", "bash", cmd[:80],
+                                       blocked=perms.confirm_callback is None)
+                if perms.confirm_callback is None:
+                    return (
+                        f"blocked: this command runs {_names} from a "
+                        "directory that cannot be known before it runs (a "
+                        "cd into a variable, a substitution or $OLDPWD), so "
+                        "the script's contents could not be checked, and "
+                        "nobody can be asked here. Use the directory's path "
+                        "as written, or the script's absolute path.")
+                try:
+                    ok = bool(perms.confirm_callback(
+                        "bash", {"command": cmd},
+                        "[SCRIPT IN AN UNKNOWN DIRECTORY]\n"
+                        f"{_names} runs from a directory that cannot be "
+                        "known before the command runs; its contents were "
+                        "not checked.\n\n$ " + cmd))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval for a script in an unknown directory "
+                            "TIMED OUT — the user is away, this is not a "
+                            "refusal. Do not run it now.")
+                    perms.record_denied_action("bash", cmd)
+                    _remember_refusal(perms, "bash", cmd,
+                                      self._refusal_reason(perms))
+                    return (
+                        f"user denied running {_names} from a directory "
+                        f"that could not be checked ('{cmd[:120]}'). Do NOT "
+                        "retry it or work around it." + self._said_why(perms))
                 _approved_here = True
             # A push publishes. Report 20260915-085107 pushed the change it
             # was asked to, then chained a second commit and push onto a fix
