@@ -80,6 +80,8 @@ scan_steps=25
 # scan_dissoc=true: scan outward from r0 to dissoc_distance instead of inward to scan_end
 # dissoc_distance: target M–substrate distance for dissociation (default 6.0 A)
 # run_occupier_on_adduct=true: run the OCCUPIER input writer on the best MANTA structure before the scan
+# occupier_on_adduct=true: run the full OCCUPIER FoB search (m=2,4,6 + best-selector) on the optimised
+#   adduct before the scan; the winning multiplicity/BrokenSym label is used for the whole scan
 # substrate_atom: element symbol of the substrate anchor atom (nearest to the metal), e.g. N for NH3, C for CO2
 # substrate_atom_index: explicit 0-based anchor index (overrides substrate_atom; use when ambiguous)
 ------------------------------------
@@ -89,6 +91,7 @@ adduct_xyz=
 scan_dissoc=false
 dissoc_distance=6.0
 run_occupier_on_adduct=false
+occupier_on_adduct=true
 substrate_atom=
 substrate_atom_index=
 
@@ -799,6 +802,158 @@ def _run_occupier_on_adduct(atoms, xyz_path: str, metal_symbol: Optional[str],
     except Exception as exc:  # noqa: BLE001 - surface any occupier failure loudly
         raise RuntimeError(f"OCCUPIER pass on the MANTA adduct failed: {exc}") from exc
     return output_file
+
+
+def _optimise_adduct_geometry(occ_inp: str, work_dir: Optional[str] = None) -> Optional[str]:
+    """Run the occupier-prepared adduct input as a real ORCA OPT and return
+    the optimised-geometry XYZ path, or ``None`` when the optimisation did
+    not converge.
+
+    ``occ_inp`` is the ``manta_adduct_occupier.inp`` written by
+    :func:`_run_occupier_on_adduct` (PBE0 OPT, per-atom NewGTO, charge/mult,
+    solvent, PAL/maxcore). ORCA runs in ``work_dir``; the converged
+    geometry is parsed from the ``.out``'s final ``CARTESIAN COORDINATES``
+    block and written as ``adduct_opt.xyz`` next to the input. A
+    non-converged or failed run returns ``None`` so the caller can fall
+    back to the raw MANTA adduct instead of aborting the whole scan.
+    """
+    from delfin.orca import run_orca
+
+    wd = Path(work_dir or os.path.dirname(os.path.abspath(occ_inp)))
+    out_path = wd / (Path(occ_inp).stem + ".out")
+    if not run_orca(str(occ_inp), str(out_path), working_dir=wd):
+        print(f"[WARN] Adduct OPT failed to run ({occ_inp}); "
+              f"falling back to the raw adduct geometry.")
+        return None
+
+    # Parse the last CARTESIAN COORDINATES block from the ORCA output.
+    symbols, coords = [], []
+    in_block = False
+    try:
+        with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if "CARTESIAN COORDINATES (ANGSTROEM)" in line:
+                    symbols, coords, in_block = [], [], False
+                    continue
+                if in_block:
+                    parts = line.split()
+                    if len(parts) == 4:
+                        try:
+                            float(parts[1])
+                        except ValueError:
+                            in_block = False
+                            continue
+                        symbols.append(parts[0])
+                        coords.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                    elif symbols:
+                        break
+    except OSError as exc:
+        print(f"[WARN] Could not read ORCA output {out_path}: {exc}")
+        return None
+
+    if not symbols:
+        print("[WARN] No CARTESIAN COORDINATES block found in the adduct OPT "
+              "output; falling back to the raw adduct geometry.")
+        return None
+
+    opt_xyz = wd / "adduct_opt.xyz"
+    with open(opt_xyz, "w", encoding="utf-8") as f:
+        f.write(f"{len(symbols)}\n")
+        f.write("optimised adduct geometry (occupier input, ORCA OPT)\n")
+        for sym, (x, y, z) in zip(symbols, coords):
+            f.write(f"{sym} {x:.10f} {y:.10f} {z:.10f}\n")
+    print(f"[INFO] Adduct OPT converged: {len(symbols)} atoms -> {opt_xyz}")
+    return str(opt_xyz)
+
+
+def _search_adduct_occupancy(adduct_xyz: str, args: Dict, charge: int,
+                             default_mult: int, default_bs: str) -> Tuple[int, str]:
+    """Run the full OCCUPIER FoB search on the optimised adduct geometry.
+
+    Prepares an ``adduct_occupier/`` folder (input.xyz = the adduct
+    geometry, CONTROL.txt from the CO2 args) and executes
+    :func:`delfin.occupier.run_OCCUPIER` there — the same machinery the
+    main pipeline uses: the configured sequence (e.g. m=2,4,6 for odd
+    electron systems) runs as parallel FoB jobs and the best-selector
+    writes ``OCCUPIER.txt``. The winning multiplicity + BrokenSym label
+    is read back with :func:`delfin.copy_helpers.extract_preferred_spin`
+    and returned as ``(m, bs)``.
+
+    On any failure (folder prep, OCCUPIER crash, no preferred entry) the
+    caller's ``default_mult``/``default_bs`` are returned unchanged with a
+    loud warning — a failed occupancy search degrades to the current
+    fixed-multiplicity behaviour instead of killing the scan.
+    """
+    from delfin.copy_helpers import extract_preferred_spin
+    from delfin.occupier import run_OCCUPIER
+
+    base = Path(adduct_xyz).resolve().parent
+    occ_dir = base / "adduct_occupier"
+    try:
+        occ_dir.mkdir(exist_ok=True)
+        shutil.copy(adduct_xyz, occ_dir / "input.xyz")
+        _write_co2_control_for_occupier(occ_dir, args)
+        print(f"[INFO] OCCUPIER FoB search on the adduct starts in {occ_dir}.")
+        run_OCCUPIER(work_dir=occ_dir)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] Adduct OCCUPIER search failed ({exc}); the scan keeps "
+              f"multiplicity={default_mult} and no BrokenSym label.")
+        return default_mult, default_bs
+
+    mult, bs = extract_preferred_spin(occ_dir)
+    if mult is None:
+        print(f"[WARN] OCCUPIER search produced no preferred occupancy in {occ_dir}; "
+              f"the scan keeps multiplicity={default_mult}.")
+        return default_mult, default_bs
+
+    print(f"[INFO] OCCUPIER FoB search on the adduct chose multiplicity={mult}"
+          + (f", BrokenSym '{bs}'" if bs else "") + ".")
+    return mult, (bs or default_bs or "")
+
+
+def _write_co2_control_for_occupier(occ_dir: Path, args: Dict) -> None:
+    """Write a minimal CONTROL.txt so run_OCCUPIER can work inside occ_dir.
+
+    The OCCUPIER machinery reads its configuration from CONTROL.txt in its
+    working directory (input_file, sequences, level of theory, PAL/maxcore).
+    The CO2 args dict carries all of these already — level-of-theory keys
+    come through _TRANSFER_KEYS, the FoB sequences are copied verbatim from
+    the main CONTROL.txt by chain_setup when they exist. Keys the OCCUPIER
+    step must not inherit are blanked (charge/multiplicity are set per FoB
+    by the sequence itself).
+    """
+    lines = [
+        "input_file=input.xyz",
+        "NAME=",
+        f"charge={args.get('charge', 0)}",
+        f"multiplicity={args.get('multiplicity', 2)}",
+        f"broken_sym={args.get('broken_sym', '')}",
+        "------------------------------------",
+        f"functional={args.get('functional', 'PBE0')}",
+        f"disp_corr={args.get('disp_corr', '')}",
+        f"ri_jkx={args.get('ri_jkx', '')}",
+        f"aux_jk={args.get('aux_jk', '')}",
+        f"main_basisset={args.get('main_basisset', 'def2-SVP')}",
+        f"metal_basisset={args.get('metal_basisset', '')}",
+        f"first_coordination_sphere_metal_basisset={args.get('first_coordination_sphere_metal_basisset', '')}",
+        f"first_coordination_sphere_scale={args.get('first_coordination_sphere_scale', '')}",
+        f"implicit_solvation_model={args.get('implicit_solvation_model', '')}",
+        f"solvent={args.get('solvent', '')}",
+        "frequency_calculation_OCCUPIER=no",
+        f"calc_potential_method={args.get('calc_potential_method', '')}",
+        f"PAL={args.get('PAL', 4)}",
+        f"maxcore={args.get('maxcore', 2000)}",
+        f"maxiter_occupier={args.get('maxiter_occupier', '')}",
+        f"parallel_workflows={args.get('parallel_workflows', 'auto')}",
+        f"orca_parallel_strategy={args.get('orca_parallel_strategy', 'auto')}",
+        f"pal_jobs={args.get('pal_jobs', '')}",
+        f"initial_guess={args.get('initial_guess', '')}",
+        f"initial_sequence={args.get('initial_sequence', '')}",
+        f"even_seq={args.get('even_seq', '')}",
+        f"odd_seq={args.get('odd_seq', '')}",
+        "occ_folder_compare=FSPE",
+    ]
+    (occ_dir / "CONTROL.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def detect_metal_index(atoms):
@@ -1957,6 +2112,13 @@ def main():
     # Charge/mult etc.
     charge = args.get("charge", -2)
     multiplicity = args.get("multiplicity", 1)
+    # CONTROL values arrive as strings; the FoB search comparison and the
+    # scan writer need an int.
+    if isinstance(multiplicity, str) and multiplicity.strip():
+        try:
+            multiplicity = int(multiplicity.strip())
+        except ValueError:
+            pass
     PAL = args.get("PAL", 32)
     maxcore = args.get("maxcore", 3800)
 
@@ -2046,6 +2208,53 @@ def main():
                     charge, multiplicity, broken_sym, args,
                 )
                 print(f"[INFO] OCCUPIER pass on the generated adduct wrote {occ_inp}.")
+
+                # Close the ordering gap: without an executed OPT the scan
+                # starts from the raw generator geometry and its point 1 both
+                # relaxes AND dissociates, so the curve has no converged
+                # reference. Opt-in via co2_optimize_adduct (default true
+                # whenever the occupier pass ran); falls back to the raw
+                # adduct when the OPT does not converge, so a failed ORCA
+                # step never kills the whole scan.
+                optimize_adduct = _is_enabled(args.get("optimize_adduct", True))
+                if optimize_adduct:
+                    opt_xyz = _optimise_adduct_geometry(occ_inp)
+                    if opt_xyz:
+                        atoms_adduct = _read_xyz_robust(opt_xyz)
+                        adduct_xyz = opt_xyz
+                        metal_idx = detect_metal_index(atoms_adduct)
+                        co2_c_idx = _resolve_substrate_anchor(
+                            atoms_adduct, metal_idx, substrate_symbol, substrate_idx_raw,
+                            source=adduct_xyz, allowed_indices=None)
+                        start_distance = float(np.linalg.norm(
+                            atoms_adduct.positions[metal_idx] - atoms_adduct.positions[co2_c_idx]
+                        ))
+                        print(f"[INFO] Scan restarts from the optimised adduct: r0 (M–substrate) = "
+                              f"{start_distance:.3f} A ({adduct_xyz}).")
+                    else:
+                        print("[WARN] Adduct OPT did not converge; the scan starts from the "
+                              "raw generated adduct as before.")
+
+            # Close the occupancy gap: the FoB sequence (m=2,4,6 for odd
+            # electron systems) determines the electronic ground state
+            # the whole scan is computed in. Without it the scan runs a
+            # fixed multiplicity with a standard guess - for redox-active
+            # Co complexes that can distort the dissociation curve. The
+            # search runs on the final adduct geometry (optimised when the
+            # OPT ran) and reuses the main pipeline's OCCUPIER machinery
+            # (sequence -> parallel FoB jobs -> best-selector ->
+            # OCCUPIER.txt); its failures degrade to the CONTROL's fixed
+            # multiplicity instead of killing the scan.
+            scan_occ_enabled = _is_enabled(args.get("occupier_on_adduct", True))
+            if scan_occ_enabled:
+                scan_mult, scan_bs = _search_adduct_occupancy(
+                    adduct_xyz, args, charge, multiplicity, broken_sym)
+                if scan_mult != multiplicity or (scan_bs or "") != (broken_sym or ""):
+                    print(f"[INFO] Scan occupancy from the adduct OCCUPIER search: "
+                          f"multiplicity {multiplicity} -> {scan_mult}"
+                          + (f", BrokenSym '{scan_bs}'" if scan_bs else "") + ".")
+                multiplicity = scan_mult
+                broken_sym = scan_bs
 
             metal_symbol_scan = metal_symbol or atoms_adduct[metal_idx].symbol
             write_orca_input_and_run(

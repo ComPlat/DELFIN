@@ -290,8 +290,13 @@ def test_main_rejects_unknown_adduct_source(tmp_path, monkeypatch):
         mod.main()
 
 
-def _manta_e2e_setup(tmp_path, monkeypatch, run_occupier):
-    """Shared setup: mock MANTA + OCCUPIER + scan writer, run main()."""
+def _manta_e2e_setup(tmp_path, monkeypatch, run_occupier, opt_result="converged"):
+    """Shared setup: mock MANTA + OCCUPIER + scan writer, run main().
+
+    ``opt_result``: "converged" (fake OPT writes adduct_opt.xyz with an
+    adjusted M–C distance), "none" (OPT fails -> raw-adduct fallback), or
+    False (no _optimise_adduct_geometry call expected).
+    """
     from delfin.co2 import CO2_Coordinator6 as mod
     monkeypatch.chdir(tmp_path)
     captured = {}
@@ -312,6 +317,28 @@ def _manta_e2e_setup(tmp_path, monkeypatch, run_occupier):
             f.write("! mocked occupier input\n")
         return out
 
+    def fake_opt(occ_inp, work_dir=None):
+        if opt_result is False:
+            captured["opt_called"] = False
+            return None
+        captured["opt_called"] = True
+        captured["opt_inp"] = occ_inp
+        if opt_result == "converged":
+            path = "adduct_opt.xyz"
+            with open(path, "w") as f:
+                f.write("2\nopt\nNi 0.0 0.0 0.0\nC 0.0 0.0 2.4\n")
+            return path
+        return None
+
+    def fake_occ_search(adduct_xyz, config, charge, default_mult, default_bs):
+        # Default: the occupancy search is mocked to report "not run" so
+        # existing e2e tests only see the OPT/scan wiring. Tests for the
+        # search itself set occ_search instead and re-patch.
+        captured["occ_search_called"] = False
+        return default_mult, default_bs
+
+    monkeypatch.setattr(mod, "_search_adduct_occupancy", fake_occ_search)
+
     def fake_write(atoms, xyz_path, metal_index, co2_c_index,
                    start_distance, end_distance=1.7, steps=5, **kw):
         captured["start"] = start_distance
@@ -324,6 +351,7 @@ def _manta_e2e_setup(tmp_path, monkeypatch, run_occupier):
 
     monkeypatch.setattr(mod, "_manta_adduct_geometry", fake_manta)
     monkeypatch.setattr(mod, "_run_occupier_on_adduct", fake_occupier)
+    monkeypatch.setattr(mod, "_optimise_adduct_geometry", fake_opt)
     monkeypatch.setattr(mod, "write_orca_input_and_run", fake_write)
     monkeypatch.setattr(mod, "plot_scan_result", lambda p: None)
     monkeypatch.setattr(mod, "_minimal_read_control_file",
@@ -346,6 +374,7 @@ def test_main_manta_source_builds_adduct_and_scans(tmp_path, monkeypatch):
     assert captured["start"] == pytest.approx(2.0)
     assert captured["end"] == pytest.approx(6.0)
     assert "occ_called" not in captured  # occupier pass disabled
+    assert "opt_called" not in captured  # no occupier pass -> no OPT either
     assert os.path.basename(captured["xyz"]) == "manta_adduct.xyz"
 
 
@@ -354,8 +383,160 @@ def test_main_manta_source_runs_occupier_before_scan(tmp_path, monkeypatch):
     captured = _manta_e2e_setup(tmp_path, monkeypatch, run_occupier=True)
     assert captured.get("occ_called") is True
     assert captured["occ_n_atoms"] == 2
-    assert captured["start"] == pytest.approx(2.0)
     assert captured["end"] == pytest.approx(6.0)
+    # the OPT now closes the ordering gap: the scan starts from the
+    # optimised geometry (M-C 2.4 A), not the raw generator output
+    assert captured.get("opt_called") is True
+    assert captured["start"] == pytest.approx(2.4)
+
+
+def test_main_manta_opt_fallback_to_raw_adduct(tmp_path, monkeypatch):
+    """A non-converged adduct OPT falls back to the raw generator adduct."""
+    captured = _manta_e2e_setup(tmp_path, monkeypatch, run_occupier=True,
+                                opt_result="none")
+    assert captured.get("opt_called") is True
+    assert captured["start"] == pytest.approx(2.0)  # raw M-C distance
+    assert os.path.basename(captured["xyz"]) == "manta_adduct.xyz"
+
+
+def test_main_manta_opt_disabled(tmp_path, monkeypatch):
+    """co2_optimize_adduct=false restores the pre-gap behaviour."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    captured = _manta_e2e_setup(tmp_path, monkeypatch, run_occupier=True,
+                                opt_result=False)
+    assert captured.get("opt_called") is False
+    assert captured["start"] == pytest.approx(2.0)
+
+
+def test_main_manta_occupancy_search_feeds_scan(tmp_path, monkeypatch):
+    """The winning FoB multiplicity/BS from the adduct search drive the scan."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    def fake_manta(smiles, out_path=None):
+        with open("manta_adduct.xyz", "w") as f:
+            f.write("2\nbest\nNi 0.0 0.0 0.0\nC 0.0 0.0 2.0\n")
+        return ("NI-atoms", "manta_adduct.xyz")
+
+    def fake_write(atoms, xyz_path, metal_index, co2_c_index,
+                   start_distance, end_distance=1.7, steps=5, **kw):
+        captured["scan_mult"] = kw.get("multiplicity")
+        captured["scan_bs"] = kw.get("broken_sym")
+        os.makedirs("relaxed_surface_scan", exist_ok=True)
+        with open(os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat"), "w") as f:
+            f.write("# mocked\n")
+        return "mocked.out"
+
+    def fake_search(adduct_xyz, config, charge, default_mult, default_bs):
+        captured["search_called"] = True
+        captured["search_adduct"] = adduct_xyz
+        return 4, "%scf BrokenSym 21,23 end"
+
+    monkeypatch.setattr(mod, "_manta_adduct_geometry", fake_manta)
+    monkeypatch.setattr(mod, "write_orca_input_and_run", fake_write)
+    monkeypatch.setattr(mod, "_search_adduct_occupancy", fake_search)
+    monkeypatch.setattr(mod, "plot_scan_result", lambda p: None)
+    monkeypatch.setattr(mod, "_minimal_read_control_file",
+                        lambda: {"scan_dissoc": "true",
+                                 "adduct_source": "manta",
+                                 "manta_smiles": "[Ni](C)",
+                                 "dissoc_distance": "6.0",
+                                 "scan_steps": "4",
+                                 "substrate_atom_index": "1",
+                                 "run_occupier_on_adduct": "false",
+                                 "PAL": "4", "maxcore": "1000",
+                                 "charge": "-2", "multiplicity": "2"})
+    mod.main()
+    assert captured["search_called"] is True
+    # the winning FoB occupancy replaces the CONTROL multiplicity/BS
+    assert captured["scan_mult"] == 4
+    assert captured["scan_bs"] == "%scf BrokenSym 21,23 end"
+
+
+def test_main_manta_occupancy_search_failure_keeps_defaults(tmp_path, monkeypatch):
+    """A failing search degrades to the CONTROL multiplicity (no BS)."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    def fake_manta(smiles, out_path=None):
+        with open("manta_adduct.xyz", "w") as f:
+            f.write("2\nbest\nNi 0.0 0.0 0.0\nC 0.0 0.0 2.0\n")
+        return ("NI-atoms", "manta_adduct.xyz")
+
+    def fake_write(atoms, xyz_path, metal_index, co2_c_index,
+                   start_distance, end_distance=1.7, steps=5, **kw):
+        captured["scan_mult"] = kw.get("multiplicity")
+        captured["scan_bs"] = kw.get("broken_sym")
+        os.makedirs("relaxed_surface_scan", exist_ok=True)
+        with open(os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat"), "w") as f:
+            f.write("# mocked\n")
+        return "mocked.out"
+
+    def failing_search(adduct_xyz, config, charge, default_mult, default_bs):
+        captured["search_called"] = True
+        return default_mult, default_bs
+
+    monkeypatch.setattr(mod, "_manta_adduct_geometry", fake_manta)
+    monkeypatch.setattr(mod, "write_orca_input_and_run", fake_write)
+    monkeypatch.setattr(mod, "_search_adduct_occupancy", failing_search)
+    monkeypatch.setattr(mod, "plot_scan_result", lambda p: None)
+    monkeypatch.setattr(mod, "_minimal_read_control_file",
+                        lambda: {"scan_dissoc": "true",
+                                 "adduct_source": "manta",
+                                 "manta_smiles": "[Ni](C)",
+                                 "dissoc_distance": "6.0",
+                                 "scan_steps": "4",
+                                 "substrate_atom_index": "1",
+                                 "run_occupier_on_adduct": "false",
+                                 "PAL": "4", "maxcore": "1000",
+                                 "charge": "-2", "multiplicity": "2"})
+    mod.main()
+    assert captured["search_called"] is True
+    assert captured["scan_mult"] == 2
+    assert captured["scan_bs"] in ("", None)
+
+
+def test_main_manta_occupancy_search_disabled(tmp_path, monkeypatch):
+    """co2_occupier_on_adduct=false skips the search entirely."""
+    from delfin.co2 import CO2_Coordinator6 as mod
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    def fake_manta(smiles, out_path=None):
+        with open("manta_adduct.xyz", "w") as f:
+            f.write("2\nbest\nNi 0.0 0.0 0.0\nC 0.0 0.0 2.0\n")
+        return ("NI-atoms", "manta_adduct.xyz")
+
+    def fake_write(atoms, xyz_path, metal_index, co2_c_index,
+                   start_distance, end_distance=1.7, steps=5, **kw):
+        captured["scan_mult"] = kw.get("multiplicity")
+        os.makedirs("relaxed_surface_scan", exist_ok=True)
+        with open(os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat"), "w") as f:
+            f.write("# mocked\n")
+        return "mocked.out"
+
+    def must_not_run(adduct_xyz, config, charge, default_mult, default_bs):
+        raise AssertionError("occupancy search must be skipped")
+
+    monkeypatch.setattr(mod, "_manta_adduct_geometry", fake_manta)
+    monkeypatch.setattr(mod, "write_orca_input_and_run", fake_write)
+    monkeypatch.setattr(mod, "_search_adduct_occupancy", must_not_run)
+    monkeypatch.setattr(mod, "plot_scan_result", lambda p: None)
+    monkeypatch.setattr(mod, "_minimal_read_control_file",
+                        lambda: {"scan_dissoc": "true",
+                                 "adduct_source": "manta",
+                                 "manta_smiles": "[Ni](C)",
+                                 "dissoc_distance": "6.0",
+                                 "scan_steps": "4",
+                                 "substrate_atom_index": "1",
+                                 "run_occupier_on_adduct": "false",
+                                 "occupier_on_adduct": "false",
+                                 "PAL": "4", "maxcore": "1000",
+                                 "charge": "-2", "multiplicity": "2"})
+    mod.main()
+    assert captured["scan_mult"] == 2
 
 
 def test_manta_adduct_geometry_writes_best_isomer(tmp_path, monkeypatch):

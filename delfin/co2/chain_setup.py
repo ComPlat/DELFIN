@@ -160,6 +160,7 @@ _CO2_DEFAULTS = {
     "scan_dissoc": "false",
     "dissoc_distance": "6.0",
     "run_occupier_on_adduct": "false",
+    "occupier_on_adduct": "true",
     "substrate_atom": "",
     "substrate_atom_index": "",
     # Adduct flow (automatic chain: xTB preopt -> coordination test -> OCCUPIER)
@@ -272,6 +273,7 @@ def _build_co2_control(
         ("# Inverse RSS (dissociation scan)", [
             "binding", "adduct_source", "manta_smiles", "adduct_xyz",
             "scan_dissoc", "dissoc_distance", "run_occupier_on_adduct",
+            "occupier_on_adduct",
             "substrate_atom", "substrate_atom_index",
         ]),
         ("# Adduct flow (automatic chain)", [
