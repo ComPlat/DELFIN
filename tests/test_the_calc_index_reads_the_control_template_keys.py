@@ -184,6 +184,14 @@ def test_method_parts_of_folder_reads_the_template(tmp_path):
     assert parts["solvent"] == "DMF"
 
 
+def test_method_parts_keeps_the_old_dispersion_key_as_fallback(tmp_path):
+    d = _calc(tmp_path, "old_disp", "functional = PBE0\ndispersion_correction = D3BJ\n")
+    assert ci.method_parts_of_folder(d)["dispersion"] == "D3BJ"
+    d = _calc(tmp_path, "both_disp",
+              "disp_corr = D4\ndispersion_correction = D3BJ\n")
+    assert ci.method_parts_of_folder(d)["dispersion"] == "D4"
+
+
 def test_the_engine_finds_and_summarises_the_run(tmp_path):
     _, idx = _record(tmp_path, "organic", _template_control(),
                      geometry=_XYZ_ORGANIC)
