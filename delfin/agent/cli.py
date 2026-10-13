@@ -1364,8 +1364,16 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
         from . import permission_rules
         where = (getattr(engine, "workspace", None)
                  or getattr(args, "cwd", "") or Path.cwd())
-        for line in permission_rules.error_lines(permission_rules.load(where)):
+        rules = permission_rules.load(where)
+        for line in permission_rules.error_lines(rules):
             notes.append(f"permissions {line}")
+        from .api_client import unknown_tool_names
+        named = [r.value for r in rules.deny + rules.ask + rules.allow
+                 if r.kind == "tool"]
+        for name in unknown_tool_names(named):
+            notes.append(
+                f"permissions rule {name!r} names no tool, so it decides "
+                "nothing and is most likely a typo")
     except Exception:
         pass
 
