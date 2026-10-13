@@ -777,12 +777,17 @@ def _struct_rmsd(coords_a: np.ndarray, coords_b: np.ndarray) -> Optional[float]:
     try:
         from delfin.atom_mapping import apply_rt, kabsch_rt
     except Exception:  # noqa: BLE001 - analysis must never crash the run
-        # Fallback: plain all-atoms RMSD (no rotation) if the mapping
-        # module is unavailable.
-        return float(np.sqrt(np.mean(((a - b) ** 2))))
+        # Fallback: plain all-atoms RMSD (no rotation) if the mapping module
+        # is unavailable.  Same per-atom definition as the main path below:
+        # mean over atoms of the per-atom squared distance, i.e. the RMS
+        # of the atom-wise distances (in Angstrom).
+        return float(np.sqrt(np.mean(np.sum(((a - b) ** 2), axis=1))))
     R, pc, qc = kabsch_rt(a, b)
     aligned = apply_rt(a, R, pc, qc)
-    return float(np.sqrt(np.mean(((aligned - b) ** 2))))
+    # Per-atom RMSD: sqrt(mean over atoms of sqrt(dx^2+dy^2+dz^2)^2) ==
+    # sqrt(mean(sum((aligned-b)**2, axis=1))).  Averaging the squared
+    # coordinates directly (as before) was wrong by a factor of sqrt(3).
+    return float(np.sqrt(np.mean(np.sum(((aligned - b) ** 2), axis=1))))
 
 
 def _family_pairwise_rmsd(
@@ -1142,7 +1147,7 @@ def write_clustered_representatives_xyz(
         for element, (x, y, z) in zip(conf.elements, conf.coords):
             lines.append(f"{element} {x:.10f} {y:.10f} {z:.10f}")
         blocks.append("\n".join(lines))
-    path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+    path.write_text("\n".join(blocks) + "\n", encoding="utf-8")
 
 
 def plot_pca_clusters(

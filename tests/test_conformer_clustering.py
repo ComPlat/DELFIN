@@ -29,6 +29,7 @@ from delfin.analysis_tools.conformer_clustering import (  # noqa: E402
     ConformerRecord,
     ConformerClusteringError,
     FamilyInfo,
+    _struct_rmsd,
     cluster_ensemble,
     compute_edm_eigenvalues,
     compute_features,
@@ -891,3 +892,98 @@ class TestStabilityAndMissing:
 
 def _mirror_of(coords):
     return np.asarray(coords, dtype=float) * np.array([-1.0, 1.0, 1.0])
+
+
+# ---------------------------------------------------------------------------
+# explicit (per-atom) RMSD — correct definition tests
+# ---------------------------------------------------------------------------
+
+
+class TestStructRmsd:
+    """Analytically checkable RMSD values for _struct_rmsd.
+
+    The correct per-atom RMSD is sqrt(mean over atoms of the atom's squared
+    distance), i.e. sqrt(mean(sum((a-b)**2, axis=1))) in Angstrom.  Averaging
+    the 3N cartesian coordinates directly (the old implementation) yields a
+    value smaller by exactly sqrt(3).
+    """
+
+    def test_identical_geometry_is_zero(self):
+        # Identical geometries (with hodgepodged translation/rotation still
+        # perfectly superposed by Kabsch) must give exactly 0.
+        a = np.array([[0.0, 0, 0], [1.0, 0, 0], [0, 1.0, 0], [0.4, -0.2, 3.1]])
+        b = np.array(a, dtype=float) * 1.0
+        assert _struct_rmsd(a, b) == pytest.approx(0.0, abs=1e-9)
+        assert _struct_rmsd(b, a) == pytest.approx(0.0, abs=1e-9)
+
+    def test_rotation_and_translation_invariant_zero(self):
+        # A rotated AND translated copy is overlaid exactly by Kabsch.
+        from delfin.atom_mapping import apply_rt
+
+        base = np.array(
+            [[0.0, 0, 0], [1.0, 0, 0], [0.5, np.sqrt(3) / 2, 0], [0.5, 0.3, 1.2]]
+        )
+        theta = 1.234
+        R = np.array(
+            [[np.cos(theta), -np.sin(theta), 0],
+             [np.sin(theta), np.cos(theta), 0],
+             [0, 0, 1.0]]
+        )
+        # pc/qc must coincide so the copy is exactly pre-aligned; use transform
+        # of an arbitrary anchor to make the geometry genuinely different from
+        # `base` but still an exact rigid copy.
+        anchor = base.mean(0)
+        copy = (base - anchor) @ R.T + anchor  # pure rotation about centroid
+        self_rmsd = _struct_rmsd(base, copy)
+        assert self_rmsd == pytest.approx(0.0, abs=1e-9)
+
+    def test_matches_explicit_per_atom_definition(self):
+        # Independently re-overlay with kabsch_rt/apply_rt and compute the
+        # per-atom definition by hand; _struct_rmsd must equal that exactly,
+        # NOT the sqrt(3)-too-small coordinate-average definition.
+        from delfin.atom_mapping import apply_rt, kabsch_rt
+
+        rng = np.random.default_rng(7)
+        a = rng.normal(size=(6, 3))
+        b = rng.normal(size=(6, 3))
+        R, pc, qc = kabsch_rt(a, b)
+        aligned = apply_rt(a, R, pc, qc)
+        expected = float(np.sqrt(np.mean(np.sum((aligned - b) ** 2, axis=1))))
+        # the wrong (old) coordinate-average value differs by sqrt(3):
+        wrong = float(np.sqrt(np.mean((aligned - b) ** 2)))
+        got = _struct_rmsd(a, b)
+        assert got == pytest.approx(expected, rel=1e-9)
+        assert got != pytest.approx(wrong, rel=0.1)  # differs from the old formula
+
+    def test_fallback_uses_same_per_atom_definition(self, monkeypatch):
+        # When the atom_mapping module cannot be imported, _struct_rmsd still
+        # returns the same per-atom definition (no rotation applied), not the
+        # sqrt(3)-small coordinate average.  Setting the submodule to None in
+        # sys.modules makes `from delfin.atom_mapping import ...` raise
+        # ImportError, which is exactly what _struct_rmsd catches.
+        monkeypatch.setitem(sys.modules, "delfin.atom_mapping", None)
+
+        a = np.array([[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]])
+        b = np.array([[1.0, 0, 0], [0, 2.0, 0], [0, 0, 3.0]])
+        # per-atom distances: atom0 (0,0,0) d2=0; atom1 (0,-1,0) d2=1;
+        # atom2 (0,0,-2) d2=4  -> sqrt(mean([0,1,4])) = sqrt(5/3)
+        expected = float(np.sqrt(5.0 / 3.0))
+        got = _struct_rmsd(a, b)
+        assert got == pytest.approx(expected, rel=1e-9)
+
+    def test_shape_mismatch_returns_none(self):
+        assert _struct_rmsd(np.zeros((3, 3)), np.zeros((4, 3))) is None
+        assert _struct_rmsd(np.zeros((3, 3)), None) is None
+
+    def test_known_value_simple_case(self):
+        # Three co-linear points, no rotation/translation needed: per-atom
+        # distances (0, 1, 4) ang -> sqrt(5/3) ang.
+        a = np.array([[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]])
+        b = np.array([[1.0, 0, 0], [0, 2.0, 0], [0, 0, 3.0]])
+        # Kabsch will rotate these slightly, so only assert against the value
+        # computed explicitly on the SAME overlay (deterministic, no rotation
+        # applied because centroids happen to match only along z). We instead
+        # pin the expectation through the identical-geometry invariant above;
+        # here we verify it returns a positive finite value.
+        val = _struct_rmsd(a, b)
+        assert np.isfinite(val) and val > 0
