@@ -320,8 +320,8 @@ without Bun installed.
 
 | Phase | State |
 |---|---|
-| 0 Spike | in progress |
-| 1 Protocol and worker | – |
+| 0 Spike | done: GO (c35d85e1; exact-row matrix and three startup fixes in phase 0b, see TUI_REWRITE.md) |
+| 1 Protocol and worker | done (b314a988, reviews applied in cc1e12e0) |
 | 2 Supervisor and launcher | – |
 | 3 TUI foundation | – |
 | 4 One session | – |

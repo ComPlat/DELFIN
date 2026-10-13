@@ -16,5 +16,8 @@
     "@types/bun": "1.3.14",
     "@xterm/headless": "6.0.0",
     "typescript": "5.9.3"
+  },
+  "patchedDependencies": {
+    "@opentui/core@0.6.4": "patches/@opentui%2Fcore@0.6.4.patch"
   }
 }

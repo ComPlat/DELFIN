@@ -144,62 +144,152 @@ The phased implementation plan is in [TUI_PLAN.md](TUI_PLAN.md).
 
 ## Phase 0 findings (2026-10-13)
 
-**Decision: GO.** We build on OpenTUI 0.6.4 + SolidJS in split-footer mode,
-using a native library built from source with one patch until upstream fixes
-issue #1630.
+**Decision: GO.** We build on OpenTUI 0.6.4 + SolidJS in split-footer mode.
+The native library is built from source with upstream PR #1665 until
+upstream merges it, and three startup fixes of our own are carried as a bun
+patch.
 
-The spike (`tui/spike/inline.tsx`) runs a scripted session: two agent turns
-with tool rows, a highlighted diff, an approval panel, a streamed markdown
-answer, the agent view (the footer grows close to full height), a session
-switch, and a 1,000-line replay. Afterwards the scrollback was captured from
-each terminal and checked: every expected row present exactly once and in
-order.
+### How the scrollback is checked
 
-| Terminal | Prebuilt OpenTUI | Patched OpenTUI |
+The spike (`tui/spike/inline.tsx --auto`) plays a scripted session through
+the real scrollback core (`tui/src/scrollback/`):
+- four agent turns with tool rows, a highlighted diff and a streamed
+  markdown answer;
+- approval panels of random height, which make the footer grow and shrink
+  at random;
+- the agent view, which grows the footer close to full height;
+- a session switch, a realistic 30-turn replay and a 1,000-line replay.
+
+Every row it commits carries a unique tag (`{t00001}`, …), and its report
+lists every tag the scrollback must hold, in order.
+
+Each harness gets the terminal's real history out of the terminal:
+- tmux: `capture-pane` on a private server;
+- xterm.js: its buffer, live;
+- VTE: its own text API;
+- XTerm: `print-everything`;
+- GNU screen: `hardcopy -h`.
+
+`tui/spike/scrollback_check.py` then requires:
+- exactly the expected tags: nothing missing, nothing twice, nothing out of
+  order;
+- the shell lines printed before the spike still intact above it;
+- after a resize, exactly one replay;
+- no spike errors, nothing on stderr, and a clean exit.
+
+`tui/spike/run_checks.sh` runs the whole matrix.
+
+Two things the first, marker-based harness could not see:
+- Brackets are wrong for tags: markdown reads `[t00001]` as a link and the
+  renderer conceals the brackets.
+- tmux applies `history-limit` only to panes created after it is set. The
+  limit must be set in the same command that creates the session.
+
+### Results (patched build, final)
+
+| Terminal | Cases | Result |
 |---|---|---|
-| tmux 3.4 (also over SSH) | all rows kept | all rows kept |
-| xterm.js 6.0 (VS Code, JupyterLab, browser shells) | 14 rows lost when the footer grows | all rows kept |
-| VTE 0.76 (GNOME Terminal) | all rows kept | all rows kept |
-| XTerm 390 | all rows kept | all rows kept |
+| xterm.js 6.0, live (VS Code, JupyterLab, browser shells) | replies delayed 0, 150, 300, 1000, 2000 ms × start rows 1, 9, 21, 32, 35 × 2 fuzz seeds (50 runs) | all rows exactly once |
+| tmux 3.4 | start rows 1, 21 and the bottom row; resized 110→80 and 110→140 mid-run; over SSH from the bottom row; keys | all pass; resize gives exactly one replay |
+| VTE 0.76 (GNOME Terminal) | start rows 1, 21, 35; 80×24 from the bottom | all pass |
+| XTerm 390 | start rows 1, 21, 35; 80×24 from the bottom | all pass |
+| GNU screen 4.9.1 | start rows 1 and 35 | all pass |
+| GNU screen 4.9.1, resized | 110→80 mid-run | 52 rows twice: screen has no ED3, so a replay cannot erase its scrollback (see phase 4) |
 
-- **The patch:** `tui/patches/opentui-v0.6.4-footer-growth-linefeeds.patch`
-  grows the footer with line feeds instead of `CSI n S`.
-  `tui/scripts/build-opentui-native.sh` builds and installs it. Re-run the
-  script after every `bun install`.
-- **Speed:** a 1,000-line replay takes 400–480 ms; idle CPU use is zero.
-- **Resize:** shrinking the terminal from 110 to 80 or 90 columns mid-run
-  re-wrapped the whole session correctly, including over SSH.
-- **Exit:** the exit is clean. The footer disappears and the transcript stays.
-- **Keys** behave correctly in tmux: ←, shift+tab, esc, and ← with text typed.
+Negative control: with the prebuilt native library, xterm.js loses 49 and 54
+rows (two seeds) when the footer grows. That is opentui#1630, and the checker
+names every missing row.
 
-Lessons the implementation must follow:
+### What we carry on top of OpenTUI 0.6.4
+
+- **Native: upstream PR #1665** (`tui/patches/opentui-v0.6.4-pr1665-footer-growth-scrollback.patch`).
+  - It grows the footer by saving the cursor, moving to the footer's last row,
+    writing line feeds and restoring the cursor (DECSC, CUP, n LF, DECRC),
+    instead of `CSI n S`. xterm.js deletes the rows that `CSI n S` scrolls
+    off, while line feeds push them into history.
+  - Its JS half (`scrollIntoHistory`) is in the bun patch.
+  - `tui/scripts/build-opentui-native.sh` builds it at a pinned commit with a
+    pinned Zig, runs its tests and installs it. `--check` verifies the
+    installed library. Re-run it after every `bun install`.
+- **JS: the bun patch** (`tui/patches/@opentui%2Fcore@0.6.4.patch`, applied
+  by `bun install`), which carries three startup fixes:
+  1. **Starting near the bottom row overwrote the line above.**
+     - Setup reserves the footer's rows with line feeds after the
+       cursor-position query was sent. On the bottom rows those line feeds
+       scroll the screen.
+     - The startup seed then took the pre-scroll row, and the first commit
+       wrote over the last line of output. The usual case for this is
+       `delfin-agent tui` typed into a terminal that has already scrolled.
+     - Prebuilt and patched native libraries both had the bug, in every
+       terminal.
+     - Fix: seed from the row as it is after the reservation. If that row is
+       under the footer, push it into history first.
+  2. **A fast terminal's reply arrived before setup finished.**
+     - That happens with XTerm, which answers every startup query. Fix 1's
+       scroll then has to wait until setup completes. It is written at once
+       after setup, before the first frame.
+  3. **A slow reply (over 1.5 s) overwrote the screen from row 1.**
+     - The fallback seed was row 1. Now a missing reply counts as "cursor on
+       the bottom row".
+     - At worst that leaves blank rows above the footer; it never overwrites.
+     - The reply timeout itself is raised from 120 ms to 1.5 s
+       (`OTUI_SPLIT_CPR_TIMEOUT_MS`): an earlier review showed that 300 ms of
+       latency overwrote shell lines.
+- These three fixes should go upstream as a PR once the user has seen them
+  (left for the user: it means posting on a third-party repository).
+
+### Measurements
+
+- A 1,000-line replay takes 400–470 ms, and a realistic 30-turn replay with
+  markdown, diffs and highlighting about 0.85–0.9 s. Both were measured in
+  tmux on a loaded machine (load average 15–20).
+- Idle CPU use is zero.
+- The exit is clean: the footer disappears and the transcript stays.
+
+### Lessons the implementation must follow
 
 1. **Render on demand, and run live while scrollback output is queued.**
    Demand-only rendering stalls on a burst of commits. Always-on rendering
    costs CPU and never lets `renderer.idle()` resolve.
+   (`tui/src/scrollback/queue.ts`)
 2. **`resize` also fires when the footer changes height.** Only a change of
-   terminal width may trigger the clear-and-replay. Anything else would wipe
-   scrollback for nothing.
-3. **Solid's JSX compiler collapses runs of spaces in literal text.**
+   terminal width may trigger the clear-and-replay; anything else would wipe
+   scrollback for nothing. (`resize.ts`)
+3. **Commit whole items, and replay as one queue task.**
+   - Record each item when it is written, not when it is queued.
+   - Then a replay can neither miss an item nor write one twice, and
+     nothing lands between the wipe and the reprint. (`transcript.ts`)
+4. **Solid's JSX compiler collapses runs of spaces in literal text.**
    Significant spacing must be written as string expressions.
-4. **Never exit the process from `onDestroy`.** OpenTUI flushes queued
+5. **Never exit the process from `onDestroy`.** OpenTUI flushes queued
    scrollback after destroy. Exiting early drops it.
-5. **The diff renderer rejects hunks whose line counts are wrong.** Validate
-   diffs, and fall back to plain text.
-6. **Markdown heading styles need one key per level**
+6. **The diff renderer rejects hunks whose line counts are wrong.** Validate
+   diffs with jsdiff's `parsePatch`, and fall back to plain text.
+7. **Markdown heading styles need one key per level**
    (`markup.heading.1` … `.6`).
-7. **The live tail in the footer must be rendered as markdown.** Raw source
+8. **The live tail in the footer must be rendered as markdown.** Raw source
    such as `| --- |` looks broken.
-8. **OpenTUI bundles no Python tree-sitter grammar.** Phase 4 registers
+9. **OpenTUI bundles no Python tree-sitter grammar.** Phase 4 registers
    Python, plus ORCA/shell where available.
-9. **Colours over SSH:** truecolour is only detected when `COLORTERM` reaches
-   the remote host. Otherwise output falls back to 256 colours.
+10. **Colours over SSH:** truecolour is only detected when `COLORTERM`
+    reaches the remote host. Otherwise output falls back to 256 colours.
+11. **`OPENTUI_GRAPHICS=0`.** The kitty-graphics probe retitles tmux panes,
+    and this TUI draws no images.
+12. **GNU screen cannot erase its scrollback (no ED3).**
+    - On a resize under screen, print a divider ("resized to N columns —
+      the rows above keep their old width") instead of replaying.
+    - Detect screen by `STY`. TERM doesn't tell it apart, because tmux sets
+      `screen*` too.
 
 ## Risks
 
-- **OpenTUI's inline mode is young.** Its native path dates from 2026-03, and
-  bug #1630 is patched locally (see "Phase 0 findings"). The patch has to be
-  rebuilt for each OpenTUI upgrade until upstream fixes the bug.
+- **OpenTUI's inline mode is young.**
+  - Its native path dates from 2026-03.
+  - We carry upstream PR #1665 for bug #1630, plus three startup fixes (see
+    "Phase 0 findings"). The native part has to be rebuilt for each OpenTUI
+    upgrade until upstream has both.
+  - `tui/spike/run_checks.sh` is the test that tells whether an upgrade
+    still works.
 - **HPC login nodes** have process reapers, several login nodes and a shared
   NFS `$HOME`. The event log and resumable sessions mitigate this. Sessions
   survive logout exactly as well as tmux does on that cluster.
