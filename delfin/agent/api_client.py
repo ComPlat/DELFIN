@@ -5677,6 +5677,19 @@ def _mcp_call_refusal(fn_name: str, fn_args: dict,
     """
     base = (fn_name.rsplit("__", 1)[-1]
             if fn_name.startswith("mcp__") else fn_name)
+    # The administrator's managed policy, as at execute(): before the
+    # hooks, in every mode.
+    managed = (_managed_hit(permissions, fn_name, fn_args)
+               if permissions is not None else None)
+    if managed is not None and managed[0] == "deny":
+        from . import managed_policy as _mp
+        _record_security_event("managed_policy_deny", fn_name,
+                               managed[1].text[:120])
+        return json.dumps({"error": _mp.deny_text(fn_name, managed[1])})
+    if managed is not None:
+        refusal = _managed_ask(permissions, fn_name, fn_args, managed[1])
+        if refusal is not None:
+            return json.dumps({"error": refusal})
     hook_block = _doc_executor._run_pre_tool_hooks(base, fn_args, permissions)
     if hook_block is not None:
         return json.dumps({"error": "blocked_by_hook",
@@ -6790,8 +6803,82 @@ def effective_mode(perms: Optional["KitToolPermissions"]) -> str:
     """The mode THIS call is being decided by."""
     pin = _MODE_PIN.get()
     if pin is not None:
-        return pin[0]
+        return _managed_mode(pin[0])
     return str(getattr(perms, "mode", "") or "")
+
+
+def _managed_mode(mode: str) -> str:
+    """``mode`` unless the administrator's managed policy disallows it
+    (managed_policy.coerce_mode); unchanged when there is no policy."""
+    if not mode:
+        return mode
+    try:
+        from . import managed_policy as _mp
+        return _mp.coerce_mode(mode)
+    except Exception:
+        return mode
+
+
+def _managed_hit(perms, name: str, args) -> Optional[tuple]:
+    """("deny"|"ask", Rule) of the managed policy for this call, or None."""
+    try:
+        from . import managed_policy as _mp
+        return _mp.friction(name, args if isinstance(args, dict) else {},
+                            getattr(perms, "workspace", None))
+    except Exception:
+        return None
+
+
+def _managed_ask(perms, name: str, args: dict, rule) -> Optional[str]:
+    """Put a call a managed ask rule names to the person, in every mode.
+    None when approved, else the refusal; refused with nobody to ask."""
+    bare = _bare_tool_name(name)
+    body = (f"$ {(args or {}).get('command') or ''}"
+            if bare in ("bash", "bash_background")
+            else f"{name}\n" + _preview_args(args or {}))
+    cb = getattr(perms, "confirm_callback", None)
+    _record_security_event("managed_policy_ask", bare,
+                           f"{rule.text}: {body}"[:160], blocked=cb is None)
+    if cb is None:
+        return (f"'{bare}' meets the managed policy rule `{rule.text}` (ask, "
+                f"{rule.source}) and nobody can be asked here, so it is "
+                "refused. Tell the user what the call is for.")
+    preview = ("[MANAGED POLICY: ask]\nThe administrator's rule "
+               f"`{rule.text}` ({rule.source}) asks before this call.\n\n"
+               f"{body}")
+    try:
+        ok = bool(cb(name, args or {}, preview))
+    except Exception as exc:
+        return f"confirm_callback raised: {exc}"
+    if ok:
+        return None
+    _record_security_event("denied_by_user", bare, body[:120])
+    return (f"user denied '{bare}' (asked by the managed policy rule "
+            f"`{rule.text}`). Do NOT retry it or reach the same effect "
+            "another way.")
+
+
+def _managed_path_refusal(perms, kind: str, path) -> Optional[str]:
+    """The refusal for the policy file itself (writes) or a managed deny
+    rule on a path a tool resolved; None otherwise."""
+    try:
+        from . import managed_policy as _mp
+        if kind == "write" and _mp.is_policy_path(path):
+            _record_security_event("managed_policy_deny", "write",
+                                   f"policy file: {path}"[:160])
+            return (f"write denied: '{path}' is the administrator's managed "
+                    "policy file. No session, mode or approval writes it.")
+        rule = _mp.denies_path(kind, path, getattr(perms, "workspace", None))
+    except Exception:
+        return None
+    if rule is None:
+        return None
+    _record_security_event("managed_policy_deny", kind,
+                           f"{rule.text}: {path}"[:160])
+    return (f"{kind} denied: '{path}' is refused by the managed policy rule "
+            f"`{rule.text}` ({rule.source}), set by the administrator, in "
+            "every mode and whatever is approved. Do not reach it through "
+            "another tool.")
 
 
 def repin_permission_mode(mode: str) -> None:
@@ -6997,6 +7084,15 @@ class KitToolPermissions:
     # would be a route around the flag.
     skip_hook_discovery: bool = False
     skip_skill_discovery: bool = False
+
+    def __setattr__(self, key: str, value: Any) -> None:
+        # The mode an administrator's managed policy disallows is never
+        # held, whichever caller sets it (constructor, replace(), the
+        # engine, a plan approval, a dashboard): it becomes the fallback
+        # managed_policy.coerce_mode names. One attribute, every route.
+        if key == "mode" and isinstance(value, str):
+            value = _managed_mode(value)
+        object.__setattr__(self, key, value)
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).expanduser().resolve()
@@ -7411,6 +7507,14 @@ class KitToolPermissions:
     def matches_bash_auto_allow(self, cmd: str) -> bool:
         if self._interpreter_needs_confirm(cmd):
             return False
+        # The administrator's ``only_allow`` bounds what any allow pattern
+        # (default, settings, remembered) may grant without asking.
+        try:
+            from . import managed_policy as _mp
+            if not _mp.allow_may_grant_bash(cmd):
+                return False
+        except Exception:
+            pass
         # The line-number lookup `$(grep -n PAT FILE | cut -d: -f1)` --
         # the largest group of avoidable dialogs (2026-09-25/26 audits) --
         # prints digits and nothing else, so its output cannot become code
@@ -11870,6 +11974,14 @@ def _classifier_settings() -> Optional[dict]:
         enabled = True
     elif env == "all":
         enabled = broad = True
+    # The administrator's managed policy may keep the watcher on against
+    # both the settings file and the environment.
+    if not enabled:
+        try:
+            from . import managed_policy as _mp
+            enabled = _mp.classifier_forced_on()
+        except Exception:
+            pass
     if not enabled:
         return None
     from . import action_classifier as _ac
@@ -13918,6 +14030,11 @@ class _DocToolExecutor:
         # from this decision (see ``tool_unavailable_reason``), never the
         # other way round.
         session_refusal = _tool_denied_for_session(permissions, name)
+        # The administrator's managed policy (managed_policy.py): a deny
+        # refuses here, in every mode, before the session lists, hooks, the
+        # mode and every user allow; an ask is put just before dispatch.
+        managed_hit = (_managed_hit(permissions, name, arguments)
+                       if permissions is not None else None)
         if permissions is not None and _tool_denied_for_role(auth_role, name):
             from . import action_protocol as _action_protocol
             if (_action_protocol.role_uses_action_protocol(auth_role)
@@ -13936,6 +14053,11 @@ class _DocToolExecutor:
                     "and researches via search_docs — it does not read/edit source "
                     "or run shell commands."
                 )})
+        elif managed_hit is not None and managed_hit[0] == "deny":
+            from . import managed_policy as _mp
+            _record_security_event("managed_policy_deny", name,
+                                   managed_hit[1].text[:120])
+            result = json.dumps({"error": _mp.deny_text(name, managed_hit[1])})
         elif session_refusal:
             # After the role check and before the mode check, by the same
             # rule the mode check states: report the more permanent reason
@@ -13988,6 +14110,10 @@ class _DocToolExecutor:
             # After every refusal that outranks it, before any dialog: a
             # call the schema cannot accept is answered with its shape.
             result = json.dumps({"error": _malformed})
+        elif (managed_hit is not None
+                and (_managed_refusal := _managed_ask(
+                    permissions, name, arguments, managed_hit[1]))):
+            result = json.dumps({"error": _managed_refusal})
         else:
             result = self._dispatch(name, arguments, permissions)
 
@@ -16960,6 +17086,11 @@ class _DocToolExecutor:
                 "These are never readable, regardless of mode or confirm."
             )
 
+        # A managed deny rule of the administrator's on the resolved path.
+        _managed_refusal = _managed_path_refusal(perms, "read", resolved)
+        if _managed_refusal:
+            return _managed_refusal
+
         # Inside any allowed root: free read. Checked BEFORE the refusal
         # ledger on purpose — if the user has since granted the directory
         # (extra_dir / "Erlaubte Verzeichnisse"), that later, explicit
@@ -17257,6 +17388,19 @@ class _DocToolExecutor:
                 blocked=True)
             return _approval_guard.refusal(
                 f"'{path_arg}' is where pending approvals are answered")
+        # The managed policy file, and a managed deny rule on the path, for
+        # every write tool and every shell write target, in every mode.
+        try:
+            _managed_target = Path(str(path_arg)).expanduser()
+            if not _managed_target.is_absolute():
+                _managed_target = Path(perms.workspace) / _managed_target
+        except Exception:
+            _managed_target = None
+        if _managed_target is not None:
+            _managed_refusal = _managed_path_refusal(
+                perms, "write", _managed_target)
+            if _managed_refusal:
+                return _managed_refusal
         # for_read=True: recognise every reachable root so the per-tier policy
         # below can fire (deny read-only, confirm calc). The write EXECUTOR
         # re-resolves writable-only — defense in depth.
@@ -23861,6 +24005,32 @@ def _bash_isolation_argv(
         except Exception:
             mode = "auto"
     mode = mode.strip().lower()
+    # The administrator's managed policy: with require_isolation no setting
+    # or flag runs a command unsandboxed -- "off" and "auto" become the
+    # forced isolation below, whose fallbacks are Landlock, Seatbelt or a
+    # refusal. container_backend "bwrap" accepts bubblewrap only.
+    try:
+        from . import managed_policy as _mp
+        _managed = _mp.load()
+    except Exception:
+        _managed = None
+    if _managed is not None and _managed.require_isolation:
+        if not _bwrap_functional():
+            if _managed.container_backend == "bwrap":
+                return _refusal_argv(
+                    "the managed policy requires bubblewrap for every "
+                    "command, and bubblewrap does not work on this host")
+            if _landlock_functional():
+                _announce_isolation_via_landlock("managed policy")
+                return _in_process_cage(_landlock_argv(
+                    plain, perms, extra_write, strict=True), run_cwd)
+            if _seatbelt_functional():
+                return _seatbelt_argv(plain, perms, extra_write)
+            return _refusal_argv(
+                "the managed policy requires isolation for every command, "
+                "and neither bubblewrap nor Landlock nor Seatbelt works on "
+                "this host")
+        mode = "bwrap"
     # "auto" (default): hard-isolate ONLY in the unattended/permissive
     # permission mode (bypassPermissions) where no human approves each
     # command — that's where containment matters most. Interactive modes keep

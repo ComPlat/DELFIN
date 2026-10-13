@@ -247,10 +247,18 @@ def _mode_cmd(ctx, args: str) -> CommandResult:
 
 def _permissions(ctx, args: str) -> CommandResult:
     name = args.strip()
+    try:
+        from . import managed_policy as _mp
+        managed = _mp.summary_lines()
+        refusal = _mp.mode_refusal(name) if name else None
+    except Exception:
+        managed, refusal = [], None
     if not name:
-        return CommandResult(output=(
+        return CommandResult(output="\n".join([
             f"approval is {_mode(ctx.engine) or '(no gate)'} — "
-            "/permissions plan|default|acceptEdits, or Shift+Tab"))
+            "/permissions plan|default|acceptEdits, or Shift+Tab"] + managed))
+    if refusal:
+        return CommandResult(output=f"not switched: {refusal}")
     if name == "bypassPermissions":
         return CommandResult(output=(
             "not from here. Unattended execution is reachable only by "

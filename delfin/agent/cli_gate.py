@@ -190,6 +190,16 @@ def _unjson(err: str | None) -> str | None:
     return str(err)
 
 
+#: The CLI's tool names as the native tools managed rules name.
+_MANAGED_NATIVE = {
+    "Read": "read_file", "NotebookRead": "notebook_read", "Grep": "grep_file",
+    "Glob": "list_files", "LS": "list_files", "Write": "write_file",
+    "Edit": "edit_file", "MultiEdit": "multi_edit",
+    "NotebookEdit": "notebook_edit", "Bash": "bash", "WebFetch": "web_fetch",
+    "WebSearch": "web_search",
+}
+
+
 def decide(token: str, event: dict) -> str | None:
     """Why this tool call is refused, or None when it may run.
 
@@ -208,6 +218,24 @@ def decide(token: str, event: dict) -> str | None:
     args = event.get("tool_input") or {}
     cwd = str(event.get("cwd") or state["workspace"])
     err: str | None = None
+
+    # The administrator's managed policy on the native name of the call:
+    # deny refuses, ask asks through the same relay (refused with nobody).
+    native = _MANAGED_NATIVE.get(tool, tool)
+    native_args = dict(args) if isinstance(args, dict) else {}
+    if native == "bash":
+        native_args = {"command": str(native_args.get("command") or ""),
+                       "cwd": cwd}
+    hit = ac._managed_hit(perms, native, native_args)
+    if hit is not None and hit[0] == "deny":
+        from . import managed_policy as _mp
+        ac._record_security_event("managed_policy_deny", native,
+                                  hit[1].text[:120])
+        return _mp.deny_text(native, hit[1])
+    if hit is not None:
+        refusal = ac._managed_ask(perms, native, native_args, hit[1])
+        if refusal is not None:
+            return refusal
 
     if tool in _READ_TOOLS:
         raw = args.get(_READ_TOOLS[tool]) or cwd

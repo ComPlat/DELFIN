@@ -107,6 +107,9 @@ _KINDS = {
     # dialog said, so it is recorded like the other floors that hold
     # against an approving user.
     "unbounded_allow_pattern": ("🔓", "Auto-allow rule that matched everything"),
+    # The administrator's managed policy (managed_policy.py).
+    "managed_policy_deny": ("🏛", "Refused by the managed policy"),
+    "managed_policy_ask":  ("🏛", "Asked by the managed policy"),
     # MCP dispatch bypasses the native executor, so its refusals are their
     # own kinds.
     "plan_mode_mcp":     ("📝", "Plan mode: MCP tool refused"),

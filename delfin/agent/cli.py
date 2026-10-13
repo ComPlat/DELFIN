@@ -1294,6 +1294,24 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
     """
     notes: list[str] = []
 
+    # The administrator's managed policy: what it enforces, and a requested
+    # mode it replaced. Read from the policy itself, as the gate reads it.
+    try:
+        from . import managed_policy as _mp
+        requested = str(getattr(args, "permission_mode", "") or "")
+        if requested:
+            _m, _note, _refuse = _mp.launch_decision(
+                requested, explicit=True, attended=False)
+            if _note:
+                notes.append(_note)
+        if _mp.isolation_unmet():
+            notes.append("managed policy requires an isolation layer and "
+                         "none works here: this run is capped at default "
+                         "and every shell command is refused")
+        notes.extend(_mp.summary_lines())
+    except Exception:
+        pass
+
     try:
         usd = float(getattr(args, "max_budget_usd", 0.0) or 0.0)
     except (TypeError, ValueError):
@@ -1419,6 +1437,22 @@ def cmd_chat(args: argparse.Namespace) -> int:
         print("Nothing on stdin, and no -p. Nothing to do.", file=sys.stderr)
         return 2
 
+    # The administrator's managed policy, before anything is built: a mode
+    # the person named on the command line that the policy disallows, or a
+    # required isolation layer this host lacks, ends an attended start here
+    # with the reason. A mode from a settings file falls back instead.
+    try:
+        from . import managed_policy as _mp
+        _flag_mode = str(getattr(args, "permission_mode", "") or "")
+        _, _managed_note, _managed_refuse = _mp.launch_decision(
+            _flag_mode or "default", explicit=bool(_flag_mode),
+            attended=True)
+    except Exception:
+        _managed_note, _managed_refuse = "", False
+    if _managed_refuse:
+        print(_managed_note, file=sys.stderr)
+        return 2
+
     # An interactive session is a conversation, not a document. The flag
     # is accepted on this subcommand because the one-shot half lives here
     # too; taking it silently and then emitting text is the shape of a
@@ -1443,7 +1477,17 @@ def cmd_chat(args: argparse.Namespace) -> int:
     args.extra_dirs = [str(p) for p in report.granted_dirs]
     args.read_only_dirs = [str(p) for p in report.read_dirs]
     isolation_note = ""
-    if getattr(args, "no_isolate", False):
+    try:
+        from . import managed_policy as _mp
+        _isolation_required = _mp.load().require_isolation
+    except Exception:
+        _isolation_required = False
+    if getattr(args, "no_isolate", False) and _isolation_required:
+        # The managed policy forces isolation in the shell gate whatever
+        # this flag says; say so rather than claim it is off.
+        isolation_note = ("isolation  --no-isolate IGNORED: the managed "
+                          "policy requires isolation for every command")
+    elif getattr(args, "no_isolate", False):
         # Deliberately disarmed. Said on screen, because a session running
         # without containment should not look like one that has it.
         from .api_client import set_bash_isolation_override
@@ -1481,6 +1525,15 @@ def cmd_chat(args: argparse.Namespace) -> int:
         unattended_opt_in=bool(getattr(args, "unattended", False)),
         settings_path=persisted_from or "~/.delfin/settings.json",
     )
+    try:
+        from . import managed_policy as _mp
+        _managed_posture = _mp.coerce_mode(posture)
+        if _managed_posture != posture:
+            why = (f"{why}; {posture} disallowed by the managed policy, "
+                   f"so {_managed_posture}")
+            posture = _managed_posture
+    except Exception:
+        pass
     try:
         engine.set_kit_permission_mode(posture)
     except Exception:

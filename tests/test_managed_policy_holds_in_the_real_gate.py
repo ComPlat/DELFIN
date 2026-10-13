@@ -56,6 +56,7 @@ def env(tmp_path, monkeypatch):
     etc = tmp_path / "etc" / "delfin"
     etc.mkdir(parents=True)
     etc.chmod(0o755)
+    etc.parent.chmod(0o755)
     policy = etc / "managed_policy.json"
     monkeypatch.setattr(MP, "_PATHS_OVERRIDE", (str(policy),))
     monkeypatch.setattr(MP, "_ADMIN_UIDS_OVERRIDE",
@@ -199,6 +200,7 @@ def test_a_broken_rule_is_reported(env):
     _write_policy(env["policy"],
                   {"permissions": {"deny": ["frob(x)", "bash(touch)"]}})
     pol = MP.load()
+    assert pol.sources[0].trusted, pol.sources[0].note
     assert [r.text for r in pol.deny] == ["bash(touch)"]
     assert any("frob(x)" in e for e in pol.errors)
 
@@ -418,11 +420,13 @@ def test_the_policy_file_is_unwritable_through_every_route(env, monkeypatch):
     _write_policy(inside, {"disallowed_modes": ["bypassPermissions"]})
     before = inside.read_text()
     perms = _perms(env, "acceptEdits", answer=True)
-    perms.read_tracker[str(inside.resolve())] = inside.stat().st_mtime
+    # Read first, so the read-before-write rule is not what refuses.
+    assert not _err(_run(perms, "read_file", {"path": "managed_policy.json"}))
     assert "managed policy" in _err(_run(perms, "write_file", {
         "path": "managed_policy.json", "content": "{}"}))
-    res = _run(perms, "bash", {"command": "echo '{}' > managed_policy.json"})
-    assert _err(res) or "managed policy" in res
+    for cmd in ("echo '{}' > managed_policy.json",
+                "cp /dev/null managed_policy.json"):
+        assert "managed policy" in _err(_run(perms, "bash", {"command": cmd}))
     assert inside.read_text() == before
 
 

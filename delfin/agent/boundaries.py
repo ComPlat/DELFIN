@@ -83,6 +83,7 @@ _READ_ONLY_SINKS = frozenset({
 #: Refusal text -> reason code, for refusals that record no security
 #: event. First match wins; matched case-insensitively.
 _TEXT_CODES: tuple[tuple[str, str], ...] = (
+    ("managed policy", "managed_policy"),
     ("plan mode", "plan_mode"),
     ("was excluded from this session", "session_tool_list"),
     ("is not available to the", "role"),
@@ -499,6 +500,15 @@ def _git(workspace: Path) -> dict:
     return {"repository_key": key or "", "role": role, "source": source}
 
 
+def _managed_summary() -> dict:
+    """managed_policy.summary(), or an inactive one when it cannot load."""
+    try:
+        from . import managed_policy
+        return managed_policy.summary()
+    except Exception as exc:
+        return {"active": False, "sources": [], "errors": [str(exc)]}
+
+
 def capabilities(*, cwd: Any = ".", permission_mode: str = "",
                  add_dirs: Iterable[str] = (), read_dirs: Iterable[str] = (),
                  allowed_tools: Iterable[str] = (),
@@ -539,6 +549,7 @@ def capabilities(*, cwd: Any = ".", permission_mode: str = "",
         "sandbox": sandbox,
         "git": _git(workspace),
         "pre_tool_hooks": _hook_count(workspace),
+        "managed_policy": _managed_summary(),
         "launch": {"refused": bool(report.refused),
                    "findings": [{"level": f.level, "code": f.code,
                                  "message": f.message}
@@ -605,6 +616,10 @@ def format_capabilities(caps: dict) -> str:
                     else "") + "]")
     if caps["pre_tool_hooks"]:
         lines.append(f"hooks       {caps['pre_tool_hooks']} PreToolUse")
+    managed = caps.get("managed_policy") or {}
+    if managed.get("active") or managed.get("errors"):
+        from . import managed_policy
+        lines.extend(managed_policy.summary_lines())
     if caps["launch"]["refused"]:
         lines.append("launch      REFUSED: " + "; ".join(
             f["message"] for f in caps["launch"]["findings"]
