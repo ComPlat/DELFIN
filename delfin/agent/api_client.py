@@ -8923,7 +8923,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "Delegate a self-contained task to an isolated sub-agent "
                 "that returns one summary. All types are read-only except "
                 "'general-purpose' (the parent's FULL permissions) and "
-                "'verifier'/'control' (run commands). Caps: "
+                "'verifier' (runs commands). Caps: "
                 + _subagent_caps_phrase() + "."
             ),
             "parameters": {

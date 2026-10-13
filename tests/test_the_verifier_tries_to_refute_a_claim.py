@@ -1,17 +1,25 @@
-"""The ``control`` preset: a delegate that receives a claim and tries to
-refute it.
+"""The ``verifier`` preset: a delegate that receives a claim about a change
+and tries to refute it.
 
-Input: a claim ("fixed", "tested", "works", "the result is X").
+Input: a claim ("fixed", "tested", "works", "breaks nothing", "the result
+is X").
 Output: a verdict (refuted | confirmed | undecided), the commands and the
 output lines that decide it, and what was not checked. Inside an
 orchestration verify step the same verdict travels in the existing
 ``{refuted, note}`` ballot (``_ORCH_VERIFY_SCHEMA``); no second verdict
 format exists.
 
-Tool surface: the verifier's -- mode ``default`` (plan mode refuses
-``bash`` and ``run_tests``, so a plan-mode control could not run the
-check it is asked to repeat), read tools plus ``bash`` and ``run_tests``,
-no file-editing tool. A write through ``bash`` goes to the default-mode
+One preset, not two. A separate ``control`` preset with the verifier's
+tool list, mode and job ("gate work before it is reported") was the
+alternative and is not built: the two would differ only in whether the
+base run happens when the check passes, which is a rule of the method,
+not a different surface. The rules (same check at base and now, the real
+path, an empty check is no evidence) live in the verifier's prompt.
+
+Tool surface: mode ``default`` (plan mode refuses ``bash`` and
+``run_tests``, so a plan-mode verifier could not run the check it is
+asked to repeat), read tools plus ``bash`` and ``run_tests``, no
+file-editing tool. A write through ``bash`` goes to the default-mode
 write gate, i.e. to the user's dialog; that is asserted here by driving
 ``run_subagent`` through the real executor with a scripted backend.
 """
@@ -36,43 +44,24 @@ def _fresh():
     SA.reload_subagent_presets()
 
 
-def _control():
-    return SA.SUBAGENT_PRESETS["control"]
+def _verifier():
+    return SA.SUBAGENT_PRESETS["verifier"]
 
 
 # ---------------------------------------------------------------------------
-# Reachable
+# One preset carries the method
 # ---------------------------------------------------------------------------
 
-def test_the_preset_is_a_pack_file_and_discovered():
-    assert (_PACK / "control_subagent.md").is_file()
-    assert "control" in SA.SUBAGENT_PRESETS
-    assert "control" in SA.subagent_type_names()
+def test_there_is_no_second_preset_with_the_same_job():
+    assert "control" not in SA.SUBAGENT_PRESETS
+    assert not (_PACK / "control_subagent.md").exists()
 
 
-def test_the_subagent_tool_enum_offers_it():
-    from delfin.agent.api_client import _DOC_TOOLS_OPENAI
-    sub = next(t for t in _DOC_TOOLS_OPENAI
-               if t["function"]["name"] == "subagent")
-    enum = sub["function"]["parameters"]["properties"]["subagent_type"]["enum"]
-    assert "control" in enum
-
-
-def test_the_subagent_tool_says_it_runs_commands():
-    """The description lists the types that are not read-only; a type that
-    runs commands and is absent from that list is a description the code
-    contradicts."""
-    from delfin.agent.api_client import _DOC_TOOLS_OPENAI
-    sub = next(t for t in _DOC_TOOLS_OPENAI
-               if t["function"]["name"] == "subagent")
-    desc = sub["function"]["description"]
-    head = desc.split("Caps:")[0]
-    assert "'control'" in head and "'verifier'" in head
-
-
-def test_the_solo_role_prompt_names_it():
+def test_the_solo_role_prompt_says_what_the_verifier_is_for():
     text = (_PACK / "solo_agent.md").read_text(encoding="utf-8")
-    assert "`control`" in text
+    row = next(line for line in text.splitlines()
+               if line.startswith("| `verifier`"))
+    assert "claim" in row and "base" in row
 
 
 # ---------------------------------------------------------------------------
@@ -85,57 +74,58 @@ _FILE_WRITERS = ("write_file", "edit_file", "multi_edit", "apply_patch",
 
 
 def test_it_can_run_the_check_it_is_asked_to_repeat():
-    tools = set(_control().tools)
+    tools = set(_verifier().tools)
     assert {"bash", "run_tests"} <= tools
-    assert _control().mode == "default", (
+    assert _verifier().mode == "default", (
         "plan mode refuses bash and run_tests for every caller")
 
 
 def test_it_has_no_file_editing_tool():
-    tools = set(_control().tools)
+    tools = set(_verifier().tools)
     for name in _FILE_WRITERS:
         assert name not in tools, name
-
-
-def test_it_reuses_the_verifier_tool_set_rather_than_a_new_one():
-    """One run-but-do-not-edit surface in the pack, not two that drift."""
-    assert set(_control().tools) == set(SA.SUBAGENT_PRESETS["verifier"].tools)
 
 
 # ---------------------------------------------------------------------------
 # The method is in the prompt
 # ---------------------------------------------------------------------------
 
-def test_the_prompt_carries_the_four_rules():
-    body = _control().system_prompt
+def test_the_prompt_carries_the_rules():
+    body = _verifier().system_prompt
     low = body.lower()
-    # 1. baseline and current state; a pass on both shows nothing
-    assert "baseline" in low and "current state" in low
-    assert "passes on both" in low
+    # the covering checks, not a suite named after the change
+    assert "cover" in low
+    # base and current state; a pass on both shows nothing
+    assert "base" in low and "current state" in low
+    assert "passes on" in low and "both" in low
     assert "git stash" in low and "never" in low
     assert "git show" in low
-    # 2. the real path
+    # the real path
     assert "entry point" in low
-    # 3. a check that saw nothing
+    # a check that saw nothing
     assert "zero tests collected" in low and "no evidence" in low
-    # 4. the answer
+    # the failure text is quoted
+    assert "message" in low
+    # the answer
     for word in ("refuted", "confirmed", "undecided"):
         assert word in low
     assert "not checked" in low
+    assert "never edit" in low
 
 
 def test_the_prompt_maps_the_verdict_onto_the_existing_ballot():
-    body = _control().system_prompt
+    body = _verifier().system_prompt
     assert "{refuted, note}" in body
     assert set(SA._ORCH_VERIFY_SCHEMA["properties"]) == {"refuted", "note"}
 
 
 def test_the_prompt_is_terse():
-    assert len(_control().system_prompt) < 1400
+    assert len(_verifier().system_prompt) < 1800
+
 
 
 def test_no_why_preset_was_added():
-    """Root-cause work is a control (reproduce, then the same check at the
+    """Root-cause work is a verifier run (reproduce, then the same check at the
     baseline) plus explore (locate); a third preset would split one
     method across two names."""
     assert "why" not in SA.SUBAGENT_PRESETS
@@ -249,7 +239,7 @@ def _drive(monkeypatch, tmp_path, ws, streams, **run_kw):
 
     client.client.chat.completions.create = _create
     result = SA.run_subagent(
-        subagent_type="control", description="refute the claim",
+        subagent_type="verifier", description="refute the claim",
         prompt="Claim: test_claim.py was fixed. Try to refute it.",
         parent_client=client, parent_perms=perms, inherit_context=False,
         **run_kw)

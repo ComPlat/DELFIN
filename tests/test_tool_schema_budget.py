@@ -204,13 +204,7 @@ _BASELINE_TOKENS = 11_422
 # shown in the chat. Trimmed first -- one-line description naming the
 # kinds, a bare type for the spec -- which leaves 71 tokens, so the budget
 # moves 9_990 -> 10_061.
-# 2026-10-13: the `control` preset (tries to refute a claim). Its cost
-# here is the enum entry plus 'control' in the description's list of the
-# types that run commands; without that the description would call it
-# read-only. 5 tokens measured (10_059 -> 10_064), 2 of them from slack,
-# so the budget moves 10_061 -> 10_064. The preset's method is in its
-# pack file and costs the schema nothing.
-_TOKEN_BUDGET = 10_064
+_TOKEN_BUDGET = 10_061
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
