@@ -117,7 +117,6 @@
     "communication": {
       "rules": [
         "Local inference — expect slower token throughput; keep answers tight and avoid long monologues",
-        "German for user-facing conversation, exact, with numbers (Å, eV, s)",
         "No extended-thinking / reasoning_effort instructions — local models do not honour them; reason inline and briefly"
       ]
     },
