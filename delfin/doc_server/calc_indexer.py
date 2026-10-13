@@ -334,20 +334,34 @@ CONTROL_TEMPLATE_KEYS = (
 )
 
 
+# A geometry file larger than this is not read: 16 MiB is ~300k atoms of
+# XYZ, far above any DFT input, and bounds the scan on a stray dump.
+_GEOMETRY_MAX_BYTES = 16 * 1024 * 1024
+
+# First line of a geometry: an XYZ atom count, or an atom line (element
+# token, then a number). DELFIN's input.txt has no atom count
+# (define.convert_xyz_to_input_txt drops it), so the count alone misses it.
+_GEOMETRY_FIRST_LINE = re.compile(r"^(\d+$|[A-Za-z]{1,2}\S*\s+[-+]?\.?\d)")
+
+
 def _metals_in(folder: Path | None, kv: dict) -> list[str] | None:
     """The transition metals of the structure, as delfin.utils.
-    search_transition_metals reads them from an XYZ geometry, or from the
-    bracket atoms of a SMILES; None when no structure is readable (no
-    SMILES in CONTROL, no geometry file inside *folder*)."""
+    search_transition_metals reads them from a geometry (input.txt
+    coordinates or XYZ), or from the bracket atoms of a SMILES; None when
+    no structure is readable (no SMILES in CONTROL, no geometry file
+    inside *folder*, or one above _GEOMETRY_MAX_BYTES)."""
     from delfin.utils import _TM_LIST, search_transition_metals
     smiles = [kv.get("SMILES", "")]
     if folder is not None:
         geom = folder / (kv.get("input_file") or "input.txt")
         try:
             if geom.is_file() and geom.resolve().is_relative_to(folder.resolve()):
+                if geom.stat().st_size > _GEOMETRY_MAX_BYTES:
+                    return None
                 lines = [ln.strip() for ln in geom.read_text(
-                    encoding="utf-8", errors="replace").splitlines() if ln.strip()]
-                if lines and lines[0].isdigit():
+                    encoding="utf-8", errors="replace").splitlines()
+                    if ln.strip() and not ln.strip().startswith("*")]
+                if lines and _GEOMETRY_FIRST_LINE.match(lines[0]):
                     return search_transition_metals(str(geom))
                 if lines:
                     smiles.append(lines[0])
@@ -395,12 +409,14 @@ def _extract_from_control_txt(text: str, folder: Path | None = None) -> dict[str
     rec["multiplicity"] = kv.get("multiplicity_0", "")
     metals = _metals_in(folder, kv)
     main, metal, relativity = "", "", ""
-    if metals is not None:
-        from delfin.utils import _rel_method_token, _should_use_rel
-        suffix = "_rel" if _should_use_rel(metals) else ""
-        main = kv.get(f"main_basisset{suffix}", "")
-        metal = kv.get(f"metal_basisset{suffix}", "") if metals else ""
-        relativity = _rel_method_token(kv) if suffix else ""
+    if metals is not None and ("main_basisset" in kv or "main_basisset_rel" in kv):
+        # DELFIN's own choice, defaults for an empty key included
+        # (def2-SVP / ZORA-def2-SVP); a CONTROL without the template keys
+        # keeps the basis_set fallback below.
+        from delfin.utils import select_rel_and_aux, set_main_basisset
+        main, metal = set_main_basisset(metals, kv)
+        metal = metal or ""
+        relativity = select_rel_and_aux(metals, kv)[0]
     rec["basis_set"] = main or kv.get("basis_set", "")
     rec["metal_basis"] = metal
     rec["relativity"] = relativity
