@@ -46,6 +46,16 @@ OPEN = {
     "_execute_make_plot": "open: unverified",
 }
 
+#: Flagged only once another change of this wave is merged; allowed either
+#: way so the order of the two merges does not matter, and to be moved into
+#: OPEN (or resolved) afterwards.
+EXPECTED_SOON = {
+    "_execute_task_update": "with the counter-test sentence the completion "
+                            "check reads the session's own tool trace "
+                            "(harness state under ~/.delfin, not a path the "
+                            "model names); the scan cannot tell that yet",
+}
+
 #: Clean today, and proven to be watched: without their gate calls the scan
 #: flags them.
 WATCHED = (
@@ -76,7 +86,7 @@ def test_the_scan_sees_the_executors_and_their_file_access(report):
 
 def test_no_executor_outside_the_open_list_is_flagged(report):
     flagged = {e.name for e in report.ungated()}
-    new = sorted(flagged - set(OPEN))
+    new = sorted(flagged - set(OPEN) - set(EXPECTED_SOON))
     assert not new, (
         f"{new}: file access with no read or write gate before it. Gate it, "
         "or show why the scan is wrong and say so in OPEN.")
