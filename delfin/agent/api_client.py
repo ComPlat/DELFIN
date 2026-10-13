@@ -3066,9 +3066,11 @@ _MCP_BASH_TOOL_BASES: frozenset[str] = frozenset({
 _MCP_BASH_CMD_KEYS: tuple[str, ...] = ("command", "cmd", "script", "code")
 
 # `git push` in a shell command, with any `-C dir` / `-c k=v` / `--flag`
-# ahead of the subcommand.
+# ahead of the subcommand. Each option has exactly one parse: a second
+# `\s+-c\s+\S+` alternative (already inside `-[Cc]`) gave every `-c` two,
+# and `git -c ! -c ! ...` without `push` took 2**n steps to reject.
 _GIT_PUSH_RE = re.compile(
-    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+|\s+-c\s+\S+"
+    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+"
     r"|\s+--[\w-]+(?:=\S+)?)*\s+push\b")
 # A user message that asks for a push ("push", "pushen", "puschen"), and
 # one that says not to. The word alone was the test once, and "der Push
@@ -6594,6 +6596,13 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/sandbox.py",
     "delfin/agent/kit_settings.py",
     "delfin/user_settings.py",
+    # Who may answer a pending approval, and the code that writes and
+    # checks an answer (approval_guard).
+    "delfin/agent/approval_guard.py",
+    "delfin/agent/file_confirm.py",
+    "delfin/agent/terminal_confirm.py",
+    "delfin/agent/approval_answers.py",
+    "delfin/agent/cli_gate.py",
     # The maintainer's principles, loaded first into every role: an agent
     # that could rewrite them could rewrite what it is for.
     "delfin/agent/pack/shared/principles_addendum.md",
@@ -6867,6 +6876,42 @@ def output_for_a_person():
         yield
     finally:
         _PERSON_OUTPUT.reset(token)
+
+
+#: Set only by gate_dry_run() (``delfin-agent gate explain``), for the
+#: thread running that one call. Read at exactly one point per supported
+#: tool: after its last gate and before its first act (bash: before the
+#: process starts; write_file: before the bytes are written). Every gate
+#: before that point runs unchanged, so the verdict is the executor's own.
+_GATE_DRY_RUN: "_contextvars.ContextVar[bool]" = (
+    _contextvars.ContextVar("delfin_gate_dry_run", default=False))
+
+#: The tools that read _GATE_DRY_RUN. Any other tool would ACT under a
+#: dry run, so gate_explain refuses to explain it.
+GATE_DRY_RUN_TOOLS: frozenset[str] = frozenset({"bash", "write_file"})
+
+#: Marker key of the result a dry-run stop returns.
+GATE_DRY_RUN_KEY = "gate_dry_run"
+
+
+@contextlib.contextmanager
+def gate_dry_run():
+    """Inside this block, on this thread, bash and write_file stop after
+    their last gate and return ``{GATE_DRY_RUN_KEY: true, ...}`` instead
+    of acting. Grants nothing and changes no gate decision."""
+    token = _GATE_DRY_RUN.set(True)
+    try:
+        yield
+    finally:
+        _GATE_DRY_RUN.reset(token)
+
+
+def _dry_run_stop(tool: str, target: str) -> Optional[str]:
+    """The dry-run result, or None when no dry run is active."""
+    if not _GATE_DRY_RUN.get():
+        return None
+    return json.dumps({GATE_DRY_RUN_KEY: True, "tool": tool,
+                       "target": str(target)[:500]})
 
 
 @contextlib.contextmanager
@@ -7667,16 +7712,239 @@ class KitToolPermissions:
         return False
 
 
+# Blanking of sed regex bodies, in linear time.
+#
+# The three substitutions below replace these patterns, applied with
+# re.sub in this order:
+#
+#   s:  (?<![\w])s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1([a-zA-Z0-9]*)
+#         -> " s " + flags
+#   /:  /(?:\\.|[^/])*/                  -> " "
+#   \c: \\(.)(?:\\.|(?!\1).)*\1          -> " "
+#
+# Each body loop reads a backslash both as the start of an escape and as
+# a plain character, so ``\a\a\a...`` has 2**n parses, and a body with no
+# closing delimiter took 2**n steps to reject (code scanning py/redos;
+# 30 repetitions held the gate for minutes). An unambiguous rewrite such
+# as (?:\\.|[^\\D])* rejects quickly but ends some bodies elsewhere:
+# ``s/x\\/y/z/`` is s|x\\|y|z under the old pattern and s|x\\/y|z| under
+# the rewrite, which changes what the gate blanks. The functions below
+# reproduce the old pattern's choice exactly.
+#
+# Which end the old pattern chooses. Python's engine tries the parses
+# depth first, escape before plain character, and returns the first whose
+# continuation succeeds; whether a continuation succeeds depends only on
+# the position the body ends at, so revisiting a position never changes
+# the answer, and the order of FIRST visits decides. Following that order
+# with the greedy tokenisation g (escape whenever the next character is
+# not a newline; terminal at the first unescaped D, a newline the body
+# cannot hold, or the end), the candidate ends -- all positions of D, as
+# the continuation starts with D -- are tried in this order:
+#
+#   1. the terminal of g, if it is D;
+#   2. if g's last token is an escaped backslash and the terminal is D:
+#      every candidate of a body starting just after that D (the parse
+#      reading ``\`` + ``\D`` instead of ``\\`` + ``D``), recursively;
+#   3. each D inside g, last first. Every D before the terminal is the
+#      second character of an escape token (a D at a token start would
+#      be the terminal), and reading that backslash as a plain character
+#      ends the body at the D.
+#
+# When D is the backslash, a backslash is never a plain character, so 2.
+# and 3. do not exist; instead the body may stop at the start of each
+# escape token on g (stopping is tried after escaping), last first.
+#
+# Every other node of the search tree is a position already visited or a
+# character that is not D. For the single-body patterns the first
+# candidate always succeeds; ``s///`` needs the second body to close too.
+# Cost: one regex walk (C speed) per body start, memoised per delimiter.
+# Equivalence with the old patterns is asserted on every string literal
+# in tests/, every string of length <= 7 over s / \ a newline x, and
+# 60000 random strings (tests/test_gate_patterns_finish_in_linear_time.py).
+
+_SED_WORD_CHAR_RE = re.compile(r"\w")
+_SED_FLAGS_RE = re.compile(r"[a-zA-Z0-9]*")
+_SED_ESCAPE_RE = re.compile(r"\\[^\n]")
+
+
+class _SedBody:
+    """Delimited sed bodies with delimiter *delim* in *text*.
+
+    ``end(start)`` is where the old pattern's single body
+    ``(?:\\.|(?!D).)*`` (``(?:\\.|[^/])*`` with *newline_plain*) followed
+    by D closes when it starts at *start*, or -1. ``ends(start)`` yields
+    the candidate ends of the first ``s`` body in the old pattern's
+    order."""
+
+    def __init__(self, text: str, delim: str, newline_plain: bool = False):
+        self.text = text
+        self.delim = delim
+        plain = "\\\\" + ("" if newline_plain else "\\n") + re.escape(delim)
+        # Escape, plain character, and (unless the backslash is the
+        # delimiter) a backslash that cannot escape. The three are
+        # disjoint, so the loop has one parse; group 1 is the last token.
+        bare = "" if delim == "\\" else r"|\\(?=\n|\Z)"
+        self._token = re.compile(r"(?:(\\[^\n])|[^" + plain + "]" + bare + ")*")
+        self._end: dict[int, int] = {}
+
+    def _walk(self, start: int) -> tuple[int, int, bool]:
+        """(terminal, start of the last escape token or -1, whether the
+        last token is an escaped backslash)."""
+        m = self._token.match(self.text, start)
+        stop = m.end()
+        return stop, m.start(1), m.end(1) == stop and m.group(1) == "\\\\"
+
+    def end(self, start: int) -> int:
+        hit = self._end.get(start)
+        if hit is None:
+            stop, last_escape, _ = self._walk(start)
+            text, delim = self.text, self.delim
+            if stop < len(text) and text[stop] == delim:
+                hit = stop
+            elif delim != "\\":
+                hit = text.rfind(delim, start, stop)
+            else:
+                # The delimiter is the backslash: the body may stop at any
+                # escape token's start, the last one first.
+                hit = last_escape
+            self._end[start] = hit
+        return hit
+
+    def ends(self, start: int):
+        text, delim = self.text, self.delim
+        regions = []
+        while True:
+            stop, _, last_is_backslash = self._walk(start)
+            closed = stop < len(text) and text[stop] == delim
+            if closed:
+                yield stop
+            regions.append((start, stop))
+            if closed and delim != "\\" and last_is_backslash:
+                start = stop + 1
+                continue
+            break
+        if delim == "\\":
+            # Every escape token starts with the delimiter; stopping there
+            # is tried after the escape, the last token first.
+            low, stop = regions[0]
+            starts = [m.start() for m in _SED_ESCAPE_RE.finditer(text, low, stop)]
+            yield from reversed(starts)
+            return
+        while regions:
+            low, pos = regions.pop()
+            while True:
+                pos = text.rfind(delim, low, pos)
+                if pos < 0:
+                    break
+                yield pos
+
+
+def _line_end(text: str, pos: int) -> int:
+    nl = text.find("\n", pos)
+    return len(text) if nl < 0 else nl
+
+
+def _sed_blank_substitutions(text: str) -> str:
+    """``re.sub(<s pattern above>, lambda m: " s " + m.group(2), text)``.
+    A start needs two delimiters before the line ends; with two, the old
+    pattern always matched (the first is reachable by plain characters,
+    the second likewise), so the check only skips hopeless starts."""
+    out: list[str] = []
+    bodies: dict[str, _SedBody] = {}
+    n, last, i, nl = len(text), 0, 0, -1
+    while True:
+        i = text.find("s", i)
+        if i < 0 or i + 1 >= n:
+            break
+        delim = text[i + 1]
+        if delim == "\n" or (i and _SED_WORD_CHAR_RE.match(text[i - 1])):
+            i += 1
+            continue
+        if nl < i + 2:
+            nl = _line_end(text, i + 2)
+        first = text.find(delim, i + 2, nl)
+        if first < 0 or text.find(delim, first + 1, nl) < 0:
+            i += 1
+            continue
+        body = bodies.get(delim)
+        if body is None:
+            body = bodies[delim] = _SedBody(text, delim)
+        close = -1
+        for mid in body.ends(i + 2):
+            close = body.end(mid + 1)
+            if close >= 0:
+                break
+        if close < 0:
+            i += 1
+            continue
+        flags = _SED_FLAGS_RE.match(text, close + 1)
+        out.append(text[last:i])
+        out.append(" s " + flags.group())
+        last = i = flags.end()
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _sed_blank_slash_regexes(text: str) -> str:
+    """``re.sub(r"/(?:\\.|[^/])*/", " ", text)``."""
+    out: list[str] = []
+    body = _SedBody(text, "/", newline_plain=True)
+    last = i = 0
+    while True:
+        i = text.find("/", i)
+        if i < 0:
+            break
+        close = body.end(i + 1)
+        if close < 0:
+            i += 1
+            continue
+        out.append(text[last:i])
+        out.append(" ")
+        last = i = close + 1
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _sed_blank_custom_regexes(text: str) -> str:
+    """``re.sub(r"\\\\(.)(?:\\\\.|(?!\\1).)*\\1", " ", text)``: sed's
+    ``\\cREGEXc`` address. A start needs its delimiter before the line
+    ends; with one, the old pattern always matched."""
+    out: list[str] = []
+    bodies: dict[str, _SedBody] = {}
+    n, last, i, nl = len(text), 0, 0, -1
+    while True:
+        i = text.find("\\", i)
+        if i < 0 or i + 1 >= n:
+            break
+        delim = text[i + 1]
+        if nl < i + 2:
+            nl = _line_end(text, i + 2)
+        if delim == "\n" or text.find(delim, i + 2, nl) < 0:
+            i += 1
+            continue
+        body = bodies.get(delim)
+        if body is None:
+            body = bodies[delim] = _SedBody(text, delim)
+        close = body.end(i + 2)
+        if close < 0:
+            i += 1
+            continue
+        out.append(text[last:i])
+        out.append(" ")
+        last = i = close + 1
+    out.append(text[last:])
+    return "".join(out)
+
+
 def _sed_script_writes(cmd: str) -> bool:
     """True when a sed script in *cmd* holds a command that writes a file
     or runs one: ``w``/``W`` (write), ``e`` (execute), or the ``s///w``
     and ``s///e`` flags. Regex bodies are blanked first, so a letter in a
     pattern (``/wait/p``) is not read as a command."""
     body = re.sub(r"^\s*sed\b", "", cmd, count=1)
-    body = re.sub(r"(?<![\w])s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1([a-zA-Z0-9]*)",
-                  lambda m: " s " + m.group(2), body)
-    body = re.sub(r"/(?:\\.|[^/])*/", " ", body)
-    body = re.sub(r"\\(.)(?:\\.|(?!\1).)*\1", " ", body)
+    body = _sed_blank_substitutions(body)
+    body = _sed_blank_slash_regexes(body)
+    body = _sed_blank_custom_regexes(body)
     # A flag set after s///, or a command letter standing alone.
     if re.search(r"\bs [a-zA-Z0-9]*[we]", body):
         return True
@@ -7831,6 +8099,137 @@ def _reading_alternative_hint(cmd: str) -> str:
         f" NOTE: the READING form of '{first}' is auto-allowed: {alt}. "
         "If that is the question you were asking, ask it that way."
     )
+
+
+#: Inline python: `-c`, or a here-document on stdin (`python3 - <<EOF`,
+#: `python3 <<EOF`). Group 1 is the interpreter word as the model wrote it.
+_INLINE_PYTHON_RE = re.compile(
+    r"^\s*(python(?:\d(?:\.\d+)?)?)\s+(?:-c\b|(?:-\s+)?<<)")
+
+#: A program name that may be echoed into a refusal: no `=`, quote or `$`.
+_PLAIN_PROGRAM_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
+
+
+def _inline_file_route(cmd: str, args: dict,
+                       perms: "KitToolPermissions") -> str:
+    """The file route for inline python, or "" where the gate would refuse it.
+
+    Input: a command refused by the auto-allow tier, its tool args, the
+    permissions that refused it. Output: one line naming
+    ``write_file(path="<name>")`` and ``<interpreter> <name>``, or "".
+
+    Named only when every step is allowed for these permissions: the
+    file is new (write_file refuses an unread overwrite), inside a
+    writable root, not read-only, inside the write scope, and
+    ``<interpreter> <name>`` is auto-allowed. No `cwd`: write_file
+    resolves against the workspace, the command against the cwd, so a
+    relative name would mean two files. The program is not copied into
+    the line (it may be long; the model has it).
+    """
+    match = _INLINE_PYTHON_RE.match(cmd or "")
+    if match is None or str(args.get("cwd") or "").strip() not in ("", "."):
+        return ""
+    interpreter = match.group(1)
+    workspace = Path(perms.workspace)
+    for n in range(1, 10):
+        name = "_inline_check.py" if n == 1 else f"_inline_check_{n}.py"
+        if not (workspace / name).exists():
+            break
+    else:
+        return ""
+    target = (workspace / name).resolve(strict=False)
+    try:
+        if (perms.find_root_for(target) is None
+                or perms.is_read_only_path(target)
+                or not _write_in_scope(target, perms)
+                or not perms.matches_bash_auto_allow(f"{interpreter} {name}")):
+            return ""
+    except Exception:
+        return ""
+    return (
+        f" ROUTE: write the program to a file with write_file(path=\"{name}\""
+        f", content=<the program>) and run `{interpreter} {name}`; the file "
+        "passes the write gate and the script scan, which inline code skips, "
+        "and undo_changes(scope=\"last\") removes it afterwards."
+    )
+
+
+def _allow_list_route(cmd: str, args: dict,
+                      perms: "KitToolPermissions") -> str:
+    """One route for an auto-allow refusal no cause-specific hint covers.
+
+    Input: the refused command, its args, the refusing permissions.
+    Output: "" or one line, computed against these permissions:
+
+    * a chain or pipe with allowed and refused parts: the first refused
+      part by name and the allowed parts, each checked with
+      ``matches_bash_auto_allow``; a refused part that is inline python
+      carries the file route. All parts refused: "" (nothing to run).
+    * a single command whose program is a plain name: the spellings of
+      it (an absolute path where one is on PATH, ``env``, ``nohup``,
+      ``time``, ``sh -c``) that the same check also refuses, and the user
+      as the route -- ``ask_user_question`` only when a question dialog
+      is bound, otherwise the answer text.
+
+    Rejected: suggesting the allowed parts of a pipe as an equivalent
+    (the pipe's meaning is lost; they are named as allowed, not as the
+    same job), and naming spellings without checking them (a user allow
+    pattern can admit one; a listed spelling that runs would be a route
+    past the refusal it annotates).
+    """
+    if "<<" in cmd or "\n" in cmd:
+        return ""
+    try:
+        segments = [s.strip() for s in _split_shell_segments(cmd)]
+    except Exception:
+        return ""
+    segments = [s for s in segments if s]
+    if not segments:
+        return ""
+    if len(segments) > 1:
+        try:
+            verdicts = [(s, perms.matches_bash_auto_allow(s))
+                        for s in segments]
+        except Exception:
+            return ""
+        refused = [s for s, ok in verdicts if not ok]
+        allowed = [s for s, ok in verdicts if ok]
+        if not refused or not allowed:
+            return ""
+        shown = ", ".join(f"`{s[:80]}`" for s in allowed[:4])
+        line = (f" ROUTE: `{refused[0][:120]}` is the part not on the list; "
+                f"{shown} "
+                + ("is allowed as a bash call of its own."
+                   if len(allowed) == 1
+                   else "are allowed as bash calls of their own."))
+        return line + _inline_file_route(refused[0], args, perms)
+    try:
+        words = shlex.split(segments[0])
+    except ValueError:
+        return ""
+    if not words or not _PLAIN_PROGRAM_RE.fullmatch(words[0]):
+        return ""
+    program = words[0]
+    quoted = " ".join(shlex.quote(w) for w in words)
+    spellings = []
+    found = shutil.which(program)
+    if found and found != program:
+        spellings.append(" ".join([shlex.quote(found)] + [
+            shlex.quote(w) for w in words[1:]]))
+    spellings += [f"env {quoted}", f"nohup {quoted}", f"time {quoted}",
+                  f"sh -c {shlex.quote(quoted)}"]
+    try:
+        spellings = [s for s in spellings
+                     if not perms.matches_bash_auto_allow(s)]
+    except Exception:
+        return ""
+    if not spellings:
+        return ""
+    ask = ("ask the user with ask_user_question"
+           if getattr(perms, "ask_user_callback", None) is not None
+           else "say in your answer which command you need and why")
+    shown = ", ".join(f"`{s[:100]}`" for s in spellings)
+    return f" ROUTE: Running it as {shown} is refused the same way; {ask}."
 
 
 def _loop_body(cmd: str) -> "list[str] | None":
@@ -17290,6 +17689,16 @@ class _DocToolExecutor:
         hard-deny, and self-mod-guard / calc explicit-confirm. Shared by
         write_file/edit_file/multi_edit and by every file an apply_patch diff
         touches. Returns an error string to block, or None to allow."""
+        # Where approvals are answered, and the CLI gate's state: refused
+        # for every write tool and every shell write target, granted root
+        # or not, with nobody asked (approval_guard).
+        from . import approval_guard as _approval_guard
+        if _approval_guard.is_answer_room_path(path_arg, perms.workspace):
+            _record_security_event(
+                "approval_self_answer", name, str(path_arg)[:120],
+                blocked=True)
+            return _approval_guard.refusal(
+                f"'{path_arg}' is where pending approvals are answered")
         # for_read=True: recognise every reachable root so the per-tier policy
         # below can fire (deny read-only, confirm calc). The write EXECUTOR
         # re-resolves writable-only — defense in depth.
@@ -17799,6 +18208,19 @@ class _DocToolExecutor:
         leaked = _leaked_call_markup(name, args)
         if leaked:
             return leaked
+
+        # A pending approval is answered by the person, in every mode and
+        # before anything is asked: a dialog here would ask the person to
+        # approve the agent approving itself (approval_guard).
+        if name == "bash":
+            from . import approval_guard as _approval_guard
+            _answers = _approval_guard.answer_command(
+                _prose_blanked(str(args.get("command", "") or "")))
+            if _answers:
+                _record_security_event(
+                    "approval_self_answer", name,
+                    str(args.get("command", "") or "")[:120], blocked=True)
+                return _approval_guard.refusal(_answers)
 
         if mode == "plan" and not _plan_mode_admits_for_delegate(name, perms):
             return (
@@ -18466,7 +18888,12 @@ class _DocToolExecutor:
                     "on a file the write gate already saw, which is the part "
                     "`-c` skips. Use one of them instead of asking for a "
                     "`-c` allow-pattern."
-                )
+                ) + _inline_file_route(cmd, args, perms)
+            elif _INLINE_PYTHON_RE.match(cmd):
+                # A here-document on python's stdin: `-c` with other
+                # punctuation (29 of 437 auto-allow refusals in the denial
+                # log), and the same file route.
+                hint = _inline_file_route(cmd, args, perms)
             elif re.search(
                     r"\bgit\b[^\n]{0,40}\b(?:worktree\s+add|stash\b|"
                     r"checkout\s+[^\s]+\s+--)", cmd):
@@ -18576,6 +19003,11 @@ class _DocToolExecutor:
                     "take it back — that is why the tool exists, not a "
                     "formality."
                 )
+            else:
+                # The rest: a chain with one refused part, or one program
+                # not on the list. The route names what the same check
+                # allows, and the spellings of the command it refuses too.
+                hint = _allow_list_route(cmd, args, perms)
             return (
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
                 f"(mode={mode}). Do NOT try to work around this block with "
@@ -19028,6 +19460,11 @@ class _DocToolExecutor:
                     old_text if existed else None, str(content))
             except _aw.AppendRejected as exc:
                 return json.dumps({"error": str(exc)})
+
+        # Every gate of this tool has run by here. `gate explain` stops.
+        _dry = _dry_run_stop("write_file", resolved)
+        if _dry is not None:
+            return _dry
 
         if getattr(perms, "mode", "") == "diff_approval":
             return self._stage_pending_change(
@@ -20216,6 +20653,21 @@ class _DocToolExecutor:
         # argument is usually absent, and a record without an absolute
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
+
+        # Every gate of this tool has run by here. `gate explain` stops,
+        # carrying the argv the command would have been started with:
+        # a host that cannot isolate a locked session answers with a
+        # refusal argv instead of the command, which is a refusal too.
+        if _GATE_DRY_RUN.get():
+            try:
+                _would = ([] if _is_git_push(cmd)
+                          and _github_push_plan(cmd, run_cwd) is not None
+                          else _bash_isolation_argv(cmd, run_cwd, perms))
+            except Exception:
+                _would = []
+            _obj = json.loads(_dry_run_stop("bash", cmd) or "{}")
+            _obj["argv_head"] = [str(a) for a in _would[:5]]
+            return json.dumps(_obj)
 
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
@@ -23458,6 +23910,12 @@ def _scrubbed_bash_env() -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in _SECRET_ENV_NAMES
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    # Every process an agent session starts says so: `delfin-agent
+    # approvals approve` and the answer functions refuse under it
+    # (approval_guard). This is the one env every agent child is built
+    # from -- shell tool, background job, test run, external agent CLI.
+    from .approval_guard import ENV_MARKER as _agent_marker
+    env[_agent_marker] = str(os.getpid())
     return env
 
 
@@ -24001,6 +24459,18 @@ def _bash_isolation_argv(
     # command: existing hooks stay readable, new ones cannot be written.
     for g in git_roots:
         args += ["--ro-bind-try", str(Path(g) / "hooks"), str(Path(g) / "hooks")]
+    # Where approvals are answered stays read-only inside a writable root
+    # (a granted ~/.delfin): a command that builds the answer path at run
+    # time is held by the mount, not by reading its text. A room outside
+    # every root is read-only already through the "/" bind.
+    try:
+        from . import approval_guard as _approval_guard
+        _bound = [Path(r) for r in roots]
+        for room in _approval_guard.answer_rooms():
+            if any(room == b or b in room.parents for b in _bound):
+                args += ["--ro-bind-try", str(room), str(room)]
+    except Exception:
+        pass
     args += ["--chdir", str(Path(run_cwd).resolve())]
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])
@@ -27741,6 +28211,89 @@ def _workspace_sandbox(
     return local_perms
 
 
+def _kit_sandbox(
+    cwd: str, permission_mode: str,
+    kit_confirm_callback: Optional[Callable[[str, dict, str], bool]],
+    extra_dirs: list[str] | None, read_only_dirs: list[str] | None,
+    confirm_write_dirs: list[str] | None,
+) -> "KitToolPermissions":
+    """The permissions policy of a KIT-provider client: workspace at
+    ``cwd``, caller then persisted extra dirs, the persisted default mode
+    unless one is passed, the built-in bash allow and deny lists extended
+    by the persisted ones, and the repository's write scope.
+
+    Its own function so that ``delfin-agent capabilities`` and ``gate
+    explain`` build the policy a session gets, not a copy of it.
+    """
+    kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
+
+    # Pull persisted user/repo settings (.delfin-style two-tier
+    # ~/.delfin/settings.json + <repo>/.delfin/settings.json). Defaults
+    # are empty if neither file exists.
+    try:
+        from . import kit_settings as _kit_settings  # local import to avoid cycle
+        persisted = _kit_settings.load(repo_dir=kit_workspace)
+    except Exception:
+        persisted = None
+
+    seen: list[Path] = []
+    # Caller-supplied extra_dirs first (e.g. CLI args), then persisted ones.
+    sources: list[str] = []
+    if extra_dirs:
+        sources.extend(extra_dirs)
+    if persisted is not None:
+        sources.extend(persisted.extra_workspace_dirs)
+    for d in sources:
+        try:
+            p = Path(d).expanduser().resolve()
+        except Exception:
+            continue
+        if p == kit_workspace or p in seen:
+            continue
+        if not p.exists() or not p.is_dir():
+            continue
+        seen.append(p)
+    kit_extra = tuple(seen)
+
+    # Mode: explicit caller arg wins over persisted default_mode.
+    if permission_mode:
+        kit_mode = _map_kit_permission_mode(permission_mode)
+    elif persisted is not None and persisted.default_mode in {
+        "plan", "default", "acceptEdits", "bypassPermissions"
+    }:
+        kit_mode = persisted.default_mode
+    else:
+        kit_mode = "default"
+
+    # Allow/deny patterns: append persisted ones to the built-in defaults.
+    allow_patterns = tuple(_DEFAULT_BASH_AUTO_ALLOW)
+    deny_patterns = tuple(_DEFAULT_BASH_DENY_PATTERNS)
+    if persisted is not None:
+        extra_allow = tuple(p for p in persisted.allow_patterns
+                            if p not in allow_patterns)
+        extra_deny = tuple(p for p in persisted.deny_patterns
+                           if p not in deny_patterns)
+        allow_patterns = allow_patterns + extra_allow
+        deny_patterns = deny_patterns + extra_deny
+    write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
+
+    from . import exchange as _exchange
+    kit_perms = KitToolPermissions(
+        workspace=kit_workspace,
+        mode=kit_mode,
+        confirm_callback=kit_confirm_callback,
+        extra_workspace_dirs=_exchange.with_exchange(kit_workspace,
+                                                     kit_extra),
+        read_only_workspace_dirs=tuple(read_only_dirs or ()),
+        confirm_write_dirs=tuple(confirm_write_dirs or ()),
+        session_read_dirs=_persisted_read_dirs(persisted),
+        bash_auto_allow_patterns=allow_patterns,
+        bash_deny_patterns=deny_patterns,
+        write_allow_globs=write_globs,
+    )
+    return kit_perms
+
+
 def create_client(
     backend: str = "cli",
     provider: str = "claude",
@@ -27784,72 +28337,9 @@ def create_client(
     if provider == "kit":
         from .credentials import load_credential as _load_cred
         kit_key = api_key or _load_cred("KIT_TOOLBOX_API_KEY")
-        kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
-
-        # Pull persisted user/repo settings (.delfin-style two-tier
-        # ~/.delfin/settings.json + <repo>/.delfin/settings.json). Defaults
-        # are empty if neither file exists.
-        try:
-            from . import kit_settings as _kit_settings  # local import to avoid cycle
-            persisted = _kit_settings.load(repo_dir=kit_workspace)
-        except Exception:
-            persisted = None
-
-        seen: list[Path] = []
-        # Caller-supplied extra_dirs first (e.g. CLI args), then persisted ones.
-        sources: list[str] = []
-        if extra_dirs:
-            sources.extend(extra_dirs)
-        if persisted is not None:
-            sources.extend(persisted.extra_workspace_dirs)
-        for d in sources:
-            try:
-                p = Path(d).expanduser().resolve()
-            except Exception:
-                continue
-            if p == kit_workspace or p in seen:
-                continue
-            if not p.exists() or not p.is_dir():
-                continue
-            seen.append(p)
-        kit_extra = tuple(seen)
-
-        # Mode: explicit caller arg wins over persisted default_mode.
-        if permission_mode:
-            kit_mode = _map_kit_permission_mode(permission_mode)
-        elif persisted is not None and persisted.default_mode in {
-            "plan", "default", "acceptEdits", "bypassPermissions"
-        }:
-            kit_mode = persisted.default_mode
-        else:
-            kit_mode = "default"
-
-        # Allow/deny patterns: append persisted ones to the built-in defaults.
-        allow_patterns = tuple(_DEFAULT_BASH_AUTO_ALLOW)
-        deny_patterns = tuple(_DEFAULT_BASH_DENY_PATTERNS)
-        if persisted is not None:
-            extra_allow = tuple(p for p in persisted.allow_patterns
-                                if p not in allow_patterns)
-            extra_deny = tuple(p for p in persisted.deny_patterns
-                               if p not in deny_patterns)
-            allow_patterns = allow_patterns + extra_allow
-            deny_patterns = deny_patterns + extra_deny
-        write_globs = tuple(getattr(persisted, "write_allow_globs", ()) or ())
-
-        from . import exchange as _exchange
-        kit_perms = KitToolPermissions(
-            workspace=kit_workspace,
-            mode=kit_mode,
-            confirm_callback=kit_confirm_callback,
-            extra_workspace_dirs=_exchange.with_exchange(kit_workspace,
-                                                         kit_extra),
-            read_only_workspace_dirs=tuple(read_only_dirs or ()),
-            confirm_write_dirs=tuple(confirm_write_dirs or ()),
-            session_read_dirs=_persisted_read_dirs(persisted),
-            bash_auto_allow_patterns=allow_patterns,
-            bash_deny_patterns=deny_patterns,
-            write_allow_globs=write_globs,
-        )
+        kit_perms = _kit_sandbox(
+            cwd, permission_mode, kit_confirm_callback, extra_dirs,
+            read_only_dirs, confirm_write_dirs)
         return OpenAIClient(
             api_key=kit_key, model=model,
             base_url="https://ki-toolbox.scc.kit.edu/api/v1",

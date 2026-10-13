@@ -79,6 +79,9 @@ _KINDS = {
     # the only place this is ever visible, which is why it is recorded
     # rather than merely allowed.
     "approval_from_outside": ("\U0001f441", "Approved from outside the terminal"),
+    # An agent session reaching for an approval: the answer command, an
+    # answer function, or a write where answers and the CLI gate state live.
+    "approval_self_answer": ("🚫", "Agent tried to answer an approval"),
     "settings_updated": ("🛡", "Settings changed by a security update"),
     "push_unrequested": ("📤", "Push nobody asked for"),
     "pr_create_unrequested": ("📤", "Pull request nobody asked for"),

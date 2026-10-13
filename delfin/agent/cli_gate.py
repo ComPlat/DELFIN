@@ -258,6 +258,14 @@ def decide(token: str, event: dict) -> str | None:
                 {"path": str(raw)})
     elif tool == "Bash":
         cmd = str(args.get("command") or "")
+        # The same refusal as the native bash gate: a pending approval is
+        # answered by the person (approval_guard), in every mode.
+        from . import approval_guard as _approval_guard
+        _answers = _approval_guard.answer_command(ac._prose_blanked(cmd))
+        if _answers:
+            ac._record_security_event("approval_self_answer", "Bash",
+                                      cmd[:120], blocked=True)
+            return _approval_guard.refusal(_answers)
         err = _unjson(ex._gate_bash_read_paths(cmd, perms, cwd))
         targets: list = []
         if err is None:
@@ -378,7 +386,8 @@ class Relay:
             return
         reason = "" if ok else str(getattr(owner, "last_refusal_reason", "")
                                    or "")
-        file_confirm.answer(rid, ok, by="delfin-cli-gate", reason=reason)
+        file_confirm._write_answer(rid, ok, by="delfin-cli-gate",
+                                   reason=reason)
 
 
 if __name__ == "__main__":
