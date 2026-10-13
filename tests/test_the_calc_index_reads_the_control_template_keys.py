@@ -205,6 +205,45 @@ def test_without_a_structure_the_basis_comes_from_the_inp(tmp_path):
     assert rec["basis_set"] == "ZORA-def2-SVP"
 
 
+def test_the_inp_header_states_what_ran_over_control(tmp_path):
+    """DELFIN regenerates every .inp from CONTROL.txt at run time, so the
+    two differ only when CONTROL was edited after the run (or the .inp by
+    hand); the .inp is then what produced the outputs in the folder.
+    Its functional, basis and dispersion win over CONTROL; CONTROL fills
+    what the header does not state; DELFIN_Data.json wins over both."""
+    inp = "! B3LYP def2-TZVP D3BJ RIJCOSX def2/J\n* xyz 0 1\n*\n"
+    rec, _ = _record(tmp_path, "edited", _template_control(),
+                     geometry=_TXT_ORGANIC, initial__inp=inp)
+    assert (rec["functional"], rec["basis_set"], rec["dispersion"]) == (
+        "B3LYP", "def2-TZVP", "D3BJ")
+    parts = ci.method_parts_of_folder(tmp_path / "calc" / "edited")
+    assert (parts["functional"], parts["basis"], parts["dispersion"]) == (
+        "B3LYP", "def2-TZVP", "D3BJ")
+    assert parts["solvent"] == "DMF"
+
+
+def test_an_inp_without_a_dft_method_leaves_control_in_place(tmp_path):
+    rec, _ = _record(tmp_path, "xtb_first", _template_control(),
+                     geometry=_TXT_ORGANIC,
+                     XTB__inp="! XTB2 OPT ALPB(DMF)\n* xyz 0 1\n*\n")
+    assert (rec["functional"], rec["basis_set"], rec["dispersion"]) == (
+        "PBE0", "def2-SVP", "D4")
+    parts = ci.method_parts_of_folder(tmp_path / "calc" / "xtb_first")
+    assert (parts["functional"], parts["basis"], parts["dispersion"]) == (
+        "PBE0", "def2-SVP", "D4")
+
+
+def test_delfin_data_json_wins_over_the_inp_header(tmp_path):
+    rec, _ = _record(
+        tmp_path, "json_inp", _template_control(), geometry=_TXT_ORGANIC,
+        initial__inp="! B3LYP def2-TZVP D3BJ\n* xyz 0 1\n*\n",
+        DELFIN_Data__json=json.dumps({"metadata": {
+            "functional": "PBE0", "basis_set": "def2-SVP",
+            "dispersion_correction": "D4"}}))
+    assert (rec["functional"], rec["basis_set"], rec["dispersion"]) == (
+        "PBE0", "def2-SVP", "D4")
+
+
 def test_a_geometry_outside_the_folder_is_not_read(tmp_path):
     """input_file naming a path out of the calc folder (or a symlink out
     of it) is not opened; the basis then comes from nowhere."""
