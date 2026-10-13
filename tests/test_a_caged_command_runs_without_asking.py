@@ -136,8 +136,7 @@ UNCHANGED = [
     'git commit -m "x"',
 ]
 
-MODES = ("default", "acceptEdits", "diff_approval", "plan",
-         "bypassPermissions")
+MODES = ("default", "acceptEdits", "plan", "bypassPermissions")
 
 
 @pytest.fixture
@@ -201,7 +200,7 @@ def test_a_harmless_command_is_admitted_when_caged(cmd, mode, attended, ws,
 
 
 @pytest.mark.parametrize("attended", [True, False])
-@pytest.mark.parametrize("mode", ["diff_approval", "plan"])
+@pytest.mark.parametrize("mode", ["plan", "bypassPermissions"])
 @pytest.mark.parametrize("cmd", HARMLESS[:8])
 def test_the_other_modes_do_not_use_the_cage_rule(cmd, mode, attended, ws,
                                                   monkeypatch):
@@ -324,9 +323,17 @@ def _run(ws: Path, cmd: str, mode: str = "default",
 @pytest.mark.parametrize("cmd", HARMLESS)
 def test_a_harmless_command_runs_through_the_executor(cmd, mode, attended,
                                                       ws):
+    """The command dialog is gone. The executor's own path gates still
+    run after it: in default mode a named write target is asked about
+    ('bash -> out.txt'), and a shell overwrite needs a prior read -- both
+    as before, and both are not the auto-allow refusal."""
     out = _run(ws, cmd, mode, attended)
-    assert "error" not in out, out
-    assert out["_asked"] == []
+    err = out.get("error", "")
+    assert "not on the auto-allow list" not in err
+    assert not [p for p in out["_asked"] if p.startswith("$ ")]
+    if mode == "acceptEdits" or not attended:
+        if "sed -i" not in cmd:
+            assert not err, out
 
 
 @requires_a_working_sandbox
@@ -355,14 +362,23 @@ def test_the_caged_command_cannot_rewrite_protected_files(ws):
     (ws / ".github").mkdir()
     (ws / ".github" / "ci.yml").write_text("on: push\n")
     git_cfg = (ws / ".git" / "config").read_text()
-    for rel in (".git/config", ".delfin/settings.json", ".github/ci.yml"):
-        out = _run(ws, f'python3 -c "open(\'{rel}\',\'a\').write(\'x\')"')
-        assert "error" not in out, out
+    # The names are assembled at run time: a literal path is refused by
+    # the gate long before the cage, which is not what is measured here.
+    (ws / "w.sh").write_text(
+        'a=.gi; b=.delfi; c=.githu\n'
+        'echo x >> "${a}t/config"\n'
+        'echo x >> "${b}n/settings.json"\n'
+        'echo y >> "${c}b/ci.yml"\n'
+        'echo done\n')
+    out = _run(ws, "bash w.sh")
+    assert "error" not in out, out
+    assert "Read-only file system" in json.dumps(out)
     assert (ws / ".git" / "config").read_text() == git_cfg
     assert (ws / ".delfin" / "settings.json").read_text() == "{}"
     assert (ws / ".github" / "ci.yml").read_text() == "on: push\n"
-    # An approved command (bypass profile) keeps its ordinary cage.
+    # An approved command (bypass profile) keeps its ordinary cage: the
+    # overlay is for the unasked command only.
+    (ws / "w2.sh").write_text('c=.githu\necho y >> "${c}b/ci.yml"\n')
     perms = KitToolPermissions(mode="bypassPermissions", workspace=str(ws))
-    _doc_executor.execute("bash", {"command": (
-        'python3 -c "open(\'.github/ci.yml\',\'a\').write(\'y\')"')}, perms)
-    assert (ws / ".github" / "ci.yml").read_text() == "on: push\ny"
+    _doc_executor.execute("bash", {"command": "bash w2.sh"}, perms)
+    assert (ws / ".github" / "ci.yml").read_text() == "on: push\ny\n"
