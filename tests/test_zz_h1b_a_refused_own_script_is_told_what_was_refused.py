@@ -104,3 +104,36 @@ def test_reading_the_own_script_is_not_running_it(box):
     write("x.py", TRIPS)
     out = bash("cat x.py")
     assert OWN not in out and "already refused once" not in out
+
+
+def test_the_refused_file_is_named_not_another_own_file_in_the_command(box):
+    """The scan refused the user's file; the session's clean file in the same
+    command is not what was refused and must not be called the cause."""
+    ws, write, bash = box
+    write("mine.py", CLEAN)
+    (ws / "theirs.py").write_text(TRIPS, encoding="utf-8")
+    out = bash("python3 mine.py && python3 theirs.py")
+    assert "trip the safety scan" in out
+    assert OWN not in out and "mine.py" not in out.split("scan:", 1)[1]
+
+
+def test_an_own_file_rewritten_outside_the_session_is_not_called_its_own(box):
+    """Journalled, then overwritten by someone else: the content the scan
+    refused is not what the session wrote."""
+    ws, write, bash = box
+    write("x.py", CLEAN)
+    (ws / "x.py").write_text(TRIPS, encoding="utf-8")
+    out = bash("python3 x.py")
+    assert "trip the safety scan" in out
+    assert OWN not in out
+
+
+def test_the_way_out_does_not_teach_moving_the_text_elsewhere(box):
+    """No route that hides the same operation from the scan; the open route
+    for an operation the script needs is the user."""
+    _, write, bash = box
+    write("x.py", TRIPS)
+    out = bash("python3 x.py")
+    assert OWN in out
+    assert "data file" not in out
+    assert "tell the user" in out
