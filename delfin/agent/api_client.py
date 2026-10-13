@@ -3066,9 +3066,11 @@ _MCP_BASH_TOOL_BASES: frozenset[str] = frozenset({
 _MCP_BASH_CMD_KEYS: tuple[str, ...] = ("command", "cmd", "script", "code")
 
 # `git push` in a shell command, with any `-C dir` / `-c k=v` / `--flag`
-# ahead of the subcommand.
+# ahead of the subcommand. Each option has exactly one parse: a second
+# `\s+-c\s+\S+` alternative (already inside `-[Cc]`) gave every `-c` two,
+# and `git -c ! -c ! ...` without `push` took 2**n steps to reject.
 _GIT_PUSH_RE = re.compile(
-    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+|\s+-c\s+\S+"
+    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+"
     r"|\s+--[\w-]+(?:=\S+)?)*\s+push\b")
 # A user message that asks for a push ("push", "pushen", "puschen"), and
 # one that says not to. The word alone was the test once, and "der Push
@@ -5681,7 +5683,29 @@ def _mcp_call_refusal(fn_name: str, fn_args: dict,
     if hook_block is not None:
         return json.dumps({"error": "blocked_by_hook",
                            "reason": hook_block[:1200]})
-    gate_block = _doc_executor._gate_mcp_tool(fn_name, fn_args, permissions)
+    # The user's permission rules, as at execute(): deny refuses, ask asks,
+    # and the call is bound for the allow answers inside the gate.
+    asked = False
+    rule_hit = (_permission_rule_hit(permissions, fn_name, fn_args)
+                if fn_name.startswith("mcp__") else None)
+    if rule_hit is not None and rule_hit[0] == "deny":
+        _record_security_event("permission_rule_deny", fn_name,
+                               rule_hit[1].text[:120])
+        return json.dumps({"error": _permission_rule_deny_text(
+            fn_name, rule_hit[1])})
+    if rule_hit is not None:
+        refusal = _doc_executor._ask_by_rule(permissions, fn_name,
+                                             fn_args, rule_hit[1])
+        if refusal is not None:
+            return json.dumps({"error": refusal})
+        asked = True
+    token = _RULE_CALL.set({"name": fn_name, "args": fn_args,
+                            "asked": asked})
+    try:
+        gate_block = _doc_executor._gate_mcp_tool(
+            fn_name, fn_args, permissions)
+    finally:
+        _RULE_CALL.reset(token)
     if gate_block is not None:
         return json.dumps({"error": gate_block})
     return None
@@ -6202,6 +6226,123 @@ def _tool_denied_for_session(
     if is_meta and not named_on_deny_list:
         return None
     return _session_tool_refusal(name, allowed, denied)
+
+
+# --- Structured permission rules (permission_rules.py) ----------------------
+# deny and ask are decided once per call at the entry points (execute,
+# _mcp_call_refusal, cli_gate.decide); a deny on a path a tool resolves
+# itself is re-checked in _check_read_access and _gate_write_path. allow is
+# consulted only where the gate would otherwise ask (_rule_answers), so it
+# cannot reach a refusal that comes before that point.
+#
+# The call being decided, for _rule_answers: {"name", "args", "asked"}.
+# "asked" is True when an ask rule already put THIS call to the user and
+# they approved it, so the ordinary dialog for the same call is not raised
+# a second time. Set around one dispatch and reset after it; a nested
+# execute() sets its own. A worker thread sees None, which answers nothing.
+_RULE_CALL: "_contextvars.ContextVar[Optional[dict]]" = (
+    _contextvars.ContextVar("delfin_permission_rule_call", default=None))
+
+
+def _permission_rules(perms):
+    """(module, RuleSet) for ``perms``' workspace, or (None, None)."""
+    try:
+        from . import permission_rules as _pr
+        return _pr, _pr.load(getattr(perms, "workspace", None))
+    except Exception:
+        return None, None
+
+
+def _permission_rule_hit(perms, name: str, args: dict):
+    """("deny"|"ask", Rule) for this call, or None."""
+    if perms is None:
+        return None
+    pr, rs = _permission_rules(perms)
+    if rs is None:
+        return None
+    try:
+        return pr.friction(rs, name, args if isinstance(args, dict) else {},
+                           perms.workspace)
+    except Exception:
+        return None
+
+
+def _rule_source(rule) -> str:
+    return str(getattr(rule, "source", "") or "the settings file")
+
+
+def _permission_rule_deny_text(name: str, rule) -> str:
+    return (f"'{_bare_tool_name(name)}' is refused by the permission rule "
+            f"`{rule.text}` (deny, {_rule_source(rule)}). The rules are the "
+            "user's and cannot be changed from inside the session. Do not "
+            "reach the same effect another way; tell the user what you "
+            "needed it for.")
+
+
+def _rule_denies_path(perms, kind: str, path) -> Optional[str]:
+    """The refusal for a deny rule on a path a tool resolved, or None."""
+    pr, rs = _permission_rules(perms)
+    if rs is None or not rs.deny:
+        return None
+    try:
+        rule = pr.denies_path(rs, kind, path, perms.workspace)
+    except Exception:
+        return None
+    if rule is None:
+        return None
+    _record_security_event("permission_rule_deny", kind,
+                           f"{rule.text}: {path}"[:160])
+    return (f"{kind} denied: '{path}' is refused by the permission rule "
+            f"`{rule.text}` (deny, {_rule_source(rule)}), in every mode and "
+            "whatever is approved. Do not reach it through another tool.")
+
+
+def _rule_answers(perms, site: str, name: str, target=None) -> Optional[str]:
+    """The rule that answers the question at ``site`` for the call being
+    decided, or None to ask as before.
+
+    Called only at a point where the gate would put a question to the user
+    (or refuse because nobody can be asked): the ordinary command dialog
+    ("bash"), a read outside the roots ("read"), the default-mode write
+    dialog ("write") and a side-effecting MCP tool ("tool"). Every hard
+    refusal of those paths comes before these points. A site answers only
+    for a call of its own kind, so an allowed command answers no read
+    question it raises, and a sub-agent call answers nothing for its
+    children."""
+    call = _RULE_CALL.get()
+    if call is None or perms is None:
+        return None
+    cname = str(call.get("name") or "")
+    bare = _bare_tool_name(cname)
+    try:
+        from . import permission_rules as _pr
+    except Exception:
+        return None
+    shell = bare in ("bash", "bash_background")
+    if site == "bash" and not shell:
+        return None
+    if site == "read" and (shell or bare in _pr.WRITE_TOOLS):
+        return None
+    if site == "write" and bare not in _pr.WRITE_TOOLS:
+        return None
+    if site == "tool" and cname != name:
+        return None
+    if call.get("asked"):
+        return "the ask rule the user approved for this call"
+    _, rs = _permission_rules(perms)
+    if rs is None:
+        return None
+    try:
+        rule = _pr.allows(rs, site, cname, call.get("args") or {},
+                          perms.workspace, target)
+    except Exception:
+        return None
+    if rule is None:
+        return None
+    _record_security_event("permission_rule_allow", bare,
+                           f"{rule.text}: {target or ''}"[:160],
+                           blocked=False)
+    return rule.text
 
 
 def unknown_tool_names(
@@ -7571,16 +7712,239 @@ class KitToolPermissions:
         return False
 
 
+# Blanking of sed regex bodies, in linear time.
+#
+# The three substitutions below replace these patterns, applied with
+# re.sub in this order:
+#
+#   s:  (?<![\w])s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1([a-zA-Z0-9]*)
+#         -> " s " + flags
+#   /:  /(?:\\.|[^/])*/                  -> " "
+#   \c: \\(.)(?:\\.|(?!\1).)*\1          -> " "
+#
+# Each body loop reads a backslash both as the start of an escape and as
+# a plain character, so ``\a\a\a...`` has 2**n parses, and a body with no
+# closing delimiter took 2**n steps to reject (code scanning py/redos;
+# 30 repetitions held the gate for minutes). An unambiguous rewrite such
+# as (?:\\.|[^\\D])* rejects quickly but ends some bodies elsewhere:
+# ``s/x\\/y/z/`` is s|x\\|y|z under the old pattern and s|x\\/y|z| under
+# the rewrite, which changes what the gate blanks. The functions below
+# reproduce the old pattern's choice exactly.
+#
+# Which end the old pattern chooses. Python's engine tries the parses
+# depth first, escape before plain character, and returns the first whose
+# continuation succeeds; whether a continuation succeeds depends only on
+# the position the body ends at, so revisiting a position never changes
+# the answer, and the order of FIRST visits decides. Following that order
+# with the greedy tokenisation g (escape whenever the next character is
+# not a newline; terminal at the first unescaped D, a newline the body
+# cannot hold, or the end), the candidate ends -- all positions of D, as
+# the continuation starts with D -- are tried in this order:
+#
+#   1. the terminal of g, if it is D;
+#   2. if g's last token is an escaped backslash and the terminal is D:
+#      every candidate of a body starting just after that D (the parse
+#      reading ``\`` + ``\D`` instead of ``\\`` + ``D``), recursively;
+#   3. each D inside g, last first. Every D before the terminal is the
+#      second character of an escape token (a D at a token start would
+#      be the terminal), and reading that backslash as a plain character
+#      ends the body at the D.
+#
+# When D is the backslash, a backslash is never a plain character, so 2.
+# and 3. do not exist; instead the body may stop at the start of each
+# escape token on g (stopping is tried after escaping), last first.
+#
+# Every other node of the search tree is a position already visited or a
+# character that is not D. For the single-body patterns the first
+# candidate always succeeds; ``s///`` needs the second body to close too.
+# Cost: one regex walk (C speed) per body start, memoised per delimiter.
+# Equivalence with the old patterns is asserted on every string literal
+# in tests/, every string of length <= 7 over s / \ a newline x, and
+# 60000 random strings (tests/test_gate_patterns_finish_in_linear_time.py).
+
+_SED_WORD_CHAR_RE = re.compile(r"\w")
+_SED_FLAGS_RE = re.compile(r"[a-zA-Z0-9]*")
+_SED_ESCAPE_RE = re.compile(r"\\[^\n]")
+
+
+class _SedBody:
+    """Delimited sed bodies with delimiter *delim* in *text*.
+
+    ``end(start)`` is where the old pattern's single body
+    ``(?:\\.|(?!D).)*`` (``(?:\\.|[^/])*`` with *newline_plain*) followed
+    by D closes when it starts at *start*, or -1. ``ends(start)`` yields
+    the candidate ends of the first ``s`` body in the old pattern's
+    order."""
+
+    def __init__(self, text: str, delim: str, newline_plain: bool = False):
+        self.text = text
+        self.delim = delim
+        plain = "\\\\" + ("" if newline_plain else "\\n") + re.escape(delim)
+        # Escape, plain character, and (unless the backslash is the
+        # delimiter) a backslash that cannot escape. The three are
+        # disjoint, so the loop has one parse; group 1 is the last token.
+        bare = "" if delim == "\\" else r"|\\(?=\n|\Z)"
+        self._token = re.compile(r"(?:(\\[^\n])|[^" + plain + "]" + bare + ")*")
+        self._end: dict[int, int] = {}
+
+    def _walk(self, start: int) -> tuple[int, int, bool]:
+        """(terminal, start of the last escape token or -1, whether the
+        last token is an escaped backslash)."""
+        m = self._token.match(self.text, start)
+        stop = m.end()
+        return stop, m.start(1), m.end(1) == stop and m.group(1) == "\\\\"
+
+    def end(self, start: int) -> int:
+        hit = self._end.get(start)
+        if hit is None:
+            stop, last_escape, _ = self._walk(start)
+            text, delim = self.text, self.delim
+            if stop < len(text) and text[stop] == delim:
+                hit = stop
+            elif delim != "\\":
+                hit = text.rfind(delim, start, stop)
+            else:
+                # The delimiter is the backslash: the body may stop at any
+                # escape token's start, the last one first.
+                hit = last_escape
+            self._end[start] = hit
+        return hit
+
+    def ends(self, start: int):
+        text, delim = self.text, self.delim
+        regions = []
+        while True:
+            stop, _, last_is_backslash = self._walk(start)
+            closed = stop < len(text) and text[stop] == delim
+            if closed:
+                yield stop
+            regions.append((start, stop))
+            if closed and delim != "\\" and last_is_backslash:
+                start = stop + 1
+                continue
+            break
+        if delim == "\\":
+            # Every escape token starts with the delimiter; stopping there
+            # is tried after the escape, the last token first.
+            low, stop = regions[0]
+            starts = [m.start() for m in _SED_ESCAPE_RE.finditer(text, low, stop)]
+            yield from reversed(starts)
+            return
+        while regions:
+            low, pos = regions.pop()
+            while True:
+                pos = text.rfind(delim, low, pos)
+                if pos < 0:
+                    break
+                yield pos
+
+
+def _line_end(text: str, pos: int) -> int:
+    nl = text.find("\n", pos)
+    return len(text) if nl < 0 else nl
+
+
+def _sed_blank_substitutions(text: str) -> str:
+    """``re.sub(<s pattern above>, lambda m: " s " + m.group(2), text)``.
+    A start needs two delimiters before the line ends; with two, the old
+    pattern always matched (the first is reachable by plain characters,
+    the second likewise), so the check only skips hopeless starts."""
+    out: list[str] = []
+    bodies: dict[str, _SedBody] = {}
+    n, last, i, nl = len(text), 0, 0, -1
+    while True:
+        i = text.find("s", i)
+        if i < 0 or i + 1 >= n:
+            break
+        delim = text[i + 1]
+        if delim == "\n" or (i and _SED_WORD_CHAR_RE.match(text[i - 1])):
+            i += 1
+            continue
+        if nl < i + 2:
+            nl = _line_end(text, i + 2)
+        first = text.find(delim, i + 2, nl)
+        if first < 0 or text.find(delim, first + 1, nl) < 0:
+            i += 1
+            continue
+        body = bodies.get(delim)
+        if body is None:
+            body = bodies[delim] = _SedBody(text, delim)
+        close = -1
+        for mid in body.ends(i + 2):
+            close = body.end(mid + 1)
+            if close >= 0:
+                break
+        if close < 0:
+            i += 1
+            continue
+        flags = _SED_FLAGS_RE.match(text, close + 1)
+        out.append(text[last:i])
+        out.append(" s " + flags.group())
+        last = i = flags.end()
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _sed_blank_slash_regexes(text: str) -> str:
+    """``re.sub(r"/(?:\\.|[^/])*/", " ", text)``."""
+    out: list[str] = []
+    body = _SedBody(text, "/", newline_plain=True)
+    last = i = 0
+    while True:
+        i = text.find("/", i)
+        if i < 0:
+            break
+        close = body.end(i + 1)
+        if close < 0:
+            i += 1
+            continue
+        out.append(text[last:i])
+        out.append(" ")
+        last = i = close + 1
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _sed_blank_custom_regexes(text: str) -> str:
+    """``re.sub(r"\\\\(.)(?:\\\\.|(?!\\1).)*\\1", " ", text)``: sed's
+    ``\\cREGEXc`` address. A start needs its delimiter before the line
+    ends; with one, the old pattern always matched."""
+    out: list[str] = []
+    bodies: dict[str, _SedBody] = {}
+    n, last, i, nl = len(text), 0, 0, -1
+    while True:
+        i = text.find("\\", i)
+        if i < 0 or i + 1 >= n:
+            break
+        delim = text[i + 1]
+        if nl < i + 2:
+            nl = _line_end(text, i + 2)
+        if delim == "\n" or text.find(delim, i + 2, nl) < 0:
+            i += 1
+            continue
+        body = bodies.get(delim)
+        if body is None:
+            body = bodies[delim] = _SedBody(text, delim)
+        close = body.end(i + 2)
+        if close < 0:
+            i += 1
+            continue
+        out.append(text[last:i])
+        out.append(" ")
+        last = i = close + 1
+    out.append(text[last:])
+    return "".join(out)
+
+
 def _sed_script_writes(cmd: str) -> bool:
     """True when a sed script in *cmd* holds a command that writes a file
     or runs one: ``w``/``W`` (write), ``e`` (execute), or the ``s///w``
     and ``s///e`` flags. Regex bodies are blanked first, so a letter in a
     pattern (``/wait/p``) is not read as a command."""
     body = re.sub(r"^\s*sed\b", "", cmd, count=1)
-    body = re.sub(r"(?<![\w])s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1([a-zA-Z0-9]*)",
-                  lambda m: " s " + m.group(2), body)
-    body = re.sub(r"/(?:\\.|[^/])*/", " ", body)
-    body = re.sub(r"\\(.)(?:\\.|(?!\1).)*\1", " ", body)
+    body = _sed_blank_substitutions(body)
+    body = _sed_blank_slash_regexes(body)
+    body = _sed_blank_custom_regexes(body)
     # A flag set after s///, or a command letter standing alone.
     if re.search(r"\bs [a-zA-Z0-9]*[we]", body):
         return True
@@ -13918,6 +14282,9 @@ class _DocToolExecutor:
         # from this decision (see ``tool_unavailable_reason``), never the
         # other way round.
         session_refusal = _tool_denied_for_session(permissions, name)
+        # The user's permission rules (permission_rules.py): deny refuses
+        # here, in every mode; ask is put to the user just before dispatch.
+        rule_hit = _permission_rule_hit(permissions, name, arguments)
         if permissions is not None and _tool_denied_for_role(auth_role, name):
             from . import action_protocol as _action_protocol
             if (_action_protocol.role_uses_action_protocol(auth_role)
@@ -13946,6 +14313,11 @@ class _DocToolExecutor:
                 f"{session_refusal}. The list was set when the session "
                 "started and cannot be changed from inside it."
             )})
+        elif rule_hit is not None and rule_hit[0] == "deny":
+            _record_security_event("permission_rule_deny", name,
+                                   rule_hit[1].text[:120])
+            result = json.dumps({"error": _permission_rule_deny_text(
+                name, rule_hit[1])})
         elif (getattr(permissions, "mode", "") == "plan"
                 and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
                 and not _plan_mode_admits_for_delegate(name, permissions)
@@ -13989,7 +14361,8 @@ class _DocToolExecutor:
             # call the schema cannot accept is answered with its shape.
             result = json.dumps({"error": _malformed})
         else:
-            result = self._dispatch(name, arguments, permissions)
+            result = self._dispatch_under_rules(
+                name, arguments, permissions, rule_hit)
 
         # Track mtime after a successful read so the write tools can verify
         # the file hasn't changed since the agent last read it. read_document
@@ -14333,6 +14706,64 @@ class _DocToolExecutor:
             extra={"job_id": job_id, "exit_code": exit_code,
                    "event": "completed", "observed_by": name},
         ))
+
+    def _ask_by_rule(self, perms: "KitToolPermissions", name: str,
+                     args: dict, rule) -> Optional[str]:
+        """Put a call an ask rule names to the user. None when approved,
+        else the refusal. With nobody to ask it is refused: an ask rule
+        only adds friction, in every mode."""
+        bare = _bare_tool_name(name)
+        if bare in ("bash", "bash_background"):
+            body = f"$ {(args or {}).get('command') or ''}"
+        else:
+            body = f"{name}\n" + _preview_args(args or {})
+        shown = body[:120]
+        _record_security_event("permission_rule_ask", bare,
+                               f"{rule.text}: {shown}"[:160],
+                               blocked=perms.confirm_callback is None)
+        if perms.confirm_callback is None:
+            return (f"'{bare}' meets the permission rule `{rule.text}` (ask, "
+                    f"{_rule_source(rule)}) and nobody can be asked here, so "
+                    "it is refused. Tell the user what the call is for.")
+        preview = ("[PERMISSION RULE: ask]\n"
+                   f"Your rule `{rule.text}` ({_rule_source(rule)}) asks "
+                   f"before this call.\n\n{body}")
+        self._clear_refusal_reason(perms)
+        try:
+            ok = bool(perms.confirm_callback(name, args or {}, preview))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        if ok:
+            return None
+        if self._confirm_timed_out(perms):
+            return (f"approval for '{bare}' (asked by the rule `{rule.text}`) "
+                    "TIMED OUT — the user is away, this is NOT a denial. Do "
+                    "not retry it now; say what is waiting for them.")
+        _record_security_event("denied_by_user", bare, shown)
+        return (f"user denied '{bare}' (asked by the rule `{rule.text}`). Do "
+                "NOT retry it or reach the same effect another way."
+                + self._said_why(perms))
+
+    def _dispatch_under_rules(
+        self, name: str, arguments: dict,
+        permissions: Optional["KitToolPermissions"], rule_hit,
+    ) -> str:
+        """``_dispatch`` with the permission-rule call bound (_RULE_CALL),
+        after the question an ask rule adds."""
+        asked = False
+        if (permissions is not None and rule_hit is not None
+                and rule_hit[0] == "ask"):
+            refusal = self._ask_by_rule(permissions, name, arguments,
+                                        rule_hit[1])
+            if refusal is not None:
+                return json.dumps({"error": refusal})
+            asked = True
+        token = _RULE_CALL.set({"name": name, "args": arguments,
+                                "asked": asked})
+        try:
+            return self._dispatch(name, arguments, permissions)
+        finally:
+            _RULE_CALL.reset(token)
 
     def _dispatch(
         self,
@@ -16960,6 +17391,11 @@ class _DocToolExecutor:
                 "These are never readable, regardless of mode or confirm."
             )
 
+        # A deny rule of the user's on this path, as resolved by the tool.
+        _rule_refusal = _rule_denies_path(perms, "read", resolved)
+        if _rule_refusal:
+            return _rule_refusal
+
         # Inside any allowed root: free read. Checked BEFORE the refusal
         # ledger on purpose — if the user has since granted the directory
         # (extra_dir / "Erlaubte Verzeichnisse"), that later, explicit
@@ -17006,6 +17442,12 @@ class _DocToolExecutor:
         # ask ME"), not a blanket grant an unattended process inherits
         # from a settings file. A headless run that needs to reach outside
         # has to be configured to, and the message says how.
+        #
+        # An allow rule of the user's (permission_rules) answers this one
+        # read and opens nothing for the session: the grant below is what
+        # a click in the dialog says it does, and no dialog was shown.
+        if _rule_answers(perms, "read", "read_file", resolved):
+            return None
         if perms.confirm_callback is None:
             return (
                 f"read denied: '{label or resolved}' is outside the allowed "
@@ -17263,6 +17705,9 @@ class _DocToolExecutor:
         resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             return err
+        _rule_refusal = _rule_denies_path(perms, "write", resolved)
+        if _rule_refusal:
+            return _rule_refusal
         if not _write_in_scope(resolved, perms):
             _record_security_event(
                 "out_of_write_scope", name, self._display_path(resolved, perms),
@@ -17439,8 +17884,12 @@ class _DocToolExecutor:
         # hatch; writing has no such list, so refusing would leave every
         # unattended run unable to produce anything. A head-less caller
         # picks its own mode, and the sandbox still bounds where it writes.
+        # An allow rule of the user's answers this dialog, for a write tool
+        # and a path the rule names; the second opinion below still looks,
+        # as it does for every write nobody was asked about.
         if (effective_mode(perms) == "default"
-                and perms.confirm_callback is not None):
+                and perms.confirm_callback is not None
+                and not _rule_answers(perms, "write", name, resolved)):
             _cannot = self._edit_cannot_apply(name, args, resolved, perms)
             if _cannot:
                 return _cannot
@@ -18360,6 +18809,22 @@ class _DocToolExecutor:
                 # Asked above, with the whole command shown, after every
                 # hard tier and the publish readiness check.
                 return None
+            # An allow rule of the user's (permission_rules) answers the
+            # dialog below -- and the head-less refusal after it, which is
+            # the same question with nobody there -- for one simple command
+            # its words cover. Every hard tier above has already run; the
+            # second opinion looks, as it does for the auto-allow list.
+            # Not for a push nobody asked for: head-less, that one reaches
+            # this point to be refused here, and the refusal is the
+            # one-request rule, not a question. Not for a command the
+            # egress scan flagged either: an upload is sent to this dialog
+            # for the person to see, and a rule naming the command is not
+            # a decision about the data it sends.
+            _ungranted_push = (_is_git_push(cmd)
+                               and not (perms.push_grants or {}).get("push"))
+            if (not _ungranted_push and egress is None
+                    and _rule_answers(perms, "bash", "bash")):
+                return self._classifier_second_opinion(perms, name, args, mode)
             if (mode in ("default", "diff_approval", "acceptEdits")
                     and perms.confirm_callback is not None):
                 _cwd = str(args.get("cwd") or "").strip()
@@ -18824,6 +19289,11 @@ class _DocToolExecutor:
         mode = getattr(perms, "mode", "")
         if mode == "bypassPermissions":
             # Nobody is asked here; the second opinion is the one look.
+            return self._classifier_second_opinion(
+                perms, name, args or {}, mode)
+        # An allow rule of the user's naming this tool answers the question
+        # below (and its head-less refusal); the second opinion still looks.
+        if _rule_answers(perms, "tool", name):
             return self._classifier_second_opinion(
                 perms, name, args or {}, mode)
         if perms.confirm_callback is None:

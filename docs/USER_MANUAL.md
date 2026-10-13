@@ -1373,6 +1373,38 @@ Cycle with `/permissions` or Shift+Tab; the cycle deliberately never lands on by
 
 Settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
 
+### Permission rules
+
+Rules in `~/.delfin_settings.json` decide single actions in advance, in every level:
+
+<!-- recipe: not-runnable — a settings file excerpt; tests/test_permission_rules_hold_in_the_real_gate.py parses every rule in it -->
+```json
+{
+  "permissions": {
+    "deny":  ["bash(git push)", "read(/data/private/**)", "web_fetch(domain:example.org)"],
+    "ask":   ["write(src/**)", "mcp__github__*"],
+    "allow": ["bash(pytest:*)", "read(/data/shared/**)"]
+  }
+}
+```
+
+| Rule | Means |
+|------|-------|
+| `bash(git push)` | that command, by its words; `bash(pytest:*)` the command with any arguments |
+| `read(<glob>)`, `write(<glob>)` | a path; absolute or `~/…` as written, otherwise relative to the workspace; `*` is one path segment, `**` any number |
+| `web_fetch(domain:example.org)` | `web_fetch` to that host and its subdomains |
+| `mcp__server__tool`, `mcp__server__*`, `mcp__server` | MCP tools |
+| `web_search` (a bare name) | every call of that tool |
+
+- **deny** refuses and **ask** puts the call to you first, at every level, `bypassPermissions` included. An ask with nobody to answer it (an unattended run) is a refusal. deny wins over ask, ask over allow.
+- deny and ask match widely: `bash(git push)` also matches `cd x && git push`, `sh -c 'git push'` and `timeout 5 git --no-pager push`; a read or write rule also matches the paths a shell command names; a rule without `*` covers the directory below it. An unrelated command that merely contains the words is caught too.
+- **allow** only answers a question DELFIN would otherwise ask you about that exact call: the command dialog, a read outside the workspace (that one read; no directory is opened for the session), the write dialog in `default`, an MCP tool with side effects. It never lifts a refusal: secrets, outside-workspace writes, a locked folder, the agent's own configuration and safety files, git settings that name a program, a push or pull request you did not ask for, an upload, a command you refused earlier, the deny patterns, all stay as they are.
+- An allow covers one plain command: a command with `;`, `&`, `|`, `<`, `>`, `` ` ``, `$`, brackets, braces, a backslash or a newline is never covered, nor one that runs another program from its words (`env …`, `xargs …`, `timeout …`, `sudo …`, `python -c …`, `sh -c …`, `perl -e …`). `bash(make)` covers exactly `make`; `bash(make:*)` covers `make test`.
+- A repository can only add friction: `deny` and `ask` in its `.delfin/settings.json` apply, its `allow` is ignored.
+- A rule that cannot be read grants nothing. Broken rules, and rules naming a tool that does not exist, are listed when the terminal starts; a broken deny or ask is marked `ERROR`.
+- `/permissions` in the terminal shows the level, every rule in force with its file, and what is not in force; `/permissions rules` shows the rules alone. You edit the file yourself: the agent cannot write it from any tool or command.
+- On the CLI backend, deny and ask apply to its tools through the same hook that keeps its file boundary; allow is not used there.
+
 ### The shell sandbox
 
 Every command runs through an allow-list and then, where available, bubblewrap or firejail. Credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, the network is denied by default, and every command is appended to `~/.cache/delfin/agent-audit.jsonl`. `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}` selects the mechanism; when isolation is unavailable the agent says so rather than running unprotected in silence.

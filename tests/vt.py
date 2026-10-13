@@ -112,7 +112,9 @@ class Screen:
         if kind != "[":
             return i + 2                # a two-character escape (Esc x)
         j = i + 2
-        while j < n and not data[j].isalpha() and data[j] not in "?":
+        # '?' is a parameter byte (CSI ? 2004 h), not a final byte: stopping
+        # on it printed "2004l" as text after every bracketed-paste toggle.
+        while j < n and not data[j].isalpha():
             j += 1
         if j >= n:
             return n                    # truncated sequence: drop it
