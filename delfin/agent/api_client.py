@@ -9892,6 +9892,7 @@ def check_completion_claim(
     changes=(),
     observed=None,
     tests=None,
+    durable_test_runs=None,
     calcs=None,
     window_start: float = 0.0,
     current_fingerprint: Optional[dict] = None,
@@ -9906,11 +9907,14 @@ def check_completion_claim(
     helpers above serve the live call site, _verify_task_completion.
     ``calcs`` is the calc-evidence ledger (Welle 10): the runs the
     session actually observed via get_calc_info, verdicting a calculation
-    task on real work.
+    task on real work. ``durable_test_runs`` is the session's test runs
+    rebuilt from the durable tool trace, across turns: a verified test
+    task says with it whether its own test was ever seen failing.
     """
     from .task_evidence import check_completion_claim as _check
     return _check(subject, description, changes=changes, observed=observed,
-                  tests=tests, calcs=calcs, window_start=window_start,
+                  tests=tests, durable_test_runs=durable_test_runs,
+                  calcs=calcs, window_start=window_start,
                   current_fingerprint=current_fingerprint)
 
 
@@ -12742,6 +12746,21 @@ def _decode_exact(data: "Optional[bytes]") -> "Optional[str]":
         return None
 
 
+class _PayloadHit(str):
+    """The script-payload scan's reason text, carrying the file it refused
+    (``path``; None for an inline ``-c`` payload). A str, so every caller
+    that formats or logs the reason is unchanged; the file is what the
+    refusal names as the session's own, rather than a second parse of the
+    command that may land on a different file of the same command."""
+
+    path: "Path | None"
+
+    def __new__(cls, text: str, path: "Path | None" = None):
+        obj = super().__new__(cls, text)
+        obj.path = path
+        return obj
+
+
 class _DocToolExecutor:
     """Lazy-loaded local executor for doc and calc search tools."""
 
@@ -15515,9 +15534,33 @@ class _DocToolExecutor:
             return json.dumps({"error": f"Invalid regex: {exc}"})
         extra_skip = _gitignore_skip_dirs(root)
         matches = []
+        # The gate above decided about ``search_path``. A symlink inside it
+        # is a second path: its target was never asked about. A link that
+        # leaves the searched folder is not read (grep_file(path=".") used
+        # to read any file a workspace symlink pointed at, with no dialog),
+        # and a link that stays inside is judged by its target's name, so an
+        # innocently named link to a secret file reads nothing either.
+        try:
+            scan_root = search_path.resolve()
+        except OSError:
+            scan_root = search_path
+        links_outside = 0
+        # Decided once, not per file: the only added per-file cost is the
+        # lstat of is_symlink (5000 files, no links: 1.25 s, within 0-4%).
+        walking = search_path.is_dir()
         for fp in _iter_scan_files(search_path, extra_skip):
             if fp.suffix.lower() in _SCAN_SKIP_SUFFIXES:
                 continue
+            if walking and fp.is_symlink():
+                try:
+                    real = fp.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    continue
+                if real != scan_root and scan_root not in real.parents:
+                    links_outside += 1
+                    continue
+                if perms is not None and _is_secret_path(perms, real):
+                    continue
             # Per-file secret deny. The comment above promised it and the
             # loop never did it: grep_file(path=".") read a workspace-root
             # .env, *.key or credentials.json line by line (review
@@ -15548,7 +15591,12 @@ class _DocToolExecutor:
                 continue
             if len(matches) >= max_results:
                 break
-        return "\n".join(matches) if matches else "No matches found."
+        out = "\n".join(matches) if matches else "No matches found."
+        if links_outside:
+            out += (f"\n[{links_outside} symlink(s) pointing outside the "
+                    "searched folder were not read. Name such a file "
+                    "directly to be asked about it.]")
+        return out
 
     def _execute_list_files(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
@@ -16022,8 +16070,8 @@ class _DocToolExecutor:
         except Exception:
             base_dir = Path(perms.workspace)
 
-        def _resolve(ref: str) -> tuple[str, str] | None:
-            """(label, contents) for a script path, or None to skip it."""
+        def _resolve(ref: str) -> tuple[str, str, Path] | None:
+            """(label, contents, path) for a script path, or None to skip it."""
             try:
                 p = Path(ref)
                 if not p.is_absolute():
@@ -16035,18 +16083,18 @@ class _DocToolExecutor:
                     # The project's own committed code, unmodified. See
                     # _is_reviewed_project_file for why that is the line.
                     return None
-                return ref, p.read_text(encoding="utf-8", errors="replace")
+                return ref, p.read_text(encoding="utf-8", errors="replace"), p
             except Exception:
                 return None
 
-        sources: list[tuple[str, str]] = []
+        sources: list[tuple[str, str, Path | None]] = []
         for ref in self._referenced_script_paths(cmd):
             got = _resolve(ref)
             if got is not None:
                 sources.append(got)
         try:
             for src in (_inline_payload.extract_c_payloads(cmd) or []):
-                sources.append(("the inline python payload", src))
+                sources.append(("the inline python payload", src, None))
                 eff = _inline_payload.analyze_payload(src, base_dir)
                 for mod in eff.local_modules:
                     got = _resolve(mod)
@@ -16055,10 +16103,10 @@ class _DocToolExecutor:
         except Exception:
             pass
 
-        for ref, text in sources:
+        for ref, text, path in sources:
             hit = perms.matches_bash_deny(text)
             if hit:
-                return f"{ref} contains deny-pattern {hit!r}"
+                return _PayloadHit(f"{ref} contains deny-pattern {hit!r}", path)
             for tok in set(re.findall(
                 r"(?<![A-Za-z0-9_])(?:~|\$HOME|/)[^\s;|&<>()`'\"]+", text)):
                 try:
@@ -16070,7 +16118,8 @@ class _DocToolExecutor:
                 rel = (str(rp.relative_to(root)).replace("\\", "/")
                        if root is not None else str(rp).replace("\\", "/"))
                 if perms.matches_path_deny(rel):
-                    return f"{ref} references a secret path ({tok!r})"
+                    return _PayloadHit(
+                        f"{ref} references a secret path ({tok!r})", path)
         return None
 
     # Outbound data-transfer signatures. These flag EXFILTRATION shapes
@@ -16898,6 +16947,44 @@ class _DocToolExecutor:
                 perms.record_denied_action(_SHELL_WRITE_KIND, _path)
         return _refused(reason, by_user=True) + self._said_why(perms)
 
+    @staticmethod
+    def _own_written_file(path: "Path | None", perms) -> "Path | None":
+        """``path`` resolved, when its current bytes are the ones this
+        session last wrote to it (newest change-journal record of the file,
+        ``post_hash`` equal to the file's sha256), else None.
+
+        Input: the file the payload scan refused. Only the session's own
+        journal (``perms.task_session_id``) is read; the journal is on disk,
+        so a restarted session with the same id still knows its writes. A
+        file overwritten afterwards by anyone else -- the user, a bash
+        redirect -- no longer holds the session's content and is not
+        called its own. It decides nothing: the caller only words a
+        refusal that was already made. Never raises.
+        """
+        try:
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            if path is None or not sid:
+                return None
+            from . import change_journal as _cj
+            ws = Path(str(getattr(perms, "workspace", "") or "."))
+            target = path.resolve()
+            post = None
+            for rec in _cj.list_changes(sid) or []:
+                rp = Path(str(rec.get("path", "") or ""))
+                if not str(rp):
+                    continue
+                if not rp.is_absolute():
+                    rp = ws / rp
+                if rp.resolve() == target:
+                    post = rec.get("post_hash")
+            if not post or not target.is_file():
+                return None
+            if _cj.sha256_bytes(target.read_bytes()) != post:
+                return None
+            return target
+        except Exception:
+            return None
+
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -17116,11 +17203,44 @@ class _DocToolExecutor:
             payload_hit = self._scan_bash_script_payloads(cmd, args, perms)
             if payload_hit is not None:
                 _record_security_event("script_payload", "bash", str(payload_hit))
-                return (
+                refusal = (
                     f"bash refuses to run a script whose contents trip the "
                     f"safety scan: {payload_hit}. The deny-list + secret scan "
                     "apply to executed script files too, not just the command "
                     "line."
+                )
+                # The commonest way into this refusal is a script the session
+                # wrote itself a moment ago, and the commonest reaction was
+                # to run the same file under another spelling. Say what was
+                # refused (the file's content, not the act of running it)
+                # and, the second time for the same file, end the attempts.
+                # Running a self-written script is otherwise untouched: this
+                # only adds words to a refusal that already happened.
+                own = self._own_written_file(
+                    getattr(payload_hit, "path", None), perms)
+                if own is None:
+                    return refusal
+                shown = self._display_path(own, perms)[:200]
+                if perms.action_denied_earlier("self_written", str(own)):
+                    return (
+                        f"{refusal} '{shown}' is a file this session wrote, "
+                        "and it was already refused once for its content. "
+                        "Spelling the run another way does not change what "
+                        "the file contains. Stop here and tell the user what "
+                        "the script was meant to do and what the scan "
+                        "objects to."
+                    )
+                perms.record_denied_action("self_written", str(own))
+                return (
+                    f"{refusal} '{shown}' is a file this session wrote: what "
+                    "was refused is its content, not running your own "
+                    "script. If the script does not need what the scan "
+                    "names, take it out, or use the tool that exists for the "
+                    "job. If it does need it, do not reach the same "
+                    "operation another way (another spelling, a variable, a "
+                    "second file): tell the user what the script is meant "
+                    "to do and what the scan objects to. Running this file "
+                    "through another command is refused again."
                 )
             # Outbound data-transfer (exfiltration) detection. Always surfaced
             # in the containment panel; hard-blocked in the unattended mode and
@@ -21664,8 +21784,15 @@ class _DocToolExecutor:
             check = self._check_completion(task_id, perms)
             if check is not None:
                 fields["verified"] = check["verdict"]
-                if check.get("detail"):
-                    fields["verify_note"] = str(check["detail"])[:200]
+                # A verified verdict may carry a note (a test task whose
+                # test was never seen failing): it is kept on the task
+                # beside the detail.
+                kept = [str(check.get("detail") or "")]
+                if check["verdict"] == "verified":
+                    kept.append(str(check.get("note") or ""))
+                kept_text = "; ".join(t for t in kept if t)
+                if kept_text:
+                    fields["verify_note"] = kept_text[:200]
         try:
             task = self._task_store(perms).update(task_id, **fields)
         except KeyError as exc:
@@ -21688,6 +21815,10 @@ class _DocToolExecutor:
             )
         elif check is not None and check["verdict"] == "unchecked":
             payload["verified"] = "unchecked"
+        elif check is not None and check["verdict"] == "verified" \
+                and check.get("note"):
+            # Information, not a condition: the task stays verified.
+            payload["note"] = "[task-verify] " + str(check["note"]) + "."
         return json.dumps(payload, ensure_ascii=False)
 
     def _check_completion(
@@ -21720,12 +21851,26 @@ class _DocToolExecutor:
                 calcs = ledgers.get("calcs")
         except Exception:
             observed, tests, calcs = None, None, None
+        durable_runs = None
+        try:
+            # Rebuild the DURABLE cross-turn test-run ledger
+            # so a red from an EARLIER turn reaches assess() (the live
+            # per-turn ledger is replaced every turn start). Never raises.
+            # An EMPTY ledger is passed through ([]), so assess can still
+            # name a changed test file no durable run ever covered.
+            if sid:
+                from . import tool_trace as _tt
+                from . import counter_test as _ct
+                durable_runs = _ct.durable_test_runs(_tt.read(sid))
+        except Exception:
+            durable_runs = None
         return check_completion_claim(
             str(task.get("subject", "")),
             str(task.get("description", "")),
             changes=_journal_changes(sid),
             observed=observed,
             tests=tests,
+            durable_test_runs=durable_runs,
             calcs=calcs,
             window_start=_task_ts_epoch(task.get("started_at")),
             current_fingerprint=_current_fingerprint(

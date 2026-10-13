@@ -49,6 +49,7 @@ from pathlib import Path
 
 from .german import GERMAN_READ_VERB_SOURCE, GERMAN_WRITE_VERB_SOURCE
 from . import evidence_freshness as evidence
+from . import counter_test
 
 __all__ = ["check_completion_claim"]
 
@@ -331,6 +332,7 @@ def check_completion_claim(
     changes=(),
     observed=None,
     tests=None,
+    durable_test_runs=None,
     calcs=None,
     window_start: float = 0.0,
     current_fingerprint: dict | None = None,
@@ -506,8 +508,23 @@ def check_completion_claim(
             fresh_green = [e for e in fresh_green
                            if e in ran_any]
             if fresh_green:
-                return _verdict("tests", "verified",
-                                f"{len(fresh_green)} green run(s)")
+                v = _verdict("tests", "verified",
+                             f"{len(fresh_green)} green run(s)")
+                if durable_test_runs is not None:
+                    try:
+                        # The journal records carry their stamps: a test
+                        # changed after its red run is no control.
+                        written = [entry for entry in changes
+                                   if isinstance(entry, dict)
+                                   and entry.get("path")]
+                        _line = counter_test.assess(
+                            written,
+                            counter_test.normalize_test_runs(durable_test_runs))
+                    except Exception:
+                        _line = None
+                    if _line and _line != "shown":
+                        v["note"] = ((v.get("note") or "") + " " + _line).strip()
+                return v
             if current_fingerprint is not None and in_window:
                 # Green runs exist but every in-window run is stale for
                 # the current state: the numbers belong to an older
