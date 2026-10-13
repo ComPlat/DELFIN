@@ -39,7 +39,8 @@ async function mount(options: { history?: Entry[]; turn?: boolean } = {}) {
   store.update((d) => {
     const s = ensureSession(d, "s1", { model: "kit.test", approval: "default" })
     s.state = "idle"
-    if (options.turn) s.turn = { id: "t1", source: "user", startedAt: Date.now(), label: "thinking…" }
+    if (options.turn) s.turn = { id: "t1", source: "user", startedAt: Date.now(), label: "thinking…",
+                                 base: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, streamed: 0 }
     d.current = "s1"
   })
   const calls: Call[] = []

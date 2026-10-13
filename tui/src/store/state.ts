@@ -29,6 +29,12 @@ export interface TurnLive {
   source: string
   startedAt: number          // ms, the window's clock
   label: string              // what the status line says it is doing
+  /** The session's totals when the turn began: the status line shows this
+   *  turn's tokens and cost, not the whole conversation's (as the REPL). */
+  base: { inputTokens: number; outputTokens: number; costUsd: number }
+  /** Answer characters streamed: an estimate of the output tokens until
+   *  the provider reports them (OpenAI-compatible streams report at the end). */
+  streamed: number
 }
 
 export interface SessionState {
@@ -49,6 +55,8 @@ export interface SessionState {
   lastSeq: number
   summary: SessionSummary | null
   ended: { reason: string; exitCode?: number } | null
+  /** A progress line the next one replaces (waiting out an endpoint outage). */
+  wait: string
 }
 
 export interface Elsewhere {
@@ -78,7 +86,7 @@ export function newSession(id: string, info: Record<string, unknown> = {}): Sess
   const s: SessionState = {
     id, title: "", workspace: "", provider: "", model: "", mode: "", approval: "",
     effort: "", state: "starting", pending: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
-    turn: null, tail: "", thinking: "", lastSeq: 0, summary: null, ended: null,
+    turn: null, tail: "", thinking: "", lastSeq: 0, summary: null, ended: null, wait: "",
   }
   applyInfo(s, info)
   return s
@@ -121,6 +129,7 @@ function endSession(s: SessionState, e: Record<string, any>): void {
   s.tail = ""
   s.thinking = ""
   s.pending = []
+  s.wait = ""
 }
 
 function toolLabel(event: Record<string, any>): string {
@@ -164,9 +173,18 @@ export function applyEvent(state: AppState, event: AnyEvent, now: number = Date.
       endSession(s, e)
       break
     case "turn.started":
-      s.turn = { id: str(e.turnId), source: str(e.source), startedAt: now, label: "thinking…" }
+      s.turn = { id: str(e.turnId), source: str(e.source), startedAt: now, label: "thinking…",
+                 base: { ...s.usage }, streamed: 0 }
       s.tail = ""
       s.thinking = ""
+      s.wait = ""
+      break
+    case "text.delta":
+      if (s.turn) s.turn.streamed += str(e.delta).length
+      s.wait = ""
+      break
+    case "wait":
+      s.wait = str(e.text)
       break
     case "reasoning.delta":
       s.thinking += str(e.delta)
@@ -189,6 +207,7 @@ export function applyEvent(state: AppState, event: AnyEvent, now: number = Date.
       s.turn = null
       s.tail = ""
       s.thinking = ""
+      s.wait = ""
       break
     case "usage":
       // Session totals, sampled during a turn.

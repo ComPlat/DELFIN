@@ -1,4 +1,4 @@
-◆ DELFIN  fake/fake-model
+◆ DELFIN  fake/fake-model · solo
   workspace  /home/user/project
   approval   default
 

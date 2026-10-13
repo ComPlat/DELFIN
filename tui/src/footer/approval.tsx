@@ -127,7 +127,9 @@ export function approvalLines(asked: Asked, ui: ApprovalState | null, max: numbe
     return lines
   }
   if (mode === "persist") {
-    const pattern = ui!.choice === "k" ? String(asked.suggestion ?? "") : "this exact command"
+    // k: the pattern it saves; A: the command itself, exactly.
+    const command = String(asked.preview ?? "").split("\n")[0]!.replace(/^\$\s*/, "")
+    const pattern = ui!.choice === "k" ? String(asked.suggestion ?? "") : `${command}  (exactly this command)`
     lines.push([{ text: "persist  ", tone: "warn", bold: true }, { text: fit(pattern, max - 9), tone: "bright" }])
     for (const row of wrap("Every future command matching it runs without asking — in this project and "
                            + "every other, in this session and every future one.", max)) {

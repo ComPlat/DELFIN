@@ -72,10 +72,7 @@ export class Presenter {
       case "session.info":
         if (!this.bannered) {
           this.bannered = true
-          const lines = (e.banner as string[] | undefined)?.filter((l) => l && !l.startsWith("delfin-agent")) ?? []
-          const head = [e.provider && e.model ? `${e.provider}/${e.model}` : e.model, e.title]
-            .filter(Boolean).join(" · ")
-          this.add("banner", { head, lines })
+          this.add("banner", bannerOf(e))
           for (const notice of (e.notices as string[] | undefined) ?? []) this.add("notice", { text: notice })
         }
         break
@@ -214,6 +211,27 @@ export class Presenter {
     }
     return blocks
   }
+}
+
+/**
+ * The banner the REPL prints (cli._startup_banner), as the window draws it:
+ * its wordmark box is the window's own head ("◆ DELFIN"), its first line
+ * ("delfin-agent · kit/model · solo") the head's text, and every other line
+ * -- workspace and git, approval, isolation, watcher, grants, the session
+ * -- kept as it is: they are the lines that decide safety.
+ */
+export function bannerOf(info: Fields): { head: string; lines: string[] } {
+  const raw = ((info.banner as string[] | undefined) ?? []).map((l) => stripControl(String(l ?? "")).trimEnd())
+  const lines = raw.filter((l) => l.trim() && !/^[╭│╰]/.test(l))
+  const first = lines.findIndex((l) => l.startsWith("delfin-agent"))
+  let head = [info.provider && info.model ? `${info.provider}/${info.model}` : info.model, info.mode]
+    .filter(Boolean).join(" · ")
+  if (first >= 0) {
+    head = lines[first]!.replace(/^delfin-agent\s*·\s*/, "")
+    lines.splice(first, 1)
+  }
+  if (info.title) head += ` · ${info.title}`
+  return { head, lines }
 }
 
 /** What a question was about, in a few words: the command, the file, the

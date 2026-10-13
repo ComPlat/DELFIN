@@ -44,7 +44,7 @@ function tailRows(tail: string): number {
 export function footerRows(s: SessionState | null, term: { width: number; height: number }, message: string,
                            composerRows = 1, approval: ApprovalUi | null = null): number {
   let rows = 3 + composerRows                    // rule, composer, rule, hints
-  if (s?.turn) rows += 1
+  if (s?.turn || s?.wait) rows += 1
   if (s) rows += tailRows(s.tail)
   rows += approvalRows(s?.pending[0], approval?.state ?? null, term.width)
   if (message) rows += 1
@@ -54,6 +54,19 @@ export function footerRows(s: SessionState | null, term: { width: number; height
 function elapsed(startedAt: number, now: number): string {
   const secs = Math.max(0, (now - startedAt) / 1000)
   return secs < 60 ? `${secs.toFixed(1)}s` : `${Math.floor(secs / 60)}m${String(Math.floor(secs % 60)).padStart(2, "0")}s`
+}
+
+/** This turn's tokens and cost, as the REPL's turn line shows them: the
+ *  difference from where the turn began; output estimated from the
+ *  streamed characters (marked ~) until the provider counts it. */
+export function turnUsage(turn: TurnLive, usage: { inputTokens: number; outputTokens: number; costUsd: number }): string[] {
+  const tin = Math.max(0, usage.inputTokens - turn.base.inputTokens)
+  const tout = Math.max(0, usage.outputTokens - turn.base.outputTokens)
+  const out = tout > 0 ? `↓${compact(tout)}` : turn.streamed > 0 ? `↓~${compact(Math.max(1, Math.floor(turn.streamed / 4)))}` : "↓…"
+  const parts = [`↑${compact(tin)} ${out}`]
+  const cost = usage.costUsd - turn.base.costUsd
+  if (cost > 0) parts.push(`$${cost.toFixed(4)}`)
+  return parts
 }
 
 export function compact(n: number): string {
@@ -115,12 +128,10 @@ export function Footer(props: FooterProps): JSX.Element {
   const status = (turn: TurnLive) => {
     const s = props.session()
     const parts = [elapsed(turn.startedAt, now())]
-    if (s && (s.usage.inputTokens || s.usage.outputTokens)) {
-      parts.push(`↑${compact(s.usage.inputTokens)} ↓${compact(s.usage.outputTokens)}`)
-    }
-    if (s?.usage.costUsd) parts.push(`$${s.usage.costUsd.toFixed(4)}`)
-    parts.push(`${props.keymap.label("interrupt")} to interrupt`)
-    const label = fit(turn.label, Math.max(8, cols() - 4 - parts.join(" · ").length - 4))
+    const parts2 = s ? turnUsage(turn, s.usage) : []
+    parts.push(...parts2, `${props.keymap.label("interrupt")} to interrupt`)
+    const doing = s?.wait || turn.label
+    const label = fit(doing, Math.max(8, cols() - 4 - parts.join(" · ").length - 4))
     return { label, rest: fit(`  ${parts.join(" · ")}`, Math.max(0, cols() - 3 - label.length)) }
   }
 
@@ -133,6 +144,9 @@ export function Footer(props: FooterProps): JSX.Element {
         <scrollbox height={tailRows(props.session()?.tail ?? "")} stickyScroll stickyStart="bottom">
           <markdown content={props.session()?.tail ?? ""} streaming syntaxStyle={style()} conceal width="100%" />
         </scrollbox>
+      </Show>
+      <Show when={!props.session()?.turn && props.session()?.wait}>
+        <text wrapMode="none" fg={t().warn}>{fit(`… ${props.session()?.wait ?? ""}`, cols() - 1)}</text>
       </Show>
       <Show when={props.session()?.turn}>
         {(turn: () => TurnLive) => (
