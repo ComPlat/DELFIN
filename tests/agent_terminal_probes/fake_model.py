@@ -7,6 +7,7 @@ marker in the LAST user message, so a test states the model's behaviour
 in the prompt it types:
 
     do-bash <command>      one ``bash`` tool call, then a text answer
+    do-bash-secret         a ``bash`` call carrying FAKE_SECRET in a header
     do-write <path> <text> one ``write_file`` tool call, then a text answer
     do-md                  a markdown answer (heading, list, code block)
     do-slow                ~30 s of streamed text, for interrupt tests
@@ -33,6 +34,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL = "fake-model"
+FAKE_SECRET = "sk-live-FAKE0123456789abcdef"
 
 
 def _last(messages: list[dict], role: str) -> dict | None:
@@ -56,14 +58,23 @@ def plan(messages: list[dict]) -> dict:
     """What to answer: {"text": str} | {"tool": name, "args": dict}
     | {"status": int} | {"slow": True}."""
     if messages and messages[-1].get("role") == "tool":
-        out = _text_of(messages[-1]).strip().splitlines()
-        return {"text": "Tool finished. First line: "
-                        + (out[0][:60] if out else "(empty)")}
+        # Only a size: an answer quoting the result would put tool output
+        # on screen as ANSWER text, and a test about how the terminal draws
+        # the result could no longer tell the two apart.
+        return {"text": f"Tool finished ({len(_text_of(messages[-1]))} "
+                        "chars came back)."}
     user = _text_of(_last(messages, "user"))
     # The engine may append notes after the typed text; the marker is the
     # first one in the message.
     for line in user.splitlines():
         s = line.strip()
+        if s == "do-bash-secret":
+            # A credential the user never typed, so any copy of it on the
+            # screen was put there by the terminal, not echoed from input.
+            # At the END of a short command: a middle-truncated headline
+            # keeps the tail, so this is where a narrow line still shows it.
+            return {"tool": "bash", "args": {"command": (
+                'curl -sH "Authorization: Bearer ' + FAKE_SECRET + '" x')}}
         if s.startswith("do-bash "):
             return {"tool": "bash", "args": {"command": s[8:]}}
         if s.startswith("do-write "):
