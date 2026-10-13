@@ -211,7 +211,12 @@ _BASELINE_TOKENS = 11_422
 # active until a human accepts", bare types, the author label dropped from
 # the schema -- which leaves 112 tokens, so the budget moves
 # 10_061 -> 10_173.
-_TOKEN_BUDGET = 10_173
+# 2026-10-13: the method-reviewer preset (pack/agents/*_subagent.md). Its
+# only schema text is its name in the subagent_type enum, which has no
+# shorter spelling; measured +5 tokens, so the budget moves
+# 10_173 -> 10_178. The preset's prompt and description are not in the
+# schema and cost nothing here.
+_TOKEN_BUDGET = 10_178
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
