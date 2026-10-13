@@ -199,3 +199,80 @@ def test_an_engine_that_never_ran_its_constructor_still_notes_a_follow_up():
     eng._open_task_count = lambda: 1
     eng.pending_turn_continuation = ""
     eng._note_turn_continuation("Let me run the tests now.")   # must not raise
+
+
+def test_the_stop_reaches_the_screen_and_the_history(make):
+    """A surface prints what arrives through on_token (a terminal cannot
+    print the return value afterwards), and the next turn's model reads
+    the history: the stop sentence must be in both."""
+    eng, _ = make(_leak())
+    eng.stream_response("go")
+    eng.stream_response("f1")
+    streamed: list[str] = []
+    eng.stream_response("f2", on_token=streamed.append)
+    assert "stops asking" in "".join(streamed)
+    last = [m for m in eng.messages if m.get("role") == "assistant"][-1]
+    assert "stops asking" in str(last.get("content"))
+
+
+def test_the_turn_that_stops_leaves_no_follow_up_behind(make):
+    """The follow-up note is recorded before the dead-call check runs; the
+    stopping turn must not leave it pending for the surface to send."""
+    eng, _ = make(_leak())
+    eng._open_task_count = lambda: 1
+    eng.stream_response("go")
+    assert eng.pending_turn_continuation, "control: a dead turn leaves a note"
+    eng.clear_turn_continuation()
+    eng.stream_response("f1")
+    eng.clear_turn_continuation()
+    eng.stream_response("f2")
+    assert eng._stall_guard_stopped
+    assert eng.pending_turn_continuation == ""
+
+
+def test_a_new_conversation_or_a_loaded_session_starts_without_a_stop(make):
+    """The dashboard's new cycle and session load reuse the engine object;
+    the count belongs to the conversation that produced it."""
+    eng, client = make(_leak())
+    for i in range(3):
+        eng.stream_response(f"t{i}")
+    saved = eng.export_state()
+    eng.reset_cycle()
+    assert eng._stall_guard_stopped == "" and eng._stall_guard.streak == 0
+    for i in range(3):
+        eng.stream_response(f"t{i}")
+    eng.restore_state(saved)
+    assert eng._stall_guard_stopped == "" and eng._stall_guard.streak == 0
+
+
+def test_a_line_typed_in_the_terminal_lifts_a_stop(make):
+    """Driven through the terminal's own loop: the typed line starts a
+    dead loop of follow-ups that stops on the third turn; no fourth
+    follow-up goes out, and the next typed line gets its re-request."""
+    import io
+
+    from delfin.agent import repl, repl_render as rr
+
+    class _Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    eng, client = make(_leak())
+    out = io.StringIO()
+    agent = repl.TerminalAgent(eng, out=out, err=_Tty())
+    agent.transcript.theme = rr.Theme(enabled=False)
+    reads = iter(["write a.txt", "call write_file as a tool", "/exit"])
+    agent._read_line = lambda _p: next(reads)
+    calls_per_turn: list[int] = []
+    real_turn = agent.turn
+
+    def turn(prompt):
+        before = client.calls
+        result = real_turn(prompt)
+        calls_per_turn.append(client.calls - before)
+        return result
+
+    agent.turn = turn
+    agent.run()
+    assert calls_per_turn == [2, 2, 1, 2], calls_per_turn
+    assert "stops asking" in out.getvalue()
