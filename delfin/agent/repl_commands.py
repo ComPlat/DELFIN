@@ -23,7 +23,7 @@ from typing import Any, Callable
 __all__ = [
     "CommandResult", "ReplCommand", "BUILTINS", "dispatch",
     "looks_like_command", "palette_rows", "expand_at_references",
-    "complete_path", "SHELL_PREFIX", "MEMORY_PREFIX",
+    "complete_path", "SHELL_PREFIX", "MEMORY_PREFIX", "nearest_builtin",
 ]
 
 SHELL_PREFIX = "!"
@@ -1905,3 +1905,33 @@ def dispatch(text: str, ctx: ReplContext) -> CommandResult:
     # Unknown: the literal text goes to the model, which is what the
     # dashboard does. Refusing here would make a typo unanswerable.
     return CommandResult(handled=False)
+
+
+#: difflib ratio a token must reach to count as a typo of a builtin.
+#: Measured over the 42 builtins: 0.75 maps hlep, hepl, stat, stauts,
+#: modle, comapct, exti, clera, toosl, sesion to their command, and none
+#: of tmp, etc, usr, opt, data, home, scratch, work, mnt, srv, var, root,
+#: proc, sys, dev, bin, lib, pfs, media to anything. 0.8 loses hlep/exti.
+_NEAR_CUTOFF = 0.75
+
+
+def nearest_builtin(text: str) -> str:
+    """The builtin a command-shaped line was probably meant to be, or "".
+
+    Input: a line ``dispatch`` did not handle. Output: ``/name`` of the
+    closest builtin when the first token is command-shaped (see
+    ``looks_like_command``), not itself a builtin, and within
+    ``_NEAR_CUTOFF``; otherwise "". The caller decides what to do; the
+    dashboard keeps sending unknown lines to the model.
+    """
+    raw = (text or "").strip()
+    if not looks_like_command(raw):
+        return ""
+    head = raw.split()[0].lower()
+    if head in BUILTINS:
+        return ""
+    import difflib
+    names = [n.lstrip("/") for n in BUILTINS]
+    hit = difflib.get_close_matches(head.lstrip("/"), names, n=1,
+                                    cutoff=_NEAR_CUTOFF)
+    return f"/{hit[0]}" if hit else ""

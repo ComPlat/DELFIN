@@ -54,10 +54,13 @@ def test_the_result_names_the_file_and_carries_no_figure(tmp_path):
 
 
 def test_make_plot_bad_spec_is_refused_clearly(tmp_path):
-    before = set(tmp_path.rglob("*"))
+    # Its own directory: tmp_path also holds the test HOME, where a
+    # session-presence thread of an earlier test may write meanwhile.
+    out = tmp_path / "plots"
+    out.mkdir()
     with pytest.raises(SpecError):
-        cp.make_plot({"kind": "pie"}, out_dir=str(tmp_path))
-    assert set(tmp_path.rglob("*")) == before, "bad spec must not write files"
+        cp.make_plot({"kind": "pie"}, out_dir=str(out))
+    assert list(out.rglob("*")) == [], "bad spec must not write files"
 
 
 def test_make_plot_filename_cannot_escape_the_workspace(tmp_path):
