@@ -276,3 +276,45 @@ def test_the_review_panel_says_who_shared_it_and_that_it_is_unverified(box):
     preview = skill_proposals_panel.render_preview(info["name"])
     assert "someone" in preview
     assert "not verified on this machine" in preview
+
+
+def _texts(box):
+    """Every visible string of a widget row: descriptions and HTML values."""
+    return " ".join(str(getattr(c, "description", "") or "")
+                    + str(getattr(c, "value", "") or "")
+                    for c in box.children)
+
+
+def test_the_panel_offers_no_accept_for_an_import_and_says_why(box):
+    _, ws, _, call, _ = box
+    info = _payload(call("skill_import", {"path": _hand_made(ws, "q.json")}))
+    from delfin.dashboard import skill_proposals_panel as P
+    row = P.build_buttons(info["name"])
+    assert "Accept" not in [getattr(c, "description", "")
+                            for c in row.children]
+    assert "not verified on this machine" in _texts(row)
+    html = P.format_panel_html()
+    assert "[Accept]" not in html
+    assert "not verified on this machine" in html
+
+
+def test_a_refused_accept_click_shows_the_reason_and_changes_nothing(
+        box, tmp_path):
+    """Evidence of a kind that can verify, which accept() still refuses
+    here (no workspace has a recipe): the click must say why."""
+    home, _, _, _, _ = box
+    skill_proposals.propose(
+        "run-first", "# Run first\n\nRun the tests first.\n",
+        evidence=[skill_proposals.Evidence(kind="recipe", ref="verify")],
+        source="session")
+    from delfin.dashboard import skill_proposals_panel as P
+    changed: list = []
+    row = P.build_buttons("run-first", on_change=lambda: changed.append(1))
+    accept = [c for c in row.children
+              if getattr(c, "description", "") == "Accept"][0]
+    for cb in accept._click_handlers.callbacks:
+        cb(accept)                       # must not raise
+    assert "no verifying evidence" in _texts(row)
+    assert changed == []
+    assert skill_proposals.get_proposal("run-first").status == "pending"
+    assert not (home / ".delfin" / "skills" / "run-first").exists()
