@@ -464,7 +464,28 @@ _KNOWN_FUNCTIONALS = {
     "b2plyp", "ri-b2plyp", "dlpno-ccsd(t)", "ccsd(t)",
     "r2scan", "r2scan-3c", "b97-3c",
     "revpbe", "blyp", "pw6b95",
+    "b97m-v", "b97m-d3bj", "b97m-d4", "wb97x-d", "wb97x-d4", "wb97m-d4",
+    "pbeh-3c", "hf-3c",
 }
+# Dispersion written into the functional token (B3LYP-D3BJ, PBE0-D4).
+_KNOWN_FUNCTIONALS |= {
+    f"{base}-{disp}"
+    for base in ("b3lyp", "pbe", "pbe0", "bp86", "blyp", "tpss", "tpssh",
+                 "revpbe", "r2scan", "b2plyp", "cam-b3lyp", "m06-2x", "pw6b95")
+    for disp in ("d3", "d3bj", "d3zero", "d4")
+}
+# Semiempirical tight-binding methods; ORCA's keywords and the xtb names.
+# A header naming one of these is DELFIN's pre-optimisation (XTB.inp,
+# XTB_GOAT.inp), not the run's DFT method: it fills a functional nothing
+# else states and replaces none.
+_XTB_METHODS = frozenset({"xtb", "xtb0", "xtb1", "xtb2", "gfn0-xtb",
+                          "gfn1-xtb", "gfn2-xtb", "gfn-ff", "gfnff"})
+_KNOWN_FUNCTIONALS |= _XTB_METHODS
+
+
+def _is_xtb(header: dict) -> bool:
+    """Whether an .inp header's method is a tight-binding one (_XTB_METHODS)."""
+    return str(header.get("inp_functional", "")).lower() in _XTB_METHODS
 
 _KNOWN_BASIS = {
     "def2-svp", "def2-tzvp", "def2-tzvpp", "def2-qzvp", "def2-qzvpp",
@@ -545,6 +566,7 @@ def method_parts_of_folder(d) -> dict:
                    "dispersion": None, "solvation": None}
     seen_solvent = False
     ctrl: dict = {}
+    xtb = None  # a tight-binding header's method: fills only, after CONTROL
     try:
         if (d / "DELFIN_Data.json").is_file():
             rec = _extract_from_delfin_data(_json.loads((d / "DELFIN_Data.json").read_text(encoding="utf-8")))
@@ -581,7 +603,10 @@ def method_parts_of_folder(d) -> dict:
         if not parts["functional"] or not parts["basis"] or not seen_solvent or not parts["dispersion"]:
             for inp in sorted(d.glob("*.inp")):
                 rec = _extract_from_inp_header(inp.read_text(encoding="utf-8", errors="replace"))
-                parts["functional"] = parts["functional"] or rec.get("inp_functional") or None
+                if _is_xtb(rec):
+                    xtb = xtb or rec["inp_functional"]
+                else:
+                    parts["functional"] = parts["functional"] or rec.get("inp_functional") or None
                 parts["basis"] = parts["basis"] or rec.get("inp_basis") or None
                 if not seen_solvent and ("inp_solvent" in rec or "inp_solvation" in rec):
                     parts["solvent"] = _clean_solvent(rec.get("inp_solvent"))
@@ -594,6 +619,7 @@ def method_parts_of_folder(d) -> dict:
         pass
     for key, value in ctrl.items():
         parts[key] = parts[key] or value
+    parts["functional"] = parts["functional"] or xtb
     return parts
 
 
@@ -725,7 +751,7 @@ def _scan_calc_dir(
                 except Exception:
                     continue
                 first = first or header
-                if header.get("inp_functional"):
+                if header.get("inp_functional") and not _is_xtb(header):
                     first = header
                     break
             rec.update(first or {})
@@ -735,7 +761,8 @@ def _scan_calc_dir(
         # when CONTROL was edited after the run, and the .inp is then what
         # produced the outputs here. DELFIN_Data.json still wins.
         for field, inp_key in _INP_STATED.items():
-            if rec.get(inp_key) and field not in from_json:
+            if rec.get(inp_key) and field not in from_json and not (
+                    _is_xtb(rec) and rec.get(field)):
                 rec[field] = rec[inp_key]
 
         # List .out files present
