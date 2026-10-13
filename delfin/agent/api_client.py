@@ -5683,7 +5683,29 @@ def _mcp_call_refusal(fn_name: str, fn_args: dict,
     if hook_block is not None:
         return json.dumps({"error": "blocked_by_hook",
                            "reason": hook_block[:1200]})
-    gate_block = _doc_executor._gate_mcp_tool(fn_name, fn_args, permissions)
+    # The user's permission rules, as at execute(): deny refuses, ask asks,
+    # and the call is bound for the allow answers inside the gate.
+    asked = False
+    rule_hit = (_permission_rule_hit(permissions, fn_name, fn_args)
+                if fn_name.startswith("mcp__") else None)
+    if rule_hit is not None and rule_hit[0] == "deny":
+        _record_security_event("permission_rule_deny", fn_name,
+                               rule_hit[1].text[:120])
+        return json.dumps({"error": _permission_rule_deny_text(
+            fn_name, rule_hit[1])})
+    if rule_hit is not None:
+        refusal = _doc_executor._ask_by_rule(permissions, fn_name,
+                                             fn_args, rule_hit[1])
+        if refusal is not None:
+            return json.dumps({"error": refusal})
+        asked = True
+    token = _RULE_CALL.set({"name": fn_name, "args": fn_args,
+                            "asked": asked})
+    try:
+        gate_block = _doc_executor._gate_mcp_tool(
+            fn_name, fn_args, permissions)
+    finally:
+        _RULE_CALL.reset(token)
     if gate_block is not None:
         return json.dumps({"error": gate_block})
     return None
@@ -6204,6 +6226,123 @@ def _tool_denied_for_session(
     if is_meta and not named_on_deny_list:
         return None
     return _session_tool_refusal(name, allowed, denied)
+
+
+# --- Structured permission rules (permission_rules.py) ----------------------
+# deny and ask are decided once per call at the entry points (execute,
+# _mcp_call_refusal, cli_gate.decide); a deny on a path a tool resolves
+# itself is re-checked in _check_read_access and _gate_write_path. allow is
+# consulted only where the gate would otherwise ask (_rule_answers), so it
+# cannot reach a refusal that comes before that point.
+#
+# The call being decided, for _rule_answers: {"name", "args", "asked"}.
+# "asked" is True when an ask rule already put THIS call to the user and
+# they approved it, so the ordinary dialog for the same call is not raised
+# a second time. Set around one dispatch and reset after it; a nested
+# execute() sets its own. A worker thread sees None, which answers nothing.
+_RULE_CALL: "_contextvars.ContextVar[Optional[dict]]" = (
+    _contextvars.ContextVar("delfin_permission_rule_call", default=None))
+
+
+def _permission_rules(perms):
+    """(module, RuleSet) for ``perms``' workspace, or (None, None)."""
+    try:
+        from . import permission_rules as _pr
+        return _pr, _pr.load(getattr(perms, "workspace", None))
+    except Exception:
+        return None, None
+
+
+def _permission_rule_hit(perms, name: str, args: dict):
+    """("deny"|"ask", Rule) for this call, or None."""
+    if perms is None:
+        return None
+    pr, rs = _permission_rules(perms)
+    if rs is None:
+        return None
+    try:
+        return pr.friction(rs, name, args if isinstance(args, dict) else {},
+                           perms.workspace)
+    except Exception:
+        return None
+
+
+def _rule_source(rule) -> str:
+    return str(getattr(rule, "source", "") or "the settings file")
+
+
+def _permission_rule_deny_text(name: str, rule) -> str:
+    return (f"'{_bare_tool_name(name)}' is refused by the permission rule "
+            f"`{rule.text}` (deny, {_rule_source(rule)}). The rules are the "
+            "user's and cannot be changed from inside the session. Do not "
+            "reach the same effect another way; tell the user what you "
+            "needed it for.")
+
+
+def _rule_denies_path(perms, kind: str, path) -> Optional[str]:
+    """The refusal for a deny rule on a path a tool resolved, or None."""
+    pr, rs = _permission_rules(perms)
+    if rs is None or not rs.deny:
+        return None
+    try:
+        rule = pr.denies_path(rs, kind, path, perms.workspace)
+    except Exception:
+        return None
+    if rule is None:
+        return None
+    _record_security_event("permission_rule_deny", kind,
+                           f"{rule.text}: {path}"[:160])
+    return (f"{kind} denied: '{path}' is refused by the permission rule "
+            f"`{rule.text}` (deny, {_rule_source(rule)}), in every mode and "
+            "whatever is approved. Do not reach it through another tool.")
+
+
+def _rule_answers(perms, site: str, name: str, target=None) -> Optional[str]:
+    """The rule that answers the question at ``site`` for the call being
+    decided, or None to ask as before.
+
+    Called only at a point where the gate would put a question to the user
+    (or refuse because nobody can be asked): the ordinary command dialog
+    ("bash"), a read outside the roots ("read"), the default-mode write
+    dialog ("write") and a side-effecting MCP tool ("tool"). Every hard
+    refusal of those paths comes before these points. A site answers only
+    for a call of its own kind, so an allowed command answers no read
+    question it raises, and a sub-agent call answers nothing for its
+    children."""
+    call = _RULE_CALL.get()
+    if call is None or perms is None:
+        return None
+    cname = str(call.get("name") or "")
+    bare = _bare_tool_name(cname)
+    try:
+        from . import permission_rules as _pr
+    except Exception:
+        return None
+    shell = bare in ("bash", "bash_background")
+    if site == "bash" and not shell:
+        return None
+    if site == "read" and (shell or bare in _pr.WRITE_TOOLS):
+        return None
+    if site == "write" and bare not in _pr.WRITE_TOOLS:
+        return None
+    if site == "tool" and cname != name:
+        return None
+    if call.get("asked"):
+        return "the ask rule the user approved for this call"
+    _, rs = _permission_rules(perms)
+    if rs is None:
+        return None
+    try:
+        rule = _pr.allows(rs, site, cname, call.get("args") or {},
+                          perms.workspace, target)
+    except Exception:
+        return None
+    if rule is None:
+        return None
+    _record_security_event("permission_rule_allow", bare,
+                           f"{rule.text}: {target or ''}"[:160],
+                           blocked=False)
+    return rule.text
 
 
 def unknown_tool_names(
@@ -14143,6 +14282,9 @@ class _DocToolExecutor:
         # from this decision (see ``tool_unavailable_reason``), never the
         # other way round.
         session_refusal = _tool_denied_for_session(permissions, name)
+        # The user's permission rules (permission_rules.py): deny refuses
+        # here, in every mode; ask is put to the user just before dispatch.
+        rule_hit = _permission_rule_hit(permissions, name, arguments)
         if permissions is not None and _tool_denied_for_role(auth_role, name):
             from . import action_protocol as _action_protocol
             if (_action_protocol.role_uses_action_protocol(auth_role)
@@ -14171,6 +14313,11 @@ class _DocToolExecutor:
                 f"{session_refusal}. The list was set when the session "
                 "started and cannot be changed from inside it."
             )})
+        elif rule_hit is not None and rule_hit[0] == "deny":
+            _record_security_event("permission_rule_deny", name,
+                                   rule_hit[1].text[:120])
+            result = json.dumps({"error": _permission_rule_deny_text(
+                name, rule_hit[1])})
         elif (getattr(permissions, "mode", "") == "plan"
                 and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
                 and not _plan_mode_admits_for_delegate(name, permissions)
@@ -14214,7 +14361,8 @@ class _DocToolExecutor:
             # call the schema cannot accept is answered with its shape.
             result = json.dumps({"error": _malformed})
         else:
-            result = self._dispatch(name, arguments, permissions)
+            result = self._dispatch_under_rules(
+                name, arguments, permissions, rule_hit)
 
         # Track mtime after a successful read so the write tools can verify
         # the file hasn't changed since the agent last read it. read_document
@@ -14558,6 +14706,64 @@ class _DocToolExecutor:
             extra={"job_id": job_id, "exit_code": exit_code,
                    "event": "completed", "observed_by": name},
         ))
+
+    def _ask_by_rule(self, perms: "KitToolPermissions", name: str,
+                     args: dict, rule) -> Optional[str]:
+        """Put a call an ask rule names to the user. None when approved,
+        else the refusal. With nobody to ask it is refused: an ask rule
+        only adds friction, in every mode."""
+        bare = _bare_tool_name(name)
+        if bare in ("bash", "bash_background"):
+            body = f"$ {(args or {}).get('command') or ''}"
+        else:
+            body = f"{name}\n" + _preview_args(args or {})
+        shown = body[:120]
+        _record_security_event("permission_rule_ask", bare,
+                               f"{rule.text}: {shown}"[:160],
+                               blocked=perms.confirm_callback is None)
+        if perms.confirm_callback is None:
+            return (f"'{bare}' meets the permission rule `{rule.text}` (ask, "
+                    f"{_rule_source(rule)}) and nobody can be asked here, so "
+                    "it is refused. Tell the user what the call is for.")
+        preview = ("[PERMISSION RULE: ask]\n"
+                   f"Your rule `{rule.text}` ({_rule_source(rule)}) asks "
+                   f"before this call.\n\n{body}")
+        self._clear_refusal_reason(perms)
+        try:
+            ok = bool(perms.confirm_callback(name, args or {}, preview))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        if ok:
+            return None
+        if self._confirm_timed_out(perms):
+            return (f"approval for '{bare}' (asked by the rule `{rule.text}`) "
+                    "TIMED OUT — the user is away, this is NOT a denial. Do "
+                    "not retry it now; say what is waiting for them.")
+        _record_security_event("denied_by_user", bare, shown)
+        return (f"user denied '{bare}' (asked by the rule `{rule.text}`). Do "
+                "NOT retry it or reach the same effect another way."
+                + self._said_why(perms))
+
+    def _dispatch_under_rules(
+        self, name: str, arguments: dict,
+        permissions: Optional["KitToolPermissions"], rule_hit,
+    ) -> str:
+        """``_dispatch`` with the permission-rule call bound (_RULE_CALL),
+        after the question an ask rule adds."""
+        asked = False
+        if (permissions is not None and rule_hit is not None
+                and rule_hit[0] == "ask"):
+            refusal = self._ask_by_rule(permissions, name, arguments,
+                                        rule_hit[1])
+            if refusal is not None:
+                return json.dumps({"error": refusal})
+            asked = True
+        token = _RULE_CALL.set({"name": name, "args": arguments,
+                                "asked": asked})
+        try:
+            return self._dispatch(name, arguments, permissions)
+        finally:
+            _RULE_CALL.reset(token)
 
     def _dispatch(
         self,
@@ -17185,6 +17391,11 @@ class _DocToolExecutor:
                 "These are never readable, regardless of mode or confirm."
             )
 
+        # A deny rule of the user's on this path, as resolved by the tool.
+        _rule_refusal = _rule_denies_path(perms, "read", resolved)
+        if _rule_refusal:
+            return _rule_refusal
+
         # Inside any allowed root: free read. Checked BEFORE the refusal
         # ledger on purpose — if the user has since granted the directory
         # (extra_dir / "Erlaubte Verzeichnisse"), that later, explicit
@@ -17231,6 +17442,12 @@ class _DocToolExecutor:
         # ask ME"), not a blanket grant an unattended process inherits
         # from a settings file. A headless run that needs to reach outside
         # has to be configured to, and the message says how.
+        #
+        # An allow rule of the user's (permission_rules) answers this one
+        # read and opens nothing for the session: the grant below is what
+        # a click in the dialog says it does, and no dialog was shown.
+        if _rule_answers(perms, "read", "read_file", resolved):
+            return None
         if perms.confirm_callback is None:
             return (
                 f"read denied: '{label or resolved}' is outside the allowed "
@@ -17488,6 +17705,9 @@ class _DocToolExecutor:
         resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             return err
+        _rule_refusal = _rule_denies_path(perms, "write", resolved)
+        if _rule_refusal:
+            return _rule_refusal
         if not _write_in_scope(resolved, perms):
             _record_security_event(
                 "out_of_write_scope", name, self._display_path(resolved, perms),
@@ -17664,8 +17884,12 @@ class _DocToolExecutor:
         # hatch; writing has no such list, so refusing would leave every
         # unattended run unable to produce anything. A head-less caller
         # picks its own mode, and the sandbox still bounds where it writes.
+        # An allow rule of the user's answers this dialog, for a write tool
+        # and a path the rule names; the second opinion below still looks,
+        # as it does for every write nobody was asked about.
         if (effective_mode(perms) == "default"
-                and perms.confirm_callback is not None):
+                and perms.confirm_callback is not None
+                and not _rule_answers(perms, "write", name, resolved)):
             _cannot = self._edit_cannot_apply(name, args, resolved, perms)
             if _cannot:
                 return _cannot
@@ -18585,6 +18809,22 @@ class _DocToolExecutor:
                 # Asked above, with the whole command shown, after every
                 # hard tier and the publish readiness check.
                 return None
+            # An allow rule of the user's (permission_rules) answers the
+            # dialog below -- and the head-less refusal after it, which is
+            # the same question with nobody there -- for one simple command
+            # its words cover. Every hard tier above has already run; the
+            # second opinion looks, as it does for the auto-allow list.
+            # Not for a push nobody asked for: head-less, that one reaches
+            # this point to be refused here, and the refusal is the
+            # one-request rule, not a question. Not for a command the
+            # egress scan flagged either: an upload is sent to this dialog
+            # for the person to see, and a rule naming the command is not
+            # a decision about the data it sends.
+            _ungranted_push = (_is_git_push(cmd)
+                               and not (perms.push_grants or {}).get("push"))
+            if (not _ungranted_push and egress is None
+                    and _rule_answers(perms, "bash", "bash")):
+                return self._classifier_second_opinion(perms, name, args, mode)
             if (mode in ("default", "diff_approval", "acceptEdits")
                     and perms.confirm_callback is not None):
                 _cwd = str(args.get("cwd") or "").strip()
@@ -19049,6 +19289,11 @@ class _DocToolExecutor:
         mode = getattr(perms, "mode", "")
         if mode == "bypassPermissions":
             # Nobody is asked here; the second opinion is the one look.
+            return self._classifier_second_opinion(
+                perms, name, args or {}, mode)
+        # An allow rule of the user's naming this tool answers the question
+        # below (and its head-less refusal); the second opinion still looks.
+        if _rule_answers(perms, "tool", name):
             return self._classifier_second_opinion(
                 perms, name, args or {}, mode)
         if perms.confirm_callback is None:

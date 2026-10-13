@@ -91,6 +91,10 @@ _KINDS = {
     "pr_route":       ("🔀", "Direct push or merge refused (PR route requested)"),
     "pr_merge_unpinned": ("🚫", "Merge not pinned to a green PR head"),
     "git_config_program": ("⚙", "Git setting that runs a program"),
+    # The user's permission rules (permission_rules.py).
+    "permission_rule_deny": ("⛔", "Refused by a permission rule"),
+    "permission_rule_ask": ("❓", "Asked by a permission rule"),
+    "permission_rule_allow": ("✅", "Question answered by a permission rule"),
     "auto_verify":    ("🔁", "Auto-verify caught a problem"),
     "auto_verify_exhausted": ("🔁", "Auto-verify gave up"),
     "test_tamper":    ("🧪", "Failing test edited"),

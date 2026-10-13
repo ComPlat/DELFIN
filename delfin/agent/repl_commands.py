@@ -245,12 +245,25 @@ def _mode_cmd(ctx, args: str) -> CommandResult:
     return CommandResult(output=f"mode → {name}")
 
 
+def _permission_rules_view(ctx) -> str:
+    """The rules in force, read-only; editing is the user's, in the file."""
+    try:
+        from . import permission_rules
+        return permission_rules.describe(
+            permission_rules.load(ctx.workspace))
+    except Exception as exc:
+        return f"permission rules could not be read: {exc}"
+
+
 def _permissions(ctx, args: str) -> CommandResult:
     name = args.strip()
     if not name:
         return CommandResult(output=(
             f"approval is {_mode(ctx.engine) or '(no gate)'} — "
-            "/permissions plan|default|acceptEdits, or Shift+Tab"))
+            "/permissions plan|default|acceptEdits, or Shift+Tab\n"
+            + _permission_rules_view(ctx)))
+    if name == "rules":
+        return CommandResult(output=_permission_rules_view(ctx))
     if name == "bypassPermissions":
         return CommandResult(output=(
             "not from here. Unattended execution is reachable only by "
@@ -1779,8 +1792,8 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/model", "setup", "Show or switch the model", _model, True),
         ReplCommand("/mode", "setup", "Show or switch the agent mode",
                     _mode_cmd, True),
-        ReplCommand("/permissions", "setup", "Show or switch the approval "
-                    "posture", _permissions, True),
+        ReplCommand("/permissions", "setup", "Approval posture and "
+                    "permission rules", _permissions, True),
         ReplCommand("/effort", "setup", "Show or set reasoning effort",
                     _effort, True),
         ReplCommand("/doctor", "setup", "Check the setup", _doctor),
