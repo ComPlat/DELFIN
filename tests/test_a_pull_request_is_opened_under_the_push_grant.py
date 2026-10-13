@@ -68,7 +68,9 @@ class TestMerge:
         unpinned form is refused (test_the_git_role_is_set_per_repository)."""
         sha = "a" * 40
         monkeypatch.setattr(A, "_gh_pr_view", lambda *a: {
-            "headRefOid": sha, "statusCheckRollup": []})
+            "headRefOid": sha, "statusCheckRollup": [
+                {"name": "tests", "status": "COMPLETED",
+                 "conclusion": "SUCCESS"}]})
         run = gate(role="maintainer", mode="bypassPermissions", grant=True)
         assert run(f"gh pr merge 12 --match-head-commit {sha}") is None
         assert "--match-head-commit" in run("gh pr merge 12")
