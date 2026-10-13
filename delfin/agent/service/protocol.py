@@ -1,0 +1,315 @@
+"""The wire protocol between the terminal UI and the agent service.
+
+JSON-RPC 2.0, one JSON object per line, UTF-8 (newline-delimited JSON).
+The client sends requests; the service answers each one and sends what
+happens in a session as notifications whose method is ``event`` and whose
+params carry a ``type``.
+
+This module is the single definition of every message. The TypeScript side
+does not keep a second copy: ``json_schema()`` is exported and the TUI's
+types are generated from it, so the two cannot drift apart silently.
+
+Field specs below are deliberately small: a type name, ``?`` for an
+optional field, ``[type]`` for a list. ``object`` is any JSON object.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from typing import IO, Any, Callable, Iterator
+
+PROTOCOL_VERSION = 1
+
+#: A line longer than this is refused rather than read into memory. Tool
+#: output travels inside events, so the limit is generous; a single event
+#: that size is already a bug upstream of here.
+MAX_LINE_BYTES = 32 * 1024 * 1024
+
+# JSON-RPC error codes: the standard ones, then ours (-32000..-32099 is the
+# range the specification leaves to the application).
+PARSE_ERROR = -32700
+INVALID_REQUEST = -32600
+METHOD_NOT_FOUND = -32601
+INVALID_PARAMS = -32602
+INTERNAL_ERROR = -32603
+VERSION_MISMATCH = -32001
+UNKNOWN_REQUEST = -32002
+NOT_ALLOWED = -32003
+
+# ---------------------------------------------------------------------------
+# Requests: client -> worker
+# ---------------------------------------------------------------------------
+
+REQUESTS: dict[str, dict[str, str]] = {
+    # Must be the first request. The worker answers with its version and
+    # the session it runs; a client that speaks another version is refused.
+    "initialize": {"protocolVersion": "integer", "client": "string?"},
+    # A line exactly as the user typed it: a message, a /command, !shell or
+    # a # note. While a turn runs, how="queue" (the default) waits for the
+    # turn to end and how="steer" sends it into the running turn.
+    "session.prompt": {"text": "string", "how": "string?"},
+    # Esc: end the running turn. A tool call already running finishes first.
+    "session.cancel": {},
+    "session.setMode": {"mode": "string"},
+    "session.status": {},
+    # The durable events of the last ``turns`` turns, for a window that
+    # attaches to a session already in progress.
+    "session.replay": {"turns": "integer?"},
+    "session.shutdown": {},
+    # The answer to a permission.asked event: ``choice`` is one of the
+    # option keys it offered; ``answers`` the chosen texts of a question.
+    "permission.reply": {"requestId": "string", "choice": "string?",
+                         "answers": "[string]?", "reason": "string?"},
+}
+
+# ---------------------------------------------------------------------------
+# Events: worker -> client (method "event"; every event also carries
+# "session", "seq" and "ts")
+# ---------------------------------------------------------------------------
+
+EVENTS: dict[str, dict[str, str]] = {
+    "worker.ready": {"protocolVersion": "integer", "pid": "integer"},
+    # What a window shows at the top of a session.
+    "session.info": {"sessionId": "string", "workspace": "string",
+                     "provider": "string", "model": "string",
+                     "mode": "string", "approval": "string",
+                     "title": "string?", "banner": "[string]",
+                     "notices": "[string]"},
+    "session.updated": {"approval": "string?", "model": "string?",
+                        "effort": "string?", "title": "string?"},
+    # idle | running | needs_input | ended
+    "session.state": {"state": "string"},
+    "session.ended": {"reason": "string", "exitCode": "integer"},
+    # source: user | queued | harness (a turn nobody typed: a finished job,
+    # a message from another session, a continuation)
+    "user.message": {"text": "string", "source": "string"},
+    "turn.started": {"turnId": "string", "source": "string"},
+    "turn.ended": {"turnId": "string", "durationMs": "integer",
+                   "inputTokens": "integer", "outputTokens": "integer",
+                   "costUsd": "number", "toolCalls": "integer",
+                   "error": "string?"},
+    "text.started": {"turnId": "string", "partId": "string"},
+    "text.delta": {"partId": "string", "delta": "string"},
+    "text.ended": {"turnId": "string", "partId": "string", "text": "string"},
+    "reasoning.started": {"turnId": "string", "partId": "string"},
+    "reasoning.delta": {"partId": "string", "delta": "string"},
+    "reasoning.ended": {"turnId": "string", "partId": "string",
+                        "text": "string"},
+    "tool.started": {"turnId": "string", "callId": "string",
+                     "name": "string", "input": "object"},
+    # output is the head the engine forwards; meta carries ok/error, the
+    # true size (chars) and whether it was truncated.
+    "tool.ended": {"turnId": "string", "callId": "string", "name": "string",
+                   "output": "string", "meta": "object"},
+    "tool.denied": {"turnId": "string", "callId": "string?",
+                    "name": "string"},
+    # Harness speech: command output, status reports, anything that is not
+    # the model's answer. Lines keep their structure.
+    "notice": {"text": "string"},
+    # A progress line the next one replaces (waiting for the endpoint).
+    "wait": {"text": "string"},
+    "error": {"text": "string"},
+    "usage": {"inputTokens": "integer", "outputTokens": "integer",
+              "costUsd": "number"},
+    # kind: confirm | plan | ask. options are the keys the answer may use,
+    # exactly the ones the terminal REPL offers for the same request.
+    "permission.asked": {"requestId": "string", "kind": "string",
+                         "tool": "string", "preview": "string",
+                         "options": "[object]", "flags": "object",
+                         "question": "string?", "choices": "[string]?",
+                         "suggestion": "string?", "readDir": "string?"},
+    # by: client | outside | expired | abort
+    "permission.resolved": {"requestId": "string", "decision": "string",
+                            "by": "string"},
+}
+
+#: Events kept in the session's durable log (eventlog.py) and replayed to
+#: a window that attaches later. Deltas, progress ticks and usage samples
+#: are live-only: the ended/turn records carry their final state.
+DURABLE_EVENTS = frozenset({
+    "session.info", "session.updated", "session.ended",
+    "user.message", "turn.started", "turn.ended",
+    "text.ended", "reasoning.ended",
+    "tool.started", "tool.ended", "tool.denied",
+    "notice", "error", "permission.asked", "permission.resolved",
+})
+
+
+# ---------------------------------------------------------------------------
+# Building messages
+# ---------------------------------------------------------------------------
+
+def request(msg_id: int | str, method: str, params: dict | None = None) -> dict:
+    return {"jsonrpc": "2.0", "id": msg_id, "method": method,
+            "params": dict(params or {})}
+
+
+def result(msg_id: int | str | None, value: Any = None) -> dict:
+    return {"jsonrpc": "2.0", "id": msg_id,
+            "result": {} if value is None else value}
+
+
+def error(msg_id: int | str | None, code: int, message: str,
+          data: Any = None) -> dict:
+    err: dict[str, Any] = {"code": int(code), "message": str(message)}
+    if data is not None:
+        err["data"] = data
+    return {"jsonrpc": "2.0", "id": msg_id, "error": err}
+
+
+def event(params: dict) -> dict:
+    return {"jsonrpc": "2.0", "method": "event", "params": params}
+
+
+def encode(message: dict) -> bytes:
+    """One line: compact JSON, no raw newlines inside, newline at the end.
+
+    ``ensure_ascii`` stays off so text arrives as text; JSON escapes every
+    control character, so a newline in a value can never end the line.
+    """
+    return (json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+            + "\n").encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Reading and writing lines
+# ---------------------------------------------------------------------------
+
+class LineWriter:
+    """Thread-safe: one message is one write, so lines never interleave."""
+
+    def __init__(self, stream: IO[bytes]):
+        self._stream = stream
+        self._lock = threading.Lock()
+        self.closed = False
+
+    def send(self, message: dict) -> bool:
+        data = encode(message)
+        with self._lock:
+            if self.closed:
+                return False
+            try:
+                self._stream.write(data)
+                self._stream.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                # The reader went away. Later sends are dropped rather than
+                # raised into whatever thread happened to be emitting.
+                self.closed = True
+                return False
+        return True
+
+
+def read_messages(stream: IO[bytes],
+                  on_bad_line: Callable[[str], None] | None = None,
+                  max_bytes: int = MAX_LINE_BYTES) -> Iterator[dict]:
+    """Yield each JSON object read from ``stream`` until EOF.
+
+    A line that is not a JSON object is reported through ``on_bad_line``
+    and skipped: one malformed message must not end the session. A line
+    over ``max_bytes`` is skipped the same way, without being held whole.
+    """
+    while True:
+        line = stream.readline(max_bytes + 1)
+        if not line:
+            return
+        if len(line) > max_bytes and not line.endswith(b"\n"):
+            # Drain the rest of the oversized line.
+            while True:
+                more = stream.readline(max_bytes + 1)
+                if not more or more.endswith(b"\n"):
+                    break
+            if on_bad_line:
+                on_bad_line(f"line longer than {max_bytes} bytes skipped")
+            continue
+        text = line.decode("utf-8", errors="replace").strip()
+        if not text:
+            continue
+        try:
+            message = json.loads(text)
+        except ValueError as exc:
+            if on_bad_line:
+                on_bad_line(f"not JSON: {exc}")
+            continue
+        if not isinstance(message, dict):
+            if on_bad_line:
+                on_bad_line("not a JSON object")
+            continue
+        yield message
+
+
+# ---------------------------------------------------------------------------
+# Validation and the schema the TypeScript side is generated from
+# ---------------------------------------------------------------------------
+
+_JSON_TYPES = {"string": str, "integer": int, "number": (int, float),
+               "boolean": bool, "object": dict}
+
+
+def _check_value(spec: str, value: Any) -> bool:
+    if spec.startswith("[") and spec.endswith("]"):
+        return isinstance(value, list) and all(
+            _check_value(spec[1:-1], v) for v in value)
+    expected = _JSON_TYPES[spec]
+    if spec in ("integer", "number") and isinstance(value, bool):
+        return False
+    return isinstance(value, expected)
+
+
+def invalid_params(method: str, params: Any) -> str:
+    """Why ``params`` do not fit ``method``, or "" when they do."""
+    spec = REQUESTS.get(method)
+    if spec is None:
+        return f"unknown method {method!r}"
+    if not isinstance(params, dict):
+        return "params must be an object"
+    for name, kind in spec.items():
+        optional = kind.endswith("?")
+        kind = kind.rstrip("?")
+        if name not in params or params[name] is None:
+            if not optional:
+                return f"missing {name!r}"
+            continue
+        if not _check_value(kind, params[name]):
+            return f"{name!r} must be {kind}"
+    return ""
+
+
+def _field_schema(kind: str) -> dict:
+    if kind.startswith("["):
+        return {"type": "array", "items": _field_schema(kind[1:-1])}
+    return {"type": kind}
+
+
+def _object_schema(spec: dict[str, str], extra: dict | None = None) -> dict:
+    props: dict[str, Any] = {}
+    required: list[str] = []
+    for name, kind in spec.items():
+        optional = kind.endswith("?")
+        props[name] = _field_schema(kind.rstrip("?"))
+        if not optional:
+            required.append(name)
+    for name, schema in (extra or {}).items():
+        props[name] = schema
+        required.append(name)
+    return {"type": "object", "properties": props, "required": required,
+            "additionalProperties": True}
+
+
+def json_schema() -> dict:
+    """Every request and event as JSON Schema; the TUI's types come from it."""
+    common = {"session": {"type": "string"}, "seq": {"type": "integer"},
+              "ts": {"type": "number"}}
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "delfin-agent TUI protocol",
+        "protocolVersion": PROTOCOL_VERSION,
+        "requests": {m: _object_schema(s) for m, s in REQUESTS.items()},
+        "events": {t: _object_schema(s, {"type": {"const": t}, **common})
+                   for t, s in EVENTS.items()},
+        "durableEvents": sorted(DURABLE_EVENTS),
+    }
+
+
+if __name__ == "__main__":  # python -m delfin.agent.service.protocol
+    print(json.dumps(json_schema(), indent=2))

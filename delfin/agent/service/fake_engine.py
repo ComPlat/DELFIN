@@ -1,0 +1,259 @@
+"""Scripted turns: the agent engine's surface with no model behind it.
+
+The TUI has to be built and tested against every kind of turn -- streamed
+answers, thinking, tool calls, refused tools, approvals, plan approval,
+questions, failures, long output, turns that are steered or cancelled --
+without an API key, without network and without spending anything.
+``FakeEngine`` stands where ``AgentEngine`` stands and plays one of a few
+scripts, chosen by words in the prompt:
+
+    edit   a file edit that needs approval (write tool, with a diff)
+    bash   a shell command that needs approval
+    plan   a plan put up for approval
+    ask    a multiple-choice question for the user
+    fail   the turn ends with an error
+    slow   a slow answer, for cancelling and queueing
+    steer  an answer that reads a message sent into the running turn
+    noisy  prints to stdout and runs a child that does the same
+    long   a long answer (hundreds of lines)
+    (anything else: a short answer after one read-only tool call)
+
+It honours the same callbacks, stop and steer paths and status counters the
+real engine has, so the worker drives it exactly as it drives the real one.
+"""
+
+from __future__ import annotations
+
+import json
+import queue
+import threading
+import time
+import uuid
+from types import SimpleNamespace
+from typing import Any, Callable
+
+_EDIT_DIFF = """--- a/delfin/xtb.py
++++ b/delfin/xtb.py
+@@ -41,5 +41,8 @@ def read_final_energy(path):
+     for line in lines:
+         if "FINAL SINGLE POINT ENERGY" in line:
+-            energy = float(line.split()[3])
++            match = _ENERGY_RE.search(line)
++            if match is None:
++                raise ValueError(f"no energy on line: {line!r}")
++            energy = float(match.group(1))
+             break
+     return energy
+"""
+
+
+class FakePermissions:
+    """The parts of KitToolPermissions the worker and the REPL touch."""
+
+    def __init__(self, mode: str = "plan"):
+        self.mode = mode
+        self.confirm_callback: Callable[[str, dict, str], bool] | None = None
+        self.ask_user_callback: Callable[[dict], dict] | None = None
+        self.plan_approval_callback: Callable[[str], dict] | None = None
+        self.presence_key = ""
+
+
+class FakeEngine:
+    """Plays scripted turns through the AgentEngine callback surface."""
+
+    provider = "fake"
+
+    def __init__(self, workspace: str = "", *, mode: str = "solo",
+                 delay: float = 0.02):
+        self.repo_dir = workspace
+        self.mode = mode
+        self.session_id = uuid.uuid4().hex
+        self.messages: list[dict[str, Any]] = []
+        self.effort = ""
+        self.delay = float(delay)
+        self.kit_permissions = FakePermissions()
+        self.client = SimpleNamespace(model="fake-model", effort="",
+                                      signal_stop=self._signal_stop)
+        self.last_compaction_info = None
+        self.last_turn_stop_reason = "end_turn"
+        self.pending_turn_continuation = None
+        self.start_fresh = ""
+        self.pause_key = ""
+        self._stop = threading.Event()
+        self._steer: queue.Queue[str] = queue.Queue()
+        self._status = {"input_tokens": 0, "output_tokens": 0,
+                        "output_tokens_live": 0, "cost_usd": 0.0,
+                        "cached_tokens": 0, "provider": "fake",
+                        "mode": mode, "session_id": self.session_id}
+
+    # -- the surface the worker and TerminalAgent use --------------------------
+    def set_kit_permission_mode(self, mode: str) -> bool:
+        self.kit_permissions.mode = mode
+        return True
+
+    def set_kit_confirm_callback(self, callback) -> bool:
+        self.kit_permissions.confirm_callback = callback
+        return True
+
+    def persist_kit_pattern(self, pattern: str, *, kind: str = "allow"):
+        return True, f"would persist {kind} pattern {pattern}"
+
+    def add_kit_read_dir(self, path, *, persist: bool = False):
+        return True, f"{path} readable"
+
+    def get_status(self) -> dict[str, Any]:
+        status = dict(self._status)
+        status["session_id"] = self.session_id
+        return status
+
+    def request_stop(self) -> None:
+        self._stop.set()
+
+    def _signal_stop(self) -> None:
+        self._stop.set()
+
+    def clear_stop(self) -> None:
+        self._stop.clear()
+
+    def steer(self, text: str, *, on_delivered=None) -> bool:
+        if not str(text or "").strip():
+            return False
+        self._steer.put(str(text))
+        return True
+
+    def note_person_message(self) -> None:
+        pass
+
+    def estimate_context_tokens(self) -> int:
+        return sum(len(str(m.get("content", ""))) for m in self.messages) // 4
+
+    def export_state(self) -> dict[str, Any]:
+        return {"messages": list(self.messages), "mode": self.mode,
+                "session_id": self.session_id}
+
+    def restore_state(self, data: dict) -> None:
+        self.messages = list(data.get("messages") or [])
+        self.session_id = str(data.get("session_id") or self.session_id)
+
+    def run_gated_bash(self, command: str) -> str:
+        return json.dumps({"exit_code": 0, "stdout": f"(fake) {command}\n",
+                           "stderr": ""})
+
+    # -- one turn ----------------------------------------------------------------
+    def stream_response(self, user_message: str, memory_context: str = "",
+                        on_token=None, on_tool_use=None, on_tool_result=None,
+                        on_permission_denied=None, on_thinking=None,
+                        thinking_budget: int = 0, max_tokens: int = 0,
+                        images=None, on_notice=None, on_tool_result_meta=None,
+                        on_wait=None) -> str:
+        self._stop.clear()
+        prompt = str(user_message or "")
+        self.messages.append({"role": "user", "content": prompt})
+        self._status["input_tokens"] += 120 + len(prompt) // 4
+        words = prompt.lower()
+        out: list[str] = []
+
+        def say(text: str, step: int = 6) -> None:
+            for i in range(0, len(text), step):
+                if self._stop.is_set():
+                    return
+                piece = text[i:i + step]
+                out.append(piece)
+                self._status["output_tokens_live"] += 1
+                if on_token:
+                    on_token(piece)
+                time.sleep(self.delay)
+
+        def think(text: str) -> None:
+            if on_thinking:
+                on_thinking(text)
+
+        def tool(name: str, args: dict, result: str, *, ok: bool = True) -> None:
+            if self._stop.is_set():
+                return
+            if on_tool_use:
+                on_tool_use(name, json.dumps(args))
+            time.sleep(self.delay * 3)
+            if on_tool_result:
+                on_tool_result(name, result)
+            if on_tool_result_meta:
+                on_tool_result_meta(name, {"ok": ok, "chars": len(result),
+                                           "truncated": False})
+
+        def confirm(name: str, args: dict, preview: str) -> bool:
+            cb = self.kit_permissions.confirm_callback
+            return bool(cb(name, args, preview)) if cb else True
+
+        think("Reading the request and deciding what to look at first.")
+        if "fail" in words:
+            raise RuntimeError("scripted failure from the fake engine "
+                               "(not an endpoint problem)")
+        if "edit" in words:
+            tool("read_file", {"path": "delfin/xtb.py"}, "212 lines")
+            if confirm("edit_file", {"path": "delfin/xtb.py"}, _EDIT_DIFF):
+                tool("edit_file", {"path": "delfin/xtb.py"}, _EDIT_DIFF)
+                say("The parser now reads the energy with a regular expression.")
+            else:
+                if on_permission_denied:
+                    on_permission_denied("edit_file")
+                say("Understood, I left `delfin/xtb.py` unchanged.")
+        elif "bash" in words:
+            command = "pytest -q tests/test_xtb.py"
+            if confirm("bash", {"command": command}, f"$ {command}"):
+                tool("bash", {"command": command},
+                     json.dumps({"exit_code": 0, "stdout": "3 passed in 0.42s\n"}))
+                say("All three tests pass.")
+            else:
+                if on_permission_denied:
+                    on_permission_denied("bash")
+                say("The tests were not run.")
+        elif "plan" in words:
+            cb = self.kit_permissions.plan_approval_callback
+            verdict = cb("1. Read delfin/xtb.py\n2. Fix the energy parser\n"
+                         "3. Run the tests") if cb else {"approved": True}
+            if verdict.get("approved"):
+                self.kit_permissions.mode = str(verdict.get("new_mode") or "default")
+                say(f"Plan approved; working in {self.kit_permissions.mode}.")
+            else:
+                say("Plan rejected; staying in plan mode.")
+        elif "ask" in words:
+            cb = self.kit_permissions.ask_user_callback
+            reply = cb({"question": "Which solvent model?",
+                        "options": ["CPCM", "SMD", "none"]}) if cb else {}
+            picked = (reply or {}).get("answers") or ["(no answer)"]
+            say(f"Using {picked[0]}.")
+        elif "slow" in words:
+            self.delay = max(self.delay, 0.05)
+            say("Working through a long calculation step by step. " * 12, step=4)
+        elif "steer" in words:
+            say("Starting on the task. ")
+            deadline = time.monotonic() + 5.0
+            steered = ""
+            while time.monotonic() < deadline and not self._stop.is_set():
+                try:
+                    steered = self._steer.get(timeout=0.05)
+                    break
+                except queue.Empty:
+                    continue
+            say(f"Noted mid-turn: {steered}" if steered else "No message arrived.")
+        elif "noisy" in words:
+            # What real tools do now and then: print, and start a child that
+            # writes to the stdout it inherited. Neither may reach the wire.
+            import subprocess
+            print("stray print from inside a turn", flush=True)
+            subprocess.run(["sh", "-c", "echo stray output from a child process"],
+                           check=False)
+            say("Noise made.")
+        elif "long" in words:
+            say("".join(f"- line {i:03d} of a long answer\n" for i in range(1, 301)),
+                step=200)
+        else:
+            tool("read_file", {"path": "README.md"}, "# tui_demo\n")
+            say("## Summary\n\nThe workspace holds **one** README and nothing "
+                "else to change.\n")
+
+        text = "".join(out)
+        self.messages.append({"role": "assistant", "content": text})
+        self._status["output_tokens"] = self._status["output_tokens_live"]
+        self.last_turn_stop_reason = "stop" if self._stop.is_set() else "end_turn"
+        return text
