@@ -51,6 +51,16 @@ REFUSED = "not on the auto-allow list"
 _BASE_END = "Then STOP and wait."
 
 
+@pytest.fixture(autouse=True)
+def _no_cage_admission(monkeypatch):
+    """The refusal text under test is the one given where the caged rule
+    does not apply (no bubblewrap cage on the host, or the rule switched
+    off). Where it applies, the command runs inside the cage instead:
+    tests/test_a_caged_command_runs_without_asking.py."""
+    monkeypatch.setattr(A, "_caged_command_may_run_unasked",
+                        lambda *a, **k: False)
+
+
 @pytest.fixture
 def ws(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
