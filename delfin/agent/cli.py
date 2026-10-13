@@ -4555,6 +4555,50 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Dir to write the job and collect logs")
     t6.set_defaults(func=_cmd_test_on_slurm)
 
+    # The terminal UI and the service its sessions live in. The handlers
+    # live in delfin/agent/service/cli_service.py, imported on use like
+    # test-on-slurm's.
+    def _cmd_tui(args):
+        from delfin.agent.service.cli_service import cmd_tui
+        return cmd_tui(args)
+
+    def _cmd_service(args):
+        from delfin.agent.service.cli_service import cmd_service
+        return cmd_service(args)
+
+    tui = sub.add_parser(
+        "tui",
+        help="The terminal UI: one window over all your sessions, which keep "
+             "running when it closes (sessions live in `delfin-agent service`)",
+    )
+    tui.add_argument("--cwd", default="", help="Workspace of the first session")
+    tui.add_argument("-n", "--name", dest="session_name", default="",
+                     help="Name of the first session")
+    tui.add_argument("--model", default="")
+    tui.add_argument("--provider", default="")
+    tui.add_argument("--effort", default="")
+    tui.add_argument("--permission-mode", default="",
+                     choices=["", "plan", "default", "acceptEdits"])
+    tui.add_argument("--session", "--resume", dest="session", default="",
+                     help="Resume this saved session")
+    tui.add_argument("--continue", dest="continue_session", action="store_true",
+                     help="Resume the latest session in the workspace")
+    tui.add_argument("--add-dir", dest="add_dirs", action="append", default=[])
+    tui.add_argument("--read-dir", dest="read_dirs", action="append", default=[])
+    tui.add_argument("--isolate", action="store_true")
+    tui.add_argument("--no-isolate", action="store_true")
+    tui.set_defaults(func=_cmd_tui)
+
+    svc = sub.add_parser(
+        "service",
+        help="The agent service behind `delfin-agent tui`: status, stop, logs",
+    )
+    svc.add_argument("action", nargs="?", default="status",
+                     choices=["status", "stop", "logs"])
+    svc.add_argument("--lines", type=int, default=40,
+                     help="Lines of the log to show (logs)")
+    svc.set_defaults(func=_cmd_service)
+
     return p
 
 

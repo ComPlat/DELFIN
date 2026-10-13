@@ -84,6 +84,13 @@ _ANSWER_MODULE_RE = re.compile(
 _ANSWER_CALL_RE = re.compile(r"\banswer\s*\(|\bimport\b[^\n;]*\banswer\b")
 _IMPORT_RE = re.compile(r"\bimport\b|__import__|importlib")
 
+# The agent service's socket and run files, where a window answers a
+# session's approvals: ``delfin-<uid>/agent.sock`` and ``agent_service/run``
+# joined the same three ways.
+_SERVICE_ROOM_RE = re.compile(
+    r"delfin-\d+[\s/,]+agent\.sock\b|agent_service[\s/,]+run(?![\w-])",
+    re.IGNORECASE)
+
 # Names only an answer file or an answer location carry: ``<id>.answer
 # .json`` (and its partial), and a room joined under ``.delfin`` by a
 # slash, a Path ``/`` or an ``os.path.join`` comma. A grep for the bare
@@ -130,6 +137,14 @@ def answer_rooms() -> tuple[Path, ...]:
         home = Path.home()
         for name in _ROOM_NAMES:
             _add(home / ".delfin" / name)
+    except Exception:
+        pass
+    try:
+        # The agent service (delfin-agent tui): a window answers a session's
+        # approvals through its socket, found by its run files.
+        from .service import rundir as _rd
+        _add(_rd.runtime_dir())
+        _add(_rd.run_file().parent)
     except Exception:
         pass
     return tuple(found)
@@ -191,7 +206,7 @@ def answer_command(cmd: str) -> Optional[str]:
             _ANSWER_MODULE_RE.search(text) and _ANSWER_CALL_RE.search(text)
             and _IMPORT_RE.search(text)):
         return "the command calls the function that answers a pending approval"
-    if _ANSWER_FILE_RE.search(text):
+    if _ANSWER_FILE_RE.search(text) or _SERVICE_ROOM_RE.search(text):
         return ("the command names the location where approvals are "
                 "answered")
     return None

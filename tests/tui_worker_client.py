@@ -33,16 +33,17 @@ class WorkerClient:
     def __init__(self, tmp_path: Path, *args: str, fake: bool = True,
                  delay: float = 0.003, initialize: bool = True,
                  env: dict[str, str] | None = None):
-        self.home = tmp_path / "child_home"
-        self.scratch = scratch = tmp_path / "child_scratch"
-        self.workspace = tmp_path / "workspace"
-        for d in (self.home, scratch / ".delfin", self.workspace):
-            d.mkdir(parents=True, exist_ok=True)
+        from conftest import child_env
+
         extra_env = dict(env or {})
-        env = dict(os.environ)
-        env.update(HOME=str(self.home), DELFIN_SCRATCH_STATE=str(scratch),
-                   PYTHONPATH=os.pathsep.join(
-                       [str(REPO), env.get("PYTHONPATH", "")]).rstrip(os.pathsep))
+        # The suite's one way to give a child its own HOME and scratch state.
+        env = child_env(tmp_path)
+        self.home = Path(env["HOME"])
+        self.scratch = Path(env["DELFIN_SCRATCH_STATE"])
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(REPO), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
         env.update(extra_env)
         cmd = [sys.executable, "-m", "delfin.agent.service.worker",
                "--cwd", str(self.workspace), *args]

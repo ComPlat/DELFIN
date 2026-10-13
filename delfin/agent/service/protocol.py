@@ -331,6 +331,12 @@ def invalid_params(method: str, params: Any) -> str:
     spec = REQUESTS.get(method)
     if spec is None:
         return f"unknown method {method!r}"
+    return params_problem(spec, params)
+
+
+def params_problem(spec: dict[str, str], params: Any) -> str:
+    """Why ``params`` do not fit ``spec`` (this module's field notation),
+    or "" when they do."""
     if not isinstance(params, dict):
         return "params must be an object"
     for name, kind in spec.items():

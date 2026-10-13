@@ -29,9 +29,11 @@ types are generated from that. This page explains what the messages mean.
   from a tool thread, or a message queued from the window, is placed behind
   the output the turn had already produced, so a question never arrives
   ahead of the tool call it is about.
-- **Phase 1 setup.** One worker process runs one session over its stdin and
-  stdout. Phase 2 puts the supervisor between window and worker, and
-  sessions are then reached over a Unix socket. The messages stay the same.
+- **Two hops.** A window talks to the agent service over a Unix socket
+  (see "The service"); the service talks to one worker process per session
+  over the worker's stdin and stdout. Session requests and events are the
+  same on both hops: the service adds `sessionId` to route a request and
+  passes events through unchanged.
 
 ## Lifecycle
 
@@ -234,6 +236,74 @@ answered.
 | -32001 | protocol version mismatch |
 | -32002 | unknown or already-resolved approval |
 | -32003 | not allowed: before `initialize`, or while the session closes |
+
+## The service
+
+`delfin-agent tui` connects to the agent service on this host, starting it
+when none runs (`delfin.agent.service.launcher`). The service
+(`delfin.agent.service.supervisor`) is one process per user and host,
+detached from the terminal, so sessions keep working after their window
+closes; the next window attaches to them again.
+
+- **Where:** the socket `/tmp/delfin-<uid>/agent.sock` (mode 0600, in a
+  0700 directory that must be the user's own; `DELFIN_RUNTIME_DIR` moves
+  it), one service per host by `flock`. On a cluster, `$HOME` is shared but
+  a socket is not: `~/.delfin/agent_service/run/<host>.json` says where a
+  service runs, so a window on another login node can say so.
+- **Who:** only the user's own processes (the peer's uid is checked). A
+  process an agent session started -- a descendant of a worker, or one that
+  carries `DELFIN_AGENT_SESSION` -- may watch but not act: `hello` says
+  `mayAct: false`, and it cannot create, prompt, cancel, change modes,
+  answer approvals, send messages or stop the service (-32003). The socket
+  and the run files are also answer locations for the permission gate
+  (`approval_guard`), like the approvals directory.
+- **When it ends:** `service.shutdown` (`delfin-agent service stop`),
+  SIGTERM, an emergency stop (`delfin-agent stop-all`), or `--idle-exit`
+  seconds (default 900) with no session and no window. Every session gets a
+  `session.shutdown` first and saves; what does not end in time gets
+  SIGTERM, then SIGKILL. The service lives under no dashboard lifeline: a
+  TUI started from a dashboard terminal keeps its sessions when the
+  dashboard ends.
+
+| Method | Params | Result |
+|---|---|---|
+| `hello` | `protocolVersion`, `client?` | `protocolVersion`, `serviceVersion`, `pid`, `host`, `mayAct`, `sessions[]`. Must come first. |
+| `sessions.list` | | `sessions[]` (summaries), `elsewhere[]`: other open DELFIN sessions (dashboards, terminals) with `key`, `sessionId?`, `title?`, `workspace`, `host` |
+| `session.create` | `cwd`, `name?`, `model?`, `provider?`, `effort?`, `mode?`, `permissionMode?`, `resume?`, `continue?`, `fork?`, `addDirs?`, `readDirs?`, `isolate?`, `noIsolate?`, `fake?`, `fakeDelay?`, `attach?` | `sessionId`, `session`, `state`, `pending[]`. Starts a worker with chat's own flags; the creating window is attached unless `attach: false`. A session that cannot start is refused with its reason (-32005). |
+| `session.attach` | `sessionId`, `turns?` | `session`, `state`, `pending[]`, `summary`, `events[]`: the replay of the last `turns` turns (all for 0), then live events. |
+| `session.detach` | `sessionId` | `detached` |
+| `session.message` | `key`, `text` | `sent`: the text goes into that session's inbox, as a message from another session (`session_messages`) |
+| `service.status` | | `pid`, `host`, `startedAt`, `sessions[]`, `windows`, `socket` |
+| `service.shutdown` | | `stopping`, `sessions` |
+
+Every session request of the worker protocol (`session.prompt`,
+`session.cancel`, `session.setMode`, `session.status`, `session.replay`,
+`session.shutdown`, `permission.reply`) is sent with `sessionId` and
+forwarded to that session's worker; its answer comes back unchanged.
+
+Events from the service itself, to every window:
+
+| Event | Fields |
+|---|---|
+| `session.summary` | `summary`: `sessionId`, `title?`, `workspace`, `provider`, `model`, `approval`, `state`, `pending` (open questions), `costUsd`, `createdAt`, `lastActivity`, `pid`. Sent whenever one of them changes: what the agent view draws. |
+| `session.removed` | `reason`, `exitCode`: the session's worker ended (shut down, exited, or failed). |
+
+**Attaching while a session runs.** The replay is read from the session's
+event log in the same step of the service's loop in which the window is
+subscribed. An event the worker sends after that is either in the replay --
+then the window does not get it again (its `seq` is not above the
+replay's last) -- or arrives live. Live-only events (deltas) may continue a
+part the replay already ended; a window ignores deltas for a part it has
+seen end.
+
+**Answers.** An approval may be answered from any window attached to the
+session. The worker takes the first answer; a later one is refused with
+-32002, and every window gets `permission.resolved`.
+
+| Code | Meaning |
+|---|---|
+| -32004 | no such session in this service |
+| -32005 | the session's worker has ended, or did not start (the message says why) |
 
 ## Debugging
 

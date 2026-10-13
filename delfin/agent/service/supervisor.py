@@ -1,0 +1,761 @@
+"""The agent service: the process the sessions live in, one per user and host.
+
+    python -m delfin.agent.service.supervisor [--idle-exit SECONDS]
+
+Started by ``delfin-agent tui`` when it is not running (``launcher.py``),
+detached from the terminal, so a session keeps working after its window
+closes and the next window attaches to it again -- the way tmux keeps a
+shell, and the way Claude Code keeps its background agents.
+
+    window ──socket── supervisor ──pipe── worker (one per session)
+    window ──socket──/            \\──pipe── worker
+
+* Every session is one worker process (``worker.py``) speaking the TUI
+  protocol on its pipes. The supervisor starts it, hands it requests from
+  any window, and fans its events out to every window attached to it.
+* A window that attaches gets the session's last turns from its event log
+  first (``eventlog.py``), then the live events; the sequence numbers drop
+  what it would otherwise see twice.
+* Every window hears a summary of every session whenever one changes
+  (state, posture, cost, open questions) -- what the agent view draws.
+* An approval is answered by whichever window answers first; the worker
+  refuses a second answer, and every window hears ``permission.resolved``.
+* A process an agent session started (its shell, a background job, a
+  child of those) may watch but never act: it cannot answer approvals,
+  send prompts or end sessions through this socket (``_from_an_agent``).
+
+The service ends when ``delfin-agent service stop`` says so, on SIGTERM, on
+an emergency stop (``stop_all``), and on its own after ``--idle-exit``
+seconds with no session and no window. Sessions end with it: each worker
+saves its session, so a later window can resume it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import signal
+import socket
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+from . import eventlog, protocol, rundir
+
+SERVICE_VERSION = 1
+
+#: Requests a window sends to the service itself.
+SERVICE_REQUESTS: dict[str, dict[str, str]] = {
+    "hello": {"protocolVersion": "integer", "client": "string?"},
+    "sessions.list": {},
+    # Start a session: a worker with these settings (chat's own flags).
+    "session.create": {"cwd": "string", "name": "string?", "model": "string?",
+                       "provider": "string?", "effort": "string?",
+                       "mode": "string?", "permissionMode": "string?",
+                       "resume": "string?", "continue": "boolean?",
+                       "fork": "boolean?", "addDirs": "[string]?",
+                       "readDirs": "[string]?", "isolate": "boolean?",
+                       "noIsolate": "boolean?", "fake": "boolean?",
+                       "fakeDelay": "number?", "attach": "boolean?"},
+    "session.attach": {"sessionId": "string", "turns": "integer?"},
+    "session.detach": {"sessionId": "string"},
+    # A message for a session elsewhere (dashboard, another terminal).
+    "session.message": {"key": "string", "text": "string"},
+    "service.status": {},
+    "service.shutdown": {},
+}
+
+#: Session requests, forwarded to the session's worker (with "sessionId").
+FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
+                       "session.status", "session.replay", "session.shutdown",
+                       "permission.reply"})
+
+#: What a watch-only connection may not do.
+ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
+                    "session.setMode", "session.shutdown", "permission.reply",
+                    "session.message", "service.shutdown"})
+
+UNKNOWN_SESSION = -32004
+WORKER_GONE = -32005
+
+#: A window that reads this far behind is dropped (it can attach again and
+#: replay); a stuck window must not make the service hold its output.
+CLIENT_BACKLOG_BYTES = 64 * 1024 * 1024
+
+#: How long a session gets to start (MCP servers, a resumed session).
+CREATE_TIMEOUT_S = 180.0
+
+#: How long the sessions get to end and save when the service stops.
+SHUTDOWN_GRACE_S = 20.0
+
+
+def _ppid(pid: int) -> int:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return 0
+    # The command name is in parentheses and may contain spaces.
+    try:
+        return int(stat.rsplit(")", 1)[1].split()[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def _peer_pid(sock: socket.socket) -> int:
+    if sys.platform.startswith("linux") and hasattr(socket, "SO_PEERCRED"):
+        import struct
+        creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                struct.calcsize("3i"))
+        return struct.unpack("3i", creds)[0]
+    return 0
+
+
+class WorkerFailed(Exception):
+    def __init__(self, code: int, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class Session:
+    """One worker process and what the service knows about it."""
+
+    def __init__(self, supervisor: "Supervisor", proc: asyncio.subprocess.Process,
+                 settings: dict):
+        self.supervisor = supervisor
+        self.proc = proc
+        self.settings = settings
+        self.id = ""
+        self.info: dict = {}
+        self.state = "starting"
+        self.pending: dict[str, dict] = {}
+        self.cost = 0.0
+        self.created_at = time.time()
+        self.last_activity = self.created_at
+        self.ended_reason = ""
+        self.subscribers: dict["Client", int] = {}    # client -> last seq replayed
+        self._next_id = 0
+        self._waiting: dict[int, asyncio.Future] = {}
+        self._early: list[dict] = []                  # events before initialize
+        self.done = asyncio.get_running_loop().create_future()
+
+    # -- talking to the worker ------------------------------------------------------
+    async def request(self, method: str, params: dict | None = None,
+                      timeout: float | None = None) -> Any:
+        if self.proc.stdin is None or self.proc.returncode is not None:
+            raise WorkerFailed(WORKER_GONE, "the session has ended")
+        self._next_id += 1
+        msg_id = self._next_id
+        future = asyncio.get_running_loop().create_future()
+        self._waiting[msg_id] = future
+        try:
+            self.proc.stdin.write(protocol.encode(
+                protocol.request(msg_id, method, params or {})))
+            await self.proc.stdin.drain()
+        except (BrokenPipeError, ConnectionError, RuntimeError):
+            self._waiting.pop(msg_id, None)
+            raise WorkerFailed(WORKER_GONE, "the session has ended") from None
+        try:
+            if timeout is None:
+                return await future
+            return await asyncio.wait_for(future, timeout)
+        finally:
+            self._waiting.pop(msg_id, None)
+
+    async def read(self) -> None:
+        """Every line the worker writes: answers and events, in order."""
+        assert self.proc.stdout is not None
+        try:
+            while True:
+                try:
+                    line = await self.proc.stdout.readline()
+                except ValueError:
+                    # A line over the reader's limit: the worker bounds its
+                    # own lines, so this is damage; skip to the next one.
+                    continue
+                if not line:
+                    break
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(message, dict):
+                    continue
+                if message.get("method") == "event":
+                    self.on_event(message, message.get("params") or {})
+                    continue
+                future = self._waiting.get(message.get("id"))
+                if future is None or future.done():
+                    continue
+                if "error" in message:
+                    err = message.get("error") or {}
+                    future.set_exception(WorkerFailed(
+                        int(err.get("code", protocol.INTERNAL_ERROR)),
+                        str(err.get("message", "error"))))
+                else:
+                    future.set_result(message.get("result"))
+        finally:
+            await self.proc.wait()
+            reason = self.ended_reason or f"the worker exited ({self.proc.returncode})"
+            for future in list(self._waiting.values()):
+                if not future.done():
+                    future.set_exception(WorkerFailed(WORKER_GONE, reason))
+            self.state = "ended"
+            if not self.done.done():
+                self.done.set_result(self.proc.returncode)
+            self.supervisor.session_ended(self)
+
+    def on_event(self, message: dict, event: dict) -> None:
+        kind = str(event.get("type") or "")
+        self.last_activity = time.time()
+        changed = False
+        if kind == "session.state":
+            self.state = str(event.get("state") or self.state)
+            changed = True
+        elif kind == "session.info":
+            self.info.update({k: v for k, v in event.items()
+                              if k not in ("type", "session", "seq", "ts")})
+            changed = True
+        elif kind == "session.updated":
+            self.info.update({k: v for k, v in event.items()
+                              if k not in ("type", "session", "seq", "ts")})
+            changed = True
+        elif kind == "permission.asked":
+            self.pending[str(event.get("requestId"))] = event
+            changed = True
+        elif kind == "permission.resolved":
+            changed = self.pending.pop(str(event.get("requestId")), None) is not None
+        elif kind == "turn.ended":
+            self.cost += float(event.get("costUsd") or 0.0)
+            changed = True
+        elif kind == "session.ended":
+            self.ended_reason = str(event.get("reason") or "")
+        if not self.id:
+            self._early.append(event)
+            return
+        data = protocol.encode(message)
+        seq = event.get("seq")
+        for client, replayed in list(self.subscribers.items()):
+            if isinstance(seq, int) and seq <= replayed:
+                continue                     # already in that window's replay
+            client.send_bytes(data)
+        if changed:
+            self.supervisor.broadcast_summary(self)
+
+    # -- what windows see ---------------------------------------------------------------
+    def summary(self) -> dict:
+        return {"sessionId": self.id,
+                "title": self.info.get("title") or self.settings.get("name") or None,
+                "workspace": self.info.get("workspace") or self.settings.get("cwd", ""),
+                "provider": self.info.get("provider", ""),
+                "model": self.info.get("model", ""),
+                "approval": self.info.get("approval", ""),
+                "state": self.state,
+                "pending": len(self.pending),
+                "costUsd": round(self.cost, 6),
+                "createdAt": round(self.created_at, 3),
+                "lastActivity": round(self.last_activity, 3),
+                "pid": self.proc.pid}
+
+    def header(self) -> dict:
+        event = {"type": "session.info", "session": self.id, "seq": 0,
+                 "ts": round(time.time(), 3)}
+        event.update({k: v for k, v in self.info.items() if v is not None})
+        return event
+
+    def replay(self, turns: int) -> list[dict]:
+        path = eventlog.log_path(self.id)
+        return eventlog.tail_turns(eventlog.read_events(path), turns,
+                                   header=self.header())
+
+
+class Client:
+    """One window's connection."""
+
+    def __init__(self, supervisor: "Supervisor", reader: asyncio.StreamReader,
+                 writer: asyncio.StreamWriter, may_act: bool, peer_pid: int):
+        self.supervisor = supervisor
+        self.reader = reader
+        self.writer = writer
+        self.may_act = may_act
+        self.peer_pid = peer_pid
+        self.greeted = False
+        self.closed = False
+
+    def send(self, message: dict) -> None:
+        self.send_bytes(protocol.encode(message))
+
+    def send_bytes(self, data: bytes) -> None:
+        if self.closed:
+            return
+        try:
+            self.writer.write(data)
+        except (ConnectionError, RuntimeError):
+            self.close()
+            return
+        transport = self.writer.transport
+        if transport is not None and \
+                transport.get_write_buffer_size() > CLIENT_BACKLOG_BYTES:
+            self.close()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.writer.close()
+        except Exception:
+            pass
+        self.supervisor.client_gone(self)
+
+
+class Supervisor:
+    def __init__(self, *, idle_exit_s: float = 900.0,
+                 worker_cmd: list[str] | None = None):
+        self.sessions: dict[str, Session] = {}
+        self.starting: set[Session] = set()
+        self.clients: set[Client] = set()
+        self.idle_exit_s = float(idle_exit_s)
+        self.worker_cmd = worker_cmd or [sys.executable, "-m",
+                                         "delfin.agent.service.worker"]
+        self.started_at = time.time()
+        self.quiet_since = time.monotonic()
+        self._spawned = 0
+        self.stopping: asyncio.Event | None = None
+        self.server: asyncio.base_events.Server | None = None
+
+    # -- the socket -----------------------------------------------------------------------
+    async def serve(self, path: Path) -> None:
+        self.stopping = asyncio.Event()
+        try:
+            path.unlink()                       # stale: the lock is ours
+        except FileNotFoundError:
+            pass
+        old = os.umask(0o177)
+        try:
+            self.server = await asyncio.start_unix_server(
+                self._accept, path=str(path), limit=protocol.MAX_LINE_BYTES + 1)
+        finally:
+            os.umask(old)
+        os.chmod(path, 0o600)
+        idle = asyncio.create_task(self._watch_idle())
+        try:
+            await self.stopping.wait()
+        finally:
+            idle.cancel()
+            self.server.close()
+            await self.end_all_sessions()
+            for client in list(self.clients):
+                client.close()
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+    async def _accept(self, reader: asyncio.StreamReader,
+                      writer: asyncio.StreamWriter) -> None:
+        sock = writer.get_extra_info("socket")
+        uid = rundir.peer_uid(sock) if sock is not None else None
+        if uid is not None and uid != os.getuid():
+            writer.close()
+            return
+        pid = _peer_pid(sock) if sock is not None else 0
+        client = Client(self, reader, writer, not self._from_an_agent(pid), pid)
+        self.clients.add(client)
+        self.quiet_since = time.monotonic()
+        try:
+            while not client.closed:
+                try:
+                    line = await reader.readline()
+                except (ValueError, ConnectionError):
+                    break
+                if not line:
+                    break
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    client.send(protocol.error(None, protocol.PARSE_ERROR, "not JSON"))
+                    continue
+                if not isinstance(message, dict):
+                    client.send(protocol.error(None, protocol.PARSE_ERROR,
+                                               "not a JSON object"))
+                    continue
+                # Each request runs on its own, so a slow session never holds
+                # a window's other requests; requests to one session still
+                # reach it in the order they came (request() writes first).
+                asyncio.create_task(self._dispatch(client, message))
+        finally:
+            client.close()
+
+    def _from_an_agent(self, pid: int) -> bool:
+        """Whether ``pid`` was started by an agent session: a descendant of
+        one of the workers, or a process carrying the marker every agent
+        child process gets (approval_guard.ENV_MARKER)."""
+        if pid <= 0:
+            return False
+        workers = {s.proc.pid for s in [*self.sessions.values(), *self.starting]}
+        p, hops = pid, 0
+        while p > 1 and hops < 64:
+            if p in workers:
+                return True
+            p, hops = _ppid(p), hops + 1
+        try:
+            from ..approval_guard import ENV_MARKER
+            environ = Path(f"/proc/{pid}/environ").read_bytes()
+            if f"{ENV_MARKER}=".encode() in environ:
+                return True
+        except (OSError, ImportError):
+            pass
+        return False
+
+    def client_gone(self, client: Client) -> None:
+        self.clients.discard(client)
+        for session in self.sessions.values():
+            session.subscribers.pop(client, None)
+        if not self.clients:
+            self.quiet_since = time.monotonic()
+
+    # -- requests ------------------------------------------------------------------------
+    async def _dispatch(self, client: Client, message: dict) -> None:
+        msg_id = message.get("id")
+        method = str(message.get("method") or "")
+        params = message.get("params")
+        params = {} if params is None else params
+
+        def answer(value: Any) -> None:
+            if msg_id is not None:
+                client.send(protocol.result(msg_id, value))
+
+        def fail(code: int, text: str) -> None:
+            if msg_id is not None:
+                client.send(protocol.error(msg_id, code, text))
+
+        if not isinstance(params, dict):
+            return fail(protocol.INVALID_PARAMS, "params must be an object")
+        if method != "hello" and not client.greeted:
+            return fail(protocol.NOT_ALLOWED, "hello first")
+        if method in ACTING and not client.may_act:
+            return fail(protocol.NOT_ALLOWED,
+                        "this connection comes from an agent session's own "
+                        "process: it may watch, not act (only the user "
+                        "answers, sends and ends)")
+        try:
+            if method in FORWARDED:
+                return answer(await self._forward(method, params))
+            if method not in SERVICE_REQUESTS:
+                return fail(protocol.METHOD_NOT_FOUND, f"no method {method!r}")
+            problem = protocol.params_problem(SERVICE_REQUESTS[method], params)
+            if problem:
+                return fail(protocol.INVALID_PARAMS, problem)
+            handler = getattr(self, "_m_" + method.replace(".", "_"))
+            return answer(await handler(client, params))
+        except WorkerFailed as exc:
+            return fail(exc.code, exc.message)
+        except _Refusal as exc:
+            return fail(exc.code, str(exc))
+        except Exception as exc:                    # noqa: BLE001
+            return fail(protocol.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
+
+    async def _forward(self, method: str, params: dict) -> Any:
+        sid = str(params.get("sessionId") or "")
+        session = self.sessions.get(sid)
+        if session is None:
+            raise _Refusal(UNKNOWN_SESSION, f"no session {sid!r} here")
+        rest = {k: v for k, v in params.items() if k != "sessionId"}
+        return await session.request(method, rest)
+
+    async def _m_hello(self, client: Client, params: dict) -> dict:
+        version = int(params.get("protocolVersion", 0) or 0)
+        if version != protocol.PROTOCOL_VERSION:
+            raise _Refusal(protocol.VERSION_MISMATCH,
+                           f"the service speaks protocol {protocol.PROTOCOL_VERSION},"
+                           f" this window {version}")
+        client.greeted = True
+        return {"protocolVersion": protocol.PROTOCOL_VERSION,
+                "serviceVersion": SERVICE_VERSION, "pid": os.getpid(),
+                "host": rundir.hostname(), "mayAct": client.may_act,
+                "sessions": [s.summary() for s in self.sessions.values()]}
+
+    async def _m_sessions_list(self, _client: Client, _params: dict) -> dict:
+        return {"sessions": [s.summary() for s in self.sessions.values()],
+                "elsewhere": self.elsewhere()}
+
+    def elsewhere(self) -> list[dict]:
+        """The other open DELFIN sessions on this machine and the cluster's
+        shared home: dashboards and terminal sessions (watch and message)."""
+        ours = {s.id for s in self.sessions.values()}
+        out = []
+        try:
+            from .. import session_presence
+            for record in session_presence.open_sessions():
+                sid = str(record.get("session_id") or "")
+                if sid and sid in ours:
+                    continue
+                out.append({"key": record.get("key", ""),
+                            "sessionId": sid or None,
+                            "title": record.get("title") or None,
+                            "workspace": record.get("workspace", ""),
+                            "host": record.get("host", ""),
+                            "lastActivity": record.get("updated_at")})
+        except Exception:
+            pass
+        return out
+
+    async def _m_session_create(self, client: Client, params: dict) -> dict:
+        args = [*self.worker_cmd, "--cwd", str(Path(params["cwd"]).expanduser())]
+        for key, flag in (("name", "-n"), ("model", "--model"),
+                          ("provider", "--provider"), ("effort", "--effort"),
+                          ("mode", "--mode"), ("permissionMode", "--permission-mode"),
+                          ("resume", "--resume")):
+            if params.get(key):
+                args += [flag, str(params[key])]
+        for key, flag in (("continue", "--continue"), ("fork", "--fork-session"),
+                          ("isolate", "--isolate"), ("noIsolate", "--no-isolate"),
+                          ("fake", "--fake")):
+            if params.get(key):
+                args.append(flag)
+        if params.get("fake") and params.get("fakeDelay") is not None:
+            args += ["--fake-delay", str(float(params["fakeDelay"]))]
+        for path in params.get("addDirs") or []:
+            args += ["--add-dir", str(path)]
+        for path in params.get("readDirs") or []:
+            args += ["--read-dir", str(path)]
+        logs = eventlog.service_dir() / "logs"
+        from .. import state_paths
+        state_paths.ensure_dir(logs)
+        self._spawned += 1
+        log_name = logs / (f"worker-{time.strftime('%Y%m%d-%H%M%S')}-"
+                           f"{os.getpid()}-{self._spawned}.log")
+        log_fd = os.open(log_name, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args, stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=log_fd,
+                start_new_session=True, limit=protocol.MAX_LINE_BYTES + 1,
+                cwd=str(Path.home()))
+        finally:
+            os.close(log_fd)
+        session = Session(self, proc, dict(params))
+        self.starting.add(session)
+        asyncio.create_task(session.read())
+        try:
+            init = await session.request("initialize",
+                                         {"protocolVersion": protocol.PROTOCOL_VERSION,
+                                          "client": "delfin-agent service"},
+                                         timeout=CREATE_TIMEOUT_S)
+        except (WorkerFailed, asyncio.TimeoutError) as exc:
+            self.starting.discard(session)
+            if proc.returncode is None:
+                proc.kill()
+            reason = session.ended_reason or str(exc) or "the session did not start"
+            raise _Refusal(WORKER_GONE, reason) from None
+        self.starting.discard(session)
+        session.id = str(init["session"]["sessionId"])
+        session.info.update(init.get("session") or {})
+        session.state = str(init.get("state") or "idle")
+        for asked in init.get("pending") or []:
+            session.pending[str(asked.get("requestId"))] = asked
+        self.sessions[session.id] = session
+        self._write_roster()
+        if params.get("attach", True):
+            session.subscribers[client] = self._last_seq(session)
+        self.broadcast_summary(session)
+        return {"sessionId": session.id, "session": session.info,
+                "state": session.state, "pending": list(session.pending.values())}
+
+    def _last_seq(self, session: Session) -> int:
+        events = eventlog.read_events(eventlog.log_path(session.id))
+        return max((int(e.get("seq", 0) or 0) for e in events), default=0)
+
+    async def _m_session_attach(self, client: Client, params: dict) -> dict:
+        session = self.sessions.get(str(params["sessionId"]))
+        if session is None:
+            raise _Refusal(UNKNOWN_SESSION, f"no session {params['sessionId']!r} here")
+        # Read and subscribe in one step of the event loop: every event the
+        # worker sends from here on is either in this replay (and dropped by
+        # its sequence number) or arrives live.
+        events = session.replay(int(params.get("turns", 0) or 0))
+        last = max((int(e.get("seq", 0) or 0) for e in events), default=0)
+        session.subscribers[client] = last
+        return {"session": session.info, "state": session.state,
+                "pending": list(session.pending.values()), "events": events,
+                "summary": session.summary()}
+
+    async def _m_session_detach(self, client: Client, params: dict) -> dict:
+        session = self.sessions.get(str(params["sessionId"]))
+        if session is not None:
+            session.subscribers.pop(client, None)
+        return {"detached": True}
+
+    async def _m_session_message(self, _client: Client, params: dict) -> dict:
+        from .. import session_messages
+        text = str(params["text"]).strip()
+        if not text:
+            raise _Refusal(protocol.INVALID_PARAMS, "empty message")
+        session_messages.send(str(params["key"]), text, from_key="tui",
+                              from_title="the TUI")
+        return {"sent": True}
+
+    async def _m_service_status(self, _client: Client, _params: dict) -> dict:
+        return {"pid": os.getpid(), "host": rundir.hostname(),
+                "startedAt": round(self.started_at, 3),
+                "sessions": [s.summary() for s in self.sessions.values()],
+                "windows": len(self.clients),
+                "socket": str(rundir.socket_path())}
+
+    async def _m_service_shutdown(self, _client: Client, _params: dict) -> dict:
+        assert self.stopping is not None
+        asyncio.get_running_loop().call_soon(self.stopping.set)
+        return {"stopping": True, "sessions": len(self.sessions)}
+
+    # -- sessions ---------------------------------------------------------------------------
+    def broadcast_summary(self, session: Session) -> None:
+        if not session.id:
+            return
+        message = protocol.event({"type": "session.summary", "session": session.id,
+                                  "ts": round(time.time(), 3),
+                                  "summary": session.summary()})
+        data = protocol.encode(message)
+        for client in list(self.clients):
+            if client.greeted:
+                client.send_bytes(data)
+
+    def session_ended(self, session: Session) -> None:
+        self.starting.discard(session)
+        if session.id and self.sessions.pop(session.id, None) is not None:
+            message = protocol.event({"type": "session.removed",
+                                      "session": session.id,
+                                      "ts": round(time.time(), 3),
+                                      "reason": session.ended_reason or "ended",
+                                      "exitCode": session.proc.returncode})
+            data = protocol.encode(message)
+            for client in list(self.clients):
+                if client.greeted:
+                    client.send_bytes(data)
+            self._write_roster()
+        if not self.sessions:
+            self.quiet_since = time.monotonic()
+
+    async def end_all_sessions(self) -> None:
+        """Every session ends the way a window's shutdown ends it, and saves;
+        what does not end in time gets SIGTERM, then SIGKILL."""
+        sessions = [*self.sessions.values(), *self.starting]
+        for session in sessions:
+            try:
+                await session.request("session.shutdown", timeout=5)
+            except Exception:
+                pass
+        await self._wait_for(sessions, SHUTDOWN_GRACE_S)
+        for session in sessions:
+            if session.proc.returncode is None:
+                try:
+                    session.proc.send_signal(signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+        await self._wait_for(sessions, 12.0)
+        for session in sessions:
+            if session.proc.returncode is None:
+                try:
+                    session.proc.kill()
+                except ProcessLookupError:
+                    pass
+        await self._wait_for(sessions, 5.0)
+
+    async def _wait_for(self, sessions: list[Session], timeout: float) -> None:
+        waiting = [s.done for s in sessions if not s.done.done()]
+        if waiting:
+            await asyncio.wait(waiting, timeout=timeout)
+
+    def _write_roster(self) -> None:
+        """Which sessions run here: for `service status`, and for a later
+        service to say which ones ended when this one did."""
+        try:
+            path = rundir.run_file().with_suffix(".roster.json")
+            from .. import state_paths
+            state_paths.ensure_dir(path.parent)
+            state_paths.write_text_atomic(path, json.dumps(
+                {"pid": os.getpid(), "updatedAt": round(time.time(), 3),
+                 "sessions": [s.summary() for s in self.sessions.values()]},
+                indent=2))
+        except Exception:
+            pass
+
+    async def _watch_idle(self) -> None:
+        assert self.stopping is not None
+        while True:
+            await asyncio.sleep(min(30.0, max(1.0, self.idle_exit_s / 4)))
+            if self.sessions or self.starting or self.clients:
+                continue
+            if time.monotonic() - self.quiet_since >= self.idle_exit_s:
+                self.stopping.set()
+                return
+
+    def stop(self) -> None:
+        if self.stopping is not None:
+            self.stopping.set()
+
+
+class _Refusal(Exception):
+    def __init__(self, code: int, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(prog="python -m delfin.agent.service.supervisor",
+                                description="The agent service (one per user and host)")
+    p.add_argument("--idle-exit", type=float, default=900.0,
+                   help="end after this many seconds with no session and no window")
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    from .. import state_paths
+
+    state_paths.scratch_state_from_environment()
+    args = parse_args(argv)
+    from .. import cli as _cli
+    from .. import lifeline as _lifeline
+    from .. import process_guard as _process_guard
+
+    _cli.guard_principles_or_exit()
+    lock = rundir.ServiceLock()
+    try:
+        lock.acquire()
+    except rundir.ServiceBusy:
+        print("the agent service already runs on this host", file=sys.stderr)
+        return 0
+    # This process starts the sessions that hold the model's key, and
+    # answers for them: unreadable by the commands they run, and on the
+    # register the emergency stop reads.
+    _process_guard.protect("agent service")
+    supervisor = Supervisor(idle_exit_s=args.idle_exit)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            loop.add_signal_handler(sig, supervisor.stop)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass
+    # An emergency stop (`delfin-agent stop-all`) ends the sessions -- each
+    # worker watches it too -- and then this service.
+    _lifeline.watch(lambda: loop.call_soon_threadsafe(supervisor.stop))
+    path = rundir.socket_path()
+    rundir.write_run_file({"pid": os.getpid(), "host": rundir.hostname(),
+                           "socket": str(path), "startedAt": rundir.started_at(),
+                           "protocolVersion": protocol.PROTOCOL_VERSION,
+                           "serviceVersion": SERVICE_VERSION})
+    try:
+        loop.run_until_complete(supervisor.serve(path))
+    finally:
+        rundir.remove_run_file(os.getpid())
+        lock.release()
+        loop.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
