@@ -78,7 +78,13 @@ def normalise_remote(url: Any, base: Any = None) -> Optional[str]:
     ``git@GitHub.com:Me/Repo.git``, ``ssh://git@github.com:22/Me/Repo``
     and ``https://user@github.com/Me/Repo/`` are all
     ``github.com/Me/Repo``. A local path or ``file://`` URL is the
-    resolved absolute path (relative to ``base``)."""
+    resolved absolute path (relative to ``base``).
+
+    A host with a character outside ASCII has no key. ``str.lower`` maps
+    some of them onto ASCII (KELVIN SIGN to ``k``, ``İ`` to ``i`` plus a
+    combining dot), so a host git or DNS reads as another name would
+    match an entry written for this one. Rejected: IDNA encoding, whose
+    mapping differs between IDNA 2003 and 2008 and between resolvers."""
     text = str(url or "").strip()
     if not text or any(c.isspace() for c in text):
         return None
@@ -100,7 +106,7 @@ def normalise_remote(url: Any, base: Any = None) -> Optional[str]:
     if path.endswith(".git"):
         path = path[:-4]
     path = path.strip("/")
-    if not host or not path or ".." in path.split("/"):
+    if not host or not path or ".." in path.split("/") or not host.isascii():
         return None
     return f"{host.lower()}/{path}"
 
@@ -146,7 +152,8 @@ def entry_key(key: Any) -> Optional[str]:
     path = path.strip("/")
     if path.endswith(".git"):
         path = path[:-4]
-    if not host or not path or any(c.isspace() for c in text):
+    if (not host or not path or any(c.isspace() for c in text)
+            or not host.isascii()):
         return None
     return f"{host.lower()}/{path}"
 
@@ -169,6 +176,16 @@ def remote_keys(where: Any, remote: Optional[str] = None) -> Optional[list]:
         return None
     if remote is None:
         names = (_git(where, "remote") or "").split()
+        # An argument-less push takes its remote from these keys, and each
+        # may hold a URL instead of a remote name. A value that names no
+        # remote fails ``get-url`` below and leaves the push unresolved.
+        branch = _git(where, "symbolic-ref", "--quiet", "--short", "HEAD")
+        for cfg in ["remote.pushDefault"] + (
+                [f"branch.{branch}.pushRemote", f"branch.{branch}.remote"]
+                if branch else []):
+            value = _git(where, "config", "--get", cfg)
+            if value and value not in names:
+                names.append(value)
         if not names:
             return [top]
     else:
