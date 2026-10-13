@@ -1391,7 +1391,48 @@ delfin-agent gate explain --tool write_file --path notes/new.md
 
 `capabilities` lists the mode and where it came from, the writable, read-only and readable roots, the deny and protected path globs and the masked home directories (names only, never contents), the shell deny patterns and auto-allow list, the session tool lists, who would be asked, the git role resolved for the workspace's repository, and the isolation layers: which mechanism the agent would actually wrap a command in on this host (`bwrap`, `Landlock`, `Seatbelt`, `none`, or `refused`), and whether bubblewrap, Landlock, Seatbelt, the socket guard, the process cage and the process guard are available here.
 
-`gate explain` asks the permission gate about one `bash` command or one `write_file` and prints the verdict — `allow`, `ask` or `refuse` — with a reason code (`plan_mode`, `deny_pattern`, `secret_path`, `outside_ws`, `not_auto_allowed`, `read_first`, `session_tool_list`, …), the reason text, the questions the gate would put, and for an `ask` what a yes would lead to. It goes through the same gates as a real call and stops after the last one, so nothing is run and nothing is written; the security panel, the audit log, the failure log and the approvals directory are not touched. Put the command after `--`; quote it as one argument to keep its own quoting. An existing `write_file` target counts as read in the session. Limits: only `bash` and `write_file` can be explained; PreToolUse hooks are counted but not run; only the `kit`, `openai` and `ollama` providers run this gate (the `claude` CLI backend has its own hook gate and is refused).
+`gate explain` asks the permission gate about one `bash` command or one `write_file` and prints the verdict — `allow`, `ask` or `refuse` — with a reason code (`plan_mode`, `deny_pattern`, `secret_path`, `outside_ws`, `not_auto_allowed`, `read_first`, `session_tool_list`, …), the reason text, the questions the gate would put, and for an `ask` what a yes would lead to (a refusal by the administrator's policy has the code `managed_policy`). It goes through the same gates as a real call and stops after the last one, so nothing is run and nothing is written; the security panel, the audit log, the failure log and the approvals directory are not touched. Put the command after `--`; quote it as one argument to keep its own quoting. An existing `write_file` target counts as read in the session. Limits: only `bash` and `write_file` can be explained; PreToolUse hooks are counted but not run; only the `kit`, `openai` and `ollama` providers run this gate (the `claude` CLI backend has its own hook gate and is refused).
+
+### For administrators: a managed policy
+
+On a shared installation (a cluster, a teaching lab) an administrator can set restrictions that no user setting, project setting, command-line flag or agent action loosens. DELFIN reads them from
+
+| Path | Host |
+|------|------|
+| `/etc/delfin/managed_policy.json` | Linux |
+| `/Library/Application Support/DELFIN/managed_policy.json` | macOS |
+| `managed_policy.json` beside the installed `delfin` package | any |
+
+The file must be readable by every user. It is **trusted** only when the file and every directory above it are owned by root, or by the account that installed the package (the owner of the package directory, when that is not the user running DELFIN), and none of them is group- or world-writable (a sticky directory such as `/tmp` is accepted as an ancestor). A file that fails this check, and any file named by `DELFIN_MANAGED_POLICY` (the user controls the environment), is still read, but **only for restrictions**: it cannot choose the audit destination, and since several files are merged by the union of their restrictions and the intersection of their allow-lists and domain lists, it can never remove what a trusted file imposes. It is announced as `NOT TRUSTED` at every start. A trusted file that cannot be read or parsed fails closed: `bypassPermissions` and `acceptEdits` are unavailable until it is fixed.
+
+```json
+{
+  "permissions": {
+    "deny": ["bash(sudo)", "read(/projects/restricted/**)", "web_search"],
+    "ask": ["bash(sbatch)", "mcp__mail"],
+    "only_allow": ["bash(ls:*)", "bash(git status)", "bash(squeue:*)"]
+  },
+  "disallowed_modes": ["bypassPermissions"],
+  "require_isolation": true,
+  "container_backend": "bwrap",
+  "network": {"allowed_domains_max": ["pypi.org", "files.pythonhosted.org", "*.github.com", "github.com"]},
+  "disable_classifier_off": true,
+  "audit_log": "/var/log/delfin/{user}.jsonl"
+}
+```
+
+| Key | Effect |
+|-----|--------|
+| `permissions.deny` | Refused in every mode, `bypassPermissions` included, before any user allow pattern, remembered permission or approval. Rules: `bash(<words>)` (the words anywhere in the command, a chain or a quoted `sh -c` body), `read(<glob>)` / `write(<glob>)` (a relative glob is relative to the workspace; `*` is one path segment, `**` any number; a glob without a wildcard covers everything below it; a `read` rule also covers writes and shell commands that name the path), `web_fetch(domain:<host>)`, `mcp__<server>[__<tool>]`, or a bare tool name. |
+| `permissions.ask` | Put to the person in every mode; refused when nobody can be asked (an unattended run). |
+| `permissions.only_allow` | The most the shell auto-allow list may grant: a command runs unasked only if each of its parts starts with the words of one of these `bash(...)` rules (`:*` = followed by anything) and it has no substitution or redirection. Everything else is asked, or refused unattended. |
+| `disallowed_modes` | These modes are never held: an unattended run and a mode from a settings file fall back to `default` (`plan` if `default` is disallowed too) and say so, Shift+Tab skips them; an interactive session started with the mode named on the command line, and `/permissions <mode>`, are refused with the reason. |
+| `require_isolation` | No shell command runs outside a sandbox (bubblewrap, else Landlock, else Seatbelt, else the command is refused); `--no-isolate` and `agent.bash_isolation = "off"` are ignored. On a host with no working layer an interactive session does not start, and an unattended run is capped at `default`. `container_backend: "bwrap"` accepts bubblewrap only. |
+| `network.allowed_domains_max` | The ceiling for sandboxed network access and for `web_fetch`: the user's `agent.sandbox_network.allowed_domains` intersected with it; `sandbox_network.mode = "open"` becomes `proxy`. |
+| `disable_classifier_off` | The action watcher (the model second opinion) stays on whatever `agent.classifier.enabled` or `DELFIN_CLASSIFIER` say. It still needs a model connection to run. |
+| `audit_log` | Every audit record is also appended to this absolute path (`{user}` and `{uid}` are expanded), in addition to the user's own log. Create the directory so each user can append and not read others' files (for example mode `1733`); DELFIN does not rotate it. |
+
+`delfin-agent capabilities`, the start banner (stderr for `delfin-agent run`) and `/permissions` name each policy file, whether it is trusted, and what it enforces. The policy file is unwritable through every write tool and shell command of the agent, in every mode. Limits: the rules bind DELFIN's own gate (native tools, MCP tools and the `claude` CLI backend's hook); a process the user starts outside DELFIN is not governed by it, which is what operating-system permissions are for.
 
 ### Pushing, pull requests and the git role
 

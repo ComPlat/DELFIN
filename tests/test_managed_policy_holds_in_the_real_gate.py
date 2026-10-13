@@ -196,6 +196,21 @@ def test_only_allow_bounds_the_auto_allow_list(env):
     assert not perms.matches_bash_auto_allow("ls; cat notes.txt")
 
 
+def test_the_manual_example_is_a_policy_that_loads_clean(env):
+    import re
+    manual = (Path(__file__).resolve().parents[1] / "docs" / "USER_MANUAL.md"
+              ).read_text(encoding="utf-8")
+    block = re.search(r"```json\n(\{\n  \"permissions\": \{\n    \"deny\".*?)```",
+                      manual, re.DOTALL)
+    assert block, "the managed policy example is gone from the manual"
+    _write_policy(env["policy"], block.group(1))
+    pol = MP.load()
+    assert pol.sources[0].trusted and not pol.errors, pol.errors
+    assert len(pol.deny) == 3 and len(pol.ask) == 2
+    assert pol.require_isolation and pol.disable_classifier_off
+    assert MP.coerce_mode("bypassPermissions") == "default"
+
+
 def test_a_broken_rule_is_reported(env):
     _write_policy(env["policy"],
                   {"permissions": {"deny": ["frob(x)", "bash(touch)"]}})
