@@ -3125,6 +3125,73 @@ _REPO_SHIFTING_WORD_RE = re.compile(
 _SEGMENT_ASSIGNMENT_RE = re.compile(r"(?:^|[;&|({])\s*[A-Za-z_]\w*=")
 _SHELL_EXPANSION_CHARS = frozenset("$`*?[]{}")
 
+#: The steps that may stand before the one push or merge on a command line
+#: without changing where it goes: ``git`` with no global option and one
+#: of these subcommands.
+_KEEPS_PUSH_URL_SUBCOMMANDS = frozenset({"add", "commit", "status", "log",
+                                         "fetch"})
+_STEP_OPERATORS = frozenset({";", "&", "&&", "|", "||", "\n"})
+
+
+def _steps_keep_the_push_url(prefix: str) -> bool:
+    """Whether every step in ``prefix`` (the command line before its one
+    push or ``gh pr merge``) leaves the push URL as it is now.
+
+    The role is resolved from the repository's configuration as it is
+    before the line runs. A step in front of the push runs first and may
+    rewrite that configuration (``git remote``, ``git config`` with
+    remote./url./pushurl/insteadOf keys, ``git -c``, a script), so only an
+    allow-list counts: ``git add``, ``git commit``, ``git status``, ``git
+    log``, ``git fetch`` and ``git pull --ff-only``, none with ``--set-upstream`` (it writes
+    branch.<b>.remote) or ``--upload-pack``/``--exec`` (a program). Any
+    ``$``, backtick, subshell, redirection or other command makes the push
+    unresolved, which is contributor. The caller strips the one leading
+    ``cd <dir> &&`` it follows; a ``cd`` anywhere else is refused here.
+
+    ``git commit`` runs the repository's hooks, and a hook could change the
+    remote. Hooks live in ``.git/hooks`` (a deny path) or where
+    ``core.hooksPath`` points; a write of that key is asked in every mode
+    as a git configuration change (``_GIT_HOOK_CONFIG_WRITE_RE``), so a
+    hook that runs here is one the user allowed.
+
+    Rejected: classifying each step's effect on the configuration. The
+    keys that steer a push (remote.*, url.*, branch.*, include.path, a
+    hook) are many and a misread one unlocks a repository; the steps run
+    before a push are few. Cost: one shlex pass over the prefix."""
+    import shlex
+    if "$" in prefix or "`" in prefix:
+        return False
+    try:
+        lex = shlex.shlex(prefix, posix=True, punctuation_chars=";&|\n()<>")
+        lex.whitespace = " \t\r"
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        return False
+    steps: list = [[]]
+    for tok in tokens:
+        if tok in _STEP_OPERATORS:
+            steps.append([])
+        elif tok and set(tok) <= set(";&|\n()<>"):
+            return False
+        else:
+            steps[-1].append(tok)
+    steps = [s for s in steps if s]
+    for words in steps:
+        if len(words) < 2 or words[0] != "git":
+            return False
+        sub = words[1]
+        if sub == "pull":
+            if "--ff-only" not in words[2:]:
+                return False
+        elif sub not in _KEEPS_PUSH_URL_SUBCOMMANDS:
+            return False
+        if any(w == "--set-upstream" or w.startswith(("--upload-pack",
+                                                       "--exec"))
+               for w in words[2:]):
+            return False
+    return True
+
 
 def _gh_merge_repo_specs(segment: str) -> Optional[list]:
     """Repository keys a ``gh pr merge`` names (``-R``, ``--repo``, a PR
@@ -3181,8 +3248,10 @@ def _command_repo_keys(cmd: str, args: Any, perms: Any) -> Optional[list]:
     and ``GH_REPO``. Not followed, therefore None: more than one push or
     merge in the command, another cd/pushd/loop/xargs/env or an assignment
     in front of it, ``git -c``/``--git-dir`` or another global option, a
-    shell expansion in the directory or remote, and GIT_DIR and its kin in
-    this process's environment. Rejected: following those shapes the way
+    shell expansion in the directory or remote, any earlier step outside
+    ``_steps_keep_the_push_url``'s allow-list (the URL is read before the
+    line runs), and GIT_DIR and its kin in this process's environment.
+    Rejected: following those shapes the way
     the shell would. Each is a second interpreter of the line, and a
     resolver that misreads one unlocks a repository."""
     from . import git_role as _GR
@@ -3198,6 +3267,12 @@ def _command_repo_keys(cmd: str, args: Any, perms: Any) -> Optional[list]:
         line_start = text.rfind("\n", 0, m.start()) + 1
         head = text[line_start:m.start() + 1]
         cd = _LEADING_CD_RE.match(head)
+        before = text[:m.start()] + (text[m.start()]
+                                     if text[m.start()] in ";&|(`\n" else "")
+        if cd and line_start == 0:
+            before = before[cd.end():]
+        if not _steps_keep_the_push_url(before):
+            return None
         if cd and _SHELL_EXPANSION_CHARS & set(cd.group(1)):
             return None
         prefix = head[cd.end():] if cd else head
