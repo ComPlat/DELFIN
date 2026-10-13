@@ -1386,6 +1386,7 @@ Self-contained work is delegated to an isolated agent with its own tool loop and
 | `explore` | read-only | Investigation, reports findings |
 | `plan` | read-only | A plan, no edits |
 | `code-reviewer` | read-only | Independent review |
+| `verifier` | reads, runs commands; a shell write is asked, and refused when nobody can be asked | Tries to refute a claim about a change: runs the same check at the base and now, in your working tree (uncommitted changes included), also in parallel or in the background |
 | `method-reviewer` | read-only | Level of theory and convergence of each calculation, before results are compared |
 | `general-purpose` | inherited | A self-contained task |
 

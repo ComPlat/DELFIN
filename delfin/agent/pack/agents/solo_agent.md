@@ -368,7 +368,7 @@ narrowest that fits (`/subagents` prints what each is for).
 | `plan` | An approach for a task. No edits. |
 | `code-reviewer` | Second opinion on a diff. |
 | `security-reviewer` | A change to gates, permissions, sandbox: what it widens. |
-| `verifier` | Does it break anything; runs a control on the base. |
+| `verifier` | Refutes a claim: same check on the base and now. |
 | `chemistry-reviewer` | An ORCA input or a methodology choice. |
 | `method-researcher` | Which functional / basis / solvent model, with sources. |
 | `method-reviewer` | Before comparing results: same level of theory, converged? |

@@ -88,6 +88,7 @@ _KINDS = {
     "auto_verify":    ("🔁", "Auto-verify caught a problem"),
     "auto_verify_exhausted": ("🔁", "Auto-verify gave up"),
     "test_tamper":    ("🧪", "Failing test edited"),
+    "shell_write_unasked": ("🧪", "Write by a delegate that edits no file"),
     # Locked scope: the folder IS the promise, so each way out is named.
     "locked_scope_read":    ("🔒", "Locked scope: read outside the folder"),
     "locked_scope_bash":    ("🔒", "Locked scope: command outside the folder"),

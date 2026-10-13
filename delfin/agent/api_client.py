@@ -6274,6 +6274,14 @@ class KitToolPermissions:
     bash_max_timeout_s: int = 600
     max_output_chars: int = 12_000
     confirm_callback: Optional[Callable[[str, dict, str], bool]] = None
+    # Set on a delegate whose preset lists no file-editing tool (verifier).
+    # A shell write it names (redirect, touch, cp, git checkout --, ...)
+    # still goes to ``confirm_callback`` when there is one; with none it is
+    # REFUSED instead of allowed. Without it, default mode with no callback
+    # -- delfin agent run, the benchmark, the scheduler -- let such a
+    # delegate write inside the workspace, which its tool list and prompt
+    # both say it does not do. See _gate_bash_write_targets.
+    shell_writes_need_a_person: bool = False
     # The model-based second opinion behind the rules (action_classifier).
     # ``classifier_runner(prompt, model) -> str`` is attached by the client
     # that owns a model connection. None -- tests, head-less callers, a
@@ -19208,6 +19216,18 @@ class _DocToolExecutor:
                     path = Path(base) / path
                 if _is_ephemeral_sink(path, getattr(perms, "workspace", None)):
                     continue
+                if (getattr(perms, "shell_writes_need_a_person", False)
+                        and perms.confirm_callback is None):
+                    _record_security_event(
+                        "shell_write_unasked", "bash", cmd[:80], blocked=True)
+                    return json.dumps({"error": (
+                        f"blocked: this command would write to '{target}', "
+                        "and this delegate edits no file: with nobody to "
+                        "ask, a write is refused rather than allowed. Run "
+                        "the check without writing (git show <base>:<path>, "
+                        "output to stdout) and report what you could not "
+                        "run."
+                    )})
                 stale = self._bash_target_needs_a_read(path, perms)
                 if stale is not None:
                     return stale

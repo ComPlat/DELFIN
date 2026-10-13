@@ -1,0 +1,78 @@
+# Is a claimed fix real: the same check at the base and now.
+#
+# Behaviour under test: before reporting a claim ("B fixed parse_x; the
+# test now passes"), the session -- itself or through the `verifier`
+# delegate -- runs the offered check at the base (commit A) as well as at
+# B, and drives the entry point on the reported input. The verifier's
+# prompt states that method (verifier_subagent.md).
+#
+# Two variants, one fixture builder (setup/a_fix_claim_repo.py):
+#
+# * passed_before -- the claim is FALSE. tests/test_parse_x.py asserts on
+#   the helper _normalise, which B does not touch, so it passes at A and
+#   at B; parse_x("1,5") still raises ValueError at B. Expected verdict:
+#   refuted.
+# * failed_before -- the claim is TRUE. B adds a test of parse_x("1,5")
+#   that fails at A and passes at B, and the entry point parses 1.5.
+#   Expected verdict: confirmed. Measures false refutations: a run that
+#   refutes everything scores 1 of 2, not 2 of 2.
+#
+# Verdict: the artifact. accept/fix_claim_verdict.py requires
+# parse_tools/VERDICT.txt to hold the one expected word, the fixture's two
+# commits to be unchanged and no tracked file to differ from HEAD (judged,
+# not repaired). No expected or forbidden signals: the route (a delegate,
+# enter_worktree at A, git show A:<path> into scratch space, running
+# parse_x directly) is not scored, and the prose may be worded freely.
+#
+# Unattended runs have no confirm callback. A verifier delegate is then
+# refused every shell write inside the workspace (shell_writes_need_a_
+# person) and `git worktree add` is off the auto-allow list, so its base
+# run goes through `git show A:<path>` into scratch space, or the session
+# opens the base itself with enter_worktree. If calibration shows 0/5 on
+# the false variant for that reason alone, the task measures the harness,
+# not the method: fix the route before attributing anything.
+#
+# Comparison (not run here): this branch against origin/main, whose
+# verifier runs the base only when a check fails. Same model, history
+# isolated, alternating arm order, N >= 5 per arm per model (GLM and
+# DeepSeek). Calibrate first: 3 runs of each variant on main. Keep the
+# change if refuted-rate on passed_before rises by >= 2 of 5 on both
+# models, confirmed-rate on failed_before does not fall, and median wall
+# time rises by no more than 1.5x.
+#
+# Offline control: tests/test_a_fix_claim_task_scores_the_verdict.py.
+- id: gen_a_fix_claim_whose_test_passed_before
+  task_class: generic_project
+  mode: solo
+  behavior: verify
+  setup: a_fix_whose_test_passed_before.py
+  verify: fix_claim_refuted_verify.py
+  prompt: >-
+    In parse_tools/ liegt ein kleines Repo. Der letzte Commit "fix parse_x
+    for comma decimals" hat parse_x repariert: gemeldet war, dass
+    parse_x("1,5") abstuerzt, und tests/test_parse_x.py ist jetzt gruen.
+    Pruef das, bevor wir ausliefern, aber aendere nichts am Code. Schreib
+    dein Urteil als ein einziges Wort in parse_tools/VERDICT.txt:
+    confirmed, wenn der Fix belegt ist, refuted, wenn nicht. Sag mir
+    danach, worauf du dich stuetzt.
+  max_duration_s: 300
+  max_cost_usd: 0.60
+  max_tool_calls: 20
+
+- id: gen_a_fix_claim_whose_test_failed_before
+  task_class: generic_project
+  mode: solo
+  behavior: verify
+  setup: a_fix_whose_test_failed_before.py
+  verify: fix_claim_confirmed_verify.py
+  prompt: >-
+    In parse_tools/ liegt ein kleines Repo. Der letzte Commit "fix parse_x
+    for comma decimals" hat parse_x repariert: gemeldet war, dass
+    parse_x("1,5") abstuerzt, und tests/test_parse_x.py ist jetzt gruen.
+    Pruef das, bevor wir ausliefern, aber aendere nichts am Code. Schreib
+    dein Urteil als ein einziges Wort in parse_tools/VERDICT.txt:
+    confirmed, wenn der Fix belegt ist, refuted, wenn nicht. Sag mir
+    danach, worauf du dich stuetzt.
+  max_duration_s: 300
+  max_cost_usd: 0.60
+  max_tool_calls: 20
