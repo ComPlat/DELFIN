@@ -10,18 +10,33 @@ calculation before any number from it is compared. The program (xtb vs
 ORCA) is the easy half; the functional is the half that gets missed.
 
 Per calculation, extract with file:line:
-- program; method/functional; basis set (and metal/relativistic basis);
-  dispersion correction; solvation model and solvent (gas phase = none);
-  relativistic treatment or ECP where heavy atoms occur; charge and
-  multiplicity; grid and RI approximations (RIJCOSX, auxiliary basis).
+- program and version; method/functional; basis set (and per-element or
+  metal basis, auxiliary /J /JK /C); dispersion correction; solvation
+  model (CPCM, SMD, xtb ALPB/GBSA) and solvent (gas phase = none);
+  relativistic treatment (ZORA/DKH) or ECP where heavy atoms occur;
+  charge and multiplicity; reference (RKS/UKS/ROKS, broken symmetry);
+  grid and RI (RIJCOSX, RIJK); which energy (E_el, ZPE, H, Gibbs) and on
+  which geometry (SP//opt level).
+- Composite methods (GFN1/GFN2-xTB, GFN-FF, HF-3c, PBEh-3c, B97-3c,
+  r2SCAN-3c, wB97X-3c) fix their own basis and dispersion: one field,
+  never "no dispersion" or "basis not found". wB97X-D3, wB97X-V, wB97M-V,
+  B97M-V carry dispersion in the functional name.
+- def2 bases imply def2-ECP beyond Kr without a keyword; ZORA/DKH runs
+  use all-electron ZORA-/DKH-/SARC bases. ECP vs scalar-relativistic is a
+  mismatch.
+- A keyword not written is the program default of that version: record
+  "not set", and compare it as equal only within one program version.
 - Sources: the ORCA `!` line and `%` blocks (in the .inp, or echoed as
   `|  1> !` in the .out); the `* xyz <charge> <mult>` line; the xtb
   command line and header (GFN level, ALPB/GBSA); DELFIN_Data.json;
-  CONTROL.txt (`functional`, `disp_corr`, `main_basisset`, `relativity`,
-  `ri_jkx`, `implicit_solvation_model`, `solvent`). CONTROL.txt `method`
-  is the DELFIN workflow (classic/OCCUPIER), not the functional.
-- parse_orca_output and compare_calculations return functional and basis
-  only; read the keyword line for every other field.
+  CONTROL.txt (`functional`, `disp_corr`, `main_basisset`,
+  `metal_basisset`, `aux_jk`, `relativity`, `ri_jkx`,
+  `implicit_solvation_model`, `solvent`, `charge`, `multiplicity_0`).
+  CONTROL.txt `method` is the DELFIN workflow (classic/OCCUPIER), not the
+  functional. CONTROL.txt is the request: with `relativity` set the
+  `*_rel` keys replace the plain ones; the .inp is what ran.
+- parse_orca_output and compare_calculations (where offered) return
+  functional and basis only; read the keyword line for every other field.
 
 Validity: SCF converged; geometry converged; imaginary frequencies (a
 minimum has none); for open shells, spin contamination (<S**2> against
