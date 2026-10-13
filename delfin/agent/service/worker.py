@@ -790,20 +790,12 @@ def open_real_session(args: argparse.Namespace, workspace: Path):
             "This folder needs a yes/no before an agent may start here:\n"
             + report.render())
     os.chdir(workspace)
-    ns.extra_dirs = [str(p) for p in report.granted_dirs]
-    ns.read_only_dirs = [str(p) for p in report.read_dirs]
+    # cmd_chat's own steps, by its own helpers: the grants launch_guard
+    # accepted, then the isolation flags (with the line that says so).
+    _cli._apply_launch_grants(ns, report)
     said = io.StringIO()
     with contextlib.redirect_stderr(said):
-        isolation_note = ""
-        if getattr(ns, "no_isolate", False):
-            from ..api_client import set_bash_isolation_override
-            set_bash_isolation_override("off")
-            isolation_note = ("isolation  OFF by request (--no-isolate) — a "
-                              "command the agent runs can write outside the "
-                              "workspace")
-        elif getattr(ns, "isolate", False):
-            from ..api_client import set_bash_isolation_override
-            set_bash_isolation_override("bwrap")
+        isolation_note = _cli._apply_isolation_flags(ns)
         try:
             engine = _cli._build_engine(ns)
         except SystemExit as exc:
