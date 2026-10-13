@@ -614,3 +614,224 @@ def test_git_role_outside_a_repository_says_so(tmp_path):
     plain.mkdir()
     out = rc.dispatch("/git role maintainer", rc.ReplContext(workspace=plain)).output
     assert "not inside a git repository" in out, out
+
+
+# ---------------------------------------------------------------------------
+# The role is read before the command runs
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("before", [
+    "git remote set-url origin https://github.com/me/beta",
+    "git remote add up https://github.com/me/beta",
+    "git config remote.origin.pushurl https://github.com/me/beta",
+    "git config url.https://github.com/me/beta.pushInsteadOf "
+    "git@github.com:me/alpha.git",
+    "git config core.hooksPath h",
+    "git config user.name x",
+    "git -c core.hooksPath=h commit -qm x",
+    "git -C . commit -qm x",
+    "python3 retarget.py",
+    "git fetch --set-upstream https://github.com/me/beta main",
+    "git commit -qm \"$(git remote set-url origin https://github.com/me/beta)\"",
+    "(git status)",
+])
+@pytest.mark.parametrize("sep", [" && ", "; ", "\n"])
+def test_an_earlier_step_that_may_move_the_push_is_contributor(
+        repos, before, sep):
+    """The push URL is read before the line runs; an earlier step that is
+    not one of the few that keep it leaves the push unresolved."""
+    _settings(git_role="contributor", git_roles={A_KEY: "maintainer"})
+    cmd = before + sep + "git push origin main"
+    err = _gate(_perms(repos["alpha"]), cmd)
+    assert _refused_as_contributor(err), (cmd, err)
+
+
+@pytest.mark.parametrize("cmd", [
+    "git add f.txt && git commit -qm 'x; y' && git push origin main",
+    "cd . && git add -A && git status && git push origin main",
+    "git fetch origin && git pull --ff-only origin main && "
+    "git log -1 --oneline && git push origin main",
+    "git add f.txt\ngit commit -qm x\ngit push origin main",
+])
+def test_the_usual_steps_before_a_push_keep_the_role(repos, cmd):
+    _settings(git_role="contributor", git_roles={A_KEY: "maintainer"})
+    assert _gate(_perms(repos["alpha"]), cmd) is None, cmd
+
+
+def test_an_earlier_step_before_a_merge_is_contributor(repos, pr_view):
+    _settings(git_roles={A_KEY: "maintainer"})
+    pr_view(_green())
+    err = _gate(_perms(repos["alpha"]),
+                "git remote set-url origin https://github.com/me/beta && "
+                f"gh pr merge 12 --squash --match-head-commit {SHA}")
+    assert err and "maintainer's decision" in err, err
+
+
+@pytest.mark.parametrize("key", [
+    "branch.main.pushRemote", "remote.pushDefault", "branch.main.remote"])
+def test_a_push_naming_no_remote_follows_the_configured_push_remote(
+        repos, key):
+    """``git push`` with no remote goes where branch.<b>.pushRemote,
+    remote.pushDefault or branch.<b>.remote says, which may be a URL."""
+    _git("config", key, B_URL, cwd=repos["alpha"], env=repos["env"])
+    _settings(git_role="contributor", git_roles={A_KEY: "maintainer"})
+    err = _gate(_perms(repos["alpha"]), "git push")
+    assert _refused_as_contributor(err), (key, err)
+    assert _gate(_perms(repos["alpha"]), "git push origin main") is None
+
+
+@pytest.mark.parametrize("cmd", [
+    "git config core.hooksPath h",
+    "git config --local core.hookspath /tmp/h",
+    "git config set core.hooksPath h",
+    "git config --global core.fsmonitor ./m.sh",
+])
+@pytest.mark.parametrize("mode", ["default", "acceptEdits", "bypassPermissions"])
+def test_a_hook_path_write_is_asked_in_every_mode(repos, cmd, mode):
+    """A hook directory or fsmonitor program set now runs from the next
+    auto-allowed ``git commit``/``git status``: asked as a git
+    configuration change, refused with nobody to ask."""
+    perms = _perms(repos["alpha"], mode=mode, grant=False, answer=False)
+    err = _gate(perms, cmd)
+    assert perms.asked and "GIT CONFIGURATION" in str(perms.asked[0]), (
+        cmd, mode, perms.asked)
+    assert err, (cmd, mode)
+    headless = _perms(repos["alpha"], mode=mode, grant=False)
+    err = _gate(headless, cmd)
+    assert err and "git configuration" in err.lower(), (cmd, mode, err)
+
+
+@pytest.mark.parametrize("cmd", [
+    "git config --get core.hooksPath", "git config -l", "git config user.name"])
+def test_reading_the_configuration_is_not_asked_as_a_hook_write(repos, cmd):
+    perms = _perms(repos["alpha"], grant=False, answer=True)
+    assert _gate(perms, cmd) is None
+    assert not perms.asked, (cmd, perms.asked)
+
+
+# ---------------------------------------------------------------------------
+# A host that is not ASCII
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("url", [
+    "https://gitlab.Kit.edu/me/x",      # KELVIN SIGN lower-cases to k
+    "git@gıthub.com:me/alpha.git",      # dotless i
+    "https://GİTHUB.com/me/alpha",
+    "https://ｇｉｔｈｕｂ.com/me/alpha",
+])
+def test_a_host_that_is_not_ascii_has_no_key(url):
+    from delfin.agent import git_role as GR
+    assert GR.normalise_remote(url) is None, url
+    assert GR.entry_key(url) is None, url
+
+
+def test_an_entry_with_a_non_ascii_host_counts_for_nothing(repos):
+    from delfin.agent import git_role as GR
+    assert GR.entry_key("gitlab.Kit.edu/me/x") is None
+
+
+# ---------------------------------------------------------------------------
+# A pull request with no checks
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("checks", [[], ["not a check"]])
+def test_a_merge_with_no_checks_asks_when_attended(repos, pr_view, checks):
+    _settings(git_roles={A_KEY: "maintainer"})
+    pr_view(_green(checks=checks))
+    perms = _perms(repos["alpha"], mode="default", answer=False)
+    err = _merge(perms)
+    assert perms.asked and "no checks" in str(perms.asked[-1]), perms.asked
+    assert err and err.startswith("blocked:"), err
+    perms = _perms(repos["alpha"], mode="default", answer=True)
+    assert _merge(perms) is None
+    assert perms.asked and "no checks" in str(perms.asked[-1])
+
+
+@pytest.mark.parametrize("mode", ["default", "bypassPermissions"])
+def test_a_merge_with_no_checks_is_refused_unattended(repos, pr_view, mode):
+    _settings(git_roles={A_KEY: "maintainer"})
+    pr_view(_green(checks=[]))
+    perms = _perms(repos["alpha"], mode=mode)
+    if mode == "bypassPermissions":
+        perms.confirm_callback = lambda *a, **k: True
+    err = _merge(perms)
+    assert err and "no checks" in err and err.startswith("blocked:"), err
+
+
+# ---------------------------------------------------------------------------
+# A resumed session keeps the route
+# ---------------------------------------------------------------------------
+
+def test_a_resumed_session_keeps_the_pr_route(repos, tmp_path, monkeypatch):
+    import types
+    from delfin.agent import cli as agent_cli
+    from delfin.agent import session_store as S
+    from delfin.agent.engine import AgentEngine
+
+    def _engine(perms):
+        eng = AgentEngine.__new__(AgentEngine)
+        eng.mode = "solo"
+        eng.route = ["solo_agent"]
+        eng.current_role_index = 0
+        eng.role_outputs = {}
+        eng.compaction_summaries = {}
+        eng.messages = []
+        eng.token_usage = {"input": 0, "output": 0}
+        eng.cost_usd = 0.0
+        eng.session_id = "pr-route-rt-1"
+        for spec in AgentEngine._SESSION_FIELDS:
+            setattr(eng, spec.attr, spec.reset())
+        eng.client = types.SimpleNamespace(_permissions=perms)
+        return eng
+
+    monkeypatch.setattr(S, "_SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(AgentEngine, "_sync_task_session", lambda self: None)
+    _settings(git_role="maintainer")
+    perms = _perms(repos["alpha"], grant=False)
+    _typed(perms, "über PR bitte")
+    assert perms.pr_route_repos == {A_KEY}
+    sid = agent_cli._save_session(_engine(perms), tmp_path)
+
+    fresh = _perms(repos["alpha"], grant=False)
+    resumed = _engine(fresh)
+    agent_cli._resume_or_create(resumed, types.SimpleNamespace(
+        session=sid, mode="solo", verbose=False, cwd=str(tmp_path)))
+    assert fresh.pr_route_repos == {A_KEY}
+    _typed(fresh, "jetzt push es")
+    err = _gate(fresh, "git push origin main")
+    assert err and "pull request" in err, err
+
+
+# ---------------------------------------------------------------------------
+# The route matcher
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("phrase", [
+    "über einen PR", "mach einen PR", "lieber per PR",
+    "bitte nicht direkt pushen", "open a pull request instead",
+    "go through a PR", "erstell bitte einen PR dafür",
+])
+def test_the_route_is_read_in_its_common_phrasings(repos, phrase):
+    perms = _perms(repos["alpha"], grant=False)
+    _typed(perms, phrase)
+    assert perms.pr_route_repos == {A_KEY}, phrase
+
+
+@pytest.mark.parametrize("phrase", [
+    "nicht über PR", "kein PR nötig, direkt auf main", "mach keinen PR",
+    "no PR needed, push to main", "don't open a PR", "without a pull request",
+])
+def test_a_declined_pr_does_not_set_the_route(repos, phrase):
+    perms = _perms(repos["alpha"], grant=False)
+    _typed(perms, phrase)
+    assert perms.pr_route_repos == set(), phrase
+
+
+def test_kein_pr_noetig_lifts_the_route_only_as_a_typed_message(repos):
+    _settings(git_role="maintainer")
+    perms = _perms(repos["alpha"], grant=False)
+    _typed(perms, "über PR bitte")
+    _harness(perms, "kein PR nötig, direkt auf main")
+    assert perms.pr_route_repos == {A_KEY}
+    _typed(perms, "kein PR nötig, direkt auf main")
+    assert perms.pr_route_repos == set()
