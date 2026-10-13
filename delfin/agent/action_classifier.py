@@ -30,9 +30,17 @@ from . import untrusted as _ut
 
 __all__ = [
     "Verdict", "DEFAULT_MODEL", "judge", "screen", "should_classify",
-    "is_plain_read",
+    "is_plain_read", "AGENT_SESSION_ENV",
     "apply_user_rules", "_injection_flag_kind",
 ]
+
+# Set in the environment of every process an agent session starts
+# (api_client._scrubbed_bash_env); the value is the session's process id,
+# for the record only. In such a process DELFIN_CLASSIFIER=off is ignored:
+# an agent must not switch its own watcher off by starting a nested
+# DELFIN with that variable. The same name as the approval guard's marker,
+# so both checks read one variable.
+AGENT_SESSION_ENV = "DELFIN_AGENT_SESSION"
 
 # The settings default. Fast cold and warm, no hidden reasoning tokens: a
 # check in front of an action must not take minutes (glm cold-starts are
@@ -578,10 +586,10 @@ def judge(action: dict, context: dict, *, model: str = DEFAULT_MODEL,
                 a real model).
     ``rules``   user free-text rules (always/never allow).
     ``default_on_error``  verdict when the runner raises or times out: the
-                wiring passes "ask" (the Bypass high-risk class with a
-                reachable human), "refuse" (that class with nobody to
-                ask), or "allow" (everything else: the rule result
-                stands; the classifier never removes an existing allow).
+                wiring passes "ask" (an action that leaves the workspace,
+                with a reachable human), "refuse" (such an action with
+                nobody to ask), or "allow" (workspace work: the rule
+                result stands). See api_client._leaves_workspace.
     """
     screened = screen(action, context, rules)
     if screened is not None:

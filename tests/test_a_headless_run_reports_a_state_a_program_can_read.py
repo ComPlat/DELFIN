@@ -27,9 +27,19 @@ from pathlib import Path
 
 import pytest
 
+from delfin.agent import api_client as _A
 from delfin.agent import cli as agent_cli
 from delfin.agent import mcp_client as M
 from delfin.agent import turn_outcome as TO
+
+
+@pytest.fixture(autouse=True)
+def _uncaged(monkeypatch):
+    """The refusal and approval events are driven by an off-list command;
+    where the cage holds it, it runs unasked (_caged_command_may_run_unasked)
+    and the verdict would depend on the host."""
+    monkeypatch.setattr(_A, "_caged_command_may_run_unasked",
+                        lambda *a, **k: False)
 
 
 # --- scripted OpenAI-compatible stream -------------------------------------

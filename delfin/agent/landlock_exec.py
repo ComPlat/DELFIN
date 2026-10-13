@@ -20,8 +20,11 @@ instead of running it unconfined.
     python -I landlock_exec.py --write DIR ... --hide PATH ... \
         [--tmpdir DIR] [--allow-socket DIR ...] [--strict 1] [--fs 0] \
         [--net open|proxy|none] [--proxy-socket PATH] [--allow-tcp IP:PORT ...] \
-        [--deny-socket DIR ...] \
+        [--deny-socket DIR ...] [--read-only PATH ...] [--read DIR ...] \
         -- /bin/bash -c CMD
+
+``--read`` (any number) confines reading to beneath those directories and
+the write roots; without it the command reads everywhere except ``--hide``.
 
 Unix sockets are guarded too (``socket_guard``): the command reaches them
 only beneath the write roots, the private temp directory and the cluster's
@@ -162,12 +165,19 @@ def _grant_except(ruleset_fd: int, directory: str, hidden: list[str],
             continue
 
 
-def apply(write: list[str], hide: list[str], read_only: list[str] = ()) -> None:
+def apply(write: list[str], hide: list[str], read_only: list[str] = (),
+          read: list[str] | None = None) -> None:
     """Restrict this process. Raises ``_Refused`` when it cannot.
 
     ``read_only`` paths stay readable (from the top-level read grant) but are
     carved out of every write grant, so a directory inside a write root can
-    be readable and executable without being writable -- git's ``hooks``."""
+    be readable and executable without being writable -- git's ``hooks``.
+
+    ``read``: None reads everywhere except ``hide``. A list confines
+    reading to beneath those paths and the write paths (``hide`` still
+    carved out); a path outside them answers EACCES. Execution is not
+    handled, so a program anywhere still starts if its loader and
+    libraries are beneath a read path."""
     abi = abi_version()
     if abi < 1:
         raise _Refused("Landlock is not available on this kernel")
@@ -184,7 +194,16 @@ def apply(write: list[str], hide: list[str], read_only: list[str] = ()) -> None:
     try:
         hidden = sorted({os.path.realpath(h) for h in hide if h})
         no_write = sorted(set(hidden) | {os.path.realpath(r) for r in read_only if r})
-        _grant_except(ruleset_fd, "/", hidden, _READ, list_dirs=True)
+        if read is None:
+            _grant_except(ruleset_fd, "/", hidden, _READ, list_dirs=True)
+        else:
+            seen: set[str] = set()
+            for path in list(read) + list(write):
+                rp = os.path.realpath(path) if path else ""
+                if rp and rp not in seen:
+                    seen.add(rp)
+                    _grant_except(ruleset_fd, rp, hidden, _READ,
+                                  list_dirs=True)
         # Write roots get the write rights only; reading comes from the
         # walk above, so a hidden path inside a workspace stays hidden,
         # and it is not writable either. A read_only path is skipped by the
@@ -282,7 +301,8 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
                  net_mode: str = "open", proxy_socket: str = "",
                  allow_tcp: list[str] | None = None,
                  deny_socket: list[str] | None = None,
-                 read_only: list[str] | None = None) -> int:
+                 read_only: list[str] | None = None,
+                 read: list[str] | None = None) -> int:
     """Apply the filesystem policy (unless ``use_fs`` is off, inside
     bubblewrap), the socket guard and the network mode, and run the command.
 
@@ -323,7 +343,7 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
             return 126
         try:
             if use_fs:
-                apply(write, hide, read_only or [])
+                apply(write, hide, read_only or [], read)
             elif _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
                 raise _Refused("prctl(PR_SET_NO_NEW_PRIVS) failed")
         except _Refused as exc:
@@ -357,7 +377,7 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
             if forwarder is not None:
                 forwarder.server.close()
             if use_fs:
-                apply(write, hide, read_only or [])
+                apply(write, hide, read_only or [], read)
             elif _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
                 raise _Refused("prctl(PR_SET_NO_NEW_PRIVS) failed")
             listener = sg.install_filter(block_inet_datagrams=restricted)
@@ -407,6 +427,7 @@ def main(argv: list[str]) -> int:
     allow_tcp: list[str] = []
     deny_socket: list[str] = []
     read_only: list[str] = []
+    read: list[str] | None = None
     strict = False
     use_fs = True
     net_mode = "open"
@@ -430,6 +451,8 @@ def main(argv: list[str]) -> int:
             deny_socket.append(value)
         elif flag == "--read-only":
             read_only.append(value)
+        elif flag == "--read":
+            read = (read or []) + [value]
         elif flag == "--strict":
             strict = value == "1"
         elif flag == "--fs":
@@ -459,7 +482,8 @@ def main(argv: list[str]) -> int:
     return _run_guarded(write, hide, sg_defaults + roots + allow_socket,
                         command, strict, use_fs=use_fs, net_mode=net_mode,
                         proxy_socket=proxy_socket, allow_tcp=allow_tcp,
-                        deny_socket=deny_socket, read_only=read_only)
+                        deny_socket=deny_socket, read_only=read_only,
+                        read=read)
 
 
 if __name__ == "__main__":
