@@ -1010,10 +1010,10 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
 
     monkeypatch.setattr(_user_settings, "get_settings_path", _settings_path)
 
-    # The approval-code directory: beside tmp_path, as the product's
-    # default (the per-user runtime directory) lies beside every workspace,
-    # not in one. A test that moved Path.home gets ~/.delfin's, never the
-    # real runtime directory the unredirected resolver would pick.
+    # The approval-code directory: beside tmp_path, as ~/.delfin lies
+    # beside a workspace in real use, not in it (the generic redirect above
+    # puts it under tmp_path, and a Landlock cage keeps no hide inside a
+    # write root). A test that moved Path.home gets that home's.
     # tests/test_a_hidden_code_dir_keeps_its_root_writable.py puts it
     # inside a workspace on purpose.
     from delfin.agent import approval_code as _approval_code

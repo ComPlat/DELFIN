@@ -392,15 +392,9 @@ def show_code_on_terminal(request_id: str, code: str) -> None:
             return
         except OSError:
             pass
-        written = _code.write_code_file(request_id, code)
-        if written is not None:
-            # A runtime directory is this machine's: say which one.
-            root = _code.runtime_root()
-            where = (f" on {_hostname()}" if root is not None
-                     and root in written.parents else "")
+        if _code.write_code_file(request_id, code) is not None:
             note = ("no terminal to show its code on; answer it from your "
-                    f"shell{where}: delfin-agent approvals approve|deny "
-                    f"{request_id}")
+                    f"shell: delfin-agent approvals approve|deny {request_id}")
         else:
             note = ("no terminal and no code file, so it cannot be answered "
                     "from outside and will time out")

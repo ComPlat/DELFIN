@@ -38,11 +38,10 @@ isolation a same-account program can read that file: for this case the
 protection is the read gates, the same trust level as an unsigned answer
 file had before the code existed.
 
-``codes_dir()`` is the per-user runtime directory where one exists
-(``$XDG_RUNTIME_DIR`` or ``/run/user/<uid>``, 0700, outside every
-workspace), else ``~/.delfin/approval_codes`` (and always that inside a
-batch job, whose node is not the person's). Readers look in both. Limit,
-measured on the Landlock path: Landlock cannot hide a path that lies
+``codes_dir()`` is ``~/.delfin/approval_codes``: on a shared home it is
+the same directory on every node, so a run on one login node is
+answerable from another. Limit, measured on the Landlock path: Landlock
+cannot hide a path that lies
 inside a root it grants for writing without refusing every new file at
 that root (it only grants, beneath a path), so where the code directory
 lies inside a writable root -- a granted ``~/.delfin``, a workspace that
@@ -145,94 +144,29 @@ def forget(request_id: str) -> None:
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
 
-#: Environment variables that mark a batch-scheduler job. Its node's
-#: runtime directory is not where the person runs ``approvals``.
-_BATCH_JOB_VARS = ("SLURM_JOB_ID", "PBS_JOBID", "LSB_JOBID", "JOB_ID",
-                   "FLUX_JOB_ID")
-#: The per-user runtime directory when ``XDG_RUNTIME_DIR`` is not set.
-_RUN_USER_FMT = "/run/user/{uid}"
-
-
-def _private_dir(path: str) -> Optional[Path]:
-    """*path* when it is a real directory (no symlink) of this uid with no
-    group/world bits, else None."""
-    if not path or not os.path.isabs(path):
-        return None
-    try:
-        info = os.lstat(path)
-    except OSError:
-        return None
-    if (not _stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-            or info.st_mode & 0o077):
-        return None
-    return Path(path)
-
-
-def runtime_root() -> Optional[Path]:
-    """The per-user runtime directory (a tmpfs, 0700, never a workspace),
-    or None: ``$XDG_RUNTIME_DIR``, else ``/run/user/<uid>``, each only
-    when :func:`_private_dir` accepts it. None inside a batch job
-    (:data:`_BATCH_JOB_VARS`): there the directory is the compute node's,
-    and the person answers from another node."""
-    if any(os.environ.get(v) for v in _BATCH_JOB_VARS):
-        return None
-    xdg = os.environ.get("XDG_RUNTIME_DIR", "").strip()
-    for candidate in (xdg, _RUN_USER_FMT.format(uid=os.getuid())):
-        found = _private_dir(candidate)
-        if found is not None:
-            return found
-    return None
-
-
 def home_codes_dir() -> Path:
-    """``~/.delfin/approval_codes``: the location without a runtime
-    directory, and the one every reader also looks in."""
+    """``~/.delfin/approval_codes``, never redirected: the canonical location,
+    which the cages treat as the code directory too."""
     return Path.home() / ".delfin" / "approval_codes"
 
 
-def _default_codes_dir() -> Path:
-    root = runtime_root()
-    if root is not None:
-        return root / "delfin" / "approval_codes"
-    return home_codes_dir()
-
-
 def codes_dir() -> Path:
-    """Where this process writes code files. Resolved per call (tests move
-    HOME); redirected as a user-state sink (``state_paths``).
+    """``~/.delfin/approval_codes``. Resolved per call (tests move HOME);
+    redirected as a user-state sink (``state_paths``).
 
-    ``<runtime_root()>/delfin/approval_codes`` where a private runtime
-    directory exists, else ``~/.delfin/approval_codes``. The runtime
-    directory first because it lies under no plausible write root: a
-    Landlock cage cannot hide a path inside a root it grants for writing
-    without taking that root's new-file rights away
-    (``api_client._landlock_hide_paths``), so a code directory inside a
-    granted ``~/.delfin`` or a workspace holding ``$HOME`` is masked by
-    bubblewrap and Seatbelt but not by Landlock. Rejected: the runtime
-    directory everywhere (a batch job's node is not the person's), and a
-    fixed ``~/.delfin`` location (granted roots reach it).
+    One location on the shared home, so a run on one login node is answered
+    from another. Rejected: the per-user runtime directory
+    (``$XDG_RUNTIME_DIR``, ``/run/user/<uid>``). It lies under no write
+    root, so Landlock could always hide it, but it is local to one node and
+    a person on another login node could no longer approve the run.
 
     A deny-read location for every agent route: the path deny globs
     (read_file, grep/glob, the bash read scan, cli_gate), the command-text
     gate (``approval_guard``), and the cages (``sandbox._HOME_SECRET_DIRS``
-    and ``sandbox.runtime_masked_dirs``: a bubblewrap tmpfs, a
-    Landlock/Seatbelt hide)."""
-    return _default_codes_dir()
-
-
-def _read_dirs() -> list[Path]:
-    """Where a code file may be: :func:`codes_dir`, and ``~/.delfin``'s
-    when the writer may have had no runtime directory (another session,
-    a batch job). Only for the unredirected location: a redirected one
-    (tests, a benchmark attempt) is the only place."""
-    first = codes_dir()
-    out = [first]
-    root = runtime_root()
-    if root is not None and first == root / "delfin" / "approval_codes":
-        fallback = home_codes_dir()
-        if fallback != first:
-            out.append(fallback)
-    return out
+    and ``sandbox.runtime_masked_dirs``: a bubblewrap tmpfs, a Seatbelt
+    hide, a Landlock hide unless a write root contains it, see
+    ``api_client._landlock_hide_paths``)."""
+    return home_codes_dir()
 
 
 def ensure_codes_dir() -> Optional[Path]:
@@ -273,22 +207,17 @@ def write_code_file(request_id: str, code: str) -> Optional[Path]:
 def read_code_file(request_id: str) -> str:
     """The code in *request_id*'s file, normalised, or "". Only a regular
     file of this uid, not group/world-accessible, is read."""
-    rid = str(request_id or "")
-    if not _ID_RE.match(rid):
+    path = _code_path(request_id)
+    if path is None:
         return ""
-    for d in _read_dirs():
-        path = d / f"{rid}.code"
-        try:
-            info = path.lstat()
-            if (not _stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_mode & 0o077):
-                continue
-            code = normalize(path.read_text(encoding="ascii", errors="ignore"))
-        except OSError:
-            continue
-        if code:
-            return code
-    return ""
+    try:
+        info = path.lstat()
+        if (not _stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077):
+            return ""
+        return normalize(path.read_text(encoding="ascii", errors="ignore"))
+    except OSError:
+        return ""
 
 
 def remove_code_file(request_id: str) -> None:
@@ -391,6 +320,6 @@ def spent(request_id: str) -> bool:
 __all__ = ["ALPHABET", "LENGTH", "MAX_WRONG", "OK", "WRONG", "issue",
            "exempt", "code_for", "forget", "normalize", "display",
            "detail_of", "proof", "sign", "required", "check", "note_wrong",
-           "spent", "runtime_root", "home_codes_dir", "codes_dir",
+           "spent", "home_codes_dir", "codes_dir",
            "ensure_codes_dir", "write_code_file",
            "read_code_file", "remove_code_file"]

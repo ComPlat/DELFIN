@@ -24694,9 +24694,9 @@ def _landlock_hide_paths(write_roots) -> list[str]:
     ``~/.delfin/approval_codes``) inside a write root that cost is not
     paid: the hide is dropped for this run, and the read gates (path deny
     globs, the bash read scan, ``approval_guard``) protect the 0600,
-    short-lived code file there. ``approval_code.codes_dir`` keeps it
-    outside every plausible root where a runtime directory exists. The
-    credential locations keep their behaviour (hidden, at that cost)."""
+    short-lived code file there. That happens only for a granted
+    ``~/.delfin`` or a workspace holding ``$HOME``. The credential
+    locations keep their behaviour (hidden, at that cost)."""
     hides = _home_secret_paths()
     soft: set[str] = set()
     try:
