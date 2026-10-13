@@ -171,6 +171,9 @@ def _cage(monkeypatch, kind: str) -> None:
     monkeypatch.setattr(A, "_bash_isolation_decision",
                         lambda perms, mode=None: (kind, "auto"))
     monkeypatch.setattr(A, "_process_cage_enabled", lambda: kind == "bwrap")
+    # Read confinement (Landlock) is part of "the cage holds it"; pinned
+    # so the gate-level tables do not depend on this host's kernel.
+    monkeypatch.setattr(A, "_landlock_functional", lambda: kind == "bwrap")
 
 
 def _gate(ws: Path, cmd: str, mode: str, attended: bool):
@@ -253,6 +256,20 @@ def test_control_without_isolation_nothing_changes(cmd, attended, ws,
         assert asked == [] and "not on the auto-allow list" in verdict
 
 
+@pytest.mark.parametrize("attended", [True, False])
+@pytest.mark.parametrize("cmd", HARMLESS)
+def test_control_without_landlock_read_support_asks(cmd, attended, ws,
+                                                    monkeypatch):
+    """bubblewrap works but Landlock does not: reads could not be
+    confined, so the harmless table is handled exactly as before."""
+    _cage(monkeypatch, "none")
+    before = _gate(ws, cmd, "default", attended)
+    _cage(monkeypatch, "bwrap")
+    monkeypatch.setattr(A, "_landlock_functional", lambda: False)
+    after = _gate(ws, cmd, "default", attended)
+    assert after == before and after[2] == []
+
+
 @pytest.mark.parametrize("kind", ["landlock", "seatbelt", "refuse"])
 def test_only_bubblewrap_admits(kind, ws, monkeypatch):
     """Landlock cannot carve the protected files out of a writable root,
@@ -332,6 +349,15 @@ def test_an_admitted_command_is_built_with_the_overlay(tool, ws, monkeypatch):
 
 # -- through the real executor, where bubblewrap works ----------------------
 
+@pytest.fixture
+def landlock_host():
+    """The rule needs Landlock for read confinement; on a kernel without
+    it the command is asked about (test_without_landlock_... and the
+    gate-level control cover that host)."""
+    if not A._landlock_functional():
+        pytest.skip("no Landlock ABI on this kernel: the caged rule does "
+                    "not admit here")
+
 def _run(ws: Path, cmd: str, mode: str = "default",
          attended: bool = False) -> dict:
     asked: list[str] = []
@@ -352,7 +378,7 @@ def _run(ws: Path, cmd: str, mode: str = "default",
 @pytest.mark.parametrize("mode", ["default", "acceptEdits"])
 @pytest.mark.parametrize("cmd", HARMLESS)
 def test_a_harmless_command_runs_through_the_executor(cmd, mode, attended,
-                                                      ws):
+                                                      ws, landlock_host):
     """The command dialog is gone. The executor's own path gates still
     run after it: in default mode a named write target is asked about
     ('bash -> out.txt'), and a shell overwrite needs a prior read -- both
@@ -367,11 +393,33 @@ def test_a_harmless_command_runs_through_the_executor(cmd, mode, attended,
 
 
 @requires_a_working_sandbox
-def test_what_the_caged_command_computes_comes_back(ws):
+def test_what_the_caged_command_computes_comes_back(ws, landlock_host):
     out = _run(ws, 'python3 -c "import os; print(os.getcwd())"')
     assert str(ws.resolve()) in json.dumps(out)
     out = _run(ws, 'python3 -c "open(\'out.txt\',\'w\').write(\'x\')"')
     assert (ws / "out.txt").read_text() == "x"
+
+
+@requires_a_working_sandbox
+@pytest.mark.parametrize("tool,cmd,expect", [
+    ("python3", 'python3 -c "import os, sqlite3, decimal, json; '
+                'print(os.path.basename(os.getcwd()))"', "ws"),
+    ("python3", 'python3 -c "import os, importlib.util as u; '
+                'print(u.find_spec(\'pytest\') is not None)"', "True"),
+    ("gcc", "gcc hello.c -o hello && ./hello", "hi"),
+    ("make", "make", "made"),
+    ("python3", "python3 run_analysis.py && ./run.sh", "ran"),
+])
+def test_common_work_still_runs_under_read_confinement(tool, cmd, expect,
+                                                       ws, landlock_host):
+    """Reads confined to the roots plus system, toolchain and environment
+    paths: site-packages, system headers, the compiler's /tmp files."""
+    import shutil
+    if not shutil.which(tool):
+        pytest.skip(f"{tool} is not installed here")
+    out = _run(ws, cmd, "acceptEdits")
+    assert str(out.get("exit_code")) == "0", out
+    assert expect in out.get("stdout", ""), out
 
 
 @requires_a_working_sandbox
@@ -381,8 +429,57 @@ def test_the_caged_command_cannot_write_outside_the_workspace(ws, tmp_path):
     assert not target.exists()
 
 
+@pytest.fixture
+def elsewhere():
+    """A directory outside the workspace roots and outside /tmp (the cage
+    gives /tmp a fresh tmpfs, which would hide it for the wrong reason),
+    standing in for another user's directory."""
+    import shutil
+    import tempfile
+    base = "/var/tmp" if os.access("/var/tmp", os.W_OK) else None
+    if base is None:
+        pytest.skip("no writable directory outside /tmp on this host")
+    d = Path(tempfile.mkdtemp(prefix="caged-read-", dir=base))
+    (d / "notes.txt").write_text("private\n")
+    try:
+        yield d
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 @requires_a_working_sandbox
-def test_the_caged_command_cannot_rewrite_protected_files(ws):
+def test_the_caged_command_cannot_read_outside_the_roots(ws, elsewhere,
+                                                         landlock_host):
+    """The path is assembled at run time, so the read-path gate cannot see
+    it; Landlock inside the cage answers instead."""
+    head, tail = str(elsewhere)[:9], str(elsewhere)[9:]
+    (ws / "r.sh").write_text(
+        f'a="{head}"; b="{tail}"\n'
+        'cat "$a$b/notes.txt" && echo READ-OK || echo READ-REFUSED\n')
+    out = _run(ws, "bash r.sh")
+    assert "error" not in out, out
+    text = json.dumps(out)
+    assert "private" not in text and "READ-REFUSED" in text
+    assert "Permission denied" in text or "No such file" in text
+    # Control: the same script in the ordinary cage (bypass profile, no
+    # read confinement) reads the file -- the refusal above is Landlock's.
+    perms = KitToolPermissions(mode="bypassPermissions", workspace=str(ws))
+    raw = _doc_executor.execute("bash", {"command": "bash r.sh"}, perms)
+    assert "private" in raw and "READ-OK" in raw
+
+
+@requires_a_working_sandbox
+def test_without_landlock_the_command_is_asked_about(ws, monkeypatch):
+    """Read confinement cannot be applied: no admission, the old answer."""
+    monkeypatch.setattr(A, "_landlock_functional", lambda: False)
+    out = _run(ws, "make")
+    assert "not on the auto-allow list" in out.get("error", "")
+    out = _run(ws, "make", attended=True)
+    assert out["_asked"] and out["_asked"][0].startswith("$ make")
+
+
+@requires_a_working_sandbox
+def test_the_caged_command_cannot_rewrite_protected_files(ws, landlock_host):
     """git metadata, the agent's settings and CI configuration are
     read-only for a command nobody approved."""
     subprocess.run(["git", "init", "-q", str(ws)], check=True,
