@@ -40,6 +40,7 @@ import json
 import os
 import re
 import stat
+import unicodedata
 from pathlib import Path
 
 __all__ = ["export_bundle", "import_bundle"]
@@ -47,6 +48,24 @@ __all__ = ["export_bundle", "import_bundle"]
 #: An import reads at most this many bytes; larger bundles are refused.
 DEFAULT_MAX_BUNDLE_BYTES = 1_048_576  # 1 MiB
 _MAX_BUNDLE_BYTES = DEFAULT_MAX_BUNDLE_BYTES
+
+
+def _check_name(name: str, action: str) -> str:
+    """The name, or ValueError when no skill could carry it.
+
+    The rule is ``skills._SKILL_NAME_RE``, the one discover_skills applies:
+    a proposal under any other name is accepted into a folder that is
+    never loaded, and a name with a zero-width character reads as the
+    user's own skill in the review panel. It also excludes path
+    separators, a leading dot or underscore, NUL and over-long names.
+    """
+    from .skills import _SKILL_NAME_RE
+    # fullmatch: "$" in the pattern also matches before a final newline
+    if not isinstance(name, str) or not _SKILL_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"invalid skill name for {action}: {str(name)[:80]!r} (a letter, "
+            "then up to 63 letters, digits, '-' or '_')")
+    return name
 
 
 def _skills_root() -> Path:
@@ -109,6 +128,30 @@ def _machine_ref_snippets(text: str) -> list[tuple[int, str, str]]:
     return hits
 
 
+def _control_char_findings(text: str, field: str) -> list[str]:
+    """One finding per line that carries a control character other than
+    tab and newline.
+
+    ESC (terminal escape sequences, e.g. ``ESC[8m`` conceals what follows),
+    a bare CR and backspace make a terminal hide or overwrite part of the
+    line, so the reviewer would accept text they did not see. Format
+    characters (zero-width, bidi) are already folded by skill_safety's
+    prose rules; this covers category Cc, which nothing else does. A
+    skill read from disk never carries CR here: ``read_text`` turns CRLF
+    into LF. Rejected: stripping the characters -- the hash covers the
+    original, and nothing is rewritten silently.
+    """
+    out: list[str] = []
+    for i, line in enumerate(text.split("\n"), start=1):
+        bad = sorted({f"U+{ord(ch):04X}" for ch in line
+                      if ch != "\t" and unicodedata.category(ch) == "Cc"})
+        if bad:
+            out.append(f"control character {', '.join(bad)} on line {i} "
+                       f"of field {field!r}: a terminal would hide or "
+                       "overwrite part of what the reviewer reads")
+    return out
+
+
 def _export_scrub(text: str, field: str = "text") -> str:
     """Return a blocking reason naming the offending line, or "" when clean.
 
@@ -117,7 +160,7 @@ def _export_scrub(text: str, field: str = "text") -> str:
     / job id). ``field`` is the bundle field being scanned, so a hit names
     where the machine identity sits. Nothing is rewritten.
     """
-    reasons: list[str] = []
+    reasons: list[str] = list(_control_char_findings(text, field))
     try:
         from . import skill_safety
         for finding in skill_safety.check(text):
@@ -167,9 +210,7 @@ def export_bundle(name: str, target_dir: str | os.PathLike, *,
 
     Returns exactly the skill text that leaves this machine.
     """
-    name = (name or "").strip()
-    if not name or "/" in name or name.startswith("."):
-        raise ValueError(f"invalid skill name for export: {name!r}")
+    name = _check_name((name or "").strip(), "export")
     skill_dir = _skills_root() / name
     text_path = skill_dir / "SKILL.md"
     if not text_path.is_file():
@@ -297,6 +338,7 @@ def import_bundle(path: str | os.PathLike, *, source: str = "shared") -> dict:
         raise ValueError(
             f"bundle hash mismatch: {path!r} was tampered with or truncated; "
             "nothing is proposed")
+    _check_name(name, "import")
 
     # F4 (operator): the SAME machine-reference scan also runs on import.
     # A bundle hand-made to carry /home/<user>/ (or a user@host / job id) is

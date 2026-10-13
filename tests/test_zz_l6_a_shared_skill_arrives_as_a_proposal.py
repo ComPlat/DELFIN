@@ -241,11 +241,12 @@ def _hand_made(ws, fname, **fields):
 
 @pytest.mark.parametrize("name", [
     "_proposals",              # the proposal store's own folder name
-    "pick-functional​",   # looks exactly like a skill the user has
+    "pick-functional\u200b",   # looks exactly like a skill the user has
     "x" * 300,                 # longer than a file name may be
     "a\x00b",
     "# Heading\nline two",
     "-starts-with-a-dash",
+    "pick-functional\n",     # "$" alone would let a final newline through
 ])
 def test_a_name_no_skill_could_have_is_refused_and_stores_nothing(box, name):
     _, ws, _, call, _ = box

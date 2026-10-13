@@ -65,10 +65,19 @@ def render_preview(name: str) -> str:
     if p is None:
         return f"(proposal '{name}' not found)"
     findings = "\n".join(f"- {f}" for f in (p.findings or []))
+    # The evidence detail is where a shared bundle names its author label
+    # and says nothing was checked here; "from shared" alone tells the
+    # reviewer neither.
+    evidence = "\n".join(
+        f"- {getattr(e, 'kind', '?')}: "
+        f"{getattr(e, 'detail', '') or getattr(e, 'ref', '')}"
+        for e in (p.evidence or []))
     return (
         f"--- Skill proposal: {p.name} (status: {p.status}, "
         f"from {p.source}) ---\n"
         f"{p.text}\n"
+        f"--- Evidence ---\n"
+        f"{evidence if evidence else '(none)'}\n"
         f"--- Security findings ---\n"
         f"{findings if findings else '(none)'}\n"
     )
