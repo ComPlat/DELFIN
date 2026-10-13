@@ -23915,12 +23915,91 @@ def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
             return False
         if not _process_cage_enabled():
             return False
+        # Reads are confined by Landlock inside the cage; without it the
+        # command could read outside the roots unseen, which default mode
+        # asks about. No Landlock, no admission.
+        if not _landlock_functional():
+            return False
         from . import egress_proxy as _ep
         if _ep.network_mode() == "open":
             return False
         return True
     except Exception:
         return False
+
+
+_CAGED_SYSTEM_READ_PATHS: tuple[str, ...] = (
+    "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc",
+    "/opt", "/tmp", "/proc", "/dev", "/sys", "/run", "/var/lib/sss",
+)
+
+# Environment variables naming tool installs a command may need to read.
+_CAGED_ENV_READ_VARS: tuple[str, ...] = (
+    "PATH", "LD_LIBRARY_PATH", "PYTHONPATH", "CONDA_PREFIX", "VIRTUAL_ENV",
+    "MAMBA_ROOT_PREFIX", "XTBPATH", "XTBHOME", "ORCA_PATH", "ORCADIR",
+)
+
+
+def _caged_read_paths(perms) -> list[str]:
+    """Where a command admitted by the caged rule may read, besides its
+    write roots (which landlock_exec adds itself).
+
+    The session's roots (workspace, extra, read-only, calc, granted read
+    directories, git metadata), the system paths a program needs
+    (``_CAGED_SYSTEM_READ_PATHS``; /etc's secret-bearing files are not
+    readable by the user anyway), this interpreter's prefixes, and every
+    directory named by ``_CAGED_ENV_READ_VARS`` (a ``bin`` entry grants
+    its parent prefix, so an environment's ``lib`` and headers come with
+    it). An entry that would grant ``/``, the home directory or an
+    ancestor of it is skipped: the rest of the home stays unreadable.
+    Credential paths are hidden on top (``--hide``). Real paths,
+    existing only, deduplicated. Never raises."""
+    out: list[str] = []
+    seen: set[str] = set()
+    try:
+        home = os.path.realpath(str(Path.home()))
+    except Exception:
+        home = "/"
+    too_broad = {"/", home}
+    p = home
+    while p not in ("/", ""):
+        p = os.path.dirname(p)
+        too_broad.add(p)
+
+    def _add(path) -> None:
+        try:
+            rp = os.path.realpath(str(path))
+        except OSError:
+            return
+        if (not rp or rp in seen or rp in too_broad
+                or not os.path.exists(rp)):
+            return
+        seen.add(rp)
+        out.append(rp)
+
+    try:
+        for r in perms.all_workspace_roots():
+            _add(r)
+    except Exception:
+        _add(getattr(perms, "workspace", "."))
+    for attr in ("read_only_workspace_dirs", "confirm_write_dirs",
+                 "session_read_dirs", "extra_workspace_dirs"):
+        for d in tuple(getattr(perms, attr, ()) or ()):
+            _add(d)
+    for g in _git_metadata_roots(getattr(perms, "workspace", ".")):
+        _add(g)
+    for d in _CAGED_SYSTEM_READ_PATHS:
+        _add(d)
+    for d in (sys.prefix, sys.base_prefix, sys.exec_prefix,
+              os.path.dirname(os.path.dirname(os.path.realpath(sys.executable)))):
+        _add(d)
+    for var in _CAGED_ENV_READ_VARS:
+        for entry in str(os.environ.get(var) or "").split(os.pathsep):
+            if not entry or not os.path.isabs(entry):
+                continue
+            rp = os.path.realpath(entry)
+            _add(os.path.dirname(rp) if os.path.basename(rp) == "bin" else rp)
+    return out
 
 
 def _caged_readonly_paths(perms) -> list[str]:
@@ -24018,7 +24097,7 @@ def _bash_isolation_argv(
     # session-scoped choice must not have to write a setting that outlives
     # the session making it. Resolved in _bash_isolation_decision.
     kind, mode = _bash_isolation_decision(perms, mode)
-    if caged_unasked and kind != "bwrap":
+    if caged_unasked and (kind != "bwrap" or not _landlock_functional()):
         return _refusal_argv(
             "this command was admitted without a question because the "
             "filesystem cage holds it, and the cage is no longer available")
@@ -24167,8 +24246,9 @@ def _bash_isolation_argv(
         from . import socket_guard as _sg
         net_args, proxy_dir = (_sandbox_network_args(allow_slurm=False)
                                if caged_unasked else _sandbox_network_args())
-        if _sg.available():
-            if proxy_dir:
+        guard = _sg.available()
+        if guard or caged_unasked:
+            if guard and proxy_dir:
                 args += ["--ro-bind", proxy_dir, proxy_dir]
             # The helper and its interpreter must be visible inside: a
             # checkout or an environment under /tmp is behind the fresh
@@ -24178,14 +24258,50 @@ def _bash_isolation_argv(
                            str(Path(sys.prefix).resolve())}:
                 if needed.startswith("/tmp/") or needed == "/tmp":
                     args += ["--ro-bind", needed, needed]
-            inner = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
-                     "--fs", "0", *net_args, "--strict", "1"]
-            for r in roots + [str(Path(p).resolve()) for p in extra_write] + ["/tmp"]:
-                inner += ["--allow-socket", r]
+            if caged_unasked:
+                # Reads confined too (Landlock inside the namespace): the
+                # workspace roots and the paths a program needs, nothing
+                # of other users or of the rest of the home directory.
+                fs_part = []
+                for r in roots + [str(Path(p).resolve()) for p in extra_write] \
+                        + ["/tmp"]:
+                    fs_part += ["--write", r]
+                for h in _home_secret_paths():
+                    # The cage's /tmp is a fresh tmpfs: a host path under it
+                    # is not there unless a root brings it in. Naming it
+                    # anyway would make Landlock grant /tmp entry by entry,
+                    # and nothing created in /tmp later would be writable.
+                    if (h.startswith("/tmp/") and not any(
+                            h == r or h.startswith(r.rstrip("/") + "/")
+                            for r in roots)):
+                        continue
+                    fs_part += ["--hide", h]
+                for p in _caged_readonly_paths(perms):
+                    fs_part += ["--read-only", p]
+                for p in _caged_read_paths(perms):
+                    fs_part += ["--read", p]
+            else:
+                fs_part = ["--fs", "0"]
+            if guard:
+                inner = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+                         *fs_part, *net_args, "--strict", "1"]
+                for r in roots + [str(Path(p).resolve()) for p in extra_write] + ["/tmp"]:
+                    inner += ["--allow-socket", r]
+            else:
+                # No connect filter here: a restricted network becomes no
+                # network, as below, and the helper applies only the files.
+                if net_args[1] != "open":
+                    args += ["--unshare-net"]
+                inner = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+                         *fs_part, "--net", "open", "--strict", "0"]
             return args + inner + ["--"] + plain
         if net_args[1] != "open":
             args += ["--unshare-net"]
     except Exception:
+        if caged_unasked:
+            return _refusal_argv(
+                "the read confinement for a command run without a question "
+                "could not be built")
         args += ["--unshare-net"]
     return args + plain
 
