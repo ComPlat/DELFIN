@@ -9116,6 +9116,28 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "skill_share",
+            "description": (
+                "Share a skill as a file: export (name, target_dir) writes "
+                "an accepted skill; import (path) stores a bundle as a "
+                "proposal. Never active until a human accepts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string",
+                               "enum": ["export", "import"]},
+                    "name": {"type": "string"},
+                    "target_dir": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "exit_plan_mode",
             "description": (
                 "Submit the finished plan for approval. ONLY in 'plan' mode, "
@@ -13735,6 +13757,20 @@ class _DocToolExecutor:
         if name == "skill_propose_patch":
             return self._execute_skill_propose_patch(
                 arguments, permissions)
+
+        # Skill sharing: export an accepted skill to a folder as a JSON
+        # bundle, or import one as a proposal (bounded read + hash verify +
+        # scrub; never active without a human accept).
+        # The executors gate the filesystem paths through the same read /
+        # write checks every other tool uses.
+        if name == "skill_share":
+            action = str(arguments.get("action") or "").strip().lower()
+            if action == "export":
+                return self._execute_skill_export(arguments, permissions)
+            if action == "import":
+                return self._execute_skill_import(arguments, permissions)
+            return json.dumps({"error": (
+                "skill_share needs action 'export' or 'import'")})
 
         # Sub-agent delegation: spawn an isolated tool-calling loop
         # via the runner the parent OpenAIClient attached.
@@ -21223,6 +21259,93 @@ class _DocToolExecutor:
             "note": ("Proposed as a new version — the active skill is "
                      "unchanged until a human accepts the proposal."),
         }, ensure_ascii=False)
+
+    def _execute_skill_export(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Export one ACCEPTED skill to a shared folder as a JSON bundle.
+
+        Delegates to ``skill_share.export_bundle``: only an
+        accepted skill (~/.delfin/skills/<name>/SKILL.md) may be exported,
+        by an explicit call, and the text is scrubbed before anything is
+        written (an absolute path / user@host / job id / secret blocks and
+        names the line; nothing is rewritten). ``target_dir`` must be in
+        this workspace's write scope -- gated like every other writing
+        tool. Writes, so plan mode rejects it.
+        """
+        if perms is None:
+            return json.dumps({"error": (
+                "skill_share requires permissions to be configured")})
+        if effective_mode(perms) == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — skill_export rejected. Present "
+                "the plan first.")})
+        name = str(arguments.get("name") or "").strip()
+        target_dir = str(arguments.get("target_dir") or "")
+        if not name or not target_dir:
+            return json.dumps({"error": (
+                "skill_export needs 'name' and a 'target_dir'")})
+        if "/" in name or "\\" in name or name.startswith("."):
+            return json.dumps({"error": f"invalid skill name: {name!r}"})
+        # The gate decides about the FILE that is written, at the place it
+        # is written: a relative folder is taken from the workspace (not
+        # from wherever the process happens to stand), and the bundle's own
+        # path is what is asked about, not only the folder around it.
+        folder = Path(target_dir).expanduser()
+        if not folder.is_absolute():
+            folder = Path(perms.workspace) / folder
+        bundle_path = folder / f"{name}.skill.json"
+        gate_err = self._gate_write_path(
+            str(bundle_path), perms, "skill_export", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+        try:
+            from .skill_share import export_bundle
+            text = export_bundle(name, str(folder),
+                                 author=str(arguments.get("author") or ""))
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+        return json.dumps({"status": "ok", "name": name,
+                           "exported_text": text}, ensure_ascii=False)
+
+    def _execute_skill_import(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Import a shared skill bundle as a proposal.
+
+        The path (relative paths are taken from the workspace) passes the
+        standard read gate first; then ``skill_share.import_bundle``
+        verifies, scrubs and stores it as a pending or blocked proposal of
+        source "shared", never active without a human accept. The result
+        is fenced as untrusted content. Plan mode rejects it: it writes
+        into the proposal store.
+        """
+        if perms is None:
+            return json.dumps({"error": (
+                "skill_share requires permissions to be configured")})
+        if effective_mode(perms) == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — skill_import rejected. Present "
+                "the plan first.")})
+        path = str(arguments.get("path") or "")
+        if not path:
+            return json.dumps({"error": "skill_import needs a 'path'"})
+        bundle = Path(path).expanduser()
+        if not bundle.is_absolute():
+            bundle = Path(perms.workspace) / bundle
+        denied = self._check_read_access(
+            perms, bundle, label="skill_import")
+        if denied is not None:
+            return json.dumps({"error": denied})
+        try:
+            from .skill_share import import_bundle
+            info = import_bundle(str(bundle))
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+        # The bundle was written by someone else. What it says -- the skill
+        # text, the author label, the reasons of a block -- reaches the
+        # model fenced as outside content, never as the harness speaking.
+        return _wrap_untrusted(json.dumps(info, ensure_ascii=False))
 
     # ------- Plan-mode roundtrip ------------------------------------------
 
