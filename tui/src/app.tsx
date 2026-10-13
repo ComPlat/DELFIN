@@ -1,16 +1,18 @@
 /**
  * The window: one session in view, its scrollback, and the footer.
  *
- * Keys go to the open question first (it holds the turn), then to the
- * keymap's actions; everything else is the composer's. Leaving the window
+ * Keys go to the open question first (it holds the turn; approval.tsx),
+ * then to the composer (completion, history, search), then to the keymap's
+ * actions. ctrl+c and ctrl+d work in all of them. Leaving the window
  * (ctrl+d, or ctrl+c twice) never ends a session: it keeps running in the
  * agent service, and the next window attaches to it again.
  */
 import type { CliRenderer, KeyEvent } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import { createSignal, type JSX } from "solid-js"
+import { createEffect, createSignal, type JSX } from "solid-js"
 import { createComposer } from "./composer/composer"
 import { History } from "./composer/history"
+import { createApprovalUi } from "./footer/approval"
 import { Footer } from "./footer/footer"
 import type { Keymap } from "./keymap/keymap"
 import type { Asked, SessionState } from "./store/state"
@@ -34,12 +36,17 @@ export interface AppProps {
   sentAs?: Map<string, string>
   onQuit: () => void
   onRedraw: () => void
+  /** The pause before a key answers a question (approval.tsx); tests set 0. */
+  answerPauseMs?: number
 }
 
-const POSTURES = ["plan", "default", "acceptEdits"] as const
+/** shift+tab's order, as in the REPL (never onto bypass). */
+export const POSTURES = ["plan", "default", "acceptEdits"] as const
 
-function keyChar(key: KeyEvent): string {
-  return key.sequence && key.sequence.length === 1 ? key.sequence : key.name
+/** The posture after `current`; from one outside the cycle, default. */
+export function nextPosture(current: string): string {
+  const at = POSTURES.indexOf(current as typeof POSTURES[number])
+  return at < 0 ? "default" : POSTURES[(at + 1) % POSTURES.length]!
 }
 
 export function App(props: AppProps): JSX.Element {
@@ -49,13 +56,12 @@ export function App(props: AppProps): JSX.Element {
     return id ? store.state.sessions[id] ?? null : null
   }
   const [message, setMessage] = createSignal("")
-  const [persistFor, setPersistFor] = createSignal<{ asked: Asked; choice: string } | null>(null)
-  const [picked, setPicked] = createSignal<number[]>([])
   let quitArmed = 0
 
   const say = (text: string) => {
     setMessage(text)
-    if (text) setTimeout(() => message() === text && setMessage(""), 6000)
+    // Unref'd: a note fading out must not keep a window that left alive.
+    if (text) (setTimeout(() => message() === text && setMessage(""), 6000) as { unref?: () => void }).unref?.()
   }
   const call = async (method: string, params: Record<string, unknown>) => {
     try {
@@ -73,105 +79,71 @@ export function App(props: AppProps): JSX.Element {
     history: props.history ?? new History(),
     keymap: props.keymap,
     say,
-    send: (text, how, shown) => {
-      if (!sid()) return
+    send: async (text, how, shown) => {
+      if (!sid()) return false
       // The session strips the text it shows, as a typed line is stripped.
       if (shown) props.sentAs?.set(text.trim(), shown)
-      void call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })
+      const result = await call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })
+      return result !== undefined
     },
   })
 
-  const reply = async (asked: Asked, params: Record<string, unknown>) => {
+  const reply = async (asked: Asked, params: Record<string, unknown>): Promise<boolean> => {
     const result = await call("permission.reply", { sessionId: sid(), requestId: asked.requestId, ...params })
     if (result && result.applied === false) say("that question had already been answered elsewhere")
-    else if (result?.message && /once|persist|stop asking|readable/.test(result.message)) say(result.message)
+    else if (result?.message && /once|persist|stop asking|readable|reject/.test(result.message)) say(result.message)
+    return result !== undefined
   }
-
-  const onApprovalKey = (asked: Asked, key: KeyEvent): void => {
-    const pending = persistFor()
-    if (pending) {
-      setPersistFor(null)
-      void reply(pending.asked, { choice: pending.choice, persist: keyChar(key) === "y" })
-      return
-    }
-    if (asked.kind === "ask") {
-      if (key.name === "escape") {
-        setPicked([])
-        void reply(asked, { answers: [] })
-        return
-      }
-      const n = Number(keyChar(key))
-      const choices = asked.choices ?? []
-      if (Number.isInteger(n) && n >= 1 && n <= choices.length) {
-        if (!asked.multiSelect) {
-          void reply(asked, { answers: [choices[n - 1]] })
-          return
-        }
-        setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n].sort()))
-        say(`picked: ${picked().map((i) => choices[i - 1]).join(", ") || "nothing"} (enter sends)`)
-        return
-      }
-      if (asked.multiSelect && key.name === "return") {
-        const answers = picked().map((i) => choices[i - 1])
-        setPicked([])
-        void reply(asked, { answers })
-      }
-      return
-    }
-    const char = keyChar(key)
-    const option = asked.options.find((o) => o.key === char)
-    if (!option) return
-    if (char === "?") {
-      void props.client.request("permission.reply", { sessionId: sid(), requestId: asked.requestId, choice: "?" })
-        .catch((error) => say(String((error as Error).message).split("\n").slice(0, 3).join(" ")))
-      return
-    }
-    if (char === "A" || char === "k") {
-      // A rule that is global and permanent takes a second yes, as in the REPL.
-      setPersistFor({ asked, choice: char })
-      const pattern = char === "k" ? asked.suggestion : "this exact command"
-      say(`persist ${pattern ?? ""} for every future session? [y] persist  [any other key] just this once`)
-      return
-    }
-    void reply(asked, { choice: char })
-  }
+  const approval = createApprovalUi({ reply, say,
+                                      pauseMs: props.answerPauseMs })
+  // The question's own state starts when it appears (its typeahead pause
+  // counts from then), and ends with it.
+  createEffect(() => approval.sync(session()?.pending[0]))
 
   const cycleMode = () => {
     const s = session()
-    if (!s) return
-    const next = POSTURES[(POSTURES.indexOf(s.approval as typeof POSTURES[number]) + 1) % POSTURES.length]!
-    void call("session.setMode", { sessionId: sid(), mode: next })
+    if (!s || s.state === "ended") return
+    void call("session.setMode", { sessionId: sid(), mode: nextPosture(s.approval) })
   }
 
   const draft = () => composer.value()
+
+  /** ctrl+c: end the turn; else clear what is typed; else, twice, leave. */
+  const ladder = (s: SessionState | null) => {
+    if (s?.turn && s.state !== "ended") {
+      void call("session.cancel", { sessionId: sid() })
+      return
+    }
+    if (draft()) {
+      composer.clear()
+      return
+    }
+    const now = Date.now()
+    if (now - quitArmed < 2000) {
+      props.onQuit()
+      return
+    }
+    quitArmed = now
+    say("ctrl+c again to leave — the sessions keep running in the agent service")
+  }
 
   const onKey = (key: KeyEvent): void => {
     const s = session()
     const km = props.keymap
     const asked = s?.pending[0]
-    if (asked) {
+    if (key.ctrl && key.name === "c" && !composer.search()) {
       key.preventDefault()
-      onApprovalKey(asked, key)
+      ladder(s)
       return
     }
-    if (key.ctrl && key.name === "c" && !composer.search()) {
-      // The ladder: end the turn; else clear what is typed; else, twice, leave.
+    if (asked) {
       key.preventDefault()
-      if (s?.turn) {
-        void call("session.cancel", { sessionId: sid() })
-        return
-      }
-      if (draft()) {
-        composer.clear()
-        return
-      }
-      const now = Date.now()
-      if (now - quitArmed < 2000) {
+      // ctrl+d leaves the window; the question stays open for any window.
+      if (km.matches("quit", key)) {
         props.onQuit()
         return
       }
-      quitArmed = now
-      say("ctrl+c again to leave — the sessions keep running in the agent service")
+      approval.handleKey(asked, key)
       return
     }
     if (composer.handleKey(key)) {
@@ -183,7 +155,7 @@ export function App(props: AppProps): JSX.Element {
       props.onQuit()
       return
     }
-    if (km.matches("interrupt", key) && s?.turn) {
+    if (km.matches("interrupt", key) && s?.turn && s.state !== "ended") {
       key.preventDefault()
       void call("session.cancel", { sessionId: sid() })
       return
@@ -215,6 +187,7 @@ export function App(props: AppProps): JSX.Element {
       connection={() => store.state.connection}
       message={message}
       composer={composer}
+      approval={approval}
       focused={() => true}
     />
   )

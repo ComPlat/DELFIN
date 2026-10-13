@@ -17,6 +17,9 @@ export class RpcError extends Error {
   }
 }
 
+/** The connection to the service is gone (not a session's worker). */
+export const CONNECTION_LOST = -1
+
 /** What carries lines both ways. */
 export interface Wire {
   write(line: string): void
@@ -29,7 +32,8 @@ export class RpcClient {
   private nextId = 0
   private pending = new Map<number, Pending>()
   private buffer = ""
-  private readonly decoder = new TextDecoder()
+  // One per connection: a lost one may have stopped inside a character.
+  private decoder = new TextDecoder()
   private readonly listeners = new Set<(event: AnyEvent) => void>()
 
   constructor(private wire: Wire | null = null) {}
@@ -43,18 +47,35 @@ export class RpcClient {
     return () => this.listeners.delete(listener)
   }
 
-  request<M extends keyof Requests & keyof Results>(method: M, params: Requests[M]): Promise<Results[M]>
-  request(method: string, params?: Record<string, unknown>): Promise<any>
-  request(method: string, params: Record<string, unknown> = {}): Promise<any> {
-    if (!this.wire) return Promise.reject(new RpcError(-1, "not connected"))
+  request<M extends keyof Requests & keyof Results>(method: M, params: Requests[M],
+                                                     options?: { timeoutMs?: number }): Promise<Results[M]>
+  request(method: string, params?: Record<string, unknown>, options?: { timeoutMs?: number }): Promise<any>
+  request(method: string, params: Record<string, unknown> = {},
+          options: { timeoutMs?: number } = {}): Promise<any> {
+    if (!this.wire) return Promise.reject(new RpcError(CONNECTION_LOST, "not connected"))
     const id = ++this.nextId
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method })
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const done = (fn: () => void) => {
+        if (timer) clearTimeout(timer)
+        fn()
+      }
+      this.pending.set(id, {
+        resolve: (value) => done(() => resolve(value)),
+        reject: (error) => done(() => reject(error)),
+        method,
+      })
+      if (options.timeoutMs) {
+        timer = setTimeout(() => {
+          if (!this.pending.delete(id)) return
+          reject(new RpcError(CONNECTION_LOST, `${method}: no answer within ${Math.round(options.timeoutMs! / 1000)} s`))
+        }, options.timeoutMs)
+      }
       try {
         this.wire!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n")
       } catch (error) {
         this.pending.delete(id)
-        reject(new RpcError(-1, `could not send ${method}: ${(error as Error).message}`))
+        done(() => reject(new RpcError(CONNECTION_LOST, `could not send ${method}: ${(error as Error).message}`)))
       }
     })
   }
@@ -102,9 +123,10 @@ export class RpcClient {
   lost(reason: string): void {
     this.wire = null
     this.buffer = ""
+    this.decoder = new TextDecoder()
     for (const [id, waiting] of this.pending) {
-      waiting.reject(new RpcError(ERRORS.WORKER_GONE, `${waiting.method}: ${reason}`))
       this.pending.delete(id)
+      waiting.reject(new RpcError(CONNECTION_LOST, `${waiting.method}: ${reason}`))
     }
   }
 }
@@ -120,10 +142,15 @@ export interface ServiceHello {
   sessions: Record<string, unknown>[]
 }
 
+/** How long a service gets to answer hello. */
+export const HELLO_TIMEOUT_MS = 10_000
+
 export class ServiceConnection {
   readonly rpc = new RpcClient()
   state: ConnectionState = "connecting"
   hello: ServiceHello | null = null
+  /** Why the connection closed for good, when it did on its own. */
+  problem = ""
   private closing = false
   private socket: any = null
   private readonly stateListeners = new Set<(state: ConnectionState) => void>()
@@ -205,7 +232,8 @@ export class ServiceConnection {
   }
 
   private async greet(): Promise<ServiceHello> {
-    const hello = await this.rpc.request("hello", { protocolVersion: PROTOCOL_VERSION, client: "delfin-tui" })
+    const hello = await this.rpc.request("hello", { protocolVersion: PROTOCOL_VERSION, client: "delfin-tui" },
+                                         { timeoutMs: HELLO_TIMEOUT_MS })
     this.hello = hello as ServiceHello
     this.setState("up")
     for (const listener of this.upListeners) listener(this.hello)
@@ -235,9 +263,25 @@ export class ServiceConnection {
         await this.open()
         await this.greet()
         return
-      } catch {
-        this.rpc.lost("still reconnecting")
+      } catch (error) {
+        // The socket of a failed attempt is closed here, or every attempt
+        // would leave one open on the service.
+        const socket = this.socket
         this.socket = null
+        try {
+          socket?.end()
+        } catch {
+          // already gone
+        }
+        this.rpc.lost("still reconnecting")
+        if (error instanceof RpcError && error.code === ERRORS.VERSION_MISMATCH) {
+          // The service was updated under this window: retrying cannot help.
+          this.problem = `the agent service now speaks another protocol (${error.message}); `
+            + "start the window again"
+          this.closing = true
+          this.setState("closed")
+          return
+        }
       }
     }
   }

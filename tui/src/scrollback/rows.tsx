@@ -100,6 +100,12 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
       )
     case "error":
       return <text fg={t.err} wrapMode="word">{"✗ " + String(f.text ?? "")}</text>
+    case "ended":
+      return (
+        <box paddingTop={1}>
+          <text fg={t.muted}>{"◼ " + String(f.text ?? "")}</text>
+        </box>
+      )
     case "turnEnd":
       return <text fg={f.ok === false ? t.err : t.faint}>{"  " + String(f.text ?? "")}</text>
     case "divider": {

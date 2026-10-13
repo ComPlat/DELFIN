@@ -41,6 +41,16 @@ export interface AppStore {
   update(fn: (draft: AppState) => void): void
   /** Run for every batch, inside the same produce, after the reducer. */
   onBatch(listener: BatchListener): () => void
+  /**
+   * Hold every event pushed from now on, until `release`: while a request
+   * that brings a replay (create, attach) is in flight. Its answer and the
+   * live events behind it can arrive in one read; the live ones would
+   * otherwise be applied first -- a durable one making the whole replay
+   * look seen, a delta landing before the answer it belongs to.
+   */
+  hold(): void
+  /** The replay first, then what was held (each hold has its release). */
+  release(replay?: AnyEvent[]): void
 }
 
 export function createAppStore(clock: Clock = realClock, frameMs = 16): AppStore {
@@ -54,6 +64,8 @@ function wrap(state: AppState, setState: SetStoreFunction<AppState>,
   let timer: unknown = null
   const seen = new Map<string, number>()
   const listeners = new Set<BatchListener>()
+  let holds = 0
+  let held: AnyEvent[] = []
 
   const flush = () => {
     if (timer !== null) {
@@ -72,9 +84,13 @@ function wrap(state: AppState, setState: SetStoreFunction<AppState>,
     })
   }
 
-  return {
+  const store: AppStore = {
     state,
     push(event) {
+      if (holds > 0) {
+        held.push(event)
+        return
+      }
       const e = event as { session?: string; seq?: number }
       if (typeof e.seq === "number" && e.seq > 0 && e.session) {
         const last = seen.get(e.session) ?? 0
@@ -92,5 +108,38 @@ function wrap(state: AppState, setState: SetStoreFunction<AppState>,
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
+    hold() {
+      holds++
+    },
+    release(replay = []) {
+      // In front of everything held: a replay must precede its session's
+      // live events; other sessions keep their own order.
+      held = [...replay, ...held]
+      holds = Math.max(0, holds - 1)
+      if (holds > 0) return
+      const all = held
+      held = []
+      for (const event of all) store.push(event)
+    },
+  }
+  return store
+}
+
+/**
+ * A request whose answer brings a replay (attach, create): live events
+ * that arrive with or behind the answer wait until the replay is in.
+ * `register` puts the session in place and returns the replay.
+ */
+export async function withReplay<T>(store: AppStore, ask: () => Promise<T>,
+                                    register: (answer: T) => AnyEvent[]): Promise<T> {
+  store.hold()
+  let replay: AnyEvent[] = []
+  try {
+    const answer = await ask()
+    replay = register(answer)
+    return answer
+  } finally {
+    store.release(replay)
   }
 }
+

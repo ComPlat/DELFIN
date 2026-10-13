@@ -20,11 +20,11 @@ export const ERRORS = {
 
 export interface InitializeParams {
   "protocolVersion": number
-  "client"?: string
+  "client"?: string | null
 }
 export interface SessionPromptParams {
   "text": string
-  "how"?: string
+  "how"?: string | null
 }
 export interface SessionCancelParams {}
 export interface SessionSetModeParams {
@@ -32,15 +32,15 @@ export interface SessionSetModeParams {
 }
 export interface SessionStatusParams {}
 export interface SessionReplayParams {
-  "turns"?: number
+  "turns"?: number | null
 }
 export interface SessionShutdownParams {}
 export interface PermissionReplyParams {
   "requestId": string
-  "choice"?: string
-  "answers"?: string[]
-  "reason"?: string
-  "persist"?: boolean
+  "choice"?: string | null
+  "answers"?: string[] | null
+  "reason"?: string | null
+  "persist"?: boolean | null
 }
 export interface SessionCommandsParams {}
 export interface SessionCompletePathParams {
@@ -71,8 +71,8 @@ export interface InitializeResult {
 }
 export interface SessionPromptResult {
   "accepted": boolean
-  "queued"?: boolean
-  "steered"?: boolean
+  "queued"?: boolean | null
+  "steered"?: boolean | null
 }
 export interface SessionCancelResult {
   "stopping": boolean
@@ -133,7 +133,7 @@ export interface SessionInfoEvent {
   "model": string
   "mode": string
   "approval": string
-  "title"?: string
+  "title"?: string | null
   "banner": string[]
   "notices": string[]
   "type": "session.info"
@@ -142,10 +142,10 @@ export interface SessionInfoEvent {
   "seq": number
 }
 export interface SessionUpdatedEvent {
-  "approval"?: string
-  "model"?: string
-  "effort"?: string
-  "title"?: string
+  "approval"?: string | null
+  "model"?: string | null
+  "effort"?: string | null
+  "title"?: string | null
   "type": "session.updated"
   "session": string
   "ts": number
@@ -188,7 +188,7 @@ export interface TurnEndedEvent {
   "outputTokens": number
   "costUsd": number
   "toolCalls": number
-  "error"?: string
+  "error"?: string | null
   "type": "turn.ended"
   "session": string
   "ts": number
@@ -263,7 +263,7 @@ export interface ToolEndedEvent {
 }
 export interface ToolDeniedEvent {
   "turnId": string
-  "callId"?: string
+  "callId"?: string | null
   "name": string
   "type": "tool.denied"
   "session": string
@@ -305,13 +305,13 @@ export interface PermissionAskedEvent {
   "preview": string
   "options": Record<string, unknown>[]
   "flags": Record<string, unknown>
-  "question"?: string
-  "header"?: string
-  "choices"?: string[]
-  "choiceDetails"?: string[]
-  "multiSelect"?: boolean
-  "suggestion"?: string
-  "readDir"?: string
+  "question"?: string | null
+  "header"?: string | null
+  "choices"?: string[] | null
+  "choiceDetails"?: string[] | null
+  "multiSelect"?: boolean | null
+  "suggestion"?: string | null
+  "readDir"?: string | null
   "type": "permission.asked"
   "session": string
   "ts": number
@@ -353,31 +353,31 @@ export interface WorkerEvents {
 }
 export interface HelloParams {
   "protocolVersion": number
-  "client"?: string
+  "client"?: string | null
 }
 export interface SessionsListParams {}
 export interface SessionCreateParams {
   "cwd": string
-  "name"?: string
-  "model"?: string
-  "provider"?: string
-  "effort"?: string
-  "mode"?: string
-  "permissionMode"?: string
-  "resume"?: string
-  "continue"?: boolean
-  "fork"?: boolean
-  "addDirs"?: string[]
-  "readDirs"?: string[]
-  "isolate"?: boolean
-  "noIsolate"?: boolean
-  "fake"?: boolean
-  "fakeDelay"?: number
-  "attach"?: boolean
+  "name"?: string | null
+  "model"?: string | null
+  "provider"?: string | null
+  "effort"?: string | null
+  "mode"?: string | null
+  "permissionMode"?: string | null
+  "resume"?: string | null
+  "continue"?: boolean | null
+  "fork"?: boolean | null
+  "addDirs"?: string[] | null
+  "readDirs"?: string[] | null
+  "isolate"?: boolean | null
+  "noIsolate"?: boolean | null
+  "fake"?: boolean | null
+  "fakeDelay"?: number | null
+  "attach"?: boolean | null
 }
 export interface SessionAttachParams {
   "sessionId": string
-  "turns"?: number
+  "turns"?: number | null
 }
 export interface SessionDetachParams {
   "sessionId": string
@@ -387,9 +387,9 @@ export interface SessionMessageParams {
   "text": string
 }
 export interface SessionsPastParams {
-  "workspace"?: string
-  "query"?: string
-  "limit"?: number
+  "workspace"?: string | null
+  "query"?: string | null
+  "limit"?: number | null
 }
 export interface ServiceStatusParams {}
 export interface ServiceShutdownParams {}
@@ -470,7 +470,7 @@ export interface SessionSummaryEvent {
 }
 export interface SessionRemovedEvent {
   "reason": string
-  "exitCode"?: number
+  "exitCode"?: number | null
   "type": "session.removed"
   "session": string
   "ts": number
@@ -481,7 +481,7 @@ export interface ServiceEvents {
 }
 export interface SessionSummary {
   "sessionId": string
-  "title"?: string
+  "title"?: string | null
   "workspace": string
   "provider": string
   "model": string

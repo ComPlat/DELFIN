@@ -56,7 +56,11 @@ function tsType(s: Schema): string {
 function fields(s: Schema, indent = "  "): string {
   const required = new Set(s.required ?? [])
   return Object.entries(s.properties ?? {})
-    .map(([name, field]) => `${indent}${JSON.stringify(name)}${required.has(name) ? "" : "?"}: ${tsType(field)}`)
+    // An optional field may also come as null: Python sends None for one
+    // it has no value for (a session's title).
+    .map(([name, field]) => required.has(name)
+      ? `${indent}${JSON.stringify(name)}: ${tsType(field)}`
+      : `${indent}${JSON.stringify(name)}?: ${tsType(field)} | null`)
     .join("\n")
 }
 

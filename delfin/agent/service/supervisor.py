@@ -836,7 +836,7 @@ class Supervisor:
             message = protocol.event({"type": "session.removed",
                                       "session": session.id,
                                       "ts": round(time.time(), 3),
-                                      "reason": session.ended_reason or "ended",
+                                      "reason": session.ended_reason or _how_it_died(session.proc.returncode),
                                       "exitCode": session.proc.returncode})
             data = protocol.encode(message)
             for client in list(self.clients):
@@ -930,6 +930,19 @@ class Supervisor:
         self.closing = True
         if self.stopping is not None:
             self.stopping.set()
+
+
+def _how_it_died(code: int | None) -> str:
+    """What ended a worker that said nothing about it."""
+    if code is None:
+        return "the worker ended"
+    if code < 0:
+        try:
+            name = signal.Signals(-code).name
+        except ValueError:
+            name = f"signal {-code}"
+        return f"the worker was killed ({name})"
+    return f"the worker exited ({code})"
 
 
 def past_sessions(workspace: str, query: str, limit: int) -> list[dict]:

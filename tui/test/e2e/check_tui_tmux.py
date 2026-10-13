@@ -68,15 +68,19 @@ def main() -> int:
             tmux.type(step["prompt"])
             tmux.key("Enter")
             reply = step.get("reply") or {}
+            # A person reads the question before answering it; a key in the
+            # same instant it opens is typeahead and not taken (approval.tsx).
             if "choice" in reply:
                 if not tmux.wait_for(r"\[y\] ", 30):
                     problems.append(f"no approval for {step['prompt']!r}")
+                time.sleep(0.6)
                 tmux.key(reply["choice"])
             elif "answers" in reply:
                 found = tmux.wait_for(r"(\d)\. " + re.escape(reply["answers"][0]), 30)
                 if not found:
                     problems.append(f"no question for {step['prompt']!r}")
                 else:
+                    time.sleep(0.6)
                     tmux.key(found.group(1))
             turns += 1
             deadline = time.monotonic() + 30

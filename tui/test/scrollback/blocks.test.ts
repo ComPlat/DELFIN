@@ -61,7 +61,7 @@ describe("splitMarkdown", () => {
   })
 
   test("blank or empty input commits nothing", () => {
-    expect(splitMarkdown("", true)).toEqual({ blocks: [], tail: "" })
+    expect(splitMarkdown("", true)).toEqual({ blocks: [], tail: "", consumed: 0 })
     expect(splitMarkdown("\n\n", true).blocks).toEqual([])
   })
 })
@@ -91,3 +91,33 @@ describe("AnswerBlocks", () => {
     }
   })
 })
+
+describe("an answer that ended with its whole text", () => {
+  test("commits what the deltas did not bring (a reconnect mid-answer)", () => {
+    const committed: string[] = []
+    const blocks = new AnswerBlocks((b) => committed.push(b))
+    blocks.append("First paragraph.\n\nSecond par")
+    blocks.finishWith("First paragraph.\n\nSecond paragraph, in full.\n\nThird.")
+    expect(committed).toEqual(["First paragraph.", "Second paragraph, in full.", "Third."])
+  })
+
+  test("says so and commits it whole when even the committed part differs", () => {
+    const committed: string[] = []
+    let noted = 0
+    const blocks = new AnswerBlocks((b) => committed.push(b))
+    blocks.append("Garbled start.\n\nMore")
+    blocks.finishWith("Real start.\n\nMore text.", () => noted++)
+    expect(noted).toBe(1)
+    expect(committed).toEqual(["Garbled start.", "Real start.", "More text."])
+  })
+
+  test("a list streamed digit by digit keeps every item", () => {
+    const committed: string[] = []
+    const blocks = new AnswerBlocks((b) => committed.push(b))
+    for (const piece of ["1. one", "\n\n", "2", ".", " two", "\n\n", "3", ". three"]) blocks.append(piece)
+    blocks.finish()
+    const all = committed.join("\n")
+    for (const item of ["one", "two", "three"]) expect(all).toContain(item)
+  })
+})
+

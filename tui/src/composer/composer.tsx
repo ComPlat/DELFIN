@@ -37,8 +37,10 @@ export interface ComposerDeps {
   history: History
   keymap: Keymap
   /** A prompt to send; `how: "steer"` sends it into the running turn.
-   *  `shown` is the prompt as typed, when pastes were put back into it. */
-  send(text: string, how?: "steer", shown?: string): void
+   *  `shown` is the prompt as typed, when pastes were put back into it.
+   *  False (or a promise of it) when it could not be sent: the prompt then
+   *  comes back into the composer, if nothing else was typed meanwhile. */
+  send(text: string, how?: "steer", shown?: string): Promise<boolean> | boolean | void
   say(text: string): void
 }
 
@@ -205,10 +207,17 @@ export function createComposer(deps: ComposerDeps): Composer {
     const raw = area.plainText.trim()
     if (!raw) return false
     const expanded = pastes.expand(raw)
-    deps.history.add({ text: raw, pastes: pastes.used(raw) })
+    const used = pastes.used(raw)
+    deps.history.add({ text: raw, pastes: used })
     walk = new HistoryWalk(deps.history)
     clear()
-    deps.send(expanded, how, expanded === raw ? undefined : raw)
+    void Promise.resolve(deps.send(expanded, how, expanded === raw ? undefined : raw)).then((sent) => {
+      // Not sent (the service is away): the prompt is not lost.
+      if (sent === false && area && !area.plainText) {
+        pastes.restore(used)
+        setAreaText(raw)
+      }
+    })
     return true
   }
 

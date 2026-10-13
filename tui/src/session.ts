@@ -26,6 +26,9 @@ export interface SessionView {
   sentAs: Map<string, string>
   /** Put session `id` in view: its events become rows from now on. */
   show(id: string): void
+  /** A note of the window's own (a config problem, a lost session), as a
+   *  row in the scrollback, after what is already queued. */
+  note(text: string): void
   redraw(): Promise<void>
   stop(): void
 }
@@ -37,7 +40,11 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
     dropLive: () => renderer.dropLive(),
     resetSplitFooterForReplay: (o?: { clearSavedLines?: boolean }) => renderer.resetSplitFooterForReplay(o),
   }
-  const queue = new CommitQueue(target, (error) => store.update((d) => { d.messages.push(String(error)) }))
+  let notes = 0
+  const note = (text: string) => {
+    void transcript.append({ id: `note:${++notes}`, kind: "notice", text })
+  }
+  const queue = new CommitQueue(target, (error) => note(`could not draw a row: ${String(error)}`))
   const transcript = new Transcript(queue, target, itemWriter(renderer, theme))
   const stopResize = replayOnWidthChange(renderer, transcript, { limit: options.replayLimit })
   let off: (() => void) | null = null
@@ -57,6 +64,7 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
       off = store.onBatch((events, draft) => presenter.handle(events, draft))
       store.update((d) => { d.current = id })
     },
+    note,
     redraw: () => transcript.replay(options.replayLimit),
     stop() {
       off?.()

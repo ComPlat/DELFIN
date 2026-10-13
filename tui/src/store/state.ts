@@ -67,12 +67,11 @@ export interface AppState {
   order: string[]
   current: string | null
   elsewhere: Elsewhere[]
-  messages: string[]         // the window's own notes (config, connection)
 }
 
 export function emptyState(): AppState {
   return { connection: "connecting", mayAct: true, host: "", sessions: {}, order: [],
-           current: null, elsewhere: [], messages: [] }
+           current: null, elsewhere: [] }
 }
 
 export function newSession(id: string, info: Record<string, unknown> = {}): SessionState {
@@ -113,6 +112,17 @@ export function ensureSession(state: AppState, id: string,
   return s
 }
 
+/** A session that ended -- on its own, or because its worker died: nothing
+ *  runs any more and nothing is waiting for an answer. */
+function endSession(s: SessionState, e: Record<string, any>): void {
+  s.state = "ended"
+  s.ended = { reason: str(e.reason), exitCode: e.exitCode }
+  s.turn = null
+  s.tail = ""
+  s.thinking = ""
+  s.pending = []
+}
+
 function toolLabel(event: Record<string, any>): string {
   const input = (event.input ?? {}) as Record<string, unknown>
   const arg = ["path", "command", "pattern", "query", "url", "file"].map((k) => input[k])
@@ -136,8 +146,7 @@ export function applyEvent(state: AppState, event: AnyEvent, now: number = Date.
   if (type === "session.removed") {
     const s = state.sessions[id]
     if (!s) return
-    s.state = "ended"
-    s.ended = { reason: str(e.reason), exitCode: e.exitCode }
+    endSession(s, e)
     return
   }
   const s = state.sessions[id]
@@ -152,8 +161,7 @@ export function applyEvent(state: AppState, event: AnyEvent, now: number = Date.
       s.state = str(e.state)
       break
     case "session.ended":
-      s.state = "ended"
-      s.ended = { reason: str(e.reason), exitCode: e.exitCode }
+      endSession(s, e)
       break
     case "turn.started":
       s.turn = { id: str(e.turnId), source: str(e.source), startedAt: now, label: "thinking…" }

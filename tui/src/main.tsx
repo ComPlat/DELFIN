@@ -19,7 +19,7 @@ import { Keymap } from "./keymap/keymap"
 import type { AnyEvent } from "./protocol/generated"
 import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
-import { createAppStore } from "./store/store"
+import { createAppStore, withReplay } from "./store/store"
 import { themeFor } from "./theme/theme"
 import { ServiceConnection, type ServiceHello } from "./transport/rpc"
 
@@ -75,40 +75,51 @@ const view = startSessionView(renderer, store, theme,
 store.update((d) => {
   d.mayAct = Boolean(hello.mayAct)
   d.host = String(hello.host ?? "")
-  for (const problem of [...loaded.problems, ...keymap.problems]) d.messages.push(problem)
 })
+for (const problem of [...loaded.problems, ...keymap.problems]) view.note(problem)
 
 /** Open the first session: a new one, or the one to resume if it runs here. */
 async function openFirst(): Promise<string> {
   const running = (hello.sessions ?? []) as { sessionId: string }[]
   const resume = String(start.resume ?? "")
   if (resume && running.some((s) => s.sessionId === resume)) {
-    const attached = await connection.rpc.request("session.attach", { sessionId: resume, turns: loaded.config.replayTurns })
-    store.update((d) => { ensureSession(d, resume, attached.session) })
-    view.show(resume)
-    for (const event of attached.events) store.push(event as unknown as AnyEvent)
+    await withReplay(store,
+      () => connection.rpc.request("session.attach", { sessionId: resume, turns: loaded.config.replayTurns }),
+      (attached) => {
+        store.update((d) => { ensureSession(d, resume, attached.session) })
+        view.show(resume)
+        return attached.events as unknown as AnyEvent[]
+      })
     return resume
   }
-  const created = await connection.rpc.request("session.create", { ...start, cwd: String(start.cwd ?? process.cwd()) })
-  const id = created.sessionId as string
-  store.update((d) => {
-    const s = ensureSession(d, id, created.session)
-    s.state = created.state
-    s.pending = created.pending as unknown as Asked[]
-  })
-  view.show(id)
-  // The banner: the session as the service saw it start.
-  store.push({ type: "session.info", session: id, ts: Date.now() / 1000, seq: 0, ...created.session } as never)
-  return id
+  const created = await withReplay(store,
+    () => connection.rpc.request("session.create", { ...start, cwd: String(start.cwd ?? process.cwd()) }),
+    (answer) => {
+      const id = answer.sessionId as string
+      store.update((d) => {
+        const s = ensureSession(d, id, answer.session)
+        s.state = answer.state
+        s.pending = answer.pending as unknown as Asked[]
+      })
+      view.show(id)
+      // The banner (the session as the service saw it start), then what
+      // the session has said since its worker started.
+      return [{ type: "session.info", session: id, ts: Date.now() / 1000, seq: 0, ...answer.session } as never,
+              ...((answer.events ?? []) as unknown as AnyEvent[])]
+    })
+  return created.sessionId as string
 }
 
 let current = ""
 try {
   current = await openFirst()
 } catch (error) {
+  // Nothing to show: say why on a terminal that is the user's again.
+  connection.close()
   renderer.destroy()
-  console.error(`The session could not start: ${(error as Error).message}`)
-  process.exitCode = 3
+  await Bun.sleep(50)
+  process.stderr.write(`The session could not start: ${(error as Error).message}\n`)
+  process.exit(3)
 }
 
 // After a reconnect: the session is attached again; what this window has
@@ -116,11 +127,15 @@ try {
 connection.onUp(async () => {
   if (!current) return
   try {
-    const attached = await connection.rpc.request("session.attach", { sessionId: current, turns: 0 })
-    for (const event of attached.events) store.push(event as unknown as AnyEvent)
+    await withReplay(store,
+      () => connection.rpc.request("session.attach", { sessionId: current, turns: 0 }),
+      (attached) => attached.events as unknown as AnyEvent[])
   } catch (error) {
-    store.update((d) => { d.messages.push(`the session is gone: ${(error as Error).message}`) })
+    view.note(`the session is not in the agent service any more: ${(error as Error).message}`)
   }
+})
+connection.onState((state) => {
+  if (state === "closed" && connection.problem) view.note(connection.problem)
 })
 
 let quitting = false

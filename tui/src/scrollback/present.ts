@@ -72,10 +72,16 @@ export function toolSummary(output: string, meta: Fields): { summary: string; ta
 }
 
 export class Presenter {
-  private blocks: AnswerBlocks | null = null
+  /** The answer parts streaming now, by partId. */
+  private parts = new Map<string, AnswerBlocks>()
+  /** Parts seen to end: a delta of one (after a reconnect, the live stream
+   *  goes on where the replay ended) is not shown again. */
+  private endedParts = new Set<string>()
   private tools = new Map<string, Fields>()
   private asked = new Map<string, Fields>()
   private bannered = false
+  private ended = false
+  private lastError = ""
   private n = 0
 
   constructor(readonly sessionId: string, private readonly transcript: Transcript,
@@ -113,16 +119,26 @@ export class Presenter {
         this.add("user", { text: this.options.shownAs?.(String(e.text ?? "")) ?? e.text, source: e.source })
         break
       case "text.started":
-        this.blocks = new AnswerBlocks((block) => this.add("markdown", { text: block }), setTail)
+        this.part(String(e.partId ?? ""), setTail)
         break
-      case "text.delta":
-        if (!this.blocks) this.blocks = new AnswerBlocks((block) => this.add("markdown", { text: block }), setTail)
-        this.blocks.append(String(e.delta ?? ""))
+      case "text.delta": {
+        const id = String(e.partId ?? "")
+        if (this.endedParts.has(id)) break
+        this.part(id, setTail)?.append(String(e.delta ?? ""))
         break
-      case "text.ended":
-        if (this.blocks) {
-          this.blocks.finish()
-          this.blocks = null
+      }
+      case "text.ended": {
+        const id = String(e.partId ?? "")
+        if (this.endedParts.has(id)) break            // shown already
+        this.endedParts.add(id)
+        const streamed = this.parts.get(id)
+        this.parts.delete(id)
+        if (streamed) {
+          // The whole text is the truth: deltas missed while the window
+          // reconnected are committed from it.
+          streamed.finishWith(String(e.text ?? ""), () => this.add("notice", {
+            text: "(part of this answer arrived while the window was reconnecting; here it is in full)",
+          }))
         } else {
           for (const block of splitMarkdown(String(e.text ?? ""), true).blocks) {
             this.add("markdown", { text: block })
@@ -130,6 +146,7 @@ export class Presenter {
         }
         setTail("")
         break
+      }
       case "reasoning.ended":
         if (this.options.showThinking && String(e.text ?? "").trim()) {
           this.add("reasoning", { text: firstLine(String(e.text), 400) })
@@ -158,6 +175,7 @@ export class Presenter {
         this.add("notice", { text: e.text })
         break
       case "error":
+        this.lastError = String(e.text ?? "")
         this.add("error", { text: e.text })
         break
       case "permission.asked":
@@ -173,22 +191,53 @@ export class Presenter {
         break
       }
       case "turn.ended": {
+        // A part the turn left open (it stopped mid-answer) keeps what it
+        // streamed.
+        for (const [id, blocks] of this.parts) {
+          this.endedParts.add(id)
+          blocks.finish()
+        }
+        this.parts.clear()
+        setTail("")
         const secs = (Number(e.durationMs ?? 0) / 1000).toFixed(1)
         if (e.error) {
-          this.add("turnEnd", { text: `✗ ${secs}s · ${firstLine(String(e.error), 120)}`, ok: false })
+          // The error row already said it: the line ends the turn only.
+          const said = this.lastError && String(e.error).includes(firstLine(this.lastError, 400))
+          this.add("turnEnd", { text: said ? `✗ ${secs}s` : `✗ ${secs}s · ${firstLine(String(e.error), 120)}`, ok: false })
         } else {
           const cost = Number(e.costUsd ?? 0)
           const parts = [`✓ ${secs}s`, `↑${compact(Number(e.inputTokens ?? 0))} ↓${compact(Number(e.outputTokens ?? 0))}`]
           if (cost > 0) parts.push(`$${cost.toFixed(4)}`)
           this.add("turnEnd", { text: parts.join(" · "), ok: true })
         }
-        this.blocks = null
+        this.lastError = ""
         break
       }
       case "session.ended":
-        this.add("notice", { text: `session ended (${e.reason ?? "closed"})` })
+      case "session.removed":
+        // The worker's own last word, or the service's when the worker
+        // died without one: said once.
+        if (!this.ended) {
+          this.ended = true
+          for (const blocks of this.parts.values()) blocks.finish()
+          this.parts.clear()
+          setTail("")
+          const reason = String(e.reason ?? "closed")
+          // A reason that says how the worker ended says the code already.
+          const code = e.exitCode != null && e.exitCode !== 0 && !/worker/.test(reason) ? `, exit ${e.exitCode}` : ""
+          this.add("ended", { text: `session ended (${reason}${code})` })
+        }
         break
     }
+  }
+
+  private part(id: string, setTail: (tail: string) => void): AnswerBlocks | null {
+    let blocks = this.parts.get(id)
+    if (!blocks) {
+      blocks = new AnswerBlocks((block) => this.add("markdown", { text: block }), setTail)
+      this.parts.set(id, blocks)
+    }
+    return blocks
   }
 }
 

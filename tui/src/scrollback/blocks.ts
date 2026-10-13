@@ -22,7 +22,14 @@ export interface MarkdownSplit {
   blocks: string[]
   /** The unfinished rest, exactly as it arrived. Empty once final. */
   tail: string
+  /** How much of the text the blocks cover (where the tail starts). */
+  consumed: number
 }
+
+/** A last line that may still become a list item ("2", "2.", "-"): the
+ *  list before it is not complete yet -- one more character can make
+ *  them one list. */
+const MAYBE_ITEM = /^\s{0,3}(\d{1,9}[.)]?|[-*+])\s*$/
 
 function lex(text: string): Token[] {
   try {
@@ -39,12 +46,18 @@ export function splitMarkdown(text: string, final: boolean): MarkdownSplit {
   const normal = text.replace(/\r\n?/g, "\n")
   const tokens = lex(normal)
   if (tokens.length === 0) {
-    return final ? { blocks: normal.trim() ? [normal.replace(/\n+$/, "")] : [], tail: "" }
-                 : { blocks: [], tail: normal }
+    return final ? { blocks: normal.trim() ? [normal.replace(/\n+$/, "")] : [], tail: "", consumed: normal.length }
+                 : { blocks: [], tail: normal, consumed: 0 }
   }
   let lastBlock = tokens.length - 1
   while (lastBlock > 0 && tokens[lastBlock]!.type === "space") lastBlock--
-  const stableEnd = final ? tokens.length : lastBlock
+  let stableEnd = final ? tokens.length : lastBlock
+  if (!final && MAYBE_ITEM.test(tokens[lastBlock]!.raw)) {
+    // Hold the list (and the space after it) back with the would-be item.
+    let prev = lastBlock - 1
+    while (prev >= 0 && tokens[prev]!.type === "space") prev--
+    if (prev >= 0 && tokens[prev]!.type === "list") stableEnd = prev
+  }
   const blocks: string[] = []
   let offset = 0
   for (let i = 0; i < stableEnd; i++) {
@@ -54,16 +67,23 @@ export function splitMarkdown(text: string, final: boolean): MarkdownSplit {
     const raw = token.raw.replace(/\n+$/, "")
     if (raw.trim()) blocks.push(raw)
   }
-  return { blocks, tail: final ? "" : normal.slice(offset) }
+  return { blocks, tail: final ? "" : normal.slice(offset), consumed: final ? normal.length : offset }
 }
 
 /**
  * Feeds an answer delta by delta and calls `commit` once for each block as
  * it becomes final, and `onTail` with whatever is still unfinished.
+ *
+ * What is committed is a prefix of the text, and only the text after it
+ * is split again: a later delta can change how earlier text lexes (a
+ * loose list going on after a blank line merges into one list), and a
+ * block committed is never taken back -- so what follows it must never be
+ * counted as already committed either. At worst one list arrives as two.
  */
 export class AnswerBlocks {
   private text = ""
-  private committed = 0
+  private offset = 0                  // characters of `text` committed
+  private n = 0
 
   constructor(
     private readonly commit: (block: string, index: number) => void,
@@ -74,9 +94,14 @@ export class AnswerBlocks {
     return this.text
   }
 
+  /** The part of the text already in the scrollback. */
+  get committedText(): string {
+    return this.text.slice(0, this.offset)
+  }
+
   append(delta: string): void {
     if (!delta) return
-    this.text += delta
+    this.text += delta.replace(/\r\n?/g, "\n")
     this.flush(false)
   }
 
@@ -84,13 +109,30 @@ export class AnswerBlocks {
     this.flush(true)
   }
 
+  /**
+   * The part ended with `full` as its whole text (text.ended). When what
+   * streamed is the start of it, the rest is committed; when deltas went
+   * missing (a reconnect mid-answer), what was committed stays and the
+   * rest of `full` after it is committed -- or, if even the committed
+   * part does not match, `full` is committed whole after a note.
+   */
+  finishWith(full: string, onMismatch: () => void = () => {}): void {
+    const text = full.replace(/\r\n?/g, "\n")
+    if (!text.startsWith(this.committedText)) {
+      onMismatch()
+      this.text = text
+      this.offset = 0
+    } else {
+      this.text = text
+    }
+    this.flush(true)
+  }
+
   private flush(final: boolean): void {
-    const { blocks, tail } = splitMarkdown(this.text, final)
-    // A later delta can merge what looked like two blocks (a loose list
-    // continuing after a blank line). What is committed stays committed;
-    // only blocks past that point are new.
-    for (let i = this.committed; i < blocks.length; i++) this.commit(blocks[i]!, i)
-    this.committed = Math.max(this.committed, blocks.length)
+    const rest = this.text.slice(this.offset)
+    const { blocks, tail, consumed } = splitMarkdown(rest, final)
+    for (const block of blocks) this.commit(block, this.n++)
+    this.offset += consumed
     this.onTail(tail)
   }
 }
