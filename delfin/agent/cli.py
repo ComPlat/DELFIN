@@ -1482,7 +1482,14 @@ def cmd_chat(args: argparse.Namespace) -> int:
         settings_path=persisted_from or "~/.delfin/settings.json",
     )
     try:
-        engine.set_kit_permission_mode(posture)
+        # The starting rule, not a switch: no turn is running to be told.
+        try:
+            engine.set_kit_permission_mode(posture, announce=False)
+        except TypeError:
+            # An engine without the keyword still gets the posture; only
+            # the note is lost. Swallowing the TypeError below would leave
+            # the session in the mode it was built with.
+            engine.set_kit_permission_mode(posture)
     except Exception:
         pass          # a backend with no gate has no posture to set
 
