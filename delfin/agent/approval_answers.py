@@ -129,7 +129,14 @@ def write_choice_answer(record: dict, answers: list[str], *,
     ``"choose"`` -- distinct from APPROVE/DENY on purpose, so an old
     reader treats it as unrecognised (not an answer) rather than
     approving something.
+
+    Raises ChoiceError, and writes nothing, inside an agent session
+    (``approval_guard.ENV_MARKER``).
     """
+    from .approval_guard import inside_agent_session, refusal
+    if inside_agent_session():
+        raise ChoiceError(refusal("this process was started by an agent "
+                                  "session"))
     from . import file_confirm as _fc
     # The answer goes beside the question. A terminal session publishes its
     # questions in its own room (terminal_confirm), not the headless one,

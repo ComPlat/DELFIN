@@ -213,6 +213,9 @@ def run_headless(probe: Probe, box: sb.Sandbox, *, api_key: str,
     argv = [sb.python(), "-m", "delfin.agent.cli", "run",
             "--provider", "kit", "--model", model,
             "--permission-mode", probe.mode or "default"]
+    # `run` refuses bypassPermissions without it, as the terminal does.
+    if probe.unattended:
+        argv.append("--unattended")
     if probe.agent_mode:
         argv += ["--mode", probe.agent_mode]
     argv.append("\n".join(probe.prompts))
