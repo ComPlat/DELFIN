@@ -364,3 +364,98 @@ def test_interactive_grants_and_fork_still_apply(wired, monkeypatch, capsys):
     assert rc == 0
     assert _Recorder.last.get("extra_dirs") == [str(sibling.resolve())]
     assert wired["restored"] == ["sid-fork"]
+
+
+# -- the `run` subcommand: the same bypass rule ------------------------------------
+
+def _run(wired, monkeypatch, *flags):
+    _stdin(monkeypatch, tty=False)
+    return agent_cli.main(["run", "--cwd", str(wired["project"]), *flags,
+                           "do it"])
+
+
+def test_run_refuses_bypass_without_unattended(wired, monkeypatch, capsys):
+    rc = _run(wired, monkeypatch, "--permission-mode", "bypassPermissions")
+    out, err = capsys.readouterr()
+    assert rc == 2
+    assert out == ""
+    assert "--unattended" in err
+    assert _Recorder.instances == []
+
+
+def test_run_takes_bypass_with_unattended(wired, monkeypatch, capsys):
+    rc = _run(wired, monkeypatch, "--permission-mode", "bypassPermissions",
+              "--unattended")
+    capsys.readouterr()
+    assert rc == 0
+    assert _posture() == "bypassPermissions"
+
+
+def test_run_refuses_a_settings_default_of_bypass(wired, monkeypatch, capsys):
+    monkeypatch.setattr(agent_cli, "_persisted_default_mode",
+                        lambda ws: ("bypassPermissions", "~/s.json"))
+    rc = _run(wired, monkeypatch)
+    out, err = capsys.readouterr()
+    assert rc == 2
+    assert out == ""
+    assert "~/s.json" in err
+    assert _Recorder.instances == []
+
+
+def test_run_does_not_inherit_a_settings_bypass_with_unattended(
+        wired, monkeypatch, capsys):
+    monkeypatch.setattr(agent_cli, "_persisted_default_mode",
+                        lambda ws: ("bypassPermissions", "~/s.json"))
+    rc = _run(wired, monkeypatch, "--unattended")
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert _posture() == "plan"
+    assert "~/s.json" in err
+
+
+def test_run_with_no_mode_keeps_its_default(wired, monkeypatch, capsys):
+    """Control: the scheduler-style call with nothing passed."""
+    rc = _run(wired, monkeypatch)
+    capsys.readouterr()
+    assert rc == 0
+    assert _Recorder.last.get("permission_mode", "") == ""
+
+
+def test_run_keeps_a_mode_below_bypass(wired, monkeypatch, capsys):
+    """Control: the probe runner passes default or acceptEdits."""
+    rc = _run(wired, monkeypatch, "--permission-mode", "acceptEdits")
+    capsys.readouterr()
+    assert rc == 0
+    assert _posture() == "acceptEdits"
+    assert wired["restored"] == [""], "run keeps the plain restore"
+
+
+def test_the_headless_probe_runner_says_unattended_when_the_probe_does(
+        monkeypatch, tmp_path):
+    """The one internal caller of `run` that can ask for bypass."""
+    import subprocess
+    import types as _types
+
+    from agent_terminal_probes import runner
+
+    seen: list[list[str]] = []
+
+    def _fake_run(argv, **kw):
+        seen.append(list(argv))
+        return _types.SimpleNamespace(stdout="ok", stderr="", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    box = _types.SimpleNamespace(env=lambda key: {}, workspace=tmp_path)
+
+    def _check(b, answer):
+        return True, ""
+
+    for unattended in (True, False):
+        probe = runner.Probe(name="p", prompts=["x"], check=_check,
+                             mode="bypassPermissions" if unattended
+                             else "acceptEdits",
+                             unattended=unattended, headless=True)
+        runner.run_headless(probe, box, api_key="k", model="m")
+    with_flag, without_flag = seen
+    assert "--unattended" in with_flag
+    assert "--unattended" not in without_flag, "no probe gains the opt-in"
