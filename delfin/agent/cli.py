@@ -680,7 +680,7 @@ def _persisted_default_mode(workspace: Path) -> tuple[str, str]:
     still returns ``default_mode="default"``, its own fallback, which is
     indistinguishable from a user having written that word down. Asking
     the merged view therefore reports a decision nobody made — and it
-    silently defeated the plan-first default, because resolve_posture
+    silently decided the start posture, because resolve_posture
     correctly honours anything a user configured.
 
     The path travels with the mode because the banner names it. It used
@@ -1456,20 +1456,19 @@ def _headless_posture(args: argparse.Namespace,
     The interactive rule, held for a run nobody watches:
 
     * ``--permission-mode bypassPermissions`` needs ``--unattended``.
-      A terminal session downgrades to plan; a one-shot run is refused
-      (exit 2), because a downgraded run would exit 0 having done none of
-      what the script asked, and nobody reads the banner.
+      A terminal session falls back to ``launch_guard.DEFAULT_MODE``
+      (``default``); a headless run is refused (exit 2), because a
+      fallen-back run would exit 0 having done less than the script
+      asked, and nobody reads the banner.
     * A settings default of ``bypassPermissions`` is never inherited.
       Without ``--unattended``: refused. With it: the posture
-      ``launch_guard.resolve_posture`` gives the terminal session (plan),
-      said on stderr. Taking the default there would give a one-shot run
-      more than an interactive session with the same flags.
+      ``launch_guard.resolve_posture`` gives the terminal session
+      (``DEFAULT_MODE``), said on stderr. Taking the settings default
+      there would give a headless run more than an interactive session
+      with the same flags.
     * Otherwise the flag, or ``""`` when none is passed, so the engine
-      resolves the settings default (or ``default``) exactly as before.
-
-    Rejected: plan for a run with no mode at all, as the terminal does.
-    It turns every existing ``-p`` script read-only, and plan has no
-    approver on a headless run.
+      resolves the settings default (or ``default``) exactly as before --
+      the same start posture the terminal now has.
     """
     from . import launch_guard
 
@@ -3654,7 +3653,8 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--permission-mode", default="", dest="permission_mode",
                       choices=["", "plan", "default", "acceptEdits",
                                "bypassPermissions"],
-                      help="Start in this approval posture (default: plan)")
+                      help="Start in this approval posture (default: the "
+                           "settings default_mode, else default)")
     chat.add_argument("--confirm-timeout", type=float, default=0.0,
                       dest="confirm_timeout", metavar="SECONDS",
                       help="Let an unanswered question in the terminal expire "
