@@ -1373,6 +1373,14 @@ Cycle with `/permissions` or Shift+Tab; the cycle deliberately never lands on by
 
 Settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
 
+### The action watcher
+
+Behind the rules, a small model gives a second opinion on actions the rules allowed without anyone seeing them: everything under `bypassPermissions`, messages to other agents and network calls in every mode, and — when nobody can be asked (`delfin agent run`, `chat -p`, the scheduler) — every auto-allowed action that leaves the workspace, such as `git fetch`. It can only add friction: ask you, or refuse with its reason. Plain reads never reach it. Its state — on or off, model, scope, last failure — is in the start banner and in `/status`.
+
+When the watcher's model fails (one retry on an error, none on a timeout), an action that leaves the workspace is asked about, or held when nobody can be asked; reading, commands on the auto-allow list and writing inside the workspace go on, so a long unattended run keeps working. After three failures in a row the watcher is reported down, and its model is re-tried at most once a minute until it answers again.
+
+`agent.classifier.enabled`, `.model`, `.scope` (`unattended` or `all`) and `.user_rules` in `~/.delfin_settings.json` configure it, `DELFIN_CLASSIFIER=off|on|all` overrides it for one process. A process started from inside an agent session ignores `DELFIN_CLASSIFIER=off`, and the agent cannot edit the settings file.
+
 ### The shell sandbox
 
 Every command runs through an allow-list and then, where available, bubblewrap or firejail. Credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, the network is denied by default, and every command is appended to `~/.cache/delfin/agent-audit.jsonl`. `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}` selects the mechanism; when isolation is unavailable the agent says so rather than running unprotected in silence.

@@ -149,6 +149,7 @@ def _status(ctx, _args: str) -> CommandResult:
         f"provider   {st.get('provider', '?')}",
         f"mode       {st.get('mode', '?')}   role {st.get('role', '?')}",
         f"approval   {_mode(engine) or '(no gate on this backend)'}",
+        f"watcher    {st.get('watcher') or 'off (no permission gate)'}",
         f"workspace  {ctx.workspace}",
         f"session    {st.get('session_id', '') or '(unsaved)'}",
         f"tokens     ↑{st.get('input_tokens', 0)} ↓{st.get('output_tokens', 0)}"

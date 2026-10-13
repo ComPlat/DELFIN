@@ -6853,6 +6853,10 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # The watcher's health for the whole session (not per turn):
+    # consecutive failed model calls, down/up, last failure, pending user
+    # notices. See _watcher_record.
+    classifier_health: dict = field(default_factory=dict)
     # Skill name -> the user's own words, for the turn that opened with
     # the user correcting a skill the turn before it used. Set by the
     # engine (_note_skill_correction), read by skill_propose_patch.
@@ -11635,6 +11639,175 @@ _CLASSIFIER_REFUSALS_PER_TURN = 3
 _CLASSIFIED_NETWORK_TOOLS = frozenset({
     "web_fetch", "remote_trigger", "push_notification"})
 
+# The watcher failing. A model error is retried once after this pause (a
+# dropped connection, a 502 from the proxy); a timeout is not, it has
+# already cost _CLASSIFIER_TIMEOUT_S. After _CLASSIFIER_BREAKER_FAILURES
+# consecutive failed model calls in a session the watcher is "down": the
+# user is told once, and the model is probed at most once per
+# _CLASSIFIER_PROBE_INTERVAL_S until it answers. Counted per model call,
+# not per action: a skipped call while down is not new evidence.
+_CLASSIFIER_RETRY_DELAY_S = 0.5
+_CLASSIFIER_BREAKER_FAILURES = 3
+_CLASSIFIER_PROBE_INTERVAL_S = 60.0
+_classifier_clock = time.monotonic
+
+# Commands that reach the network or another machine with no operator a
+# text gate can see. Several are on the default auto-allow list (git
+# fetch/pull); they are what "leaves the workspace" means for a command
+# outside Bypass.
+_LEAVING_BASH = re.compile(r"""(?x)
+    (?:^|[\s;&|(`])
+    (?:git\s+(?:-[Cc]\s+\S+\s+)*
+         (?:fetch|pull|clone|push|ls-remote|submodule|remote\s+update)\b
+     | curl\b | wget\b | ssh\b | scp\b | sftp\b | rsync\b | nc\b | ncat\b
+     | telnet\b | ftp\b | gh\b | huggingface-cli\b
+     | pip3?\s+(?:install|download)\b
+     | python\S*\s+-m\s+pip\s+(?:install|download)\b
+     | (?:conda|mamba|micromamba)\s+(?:install|create|update)\b)
+""")
+
+# Gated tools that run inside the workspace and send nothing out; under
+# Bypass they reach the second opinion with every other gated tool.
+_WORKSPACE_LOCAL_TOOLS = frozenset({"run_tests", "make_plot"})
+
+
+def _leaves_workspace(
+    perms: "KitToolPermissions", action: dict, bypass: bool,
+) -> bool:
+    """Whether *action* reaches beyond the session workspace.
+
+    Input: an action as ``_classifier_action`` builds it, the session's
+    permissions and whether the mode is Bypass. Output: True for a network
+    or remote tool, a message to another agent, a write outside the
+    session and agent workspace or into a file that instructs an agent or
+    configures git, the high-risk command class, a command that reaches
+    the network (_LEAVING_BASH), and under Bypass a command the default
+    auto-allow list does not cover; False for workspace work.
+
+    Decides what a watcher failure does (_classifier_second_opinion): a
+    leaving action asks, or is refused when nobody can be asked; workspace
+    work keeps the rule result. The Bypass rule makes a session whose
+    watcher is down fall back to what default mode runs unasked. Unknown
+    tools count as leaving.
+    """
+    tool = str(action.get("tool") or "")
+    if tool in ("bash", "bash_background"):
+        cmd = _prose_blanked(str(action.get("command") or ""))
+        if _BYPASS_HIGH_RISK_BASH.search(cmd) or _LEAVING_BASH.search(cmd):
+            return True
+        if bypass:
+            try:
+                return not perms.matches_bash_auto_allow(
+                    str(action.get("command") or ""))
+            except Exception:
+                return True
+        return False
+    if tool in ("write_file", "edit_file", "multi_edit"):
+        return _bypass_screened_action(perms, action) is None
+    return tool not in _WORKSPACE_LOCAL_TOOLS
+
+
+def _watcher_health(perms) -> dict:
+    """The session's watcher record on *perms*, created on first use."""
+    health = getattr(perms, "classifier_health", None)
+    if not isinstance(health, dict):
+        health = {}
+        try:
+            perms.classifier_health = health
+        except Exception:
+            pass
+    health.setdefault("failures", 0)
+    health.setdefault("down", False)
+    health.setdefault("last_failure", "")
+    health.setdefault("last_attempt_at", None)
+    health.setdefault("notices", [])
+    return health
+
+
+def _watcher_record(perms, ok: bool, reason: str = "") -> None:
+    """Count one model call's outcome; open or close the breaker.
+
+    A success resets the count and, when the watcher was down, queues the
+    notice that it answers again. A failure stores its reason and, at the
+    _CLASSIFIER_BREAKER_FAILURES-th in a row, marks the watcher down and
+    queues the notice once.
+    """
+    health = _watcher_health(perms)
+    if ok:
+        health["failures"] = 0
+        if health["down"]:
+            health["down"] = False
+            health["notices"].append(
+                "Action watcher answers again: actions that leave the "
+                "workspace are judged as before.")
+            _record_security_event("classifier_up", "classifier", "",
+                                   blocked=False)
+        return
+    health["failures"] = int(health["failures"]) + 1
+    health["last_failure"] = " ".join(str(reason or "").split())[:160]
+    try:
+        health["last_failure_wall"] = time.strftime("%H:%M:%S")
+    except Exception:
+        pass
+    if not health["down"] and health["failures"] >= _CLASSIFIER_BREAKER_FAILURES:
+        health["down"] = True
+        health["down_since"] = health.get("last_failure_wall", "")
+        health["notices"].append(
+            f"Action watcher down: {health['failures']} model calls in a "
+            f"row failed (last: {health['last_failure']}). Reading, "
+            "commands on the auto-allow list and writing inside the "
+            "workspace go on; actions that leave the workspace are asked "
+            "about, or held when nobody can be asked, until it answers "
+            f"again (re-tried at most every "
+            f"{_CLASSIFIER_PROBE_INTERVAL_S:.0f} s).")
+        _record_security_event("classifier_down", "classifier",
+                               health["last_failure"], blocked=True)
+
+
+def drain_watcher_notices(perms) -> list:
+    """The watcher notices queued since the last drain, oldest first.
+
+    Shown to the user by the tool loop; each is returned exactly once.
+    """
+    if perms is None:
+        return []
+    health = getattr(perms, "classifier_health", None)
+    if not isinstance(health, dict) or not health.get("notices"):
+        return []
+    out = list(health["notices"])
+    health["notices"].clear()
+    return out
+
+
+def watcher_status_line(perms) -> str:
+    """One line: the watcher's switch, model, scope and last failure.
+
+    Input: the session's permissions (or None). Output: e.g. "on ·
+    kit.deepseek-v4-flash · scope unattended · no failure", "DOWN since
+    12:03:11 · ... · last failure: ...", or "off (...)" with the reason.
+    Never raises.
+    """
+    try:
+        if perms is None or getattr(perms, "classifier_runner", None) is None:
+            return "off (no model connection on this backend)"
+        cfg = _classifier_settings()
+        if cfg is None:
+            env = os.environ.get("DELFIN_CLASSIFIER", "").strip().lower()
+            why = ("DELFIN_CLASSIFIER=off" if env in ("off", "0", "false", "no")
+                   else "agent.classifier.enabled is false")
+            return f"off ({why})"
+        scope = "all" if cfg.get("broad") else "unattended"
+        health = getattr(perms, "classifier_health", None) or {}
+        last = str(health.get("last_failure") or "")
+        when = str(health.get("last_failure_wall") or "")
+        state = (f"DOWN since {health.get('down_since') or '?'}"
+                 if health.get("down") else "on")
+        tail = (f"last failure{(' ' + when) if when else ''}: {last}"
+                if last else "no failure")
+        return f"{state} · {cfg.get('model')} · scope {scope} · {tail}"
+    except Exception as exc:                              # noqa: BLE001
+        return f"unknown ({type(exc).__name__})"
+
 # Under Bypass the classifier's own failure (error, timeout, no verdict, and
 # every later action of a turn once one timed out) keeps the rule result,
 # because the user chose a profile that asks nothing. These are the actions
@@ -11810,7 +11983,13 @@ def _classifier_settings() -> Optional[dict]:
     (2026-10-11) -- and the broad scope pays that on every action.
     ``DELFIN_CLASSIFIER=off|on|all`` overrides switch and scope for one
     process: the settings file is one per account and read by every
-    session on it.
+    session on it. In a process an agent session started
+    (``action_classifier.AGENT_SESSION_ENV`` set) "off" is ignored: the
+    agent would otherwise switch its own watcher off by starting a nested
+    DELFIN. "on"/"all" still apply there, they only add judging. The
+    settings file is a protected write path (``.delfin_settings.json`` in
+    _DEFAULT_PATH_PROTECTED_GLOBS) and lives in the home directory, which
+    is no writable root, so ``enabled: false`` stays the user's switch.
     """
     try:
         from delfin.user_settings import load_settings
@@ -11821,8 +12000,10 @@ def _classifier_settings() -> Optional[dict]:
     enabled = bool(cfg.get("enabled", True))
     broad = str(cfg.get("scope") or "").strip().lower() == "all"
     env = os.environ.get("DELFIN_CLASSIFIER", "").strip().lower()
+    from .action_classifier import AGENT_SESSION_ENV as _agent_marker
     if env in ("off", "0", "false", "no"):
-        enabled = False
+        if not str(os.environ.get(_agent_marker, "") or "").strip():
+            enabled = False
     elif env in ("on", "1", "true", "yes"):
         enabled = True
     elif env == "all":
@@ -17434,11 +17615,24 @@ class _DocToolExecutor:
 
         Called ONLY at a point where the rules have already said yes and no
         human was asked. It never turns a refusal into an allow -- it is not
-        reached after one. Any failure of the classifier itself leaves the
-        rule result standing, except under Bypass for the high-risk class
-        of ``_bypass_failure_asks``: there an error asks, or refuses when
-        nobody can be asked. Under Bypass the actions of
+        reached after one. Under Bypass the actions of
         ``_bypass_screened_action`` get the model-free screen only.
+
+        Which actions are judged: everything under Bypass, messages to
+        other agents and network tools in every mode, every auto-allowed
+        command and auto-accepted edit in the broad scope, and in a
+        session nobody can be asked in, also every auto-allowed action that
+        leaves the workspace (``_leaves_workspace``: ``git fetch``, a write
+        to a granted directory).
+
+        The watcher failing (error after one retry, timeout, no verdict, or
+        a call skipped while it is down): an action that leaves the
+        workspace asks, or is refused when nobody can be asked, with a
+        reason that says what still works; workspace work keeps the rule
+        result. Such a refusal is not cached and does not count towards
+        the three-refusals lockout -- it says nothing about the agent.
+        ``_watcher_record`` keeps the session's failure count and opens the
+        breaker after ``_CLASSIFIER_BREAKER_FAILURES``.
         """
         runner = getattr(perms, "classifier_runner", None)
         if perms is None or runner is None:
@@ -17476,13 +17670,20 @@ class _DocToolExecutor:
                 "refused in this turn, so nothing but reading runs until "
                 "the user has answered. End your turn and tell the user "
                 "what you were trying to do.")
+        can_ask = perms.confirm_callback is not None
+        try:
+            leaves = _leaves_workspace(perms, action, bypass)
+        except Exception:
+            leaves = True
         if not (bypass or cfg.get("broad")
                 or base in ("session_message", "subagent_message")
-                or base in _CLASSIFIED_NETWORK_TOOLS):
+                or base in _CLASSIFIED_NETWORK_TOOLS
+                or (leaves and not can_ask)):
             # The frequent paths -- an auto-allowed command, an
-            # auto-accepted edit -- are judged only in the broad scope.
+            # auto-accepted edit -- are judged only in the broad scope,
+            # or, with nobody to ask, when they leave the workspace.
             return None
-        can_ask = perms.confirm_callback is not None
+        health = _watcher_health(perms)
         try:
             key = hashlib.sha256(json.dumps(
                 [base, args], sort_keys=True, default=str).encode(
@@ -17536,48 +17737,66 @@ class _DocToolExecutor:
         }
         state["calls"].append({"tool": base, "args": shown})
         failed: list = []
+        called: list = []
 
         def _bounded(prompt: str, model: str) -> str:
             # The runner is the client's; the bound is the gate's, so a
             # runner that hangs cannot hold an action for minutes. After
-            # one timeout the rest of the turn does not wait again: the
-            # error behaviour applies at once (user rules and the claim
-            # guard still run, they need no model).
-            if state.get("stalled"):
-                failed.append("stalled")
+            # one timeout in a turn, or while the watcher is down, the
+            # model is not waited for again until the probe interval has
+            # passed: the error behaviour applies at once (user rules and
+            # the claim guard still run, they need no model).
+            last = health.get("last_attempt_at")
+            recent = (last is not None and _classifier_clock() - last
+                      < _CLASSIFIER_PROBE_INTERVAL_S)
+            if (health.get("down") or state.get("stalled")) and recent:
+                failed.append("down" if health.get("down") else "stalled")
                 raise TimeoutError(
-                    "no verdict: the model timed out earlier in this turn")
-            box: dict = {}
+                    "no verdict: the watcher is down" if health.get("down")
+                    else "no verdict: the model timed out earlier in this "
+                    "turn")
+            for attempt in (1, 2):
+                health["last_attempt_at"] = _classifier_clock()
+                called.append(attempt)
+                box: dict = {}
 
-            def _work() -> None:
-                try:
-                    box["out"] = runner(prompt, model)
-                except BaseException as exc:      # noqa: BLE001
-                    box["exc"] = exc
+                def _work() -> None:
+                    try:
+                        box["out"] = runner(prompt, model)
+                    except BaseException as exc:      # noqa: BLE001
+                        box["exc"] = exc
 
-            worker = threading.Thread(
-                target=_work, name="action-classifier", daemon=True)
-            worker.start()
-            worker.join(_CLASSIFIER_TIMEOUT_S)
-            if worker.is_alive():
-                failed.append("timeout")
-                state["stalled"] = True
-                raise TimeoutError(
-                    f"no verdict within {_CLASSIFIER_TIMEOUT_S:.0f} s")
-            if "exc" in box:
-                failed.append(type(box["exc"]).__name__)
-                raise box["exc"]
-            return str(box.get("out") or "")
+                worker = threading.Thread(
+                    target=_work, name="action-classifier", daemon=True)
+                worker.start()
+                worker.join(_CLASSIFIER_TIMEOUT_S)
+                if worker.is_alive():
+                    failed.append("timeout")
+                    state["stalled"] = True
+                    raise TimeoutError(
+                        f"no verdict within {_CLASSIFIER_TIMEOUT_S:.0f} s")
+                if "exc" in box:
+                    if attempt == 1:
+                        # One short retry: a dropped connection or a 502
+                        # from the proxy is usually gone a moment later.
+                        time.sleep(_CLASSIFIER_RETRY_DELAY_S)
+                        continue
+                    failed.append(type(box["exc"]).__name__)
+                    raise box["exc"]
+                return str(box.get("out") or "")
+            raise TimeoutError("no verdict")      # pragma: no cover
 
-        # The classifier failing is not a reason to ask under Bypass: the
-        # user chose the profile that asks nothing, so the rule result
-        # stands -- except for the narrow high-risk class, where it asks
-        # (or refuses when nobody can be asked). A verdict the model gives
+        # The watcher failing. An action that leaves the workspace asks,
+        # or is refused when nobody can be asked: the second look was the
+        # only one it would get. Workspace work keeps the rule result in
+        # every mode -- the rules, the write gate and the sandbox confine
+        # it, the change journal can take it back, and stopping it would
+        # stop a long unattended run on a proxy hiccup. In the broad scope
+        # attended, that is most of what reaches the model: an outage must
+        # not turn each auto-allowed command into a dialog, and the user
+        # sees every step in the transcript. A verdict the model gives
         # with a reason is unaffected.
-        if bypass and _bypass_failure_asks(action):
-            on_error = "ask" if can_ask else "refuse"
-        else:
-            on_error = "allow"
+        on_error = ("ask" if can_ask else "refuse") if leaves else "allow"
         try:
             screened = (_bypass_screened_action(perms, action)
                         if bypass else None)
@@ -17596,13 +17815,37 @@ class _DocToolExecutor:
         except Exception as exc:
             failed.append(type(exc).__name__)
             decision, reason = on_error, f"classifier error: {exc}"
-        if failed or reason.startswith(_ac.ERROR_PREFIX):
+        watcher_failed = bool(failed) or reason.startswith(_ac.ERROR_PREFIX)
+        if called:
+            # Only a real model call is evidence about the watcher; a call
+            # skipped while it is down or stalled is not counted again.
+            _watcher_record(perms, not watcher_failed, reason)
+        if watcher_failed:
             _record_security_event(
                 "classifier_error", base, f"{shown}: {reason[:120]}",
                 blocked=decision != "allow")
         reason = " ".join(reason.split())[:300]
         if not reason.endswith((".", "!", "?")):
             reason += "."
+
+        if watcher_failed and decision == "refuse":
+            # Nobody to ask and an action that leaves the workspace: held,
+            # not judged. Not cached, not counted towards the lockout.
+            _record_security_event(
+                "classifier_held", base, f"{shown}: {reason[:120]}")
+            down = bool(health.get("down"))
+            return (
+                f"'{base}' ({shown}) was not run: the action watcher (the "
+                "model's second opinion behind the permission rules) could "
+                f"not judge it -- {reason} Nobody can be asked here, so an "
+                "action that leaves the workspace waits. "
+                + ("The watcher is down; it is re-tried at most every "
+                   f"{_CLASSIFIER_PROBE_INTERVAL_S:.0f} s and this lifts by "
+                   "itself when it answers. " if down else "")
+                + "Still working: reading, planning, commands on the "
+                "auto-allow list and writing inside the workspace -- carry "
+                "on with that, and name this step in your report if it is "
+                "still needed.")
 
         if decision == "allow":
             state["allowed"].add(key)
@@ -17625,11 +17868,19 @@ class _DocToolExecutor:
                     f"{action['message'][:1200]}")
         else:
             body = f"{base} -> {shown}"
-        preview = (
-            "[ACTION CLASSIFIER -- SECOND OPINION]\n"
-            "The permission rules allow this action. The classifier is not "
-            "sure your request covers it:\n"
-            f"  {reason}\n\n{body}")
+        if watcher_failed:
+            preview = (
+                "[ACTION CLASSIFIER -- SECOND OPINION]\n"
+                "The permission rules allow this action, and it leaves the "
+                "workspace. The action watcher could not judge it"
+                + (" (the watcher is down)" if health.get("down") else "")
+                + f":\n  {reason}\n\n{body}")
+        else:
+            preview = (
+                "[ACTION CLASSIFIER -- SECOND OPINION]\n"
+                "The permission rules allow this action. The classifier is "
+                "not sure your request covers it:\n"
+                f"  {reason}\n\n{body}")
         try:
             ok = bool(perms.confirm_callback(base, args, preview))
         except Exception as exc:
@@ -23354,6 +23605,10 @@ def _scrubbed_bash_env() -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in _SECRET_ENV_NAMES
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    # Every process an agent session starts says so; a nested DELFIN then
+    # ignores DELFIN_CLASSIFIER=off (_classifier_settings).
+    from .action_classifier import AGENT_SESSION_ENV as _agent_marker
+    env[_agent_marker] = str(os.getpid())
     return env
 
 
@@ -26769,6 +27024,13 @@ class OpenAIClient(_BaseClient):
                     api_messages.append(_harness_row(_run_note))
                     yield StreamEvent(
                         type="notice", text="\n\n" + _run_note + "\n")
+
+                # The watcher went down or answers again: for the user.
+                # The model learns it from the refusal text of each held
+                # action, so the history gets nothing here.
+                for _w_note in drain_watcher_notices(self._permissions):
+                    yield StreamEvent(
+                        type="notice", text="\n\n" + _w_note + "\n")
 
                 # Mid-session memory nudge (package 7): after enough WORK
                 # (tool calls AND produced text) since the last nudge, ask
