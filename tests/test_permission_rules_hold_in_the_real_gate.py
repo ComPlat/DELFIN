@@ -339,7 +339,7 @@ def test_a_chained_or_redirected_command_is_never_covered(env, cmd):
 
 
 @pytest.mark.parametrize("cmd", [
-    "python3 -c pass", "sh -c ./run.sh", "env ./run.sh", "xargs ./run.sh",
+    "python3 -c 'import subprocess'", "sh -c ./run.sh", "env ./run.sh", "xargs ./run.sh",
     "timeout 5 ./run.sh", "perl -e 1",
 ])
 def test_an_allow_never_covers_a_program_carried_in_its_words(env, cmd):

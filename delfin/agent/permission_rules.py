@@ -448,9 +448,46 @@ def simple_command_words(cmd: str) -> Optional[list]:
     return words
 
 
+#: Commands that run another command named in their words. An allow rule
+#: for one of them would cover whatever program follows.
+_WRAPPERS = frozenset({
+    "env", "xargs", "timeout", "nice", "nohup", "time", "command", "builtin",
+    "exec", "eval", "sudo", "doas", "su", "stdbuf", "chroot", "setsid",
+    "flock", "watch", "parallel", "find", "ssh", "script", "unbuffer",
+    "taskset", "ionice", "strace", "ltrace", "gdb", "busybox",
+})
+#: Interpreters, and the flags with which their words carry program text.
+_INTERPRETER_RE = re.compile(
+    r"^(?:python[0-9.]*|py|pypy[0-9.]*|sh|bash|zsh|dash|ksh|fish|csh|tcsh|"
+    r"perl[0-9.]*|ruby|node|nodejs|deno|bun|Rscript|R|julia|php|lua[0-9.]*|"
+    r"tclsh|wish|awk|gawk|mawk|osascript|pwsh|powershell)$")
+_INLINE_FLAGS = frozenset({"-c", "-e", "-E", "--eval", "--command", "-r",
+                           "--exec", "-x", "-p", "-n", "-i"})
+
+
+def carries_a_program(words: list) -> bool:
+    """True when the command runs a program its words carry: a wrapper
+    (``env``, ``xargs``, ``timeout`` ...), or an interpreter given inline
+    code (``python3 -c``, ``sh -c``, ``perl -e``) or read from stdin."""
+    head = words[0].rsplit("/", 1)[-1]
+    if head in _WRAPPERS:
+        return True
+    if _INTERPRETER_RE.match(head):
+        rest = words[1:]
+        if not rest or rest[0] == "-":
+            return True
+        if head in ("awk", "gawk", "mawk"):
+            return True
+        return any(w in _INLINE_FLAGS or (w.startswith("-") and not
+                   w.startswith("--") and "c" in w[1:] and head in (
+                       "sh", "bash", "zsh", "dash", "ksh"))
+                   for w in rest)
+    return False
+
+
 def _bash_allow_hits(rule: Rule, cmd: str) -> bool:
     words = simple_command_words(cmd)
-    if words is None:
+    if words is None or carries_a_program(words):
         return False
     want = list(rule.value)
     if rule.wildcard:
@@ -606,11 +643,13 @@ def allows(rs: RuleSet, site: str, name: str, args: dict, workspace: Any,
         if bare not in _BASH_TOOLS:
             return None
         cmd = str(args.get("command") or "")
+        words = simple_command_words(cmd)
+        if words is None or carries_a_program(words):
+            return None
         for rule in rs.allow:
             if rule.kind == "bash" and _bash_allow_hits(rule, cmd):
                 return rule
-            if (rule.kind == "tool" and _tool_matches(rule, name, strict=True)
-                    and simple_command_words(cmd) is not None):
+            if rule.kind == "tool" and _tool_matches(rule, name, strict=True):
                 return rule
         return None
     if site in ("read", "write"):

@@ -18280,10 +18280,14 @@ class _DocToolExecutor:
             # second opinion looks, as it does for the auto-allow list.
             # Not for a push nobody asked for: head-less, that one reaches
             # this point to be refused here, and the refusal is the
-            # one-request rule, not a question.
+            # one-request rule, not a question. Not for a command the
+            # egress scan flagged either: an upload is sent to this dialog
+            # for the person to see, and a rule naming the command is not
+            # a decision about the data it sends.
             _ungranted_push = (_is_git_push(cmd)
                                and not (perms.push_grants or {}).get("push"))
-            if not _ungranted_push and _rule_answers(perms, "bash", "bash"):
+            if (not _ungranted_push and egress is None
+                    and _rule_answers(perms, "bash", "bash")):
                 return self._classifier_second_opinion(perms, name, args, mode)
             if (mode in ("default", "diff_approval", "acceptEdits")
                     and perms.confirm_callback is not None):
