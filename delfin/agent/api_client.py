@@ -1283,6 +1283,67 @@ _CHDIR_OPTIONS: dict[str, tuple[str, ...]] = {
 }
 
 
+#: `$NAME` or `${NAME}`; every other `$` form is not resolved.
+_SHELL_VAR_REF = re.compile(
+    r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+#: Every name: the command can set any variable (`source`, `eval`, `.`).
+_ALL_NAMES = frozenset({"*"})
+
+
+def _shell_names_set_opaquely(cmd: str) -> "frozenset | set":
+    """Variable names whose value at a `cd` the gate cannot read off the
+    command: set by anything other than a standalone `NAME=literal`
+    (`for NAME in`, `read NAME`, `declare NAME=`, `printf -v NAME`,
+    `NAME=$(…)`, `W=x prog` …), or written inside single quotes, where
+    `$NAME` is not expanded at all. ``_ALL_NAMES`` when the command runs
+    `source`, `.` or `eval`, which can set any of them.
+
+    Errs one way only: a name listed here is unresolved, and an
+    unresolved cd is asked about or refused. Never raises.
+    """
+    import shlex
+    try:
+        text = cmd or ""
+        ok: dict = {}
+        for seg in _split_shell_segments(text):
+            try:
+                words = shlex.split(seg)
+            except ValueError:
+                return _ALL_NAMES
+            while words and words[0] in _SHELL_LEAD_WORDS:
+                words = words[1:]
+            if words:
+                words[0] = words[0].lstrip("(")
+            if words and Path(words[0]).name in ("source", ".", "eval"):
+                return _ALL_NAMES
+            if words and words[0] == "export":
+                words = words[1:]
+            if words and all(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)
+                             for w in words):
+                for w in words:
+                    name, value = w.split("=", 1)
+                    if "$(" in value or "`" in value:
+                        continue
+                    ok[name] = ok.get(name, 0) + 1
+        out: set = set()
+        for m in _SHELL_VAR_REF.finditer(text):
+            name = m.group(1) or m.group(2)
+            if name in out:
+                continue
+            bare = [b for b in re.finditer(
+                rf"(?<![\w${{]){re.escape(name)}(?!\w)(?!=)", text)]
+            assigned = len(re.findall(
+                rf"(?<![\w$]){re.escape(name)}=", text))
+            quoted = any(f"${name}" in q or f"${{{name}}}" in q
+                         for q in re.findall(r"'[^']*'", text))
+            if bare or quoted or assigned > ok.get(name, 0):
+                out.add(name)
+        return out
+    except Exception:
+        return _ALL_NAMES
+
+
 class _ShellDirWalk:
     """The directory a shell command is in, followed command by command.
 
@@ -1303,9 +1364,14 @@ class _ShellDirWalk:
     Followed: `cd X`, `cd` (home), `cd ~/X`, `cd $HOME/X`, `cd -`,
     `pushd X`, `pushd` (swap), `popd`, `( … )`, `$( … )` (a cd inside a
     substitution does not move the outer shell), and `if`/`then`/`!`/`{`
-    before a cd. Unresolved: a target with `$` or a backquote, `cd -` with
-    no earlier cd, `popd` on an empty stack, `pushd +N`. CDPATH is not
-    read (a relative cd is taken as relative to the current directory).
+    before a cd. `$NAME`/`${NAME}` in a target resolves from ``env`` (the
+    environment the command will run with) and from standalone literal
+    assignments earlier in the command (`W=sub; cd $W`), unless the
+    command may set NAME some other way (_shell_names_set_opaquely).
+    Unresolved: any other `$` form, an unset or opaquely set name, a
+    backquote, `cd -` with no earlier cd, `popd` on an empty stack,
+    `pushd +N`. CDPATH is not read (a relative cd is taken as relative to
+    the current directory).
 
     One instance per pass over a command; the read scanner, the write
     scanner and the script content scan each drive their own, so the three
@@ -1314,24 +1380,75 @@ class _ShellDirWalk:
     to be followed by none of them and `popd` by one.
     """
 
-    def __init__(self, start: "Path | None", oldpwd: "Path | None" = None):
+    def __init__(self, start: "Path | None", oldpwd: "Path | None" = None,
+                 env: "dict | None" = None, cmd: str = ""):
         self.here = start
         self.previous = _UNRESOLVED_DIR if oldpwd is None else oldpwd
         self.stack: list = []
         self.frames: list = []       # ("sub", saved state) | ("cmd"|"plain", None)
         self.pending: "tuple | None" = None
         self.visited: list = [start]
+        # Variables a cd target may name: the environment the command runs
+        # with (_scrubbed_bash_env) and the literal assignments seen so far
+        # (None = assigned something unknowable). Names the command may set
+        # any other way are never resolved (_shell_names_set_opaquely).
+        self.env = dict(env or {})
+        self.vars: dict = {}
+        self.tainted = _shell_names_set_opaquely(cmd) if env is not None else None
 
     @property
     def unresolved(self) -> bool:
         return self.here == _UNRESOLVED_DIR
 
     def _state(self) -> tuple:
-        return (self.here, self.previous, list(self.stack))
+        return (self.here, self.previous, list(self.stack), dict(self.vars))
+
+    def _expand(self, text: str) -> "str | None":
+        """*text* with `$NAME` / `${NAME}` replaced, or None when any part
+        cannot be known: a substitution, another `$` form, a name the
+        command sets other than by a literal assignment, an unset name."""
+        if "`" in text or "$(" in text:
+            return None
+        if "$" not in text:
+            return text
+        if self.tainted is None:
+            return None
+        if "$" in _SHELL_VAR_REF.sub("", text):
+            return None              # ${X:-y}, $1, $?, ...
+        unknown = False
+
+        def _value(m: "re.Match") -> str:
+            nonlocal unknown
+            name = m.group(1) or m.group(2)
+            if self.tainted is _ALL_NAMES or name in self.tainted:
+                unknown = True
+                return ""
+            value = (self.vars[name] if name in self.vars
+                     else self.env.get(name))
+            if value is None:
+                unknown = True
+                return ""
+            return value
+
+        out = _SHELL_VAR_REF.sub(_value, text)
+        return None if unknown else out
+
+    def _assign(self, words: list) -> None:
+        """Record `NAME=literal` (also after `export`) as the shell will."""
+        if words and words[0] == "export":
+            words = words[1:]
+        for w in words:
+            m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", w, re.S)
+            if m:
+                self.vars[m.group(1)] = self._expand(m.group(2))
 
     def _target(self, dest: str) -> "Path | None":
         dest = _home_expanded(dest)
-        if "$" in dest or "`" in dest:
+        if "$" in dest:
+            dest = self._expand(dest)
+            if dest is None:
+                return _UNRESOLVED_DIR
+        if "`" in dest:
             return _UNRESOLVED_DIR
         dest = os.path.expanduser(dest)
         if dest.startswith("/"):
@@ -1419,19 +1536,30 @@ class _ShellDirWalk:
         if not depth:
             inside = sum(1 for k, _ in self.frames if k == "cmd")
             depth = [inside] * len(words)
-        i = 0
-        while i < len(words) and (words[i] in _SHELL_LEAD_WORDS or re.match(
-                r"^[A-Za-z_][A-Za-z0-9_]*=", words[i])):
+        lead = 0
+        while lead < len(words) and words[lead] in _SHELL_LEAD_WORDS:
+            lead += 1
+        i = lead
+        while i < len(words) and re.match(
+                r"^[A-Za-z_][A-Za-z0-9_]*=", words[i]):
             i += 1
         if (i < len(words) and depth[i] == 0
                 and Path(words[i]).name in _BASH_DIR_CHANGERS):
             self._follow(words[i:])
             return words, True
+        # `W=sub` or `export W=sub` on its own sets a shell variable; one
+        # in front of a program (`W=sub prog`) sets it for that program only.
+        rest = words[lead:]
+        if rest and rest[0] == "export":
+            rest = rest[1:]
+        if (rest and not any(depth[lead:]) and all(
+                re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w) for w in rest)):
+            self._assign(words[lead:])
         return words, False
 
     def leave(self) -> None:
         if self.pending is not None:
-            self.here, self.previous, self.stack = self.pending
+            self.here, self.previous, self.stack, self.vars = self.pending
             self.pending = None
 
     def command_dir(self, argv: list) -> "Path | None":
@@ -1486,7 +1614,7 @@ def _bash_visited_dirs(cmd: str, base: "str | Path") -> list:
     """
     import shlex
     start = Path(base)
-    walk = _ShellDirWalk(start, oldpwd=start)
+    walk = _ShellDirWalk(start, oldpwd=start, env=_scrubbed_bash_env(), cmd=cmd or "")
     try:
         for seg in _split_shell_segments(cmd or ""):
             walk.leave()
@@ -1657,7 +1785,7 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
     here: "Path | None" = Path(cwd) if cwd is not None else None
     # `cd -` before any cd stays where the command began, as it always did
     # here; an unknown directory stops the resolving of relative names.
-    walk = _ShellDirWalk(here, oldpwd=here)
+    walk = _ShellDirWalk(here, oldpwd=here, env=_scrubbed_bash_env(), cmd=cmd)
 
     def _known(where: "Path | None") -> "Path | None":
         if where is None or where == _UNRESOLVED_DIR or not where.is_absolute():
@@ -2449,7 +2577,8 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # open direction, and "could not tell where this writes" is a
         # refusal, not a pass.
         here = None
-        walk = _ShellDirWalk(None)
+        _env = _scrubbed_bash_env()
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
 
         def _enter(segment: str, argv: list) -> tuple:
             """Follow one simple command (_ShellDirWalk). A subshell the
@@ -2514,7 +2643,7 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 if not tok.startswith("&"):
                     _add(tok)
         here = None
-        walk = _ShellDirWalk(None)
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
 
         # What an inline python payload would write.
         #
@@ -2540,7 +2669,7 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # counts differ) a command that contains a `cd` reports relative
         # targets as unresolved, so the gate refuses rather than guesses.
         here = None
-        walk = _ShellDirWalk(None)
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
         _c_dirs: list = []           # (payload, directory)
         _doc_dirs: list = []
         _paired = True
@@ -2592,7 +2721,7 @@ def _bash_write_targets(cmd: str) -> list[str]:
             for tok in _inline_payload.analyze_payload(src).writes:
                 _add(tok)
         here = None
-        walk = _ShellDirWalk(None)
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
 
         # Per shell segment: command name + arguments.
         for segment in re.split(r"[;&|]{1,2}|\n", cmd):
@@ -17004,7 +17133,7 @@ class _DocToolExecutor:
         whose local imports resolve in that directory."""
         import shlex
         out: list = []
-        walk = _ShellDirWalk(base)
+        walk = _ShellDirWalk(base, env=_scrubbed_bash_env(), cmd=cmd)
         for seg in _split_shell_segments(cmd):
             walk.leave()
             try:
