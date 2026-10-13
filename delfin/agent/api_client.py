@@ -3066,9 +3066,11 @@ _MCP_BASH_TOOL_BASES: frozenset[str] = frozenset({
 _MCP_BASH_CMD_KEYS: tuple[str, ...] = ("command", "cmd", "script", "code")
 
 # `git push` in a shell command, with any `-C dir` / `-c k=v` / `--flag`
-# ahead of the subcommand.
+# ahead of the subcommand. Each option has exactly one parse: a second
+# `\s+-c\s+\S+` alternative (already inside `-[Cc]`) gave every `-c` two,
+# and `git -c ! -c ! ...` without `push` took 2**n steps to reject.
 _GIT_PUSH_RE = re.compile(
-    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+|\s+-c\s+\S+"
+    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+"
     r"|\s+--[\w-]+(?:=\S+)?)*\s+push\b")
 # A user message that asks for a push ("push", "pushen", "puschen"), and
 # one that says not to. The word alone was the test once, and "der Push
@@ -7571,16 +7573,239 @@ class KitToolPermissions:
         return False
 
 
+# Blanking of sed regex bodies, in linear time.
+#
+# The three substitutions below replace these patterns, applied with
+# re.sub in this order:
+#
+#   s:  (?<![\w])s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1([a-zA-Z0-9]*)
+#         -> " s " + flags
+#   /:  /(?:\\.|[^/])*/                  -> " "
+#   \c: \\(.)(?:\\.|(?!\1).)*\1          -> " "
+#
+# Each body loop reads a backslash both as the start of an escape and as
+# a plain character, so ``\a\a\a...`` has 2**n parses, and a body with no
+# closing delimiter took 2**n steps to reject (code scanning py/redos;
+# 30 repetitions held the gate for minutes). An unambiguous rewrite such
+# as (?:\\.|[^\\D])* rejects quickly but ends some bodies elsewhere:
+# ``s/x\\/y/z/`` is s|x\\|y|z under the old pattern and s|x\\/y|z| under
+# the rewrite, which changes what the gate blanks. The functions below
+# reproduce the old pattern's choice exactly.
+#
+# Which end the old pattern chooses. Python's engine tries the parses
+# depth first, escape before plain character, and returns the first whose
+# continuation succeeds; whether a continuation succeeds depends only on
+# the position the body ends at, so revisiting a position never changes
+# the answer, and the order of FIRST visits decides. Following that order
+# with the greedy tokenisation g (escape whenever the next character is
+# not a newline; terminal at the first unescaped D, a newline the body
+# cannot hold, or the end), the candidate ends -- all positions of D, as
+# the continuation starts with D -- are tried in this order:
+#
+#   1. the terminal of g, if it is D;
+#   2. if g's last token is an escaped backslash and the terminal is D:
+#      every candidate of a body starting just after that D (the parse
+#      reading ``\`` + ``\D`` instead of ``\\`` + ``D``), recursively;
+#   3. each D inside g, last first. Every D before the terminal is the
+#      second character of an escape token (a D at a token start would
+#      be the terminal), and reading that backslash as a plain character
+#      ends the body at the D.
+#
+# When D is the backslash, a backslash is never a plain character, so 2.
+# and 3. do not exist; instead the body may stop at the start of each
+# escape token on g (stopping is tried after escaping), last first.
+#
+# Every other node of the search tree is a position already visited or a
+# character that is not D. For the single-body patterns the first
+# candidate always succeeds; ``s///`` needs the second body to close too.
+# Cost: one regex walk (C speed) per body start, memoised per delimiter.
+# Equivalence with the old patterns is asserted on every string literal
+# in tests/, every string of length <= 7 over s / \ a newline x, and
+# 60000 random strings (tests/test_gate_patterns_finish_in_linear_time.py).
+
+_SED_WORD_CHAR_RE = re.compile(r"\w")
+_SED_FLAGS_RE = re.compile(r"[a-zA-Z0-9]*")
+_SED_ESCAPE_RE = re.compile(r"\\[^\n]")
+
+
+class _SedBody:
+    """Delimited sed bodies with delimiter *delim* in *text*.
+
+    ``end(start)`` is where the old pattern's single body
+    ``(?:\\.|(?!D).)*`` (``(?:\\.|[^/])*`` with *newline_plain*) followed
+    by D closes when it starts at *start*, or -1. ``ends(start)`` yields
+    the candidate ends of the first ``s`` body in the old pattern's
+    order."""
+
+    def __init__(self, text: str, delim: str, newline_plain: bool = False):
+        self.text = text
+        self.delim = delim
+        plain = "\\\\" + ("" if newline_plain else "\\n") + re.escape(delim)
+        # Escape, plain character, and (unless the backslash is the
+        # delimiter) a backslash that cannot escape. The three are
+        # disjoint, so the loop has one parse; group 1 is the last token.
+        bare = "" if delim == "\\" else r"|\\(?=\n|\Z)"
+        self._token = re.compile(r"(?:(\\[^\n])|[^" + plain + "]" + bare + ")*")
+        self._end: dict[int, int] = {}
+
+    def _walk(self, start: int) -> tuple[int, int, bool]:
+        """(terminal, start of the last escape token or -1, whether the
+        last token is an escaped backslash)."""
+        m = self._token.match(self.text, start)
+        stop = m.end()
+        return stop, m.start(1), m.end(1) == stop and m.group(1) == "\\\\"
+
+    def end(self, start: int) -> int:
+        hit = self._end.get(start)
+        if hit is None:
+            stop, last_escape, _ = self._walk(start)
+            text, delim = self.text, self.delim
+            if stop < len(text) and text[stop] == delim:
+                hit = stop
+            elif delim != "\\":
+                hit = text.rfind(delim, start, stop)
+            else:
+                # The delimiter is the backslash: the body may stop at any
+                # escape token's start, the last one first.
+                hit = last_escape
+            self._end[start] = hit
+        return hit
+
+    def ends(self, start: int):
+        text, delim = self.text, self.delim
+        regions = []
+        while True:
+            stop, _, last_is_backslash = self._walk(start)
+            closed = stop < len(text) and text[stop] == delim
+            if closed:
+                yield stop
+            regions.append((start, stop))
+            if closed and delim != "\\" and last_is_backslash:
+                start = stop + 1
+                continue
+            break
+        if delim == "\\":
+            # Every escape token starts with the delimiter; stopping there
+            # is tried after the escape, the last token first.
+            low, stop = regions[0]
+            starts = [m.start() for m in _SED_ESCAPE_RE.finditer(text, low, stop)]
+            yield from reversed(starts)
+            return
+        while regions:
+            low, pos = regions.pop()
+            while True:
+                pos = text.rfind(delim, low, pos)
+                if pos < 0:
+                    break
+                yield pos
+
+
+def _line_end(text: str, pos: int) -> int:
+    nl = text.find("\n", pos)
+    return len(text) if nl < 0 else nl
+
+
+def _sed_blank_substitutions(text: str) -> str:
+    """``re.sub(<s pattern above>, lambda m: " s " + m.group(2), text)``.
+    A start needs two delimiters before the line ends; with two, the old
+    pattern always matched (the first is reachable by plain characters,
+    the second likewise), so the check only skips hopeless starts."""
+    out: list[str] = []
+    bodies: dict[str, _SedBody] = {}
+    n, last, i, nl = len(text), 0, 0, -1
+    while True:
+        i = text.find("s", i)
+        if i < 0 or i + 1 >= n:
+            break
+        delim = text[i + 1]
+        if delim == "\n" or (i and _SED_WORD_CHAR_RE.match(text[i - 1])):
+            i += 1
+            continue
+        if nl < i + 2:
+            nl = _line_end(text, i + 2)
+        first = text.find(delim, i + 2, nl)
+        if first < 0 or text.find(delim, first + 1, nl) < 0:
+            i += 1
+            continue
+        body = bodies.get(delim)
+        if body is None:
+            body = bodies[delim] = _SedBody(text, delim)
+        close = -1
+        for mid in body.ends(i + 2):
+            close = body.end(mid + 1)
+            if close >= 0:
+                break
+        if close < 0:
+            i += 1
+            continue
+        flags = _SED_FLAGS_RE.match(text, close + 1)
+        out.append(text[last:i])
+        out.append(" s " + flags.group())
+        last = i = flags.end()
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _sed_blank_slash_regexes(text: str) -> str:
+    """``re.sub(r"/(?:\\.|[^/])*/", " ", text)``."""
+    out: list[str] = []
+    body = _SedBody(text, "/", newline_plain=True)
+    last = i = 0
+    while True:
+        i = text.find("/", i)
+        if i < 0:
+            break
+        close = body.end(i + 1)
+        if close < 0:
+            i += 1
+            continue
+        out.append(text[last:i])
+        out.append(" ")
+        last = i = close + 1
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _sed_blank_custom_regexes(text: str) -> str:
+    """``re.sub(r"\\\\(.)(?:\\\\.|(?!\\1).)*\\1", " ", text)``: sed's
+    ``\\cREGEXc`` address. A start needs its delimiter before the line
+    ends; with one, the old pattern always matched."""
+    out: list[str] = []
+    bodies: dict[str, _SedBody] = {}
+    n, last, i, nl = len(text), 0, 0, -1
+    while True:
+        i = text.find("\\", i)
+        if i < 0 or i + 1 >= n:
+            break
+        delim = text[i + 1]
+        if nl < i + 2:
+            nl = _line_end(text, i + 2)
+        if delim == "\n" or text.find(delim, i + 2, nl) < 0:
+            i += 1
+            continue
+        body = bodies.get(delim)
+        if body is None:
+            body = bodies[delim] = _SedBody(text, delim)
+        close = body.end(i + 2)
+        if close < 0:
+            i += 1
+            continue
+        out.append(text[last:i])
+        out.append(" ")
+        last = i = close + 1
+    out.append(text[last:])
+    return "".join(out)
+
+
 def _sed_script_writes(cmd: str) -> bool:
     """True when a sed script in *cmd* holds a command that writes a file
     or runs one: ``w``/``W`` (write), ``e`` (execute), or the ``s///w``
     and ``s///e`` flags. Regex bodies are blanked first, so a letter in a
     pattern (``/wait/p``) is not read as a command."""
     body = re.sub(r"^\s*sed\b", "", cmd, count=1)
-    body = re.sub(r"(?<![\w])s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1([a-zA-Z0-9]*)",
-                  lambda m: " s " + m.group(2), body)
-    body = re.sub(r"/(?:\\.|[^/])*/", " ", body)
-    body = re.sub(r"\\(.)(?:\\.|(?!\1).)*\1", " ", body)
+    body = _sed_blank_substitutions(body)
+    body = _sed_blank_slash_regexes(body)
+    body = _sed_blank_custom_regexes(body)
     # A flag set after s///, or a command letter standing alone.
     if re.search(r"\bs [a-zA-Z0-9]*[we]", body):
         return True

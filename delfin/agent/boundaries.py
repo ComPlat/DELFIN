@@ -505,7 +505,7 @@ def capabilities(*, cwd: Any = ".", permission_mode: str = "",
                  disallowed_tools: Iterable[str] = (), asker: str = "nobody",
                  provider: str = "") -> dict:
     """The boundary a session started with these options would have."""
-    from .sandbox import _HOME_SECRET_DIRS
+    from .sandbox import MASKED_HOME_ENTRIES
     with _events_into([]):
         perms, info = session_permissions(
             cwd, permission_mode=permission_mode, add_dirs=add_dirs,
@@ -530,7 +530,7 @@ def capabilities(*, cwd: Any = ".", permission_mode: str = "",
         "readable_roots": readable,
         "deny_paths": list(perms.path_deny_globs),
         "protected_paths": list(perms.path_protected_globs),
-        "masked_home_dirs": list(_HOME_SECRET_DIRS),
+        "masked_home_dirs": list(MASKED_HOME_ENTRIES),
         "write_scope_globs": list(perms.write_allow_globs),
         "bash": {"deny_patterns": list(perms.bash_deny_patterns),
                  "auto_allow_patterns": list(perms.bash_auto_allow_patterns)},

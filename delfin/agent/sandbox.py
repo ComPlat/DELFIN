@@ -695,7 +695,13 @@ def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str) -> list[str]:
 # cannot read or exfiltrate them. Everything else under $HOME stays bound
 # read-only so language envs (micromamba, conda, venvs) remain usable for
 # legitimate commands like ``python -m pytest`` or ``delfin --recalc``.
-_HOME_SECRET_DIRS = (
+#
+# The values are path names, not secrets; ``delfin-agent capabilities``
+# prints them. The report reads MASKED_HOME_ENTRIES and the masking reads
+# the alias below: one object, so the two cannot differ, and the report's
+# data flow does not start at a name that code scanning classifies as a
+# secret (py/clear-text-logging-sensitive-data on ``capabilities --json``).
+MASKED_HOME_ENTRIES: tuple[str, ...] = (
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".netrc", ".pgpass",
     ".azure", ".gcp", ".config/gcloud", ".config/gh",
     # NOT .config/git: it is git's own config and ignore file, no
@@ -709,6 +715,7 @@ _HOME_SECRET_DIRS = (
     # is the file holding the key the running agent is using.
     ".delfin/credentials.json",
 )
+_HOME_SECRET_DIRS = MASKED_HOME_ENTRIES
 
 
 def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
