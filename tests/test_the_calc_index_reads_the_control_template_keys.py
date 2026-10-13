@@ -125,6 +125,71 @@ def test_a_3d_metal_keeps_the_plain_basis_although_relativity_is_set(tmp_path):
     assert rec.get("relativity", "") == ""
 
 
+# input.txt as DELFIN writes it: coordinate lines, no atom count, no
+# comment (define.convert_xyz_to_input_txt drops the first two lines).
+_TXT_RU = "Ru 0.0 0.0 0.0\nCl 0.0 0.0 2.3\n"
+_TXT_FE = "Fe 0.0 0.0 0.0\nCl 0.0 0.0 2.2\n"
+_TXT_DY = "Dy 0.0 0.0 0.0\nCl 0.0 0.0 2.6\n"
+_TXT_ORGANIC = "O 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n"
+
+
+def _delfin_writes(tmp_path, control, geometry):
+    """(main basis, metal basis, relativity token) of the ORCA input that
+    DELFIN's own writer builds from this CONTROL and geometry, with the
+    relativity reset that cli.py applies to a structure without a heavy
+    metal."""
+    from delfin.config import read_control_file
+    from delfin.utils import _should_use_rel, search_transition_metals
+    from delfin.xyz_io import read_and_modify_file
+    work = tmp_path / "delfin_writes"
+    work.mkdir(exist_ok=True)
+    ctl = work / "CONTROL.txt"
+    ctl.write_text(control.replace("method=\n", "method=classic\n").replace(
+        "smiles_converter=\n", "smiles_converter=MANTA\n"), encoding="utf-8")
+    geom = work / "input.txt"
+    geom.write_text(geometry, encoding="utf-8")
+    cfg = read_control_file(str(ctl))
+    metals = search_transition_metals(str(geom))
+    if not _should_use_rel(metals):
+        cfg["relativity"] = "none"
+    out = work / "out.inp"
+    read_and_modify_file(str(geom), str(out), 0, 1, "DMF", metals, None, None, cfg, "")
+    text = out.read_text(encoding="utf-8")
+    toks = next(ln for ln in text.splitlines() if ln.startswith("!")).split()
+    rel = next((t for t in toks if t in ("ZORA", "X2C", "DKH")), "")
+    m = re.search(r'NewGTO "([^"]+)"', text)
+    return toks[3 if rel else 2], (m.group(1) if m else ""), rel
+
+
+@pytest.mark.parametrize("name,geometry,overrides", [
+    ("organic", _TXT_ORGANIC, {}),
+    ("fe", _TXT_FE, {}),
+    ("ru", _TXT_RU, {}),
+    ("dy", _TXT_DY, {}),
+    ("ru_relativity_none", _TXT_RU, {"relativity": "none"}),
+    ("ru_empty_rel_basis", _TXT_RU, {"main_basisset_rel": ""}),
+    ("organic_empty_basis", _TXT_ORGANIC, {"main_basisset": ""}),
+], ids=lambda v: v if isinstance(v, str) and "\n" not in v else "")
+def test_the_index_records_the_basis_delfin_writes(tmp_path, name, geometry, overrides):
+    """The index and DELFIN's input writer agree on main basis, metal
+    basis and relativity, for the input.txt format DELFIN itself writes
+    and for a CONTROL key left empty (DELFIN falls back to def2-SVP /
+    ZORA-def2-SVP there)."""
+    control = _template_control(**overrides)
+    rec, _ = _record(tmp_path, name, control, geometry=geometry)
+    got = (rec["basis_set"], rec.get("metal_basis", ""), rec.get("relativity", ""))
+    assert got == _delfin_writes(tmp_path, control, geometry)
+
+
+def test_an_oversized_geometry_is_not_read(tmp_path, monkeypatch):
+    """A geometry above the size bound is not opened; the basis is then
+    left to the .inp header, as with no geometry at all."""
+    d = _calc(tmp_path, "big", _template_control(), geometry=_XYZ_RU)
+    assert ci._metals_in(d, {"input_file": "input.txt"}) == ["Ru"]
+    monkeypatch.setattr(ci, "_GEOMETRY_MAX_BYTES", 8, raising=False)
+    assert ci._metals_in(d, {"input_file": "input.txt"}) is None
+
+
 def test_a_heavy_metal_in_the_smiles_counts(tmp_path):
     rec, _ = _record(tmp_path, "ru_smiles",
                      _template_control(SMILES="Cl[Ru](Cl)(N)N"))
