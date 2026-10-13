@@ -188,6 +188,19 @@ def test_a_mistyped_command_names_the_nearest_and_sends_nothing(chat):
     assert "/help" in text and "unknown command /hlep" in text, (
         "\n".join(session.visible()))
     assert _requests(session) == [], "the typo went to the model"
+    session.send("\x1b[A", 0.6)
+    assert session.visible()[-3].startswith("> /hlep"), (
+        "↑ did not bring the line back:\n" + "\n".join(session.visible()[-4:]))
+
+
+@pytest.mark.parametrize("line,near", [
+    ("/hlep", "/help"), ("/stauts", "/status"), ("/comapct now", "/compact"),
+    ("/tmp", ""), ("/scratch what is here", ""), ("/data", ""),
+    ("/home", ""), ("/help", ""), ("/home/u/x.py", ""),
+])
+def test_only_a_near_miss_of_a_builtin_is_held_back(line, near):
+    from delfin.agent import repl_commands as rc
+    assert rc.nearest_builtin(line) == near
 
 
 def test_a_path_is_still_a_message(chat):

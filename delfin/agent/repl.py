@@ -1581,6 +1581,15 @@ class TerminalAgent:
 
         result = rc.dispatch(line, self._ctx())
         if not result.handled:
+            near = rc.nearest_builtin(line)
+            if near:
+                # A typo of a command is not a question for the model: it
+                # cost a turn and the answer was about the typo.
+                head = line.strip().split()[0]
+                self.transcript.chrome(self.transcript.theme.yellow(
+                    f"unknown command {head} — did you mean {near}? "
+                    "Nothing was sent; ↑ brings the line back."))
+                return ""
             return rc.expand_at_references(line, self.opts.cwd)
         if result.output:
             for out_line in result.output.splitlines():
