@@ -143,13 +143,15 @@ def test_explain_agrees_with_the_executor(tmp_path, monkeypatch, mode, asker):
             # What a yes would lead to, against a real yes.
             ws2, outside2 = _workspace(tmp_path / f"y{i}")
             args2 = {"command": template.format(outside=outside2)}
-            yes = _real_verdict("bash", args2, ws2, mode, asker, True,
-                                monkeypatch)
+            # Explained first: the real yes changes the workspace.
             again = B.explain("bash", args2, cwd=ws2, permission_mode=mode,
                               asker=asker)
-            if again["if_approved"] != yes["verdict"]:
+            yes = _real_verdict("bash", args2, ws2, mode, asker, True,
+                                monkeypatch)
+            really = "allow" if yes["reached"] else "refuse"
+            if again["if_approved"] != really:
                 mismatches.append((template, "if_approved",
-                                   again["if_approved"], yes["verdict"]))
+                                   again["if_approved"], really))
     assert not mismatches, mismatches
 
 
