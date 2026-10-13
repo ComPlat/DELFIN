@@ -21545,8 +21545,15 @@ class _DocToolExecutor:
             check = self._check_completion(task_id, perms)
             if check is not None:
                 fields["verified"] = check["verdict"]
-                if check.get("detail"):
-                    fields["verify_note"] = str(check["detail"])[:200]
+                # A verified verdict may carry a note (a test task whose
+                # test was never seen failing): it is kept on the task
+                # beside the detail.
+                kept = [str(check.get("detail") or "")]
+                if check["verdict"] == "verified":
+                    kept.append(str(check.get("note") or ""))
+                kept_text = "; ".join(t for t in kept if t)
+                if kept_text:
+                    fields["verify_note"] = kept_text[:200]
         try:
             task = self._task_store(perms).update(task_id, **fields)
         except KeyError as exc:
@@ -21569,6 +21576,10 @@ class _DocToolExecutor:
             )
         elif check is not None and check["verdict"] == "unchecked":
             payload["verified"] = "unchecked"
+        elif check is not None and check["verdict"] == "verified" \
+                and check.get("note"):
+            # Information, not a condition: the task stays verified.
+            payload["note"] = "[task-verify] " + str(check["note"]) + "."
         return json.dumps(payload, ensure_ascii=False)
 
     def _check_completion(
