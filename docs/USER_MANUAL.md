@@ -1373,6 +1373,12 @@ Cycle with `/permissions` or Shift+Tab; the cycle deliberately never lands on by
 
 Settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
 
+#### Answering an approval from another terminal
+
+A waiting approval can also be answered with `delfin-agent approvals approve|deny <id>` (or `answer <id> <n>` for a choice question). Each waiting request has a one-time code, shown only where the session asks: in its terminal dialog, in its dashboard row, or on the controlling terminal of a `chat --supervised` run. Pass it with `--code ABC-DEF`; on a terminal the command asks for it when it is left out. The code is in no file the agent can read, and the answer carries a signature made with it rather than the code. An answer without the right code is ignored and shown as a security event; the third one expires the request. A key in the terminal dialog or a click in the dashboard needs no code.
+
+Not covered: a program that can read the DELFIN process's memory (on Linux, `kernel.yama.ptrace_scope` 0 allows any program of your account; 1 or higher allows only DELFIN's own parents), a program that sees the session's terminal itself (an assistant driving it through a pseudo-terminal), and the external-CLI backend's own hook, which DELFIN's relay answers from your dialog. A supervised run without a terminal has nowhere to show the code, so its requests can only time out.
+
 ### The shell sandbox
 
 Every command runs through an allow-list and then, where available, bubblewrap or firejail. Credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, the network is denied by default, and every command is appended to `~/.cache/delfin/agent-audit.jsonl`. `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}` selects the mechanism; when isolation is unavailable the agent says so rather than running unprotected in silence.

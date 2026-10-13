@@ -373,9 +373,18 @@ def test_a_human_in_a_plain_shell_still_answers(home, tmp_path):
     env["HOME"] = str(home)
     env.pop("DELFIN_SCRATCH_STATE", None)
     env.pop(MARKER, None)
+    # The checkout under test: from tmp_path the interpreter would load
+    # whichever delfin it has installed.
+    root = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = ":".join(p for p in (root, env.get("PYTHONPATH", ""))
+                                 if p)
+    # The person types the code their session showed (approval_code).
+    from delfin.agent import approval_code
     proc = subprocess.run(
-        [sys.executable, "-m", "delfin.agent.cli", "approvals", "approve", rid],
-        env=env, capture_output=True, text=True, timeout=120, cwd=tmp_path)
+        [sys.executable, "-m", "delfin.agent.cli", "approvals", "approve", rid,
+         "--code", approval_code.code_for(rid)],
+        env=env, capture_output=True, text=True, timeout=120, cwd=tmp_path,
+        stdin=subprocess.DEVNULL)
     assert proc.returncode == 0, proc.stderr[-800:]
     record = json.loads(req.with_name(f"{rid}.answer.json").read_text())
     assert record["decision"] == "approve"

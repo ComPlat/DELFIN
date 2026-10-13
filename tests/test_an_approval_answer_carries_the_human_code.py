@@ -328,6 +328,11 @@ def _cli(home, tmp_path, *argv):
     env["HOME"] = str(home)
     env.pop("DELFIN_SCRATCH_STATE", None)
     env.pop(MARKER, None)
+    # The checkout under test, not whichever delfin the interpreter has
+    # installed: the child runs from tmp_path.
+    root = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (root, env.get("PYTHONPATH", "")) if p)
     return subprocess.run(
         [sys.executable, "-m", "delfin.agent.cli", "approvals", *argv],
         env=env, capture_output=True, text=True, timeout=120, cwd=tmp_path,

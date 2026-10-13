@@ -1919,6 +1919,11 @@ class TerminalAgent:
         self.transcript.chrome(self.transcript.theme.bold(f"? {question}"))
         for i, opt in enumerate(options, 1):
             self.transcript.chrome(f"  {i}. {rr.strip_control(opt)}")
+        from . import terminal_confirm as tc
+        outside = tc.outside_answer_line(getattr(req, "published", None),
+                                         choice=True)
+        if outside and options:
+            self.transcript.chrome(self.transcript.theme.dim("  " + outside))
         if not options:
             self._apply(req, {"answers": []})
             return

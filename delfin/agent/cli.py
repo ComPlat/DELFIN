@@ -2421,6 +2421,52 @@ def cmd_skills(args: argparse.Namespace) -> int:
     return 2
 
 
+def _approval_code_for(args: argparse.Namespace):
+    """The one-time code for answering ``args.request_id`` from here.
+
+    Output: the normalised code from ``--code`` or typed at this
+    terminal; None when no code is asked for (nothing waits under the id,
+    the request predates codes or is exempt, or this very process asked
+    it); False, with the refusal printed and recorded, when one is needed
+    and none was given. The code is checked by the waiting process, not
+    here: this process does not know it.
+    """
+    from . import approval_code as _code
+    from . import file_confirm as _fc
+    from . import terminal_confirm as _tc
+    rid = str(getattr(args, "request_id", "") or "")
+    given = _code.normalize(getattr(args, "code", "") or "")
+    if given:
+        return given
+    record = None
+    for row in list(_fc.pending()) + list(_tc.pending_for_supervisors()):
+        if str(row.get("id") or "") == rid:
+            record = row
+            break
+    if record is None or not record.get("needs_code") or _code.code_for(rid):
+        return None
+    try:
+        if sys.stdin.isatty():
+            typed = _code.normalize(input(
+                f"code shown by the session waiting on {rid}: "))
+            if typed:
+                return typed
+    except (EOFError, KeyboardInterrupt, OSError):
+        pass
+    try:
+        from .api_client import _record_security_event
+        _record_security_event(
+            "approval_code_missing", "approvals",
+            f"{rid}: an answer without the session's code was not written",
+            blocked=True)
+    except Exception:
+        pass
+    print(f"ERROR: answering {rid} needs the one-time code the waiting "
+          "session shows (its terminal, or its row in the dashboard); "
+          "pass it with --code", file=sys.stderr)
+    return False
+
+
 def cmd_approvals(args: argparse.Namespace) -> int:
     """The questions a headless session waits on, and the answers.
 
@@ -2456,6 +2502,11 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 "`delfin-agent approvals "
                 f"{action}` was run by an agent session"), file=sys.stderr)
             return 2
+        code = _approval_code_for(args)
+        if code is False:
+            return 2
+    else:
+        code = None
 
     if action == "answer":
         # A choice question (ask_user_question) published by a terminal
@@ -2466,7 +2517,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         from . import approval_answers as _ans
         who = os.environ.get("USER", "")
         try:
-            picks = _ans.answer(args.request_id, args.choice, by=who)
+            picks = _ans.answer(args.request_id, args.choice, by=who,
+                                code=code)
         except _ans.ChoiceError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
@@ -2481,7 +2533,7 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         # differently, which is one more dialog for the person here.
         reason = (getattr(args, "reason", "") or "") if action == "deny" else ""
         ok = _fc.answer(args.request_id, action == "approve", by=who,
-                        reason=reason)
+                        reason=reason, code=code)
         if not ok:
             # The same id may belong to a session waiting at a terminal.
             # Answering it here is the point of publishing it whole: the
@@ -2489,7 +2541,7 @@ def cmd_approvals(args: argparse.Namespace) -> int:
             from . import terminal_confirm as _tc
             ok = _tc.answer_waiting(args.request_id,
                                     action == "approve", by=who,
-                                    reason=reason)
+                                    reason=reason, code=code)
         if not ok:
             print(f"ERROR: nothing waiting with id {args.request_id!r}",
                   file=sys.stderr)
@@ -2507,6 +2559,9 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print(f"session {row.get('session_id', '')}")
                 print(f"tool    {row.get('tool', '')}")
                 print(f"path    {row.get('path', '')}")
+                if row.get("needs_code"):
+                    print("code    shown on that session's terminal; "
+                          "pass it with --code")
                 print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s"
                       f" of {int(row.get('timeout_s') or 0)}s")
                 print()
@@ -2527,6 +2582,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print(f"tool    {row.get('tool', '')}")
                 print(f"command {row.get('command', '')}")
                 print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s")
+                if row.get("needs_code"):
+                    print(f"code    shown at {where}; pass it with --code")
                 print(f"answer  here or at {where} — "
                       "whichever comes first")
                 print()
@@ -3952,6 +4009,12 @@ def build_parser() -> argparse.ArgumentParser:
     appr_ans.add_argument(
         "choice", help="The pick: an option's number (2) or its text, "
                        "comma-separated when the question allows more")
+    for _p in (appr_ok, appr_no, appr_ans):
+        _p.add_argument(
+            "--code", default="",
+            help="The one-time code the waiting session shows (its "
+                 "terminal, its dashboard row); asked for on a terminal "
+                 "when left out")
     appr_watch = appr_sub.add_parser(
         "watch", help="One line per new request, as they arrive")
     appr_watch.add_argument("--seconds", type=float, default=0.0,
