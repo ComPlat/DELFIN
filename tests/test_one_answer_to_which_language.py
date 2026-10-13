@@ -123,9 +123,11 @@ def test_no_session_language_means_no_block():
 # --- the learned rules -------------------------------------------------
 
 def test_the_shipped_language_rules_are_the_ones_dropped():
-    """Read the file that ships, not a synthetic string. Three of its
+    """Read the file that ships, not a synthetic string. Two of its
     rules name a conversation language; those are the ones that compete
-    with the session pin."""
+    with the session pin. (The ollama block repeated the shared one; the
+    repeat made every ollama session rewrite the file, see
+    test_a_session_does_not_rewrite_the_shipped_profiles.)"""
     import json
     from pathlib import Path
 
@@ -141,7 +143,7 @@ def test_the_shipped_language_rules_are_the_ones_dropped():
         for rule in (entry.get("communication") or {}).get("rules", []):
             (dropped if _dictates_a_language(rule) else kept).append(
                 (prov, rule))
-    assert [p for p, _ in dropped] == ["shared", "kit", "ollama"], dropped
+    assert [p for p, _ in dropped] == ["shared", "kit"], dropped
     for _, rule in dropped:
         assert "German for user-facing conversation" in rule
     # Everything else survives: exactness, units, tool discipline.
