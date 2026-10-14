@@ -4910,6 +4910,37 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Report daemon, setting and watched count "
                                  "(default)")
 
+    # ops status -- checkouts, dashboard servers, sessions and leftovers in
+    # one read-only view (delfin/agent/ops_status.py). Every flag reads:
+    # the bash auto-allow entry for this command depends on that, and
+    # tests/test_ops_status_reads_the_machinery.py pins the flag set.
+    def _cmd_ops(args):
+        from delfin.agent import ops_status
+        return ops_status.main(json_out=bool(args.json),
+                               repo=str(args.repo or ""))
+
+    ops_p = sub.add_parser(
+        "ops",
+        help="DELFIN's own machinery: `ops status` lists checkouts and "
+             "worktrees, dashboard servers, sessions and leftovers with a "
+             "safe next step per problem (read-only)",
+    )
+    ops_sub = ops_p.add_subparsers(dest="ops_action", required=True)
+    ops_status_p = ops_sub.add_parser(
+        "status",
+        help="Read-only overview: checkouts (branch / detached / held by), "
+             "dashboard servers of yours, session locks, stale locks and "
+             "worktrees; one 'problem → next step' line each; changes nothing",
+    )
+    ops_status_p.add_argument("--json", action="store_true",
+                              help="Print the status as JSON "
+                                   "(schema delfin.ops_status/1)")
+    ops_status_p.add_argument("--repo", default="",
+                              help="A checkout of the repository to inspect "
+                                   "(default: the current directory, else "
+                                   "the checkout DELFIN runs from)")
+    ops_status_p.set_defaults(func=_cmd_ops)
+
     # T6: run a session's tests on a SLURM compute node from a node-local
     # copy. The handler lives in delfin/agent/slurm_tests.py; it is imported
     # on use so an import error there cannot break every other command.
