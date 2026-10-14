@@ -2533,12 +2533,15 @@ def cmd_bug(args: argparse.Namespace) -> int:
 
 
 def cmd_credentials(args: argparse.Namespace) -> int:
-    """Manage credentials in ~/.delfin/credentials.json (chmod 0600).
+    """Manage API keys: the OS keyring or ~/.delfin/credentials.json (0600).
 
-    No subcommand here echoes a stored value — `list` masks every key
-    so the user can verify WHICH credentials are stored without exposing
-    them.  Input is read via getpass so the value is never visible on
-    screen and never lands in shell history.
+    Where `set` writes is agent.credentials.store (auto|keyring|file).
+    No subcommand here echoes a stored value — `list` masks every key and
+    names its store, so the user can verify WHICH credentials are stored
+    without exposing them. `migrate` moves file entries into the keyring
+    and removes each from the file only after an equal read-back. Input is
+    read via getpass so the value is never visible on screen and never
+    lands in shell history.
     """
     import getpass
     from . import credentials as _cred
@@ -2554,14 +2557,43 @@ def cmd_credentials(args: argparse.Namespace) -> int:
                   "KIT_TOOLBOX_API_KEY")
             print("Other well-known names: OPENAI_API_KEY, ANTHROPIC_API_KEY")
             return 0
-        print(f"Credentials (file: {_cred.credentials_path()})")
+        mode = _cred.configured_store()
+        status = _cred.keyring_status() if mode != "file" else None
+        if status is None:
+            kr = "not used (agent.credentials.store = file)"
+        elif status["usable"]:
+            kr = status["backend"]
+        else:
+            kr = f"unavailable: {status['reason']}"
+        print(f"Credentials (store setting: {mode})")
+        print(f"  file:    {_cred.credentials_path()}")
+        print(f"  keyring: {kr}")
         print()
         for name in sorted(items):
             info = items[name]
             src = info.get("source", "?")
-            tag = "[env]" if src == "env" else "[file]"
-            print(f"  {name:<28}  {info.get('value', ''):<14}  {tag}")
+            tag = f"[{src}]"
+            extra = [s for s in info.get("stores") or [] if s != src]
+            also = f"  (also in: {', '.join(extra)})" if extra else ""
+            print(f"  {name:<28}  {info.get('value', ''):<14}  {tag}{also}")
         return 0
+
+    if action == "migrate":
+        names = list(getattr(args, "names", None) or [])
+        try:
+            rows = _cred.migrate_to_keyring(names)
+        except _cred.CredentialStoreUnavailable as exc:
+            print(f"Nothing moved: {exc}", file=sys.stderr)
+            return 1
+        if not rows:
+            print("No file entries to move.")
+            return 0
+        bad = 0
+        for row in rows:
+            reason = f" ({row['reason']})" if row.get("reason") else ""
+            print(f"  {row['name']:<28}  {row['action']}{reason}")
+            bad += row["action"] in ("failed", "differs")
+        return 1 if bad else 0
 
     name = (getattr(args, "name", "") or "").strip()
     if not name:
@@ -2569,7 +2601,12 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         return 2
 
     if action == "delete":
-        if _cred.delete_credential(name):
+        try:
+            removed = _cred.delete_credential(name)
+        except _cred.CredentialStoreUnavailable as exc:
+            print(f"{name} is still in the keyring: {exc}", file=sys.stderr)
+            return 1
+        if removed:
             print(f"Removed {name}.")
             return 0
         print(f"No credential named {name}.", file=sys.stderr)
@@ -2588,12 +2625,17 @@ def cmd_credentials(args: argparse.Namespace) -> int:
             return 1
         try:
             ok = _cred.set_credential(name, value)
-        except _cred.CredentialStoreNotPrivate as exc:
+        except (_cred.CredentialStoreNotPrivate,
+                _cred.CredentialStoreUnavailable) as exc:
             print(f"Not stored: {exc}", file=sys.stderr)
             return 1
         if ok:
             print(f"Stored {name} = {_cred.mask(value)} "
-                  f"in {_cred.credentials_path()} (chmod 0600)")
+                  f"in {_cred.describe_store(name)}")
+            if _cred.stored_in(name) == ["keyring", "file"]:
+                print(f"An older copy of {name} is still in "
+                      f"{_cred.credentials_path()}; `delfin-agent credentials "
+                      "migrate` or `delete` removes it.")
         else:
             print(f"{name} already stored with this value (no change).")
         return 0
@@ -4203,13 +4245,21 @@ def build_parser() -> argparse.ArgumentParser:
     # credentials — secure key management
     cred = sub.add_parser(
         "credentials",
-        help=("Manage API keys in ~/.delfin/credentials.json (chmod 0600); "
-              "no stored value is ever echoed back"),
+        help=("Manage API keys in the OS keyring or ~/.delfin/credentials.json "
+              "(0600); no stored value is ever echoed back"),
     )
     cred_sub = cred.add_subparsers(dest="cred_action", required=False)
 
-    cred_ls = cred_sub.add_parser("list", help="List stored credentials (masked)")
+    cred_ls = cred_sub.add_parser(
+        "list", help="List stored credentials (masked) and their store")
     cred_ls.set_defaults(cred_action="list")
+
+    cred_mig = cred_sub.add_parser(
+        "migrate",
+        help=("Move file entries into the OS keyring; each leaves the file "
+              "only after an equal read-back"))
+    cred_mig.add_argument("names", nargs="*",
+                          help="Credential names (default: every file entry)")
 
     cred_set = cred_sub.add_parser(
         "set", help="Store a credential (value read via getpass, no echo)",
