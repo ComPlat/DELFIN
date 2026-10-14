@@ -87,3 +87,28 @@ def test_the_note_sits_in_the_stable_head(settings):
     assert note.layer == PromptLoader.LAYER_STABLE
     layers = [s.layer for s in sections]
     assert layers == sorted(layers)
+
+
+# --- concise final answers --------------------------------------------------
+
+def test_deepseek_is_told_to_answer_concisely(settings):
+    """Benchmark, 950 DeepSeek attempts: within one task, answers longer
+    than that task's median passed 0.79 (n=406) and shorter ones 0.75
+    (n=399) -- no gain -- at a duration p50 of 55 s against 40 s."""
+    assert mp.get_profile(_DEEPSEEK).concise_answers is True
+    assert mp.MODEL_NOTES["concise_answers"] in _solo_prompt(_DEEPSEEK)
+
+
+def test_glm_answers_are_left_as_they_are(settings):
+    """GLM's passing answers are already short (p50 710 chars against
+    DeepSeek's 2146), and its within-task longer answers passed less
+    often, not more -- nothing for the note to buy."""
+    assert mp.get_profile(_GLM).concise_answers is False
+    assert mp.MODEL_NOTES["concise_answers"] not in _solo_prompt(_GLM)
+
+
+def test_each_note_switches_alone(settings):
+    settings({"kit.deepseek": {"concise_answers": False}})
+    text = _solo_prompt(_DEEPSEEK)
+    assert mp.MODEL_NOTES["concise_answers"] not in text
+    assert mp.MODEL_NOTES["terse_tool_rounds"] in text
