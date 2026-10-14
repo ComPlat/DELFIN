@@ -225,6 +225,29 @@ def test_without_a_description_it_asks_for_one(stores):
     assert rep["description"] == "it stalled after the tool"
 
 
+def test_a_real_engine_yields_the_fields_the_report_needs(stores, monkeypatch):
+    """The live collector reads attributes off a real AgentEngine, not
+    only off the stand-in above."""
+    from delfin.agent import bug_filing
+    from delfin.agent import model_capabilities as mc
+    from delfin.agent.engine import AgentEngine
+    monkeypatch.setattr(mc, "resolve", lambda *a, **k: mc.ModelCapabilities(
+        model="m", provider="ollama", context_window=32768,
+        supports_tools=True))
+    eng = AgentEngine(repo_dir=str(stores["ws"]), backend="api",
+                      provider="ollama", model="probe-model")
+    eng.messages.append({"role": "user", "content": "hello"})
+    tt.record(eng.trace_session(), tool="read_file",
+              tool_input={"path": "a.txt"}, output="x", ok=True)
+    got = bug_filing.collect_live(eng, stores["ws"])
+    assert got["model"] == "probe-model"
+    assert got["provider"] == "ollama"
+    assert got["trace_session"] == eng.trace_session()
+    assert got["chat_messages"] == [{"role": "user", "content": "hello"}]
+    assert got["referenced_files"] == ["a.txt"]
+    assert got["workspace"]
+
+
 def test_an_empty_description_files_nothing(stores):
     engine = _Engine(stores["ws"])
     ctx, asked = _ctx(stores["ws"], engine, ["   "], [])
@@ -239,13 +262,29 @@ def test_bug_is_a_listed_builtin():
     assert any(row[1] == "/bug" for row in rc.palette_rows())
 
 
-def test_the_terminal_hands_its_reader_to_the_command():
-    """The REPL builds the context the handler asks through; a context
-    without ``ask`` could never confirm, so it must be wired."""
-    import inspect
+def test_the_terminal_hands_its_reader_to_the_command(stores):
+    """Through the real TerminalAgent line handler: the question is read
+    with the terminal's own reader and the preview is printed as chrome."""
     from delfin.agent import repl
-    src = inspect.getsource(repl.TerminalAgent._ctx)
-    assert "ask=" in src and "say=" in src
+    engine = _Engine(stores["ws"])
+    answers = ["y"]
+    prompts: list[str] = []
+
+    def read_line(prompt):
+        prompts.append(prompt)
+        return answers.pop(0)
+
+    out, err = io.StringIO(), io.StringIO()
+    agent = repl.TerminalAgent(engine, repl.ReplOptions(cwd=stores["ws"]),
+                               out=out, err=err, read_line=read_line)
+    assert agent._handle_line("/bug the terminal path") == ""
+    assert prompts == ["File this report? [y/N] "]
+    screen = out.getvalue() + err.getvalue()
+    assert "The bug report will contain" in screen
+    assert "bug report written" in screen
+    rep = json.loads((_reports(stores["archive"])[0] / "report.json")
+                     .read_text(encoding="utf-8"))
+    assert rep["surface"] == "terminal"
 
 
 # ---------------------------------------------------------------------------
