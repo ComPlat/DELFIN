@@ -19,6 +19,9 @@ and CLI parser (no model call):
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -166,3 +169,72 @@ def test_the_generalist_class_writes_into_its_own_fixture():
 def test_the_generalist_fixture_is_restored_after_every_attempt():
     rel = Path("tests") / "fixtures" / "generalist_workspace"
     assert rel in br._BEHAVIOR_WS_RELS
+
+
+# --- toolchains -----------------------------------------------------------
+
+def _fake_acceptance(monkeypatch, tmp_path, body: str) -> None:
+    script = tmp_path / "acc.py"
+    script.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(br, "acceptance_path", lambda name, root=None: script)
+
+
+def test_a_missing_toolchain_is_not_run_not_failed(monkeypatch, tmp_path):
+    _fake_acceptance(monkeypatch, tmp_path,
+                     "import sys\nprint('toolchain unavailable: cargo',"
+                     " file=sys.stderr)\nsys.exit(3)\n")
+    ok, out = br.run_acceptance("x.py", tmp_path, root=tmp_path)
+    assert ok is None
+    assert "toolchain unavailable" in out
+
+
+def test_exit_three_without_the_phrase_is_an_ordinary_failure(monkeypatch,
+                                                               tmp_path):
+    _fake_acceptance(monkeypatch, tmp_path, "import sys\nsys.exit(3)\n")
+    ok, _ = br.run_acceptance("x.py", tmp_path, root=tmp_path)
+    assert ok is False
+
+
+def test_the_toolchain_is_first_on_path_for_a_generalist_attempt(
+        monkeypatch, tmp_path):
+    tc = tmp_path / "tc-bin"
+    tc.mkdir()
+    monkeypatch.setenv("DELFIN_TOOLCHAIN_BIN", str(tc))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    with br._toolchain_on_path("generalist"):
+        assert os.environ["PATH"].split(os.pathsep)[0] == str(tc)
+    assert os.environ["PATH"] == "/usr/bin"
+    with br._toolchain_on_path("generic_project"):
+        assert os.environ["PATH"] == "/usr/bin"
+
+
+def test_no_toolchain_directory_changes_nothing(monkeypatch, tmp_path):
+    monkeypatch.setenv("DELFIN_TOOLCHAIN_BIN", str(tmp_path / "absent"))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    assert br.toolchain_bin() is None
+    with br._toolchain_on_path("generalist"):
+        assert os.environ["PATH"] == "/usr/bin"
+
+
+@pytest.mark.parametrize("setup", [
+    "generalist_rust_feature.py", "generalist_rust_red_to_green.py",
+    "generalist_go_feature.py", "generalist_go_red_to_green.py",
+    "generalist_ts_feature.py"])
+def test_a_setup_without_its_toolchain_says_so_and_builds_nothing(
+        setup, tmp_path):
+    """Run on every host: PATH and the toolchain directory are emptied,
+    so the setup must take the not-run route whatever is installed."""
+    from conftest import child_env
+    env = child_env(tmp_path)
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    env["PATH"] = str(empty)
+    env["DELFIN_TOOLCHAIN_BIN"] = str(empty)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    proc = subprocess.run(
+        [sys.executable, str(br.setup_path(setup, _ROOT)), str(ws)],
+        capture_output=True, text=True, timeout=60, env=env, cwd=str(ws))
+    assert proc.returncode == 3, proc.stderr
+    assert "toolchain unavailable" in proc.stderr
+    assert not any(ws.iterdir())

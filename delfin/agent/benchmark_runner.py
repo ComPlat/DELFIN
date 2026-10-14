@@ -941,7 +941,8 @@ def _run_task_once(
     verify_ok: "Optional[bool]" = None
     verify_output = ""
     try:
-        with _PristineWorkspace(learning_home=learning_home):
+        with _toolchain_on_path(task.task_class), \
+                _PristineWorkspace(learning_home=learning_home):
             _ws = workspace_for(Path(os.getcwd()), mode=task.mode,
                                 task_class=task.task_class)
             _seed_fixture_memories(Path(os.getcwd()), _ws)
@@ -1214,7 +1215,55 @@ def run_acceptance(
     except Exception as exc:
         return None, f"acceptance script could not run: {exc}"
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if (proc.returncode == TOOLCHAIN_EXIT
+            and "toolchain unavailable" in out):
+        # The host cannot run the check (no cargo, go, or a Node that
+        # runs TypeScript): not run, the same stance as a missing script.
+        return None, out
     return proc.returncode == 0, out
+
+
+# Exit status a setup or acceptance script uses for "this host lacks the
+# toolchain the task needs", printed with ``toolchain unavailable:``.
+TOOLCHAIN_EXIT = 3
+TOOLCHAIN_ENV = "DELFIN_TOOLCHAIN_BIN"
+_DEFAULT_TOOLCHAIN_BIN = Path("~/micromamba/envs/delfin-toolchains/bin")
+
+
+def toolchain_bin() -> Optional[Path]:
+    """Where node, cargo and go for the generalist tasks live, or None.
+
+    ``$DELFIN_TOOLCHAIN_BIN`` when set, else
+    ``~/micromamba/envs/delfin-toolchains/bin``; only an existing
+    directory counts. Resolved before an attempt's scratch home is
+    entered, so ``~`` is the operator's home."""
+    raw = os.environ.get(TOOLCHAIN_ENV) or str(
+        _DEFAULT_TOOLCHAIN_BIN.expanduser())
+    p = Path(raw).expanduser()
+    return p if p.is_dir() else None
+
+
+@contextlib.contextmanager
+def _toolchain_on_path(task_class: str):
+    """For a generalist attempt: the toolchain directory first on PATH
+    and exported as DELFIN_TOOLCHAIN_BIN, for the setup, the agent's own
+    shell commands and the acceptance script alike; both put back
+    afterwards. Other classes and hosts without the directory: no-op."""
+    tc = toolchain_bin() if (task_class or "") == "generalist" else None
+    if tc is None:
+        yield
+        return
+    saved = {k: os.environ.get(k) for k in ("PATH", TOOLCHAIN_ENV)}
+    os.environ["PATH"] = str(tc) + os.pathsep + (saved["PATH"] or "")
+    os.environ[TOOLCHAIN_ENV] = str(tc)
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def run_task(
