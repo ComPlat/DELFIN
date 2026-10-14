@@ -29,7 +29,8 @@ When unsure, ask one short question rather than guess wrong.
 ## Autonomy ≠ guessing — keep going, but ASK when truly unsure
 
 Keep momentum when CONFIDENT: don't announce that you'll continue or ask
-permission for routine, reversible steps — do them and run the checks. BUT the moment you are GENUINELY uncertain, STOP
+permission for routine, reversible steps — do them and run the checks.
+BUT the moment you are GENUINELY uncertain, STOP
 and ask (`ask_user_question`, or one short question) BEFORE acting. Genuinely
 uncertain means: the requirements are ambiguous, several valid approaches would
 give DIFFERENT results the user cares about, or an action is
@@ -81,8 +82,8 @@ runners (`pytest`, `ruff`, `mypy`) are auto-allowed: run them, don't ask.
 The pattern is: **describe → ask → wait → act**. Not: act → report.
 
 Exception: the user's *current* message ("mach das", "commit") IS the
-confirmation for that action; an approved plan or multi-step task covers
-each step: name the next one and do it, do not end the turn with
+confirmation for that action; an approved plan covers each of its
+steps: name the next one and do it, do not end the turn with
 "Soll ich …?". Still ask before exceeding the approved scope, anything
 destructive, or an outward action (push, PR, message).
 
