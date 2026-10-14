@@ -65,7 +65,7 @@ def ws(tmp_path, monkeypatch):
                         lambda perms, mode=None: ("bwrap", "auto"))
     monkeypatch.setattr(A, "_process_cage_enabled", lambda: True)
     monkeypatch.setattr(A, "_landlock_functional", lambda: True)
-    monkeypatch.setattr(A, "_BWRAP_RUNTIME_FAILURE", None, raising=False)
+    monkeypatch.setattr(A, "_BWRAP_RUNTIME_FAILURE", None)
     from delfin.agent import egress_proxy as EP
     monkeypatch.setattr(EP, "network_mode", lambda: "proxy")
     return d

@@ -22121,11 +22121,12 @@ class _DocToolExecutor:
                 # group, no terminal, the whole group ended at exit and
                 # at the timeout. subprocess.run killed only bash itself.
                 from . import contained_run as _contained
+                _run_argv = (_bash_isolation_argv(cmd, run_cwd, perms)
+                             if not caged_unasked
+                             else _bash_isolation_argv(cmd, run_cwd, perms,
+                                                       caged_unasked=True))
                 proc = _contained.run(
-                    _bash_isolation_argv(cmd, run_cwd, perms)
-                    if not caged_unasked
-                    else _bash_isolation_argv(cmd, run_cwd, perms,
-                                              caged_unasked=True),
+                    _run_argv,
                     cwd=str(run_cwd),
                     env=env,
                     timeout=timeout,
@@ -22214,6 +22215,16 @@ class _DocToolExecutor:
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
+        if _push is None:
+            _wrap_err = _note_wrap_failure(_run_argv, proc.returncode,
+                                           proc.stderr or "")
+            if _wrap_err:
+                payload["error"] = (
+                    "the sandbox could not be applied, so the command did "
+                    f"not run ({_wrap_err}). It is not run without it. "
+                    "Commands off the auto-allow list are asked about for "
+                    "the rest of this session; tell the user if they need "
+                    "this one.")
         _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
         if _ssh_note:
             payload["hint"] = _ssh_note
@@ -25010,6 +25021,50 @@ def _bwrap_functional() -> bool:
     return ok
 
 
+# bwrap's own diagnostic from the first wrap that failed at run time in
+# this process, or None. Set by _note_wrap_failure; read by
+# _caged_command_may_run_unasked and the caged argv.
+_BWRAP_RUNTIME_FAILURE: Optional[str] = None
+
+
+def _note_wrap_failure(argv, returncode, stderr: str) -> Optional[str]:
+    """bwrap's message when ``argv`` was a bubblewrap wrap that failed
+    before the command started, else None.
+
+    Input: the argv the executor started, its exit status and stderr.
+    Semantics: argv[0] is ``bwrap``, the status is non-zero and stderr
+    opens with bwrap's own ``bwrap: `` prefix (setup failures such as a
+    nested namespace, "Device or resource busy"). The command did not run
+    and is not retried without the wrap. Effect: ``_BWRAP_RUNTIME_FAILURE``
+    is set, which withdraws the caged admission for the process -- later
+    off-list commands are asked about. A security event is recorded.
+
+    Rejected: resetting ``_BWRAP_FUNCTIONAL`` to False. The stderr prefix
+    can be printed by the command itself, and that reset would move
+    "auto" from bwrap to Landlock or to no filesystem isolation; withdrawing
+    the admission only adds questions. Never raises.
+    """
+    global _BWRAP_RUNTIME_FAILURE
+    try:
+        if (not argv or os.path.basename(str(argv[0])) != "bwrap"
+                or not returncode):
+            return None
+        first = (stderr or "").lstrip().splitlines()
+        if not first or not first[0].startswith("bwrap: "):
+            return None
+        msg = first[0][:300]
+        if _BWRAP_RUNTIME_FAILURE is None:
+            _BWRAP_RUNTIME_FAILURE = msg
+            _record_security_event(
+                "isolation", "bash",
+                f"bubblewrap failed at run time ({msg}); the command did not "
+                "run, and commands off the auto-allow list are asked about "
+                "from now on", blocked=True)
+        return msg
+    except Exception:
+        return None
+
+
 _LANDLOCK_FUNCTIONAL: Optional[bool] = None
 
 
@@ -26082,7 +26137,9 @@ def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
         ``_bash_isolation_argv`` builds the argv from -- the process cage
         is active (``--unshare-pid``: no process outside the command is
         visible to signal) and the network mode is not "open";
-      - the text names nothing in ``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``.
+      - the text names nothing in ``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``;
+      - no wrap has failed at run time in this process
+        (``_BWRAP_RUNTIME_FAILURE``, set by ``_note_wrap_failure``).
     The command then runs with ``caged_unasked=True``: protected files
     read-only, no SLURM route, refused if the cage is gone by then.
 
@@ -26118,6 +26175,10 @@ def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
         # A container session runs its commands in the container, whose
         # mounts are not the cage this admission relies on: asked instead.
         if _kind != "bwrap" or _iso_mode == "container":
+            return False
+        # A wrap already failed at run time in this process
+        # (_note_wrap_failure): the cage cannot be relied on, so ask.
+        if _BWRAP_RUNTIME_FAILURE is not None:
             return False
         if not _process_cage_enabled():
             return False
@@ -26319,7 +26380,8 @@ def _bash_isolation_argv(
         if boxed:
             return boxed
         kind, mode = _bash_isolation_decision(perms, "auto")
-    if caged_unasked and (kind != "bwrap" or not _landlock_functional()):
+    if caged_unasked and (kind != "bwrap" or not _landlock_functional()
+                          or _BWRAP_RUNTIME_FAILURE is not None):
         return _refusal_argv(
             "this command was admitted without a question because the "
             "filesystem cage holds it, and the cage is no longer available")
