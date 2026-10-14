@@ -6,6 +6,12 @@ project file ``<workspace>/.delfin/settings.json``::
 
     "permissions": {"deny": [...], "ask": [...], "allow": [...]}
 
+and the administrator's managed policy (``managed_policy``), whose
+``deny``/``ask`` are parsed by ``parse_rule`` here, marked ``managed``,
+and placed ahead of the user's and the project's in the ``RuleSet``; its
+``only_allow`` bounds every allow (``within_only_allow``). This module is
+the one parser and matcher for all of them.
+
 Rule forms:
 
 * ``bash(git push)`` / ``bash(pytest:*)`` -- a command prefix, as words.
@@ -104,10 +110,13 @@ class Rule:
     wildcard: bool = False
     list: str = ""
     source: str = ""
+    #: True for a rule of the administrator's managed policy.
+    managed: bool = False
 
 
 @dataclass
 class RuleSet:
+    #: Managed deny/ask rules first, then the user's, then the project's.
     deny: tuple = ()
     ask: tuple = ()
     allow: tuple = ()
@@ -115,6 +124,11 @@ class RuleSet:
     errors: list = field(default_factory=list)
     user_path: str = ""
     project_path: str = ""
+    #: The managed ``only_allow`` lists, one tuple of rules per policy file
+    #: that sets one; a grant must fit every tuple. () = no bound.
+    only_allow: tuple = ()
+    #: The ``managed_policy.Policy`` merged in, or None.
+    policy: Any = None
 
     def is_empty(self) -> bool:
         return not (self.deny or self.ask or self.allow)
@@ -157,9 +171,13 @@ def parse_rule(text: Any) -> "Rule | str":
         if not body.lower().startswith("domain:"):
             return "web_fetch rules are web_fetch(domain:<host>)"
         host = body[len("domain:"):].strip().lower().rstrip(".")
+        # ``*.example.org``: the subdomains only, not the domain itself.
+        sub_only = host.startswith("*.")
+        if sub_only:
+            host = host[2:]
         if not host.isascii() or not _HOST_RE.match(host):
             return f"{host!r} is not a host name"
-        return Rule(raw, "web_fetch", host)
+        return Rule(raw, "web_fetch", host, sub_only)
     if raw.startswith("mcp__"):
         if not _MCP_RE.match(raw):
             return "an MCP rule is mcp__<server>, mcp__<server>__<tool> or mcp__<server>__*"
@@ -256,9 +274,47 @@ def _parse_lists(block: dict, source: str, *, project: bool,
     return out
 
 
+def _managed_policy():
+    """The managed policy in force, or None when there is none."""
+    try:
+        from . import managed_policy as _mp
+        pol = _mp.load()
+    except Exception:
+        return None
+    return pol if (pol.active or pol.errors) else None
+
+
 def load(workspace: Any = None) -> RuleSet:
-    """The rules in force for ``workspace``. Never raises: a failure is an
-    error entry and grants nothing."""
+    """The rules in force for ``workspace``: the administrator's managed
+    deny and ask rules ahead of the user's and the project's, and the
+    managed ``only_allow`` bound on every allow. Never raises."""
+    local = _load_local(workspace)
+    pol = _managed_policy()
+    if pol is None:
+        return local
+    key = ("combined", id(local), id(pol))
+    with _CACHE_LOCK:
+        hit = _CACHE.get(key)
+    # The objects are kept in the entry: an id is only a key while the
+    # object it named is alive.
+    if hit is not None and hit[0] is local and hit[1] is pol:
+        return hit[2]
+    # The policy's own errors stay in ``policy.errors`` (shown by
+    # ``managed_policy.summary_lines``), not in ``errors``: one report each.
+    rs = RuleSet(tuple(pol.deny) + local.deny, tuple(pol.ask) + local.ask,
+                 local.allow, list(local.errors), local.user_path,
+                 local.project_path,
+                 tuple(pol.only_allow), pol)
+    with _CACHE_LOCK:
+        if len(_CACHE) > 64:
+            _CACHE.clear()
+        _CACHE[key] = (local, pol, rs)
+    return rs
+
+
+def _load_local(workspace: Any = None) -> RuleSet:
+    """The user's and the project's rules for ``workspace``. Never raises:
+    a failure is an error entry and grants nothing."""
     try:
         upath = user_settings_path()
     except Exception:
@@ -379,8 +435,10 @@ def path_matches(glob: str, path: Any, workspace: Any, *,
     return re.fullmatch(_glob_regex(pattern), target) is not None
 
 
-def _host_matches(rule_host: str, host: str) -> bool:
+def _host_matches(rule_host: str, host: str, sub_only: bool = False) -> bool:
     host = (host or "").lower().rstrip(".")
+    if sub_only:
+        return bool(host) and host.endswith("." + rule_host)
     return bool(host) and (host == rule_host or host.endswith("." + rule_host))
 
 
@@ -593,10 +651,36 @@ def _hits(rule: Rule, name: str, subj: dict, workspace: Any) -> bool:
     return False
 
 
-def friction(rs: RuleSet, name: str, args: dict, workspace: Any
-             ) -> "tuple[str, Rule] | None":
-    """("deny", rule) or ("ask", rule) for the first rule the call meets."""
-    if not (rs.deny or rs.ask):
+def _ceiling_rule(rs: RuleSet, name: str, args: dict) -> Optional[Rule]:
+    """The managed network ceiling as a deny rule, when ``web_fetch``
+    names a host outside it (``managed_policy.domain_within_max``)."""
+    pol = rs.policy
+    if (pol is None or not getattr(pol, "allowed_domains_max", ())
+            or bare_tool_name(name) != "web_fetch"):
+        return None
+    try:
+        from . import managed_policy as _mp
+        if _mp.domain_within_max(url_host((args or {}).get("url")), pol):
+            return None
+        src = pol.sources[0].path if pol.sources else ""
+    except Exception:
+        src = ""
+    return Rule("network.allowed_domains_max", "web_fetch", "", list="deny",
+                source=src, managed=True)
+
+
+def friction(rs: RuleSet, name: str, args: dict, workspace: Any, *,
+             managed_only: bool = False) -> "tuple[str, Rule] | None":
+    """("deny", rule) or ("ask", rule) for the first rule the call meets.
+
+    Order: every deny before any ask (a deny anywhere outranks a
+    question), and within each list the managed rules before the user's
+    and the project's; the managed network ceiling is a deny.
+    ``managed_only``: the user's and the project's rules are skipped (an
+    entry point where only the managed policy is decided)."""
+    args = args if isinstance(args, dict) else {}
+    ceiling = _ceiling_rule(rs, name, args)
+    if not (rs.deny or rs.ask or ceiling):
         return None
     try:
         subj = _subjects(name, args, workspace)
@@ -604,21 +688,32 @@ def friction(rs: RuleSet, name: str, args: dict, workspace: Any
         subj = {"bash": None, "read": [], "write": [], "hosts": []}
     for which, rules in (("deny", rs.deny), ("ask", rs.ask)):
         for rule in rules:
+            if managed_only and not rule.managed:
+                continue
             try:
                 if _hits(rule, name, subj, workspace):
                     return which, rule
             except Exception:
+                if rule.managed:
+                    # An administrator's rule that cannot be evaluated
+                    # holds: deny refuses, ask asks.
+                    return which, rule
                 continue
+        if which == "deny" and ceiling is not None:
+            return "deny", ceiling
     return None
 
 
-def denies_path(rs: RuleSet, kind: str, path: Any, workspace: Any
-                ) -> Optional[Rule]:
+def denies_path(rs: RuleSet, kind: str, path: Any, workspace: Any, *,
+                managed_only: bool = False) -> Optional[Rule]:
     """The deny rule on ``path`` for a ``kind`` ("read"/"write") access a
-    tool resolved itself. A read rule covers writes too."""
+    tool resolved itself. A read rule covers writes too. Managed rules
+    come first (``rs.deny`` is in that order)."""
     kinds = ("read",) if kind == "read" else ("read", "write")
     forms = _forms([Path(str(path))])
     for rule in rs.deny:
+        if managed_only and not rule.managed:
+            continue
         if rule.kind in kinds and any(
                 path_matches(rule.value, f, workspace, subtree=True)
                 for f in forms):
@@ -634,9 +729,88 @@ def allows(rs: RuleSet, site: str, name: str, args: dict, workspace: Any,
     the roots, ``target`` the resolved path), "write" (the default-mode
     write dialog, ``target`` the resolved path), "tool" (a side-effecting
     MCP tool). A call answers only the site of its own kind: an allowed
-    command answers no read question it raises, and the reverse."""
+    command answers no read question it raises, and the reverse.
+
+    A managed ``only_allow`` bounds the answer: an allow rule for a call
+    outside it answers nothing (``within_only_allow``)."""
     if not rs.allow:
         return None
+    rule = _allow_match(rs.allow, site, name, args, workspace, target)
+    if rule is None:
+        return None
+    if not within_only_allow(rs, site, name, args, workspace, target):
+        return None
+    return rule
+
+
+def _only_allow_segment_fits(rules: tuple, name: str, words: list) -> bool:
+    for r in rules:
+        if r.kind == "tool" and _tool_matches(r, name, strict=True):
+            return True
+        if r.kind == "bash" and (words[:len(r.value)] == list(r.value)
+                                 if r.wildcard else words == list(r.value)):
+            return True
+    return False
+
+
+#: Chain operators split a command into segments for ``only_allow``; any
+#: other shell syntax keeps it outside every grant.
+_ONLY_ALLOW_SPLIT = re.compile(r"\|\||&&|[;|&]")
+_ONLY_ALLOW_UNSAFE = set("<>`$(){}\n\r\\")
+
+
+def bash_within_only_allow(rs: RuleSet, cmd: str,
+                           name: str = "bash") -> bool:
+    """False when the managed ``only_allow`` leaves ``cmd`` outside every
+    grant. True when there is no bound.
+
+    Narrow: each segment of a ``; && || | &`` chain must start with the
+    words of an ``only_allow`` bash rule (``:*``) or equal them, under
+    every policy file that sets a list; a command with a substitution, a
+    redirection, grouping, a newline or a backslash, or a segment that
+    runs a program its words carry (``env``, ``xargs``, ``sh -c`` ...;
+    ``carries_a_program``) fits none."""
+    if not rs.only_allow:
+        return True
+    text = str(cmd or "")
+    if not text.strip() or any(c in _ONLY_ALLOW_UNSAFE for c in text):
+        return False
+    segments = [s.strip() for s in _ONLY_ALLOW_SPLIT.split(text) if s.strip()]
+    if not segments:
+        return False
+    parsed = []
+    for seg in segments:
+        try:
+            words = shlex.split(seg, posix=True)
+        except ValueError:
+            return False
+        if not words or "=" in words[0] or carries_a_program(words):
+            return False
+        parsed.append(words)
+    return all(_only_allow_segment_fits(group, name, words)
+               for group in rs.only_allow for words in parsed)
+
+
+def within_only_allow(rs: RuleSet, site: str, name: str, args: dict,
+                      workspace: Any, target: Any = None) -> bool:
+    """True when the call fits the managed ``only_allow`` at ``site``
+    (or there is no bound). ``site`` as for ``allows``; a bash call is
+    judged by ``bash_within_only_allow`` whatever the site."""
+    if not rs.only_allow:
+        return True
+    args = args if isinstance(args, dict) else {}
+    if bare_tool_name(name) in _BASH_TOOLS:
+        return bash_within_only_allow(rs, str(args.get("command") or ""),
+                                      name)
+    return all(_allow_match(group, site, name, args, workspace, target)
+               is not None for group in rs.only_allow)
+
+
+def _allow_match(rules: tuple, site: str, name: str, args: dict,
+                 workspace: Any, target: Any = None) -> Optional[Rule]:
+    """The first of ``rules`` that answers ``site`` for this call (the
+    narrow allow matching), or None."""
+    rs = RuleSet(allow=tuple(rules))
     bare = bare_tool_name(name)
     args = args if isinstance(args, dict) else {}
     if site == "bash":
@@ -677,7 +851,8 @@ def allows(rs: RuleSet, site: str, name: str, args: dict, workspace: Any,
             if rule.kind == "tool" and _tool_matches(rule, name, strict=True):
                 return rule
             if (rule.kind == "web_fetch" and bare == "web_fetch"
-                    and _host_matches(rule.value, url_host(args.get("url")))):
+                    and _host_matches(rule.value, url_host(args.get("url")),
+                                       rule.wildcard)):
                 return rule
         return None
     return None
@@ -699,22 +874,60 @@ def error_lines(rs: RuleSet) -> list:
     return lines
 
 
+def rule_origin(rs: RuleSet, rule: Rule) -> str:
+    """"managed", "project" or "user": the layer a rule comes from."""
+    if rule.managed:
+        return "managed"
+    return "project" if rule.source == rs.project_path else "user"
+
+
+def rule_records(rs: RuleSet) -> list:
+    """Every rule in force as ``{list, rule, origin, source}``, in the
+    order the gate evaluates them; ``only_allow`` entries carry
+    ``list: "only_allow"``. For the boundary report."""
+    out = []
+    for which in LISTS:
+        for r in getattr(rs, which):
+            out.append({"list": which, "rule": r.text,
+                        "origin": rule_origin(rs, r), "source": r.source})
+    for group in rs.only_allow:
+        for r in group:
+            out.append({"list": "only_allow", "rule": r.text,
+                        "origin": "managed", "source": r.source})
+    return out
+
+
 def describe(rs: RuleSet) -> str:
-    """The read-only view ``/permissions`` prints."""
+    """The read-only view ``/permissions`` prints: the managed policy's
+    rules and the user's and the project's, each with its source."""
     lines = [f"permission rules (edit {rs.user_path or '~/.delfin_settings.json'}"
              ", key \"permissions\"; the agent cannot write it)"]
     if rs.project_path:
         lines.append(f"project rules: {rs.project_path} (deny and ask only)")
+    pol = rs.policy
+    for src in (getattr(pol, "sources", ()) or ()):
+        lines.append(f"managed rules: {src.path} (administrator; "
+                     + ("trusted" if src.trusted else
+                        "NOT trusted, restrictions only") + ")")
     for which in LISTS:
         rules = getattr(rs, which)
         lines.append(f"  {which}:" + ("" if rules else " (none)"))
         for r in rules:
-            src = "project" if r.source == rs.project_path else "user"
-            lines.append(f"    {r.text}  [{src}]")
+            origin = rule_origin(rs, r)
+            tag = f"managed {r.source}" if origin == "managed" else origin
+            lines.append(f"    {r.text}  [{tag}]")
+    for group in rs.only_allow:
+        src = group[0].source if group else "managed policy"
+        lines.append("  only_allow (an allow outside it grants nothing): "
+                     + (", ".join(r.text for r in group) or "nothing")
+                     + f"  [managed {src}]")
     errs = error_lines(rs)
+    for err in (getattr(pol, "errors", ()) or ()):
+        errs.append(f"ERROR: managed policy: {err}")
     if errs:
         lines.append("  not in force:")
         lines.extend(f"    {e}" for e in errs)
-    lines.append("  deny > ask > allow; deny and ask hold in every mode; allow "
-                 "only skips a question and never lifts a refusal.")
+    lines.append("  deny > ask > allow, managed rules before the user's; deny "
+                 "and ask hold in every mode; allow only skips a question and "
+                 "never lifts a refusal.")
     return "\n".join(lines)

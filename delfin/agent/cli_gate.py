@@ -235,16 +235,16 @@ def decide(token: str, event: dict) -> str | None:
     cwd = str(event.get("cwd") or state["workspace"])
     err: str | None = None
 
-    # The user's permission rules (permission_rules.py), on the native name
-    # of the call: deny refuses, ask asks through the same relay, and with
-    # nobody to ask an ask refuses. allow is not consulted here -- this
-    # hook only refuses or passes, it never answers a question for the CLI.
+    # The permission rules (permission_rules.py) -- the administrator's
+    # managed rules first, then the user's and the project's, one matcher
+    # -- on the native name of the call: deny refuses, ask asks through
+    # the same relay, and with nobody to ask an ask refuses. allow is not
+    # consulted here -- this hook only refuses or passes, it never answers
+    # a question for the CLI.
     native, native_args = _native_call(tool, args, cwd, state["workspace"])
     hit = ac._permission_rule_hit(perms, native, native_args)
     if hit is not None and hit[0] == "deny":
-        ac._record_security_event("permission_rule_deny", native,
-                                  hit[1].text[:120])
-        return ac._permission_rule_deny_text(native, hit[1])
+        return ac._refuse_by_rule(native, hit[1])
     if hit is not None:
         refusal = ex._ask_by_rule(perms, native, native_args, hit[1])
         if refusal is not None:

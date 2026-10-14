@@ -1561,6 +1561,11 @@ class TerminalAgent:
         """
         order = ["plan", "default", "acceptEdits"]
         try:
+            from . import managed_policy as _mp
+            order = [m for m in order if _mp.mode_refusal(m) is None] or order
+        except Exception:
+            pass
+        try:
             current = str(getattr(self.engine.kit_permissions, "mode", "")
                           or "default")
         except Exception:

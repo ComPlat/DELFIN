@@ -95,6 +95,9 @@ APPROVABLE_REASON_CODES: frozenset[str] = frozenset({
     "needs_approval", "not_allowlisted", "approval_timeout", "self_mod",
     "calc_edit", "egress", "git_config_program", "mcp_side_effect",
     "classifier_ask", "shell_write_unasked", "outside_ws",
+    # An ask rule (the administrator's or the user's) met with nobody to
+    # ask: a person answering would have decided it.
+    "managed_policy_ask", "permission_rule_ask",
 })
 
 #: Containment kinds recorded with ``blocked=True`` that are not a refusal

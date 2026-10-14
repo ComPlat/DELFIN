@@ -749,6 +749,21 @@ def _reset_workspace_trust_caches():
 
 
 @pytest.fixture(autouse=True)
+def _no_host_managed_policy(monkeypatch):
+    """The host's managed policy (/etc/delfin/managed_policy.json, the
+    package-side copy, DELFIN_MANAGED_POLICY) is shadowed, not read: a
+    policy an administrator installed would otherwise change what every
+    gate test decides on that machine and on no other. Tests of the
+    policy inject their own path."""
+    from delfin.agent import managed_policy as mp
+    monkeypatch.setattr(mp, "_PATHS_OVERRIDE", ())
+    monkeypatch.delenv(mp.ENV_VAR, raising=False)
+    mp.clear_cache()
+    yield
+    mp.clear_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_subagent_state(tmp_path, monkeypatch):
     from delfin.agent import subagents as sa
     monkeypatch.setattr(sa, "_RUNNING_DIR",

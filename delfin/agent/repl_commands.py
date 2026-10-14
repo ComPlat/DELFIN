@@ -259,13 +259,24 @@ def _permission_rules_view(ctx) -> str:
 
 def _permissions(ctx, args: str) -> CommandResult:
     name = args.strip()
+    try:
+        from . import managed_policy as _mp
+        # The managed rules are listed with the user's by the rules view;
+        # here the rest of the policy (modes, isolation, network, audit).
+        managed = _mp.summary_lines(include_rules=False)
+        refusal = _mp.mode_refusal(name) if name else None
+    except Exception:
+        managed, refusal = [], None
     if not name:
-        return CommandResult(output=(
-            f"approval is {_mode(ctx.engine) or '(no gate)'} — "
-            "/permissions plan|default|acceptEdits, or Shift+Tab\n"
-            + _permission_rules_view(ctx)))
+        return CommandResult(output="\n".join(
+            [f"approval is {_mode(ctx.engine) or '(no gate)'} — "
+             "/permissions plan|default|acceptEdits, or Shift+Tab"]
+            + managed + [_permission_rules_view(ctx)]))
     if name == "rules":
-        return CommandResult(output=_permission_rules_view(ctx))
+        return CommandResult(output="\n".join(
+            managed + [_permission_rules_view(ctx)]))
+    if refusal:
+        return CommandResult(output=f"not switched: {refusal}")
     if name == "bypassPermissions":
         return CommandResult(output=(
             "not from here. Unattended execution is reachable only by "

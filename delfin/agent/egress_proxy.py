@@ -59,7 +59,17 @@ def _settings() -> dict:
 def network_mode() -> str:
     """``proxy`` (default), ``none`` or ``open``, from the settings."""
     mode = str(_settings().get("mode") or "proxy").strip().lower()
-    return mode if mode in ("proxy", "none", "open") else "proxy"
+    mode = mode if mode in ("proxy", "none", "open") else "proxy"
+    # A managed domain ceiling holds only behind the proxy, so "open" is
+    # not available under one (managed_policy.allowed_domains_max).
+    if mode == "open":
+        try:
+            from . import managed_policy as _mp
+            if _mp.network_ceiling_active():
+                return "proxy"
+        except Exception:
+            return "proxy"
+    return mode
 
 
 def domain_allowed(host: str, allowed) -> bool:
@@ -215,6 +225,16 @@ class EgressProxy:
             return (f"blocked by DELFIN's sandbox: {host} is not an allowed "
                     "domain. Ask the user to add it to "
                     "agent.sandbox_network.allowed_domains.")
+        # The administrator's ceiling: the user's list intersected with it.
+        try:
+            from . import managed_policy as _mp
+            within = _mp.domain_within_max(host)
+        except Exception:
+            within = True
+        if not within:
+            return (f"blocked by DELFIN's sandbox: {host} is outside the "
+                    "domains the administrator's managed policy allows "
+                    "(network.allowed_domains_max); no user setting adds it.")
         return None
 
     # -- serving ------------------------------------------------------------
