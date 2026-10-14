@@ -76,7 +76,8 @@ describe("the store", () => {
     e("turn.started", { turnId: "t1", source: "user" })
     expect(state.sessions.s1!.turn?.label).toBe("thinking…")
     e("tool.started", { name: "bash", input: { command: "pytest -q\nmore" } })
-    expect(state.sessions.s1!.turn?.label).toBe("bash  pytest -q")
+    // The REPL's headline: a command's lines run together, on one line.
+    expect(state.sessions.s1!.turn?.label).toBe("bash  pytest -q more")
     e("permission.asked", { requestId: "p1", kind: "confirm", tool: "bash", preview: "$ ls", options: [], flags: {} })
     e("permission.asked", { requestId: "p1", kind: "confirm", tool: "bash", preview: "$ ls", options: [], flags: {} })
     expect(state.sessions.s1!.pending.length).toBe(1)

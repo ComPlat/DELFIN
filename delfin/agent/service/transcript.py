@@ -228,8 +228,16 @@ class ProtocolTranscript:
         call_id = self._next_id("c")
         self._calls[item.name].append(call_id)
         self.tool_calls += 1
+        args = _jsonable(rr._as_dict(item.text))
+        if isinstance(args, dict) and isinstance(args.get("command"), str):
+            # The REPL's headline masks a credential in a command
+            # (repl_render._headline_value -> cli_approve.redact); the
+            # secret redactor does not know an `export API_TOKEN=...` it
+            # was never told. Masked here, before any window or the log.
+            from .. import cli_approve
+            args = {**args, "command": cli_approve.redact(args["command"])}
         self._emit("tool.started", turnId=self.turn_id, callId=call_id,
-                   name=item.name, input=_jsonable(rr._as_dict(item.text)))
+                   name=item.name, input=args)
 
     def _tool_ended(self, item) -> None:
         calls = self._calls.get(item.name)

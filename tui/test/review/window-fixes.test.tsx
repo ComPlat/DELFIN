@@ -219,8 +219,8 @@ describe("the approval panel", () => {
     await w.t.mockInput.typeText("ease rerun")
     await w.settle()
     expect(w.replies()).toEqual([])
-    expect(w.footer().join("\n")).toContain("were not used as answers")
-    await Bun.sleep(400)                                  // a pause, then a deliberate key
+    expect(w.footer().join("\n")).toContain("were not taken as answers")
+    await Bun.sleep(1100)                                 // a second of quiet, then a deliberate key
     w.t.mockInput.pressKey("y")
     await w.settle()
     expect(w.replies()).toEqual([{ sessionId: "s1", requestId: edit.requestId, choice: "y" }])

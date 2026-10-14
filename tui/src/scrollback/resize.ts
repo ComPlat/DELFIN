@@ -15,6 +15,10 @@ import type { Transcript } from "./transcript"
 
 export interface WidthSource {
   readonly terminalWidth: number
+  /** The terminal's own height (not the footer's): a change of it moves
+   *  the footer, and OpenTUI's split footer leaves rows behind (measured
+   *  in tmux), so it is replayed too. */
+  readonly terminalHeight?: number
   on(event: "resize", listener: () => void): unknown
   off(event: "resize", listener: () => void): unknown
 }
@@ -27,7 +31,7 @@ export interface ReplayPolicy {
   /** Instead of the default replay: what to do once the width settled
    *  (the session view replays by turns, or prints a divider where the
    *  terminal cannot clear its scrollback). */
-  onSettled?: (width: number) => void
+  onSettled?: (width: number, widthChanged: boolean) => void
 }
 
 /** Watch ``source``; replay ``transcript`` after each settled width change. */
@@ -38,10 +42,13 @@ export function replayOnWidthChange(
 ): () => void {
   const settleMs = policy.settleMs ?? 250
   let width = source.terminalWidth
+  let height = source.terminalHeight
   let timer: ReturnType<typeof setTimeout> | undefined
+  const same = () => source.terminalWidth === width && source.terminalHeight === height
   const onResize = () => {
-    if (source.terminalWidth === width) {
-      // Back to the width the scrollback was written at: nothing to redo.
+    if (same()) {
+      // Back to the size the scrollback was written at (or only the
+      // footer changed height): nothing to redo.
       clearTimeout(timer)
       timer = undefined
       return
@@ -49,9 +56,11 @@ export function replayOnWidthChange(
     clearTimeout(timer)
     timer = setTimeout(() => {
       timer = undefined
-      if (source.terminalWidth === width) return
+      if (same()) return
+      const widthChanged = source.terminalWidth !== width
       width = source.terminalWidth
-      if (policy.onSettled) policy.onSettled(width)
+      height = source.terminalHeight
+      if (policy.onSettled) policy.onSettled(width, widthChanged)
       else void transcript.replay(policy.limit ?? 0)
     }, settleMs)
   }

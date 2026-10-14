@@ -43,3 +43,20 @@ export function wrap(text: string, max: number): string[] {
   return out
 }
 
+/** `text` cut in its middle to `max` columns (repl_render.truncate_middle). */
+export function middle(text: string, max: number): string {
+  if (width(text) <= max || max < 8) return fit(text, max)
+  const half = Math.floor((max - 1) / 2)
+  const chars = [...text]
+  let head = ""
+  for (const ch of chars) {
+    if (width(head + ch) > half) break
+    head += ch
+  }
+  let tail = ""
+  for (let i = chars.length - 1; i >= 0; i--) {
+    if (width(chars[i]! + tail) > max - 1 - width(head)) break
+    tail = chars[i]! + tail
+  }
+  return `${head}…${tail}`
+}

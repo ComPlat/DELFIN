@@ -48,7 +48,7 @@ export interface Binding {
 }
 
 const ALIASES: Record<string, string> = {
-  esc: "escape", enter: "return", ret: "return", del: "delete", bs: "backspace",
+  esc: "escape", enter: "return", ret: "return", kpenter: "return", del: "delete", bs: "backspace",
   " ": "space", spacebar: "space", pgup: "pageup", pgdn: "pagedown",
 }
 

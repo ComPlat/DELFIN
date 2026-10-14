@@ -151,7 +151,7 @@ export function PickerView(props: { picker: Picker; theme: () => Theme; width: (
     return { mark, label, detail, now: c.current ? "  (now)" : "" }
   }
   return (
-    <box flexDirection="column" border borderStyle="rounded" borderColor={t().accent}
+    <box flexShrink={0} flexDirection="column" border borderStyle="rounded" borderColor={t().accent}
          title={` ${p.state.title} `} titleAlignment="left" paddingLeft={1} paddingRight={1}>
       <text wrapMode="none">
         <span style={{ fg: t().accentSoft }}>{"filter: "}</span>

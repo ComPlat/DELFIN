@@ -7,6 +7,7 @@
  * rows cannot change -- and is the presenter's job (present.ts).
  */
 import type { AnyEvent, SessionSummary } from "../protocol/generated"
+import { toolHeadline } from "../scrollback/tools"
 
 export interface Asked {
   requestId: string
@@ -75,11 +76,13 @@ export interface AppState {
   order: string[]
   current: string | null
   elsewhere: Elsewhere[]
+  /** The first session is being started (the window is up already). */
+  starting: boolean
 }
 
 export function emptyState(): AppState {
   return { connection: "connecting", mayAct: true, host: "", sessions: {}, order: [],
-           current: null, elsewhere: [] }
+           current: null, elsewhere: [], starting: false }
 }
 
 export function newSession(id: string, info: Record<string, unknown> = {}): SessionState {
@@ -132,11 +135,10 @@ function endSession(s: SessionState, e: Record<string, any>): void {
   s.wait = ""
 }
 
+/** What the status line says a running tool does: its headline. */
 function toolLabel(event: Record<string, any>): string {
-  const input = (event.input ?? {}) as Record<string, unknown>
-  const arg = ["path", "command", "pattern", "query", "url", "file"].map((k) => input[k])
-    .find((v) => typeof v === "string" && v)
-  return arg ? `${event.name}  ${String(arg).split("\n")[0]!.slice(0, 80)}` : String(event.name)
+  const head = toolHeadline(String(event.name ?? "tool"), (event.input ?? {}) as Record<string, unknown>)
+  return head.arg ? `${head.name}  ${head.arg.slice(0, 80)}` : head.name
 }
 
 /** Apply one event. Unknown events and events for unknown sessions are

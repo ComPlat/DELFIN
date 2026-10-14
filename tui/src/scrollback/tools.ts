@@ -61,6 +61,8 @@ export function bareName(name: string): string {
   return short.includes(":") ? short.split(":").slice(1).join(":") : short
 }
 
+import { redact } from "./redact"
+
 /** No control characters (a tool's output is not trusted to steer the terminal). */
 export function stripControl(text: string): string {
   return String(text ?? "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
@@ -85,7 +87,10 @@ export function toolHeadline(name: string, input: Fields | string | null | undef
   for (const key of [...(HEADLINE_ARG[bareName(raw)] ?? []), ...FALLBACK_KEYS]) {
     const value = args[key]
     if ((typeof value === "string" || typeof value === "number") && String(value).trim()) {
-      return { name: shortToolName(raw), arg: oneLine(String(value)) }
+      // A command is masked as the REPL masks it (only commands: a path
+      // that names "auth" must still say which file is touched).
+      const shown = key === "command" ? redact(String(value)) : String(value)
+      return { name: shortToolName(raw), arg: oneLine(shown) }
     }
   }
   const n = Object.keys(args).length

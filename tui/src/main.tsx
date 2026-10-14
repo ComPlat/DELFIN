@@ -9,6 +9,7 @@
  * draws it inline: finished output goes into the terminal's own scrollback,
  * only the footer is live. Leaving the window leaves the sessions running.
  */
+import { appendFileSync } from "node:fs"
 import { createCliRenderer } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { createSignal } from "solid-js"
@@ -21,6 +22,7 @@ import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
 import { createAppStore, withReplay } from "./store/store"
 import { themeFor } from "./theme/theme"
+import { bounded } from "./scrollback/queue"
 import { ServiceConnection, type ServiceHello } from "./transport/rpc"
 
 // The kitty-graphics probe retitles tmux panes; this TUI draws no images.
@@ -38,6 +40,20 @@ try {
   console.error("DELFIN_TUI_START is not JSON; starting with defaults")
 }
 
+// DELFIN_TUI_DEBUG=<file>: when each startup step was reached (a window
+// that is slow to come up says where it waits).
+const debugFile = process.env.DELFIN_TUI_DEBUG ?? ""
+const t0 = Date.now()
+function step(what: string): void {
+  if (!debugFile) return
+  try {
+    appendFileSync(debugFile, `${((Date.now() - t0) / 1000).toFixed(3)}s ${what}\n`)
+  } catch {
+    // a debug log that cannot be written is no reason to stop
+  }
+}
+step("start")
+
 const loaded = await loadConfig()
 const keymap = new Keymap(loaded.config.keys)
 const store = createAppStore()
@@ -45,6 +61,7 @@ const connection = new ServiceConnection(socket)
 connection.rpc.onEvent((event) => store.push(event))
 connection.onState((state) => store.update((d) => { d.connection = state }))
 
+step("config read")
 let hello: ServiceHello
 try {
   hello = await connection.connect()
@@ -53,6 +70,7 @@ try {
   process.exit(3)
 }
 
+step("hello answered")
 const renderer = await createCliRenderer({
   screenMode: "split-footer",
   footerHeight: 4,
@@ -64,6 +82,7 @@ const renderer = await createCliRenderer({
   consoleMode: "disabled",
   useKittyKeyboard: {},
 })
+step("renderer created")
 const mode = loaded.config.theme === "auto"
   ? await renderer.waitForThemeMode(300).catch(() => null)
   : loaded.config.theme
@@ -128,6 +147,8 @@ async function switchTo(id: string, workspace: string): Promise<void> {
       target = String(created.sessionId)
     }
     const previous = current
+    // Shown before in this window: its replay is new rows again.
+    store.unsee(target)
     await withReplay(store,
       () => connection.rpc.request("session.attach", { sessionId: target, turns: loaded.config.replayTurns }),
       (attached) => {
@@ -146,15 +167,71 @@ async function switchTo(id: string, workspace: string): Promise<void> {
 }
 
 let current = ""
+let quitting = false
+
+/** Leave the window; the sessions keep running in the agent service. A
+ *  second ctrl+d while leaving (a service that does not answer) leaves at
+ *  once. */
+function quit(): void {
+  if (quitting) {
+    leaveNow()
+    return
+  }
+  quitting = true
+  void (async () => {
+    if (current) {
+      await connection.rpc.request("session.detach", { sessionId: current }, { timeoutMs: 1000 }).catch(() => undefined)
+    }
+    store.flush()
+    await bounded(view.queue.drain(), 3000)
+    connection.close()
+    view.stop()
+    // OpenTUI flushes queued scrollback after destroy; the process ends on
+    // its own once that is written (never exit from onDestroy).
+    renderer.destroy()
+  })()
+}
+
+function leaveNow(): void {
+  connection.close()
+  try {
+    renderer.destroy()
+  } catch {
+    // already gone
+  }
+  setTimeout(() => process.exit(0), 100)
+}
+
+// The window takes keys from the start: a session that is slow to start
+// (MCP servers, a long resume) can still be left with ctrl+d or ctrl+c.
+await render(() => (
+  <App renderer={renderer} store={store} keymap={keymap} theme={theme} history={History.load()} sentAs={view.sentAs}
+       client={connection.rpc} onQuit={quit} onRedraw={() => void view.redraw()}
+       onExpand={() => view.expandLast()} onResume={(id, ws) => void switchTo(id, ws)}
+       onThinking={(on) => view.setShowThinking(on)} thinking={() => view.showThinking}
+       onLines={(title, lines) => view.lines(title, lines)} />
+), renderer)
+
+step("window rendered")
+store.update((d) => { d.starting = true })
 try {
   current = await openFirst()
 } catch (error) {
-  // Nothing to show: say why on a terminal that is the user's again.
-  connection.close()
-  renderer.destroy()
-  await Bun.sleep(50)
-  process.stderr.write(`The session could not start: ${(error as Error).message}\n`)
-  process.exit(3)
+  if (quitting) {
+    // Left while it started: nothing to say (the session, if it started,
+    // runs on in the agent service).
+    leaveNow()
+  } else {
+    // Nothing to show: say why on a terminal that is the user's again.
+    connection.close()
+    renderer.destroy()
+    await Bun.sleep(50)
+    process.stderr.write(`The session could not start: ${(error as Error).message}\n`)
+    process.exit(3)
+  }
+} finally {
+  store.update((d) => { d.starting = false })
+  step(current ? "session open" : "no session")
 }
 
 // After a reconnect: the session is attached again; what this window has
@@ -172,31 +249,3 @@ connection.onUp(async () => {
 connection.onState((state) => {
   if (state === "closed" && connection.problem) view.note(connection.problem)
 })
-
-let quitting = false
-function quit(): void {
-  if (quitting) return
-  quitting = true
-  void (async () => {
-    if (current) {
-      await connection.rpc.request("session.detach", { sessionId: current }).catch(() => undefined)
-    }
-    store.flush()
-    await view.queue.drain()
-    connection.close()
-    view.stop()
-    // OpenTUI flushes queued scrollback after destroy; the process ends on
-    // its own once that is written (never exit from onDestroy).
-    renderer.destroy()
-  })()
-}
-
-if (current) {
-  await render(() => (
-    <App renderer={renderer} store={store} keymap={keymap} theme={theme} history={History.load()} sentAs={view.sentAs}
-         client={connection.rpc} onQuit={quit} onRedraw={() => void view.redraw()}
-         onExpand={() => view.expandLast()} onResume={(id, ws) => void switchTo(id, ws)}
-         onThinking={(on) => view.setShowThinking(on)} thinking={() => view.showThinking}
-         onLines={(title, lines) => view.lines(title, lines)} />
-  ), renderer)
-}

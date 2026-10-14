@@ -31,6 +31,8 @@ export interface FooterProps {
   keymap: Keymap
   session: () => SessionState | null
   connection: () => string
+  /** Starting the first session: said in the hints line. */
+  starting?: () => boolean
   message: () => string
   composer: Composer
   approval: ApprovalUi
@@ -42,14 +44,28 @@ function tailRows(tail: string): number {
   return Math.min(TAIL_MAX, tail.trimEnd().split("\n").filter((l) => l.trim()).length)
 }
 
+/** The rows everything but the approval panel takes. */
+function fixedRows(s: SessionState | null, message: string, composerRows: number, pickerRows: number): number {
+  return 3 + composerRows + pickerRows + (s?.turn || s?.wait ? 1 : 0) + (message ? 1 : 0)
+}
+
+/** What the approval panel may take: the rest of the terminal (less one
+ *  row: the footer never fills it), so its keys are always on screen. */
+export function approvalBudget(s: SessionState | null, term: { height: number }, message: string,
+                               composerRows = 1, pickerRows = 0): number {
+  return Math.max(3, term.height - 1 - fixedRows(s, message, composerRows, pickerRows))
+}
+
 /** Rows the footer needs; never more than the terminal has (less one). */
 export function footerRows(s: SessionState | null, term: { width: number; height: number }, message: string,
                            composerRows = 1, approval: ApprovalUi | null = null, pickerRows = 0): number {
-  let rows = 3 + composerRows + pickerRows      // rule, composer, rule, hints
-  if (s?.turn || s?.wait) rows += 1
-  if (s) rows += tailRows(s.tail)
-  rows += approvalRows(s?.pending[0], approval?.state ?? null, term.width)
-  if (message) rows += 1
+  let rows = fixedRows(s, message, composerRows, pickerRows)
+  const asked = s?.pending[0]
+  // With a question open the turn waits: its tail is empty (a question
+  // closes the text part), and the panel has the room.
+  if (s && !asked) rows += tailRows(s.tail)
+  rows += approvalRows(asked, approval?.state ?? null, term.width,
+                       approvalBudget(s, term, message, composerRows, pickerRows))
   return Math.max(4, Math.min(rows, Math.max(4, term.height - 1)))
 }
 
@@ -137,22 +153,35 @@ export function Footer(props: FooterProps): JSX.Element {
     return { label, rest: fit(`  ${parts.join(" · ")}`, Math.max(0, cols() - 3 - label.length)) }
   }
 
+  // A wrapped draft takes another number of rows at another width -- known
+  // once the textarea is laid out at it, a frame later.
+  createEffect(() => {
+    term()
+    props.composer.remeasure()
+    for (const ms of [40, 150]) (setTimeout(() => props.composer.remeasure(), ms) as { unref?: () => void }).unref?.()
+  })
+
+  const budget = () => approvalBudget(props.session(), term(), props.message(), props.composer.height(),
+                                      props.picker?.height() ?? 0)
+
+  // Nothing in the footer shrinks: what does not fit is cut at the top
+  // (the composer and the keys are at the bottom), never drawn over.
   return (
-    <box flexDirection="column" width="100%" height="100%" justifyContent="flex-end">
+    <box flexDirection="column" width="100%" height="100%" justifyContent="flex-end" overflow="hidden">
       <Show when={props.message()}>
-        <text fg={t().warn} wrapMode="none">{fit(props.message(), cols() - 1)}</text>
+        <text flexShrink={0} fg={t().warn} wrapMode="none">{fit(props.message(), cols() - 1)}</text>
       </Show>
-      <Show when={tailRows(props.session()?.tail ?? "") > 0}>
-        <scrollbox height={tailRows(props.session()?.tail ?? "")} stickyScroll stickyStart="bottom">
+      <Show when={tailRows(props.session()?.tail ?? "") > 0 && !asked()}>
+        <scrollbox flexShrink={0} height={tailRows(props.session()?.tail ?? "")} stickyScroll stickyStart="bottom">
           <markdown content={props.session()?.tail ?? ""} streaming syntaxStyle={style()} conceal width="100%" />
         </scrollbox>
       </Show>
       <Show when={!props.session()?.turn && props.session()?.wait}>
-        <text wrapMode="none" fg={t().warn}>{fit(`… ${props.session()?.wait ?? ""}`, cols() - 1)}</text>
+        <text flexShrink={0} wrapMode="none" fg={t().warn}>{fit(`… ${props.session()?.wait ?? ""}`, cols() - 1)}</text>
       </Show>
       <Show when={props.session()?.turn}>
         {(turn: () => TurnLive) => (
-          <text wrapMode="none">
+          <text flexShrink={0} wrapMode="none">
             <span style={{ fg: t().accent }}>{SPINNER[tick() % SPINNER.length] + " "}</span>
             <span style={{ fg: t().text }}>{status(turn()).label}</span>
             <span style={{ fg: t().faint }}>{status(turn()).rest}</span>
@@ -160,21 +189,23 @@ export function Footer(props: FooterProps): JSX.Element {
         )}
       </Show>
       <Show when={asked()} keyed>
-        {(a: Asked) => <ApprovalPanel asked={a} ui={props.approval} theme={t} width={cols} />}
+        {(a: Asked) => <ApprovalPanel asked={a} ui={props.approval} theme={t} width={cols} maxRows={budget} />}
       </Show>
       <Show when={props.picker?.state.open && !asked()}>
         <PickerView picker={props.picker!} theme={t} width={cols} />
       </Show>
-      <text fg={t().faint} wrapMode="none">{rule()}</text>
+      <text flexShrink={0} fg={t().faint} wrapMode="none">{rule()}</text>
       <ComposerView
         composer={props.composer}
         theme={t}
+        width={cols}
         focused={() => props.focused() && !asked()}
         pasteActive={() => props.focused() && !asked()}
-        placeholder={() => props.session()?.turn
+        placeholder={() => props.starting?.() ? "starting the session…"
+          : props.session()?.turn
           ? `queue a message… (${props.keymap.label("steer")} sends it into the turn)` : "ask DELFIN…"}
       />
-      <text fg={t().faint} wrapMode="none">{rule()}</text>
+      <text flexShrink={0} fg={t().faint} wrapMode="none">{rule()}</text>
       <Hints {...props} cols={cols} />
     </box>
   )
@@ -187,6 +218,7 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
     const parts: string[] = []
     const conn = props.connection()
     if (conn !== "up") parts.push(conn === "reconnecting" ? "reconnecting to the agent service…" : conn)
+    if (props.starting?.()) parts.push("starting the session…")
     if (s?.state === "ended") parts.push("session ended")
     if (s?.approval) parts.push(s.approval)
     if (s?.model) parts.push(s.model)
@@ -194,5 +226,5 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
     parts.push(`${props.keymap.label("cycleMode")} mode`, `${props.keymap.label("agents")} agents`)
     return fit("  " + parts.join(" · "), props.cols() - 1)
   }
-  return <text fg={t().faint} wrapMode="none">{text()}</text>
+  return <text flexShrink={0} fg={t().faint} wrapMode="none">{text()}</text>
 }

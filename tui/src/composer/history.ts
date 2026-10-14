@@ -64,6 +64,12 @@ export function parseOwn(text: string): Entry[] {
   return out
 }
 
+function samePastes(a: Record<string, string> | undefined, b: Record<string, string> | undefined): boolean {
+  const ka = Object.keys(a ?? {})
+  const kb = Object.keys(b ?? {})
+  return ka.length === kb.length && ka.every((k) => (a ?? {})[k] === (b ?? {})[k])
+}
+
 export class History {
   readonly entries: Entry[] = []
 
@@ -91,7 +97,9 @@ export class History {
 
   private push(entry: Entry): boolean {
     const last = this.entries[this.entries.length - 1]
-    if (last && last.text === entry.text) return false
+    // The same prompt twice in a row is kept once -- unless what its
+    // placeholders stand for differs (two different logs pasted).
+    if (last && last.text === entry.text && samePastes(last.pastes, entry.pastes)) return false
     this.entries.push(entry)
     if (this.entries.length > HISTORY_MAX) this.entries.splice(0, this.entries.length - HISTORY_MAX)
     return true

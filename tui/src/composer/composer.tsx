@@ -18,6 +18,7 @@ import { decodePasteBytes, stripAnsiSequences, TextAttributes, type KeyEvent, ty
 import { usePaste } from "@opentui/solid"
 import { For, Show, createSignal, type JSX } from "solid-js"
 import type { Keymap } from "../keymap/keymap"
+import { fit, width } from "../text"
 import type { Theme } from "../theme/theme"
 import {
   applyCandidate, matchCommands, pathCandidates, tokenAt,
@@ -77,6 +78,8 @@ export interface Composer {
   setText(text: string, pastes?: Record<string, string>): void
   /** Re-measure after a width change. */
   remeasure(): void
+  /** Leave a ctrl+r search, the draft put back (a question opened). */
+  cancelSearch(): void
 }
 
 const isPlain = (key: KeyEvent) => !key.ctrl && !key.meta && !key.option && !(key as { super?: boolean }).super
@@ -102,11 +105,12 @@ export function createComposer(deps: ComposerDeps): Composer {
 
   // Wrapped lines of the whole prompt (virtualLineCount counts only the
   // rows in view), and the cursor's row among them.
-  const totalRows = () => (area ? Math.max(1, area.editorView.getTotalVirtualLineCount() || 1) : 1)
-  const cursorRow = () => (area ? area.scrollY + area.visualCursor.visualRow : 0)
+  const alive = () => Boolean(area && !area.isDestroyed)
+  const totalRows = () => (alive() ? Math.max(1, area!.editorView.getTotalVirtualLineCount() || 1) : 1)
+  const cursorRow = () => (alive() ? area!.scrollY + area!.visualCursor.visualRow : 0)
 
   const measure = () => {
-    if (!area) return
+    if (!alive()) return                   // a remeasure after the window closed
     setRows(Math.min(COMPOSER_MAX_ROWS, totalRows()))
   }
 
@@ -173,14 +177,24 @@ export function createComposer(deps: ComposerDeps): Composer {
     if (value === quiet) return
     quiet = null
     if (search()) return
-    walk.reset()
+    // An edit of a recalled prompt does not end the walk: ↓ still brings
+    // back the draft that was being typed (as readline does).
     refreshCompletion()
   }
 
   const take = (candidate: Candidate) => {
     const p = popup()
     if (!area || !p) return
-    const done = applyCandidate(area.plainText, p.token, candidate.insert)
+    // The list may be older than what is typed now (its answer was on its
+    // way): it applies only to the token at the cursor, and only while the
+    // candidate still extends what is typed.
+    const now = tokenAt(area.plainText, area.cursorOffset)
+    if (!now || now.kind !== p.token.kind || now.start !== p.token.start || !candidate.insert.startsWith(now.text)) {
+      setPopup(null)
+      refreshCompletion()
+      return
+    }
+    const done = applyCandidate(area.plainText, now, candidate.insert)
     quiet = done.text
     area.setText(done.text)
     area.cursorOffset = done.cursor
@@ -392,12 +406,21 @@ export function createComposer(deps: ComposerDeps): Composer {
       setAreaText(value)
     },
     remeasure: measure,
+    cancelSearch() {
+      const s = search()
+      if (!s) return
+      setSearch(null)
+      pastes.restore(s.draft.pastes)
+      setAreaText(s.draft.text)
+    },
   }
 }
 
 export interface ComposerViewProps {
   composer: Composer
   theme: () => Theme
+  /** The terminal's width: the list and the search line are cut to it. */
+  width?: () => number
   placeholder: () => string
   focused: () => boolean
   /** The paste handler is active only while the prompt has the keys. */
@@ -420,32 +443,47 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
     return p.candidates.slice(first, first + POPUP_ROWS).map((cand, i) => ({ cand, selected: first + i === p.selected }))
   }
   return (
-    <box flexDirection="column">
+    <box flexShrink={0} flexDirection="column">
       <For each={shown()}>
-        {(row) => (
-          <text>
-            <span style={{ fg: row.selected ? t().accent : t().faint }}>{row.selected ? "  › " : "    "}</span>
-            <span style={{ fg: row.selected ? t().bright : t().text, attributes: row.selected ? TextAttributes.BOLD : 0 }}>
-              {row.cand.label}
-            </span>
-            <span style={{ fg: t().faint }}>{row.cand.detail ? `  ${row.cand.detail}` : ""}</span>
-          </text>
-        )}
+        {(row) => {
+          // One row each, whatever the width: the footer counts them so.
+          const room = Math.max(8, (props.width?.() ?? 100) - 5)
+          const label = fit(row.cand.label, Math.max(4, Math.floor(room * 0.5)))
+          const detail = row.cand.detail ? fit(`  ${row.cand.detail}`, Math.max(0, room - width(label))) : ""
+          return (
+            <text wrapMode="none">
+              <span style={{ fg: row.selected ? t().accent : t().faint }}>{row.selected ? "  › " : "    "}</span>
+              <span style={{ fg: row.selected ? t().bright : t().text, attributes: row.selected ? TextAttributes.BOLD : 0 }}>
+                {label}
+              </span>
+              <span style={{ fg: t().faint }}>{detail}</span>
+            </text>
+          )
+        }}
       </For>
       <Show when={c.search()}>
-        {(s: () => Search) => (
-          <text>
-            <span style={{ fg: t().accentSoft }}>{"  search history: "}</span>
-            <span style={{ fg: t().bright }}>{s().query}</span>
-            <span style={{ fg: t().faint }}>
-              {s().query && s().at < 0 ? "  (no match)" : "  ctrl+r older · enter take · esc back"}
-            </span>
-          </text>
-        )}
+        {(s: () => Search) => {
+          const room = () => Math.max(8, (props.width?.() ?? 100) - 1)
+          // The hint goes first when the width runs short; the query stays.
+          const hint = () => {
+            const full = s().query && s().at < 0 ? "  (no match)" : "  ctrl+r older · enter take · esc back"
+            return room() - 18 - width(full) >= Math.min(12, width(s().query) + 1) ? full : ""
+          }
+          return (
+            <text wrapMode="none">
+              <span style={{ fg: t().accentSoft }}>{"  search history: "}</span>
+              <span style={{ fg: t().bright }}>{fit(s().query, Math.max(4, room() - 18 - width(hint())))}</span>
+              <span style={{ fg: t().faint }}>{hint()}</span>
+            </text>
+          )
+        }}
       </Show>
       <box flexDirection="row">
-        <text fg={t().accent} attributes={TextAttributes.BOLD}>{"❯ "}</text>
+        <text flexShrink={0} width={2} fg={t().accent} attributes={TextAttributes.BOLD}>{"❯ "}</text>
         <textarea
+          flexBasis={0}
+          flexShrink={1}
+          minWidth={4}
           ref={(el: TextareaRenderable) => c.attach(el)}
           flexGrow={1}
           height={c.rows()}

@@ -84,6 +84,7 @@ export class AnswerBlocks {
   private text = ""
   private offset = 0                  // characters of `text` committed
   private n = 0
+  private cr = ""                     // a CR whose LF may still come
 
   constructor(
     private readonly commit: (block: string, index: number) => void,
@@ -101,11 +102,21 @@ export class AnswerBlocks {
 
   append(delta: string): void {
     if (!delta) return
-    this.text += delta.replace(/\r\n?/g, "\n")
+    // A CR at the end of a delta may be the first half of a CRLF the next
+    // delta completes: held back until it is known which.
+    let piece = this.cr + delta
+    this.cr = ""
+    if (piece.endsWith("\r")) {
+      this.cr = "\r"
+      piece = piece.slice(0, -1)
+    }
+    this.text += piece.replace(/\r\n?/g, "\n")
     this.flush(false)
   }
 
   finish(): void {
+    if (this.cr) this.text += "\n"
+    this.cr = ""
     this.flush(true)
   }
 
@@ -117,6 +128,7 @@ export class AnswerBlocks {
    * part does not match, `full` is committed whole after a note.
    */
   finishWith(full: string, onMismatch: () => void = () => {}): void {
+    this.cr = ""
     const text = full.replace(/\r\n?/g, "\n")
     if (!text.startsWith(this.committedText)) {
       onMismatch()

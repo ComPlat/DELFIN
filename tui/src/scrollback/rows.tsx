@@ -10,31 +10,13 @@
 import { TextAttributes, type CliRenderer } from "@opentui/core"
 import { writeSolidToScrollback } from "@opentui/solid"
 import { For, Show, type JSX } from "solid-js"
-import { fit } from "../text"
+import { fit, middle } from "../text"
 import { markdownStyles, type Theme } from "../theme/theme"
 import type { DiffRow, ToolResult } from "./tools"
 import type { Item } from "./transcript"
 import { commitSurface, markdownBlock } from "./writers"
 
 type Fields = Record<string, any>
-
-/** `text` cut in its middle to `max` columns (repl_render.truncate_middle). */
-export function middle(text: string, max: number): string {
-  if (Bun.stringWidth(text) <= max || max < 8) return fit(text, max)
-  const half = Math.floor((max - 1) / 2)
-  const chars = [...text]
-  let head = ""
-  for (const ch of chars) {
-    if (Bun.stringWidth(head + ch) > half) break
-    head += ch
-  }
-  let tail = ""
-  for (let i = chars.length - 1; i >= 0; i--) {
-    if (Bun.stringWidth(chars[i]! + tail) > max - 1 - Bun.stringWidth(head)) break
-    tail = chars[i]! + tail
-  }
-  return `${head}…${tail}`
-}
 
 /** A message longer than this shows its first lines and how many more. */
 export const USER_MAX_LINES = 12
@@ -93,7 +75,7 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
           <text wrapMode="none">
             <span style={{ fg: failed ? t.err : t.ok }}>{"⏺ "}</span>
             <span style={{ fg: t.text, attributes: TextAttributes.BOLD }}>{name}</span>
-            <span style={{ fg: t.muted }}>{f.arg ? "  " + fit(String(f.arg), props.width - name.length - 5) : ""}</span>
+            <span style={{ fg: t.muted }}>{f.arg ? "  " + middle(String(f.arg), props.width - name.length - 5) : ""}</span>
           </text>
           <ToolResultRows result={r} theme={t} width={props.width} />
         </box>
@@ -174,7 +156,7 @@ function ToolResultRows(props: { result: ToolResult; theme: Theme; width: number
       <box flexDirection="column">
         <text wrapMode="none">
           <span style={{ fg: t.muted }}>{"  ⎿ "}</span>
-          <span style={{ fg: t.text, attributes: TextAttributes.BOLD }}>{fit(`${r.action} ${r.label}`, props.width - 16)}</span>
+          <span style={{ fg: t.text, attributes: TextAttributes.BOLD }}>{`${r.action} ${middle(r.label, Math.max(8, props.width - 18 - r.action.length))}`}</span>
           <span style={{ fg: t.muted }}>{" ("}</span>
           <span style={{ fg: t.ok }}>{`+${r.adds}`}</span>
           <span style={{ fg: t.err }}>{` -${r.dels}`}</span>

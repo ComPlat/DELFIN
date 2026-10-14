@@ -27,13 +27,16 @@ import { For, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import type { Asked } from "../store/state"
 import type { Theme } from "../theme/theme"
-import { fit, width, wrap } from "../text"
+import { fit, middle, width, wrap } from "../text"
 
-/** Lines of a preview shown at most (a diff, a command). */
-export const PREVIEW_MAX = 12
-/** A key this soon after the question opened, or after the key before it,
- *  is typeahead, not an answer. */
+/** Lines of a preview shown at most (a diff, a command): the REPL's 24.
+ *  ctrl+o writes the whole preview into the scrollback. */
+export const PREVIEW_MAX = 24
+/** A key this soon after the question opened is a reflex or typeahead,
+ *  not an answer. */
 export const ANSWER_PAUSE_MS = 350
+/** Typeahead ends with this much quiet: then a key is an answer. */
+export const QUIET_MS = 1000
 
 type Tone = "text" | "bright" | "muted" | "faint" | "ok" | "err" | "warn" | "key"
 
@@ -53,13 +56,16 @@ export interface ApprovalState {
   openedAt: number
   lastKeyAt: number
   swallowed: boolean
+  /** In the typing that was going on as the question opened: keys are not
+   *  answers until a second of quiet. */
+  burst: boolean
   /** Answered from here; waiting for the session to settle it. */
   sent: boolean
 }
 
-function fresh(requestId: string, now: number): ApprovalState {
+function fresh(requestId: string, now: number, burst = false, lastKeyAt = 0): ApprovalState {
   return { requestId, mode: "options", choice: "", picked: [], reason: "", openedAt: now,
-           lastKeyAt: 0, swallowed: false, sent: false }
+           lastKeyAt, swallowed: false, sent: false, burst }
 }
 
 /** Spans laid out in rows of `max` columns, broken between spans. */
@@ -83,26 +89,39 @@ export function flow(spans: Span[], max: number): Line[] {
 
 // -- what the panel shows --------------------------------------------------------
 
-function previewLines(asked: Asked, max: number): Line[] {
+/** The preview, at most `rows` lines, each cut in its MIDDLE -- the end of
+ *  a command or a path says what is about to be done (the REPL's rule). */
+function previewLines(asked: Asked, max: number, rows: number = PREVIEW_MAX): Line[] {
   const lines = String(asked.preview ?? "").split("\n")
-  const shown = lines.length <= PREVIEW_MAX ? lines
-    : [...lines.slice(0, PREVIEW_MAX - 1), `… ${lines.length - PREVIEW_MAX + 1} more lines`]
-  return shown.map((line) => [{
-    text: fit(line, max),
+  const room = Math.max(1, Math.min(rows, PREVIEW_MAX))
+  const shown = lines.length <= room ? lines
+    : [...lines.slice(0, Math.max(0, room - 1)), `… ${lines.length - room + 1} more lines (ctrl+o shows all)`]
+  return shown.map((line, i) => [{
+    text: i === shown.length - 1 && line.startsWith("… ") && lines.length > room ? fit(line, max) : middle(line, max),
     tone: line.startsWith("+") && !line.startsWith("+++") ? "ok"
       : line.startsWith("-") && !line.startsWith("---") ? "err" : "text",
   }])
 }
 
-/** The panel's lines for `asked` in state `ui`, inside `max` columns. */
-export function approvalLines(asked: Asked, ui: ApprovalState | null, max: number): Line[] {
+/** The panel's lines for `asked` in state `ui`, inside `max` columns and,
+ *  when given, `maxLines` lines: the preview gives way first, so the keys
+ *  are always there. */
+export function approvalLines(asked: Asked, ui: ApprovalState | null, max: number, maxLines?: number): Line[] {
+  const all = panelLines(asked, ui, max, PREVIEW_MAX)
+  if (maxLines === undefined || all.length <= maxLines) return all
+  const preview = Math.min(String(asked.preview ?? "").split("\n").length, PREVIEW_MAX)
+  const others = all.length - (asked.kind === "ask" ? 0 : preview)
+  return panelLines(asked, ui, max, Math.max(1, maxLines - others))
+}
+
+function panelLines(asked: Asked, ui: ApprovalState | null, max: number, previewRows: number): Line[] {
   const mine = ui?.requestId === asked.requestId ? ui : null
   const mode = mine?.mode ?? "options"
   const lines: Line[] = []
   if (mine?.sent) {
     // The answer is on its way: the panel says so until the session settles it.
     const body = asked.kind === "ask" ? wrap(asked.question || "(no question)", max).map((row) =>
-      [{ text: row, tone: "bright" as Tone }]) : previewLines(asked, max)
+      [{ text: row, tone: "bright" as Tone }]) : previewLines(asked, max, previewRows)
     return [...body, [{ text: fit("answered — waiting for the session…", max), tone: "faint" }]]
   }
   if (asked.kind === "ask") {
@@ -157,10 +176,18 @@ export function approvalLines(asked: Asked, ui: ApprovalState | null, max: numbe
     lines.push([{ text: "any key: back", tone: "faint" }])
     return lines
   }
-  lines.push(...previewLines(asked, max))
+  lines.push(...previewLines(asked, max, previewRows))
+  if (mine?.burst && mine.swallowed) {
+    lines.push([{ text: fit("keys typed as it opened were not taken as answers — answer when you are ready", max),
+                  tone: "warn" }])
+  }
   if (mode === "reason") {
+    const reason = ui!.reason
+    const room = Math.max(4, max - 11)
+    // The end of what is typed stays in view (the cursor is there).
+    const shownReason = width(reason) <= room ? reason : "…" + [...reason].slice(-(room - 1)).join("")
     lines.push([{ text: asked.kind === "plan" ? "why not? " : "why? ", tone: "warn", bold: true },
-                { text: fit(ui!.reason, max - 10) + "▏", tone: "bright" }])
+                { text: shownReason + "▏", tone: "bright" }])
     lines.push([{ text: fit("enter refuses with this reason · esc back", max), tone: "faint" }])
     return lines
   }
@@ -175,10 +202,11 @@ function offers(asked: Asked, key: string): boolean {
   return asked.options.some((o) => o.key === key)
 }
 
-/** Rows the panel takes: its lines and its border. */
-export function approvalRows(asked: Asked | undefined, ui: ApprovalState | null, termWidth: number): number {
+/** Rows the panel takes: its lines and its border (within `maxRows`). */
+export function approvalRows(asked: Asked | undefined, ui: ApprovalState | null, termWidth: number,
+                             maxRows?: number): number {
   if (!asked) return 0
-  return 2 + approvalLines(asked, ui, innerWidth(termWidth)).length
+  return 2 + approvalLines(asked, ui, innerWidth(termWidth), maxRows === undefined ? undefined : Math.max(1, maxRows - 2)).length
 }
 
 export function innerWidth(termWidth: number): number {
@@ -192,6 +220,9 @@ export interface ApprovalDeps {
   reply(asked: Asked, params: Record<string, unknown>): Promise<boolean> | boolean | void
   say(text: string): void
   now?: () => number
+  /** When the window last took a key (any key: typing in the prompt too). */
+  lastKey?: () => number
+  /** The opening reflex window; 0 turns the typeahead guard off (tests). */
   pauseMs?: number
 }
 
@@ -207,13 +238,27 @@ function keyChar(key: KeyEvent): string {
   return key.sequence && key.sequence.length === 1 && key.sequence >= " " ? key.sequence : key.name
 }
 
+/** A key held with ctrl, alt or super is never an answer: ctrl+y is not y
+ *  (the REPL reads the byte, and \x19 is no option) -- or the editing keys
+ *  a hand presses out of habit (ctrl+a, ctrl+e) would abort a turn or turn
+ *  write approvals off. */
+function modified(key: KeyEvent): boolean {
+  const k = key as KeyEvent & { super?: boolean; hyper?: boolean }
+  return Boolean(k.ctrl || k.meta || k.option || k.super || k.hyper)
+}
+
 export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
   const now = deps.now ?? (() => Date.now())
   const pause = deps.pauseMs ?? ANSWER_PAUSE_MS
   const [state, setState] = createStore<ApprovalState>(fresh("", 0))
 
   const sync = (asked: Asked | undefined) => {
-    if (asked && state.requestId !== asked.requestId) setState(fresh(asked.requestId, now()))
+    if (asked && state.requestId !== asked.requestId) {
+      const t = now()
+      const last = deps.lastKey?.() ?? 0
+      // Typing when it opened: what follows is the rest of that typing.
+      setState(fresh(asked.requestId, t, pause > 0 && last > 0 && t - last < QUIET_MS, last))
+    }
     if (!asked && state.requestId) setState(fresh("", 0))
   }
 
@@ -228,18 +273,29 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
   const handleKey = (asked: Asked, key: KeyEvent): boolean => {
     sync(asked)
     if (state.sent) return true                    // answered: nothing more to say
+    if (modified(key)) return true
     const t = now()
-    const burst = t - state.openedAt < pause || t - state.lastKeyAt < pause
+    const quiet = t - state.lastKeyAt
     setState({ lastKeyAt: t })
-    // Typing a reason is typing: no pause needed between its keys.
-    if (burst && state.mode !== "reason") {
-      if (!state.swallowed) {
-        setState({ swallowed: true })
-        deps.say("a question just opened: keys typed with it were not used as answers")
+    if (pause > 0 && state.mode !== "reason") {
+      // The typing that was going on goes on: not an answer, until quiet.
+      const typeahead = state.burst ? quiet < QUIET_MS : t - state.openedAt < pause
+      if (typeahead) {
+        setState({ burst: true, swallowed: true })
+        return true
       }
-      return true
+      if (state.burst) setState({ burst: false })
     }
     const char = keyChar(key)
+    // A letter the question does not take means the user is typing (a
+    // message, not an answer): the rest of that typing is not an answer
+    // either, until it stops.
+    const printable = Boolean(key.sequence) && key.sequence!.length === 1 && key.sequence! > " "
+    const takes = asked.kind === "ask" ? /^[1-9]$/.test(char) : offers(asked, char) || char === "N" && offers(asked, "n")
+    if (pause > 0 && printable && !takes && state.mode !== "reason") {
+      setState({ burst: true, swallowed: true })
+      return true
+    }
     if (asked.kind === "ask") return askKey(asked, key, char)
     switch (state.mode) {
       case "help":
@@ -309,7 +365,8 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
 
 // -- drawing -------------------------------------------------------------------------
 
-export function ApprovalPanel(props: { asked: Asked; ui: ApprovalUi; theme: () => Theme; width: () => number }): JSX.Element {
+export function ApprovalPanel(props: { asked: Asked; ui: ApprovalUi; theme: () => Theme; width: () => number;
+                                       maxRows?: () => number }): JSX.Element {
   const t = props.theme
   const tone = (s: Span) => {
     const theme = t()
@@ -320,9 +377,10 @@ export function ApprovalPanel(props: { asked: Asked; ui: ApprovalUi; theme: () =
     return a.kind === "ask" ? ` ${a.header || "question"} ` : a.kind === "plan" ? " plan " : ` ${a.tool} `
   }
   return (
-    <box flexDirection="column" border borderStyle="rounded" borderColor={t().warn}
+    <box flexShrink={0} flexDirection="column" border borderStyle="rounded" borderColor={t().warn}
          title={title()} titleAlignment="left" paddingLeft={1} paddingRight={1}>
-      <For each={approvalLines(props.asked, props.ui.state, innerWidth(props.width()))}>
+      <For each={approvalLines(props.asked, props.ui.state, innerWidth(props.width()),
+                               props.maxRows ? Math.max(1, props.maxRows() - 2) : undefined)}>
         {(line) => (
           <text wrapMode="none">
             <For each={line}>

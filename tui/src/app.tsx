@@ -86,8 +86,21 @@ export function App(props: AppProps): JSX.Element {
 
   const picker = createPicker()
 
+  // Prompts sent while the first session starts: they go out once it is up.
+  const early: { text: string; shown?: string }[] = []
+  createEffect(() => {
+    if (!sid() || !early.length) return
+    for (const { text, shown } of early.splice(0)) void send(text, undefined, shown)
+  })
+
   const send = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
-    if (!sid()) return false
+    typingAt = 0
+    if (!sid()) {
+      if (!store.state.starting) return false
+      early.push({ text, shown })
+      say("the session is starting: this goes out as soon as it is up")
+      return true
+    }
     // A bare /model, /effort, /mode or /resume opens its picker; with an
     // argument the command goes to the session as typed.
     const bare = /^\/(model|effort|mode|resume)$/.exec(text.trim())
@@ -199,7 +212,9 @@ export function App(props: AppProps): JSX.Element {
       const [kind, what] = [c.value.slice(0, c.value.indexOf(":")), c.value.slice(c.value.indexOf(":") + 1)]
       if (kind === "pick") openPicker(what)
       else if (kind === "run") void send(what)
-      else if (kind === "type") composer.setText(`${what} `)
+      // A command with arguments goes in front of what is typed: a draft
+      // is never thrown away.
+      else if (kind === "type") composer.setText(composer.value().trim() ? `${what} ${composer.value()}` : `${what} `)
       else if (what === "thinking") props.onThinking?.(!props.thinking?.())
       else if (what === "expand") props.onExpand?.()
       else if (what === "tasks") void call("session.toggleTasks", { sessionId: sid() })
@@ -214,14 +229,22 @@ export function App(props: AppProps): JSX.Element {
     else if (result?.message && /once|persist|stop asking|readable|reject/.test(result.message)) say(result.message)
     return result !== undefined
   }
-  const approval = createApprovalUi({ reply, say,
+  // When the user last typed into the prompt -- and has not sent it: a
+  // question that opens then gets the rest of that typing, not answers.
+  // Sending a prompt ends the typing (a question its turn asks a moment
+  // later is answered by the next key).
+  let typingAt = 0
+  const approval = createApprovalUi({ reply, say, lastKey: () => typingAt,
                                       pauseMs: props.answerPauseMs })
   // The question's own state starts when it appears (its typeahead pause
   // counts from then), and ends with it.
   createEffect(() => {
     const asked = session()?.pending[0]
     approval.sync(asked)
-    if (asked) picker.close()             // a question takes the footer from a picker
+    if (asked) {
+      picker.close()                      // a question takes the footer from a picker
+      composer.cancelSearch()             // ... and the keys from a ctrl+r search
+    }
   })
   // /exit (or /quit) ends the session, and the window with it, as in the
   // REPL. A session that ended another way stays in view, saying so.
@@ -260,8 +283,15 @@ export function App(props: AppProps): JSX.Element {
     const s = session()
     const km = props.keymap
     const asked = s?.pending[0]
+    if (!asked && key.sequence && key.sequence.length >= 1 && !key.ctrl && !key.meta
+        && !km.matches("submit", key) && key.name !== "escape") typingAt = Date.now()
     if (key.ctrl && key.name === "c" && !composer.search()) {
       key.preventDefault()
+      // An open picker or palette is what ctrl+c leaves first.
+      if (picker.state.open) {
+        picker.close()
+        return
+      }
       ladder(s)
       return
     }
@@ -271,6 +301,16 @@ export function App(props: AppProps): JSX.Element {
       // ctrl+d leaves the window; the question stays open for any window.
       if (km.matches("quit", key)) {
         props.onQuit()
+        return
+      }
+      // ctrl+o: the whole preview, into the scrollback (the panel shows 24
+      // lines, fewer on a short terminal).
+      if (km.matches("expand", key)) {
+        const what = asked.kind === "plan" ? "the plan" : asked.kind === "ask" ? "the question" : `${asked.tool}, in full`
+        const body = asked.kind === "ask"
+          ? [String(asked.question ?? ""), ...(asked.choices ?? []).map((c, i) => `${i + 1}. ${c}`)]
+          : String(asked.preview ?? "").split("\n")
+        props.onLines?.(what, body)
         return
       }
       approval.handleKey(asked, key)
@@ -335,6 +375,7 @@ export function App(props: AppProps): JSX.Element {
       keymap={props.keymap}
       session={session}
       connection={() => store.state.connection}
+      starting={() => store.state.starting}
       message={message}
       composer={composer}
       approval={approval}

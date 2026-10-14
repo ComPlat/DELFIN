@@ -95,9 +95,14 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
   const replay = () => transcript.replay(options.replayTurns, "turns", lead)
   const divider = options.dividerOnResize ?? Boolean(process.env.STY)
   const stopResize = replayOnWidthChange(renderer, transcript, {
-    onSettled: (width) => {
+    onSettled: (width, widthChanged) => {
       if (divider) {
-        void transcript.append(own("divider", { text: `${width} columns now · the rows above keep their width` }))
+        // GNU screen cannot clear its scrollback: a replay would print
+        // every row twice. A width change is said; a height change is
+        // left as it is.
+        if (widthChanged) {
+          void transcript.append(own("divider", { text: `${width} columns now · the rows above keep their width` }))
+        }
       } else void replay()
     },
   })
@@ -130,7 +135,9 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
     get showThinking() {
       return presentOptions.showThinking
     },
-    redraw: replay,
+    // ctrl+l: the session written again -- or, where the scrollback cannot
+    // be cleared (GNU screen), the footer drawn again.
+    redraw: () => (divider ? Promise.resolve(renderer.requestRender()) : replay()),
     stop() {
       off?.()
       stopResize()

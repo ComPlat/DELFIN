@@ -51,6 +51,9 @@ export interface AppStore {
   hold(): void
   /** The replay first, then what was held (each hold has its release). */
   release(replay?: AnyEvent[]): void
+  /** Forget which of a session's events were seen: its replay is shown
+   *  again (switching back to a session shown before). */
+  unsee(session: string): void
 }
 
 export function createAppStore(clock: Clock = realClock, frameMs = 16): AppStore {
@@ -110,6 +113,9 @@ function wrap(state: AppState, setState: SetStoreFunction<AppState>,
     },
     hold() {
       holds++
+    },
+    unsee(session) {
+      seen.delete(session)
     },
     release(replay = []) {
       // In front of everything held: a replay must precede its session's
