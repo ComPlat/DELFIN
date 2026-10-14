@@ -2090,20 +2090,29 @@ def cmd_bench(args: argparse.Namespace) -> int:
     _asked = getattr(args, "task", None) or []
     if isinstance(_asked, str):          # a caller that set the field itself
         _asked = [_asked]
-    wanted = {t.strip() for chunk in _asked
-              for t in str(chunk).split(",") if t.strip()}
-    if wanted:
-        tasks = [t for t in tasks if t.id in wanted]
+    # Exact ids and shell globs (quote them: --task 'generalist_*').
+    tasks, missing = _bm.select_tasks(tasks, _asked)
+    if not tasks:
+        print(f"ERROR: no task matched {sorted(missing)}", file=sys.stderr)
+        return 1
+    # A name that matched nothing is a typo or a renamed task, and
+    # running the rest without saying so hands back a number for a
+    # different question than the one that was asked.
+    if missing:
+        print(f"WARNING: {len(missing)} requested task(s) do not exist "
+              f"and were skipped: {', '.join(sorted(missing))}",
+              file=sys.stderr)
+    if (getattr(args, "lang", "de") or "de") == "en":
+        _en = [_bm.english_variant(t) for t in tasks]
+        _no_en = [t.id for t, e in zip(tasks, _en) if e is None]
+        tasks = [e for e in _en if e is not None]
+        if _no_en:
+            print(f"WARNING: {len(_no_en)} task(s) have no English prompt "
+                  f"and were skipped: {', '.join(_no_en)}", file=sys.stderr)
         if not tasks:
-            print(f"ERROR: no task matched {sorted(wanted)}", file=sys.stderr)
+            print("ERROR: none of the selected tasks has an English prompt",
+                  file=sys.stderr)
             return 1
-        # A name that matched nothing is a typo or a renamed task, and
-        # running the rest without saying so hands back a number for a
-        # different question than the one that was asked.
-        missing = sorted(wanted - {t.id for t in tasks})
-        if missing:
-            print(f"WARNING: {len(missing)} requested task(s) do not exist "
-                  f"and were skipped: {', '.join(missing)}", file=sys.stderr)
 
     model = (getattr(args, "model", "") or "").strip()
     if not model:
@@ -4225,7 +4234,12 @@ def build_parser() -> argparse.ArgumentParser:
     bench_run.add_argument("--task", default=[], action="append",
                            help=("Task IDs (default: all). Comma-separated, "
                                  "and the flag may be repeated — both forms "
-                                 "accumulate"))
+                                 "accumulate. Shell globs select a family: "
+                                 "--task 'generalist_*'"))
+    bench_run.add_argument("--lang", default="de", choices=["de", "en"],
+                           help=("Prompt language. en runs each selected "
+                                 "task's prompt_en under the id <id>.en and "
+                                 "skips tasks without one (default: de)"))
     bench_run.add_argument("--max-tokens", type=int, default=1024,
                            dest="max_tokens")
     bench_run.add_argument(

@@ -347,6 +347,67 @@ class Task:
     # suite could not express one, so nothing measured whether a model
     # respects it.
     permission_mode: str = ""
+    # The same request in English. ``prompt`` stays the German one the
+    # user writes; ``english_variant`` turns this into a task of its own
+    # (id ``<id>.en``) so the two languages never share a history row or
+    # a baseline. Empty: the task has no English form.
+    prompt_en: str = ""
+
+
+def english_variant(task: Task) -> Optional[Task]:
+    """``task`` with its English prompt and the id ``<id>.en``, or None
+    when the task declares no ``prompt_en``.
+
+    A separate id rather than a flag on the result: every consumer of a
+    run file (baseline, history, compare) keys on ``task_id``, and a
+    German and an English attempt are two measurements, not one.
+    """
+    if not task.prompt_en:
+        return None
+    from dataclasses import replace as _replace
+    return _replace(task, id=f"{task.id}.en", prompt=task.prompt_en)
+
+
+def select_tasks(tasks: list[Task],
+                 patterns: Iterable[str]) -> tuple[list[Task], list[str]]:
+    """The tasks whose id matches any of ``patterns``, in suite order,
+    plus the patterns that matched nothing.
+
+    A pattern is an exact id or a shell glob (``generalist_*``, matched
+    case-sensitively with ``fnmatchcase``); comma-separated entries are
+    split. No pattern at all selects every task. The unmatched list is
+    returned rather than dropped: a typo that silently ran the rest
+    reports a number for a question nobody asked.
+    """
+    import fnmatch as _fn
+    wanted = [p.strip() for chunk in patterns
+              for p in str(chunk).split(",") if p.strip()]
+    if not wanted:
+        return list(tasks), []
+    hit: set[str] = set()
+    selected: list[Task] = []
+    for t in tasks:
+        matched = [p for p in wanted if _fn.fnmatchcase(t.id, p)]
+        if matched:
+            selected.append(t)
+            hit.update(matched)
+    return selected, [p for p in wanted if p not in hit]
+
+
+# ``QUALITY: <0-100>`` on a line of its own in an acceptance script's
+# output: the graded part of a mechanical verdict (how many of the
+# checks held), next to the exit status that is the pass/fail.
+_QUALITY_LINE = re.compile(r"^QUALITY:\s*(\d{1,3})\s*$", re.M)
+
+
+def acceptance_quality(output: str) -> Optional[int]:
+    """The last well-formed ``QUALITY: n`` (0..100) in ``output``, else
+    None. Out-of-range or non-numeric lines are ignored, not clamped: a
+    script that printed 101 has a defect, and a clamped 100 would hide
+    it."""
+    found = [int(m) for m in _QUALITY_LINE.findall(str(output or ""))]
+    found = [q for q in found if 0 <= q <= 100]
+    return found[-1] if found else None
 
 
 @dataclass
@@ -477,6 +538,11 @@ class BenchmarkResult:
     # The acceptance run: True, False, or None for "no script / not run".
     verify_ok: Optional[bool] = None
     verify_output: str = ""
+    # ``QUALITY: n`` from the acceptance script (see acceptance_quality);
+    # None when the script printed none. Aggregated: the median over the
+    # replicates that reported one, with the samples kept beside it.
+    verify_quality: Optional[int] = None
+    per_run_verify_quality: list[Optional[int]] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)  # tools the model actually called
     # ``name: subject`` per call, in order. What the names alone could not
     # say: which file, which command, which query. See tool_subject.
@@ -564,6 +630,7 @@ def _coerce_task(raw: dict) -> Task:
         max_cost_usd=float(raw.get("max_cost_usd", 0.10)),
         max_tool_calls=int(raw.get("max_tool_calls", 5)),
         behavior=str(raw.get("behavior", "") or "").strip().lower(),
+        prompt_en=str(raw.get("prompt_en", "") or ""),
     )
 
 
@@ -1632,6 +1699,14 @@ def score_outcome(
         else 0
     )
     routing_pts = routing_base + routing_bonus
+    # A task graded on its artifact and on nothing it says: the share
+    # the signals would carry is carried by how many of the acceptance
+    # checks held. Without this every such task collected the flat 15
+    # whether the artifact was nearly right or untouched.
+    verify_quality = (acceptance_quality(traj.verify_output)
+                      if task.verify else None)
+    if verify_quality is not None and not task.expected_signals:
+        routing_pts = int(round(20 * verify_quality / 100))
 
     if task.max_duration_s > 0 and traj.duration_s >= 0:
         speed_ratio = min(1.0, traj.duration_s / task.max_duration_s)
@@ -1711,6 +1786,8 @@ def score_outcome(
         value_report=value_report,
         verify_ok=traj.verify_ok,
         verify_output=str(traj.verify_output or "")[:2000],
+        verify_quality=verify_quality,
+        per_run_verify_quality=[verify_quality],
         tool_names=tool_names,
         tool_subjects=[tool_subject(c) for c in traj.tool_calls
                        if isinstance(c, dict)][:60],
@@ -2050,6 +2127,10 @@ def aggregate_replicates(
     behavior_agg = {
         k: beh_sums[k] / beh_counts[k] for k in beh_sums if beh_counts[k]
     }
+    # Acceptance quality per replicate; a sample that reported none
+    # stays None in the list and out of the median.
+    _vq_runs = [r.verify_quality for r in results]
+    _vq_seen = [q for q in _vq_runs if q is not None]
 
     return BenchmarkResult(
         task_id=first.task_id,
@@ -2088,6 +2169,9 @@ def aggregate_replicates(
         tool_subjects=subjects,
         behavior=behavior_agg,
         unmeasured=all_unmeasured,
+        verify_quality=(None if not _vq_seen
+                        else int(round(_median([float(q) for q in _vq_seen])))),
+        per_run_verify_quality=_vq_runs,
         caveats=int(_median([float(r.caveats) for r in results])),
         answer_chars=int(_median([float(r.answer_chars) for r in results])),
         user_interventions=int(_median(

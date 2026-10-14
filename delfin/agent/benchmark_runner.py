@@ -191,10 +191,12 @@ def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Option
     the mode cannot tell them apart — both run as ``solo``. So the key is
     the task CLASS, which is what actually decides where a task belongs.
 
-    Measured over the four packaged task files: office 11, behaviour 12,
-    generic_project 8. Those 31 are every task that writes; the other 48
-    read and are left alone deliberately — see the note in #111 on why
-    moving their root is a separate problem.
+    The per-class task counts are pinned in
+    tests/test_every_task_that_writes_writes_where_it_belongs.py (the
+    figures once written here went stale at 8 while the class held 17).
+    The classes without a workspace read only and are left alone
+    deliberately — see the note in #111 on why moving their root is a
+    separate problem.
 
     ``None`` when the class writes nothing or the directory is absent: a
     missing fixture must not silently redirect a run somewhere else.
@@ -207,6 +209,12 @@ def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Option
         rel = "behavior_workspace"
     elif cls == "generic_project":
         rel = "user_project_workspace"
+    elif cls == "generalist":
+        # Everyday software work on a repository that is not DELFIN: each
+        # task's setup builds its own git repository (Python or Node) in
+        # a subdirectory, and the acceptance script runs that
+        # repository's tests on what the attempt left behind.
+        rel = "generalist_workspace"
     elif cls.startswith("science"):
         # The everyday work: read real output, compute something from it,
         # write the script that does it. Its own fixture rather than the
@@ -405,6 +413,9 @@ _BEHAVIOR_WS_RELS: tuple[Path, ...] = (
     # build, and their setup refuses an existing chem/ tree. Without
     # restore, repeat 2 collides with repeat 1's fixture.
     Path("tests") / "fixtures" / "chemistry_workspace",
+    # Generalist tasks build a nested git repository per attempt and are
+    # graded on what is left in it; every setup refuses an existing one.
+    Path("tests") / "fixtures" / "generalist_workspace",
 )
 _BEHAVIOR_WS_REL = _BEHAVIOR_WS_RELS[0]
 
