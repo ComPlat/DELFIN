@@ -175,19 +175,28 @@ def load_project_memory(
     names: list[str] = []
     used = 0
     home = str(Path.home())
+    base = Path(cwd or Path.cwd()).resolve()
     for p in files:
+        cap = min(per_file_cap, _NAME_CAPS.get(p.name, per_file_cap))
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            # Read no more than the cap needs: a repository decides the
+            # file's size.
+            with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read(cap + 1)
         except OSError:
             continue
         if not text.strip():
             continue
-        cap = min(per_file_cap, _NAME_CAPS.get(p.name, per_file_cap))
         if len(text) > cap:
             text = text[:cap].rstrip() + "\n[... truncated ...]"
-        rel = str(p)
-        if rel.startswith(home):
-            rel = "~" + rel[len(home):]
+        # Relative to the workspace where it lies inside it: the absolute
+        # path is the same bytes in every block and says nothing more.
+        try:
+            rel = p.relative_to(base).as_posix()
+        except ValueError:
+            rel = str(p)
+            if rel.startswith(home):
+                rel = "~" + rel[len(home):]
         header = f"--- Project memory: {rel} ---"
         block = f"{header}\n{text.strip()}\n"
         if used + len(block) > max_chars and parts:
