@@ -925,6 +925,22 @@ def _no_watcher_ends_the_test_run(monkeypatch):
         monkeypatch.setattr(_lifeline, "watch", lambda on_gone, **kw: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_session_list_outlives_its_test():
+    """A session list (``agent_sessions.create_tab``) starts a refresh loop
+    that announces its sessions every few seconds into
+    ``session_presence._DIR`` and rewrites ``_OPEN_SESSIONS_PATH`` -- both
+    redirected into each test's own home. Left running, the loop of one
+    test wrote into the home of every later one. Stopped (and its running
+    tick waited for) when the test ends, before the next test's redirect.
+    Only if the module was imported: this must not import the dashboard."""
+    yield
+    import sys
+    mod = sys.modules.get("delfin.dashboard.agent_sessions")
+    if mod is not None and hasattr(mod, "stop_refresh_loops"):
+        mod.stop_refresh_loops()
+
+
 @pytest.fixture
 def real_lifeline_watch(monkeypatch):
     """The real ``lifeline.watch``, for a test that checks the watch itself
