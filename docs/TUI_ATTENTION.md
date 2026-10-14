@@ -1,6 +1,10 @@
 # Everything that needs you, in one place (plan)
 
-**Status:** a plan, not built yet. The decisions at the end are open.
+**Status:** a plan, not built yet. Decided with the user on 2026-10-14:
+→ opens every item (a copy when the session is still open elsewhere, a new
+session with the item as its context when there is no session); new
+sessions wait for the user; the note in a conversation is quiet, at the
+bottom right. The rest of the plan stands as written unless changed.
 
 The agent view shows what this window's sessions need. DELFIN knows a lot
 more that waits for you, and today it is spread over four places:
@@ -88,9 +92,36 @@ They are the agent view's, and work the same on every row:
 | Key | On a row of NEEDS YOU or NOTICES |
 |---|---|
 | space | peek: the whole question and its choices, the job's diagnosis summary and the prepared fix, the alert's detail |
-| → or enter | open it: a session of this service in this window; a job's diagnosis session (saved by the monitor), resumed in this window; a parked question's workspace as a new session that gets the answer on its first turn |
+| → or enter | jump into it, wherever it came from (next section) |
 | typing + enter | on a parked question: the answer (`attention.answer_item`), delivered to the next session in that workspace. On a session of this service: a reply, as today |
 | ctrl+x | dismiss. A notice goes at once. A blocking item asks twice, because whoever waits on it gets no answer |
+
+### Jumping into an item (→)
+
+Every row opens in this window. The dashboard, the REPL and the window
+all save sessions in one store (`~/.delfin/agent_sessions/`), so the
+window can open a session that started anywhere else.
+
+| The row | → does |
+|---|---|
+| A session of this service | opens it, as today |
+| A session elsewhere that is closed (no longer open in the dashboard or terminal) | resumes that same session here: its whole history, the same id |
+| A session still open elsewhere | opens a **copy** here: its history up to its last saved turn, under a new id. Opening the original twice would make two programs write one conversation; the session lock would then silently skip one side's saves. The row and the banner say "a copy of … (still open in the dashboard on uc3n991)" |
+| A parked question | opens its session, as above (resumed or a copy). You answer there as an ordinary message, and the inbox entry is closed, so the answer is never delivered a second time |
+| A failed job the monitor diagnosed | resumes the monitor's diagnosis session, which holds the diagnosis and the prepared fix |
+| Anything with no session behind it: a failed or finished job, a scheduled run, an alert, a budget notice whose session is gone | starts a **new session** in the item's folder, with the item as its opening context, shown as one row you can expand with ctrl+o. For a failed job the context is the job id, the SLURM state, the folder, the error lines found, the diagnosis and the prepared fix. A suggested prompt stands in the prompt box ("Job 4711 failed with OUT_OF_MEMORY. What went wrong, and what should we change?"). Nothing is sent, and nothing costs tokens, until you press enter. The dashboard's `/session handoff new` already works this way |
+
+How the window does it, with what exists:
+- **Resume:** `session.create {resume: id}`.
+- **Copy:** when the session is still open elsewhere, the worker refuses the
+  resume ("being written by another process; open a copy"), and the window
+  asks for `session.create {resume: id, fork: true}`. A session on another
+  login node is open when its presence record is fresh: the lock's pid
+  cannot be checked from here.
+- **New with context:** `session.create` gains `brief` (new, phase 2). The
+  worker shows the brief as the session's first row and puts it in front of
+  the first prompt. The suggested prompt is the window's own: it fills the
+  prompt box.
 
 Applying a prepared job fix (more memory per core, a longer time limit)
 stays in the dashboard in the first version: the peek shows the fix and
@@ -99,15 +130,16 @@ job backend in the service, which is phase 3.
 
 ### Seen from anywhere in the window
 
-- **The hints line** counts what blocks across all sources:
-  `◉ 3 waiting · ✗ 1 failed`. The badge is shown today only for this
-  service's sessions.
+- **Quiet, at the bottom right:** the hints line ends with the count, right
+  aligned and faint, with only the marks in colour: `◉ 3 · ✗ 1`. Today the
+  hints line counts only this service's sessions, at its left.
+- **A new item** that waits on you or failed names itself there for a few
+  seconds, in the same quiet place, for example `◉ relax Fe complex asks`,
+  then the count takes its place again. Nothing appears above the prompt,
+  and nothing moves in the conversation.
 - **The terminal title** carries the count: `(3) DELFIN · name`.
-- **A new blocking item or failure** while you are in a conversation leaves
-  one line in the footer for six seconds, for example: `a question from
-  'scan of benzene' (dashboard) waits -- ← to answer`. Desktop notifications
-  and webhooks already come from `emit_attention` itself; the window adds
-  nothing there.
+- Desktop notifications and webhooks already come from `emit_attention`
+  itself; the window adds nothing there.
 
 ## How it works
 
@@ -140,7 +172,7 @@ job backend in the service, which is phase 3.
 ### In the window
 
 - The store gains the items. The agent view gains the two groups, the peek
-  texts and the keys above. The hints line, the title and the footer note
+  texts and the keys above. The bottom-right count and note, and the title,
   read the same items.
 - Nothing is polled by the window. It gets `attention.updated` while it is
   connected and `attention.list` after a reconnect.
@@ -169,7 +201,8 @@ job backend in the service, which is phase 3.
    - unit tests with a fake inbox and fake findings files, including several processes writing at once;
    - docs/TUI_PROTOCOL.md updated.
 2. **Window:**
-   - the groups, the rows, the peek texts, the keys, the hints-line count, the title and the footer note;
+   - the groups, the rows, the peek texts, the keys, the bottom-right count and note, the title;
+   - → on every row: resume, a copy, the diagnosis session, or a new session with the item as its context (`session.create` gains `brief`) and a suggested prompt;
    - render and key tests;
    - a live tmux check that writes a question and a finding into a private home's files and answers and dismisses them from the window;
    - the manual.
@@ -178,13 +211,17 @@ job backend in the service, which is phase 3.
    - applying a prepared job fix from the window;
    - the jobs list in the agent view (suggestion 1).
 
-## Decisions for you
+## Decisions
 
-1. **Where:** NEEDS YOU and NOTICES inside the agent view (recommended,
-   one place for oversight), or a screen of its own.
-2. **What counts:** everything, with notices kept quiet (recommended), or
-   only what blocks plus failures.
-3. **Acting:** answer and dismiss from the window (recommended), or
-   show only and point to the dashboard.
-4. **New items while you work:** the footer note plus the count
-   (recommended), or the count only.
+Taken with the user (2026-10-14):
+- → jumps into every item. A session still open elsewhere opens as a
+  **copy**: a take-over would need the dashboard to honour a hand-over
+  request, which can come later.
+- A new session for an item **waits for you**: its context is in, a
+  suggested prompt is typed, nothing is sent.
+- The note in a conversation is **quiet, at the bottom right**.
+
+Standing as recommended, unless changed:
+- NEEDS YOU and NOTICES live inside the agent view.
+- Everything counts, with notices kept quiet.
+- Answer and dismiss from the window.
