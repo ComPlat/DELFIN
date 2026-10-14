@@ -188,3 +188,12 @@ def test_the_agents_checkout_with_changes_still_fails(repos):
     assert _head(wt) == before
     assert (wt / "feat.txt").read_text() == "edited\n"
     assert "not clean" in out.get("hint", "")
+
+
+def test_only_the_plain_two_word_move_is_retried():
+    assert HB.plain_branch_move("git checkout main") == "main"
+    assert HB.plain_branch_move("git switch main") == "main"
+    for cmd in ("git checkout main && rm -rf x", "git checkout -f main",
+                "git checkout main -- f", "git -C /x checkout main",
+                "git switch -c main", "echo git checkout main"):
+        assert HB.plain_branch_move(cmd) is None, cmd
