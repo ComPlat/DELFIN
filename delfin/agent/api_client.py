@@ -21667,7 +21667,7 @@ class _DocToolExecutor:
                 "Run inside the dashboard with the KIT confirm panel mounted."
             )})
         try:
-            ok = bool(_ask_confirm(perms, 
+            ok = bool(perms.confirm_callback(
                 "remember_permission",
                 {"kind": kind, "value": value, "scope": scope,
                  "rationale": rationale},
@@ -21856,7 +21856,7 @@ class _DocToolExecutor:
                 "Run inside the dashboard with the KIT confirm panel mounted."
             )})
         try:
-            ok = bool(_ask_confirm(perms, 
+            ok = bool(perms.confirm_callback(
                 "remember_permission_bundle",
                 {"profile": profile, "directory": str(dir_path),
                  "scope": scope, "rationale": rationale,
