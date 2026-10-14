@@ -1053,10 +1053,9 @@ def _keep_engine_history(session_id: str, engine_messages, chat_messages,
         _atomic_write_text(kept_aside, stored_file.read_text(encoding="utf-8"))
     except OSError:
         pass
-    note = (f"engine history kept: a save would have replaced "
-            f"{len(old)} messages by {len(new)} with no compaction and no "
-            f"new cycle; kept the stored history and appended {len(added)}")
-    return old + added, note
+    # Counts only: the caller logs them, and nothing of the messages'
+    # content may reach a log line (CodeQL alert 59).
+    return old + added, (len(old), len(new), len(added))
 
 
 def save_session(
@@ -1176,8 +1175,11 @@ def save_session(
         session_id, engine_messages, chat_messages, last_compaction_info)
     if _history_kept:
         import logging
+        _stored, _offered, _added = (int(n) for n in _history_kept)
         logging.getLogger(__name__).warning(
-            "session %s: %s", session_id, _history_kept)
+            "engine history kept: a save would have replaced %d messages "
+            "by %d with no compaction and no new cycle; kept the stored "
+            "history and appended %d", _stored, _offered, _added)
 
     data = {
         # Unrecognised exporter keys first, so a named parameter always
