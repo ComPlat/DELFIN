@@ -3202,6 +3202,148 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"\bGet-StoredCredential\b",
 )
 
+# DELFIN's own programs: the read-only subcommands, one end-anchored
+# pattern each. Input: a shell segment. A pattern matches only the program,
+# the subcommand words, and then options from that subcommand's own list
+# and positionals that cannot be read as an option (a bare or quoted word
+# not starting with "-"), so neither an abbreviated acting flag
+# (argparse takes `--rep` for `--repair`) nor a sub-subcommand (`bench`
+# plus the word `run`) nor a redirect, substitution or chain rides on it.
+# A subcommand that acts -- stops or pauses processes, writes or deletes
+# credentials, moves or writes report files, writes outside the
+# workspace, changes a schedule or a baseline, answers an approval,
+# starts a model session, a calculation or a SLURM job -- has no entry and
+# goes to the dialog (asked when someone can ask, refused headless).
+#
+# Classification, from the argparse parsers (delfin/agent/cli.py
+# build_parser; delfin/cli.py main):
+#   delfin-agent, read-only: -h/--help anywhere, --version, bench
+#     list|latest|audit|compare|gate, session ls|search, messages
+#     ls|status, memory [tidy] without --apply, approvals [ls]|show|watch,
+#     skills [proposals]|show, bug [ls], scheduler [status], stop-all
+#     --check, doctor without --repair, capabilities, gate explain, report,
+#     watch, where [--ssh-config] without --write/--attach, sessions, jobs,
+#     jobs watch --status.
+#   delfin-agent, acting: the bare program and any unknown first word
+#     (routed to chat), chat, run, init, bench [run]|set-baseline|rebase|
+#     nightly, credentials *, session export, watchpost * (run and diff
+#     write a report under ~/.delfin), memory tidy --apply, approvals
+#     approve|deny|answer, skills accept|reject, bug triage (writes
+#     triage.md and a patch)|solve|watch, scheduler start|stop|add-bench,
+#     stop-all, pause, resume, doctor --repair, where --attach|--write,
+#     jobs watch --on|--off, test-on-slurm.
+#   delfin, read-only: -h/--help, -V/--version, doctor [--json],
+#     qm_check, csp_check, mlp_check, analysis_check.
+#   delfin, acting: the bare program (a workflow run), every flag form
+#     (--define, --recalc, --cleanup, --purge, --json ...), cleanup, stop,
+#     co2, run_orca, qm_run, tadf_xtb, hyperpol, cluster, review; and every
+#     other delfin-* program (pipeline, step, build, guppy, manta, fukui,
+#     voila, app, the servers, the indexer).
+# Rejected: one prefix pattern with a deny-list of acting subcommands (an
+# open list: a new subcommand would be free on arrival); reading the
+# parser at import time (the classification is a decision, not a fact the
+# parser holds). Cost: about 40 regex searches more per segment that
+# reaches the DELFIN entries, all anchored at the program name.
+_CLI_WORD = r"[A-Za-z0-9_./~@:+=,%][A-Za-z0-9_./~@:+=,%-]*"
+_CLI_ARG = (r"(?:" + _CLI_WORD + r"|'[^'\-][^']*'"
+            r"|\"[^\"$`\\!\-][^\"$`\\!]*\")")
+_CLI_TAIL = r"(?:\s+2>(?:&1|/dev/null))?\s*$"
+_PY_M = r"python(?:3(?:\.\d+)?)?\s+-m\s+"
+
+
+def _cli_read_only(prog: str, words: str, *, flags: tuple = (),
+                   valued: tuple = (), positional: bool = False) -> str:
+    alts = [re.escape(f) for f in flags]
+    alts += [re.escape(v) + r"(?:=|\s+)" + _CLI_ARG for v in valued]
+    if positional:
+        alts.append(_CLI_ARG)
+    body = r"^\s*" + prog + (r"\s+" + words if words else "")
+    if alts:
+        body += r"(?:\s+(?:" + "|".join(alts) + r"))*"
+    return body + _CLI_TAIL
+
+
+_GATE_FLAGS = ("--json", "--supervised")
+_GATE_VALUED = ("--permission-mode", "--cwd", "--add-dir", "--read-dir",
+                "--allowed-tools", "--disallowed-tools", "--asker",
+                "--provider")
+# (words, flags, valued, positional)
+_AGENT_READ_ONLY_SUBCOMMANDS: tuple = (
+    ("bench\\s+list", (), (), False),
+    ("bench\\s+latest", (), ("--limit",), False),
+    ("bench\\s+audit", (), (), True),
+    ("bench\\s+compare", ("--json", "--markdown"),
+     ("--model", "--run", "--last-k", "--runs-dir"), True),
+    ("bench\\s+gate", ("--json",), ("--model", "--baseline", "--runs-dir"),
+     True),
+    ("session\\s+ls", (), ("--limit",), False),
+    ("session\\s+search", (), (), True),
+    ("messages\\s+ls", (), ("--from",), False),
+    ("messages\\s+status", (), ("--from",), True),
+    ("memory", (), (), False),
+    ("memory\\s+tidy", (), ("--workspace",), False),
+    ("approvals", (), (), False),
+    ("approvals\\s+ls", (), (), False),
+    ("approvals\\s+show", (), (), True),
+    ("approvals\\s+watch", (), ("--seconds",), False),
+    ("skills", (), (), False),
+    ("skills\\s+proposals", (), (), False),
+    ("skills\\s+show", (), (), True),
+    ("bug", (), (), False),
+    ("bug\\s+ls", (), ("--archive",), False),
+    ("scheduler", (), (), False),
+    ("scheduler\\s+status", (), (), False),
+    ("stop-all\\s+--check", (), (), False),
+    ("doctor", (), ("--workspace",), False),
+    ("capabilities", _GATE_FLAGS, _GATE_VALUED, False),
+    ("gate\\s+explain", _GATE_FLAGS,
+     _GATE_VALUED + ("--tool", "--path", "--content"), True),
+    ("report", ("--json",), ("--session", "--since", "--name"), False),
+    ("watch", ("--denied",), ("--session", "--seconds", "--since"), False),
+    ("where", ("--ssh-config",), (), False),
+    ("sessions", ("--load",), ("--limit", "--watch"), False),
+    ("jobs", ("--json",), (), False),
+    ("jobs\\s+watch\\s+--status", (), (), False),
+)
+_DELFIN_READ_ONLY_SUBCOMMANDS: tuple = (
+    ("doctor", ("--json",), (), False),
+    ("qm_check", (), (), True),
+    ("csp_check", (), (), False),
+    ("mlp_check", (), (), False),
+    ("analysis_check", (), (), False),
+)
+
+
+def _delfin_cli_read_only_patterns(agent_prog: str,
+                                   delfin_prog: str) -> tuple:
+    out = [
+        # Help prints and exits before any subcommand runs; up to two
+        # subcommand words may precede it.
+        r"^\s*" + agent_prog + r"(?:\s+[a-z][a-z-]*){0,2}\s+(?:-h|--help)"
+        + _CLI_TAIL,
+        r"^\s*" + agent_prog + r"\s+--version" + _CLI_TAIL,
+        r"^\s*" + delfin_prog + r"\s+(?:-h|--help|-V|--version)" + _CLI_TAIL,
+    ]
+    for words, flags, valued, pos in _AGENT_READ_ONLY_SUBCOMMANDS:
+        out.append(_cli_read_only(agent_prog, words, flags=flags,
+                                  valued=valued, positional=pos))
+    for words, flags, valued, pos in _DELFIN_READ_ONLY_SUBCOMMANDS:
+        out.append(_cli_read_only(delfin_prog, words, flags=flags,
+                                  valued=valued, positional=pos))
+    return tuple(out)
+
+
+# The modules behind DELFIN's console scripts (pyproject [project.scripts])
+# and the package itself: `python -m <one of these>` is the program by
+# another name, so the general `python -m <module>` entry below excludes
+# them and only their read-only forms are listed (in every workspace, as
+# `python -m delfin` was before).
+_DELFIN_ENTRY_MODULE_RE = (
+    r"delfin(?:\.(?:__main__|main|cli|cli_\w+|build_up_complex|"
+    r"cluster_bench\.cli|guppy_sampling|guppy_batch|"
+    r"doc_server(?:\.indexer|\.__main__)?|tools\.mcp_server|agent\.cli|"
+    r"ops_server(?:\.__main__)?))?(?![\w.])")
+
 # Bash patterns that are auto-approved in mode="default" without callback.
 # Two categories:
 #   (a) Read-only / informational shell commands.
@@ -3371,15 +3513,21 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*python(?:3(?:\.\d+)?)?\s+--version\b",
     r"^\s*python(?:3(?:\.\d+)?)?\s+-m\s+(?:py_compile|pytest|unittest|doctest|timeit|venv|"
     r"pip\s+show|pip\s+list|pip\s+freeze|"
-    r"compileall|json\.tool|delfin(?:\.\w+)*)\b",
+    r"compileall|json\.tool)\b",
     # Run a user's OWN module: `python -m <module> [args]` is exactly as safe
     # as `python <script>.py` (already auto-allowed below) — same arbitrary-code
     # capability, same deny-list + egress checks apply to the whole command. So
     # the agent can run the CLI it just built (bug 20260718-193300: it could not
     # run `python -m molkit "…"`). Excludes pip install/uninstall/download,
     # which stay behind the confirm gate.
+    # DELFIN's own programs are not "the user's own module": their entry
+    # modules are excluded here and their read-only forms listed right
+    # after (see _delfin_cli_read_only_patterns).
     r"^\s*python(?:3(?:\.\d+)?)?\s+-m\s+(?!pip\s+(?:install|uninstall|download)\b)"
+    r"(?!" + _DELFIN_ENTRY_MODULE_RE + r")"
     r"[A-Za-z_][\w.]*",
+    *_delfin_cli_read_only_patterns(_PY_M + r"delfin\.agent\.cli",
+                                    _PY_M + r"delfin(?:\.cli|\.main|\.__main__)?"),
     r"^\s*python(?:3(?:\.\d+)?)?\s+\S+\.py\b",                             # run a script in repo
     r"^\s*pip\s+(?:--version|-V|show|list|freeze|check)\b",
     r"^\s*conda\s+(?:info|list|env\s+list|search)\b",
@@ -3433,7 +3581,9 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
 # files" behaviour for non-DELFIN projects.
 _DELFIN_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*xtb\s+\S+\.xyz\b",          # read-only xtb invocation
-    r"^\s*delfin(?:-\w+)?\b",         # delfin CLI wrappers
+    # The read-only subcommands of delfin-agent and delfin, by name; every
+    # acting one is asked (classification above _DEFAULT_BASH_AUTO_ALLOW).
+    *_delfin_cli_read_only_patterns(r"delfin-agent", r"delfin"),
 )
 
 # The patterns nobody chose. Everything else in
