@@ -110,7 +110,12 @@ def _git_branch(workspace: Path | None) -> str:
             cwd=str(workspace), capture_output=True, text=True, timeout=2,
         )
         if out.returncode == 0:
-            return out.stdout.strip()
+            name = out.stdout.strip()
+            if name == "HEAD":
+                # Detached: name the branch it runs, not "HEAD".
+                from .held_branch import checkout_label
+                name = checkout_label(workspace) or name
+            return name
     except (FileNotFoundError, subprocess.SubprocessError):
         pass
     return ""

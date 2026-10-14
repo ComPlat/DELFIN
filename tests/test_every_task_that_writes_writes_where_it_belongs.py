@@ -245,7 +245,12 @@ def test_the_counts_still_match_what_was_measured():
     # (tasks_a_fix_claim.yaml), one false and one true claim over the
     # fixture repo from setup/a_fix_claim_repo.py, which writes only
     # into its own folder under the workspace.
-    assert counts == {"office": 13, "behavior": 16, "generic_project": 17,
+    #
+    # generic_project 17 -> 18 on 2026-10-14:
+    # gen_a_held_branch_is_reached_by_detaching, setup
+    # a_checkout_whose_main_is_held.py, which builds a repository and a
+    # second worktree under <workspace>/held_main and writes nothing else.
+    assert counts == {"office": 13, "behavior": 16, "generic_project": 18,
                       "science": 23, "chemistry": 5, "other": 52}, counts
 
 
