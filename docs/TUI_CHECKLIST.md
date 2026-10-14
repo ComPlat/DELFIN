@@ -53,6 +53,21 @@ clean up on the VM. Each item says why it could not be closed here.
    - the REPL's path completer ignores a trailing `/`;
    - under `DELFIN_SCRATCH_STATE`, session reports and session-index rows
      still go to the real `~/.delfin`;
+   - the engine starts its own MCP servers as `python -m
+     delfin.tools.mcp_server` and `python -m delfin.ops_server`
+     (`agent/mcp_client.py`) in the project folder, and `-m` imports from
+     the working directory first: a `json.py` in the project folder (one
+     the agent wrote earlier, say) is imported by them when they start --
+     by default outside any containment (`agent.mcp_isolation` is off).
+     The REPL does the same. `-P` in their args (Python 3.11+) closes it;
+     the service and its workers now start in the runtime directory for
+     the same reason (3475a86c);
+   - tests that build an agent engine leave its MCP servers running when
+     they end: one full run left 20 of them (from `test_mcp_http`,
+     `test_the_rules_can_change_while_the_agent_works`,
+     `test_two_hundred_skills_through_the_public_path`,
+     `test_u11_whole_request_is_counted_once`), plus multiprocessing
+     helpers of `test_a_completion_notice_is_not_destroyed_before_it_arrives`;
    - `delfin-agent`'s start spends ~66 ms importing `api_client` for the
      security notices, and the scratch-state path imports ipywidgets
      (~90 ms): the window's launch would be faster without them.
@@ -71,11 +86,11 @@ clean up on the VM. Each item says why it could not be closed here.
     came with it (`ssh-keygen -R localhost` removes them).
 13. In the real `~/.delfin`: two old test session records (0cc8db05…,
     32cfddf4…), and audit-log entries of the real-model test sessions
-    (four of e974faa0, two of the agent-view check's) -- kept on purpose:
-    an audit log is not edited. The tests' session reports and
-    session-index rows were removed after each run.
-14. `/home/jonas/project/.scratch-tui` (scripts, review repros, logs) and
-    the test folders under `/tmp` (gone at the next reboot).
+    (four of e974faa0…, two each of the two agent-view checks: ff3e1baf…,
+    b1b67645…) -- kept on purpose: an audit log is not edited. The tests'
+    session reports and session-index rows were removed after each run.
+14. `/home/jonas/project/.scratch-tui` (scripts, review repros, logs). The
+    test folders under `/tmp` were removed at the end (746, ~850 MB).
 15. Processes: during the work, three orphaned test windows of an earlier
     review run, two stale `bun test` runs (one had spun at 100% CPU for
     hours: OpenTUI swallows the SIGTERM `timeout` sends) and one forgotten
@@ -83,6 +98,13 @@ clean up on the VM. Each item says why it could not be closed here.
     (since fixed) also sent SIGHUP to up to three `bun src/main.tsx`
     processes it had not started -- by all signs the same kind of orphans.
     Nothing of yours was touched.
+    Still running, not stopped here (the stop was not permitted in this
+    session): 24 processes DELFIN's own test suite left on 2026-10-13
+    (20 MCP servers, three multiprocessing helpers, a jedi subprocess;
+    orphans under systemd --user, idle).
+    `python3 /home/jonas/project/.scratch-tui/final/stop_test_leftovers.py`
+    lists them, `--stop` ends them (each pid is checked again first); a
+    reboot ends them too.
 
 ## Known limits
 
