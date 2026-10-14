@@ -632,7 +632,8 @@ def test_a_rule_naming_no_tool_is_named_at_startup(env):
         backend="", provider="", model="", mode="", cwd=str(env["ws"]),
         effort="", permission_mode="", settings_defaults=False,
         allowed_tools="", disallowed_tools="")
-    notes = "\n".join(agent_cli._bounding_notices(args, engine))
+    notes = "\n".join(n for n in agent_cli._bounding_notices(args, engine)
+                      if "names no tool" in n)
     assert "web_serach" in notes, notes
     assert "mcp__srv__x" not in notes and "read_file" not in notes, notes
 

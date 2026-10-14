@@ -536,7 +536,11 @@ def _rules_summary(workspace: Path) -> dict:
     try:
         from . import permission_rules as PR
         rs = PR.load(workspace)
+        notice = PR.scope_notice(rs)
         return {"rules": PR.rule_records(rs),
+                "repository": rs.repo_key or "",
+                "allow_off": [r.text for r in rs.allow_off],
+                "notice": notice or "",
                 "errors": PR.error_lines(rs)}
     except Exception as exc:
         return {"rules": [], "errors": [f"cannot be read: {exc}"]}
@@ -678,11 +682,17 @@ def format_capabilities(caps: dict) -> str:
         # Its deny/ask/only_allow are listed with the user's rules below.
         lines.extend(managed_policy.summary_lines(include_rules=False))
     rules = caps.get("permission_rules") or {}
+    if rules.get("repository"):
+        lines.append(f"{'repository':<11} {rules['repository']}")
     for i, r in enumerate(rules.get("rules") or ()):
+        scope = r.get("scope") or ""
+        where = (f", {scope}" if r["list"] == "allow" and scope else "")
         lines.append(f"{'rules' if i == 0 else '':<11} {r['list']:<10} "
-                     f"{r['rule']}  [{r['origin']}: {r['source']}]")
+                     f"{r['rule']}  [{r['origin']}: {r['source']}{where}]")
     for err in rules.get("errors") or ():
         lines.append(f"rules       {err}")
+    if rules.get("notice"):
+        lines.append(f"rules       note: {rules['notice']}")
     if caps["launch"]["refused"]:
         lines.append("launch      REFUSED: " + "; ".join(
             f["message"] for f in caps["launch"]["findings"]

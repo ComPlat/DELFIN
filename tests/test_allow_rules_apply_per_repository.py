@@ -271,6 +271,15 @@ def test_permissions_and_capabilities_name_the_repository_and_scope(env):
     assert glob and glob[0]["scope"] == "every repository"
 
 
+def test_a_changed_remote_moves_the_workspace_to_the_other_key(env):
+    _user(env, repos={"github.com/me/a": {"allow": ["bash(./run.sh)"]}})
+    assert _asked(env["a"]) == (True, False)
+    _git(env["tmp"], env["a"], "remote", "set-url", "origin",
+         "https://github.com/me/elsewhere")
+    assert PR.load(env["a"]).repo_key == "github.com/me/elsewhere"
+    assert _asked(env["a"]) == (False, True)
+
+
 def test_the_repo_key_is_the_git_role_key(env):
     from delfin.agent import git_role
     for ws in (env["a"], env["b"], env["local"]):

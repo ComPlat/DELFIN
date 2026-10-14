@@ -1446,6 +1446,20 @@ Rules in `~/.delfin_settings.json` decide single actions in advance, in every le
 - **allow** only answers a question DELFIN would otherwise ask you about that exact call: the command dialog, a read outside the workspace (that one read; no directory is opened for the session), the write dialog in `default`, an MCP tool with side effects. It never lifts a refusal: secrets, outside-workspace writes, a locked folder, the agent's own configuration and safety files, git settings that name a program, a push or pull request you did not ask for, an upload, a command you refused earlier, the deny patterns, all stay as they are.
 - An allow covers one plain command: a command with `;`, `&`, `|`, `<`, `>`, `` ` ``, `$`, brackets, braces, a backslash or a newline is never covered, nor one that runs another program from its words (`env …`, `xargs …`, `timeout …`, `sudo …`, `python -c …`, `sh -c …`, `perl -e …`). `bash(make)` covers exactly `make`; `bash(make:*)` covers `make test`.
 - A repository can only add friction: `deny` and `ask` in its `.delfin/settings.json` apply, its `allow` is ignored.
+- **Scope allow rules to a repository** (recommended). Under `"repos"` in the same `permissions` block, each entry's rules apply only in the repository it names:
+
+  <!-- recipe: not-runnable — a settings file excerpt; tests/test_allow_rules_apply_per_repository.py pins what it means -->
+  ```json
+  "permissions": {
+    "deny": ["bash(git push)"],
+    "repos": {
+      "github.com/me/analysis": {"allow": ["bash(pytest:*)"]},
+      "~/scratch/*":            {"allow": ["bash(make:*)"], "ask": ["write(data/**)"]}
+    }
+  }
+  ```
+
+  A key is written like an `agent.git_roles` key: `github.com/owner/repo` or any remote URL, compared with the workspace's origin push URL (else its only remote, else the checkout's top-level path); or an absolute or `~` path, with `*`/`?` a glob over the checkout's top-level directory, without them that directory and everything below it. The top-level `deny` and `ask` apply in every repository. The top-level `allow` also still applies in every repository, and each start names those rules with a one-line notice: set `"global_allow": true` to keep them without the notice, or `"global_allow": false` to turn them off and rely on `repos` alone. `/permissions` names the repository of the workspace and, for every allow, the repository it applies in (`every repository` for the top-level list), and lists the entries for other repositories; `delfin-agent capabilities` shows the same.
 - A rule that cannot be read grants nothing. Broken rules, and rules naming a tool that does not exist, are listed when the terminal starts; a broken deny or ask is marked `ERROR`.
 - `/permissions` in the terminal shows the level, every rule in force with its file, and what is not in force; `/permissions rules` shows the rules alone. You edit the file yourself: the agent cannot write it from any tool or command.
 - On the CLI backend, deny and ask apply to its tools through the same hook that keeps its file boundary; allow is not used there.
