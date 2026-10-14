@@ -10,6 +10,7 @@ import os
 from typing import Dict, Optional
 
 from delfin.common.logging import get_logger
+from delfin.manta._ob_rng import reseed_ob_rng as _reseed_ob_rng
 from delfin.manta.conformer_io import (
     _xyz_to_rdkit_conformer,
 )
@@ -425,6 +426,9 @@ def _optimize_xyz_openbabel(
                         _ob_atom.SetFormalCharge(0)
             except Exception as _ec_exc:
                 logger.debug("Extreme-charge fallback charge-scrub failed: %s", _ec_exc)
+        # #527: Open Babel's contact/angle nudges read a wall-clock-seeded rand(); a fixed seed
+        # per call makes the result a function of this call's input (DELFIN_OB_DETERMINISTIC_RNG).
+        _reseed_ob_rng(pybel)
         if not ff.Setup(ob_mol.OBMol):
             logger.debug("Open Babel UFF setup failed, returning unoptimized geometry")
             return (xyz_delfin, None) if return_energy else xyz_delfin

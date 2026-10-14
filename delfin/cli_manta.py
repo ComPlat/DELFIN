@@ -322,6 +322,14 @@ _CHAMPION_FLAGS = (
     # severity profile (0.70 x vdW, lone-pair cones) may not get worse or the frame falls
     # back; H_SP3_ONLY = the rotor turns only tetrahedral / pyramidal centres.
     "H_PLACEMENT", "H_CONTACT_GATE", "H_PARENT_REGAIN", "H_EYE_GATE", "H_SP3_ONLY",
+    # LANDING 7 (2026-10-14, AB:lonepair6k3, #525): the lone pairs of a coordinating sp3
+    # group-16 donor (aqua, alcohol, hydroxo, thiol) sit on free tetrahedral corners and the
+    # metal takes one of them, instead of the bisector in the substituent plane; the M-O(H)
+    # length is the ionic one for the oxidation state read by cutting the M-D bonds of the
+    # SMILES (Zn-OH2 1.88 -> 2.04 A, Cu 1.98 -> 2.09 A).  6000-pool A/B: 5850 byte-identical,
+    # 63 affected, every never-worse term 0, absolute hard frames 485 -> 446 and no system with
+    # more hard frames.  Impl delfin/manta/_lone_pair_space.py, _oxidation_state.py.
+    "LONE_PAIR_SPACE", "LONE_PAIR_MD",
                           # #31: ring-pucker symmetry reduction WITH the add guard in front of it --
                           # landed 2026-09-07, label symmfoldadd6k, pool_6000, both historic floors.
                           #   n_compared 5819, affected 123, judged intersection 107,
@@ -380,11 +388,17 @@ _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 # the stereo gate; the stereocentre enumerator no longer counts a mirror frame as a built fold.
 # 6000-pool A/B: never-worse, landing gate open, 1665 affected + 4150 byte-identical,
 # capability 0/0, every loss term 0.
+# LANDING 6 (2026-10-14, AB:detrng6k): Open Babel's contact and angle nudges draw from a fixed
+# seed per call instead of a clock-seeded rand() (#527), so a minimisation that passes through
+# such a contact gives the same geometry in every run.  6000-pool A/B: 5894 byte-identical,
+# 7 changed, every never-worse term 0, absolute hard frames 175 -> 173; the five previously
+# non-reproducible systems byte-identical in seven builds.
 _CHAMPION_EXTRA_ENV = {
     "DELFIN_MIRROR_ENUM": "1",
     "DELFIN_MIRROR_ONE_PER_SYSTEM": "1",
     "DELFIN_MIRROR_STEREO_GATE": "1",
     "DELFIN_STEREOCENTER_SKIP_MIRROR": "1",
+    "DELFIN_OB_DETERMINISTIC_RNG": "1",
 }
 
 

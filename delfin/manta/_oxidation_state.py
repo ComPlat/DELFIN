@@ -44,10 +44,33 @@ Likewise `None` for SEVERAL metals: the total charge can then not be distributed
 unambiguously (a mixed-valence Fe(II)/Fe(III) would otherwise be Fe(2.5) twice).
 
 Geometry-free, deterministic, without crystal, without an element table with radii.
+
+⚠ THE DONOR TABLE BELOW READS THE WRITTEN SMILES WRONG (#528, 09.10.2026).  It classifies a donor
+by element and neighbour COUNT, but the SMILES this module receives write every metal-donor
+contact as a bond and say with bond orders and formal charges which donors are L-type: a
+carbonyl O on the metal is `[O+]=C` (acac, carboxylate, ketone, amide), an imine `C=[N+]`, a
+nitrile `N#C`, a thione `[S+]=C` -- the table counts all of them as anions.  Cu(acac)2 comes
+out as Cu(IV) d7 instead of Cu(II) d9, a Cd(II) Schiff-base complex as Cd(IV) d8.  Checked
+against the oxidation states that crystal-structure names state, the table is wrong about as
+often as it is right; an alcohol donor (R-OH) or a ligand charge on a non-donor atom (a
+zwitterion, a counter-ion in the SMILES) is enough to break it.
+
+THE CUT (`DELFIN_OXSTATE_CUT=1`, default OFF -> byte-identical).  Every metal-donor bond is
+removed from the SMILES AS WRITTEN and each donor's open valence is closed with electrons: a
+donor that is closed-shell without the metal is L-type (0), a donor left with r open valences
+takes charge -r (Cl -> Cl-, [O] -> O-, M=O -> O2-, [O+]=C -> O=C, [N+]=C -> N=C); a donor C
+left with only two sigma bonds is a neutral singlet carbene; metal-bound H is hydride; a dative
+bond inside a ligand counts as a charge-separated single bond.  OS = total charge - sum of the
+ligand charges after the cut, so a counter-ion or a zwitterion cancels.  The same cut sets
+the spin of the optional xtb step (`_spin_rule.analyse_smiles`, branch work/2026-09-29-spin-rule);
+against the same names it is right in the large majority of cases.  Still None (the doubt rule): several metals,
+hapto binding (adjacent donor atoms), a nitrosyl (linear NO+ and bent NO- are the same SMILES;
+structure names usually count NO+, the cut NO-), a valence the cut cannot read, OS outside 0..8.
 """
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, Optional, Tuple
 
 _LOG = logging.getLogger(__name__)
@@ -144,6 +167,72 @@ def _ox_donor_charge(atom, metal_idx: int) -> Optional[int]:
     return None                                                # unknown donor -> abort
 
 
+OXSTATE_CUT_FLAG = "DELFIN_OXSTATE_CUT"
+
+
+def _ox_cut(mol, metal_idx: int) -> Optional[Tuple[int, int]]:
+    """(OS, d) by cutting every metal-donor bond of the SMILES as written (#528), or None."""
+    from rdkit import Chem
+    m = mol.GetAtomWithIdx(int(metal_idx))
+    msym = m.GetSymbol()
+    if msym not in _OX_GROUP:
+        return None
+    if sum(1 for a in mol.GetAtoms() if a.GetSymbol() in _OX_GROUP) != 1:
+        return None
+    rw = Chem.RWMol(mol)
+    if any(b.GetIsAromatic() for b in rw.GetBonds()):
+        Chem.Kekulize(rw, clearAromaticFlags=True)     # bond orders as integers, as written
+    rw.UpdatePropertyCache(strict=False)
+    total = int(sum(a.GetFormalCharge() for a in rw.GetAtoms()))
+    mi = int(metal_idx)
+    donors = sorted(n.GetIdx() for n in rw.GetAtomWithIdx(mi).GetNeighbors())
+    dset = set(donors)
+    for i in donors:
+        if any(k.GetIdx() in dset for k in rw.GetAtomWithIdx(i).GetNeighbors()):
+            return None                                 # hapto: adjacent donor atoms
+    for i in donors:
+        a = rw.GetAtomWithIdx(i)
+        heavy = [n for n in a.GetNeighbors() if n.GetIdx() != mi and n.GetAtomicNum() > 1]
+        if a.GetSymbol() == "N" and len(heavy) == 1 and heavy[0].GetSymbol() == "O" \
+                and a.GetTotalNumHs() == 0:
+            return None                                 # nitrosyl: NO+ / NO- not in the SMILES
+    n_hydride = rw.GetAtomWithIdx(mi).GetTotalNumHs()
+    # hydrogen counts frozen as written WITH the metal bond (else Cl -> HCl after the cut)
+    for a in rw.GetAtoms():
+        a.SetNumExplicitHs(a.GetTotalNumHs())
+        a.SetNoImplicit(True)
+    for i in donors:
+        rw.RemoveBond(mi, i)
+    for b in rw.GetBonds():                             # dative inside a ligand -> +/- single bond
+        if b.GetBondType() == Chem.BondType.DATIVE:
+            b.SetBondType(Chem.BondType.SINGLE)
+            s, e = b.GetBeginAtom(), b.GetEndAtom()
+            s.SetFormalCharge(s.GetFormalCharge() + 1)
+            e.SetFormalCharge(e.GetFormalCharge() - 1)
+    cut = rw.GetMol()
+    cut.UpdatePropertyCache(strict=False)
+    Chem.AssignRadicals(cut)
+    for i in donors:
+        a = cut.GetAtomWithIdx(i)
+        r = a.GetNumRadicalElectrons()
+        if r == 0:
+            continue                                    # L-type: closed shell without the metal
+        val = sum(bd.GetBondTypeAsDouble() for bd in a.GetBonds()) + a.GetTotalNumHs()
+        if a.GetSymbol() == "C" and int(round(val)) == 2:
+            a.SetFormalCharge(0)                        # singlet carbene, whatever the writer put
+        else:
+            a.SetFormalCharge(a.GetFormalCharge() - r)  # X-type: fill the open valence
+        a.SetNumRadicalElectrons(0)
+    lig = sum(a.GetFormalCharge() for a in cut.GetAtoms() if a.GetIdx() != mi) - n_hydride
+    os_ = total - int(lig)
+    if os_ < 0 or os_ > 8:
+        return None
+    d = _OX_GROUP[msym] - os_
+    if d < 0 or d > 10:
+        return None
+    return os_, d
+
+
 def oxidation_state(mol, metal_idx: int) -> Optional[Tuple[int, int]]:
     """(oxidation state, d-electron count) or None.
 
@@ -153,6 +242,12 @@ def oxidation_state(mol, metal_idx: int) -> Optional[Tuple[int, int]]:
     """
     if mol is None:
         return None
+    if os.environ.get(OXSTATE_CUT_FLAG, "0") == "1":
+        try:
+            return _ox_cut(mol, metal_idx)
+        except Exception as exc:
+            _LOG.debug("oxidation-state (cut): nicht bestimmbar (%s)", exc)
+            return None
     try:
         m = mol.GetAtomWithIdx(int(metal_idx))
         msym = m.GetSymbol()

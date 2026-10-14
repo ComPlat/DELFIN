@@ -1646,6 +1646,27 @@ Without `--check` the same command is the emergency stop: it ends every agent of
 
 The dashboard's **Agent Activity** tab shows running and recent agent and subagent work.
 
+### Scheduled runs
+
+`delfin-agent scheduler start` runs the scheduler daemon, which gives each due entry one headless turn in the entry's workspace, with nobody to ask. A scheduled run starts in `default` — a command off the auto-allow list is refused unless the cage holds it, and writes inside the workspace are allowed. It does **not** take `default_mode` from your permission settings: a `bypassPermissions` written there once for an interactive task would otherwise make every scheduled run unattended.
+
+A different start mode is chosen in `~/.delfin_settings.json` (the agent cannot write this file):
+
+<!-- recipe: not-runnable — a settings file excerpt; tests/test_the_security_wave_holds_together.py drives the scheduler's engine factory with it -->
+```json
+"agent": {
+  "scheduler": {"permission_mode": "bypassPermissions", "unattended": true}
+}
+```
+
+| `permission_mode` | Scheduled runs start in |
+|-------------------|-------------------------|
+| `plan`, `default`, `acceptEdits` | that mode |
+| `bypassPermissions` with `"unattended": true` | `bypassPermissions` — the scheduler's counterpart of `--permission-mode bypassPermissions --unattended` |
+| `bypassPermissions` without `"unattended": true`, missing, or anything else | `default` |
+
+An administrator's managed policy still decides: a mode in its `disallowed_modes` falls back to `default` (`plan` if `default` is disallowed too). As for `delfin-agent run`, bypass on a host where no layer isolates a command starts in `default`, since nobody is there to confirm it.
+
 ### Driving DELFIN from another program or agent
 
 A script, a scheduler or another agent runs DELFIN as one headless turn per process: a prompt in, one JSON object per line out, an exit code at the end.

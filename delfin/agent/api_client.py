@@ -25510,13 +25510,20 @@ def _redact_tool_result(text: str) -> str:
     Best-effort and non-fatal by design: a guard that can break a tool
     result would cost more than it saves.
     """
-    if not text or len(text) > 400_000:
+    if not text:
         return text
     try:
         # scrub_secrets also replaces the exact values DELFIN holds, which
-        # have no shape the pattern checks know (a KIT key).
+        # have no shape the pattern checks know (a KIT key). The size cap
+        # guards only the super-linear pattern scan; above it the exact
+        # values are still removed (a few bounded str.replace calls), so a
+        # large result -- a read of a big log, a long stack trace -- can no
+        # longer carry a stored credential into the transcript and the
+        # tool trace on disk unredacted. Measured: the exact pass is
+        # ~7 ms on 8 MB, the regex ~0.5 s, which is why only the latter
+        # is capped.
         from .output_guard import scrub_secrets
-        return scrub_secrets(text)
+        return scrub_secrets(text, exact_only=len(text) > 400_000)
     except Exception:
         return text
 
@@ -30235,6 +30242,28 @@ def _persisted_read_dirs(persisted) -> tuple[Path, ...]:
     return tuple(out)
 
 
+def _persisted_start_mode(persisted) -> str:
+    """The permission mode a client adopts from persisted settings when the
+    caller passes no ``permission_mode``.
+
+    Input: the loaded ``kit_settings`` record (or None). Output: the
+    persisted ``default_mode`` when it is ``plan``/``default``/
+    ``acceptEdits``, else ``default``.
+
+    A persisted ``bypassPermissions`` is NOT inherited here, the same rule
+    the CLI doors apply (``launch_guard.resolve_posture``,
+    ``cli._headless_posture``) and the threat model states for every
+    session: that default is written once, often in a container for one
+    task, and would otherwise make every future caller that builds an
+    engine WITHOUT going through those doors -- the scheduler daemon, the
+    benchmark engine, any direct ``AgentEngine`` -- start unattended and
+    silently. Reaching bypass still takes an explicit ``permission_mode``
+    argument (which the doors pass only after their ``--unattended``
+    check), so no legitimate path loses it. Never raises."""
+    mode = getattr(persisted, "default_mode", "") if persisted is not None else ""
+    return mode if mode in {"plan", "default", "acceptEdits"} else "default"
+
+
 def _workspace_sandbox(
     cwd: str, permission_mode: str,
     kit_confirm_callback: Optional[Callable[[str, dict, str], bool]],
@@ -30263,10 +30292,7 @@ def _workspace_sandbox(
         local_extra = tuple(seen)
     local_mode = (
         _map_kit_permission_mode(permission_mode) if permission_mode
-        else (persisted.default_mode if persisted is not None
-              and persisted.default_mode in {
-                  "plan", "default", "acceptEdits", "bypassPermissions"
-              } else "default")
+        else _persisted_start_mode(persisted)
     )
     from . import exchange as _exchange
     local_perms = KitToolPermissions(
@@ -30326,15 +30352,13 @@ def _kit_sandbox(
         seen.append(p)
     kit_extra = tuple(seen)
 
-    # Mode: explicit caller arg wins over persisted default_mode.
+    # Mode: explicit caller arg wins over persisted default_mode. A
+    # persisted bypassPermissions is not inherited (_persisted_start_mode):
+    # only an explicit permission_mode reaches bypass.
     if permission_mode:
         kit_mode = _map_kit_permission_mode(permission_mode)
-    elif persisted is not None and persisted.default_mode in {
-        "plan", "default", "acceptEdits", "bypassPermissions"
-    }:
-        kit_mode = persisted.default_mode
     else:
-        kit_mode = "default"
+        kit_mode = _persisted_start_mode(persisted)
 
     # Allow/deny patterns: append persisted ones to the built-in defaults.
     allow_patterns = tuple(_DEFAULT_BASH_AUTO_ALLOW)
