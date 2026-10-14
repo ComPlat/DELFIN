@@ -26,7 +26,7 @@ in the [User Manual](USER_MANUAL.md#seeing-the-boundary-before-a-session-starts)
 | Other users | Every store the agent writes for approvals, the audit log and the egress proxy is created owner-only (0600 files, 0700 directories); an approval answer is accepted only from a file owned by the same account. |
 | The approval channel | A pending approval is answered by the person, never by the session that is waiting or by any process it started. |
 | Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked. |
-| Network egress | An isolated command reaches the network only through the egress proxy, which lets through an allow-list of domains; the cloud metadata address is refused; uploading workspace data is asked or, unattended, refused. |
+| Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; uploading workspace data is asked or, unattended, refused. |
 | The agent's own safety layer | The files that define the permission system and the settings that decide what runs unattended are protected: writing them is asked in every mode, including `bypassPermissions`. |
 
 ## Against whom
@@ -63,13 +63,30 @@ apply on every host; the third depends on what the host offers.
 ### 1. Permission mode and launch posture
 
 `plan` (read-only), `default` (destructive actions ask), `diff_approval`,
-`acceptEdits` and `bypassPermissions` (nothing inside the roots asks). An
-interactive session starts in `plan` unless `--permission-mode` or the
-`kit.default_mode` setting says otherwise. `launch_guard.resolve_posture`
-refuses `--permission-mode bypassPermissions` without `--unattended`, and
-never inherits a persisted `bypassPermissions`: a terminal reaches bypass
-only by typing both flags. Settings, hooks and MCP servers that come from a
-checked-out repository are ignored until the directory is trusted (`/trust`).
+`acceptEdits` and `bypassPermissions` (nothing inside the roots asks). A
+session starts in `default` (`launch_guard.DEFAULT_MODE`) unless
+`--permission-mode` or the `kit.default_mode` setting says otherwise.
+`launch_guard.resolve_posture` refuses `--permission-mode bypassPermissions`
+without `--unattended`, and never inherits a persisted `bypassPermissions`:
+a terminal reaches bypass only by typing both flags. A one-shot run
+(`chat -p`, a piped prompt, `delfin-agent run`) takes the same set-up as a
+terminal session (grants, isolation flags, posture, session restore,
+`--supervised`) before the engine runs; where a terminal falls back to
+`default`, a one-shot run asking for bypass without `--unattended` exits
+with status 2 instead of doing less than it was asked. Settings, hooks and
+MCP servers that come from a checked-out repository are ignored until the
+directory is trusted (`/trust`).
+
+When no filesystem layer holds a shell command (none works on the host, or
+`--no-isolate` / `agent.bash_isolation` = `off`),
+`isolation_posture.apply_at_start` settles the start posture: an attended
+`bypassPermissions` session asks once, naming the consequence (no keeps
+`default`); with nobody to ask it starts in `default`, says so on stderr and
+records `isolation_missing`. In that lowered session a command off the
+auto-allow list that passed every rule is judged by the action classifier
+and refused on any answer but allow
+(`api_client._unisolated_fallback_verdict`). The banner, `/status` and the
+turn status line show `unisolated` (`isolation_posture.isolation_status`).
 
 ### 2. The permission gate
 
@@ -85,15 +102,63 @@ call, before it runs. It applies, among others:
 - the protected paths (`api_client._DEFAULT_PATH_PROTECTED_GLOBS`: the
   permission layer, the confirmation UI, the settings modules): a write is
   asked in every mode, and refused where nobody can be asked;
-- the git configuration files (`api_client._GIT_CONFIG_PROTECTED_GLOBS`:
-  `.gitattributes`, `.gitmodules`, a `.git` gitfile, `HEAD`) and `git config`
-  writes of keys that name a program: asked in every mode;
+- the git configuration files: in the work tree
+  `api_client._GIT_CONFIG_PROTECTED_GLOBS` (`.gitattributes`, `.gitmodules`,
+  a `.git` gitfile, `HEAD`); outside it every file git reads as
+  configuration — the global and system files (`GIT_CONFIG_GLOBAL`,
+  `~/.gitconfig`, the XDG location), the repository's config,
+  config.worktree and info/attributes files, and every file an include,
+  conditional include or `core.attributesFile` names, followed through
+  includes. A
+  write on any route (the file tools, a redirect, `tee`, `cp`, `sed -i`) is
+  asked in every mode and refused where nobody can be asked; so are
+  `git config` writes of keys that name a program and `git config --edit`.
+  Both are recorded as `git_config_program`;
+- the permission rules (`permission_rules`): a `permissions` block with
+  `deny`, `ask` and `allow` lists in the user's settings file, in the forms
+  `bash(<words>)`, `bash(<words>:*)`, `read(<glob>)`, `write(<glob>)`,
+  `web_fetch(domain:<host>)`, an MCP tool or a bare tool name. deny refuses
+  in every mode, `bypassPermissions` included; ask asks in every mode and
+  refuses with nobody to ask; deny and ask match a command's words in every
+  segment, substitution and `sh -c` body. allow only answers a question the
+  gate would otherwise ask, after every hard check, and never covers a
+  compound command, a wrapper (`env`, `xargs`, `sudo`) or inline code
+  (`python -c`). A repository's `.delfin/settings.json` may add deny and ask
+  rules; its allow list is ignored. `/permissions` lists the rules in force;
 - the approval routes (`approval_guard`): a shell command that answers an
-  approval, or a write into an answer location, is refused in every mode;
+  approval, or a write into an answer location, is refused in every mode.
+  An answer written outside the waiting process is accepted only with the
+  one-time code (`approval_code`) that process showed on its human channel
+  (the terminal frame, the dashboard row, or the controlling terminal of a
+  `--supervised` run); the answer carries an HMAC of the code over the
+  request id and the decision, never the code. A run with no terminal at
+  all writes the code to an owner-only file under `~/.delfin/approval_codes`,
+  which the path deny globs, `approval_guard` and every cage hide from the
+  agent. A wrong answer is moved aside and recorded
+  (`approval_code_refused`); the third expires the request;
 - the egress scan: a shell command that sends data out is asked, and refused
   under `bypassPermissions`; network tools are asked outside bypass;
+- the script content scan (`api_client._scan_bash_script_payloads`): a
+  script, a `python -m` module or a makefile the command runs is read where
+  the shell will be when it runs it, following `cd`, `pushd`/`popd`,
+  subshells and `-C` (`api_client._ShellDirWalk`). Where that directory
+  cannot be known (`cd $VAR` with the variable unset, `cd -` with no earlier
+  `cd`) the command is asked in every mode and refused with nobody to ask
+  (`script_dir_unknown`);
 - the session tool lists (`--allowed-tools`, `--disallowed-tools`), which can
   only narrow.
+
+A command off the auto-allow list is asked in `default` and `acceptEdits`,
+except where the filesystem cage holds it
+(`api_client._caged_command_may_run_unasked`): bubblewrap is the isolation in
+use, the process cage is on, Landlock works, the network mode is not `open`,
+and the text names no network client, git, package manager, job scheduler,
+signal, privilege change, deletion or file authoring. Such a command runs
+unasked (`caged_unasked`) with its reads confined by Landlock to the roots,
+the system directories and the toolchain prefixes, the agent's own files and
+the git metadata read-only, and no direct TCP route. `plan`,
+`diff_approval` and `bypassPermissions` are unchanged by it;
+`agent.caged_commands_run_unasked` = `false` turns it off.
 
 Behind the rules sits the **action classifier** (`action_classifier.judge`):
 a second model that is asked "did the user ask for this, and is it safe?"
@@ -103,9 +168,25 @@ is the user's messages and the agent's tool calls; tool outputs, files and
 web pages are never shown to it. It is on by default
 (`agent.classifier.enabled`) with `agent.classifier.scope` = `unattended`
 (bypass actions, messages to other agents, network calls); `all` also judges
-every auto-allowed command. `agent.classifier.user_rules` takes rules that
-start with "never allow" or "always allow" and are applied without the model;
-never-allow wins. `DELFIN_CLASSIFIER` overrides the switch for one process.
+every auto-allowed command; a session nobody can be asked in also judges
+auto-allowed actions that leave the workspace (`git fetch`, a write to a
+granted directory). `agent.classifier.user_rules` takes rules that start
+with "never allow" or "always allow" and are applied without the model;
+never-allow wins.
+
+The classifier fails closed where nobody looks. When it gives no verdict (a
+model error after one retry, a timeout, a garbled answer), an action that
+leaves the workspace (`api_client._leaves_workspace`: network and remote
+tools, messages to other agents, writes outside the workspace or into
+agent-instruction and git configuration files, commands that reach the
+network, and under bypass every command off the auto-allow list) is asked
+when someone can be asked and refused when nobody can; work inside the
+workspace keeps the rule result. After `api_client._CLASSIFIER_BREAKER_FAILURES`
+failed calls in a row it is marked down (`classifier_down`), probed at most
+once a minute, and `api_client.watcher_status_line` shows DOWN in the banner
+and `/status`. `DELFIN_CLASSIFIER` overrides the switch for one process,
+except in a process an agent session started (`DELFIN_AGENT_SESSION` is set
+in every agent child), so the agent cannot switch off its own watcher.
 
 ### 3. Isolation of the shell command
 
@@ -167,13 +248,37 @@ Unix socket in a 0700 directory with a per-process token. An isolated
 command reaches the network only through it (`api_client._sandbox_network_args`):
 `CONNECT host:port` and plain `http://` to the domains in
 `egress_proxy.DEFAULT_ALLOWED_DOMAINS` (PyPI, conda, GitHub) plus
-`agent.sandbox_network.allowed_domains`, on ports 80 and 443 or
-`agent.sandbox_network.allowed_ports`, plus the SLURM controller so job
-submission works. Everything else answers 403 and is recorded.
-`agent.sandbox_network.mode` is `proxy` (default), `none`, or `open`
-(unrestricted; the metadata addresses are still refused by the socket guard).
-The proxy holds only for isolated commands: an unisolated command has the
-host's network.
+`agent.sandbox_network.allowed_domains` and the hosts the configuration
+already names (the model endpoint, the package index hosts, the workspace's
+HTTP(S) git remotes), on ports 80 and 443 or
+`agent.sandbox_network.allowed_ports`. Direct TCP is opened only for
+protocols that are not HTTP: the SLURM controller, SSH git remotes and
+license servers. A command the gate let run unasked inside the cage gets no
+direct TCP route at all.
+
+The proxy (`egress_proxy.EgressProxy`) decides per session, through a
+per-session token: a port outside the allowed set is refused; a
+`web_fetch(domain:<host>)` permission rule denies, asks or allows next; a
+known host passes, and an
+upload to it above `agent.sandbox_network.upload_ask_bytes` (1 MiB by
+default) is asked or, with nobody to ask, passes and is recorded
+(`egress_upload`); an unknown host is asked when the session has an
+approval channel and is not in `plan` or bypass, and refused otherwise with
+a message naming the rule and setting that would let it through. Refusals
+answer 403 and are recorded. `agent.sandbox_network.mode` is `proxy`
+(default), `none`, or `open` (unrestricted; the metadata addresses are still
+refused by the socket guard). The first value a process reads is a ceiling:
+a stricter one applies at once, a looser one only at the next start, so a
+command that edits the settings cannot open the network for its own session.
+
+The proxy holds for programs a command starts, not only for its text. What
+holds them depends on the host (`api_client.child_network_enforcement`): the
+socket guard; a network namespace with a forwarder to the proxy inside
+(bubblewrap without the socket guard); Landlock's TCP restriction (ABI 4:
+TCP connects only to the forwarder's port, UDP not covered — partial);
+Seatbelt. With `agent.bash_isolation` = `off`, `mode` = `open`, or on a host
+with none of these, the command has the host's network, and the banner, the
+security panel and `delfin-agent doctor` say so.
 
 ### 5. Other tools
 
@@ -197,11 +302,11 @@ host's network.
 
 | Host | Writes | Credential reads | Sessions (tmux, SSH agent, systemd, D-Bus) | Network of an isolated command | Detached processes | Locked session / `--isolate` |
 |------|--------|------------------|------|---------|-----------|------|
-| **Linux, bubblewrap** (with seccomp user notification) | roots + git metadata only; `.git/hooks` and answer locations read-only | masked | masked; with seccomp user notification, connects also judged by the socket guard | egress proxy only; without seccomp user notification, no network unless `mode` = `open` | killed with the command (PID namespace) | runs isolated |
+| **Linux, bubblewrap** (with seccomp user notification) | roots + git metadata only; `.git/hooks` and answer locations read-only | masked | masked; with seccomp user notification, connects also judged by the socket guard | egress proxy only; without seccomp user notification, a network namespace whose only way out is a forwarder to the proxy | killed with the command (PID namespace) | runs isolated |
 | **Linux, Landlock** (bubblewrap refused; with seccomp user notification) | roots + git metadata + private temp + `/dev`; hooks writable (only the text check on hook paths stops a planted hook) | unreadable | refused by the socket guard | egress proxy only | can outlive the command; the lifeline and `delfin-agent stop-all` end what they find | runs isolated |
-| **Linux, partial** (Landlock without seccomp user notification) | as above | unreadable | every Unix socket refused by a plain seccomp filter | **not restricted** | can outlive the command | **refused** while the network mode is `proxy` or `none` |
+| **Linux, partial** (Landlock without seccomp user notification) | as above | unreadable | every Unix socket refused by a plain seccomp filter | Landlock ABI 4: TCP only to the proxy's forwarder port and the direct endpoints (by port, not address; UDP not covered); older ABI: **not restricted** | can outlive the command | **refused** while the network mode is `proxy` or `none` |
 | **macOS, Seatbelt** | roots + git metadata + private temp; hooks write-denied | unreadable | Unix sockets only in the roots and the private temp | TCP only to the proxy's loopback port; in `open` mode the metadata address is not refused by address | can outlive the command; no process guard (Linux only) | runs isolated |
-| **None** (no bubblewrap, Landlock or Seatbelt) | **not restricted** — only the permission gate's reading of the command text | **not restricted** for the shell; the file tools keep their secret-path checks | where seccomp user notification exists, the session doors are refused by the socket guard; otherwise not restricted | **not restricted** | can outlive the command | **refused** |
+| **None** (no bubblewrap, Landlock or Seatbelt) | **not restricted** — only the permission gate's reading of the command text | **not restricted** for the shell; the file tools keep their secret-path checks | where seccomp user notification exists, the session doors are refused by the socket guard; otherwise not restricted | egress proxy only, held by the socket guard, where seccomp user notification exists; otherwise **not restricted** | can outlive the command | **refused** |
 
 On a host in the last row an unattended (`bypassPermissions`) run still
 proceeds and records `isolation_missing`; a locked session refuses its shell
@@ -217,11 +322,16 @@ most relevant to this model:
 
 - isolation: `isolation`, `isolation_missing`, `no_sandbox`, `no_sandbox_mcp`
 - the gate: `deny_pattern`, `secret_path`, `self_mod`, `outside_ws`,
-  `denied_path_via_bash`, `git_config_program`
-- egress: `egress`, `egress_blocked`
+  `denied_path_via_bash`, `git_config_program`, `script_dir_unknown`,
+  `caged_unasked`
+- permission rules: `permission_rule_deny`, `permission_rule_ask`,
+  `permission_rule_allow`
+- egress: `egress`, `egress_blocked`, `egress_asked`, `egress_upload`,
+  `network`, `network_missing`
 - approvals: `approval_self_answer`, `approval_from_outside`,
-  `approval_timeout`
-- the classifier: `classifier_ask`, `classifier_refuse`, `classifier_error`
+  `approval_code_refused`, `approval_timeout`
+- the classifier: `classifier_ask`, `classifier_refuse`, `classifier_error`,
+  `classifier_held`, `classifier_down`, `classifier_up`
 - credentials: `key_exported`
 
 Code-modifying tool calls are also appended to the audit log (`audit_log`,
@@ -236,25 +346,33 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
   interpreter) can do what its text does not show. The same holds for
   approvals: the person approves the text.
 - **The network of a partially isolated command.** On the "Linux, partial"
-  row an attended or unattended command has the host's network; only a
+  row Landlock ABI 4 restricts TCP by port, not by address, and does not
+  cover UDP; with an older ABI the command has the host's network. Only a
   locked session or `--isolate` refuses instead.
 - **Same-uid limits.** The approval answer checks (owner, mode, age, id)
-  prove that an answer came from this account. A process of the same account
-  that DELFIN did not start — and, without isolation, a command that strips
-  `DELFIN_AGENT_SESSION` from its environment and builds the answer path at
-  run time — can write an answer. Answers from outside a terminal session
+  prove that an answer came from this account; the one-time code proves
+  that its writer saw the human channel. A process of the same account that
+  DELFIN did not start and that can read that channel — the terminal's
+  screen, the dashboard, or, for a run with no terminal, the code file —
+  can still write a valid answer. Answers from outside a terminal session
   are recorded as `approval_from_outside`, not refused. Without the process
   guard (non-Linux) a command of the same user can read the agent's
   environment.
-- **Classifier failures under bypass.** When the classifier cannot give a
-  verdict under `bypassPermissions`, the rule result stands except for a
-  narrow high-risk class (`api_client._bypass_failure_asks`: deletes, history
-  rewrites, publishing, uploads, remote triggers, writes to agent-instruction
-  or git configuration files), which asks or is refused.
-- **Git configuration outside the workspace.** `~/.gitconfig`, a file named
-  by `GIT_CONFIG_GLOBAL` and `git config --edit` are not covered by the git
-  configuration checks; on the Landlock row, hooks are guarded by command
-  text only.
+- **Classifier failures inside the workspace.** When the classifier cannot
+  give a verdict, an action that stays inside the workspace keeps the rule
+  result in every mode; only actions that leave it are asked or refused.
+  Under bypass a narrow high-risk class (`api_client._bypass_failure_asks`:
+  deletes, history rewrites, publishing, uploads, remote triggers, writes to
+  agent-instruction or git configuration files) asks or is refused as well.
+- **Commands run unasked inside the cage.** Under `default` and
+  `acceptEdits` a command off the auto-allow list can run without a
+  question where bubblewrap and Landlock hold it; what it can do is bounded
+  by the cage, not by anyone reading it.
+- **Git configuration.** The git configuration checks read the paths a
+  write names. A program the command starts that writes a git configuration
+  file is not seen by them; only isolation, which keeps files outside the
+  roots unwritable, stops it. On the Landlock row, hooks are guarded by
+  command text only.
 - **MCP servers** without declared roots are outside every containment.
 - **Kernel and sandbox bugs.** Bubblewrap, Landlock, seccomp and Seatbelt
   are only as strong as their implementations. DELFIN does not defend against
@@ -290,18 +408,8 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
 
 ## Changes in review
 
-These open pull requests change parts of this model. They are not on `main`
-and nothing above relies on them; this section is updated when they land.
+Open pull requests that change parts of this model are listed here. They
+are not on `main` and nothing above relies on them; this section is updated
+when they land.
 
-- #201 — headless runs take the interactive checks; a session starts in
-  `default`.
-- #204 — structured permission rules (deny, ask, allow) in the gate.
-- #206 — files git reads as configuration asked on every write route.
-- #207 — an out-of-process approval answer carries a code shown to the
-  person.
-- #208 — an unisolated session says so and asks before bypass.
-- #209 — the script content scan follows `cd`.
-- #210 — the action classifier fails closed.
-- #211 — child processes reach the network only through the egress proxy.
-- #212 — commands off the auto-allow list run unasked when the cage holds
-  them.
+None at present.
