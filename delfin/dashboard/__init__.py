@@ -1146,10 +1146,28 @@ def _run_git_capture(repo_dir, *args):
     )
 
 
+def _git_dir_path(repo_dir):
+    """Resolve the real git dir for a checkout.
+
+    In a normal checkout ``<repo_dir>/.git`` is a directory. In a linked
+    worktree it is a plain text file containing ``gitdir: <path>`` — writing
+    a lock file "inside" that file would fail with ENOTDIR. Return the actual
+    git dir in both cases.
+    """
+    git_dir = Path(repo_dir) / '.git'
+    if git_dir.is_file():
+        content = git_dir.read_text(encoding='utf-8').strip()
+        prefix = 'gitdir:'
+        if content.startswith(prefix):
+            candidate = Path(content[len(prefix):].strip())
+            return candidate if candidate.is_absolute() else git_dir.parent / candidate
+    return git_dir
+
+
 @contextlib.contextmanager
 def _dashboard_git_write_lock(repo_dir, action_name, timeout=15.0):
     """Serialize repo-changing dashboard Git actions across kernels/processes."""
-    lock_path = Path(repo_dir) / '.git' / 'delfin-dashboard.lock'
+    lock_path = _git_dir_path(repo_dir) / 'delfin-dashboard.lock'
     with open(lock_path, 'a+', encoding='utf-8') as handle:
         deadline = time.monotonic() + timeout
         while True:
@@ -1184,7 +1202,7 @@ def _dashboard_git_write_lock(repo_dir, action_name, timeout=15.0):
 
 def _git_index_lock_path(repo_dir):
     """Return the Git index lock path for the repository."""
-    return Path(repo_dir) / '.git' / 'index.lock'
+    return _git_dir_path(repo_dir) / 'index.lock'
 
 
 def _git_index_lock_message(repo_dir):
