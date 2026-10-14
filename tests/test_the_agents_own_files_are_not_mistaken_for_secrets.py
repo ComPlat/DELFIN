@@ -162,10 +162,11 @@ def test_rm_rf_of_a_dir_the_command_itself_creates_runs(ws):
     assert not _refused_as_delete(gate(cmd))
 
 
-def test_an_empty_dir_can_go(ws):
+def test_an_empty_dir_proves_no_ownership(ws):
+    """Nothing in it says who made it; rmdir removes it anyway."""
     root, perms, gate, read = ws
     (root / "empty").mkdir()
-    assert not _refused_as_delete(gate("rm -rf empty"))
+    assert _refused_as_delete(gate("rm -rf empty"))
 
 
 @pytest.mark.parametrize("setup,cmd", [

@@ -5037,9 +5037,11 @@ def _own_scratch_target(perms: Any, target: str, cwd: Path, journal: dict,
     glob, variable, ~ or substitution), not a symlink anywhere on its way,
     not tracked by git, and either (a) absent now but created by a
     ``mkdir`` earlier in the same command (``made_here``), or (b) a file,
-    or a directory all of whose files, whose oldest journal record of this
-    session says the session created it. An empty directory holds nothing
-    and qualifies. Fails closed."""
+    or a directory with at least one file, all of whose files the oldest
+    journal record of this session says the session created. An empty
+    directory proves no ownership and stays refused
+    (tests/test_permission_rules_hold_in_the_real_gate.py pins `rm -rf
+    build` of one). Fails closed."""
     try:
         if not target or any(c in target for c in "*?[]{}$~`\\"):
             return False
@@ -5068,7 +5070,7 @@ def _own_scratch_target(perms: Any, target: str, cwd: Path, journal: dict,
 
         if full.is_file():
             return _created(str(full))
-        seen = 0
+        seen = own = 0
         for root, dirs, files in os.walk(str(full), followlinks=False):
             seen += len(dirs) + len(files)
             if seen > _OWN_SCRATCH_WALK_BUDGET:
@@ -5079,7 +5081,10 @@ def _own_scratch_target(perms: Any, target: str, cwd: Path, journal: dict,
                     continue        # rm removes the link, not its target
                 if not _created(p):
                     return False
-        return True
+                own += 1
+        # A directory with no file of the session's proves nothing about
+        # who made it (an empty `build/` stays refused; rmdir removes it).
+        return own > 0
     except Exception:
         return False
 
