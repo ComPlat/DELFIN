@@ -1,8 +1,8 @@
 # TUI rewrite: what is left for you
 
 The rewrite ran its phases back to back (docs/TUI_PLAN.md). This is the one
-list of what needs your hardware, your eyes or your decision, and what to
-clean up on the VM. Each item says why it could not be closed here.
+list of what needs your hardware, your eyes or your decision. Each item says
+why it could not be closed here.
 
 ## Needs your hardware or your eyes
 
@@ -45,10 +45,11 @@ clean up on the VM. Each item says why it could not be closed here.
 ## Decisions for you
 
 6. **CI**: `.github/workflows/tui.yml` runs the window's and the service's
-   tests, the live tmux checks and builds the binaries. GitHub keeps Actions
-   off on forks until you enable them (Settings → Actions). The macOS jobs
-   run on `macos-14` (Apple silicon) and `macos-15-intel`; GitHub retires
-   runner images now and then, so a label may need updating.
+   tests, the live tmux checks and builds the binaries; it passes on the
+   fork, where each binary's smoke test starts it (macOS and linux-arm64
+   included). The macOS jobs run on `macos-14` (Apple silicon) and
+   `macos-15-intel`; GitHub retires runner images now and then, so a label
+   may need updating.
 7. **OpenTUI upstream**: we carry opentui PR #1665 and three startup fixes
    of our own (`tui/patches/`). Offering the three fixes upstream means
    posting on their repository: your call.
@@ -67,9 +68,6 @@ clean up on the VM. Each item says why it could not be closed here.
      The REPL does the same. `-P` in their args (Python 3.11+) closes it;
      the service and its workers now start in the runtime directory for
      the same reason (3475a86c);
-   - `--fork-session` resumes the original instead: `cli._open_session`
-     reads `session_store.fork_session`'s answer as a dict (it is the new
-     id), falls back, and leaves the fork's file behind;
    - tests that build an agent engine leave its MCP servers running when
      they end: one full run left 20 of them (from `test_mcp_http`,
      `test_the_rules_can_change_while_the_agent_works`,
@@ -82,55 +80,21 @@ clean up on the VM. Each item says why it could not be closed here.
 9. **When to make the window the default** for `delfin-agent` (today it is
    `delfin-agent tui`, beside the REPL).
 
-## Clean up on this VM
-
-10. Bun in `~/.bun` (and its PATH lines in `~/.bashrc`), and the OpenTUI
-    build cache `~/.cache/delfin-tui` (2.9 GB: Zig and three builds).
-11. Packages installed for the terminal matrix: xterm, xvfb, imagemagick,
-    xclip, screen (see `/var/log/apt/history.log`).
-12. The SSH test key `~/.ssh/delfin_tui_localhost_test` and its
-    `from="127.0.0.1,::1"` line in `~/.ssh/authorized_keys`; the three
-    `localhost` host keys in `~/.ssh/known_hosts` (and `known_hosts.old`)
-    came with it (`ssh-keygen -R localhost` removes them).
-13. In the real `~/.delfin`: two old test session records (0cc8db05…,
-    32cfddf4…), and audit-log entries of the real-model test sessions
-    (four of e974faa0…, two each of the two agent-view checks: ff3e1baf…,
-    b1b67645…) -- kept on purpose: an audit log is not edited. The tests'
-    session reports and session-index rows were removed after each run.
-14. `/home/jonas/project/.scratch-tui` (scripts, review repros, logs). The
-    test folders under `/tmp` were removed at the end (746, ~850 MB).
-15. Processes: during the work, three orphaned test windows of an earlier
-    review run, two stale `bun test` runs (one had spun at 100% CPU for
-    hours: OpenTUI swallows the SIGTERM `timeout` sends) and one forgotten
-    private test service were found and stopped; a faulty check helper
-    (since fixed) also sent SIGHUP to up to three `bun src/main.tsx`
-    processes it had not started -- by all signs the same kind of orphans.
-    Nothing of yours was touched.
-    Still running, not stopped here (the stop was not permitted in this
-    session): 24 processes DELFIN's own test suite left on 2026-10-13
-    (20 MCP servers, three multiprocessing helpers, a jedi subprocess) and
-    two windows of the phase-0 spike (`bun spike/inline.tsx`), orphans
-    under systemd --user, idle. 250 stale tmux sockets of the test runs
-    were removed from `/tmp/tmux-1000`.
-    `python3 /home/jonas/project/.scratch-tui/final/stop_test_leftovers.py`
-    lists them, `--stop` ends them (each pid is checked again first); a
-    reboot ends them too.
-
 ## Known limits
 
-16. Same user, no cage: an agent's own process can connect to the service;
+10. Same user, no cage: an agent's own process can connect to the service;
     it is told apart by process ancestry and may only watch.
-17. Notifications are the terminal title and the hints line (◉): OpenTUI
+11. Notifications are the terminal title and the hints line (◉): OpenTUI
     offers no bell or OSC 9 here.
-18. `NO_COLOR`: everything visible is in the terminal's own colours; OpenTUI
+12. `NO_COLOR`: everything visible is in the terminal's own colours; OpenTUI
     still writes a colour code for blank cells (invisible).
-19. Parity with the REPL (docs/TUI_PARITY.md): marking jobs with arrows and
+13. Parity with the REPL (docs/TUI_PARITY.md): marking jobs with arrows and
     cycling suggestions with Tab work differently.
-20. No warm spare worker: a worker imports in 0.07 s; the slow part, the
+14. No warm spare worker: a worker imports in 0.07 s; the slow part, the
     engine with its MCP servers, depends on the workspace.
-21. The binary is ~108 MB (it carries the Bun runtime); linux-arm64 and
-    macOS binaries are built in CI only, not run here.
-22. An update that changes the protocol between window and service: an
+15. The binary is ~108 MB (it carries the Bun runtime); the linux-arm64
+    and macOS binaries are built and smoke-tested in CI only, not used here.
+16. An update that changes the protocol between window and service: an
     older service that still runs sessions is never stopped by the new
     window -- it cannot be asked what a stop would cut (a turn, a
     background shell). The window names it; `delfin-agent service stop`
@@ -139,19 +103,19 @@ clean up on the VM. Each item says why it could not be closed here.
     moved over by itself once nothing would be cut; one from before this
     branch's last review cannot be asked (it would end the session it is
     asked about) and is moved over only when no session of it is live.
-23. Code in an answer is coloured only for the grammars OpenTUI ships
+17. Code in an answer is coloured only for the grammars OpenTUI ships
     (JavaScript, TypeScript, Markdown, Zig): Python, shell and ORCA input
     are drawn plain. Adding them means shipping their tree-sitter grammars
     (a `.wasm` and its highlight queries each) with the window.
-24. ctrl+o differs from the REPL on purpose: it shows or hides every tool
+18. ctrl+o differs from the REPL on purpose: it shows or hides every tool
     call's details (the window draws a call as its headline and what came
     back); the last result in full is in the palette.
-25. What needs you (docs/TUI_ATTENTION.md) comes from the attention inbox
+19. What needs you (docs/TUI_ATTENTION.md) comes from the attention inbox
     and the job monitor's findings, read every 2 s. A dashboard session
     that waits for an answer right now shows only once its question timed
     out and was parked (phase 3: presence that says it waits). A prepared
     job fix is applied in the dashboard (`/fix`), not from the window.
-26. A resumed conversation is shown from the agent service's event log
+20. A resumed conversation is shown from the agent service's event log
     when that has its turns; when it has none (the session ran in the
     dashboard or the REPL, or it is a copy), from the store: its last 20
     turns. A session that ran in a window and then went on in the

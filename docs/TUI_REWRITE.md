@@ -1,7 +1,7 @@
 # TUI rewrite: `delfin-agent tui`
 
-Status: agreed scope, 2026-10-13. Branch `tui-rewrite` of
-`the16thpythonist/DELFIN`; fork-only for now.
+Status: agreed scope, 2026-10-13; built in phases (docs/TUI_PLAN.md) on the
+branch `tui-rewrite` of `the16thpythonist/DELFIN`.
 
 ## Goal
 
