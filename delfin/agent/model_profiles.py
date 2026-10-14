@@ -124,6 +124,13 @@ class ModelProfile:
     # decodes at ~0.9 s per 100 and stays off.
     terse_tool_rounds: bool = False
 
+    # Add MODEL_NOTES["concise_answers"]: lead with the result, no recap of
+    # the steps. Benchmark store, 950 kit.deepseek-v4-flash attempts: within
+    # a task, answers longer than the task median passed 0.79 (n=406) and
+    # shorter ones 0.75 (n=399), at a duration p50 of 55 s against 40 s;
+    # passing answers p50 2146 characters against 710 on kit.glm-5.3.
+    concise_answers: bool = False
+
     # Free-form notes — useful in /agents stats / /model output and
     # for the human reading this file.
     notes: str = ""
@@ -262,6 +269,7 @@ _DEEPSEEK_V4_FLASH = ModelProfile(
     strict_action_prefix=False,
     stale_kill_after_s=120.0,
     terse_tool_rounds=True,
+    concise_answers=True,
     notes=(
         "KIT DeepSeek V4 Flash — fast on this deployment, cold and warm "
         "alike. Coding line, native function calling."
@@ -425,6 +433,7 @@ _COERCE: dict[str, type] = {
     "all_prompt_modules": bool,
     "max_effort": str,
     "terse_tool_rounds": bool,
+    "concise_answers": bool,
 }
 
 
@@ -436,6 +445,10 @@ MODEL_NOTES: dict[str, str] = {
         "Beside a tool call write one short line or nothing. Do not restate "
         "the task, the plan or the previous result before each call; the "
         "call says what you are doing."),
+    "concise_answers": (
+        "Final answer: lead with the result -- file:line, figures, verdict. "
+        "No recap of the steps taken, no restated question. Write at length "
+        "only when a plan, document or report was asked for."),
 }
 
 
