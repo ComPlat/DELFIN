@@ -1647,7 +1647,8 @@ class TerminalAgent:
         return rc.ReplContext(
             engine=self.engine, workspace=self.opts.cwd,
             session_id=str(getattr(self.engine, "session_id", "") or ""),
-            ask=self._read_line, say=self._say_chrome)
+            # getattr: an agent built without __init__ (tests) has neither.
+            ask=getattr(self, "_read_line", None), say=self._say_chrome)
 
     def _say_chrome(self, text: str) -> None:
         """Print a handler's mid-command text as chrome, line by line."""
