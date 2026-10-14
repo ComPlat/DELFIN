@@ -108,9 +108,17 @@ def test_a_running_tool_is_named_with_its_argument_and_a_clock(chat):
     session = chat(args=BYPASS, env={"DELFIN_CLASSIFIER": "off"})
     t0 = time.monotonic()
     _start(session, "do-bash sleep 5")
+    # Sampled every half second for as long as the call can take: the
+    # first request alone has taken 3.5 s on a loaded host, so fixed
+    # moments early in the turn may all fall before the call starts.
     rows = []
-    for at in (1.5, 2.5, 3.5, 4.5):
+    at = 0.5
+    while at <= 15.0:
         rows.append(_sample_until(session, at, t0))
+        if rows[-1] and "running bash" not in rows[-1] and any(
+                "running bash" in r for r in rows):
+            break
+        at += 0.5
     running = [r for r in rows if "running bash: sleep 5" in r]
     assert len(running) >= 2, "no running-tool row:\n" + "\n".join(rows)
     secs = [_seconds(r, "running bash: sleep 5") for r in running]
