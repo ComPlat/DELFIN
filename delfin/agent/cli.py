@@ -2136,6 +2136,18 @@ def cmd_bench(args: argparse.Namespace) -> int:
               f"{result.duration_s:>5.1f}s  ${result.cost_usd:.4f}  "
               f"tool={result.tool_calls}{extra}",
               flush=True)
+        _proc = getattr(result, "process", None) or {}
+        if _proc:
+            # Where the run went, not only whether it arrived: the
+            # generalist tasks' trace signals (means over replicates).
+            _vq = getattr(result, "verify_quality", None)
+            print("        process: "
+                  + (f"accept-q={_vq} " if _vq is not None else "")
+                  + " ".join(f"{k}={_proc[k]:g}" for k in (
+                      "planned", "scouted", "tested_after_last_edit",
+                      "test_runs", "edits", "tool_errors", "nonzero_exits",
+                      "tool_budget_used") if k in _proc),
+                  flush=True)
         if result.violated_signals or result.missing_signals or result.error:
             for v in result.violated_signals:
                 print(f"        violated: {v}", flush=True)

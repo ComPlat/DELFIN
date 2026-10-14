@@ -171,6 +171,73 @@ def test_the_generalist_fixture_is_restored_after_every_attempt():
     assert rel in br._BEHAVIOR_WS_RELS
 
 
+# --- process signals --------------------------------------------------------
+
+def _call(name, **inp):
+    return {"name": name, "input": inp}
+
+
+def _ptraj(calls, results):
+    tr = bm.Trajectory(text="done", duration_s=1.0, tool_calls=calls,
+                       tool_results=results)
+    tr.verify_ok = True
+    tr.verify_output = "QUALITY: 100\nOK"
+    return tr
+
+
+def test_a_run_that_planned_edited_and_tested_last_says_so():
+    calls = [_call("task_create", subject="plan"),
+             _call("read_file", file_path="textkit/src/textkit/slug.py"),
+             _call("bash", command="cd textkit && python -m pytest -q"),
+             _call("write_file", file_path="textkit/src/textkit/words.py"),
+             _call("bash", command="cd textkit && python -m pytest -q")]
+    results = ["ok", "text", '{"exit_code": 1, "stdout": "1 failed"}', "ok",
+               '{"exit_code": 0, "stdout": "3 passed"}']
+    p = bm.process_signals(_task(max_tool_calls=10), _ptraj(calls, results))
+    assert p["planned"] == 1.0 and p["scouted"] == 1.0
+    assert p["tested"] == 1.0 and p["tested_after_last_edit"] == 1.0
+    assert (p["test_runs"], p["edits"], p["tool_calls"]) == (2.0, 1.0, 5.0)
+    assert p["nonzero_exits"] == 1.0 and p["tool_errors"] == 0.0
+    assert p["tool_budget_used"] == 0.5
+
+
+def test_an_edit_after_the_last_test_run_is_not_a_tested_end_state():
+    calls = [_call("bash", command="cargo test"),
+             _call("edit_file", file_path="unitconv/src/lib.rs"),
+             _call("bash", command="cat unitconv/src/lib.rs")]
+    results = ['{"exit_code": 0}', '{"error": "old_string not found"}', "x"]
+    p = bm.process_signals(_task(), _ptraj(calls, results))
+    assert p["tested"] == 1.0
+    assert p["tested_after_last_edit"] == 0.0
+    assert p["planned"] == 0.0
+    assert p["tool_errors"] == 1.0
+
+
+@pytest.mark.parametrize("cmd", [
+    "npm test", "npm run test", "node --no-warnings --test test/a.test.ts",
+    "go test ./...", "cd stats && cargo test --offline",
+    "python3 -m pytest tests/", "pytest -q"])
+def test_every_toolchain_test_command_counts(cmd):
+    p = bm.process_signals(_task(), _ptraj([_call("bash", command=cmd)],
+                                           ['{"exit_code": 0}']))
+    assert p["test_runs"] == 1.0, cmd
+
+
+def test_other_classes_get_no_process_signals():
+    t = _task(task_class="generic_project")
+    assert bm.process_signals(t, _ptraj([], [])) == {}
+
+
+def test_process_signals_reach_the_result_and_average_over_replicates():
+    t = _task()
+    a = bm.score_outcome(t, _ptraj([_call("bash", command="pytest")],
+                                   ['{"exit_code": 0}']))
+    b = bm.score_outcome(t, _ptraj([], []))
+    assert a.process["tested"] == 1.0 and b.process["tested"] == 0.0
+    agg = bm.aggregate_replicates([a, b])
+    assert agg.process["tested"] == 0.5
+
+
 # --- toolchains -----------------------------------------------------------
 
 def _fake_acceptance(monkeypatch, tmp_path, body: str) -> None:

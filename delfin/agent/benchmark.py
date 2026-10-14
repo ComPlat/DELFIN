@@ -553,6 +553,9 @@ class BenchmarkResult:
     # Kept OUT of ``components`` on purpose — ``quality = sum(components)``,
     # so mixing behaviour flags in would corrupt the quality score.
     behavior: dict[str, float] = field(default_factory=dict)
+    # Trace-derived process signals (see process_signals); generalist
+    # tasks only. Aggregated: the mean per key over the replicates.
+    process: dict[str, float] = field(default_factory=dict)
     # --- cost side: what the guards charge for what they catch ---
     # See caveat_count. Aggregated across replicates these are medians,
     # like duration and quality.
@@ -1430,6 +1433,75 @@ def behavior_flags(task: Task, traj: Trajectory) -> dict[str, int]:
     return {}
 
 
+# A command that runs a test suite, in any of the generalist toolchains.
+_TEST_CMD_RE = re.compile(
+    r"(\bpytest\b|-m\s+pytest|\bunittest\b|\bnpm\s+(run\s+)?test\b|"
+    r"\bnode\s+(--[\w-]+\s+)*--test\b|\bcargo\s+test\b|\bgo\s+test\b|"
+    r"\bmake\s+(check|test)\b)")
+_EXIT_CODE_RE = re.compile(r'"exit_code"\s*:\s*(-?\d+)')
+
+
+def _is_test_run(call: dict) -> bool:
+    if call["name"] == "run_tests":
+        return True
+    return (call["name"] in ("bash", "bash_background")
+            and bool(_TEST_CMD_RE.search(call["input"])))
+
+
+def process_signals(task: Task, traj: Trajectory) -> dict[str, float]:
+    """Where in the process a run went wrong, from the trace alone.
+
+    Computed for ``generalist`` tasks, whose verdict is the artifact; the
+    signals say how the run got there, so a failure can be placed (no
+    plan, never ran the tests, many failed calls) rather than only
+    counted. Keys, each a number so replicates aggregate as a mean:
+
+    * ``planned``: a plan tool call before the first edit or acting
+      command (as the ``plan`` behaviour);
+    * ``scouted``: a read before the first edit;
+    * ``tested``: any test-suite command at all (pytest, npm test,
+      node --test, cargo test, go test, run_tests);
+    * ``tested_after_last_edit``: a test-suite command after the last
+      edit -- the run checked its final state before answering;
+    * ``test_runs`` / ``edits`` / ``tool_calls``: counts;
+    * ``tool_errors``: results that are an ``{"error": ...}`` payload
+      (refused, malformed, failed tool);
+    * ``nonzero_exits``: shell results with a non-zero exit_code (a red
+      test run counts; it is a cost signal, not a fault);
+    * ``tool_budget_used``: tool_calls / max_tool_calls.
+
+    ``{}`` for other classes. Pure: reads ``traj.tool_calls`` and
+    ``traj.tool_results`` only.
+    """
+    if (task.task_class or "") != "generalist":
+        return {}
+    calls = _classify_calls(traj.tool_calls)
+    results = list(traj.tool_results or [])
+    last_edit = _last_idx(calls, "mutate")
+    tests = [c["idx"] for c in calls if _is_test_run(c)]
+    errors = sum(1 for r in results if str(r).lstrip().startswith('{"error"'))
+    nonzero = 0
+    for r in results:
+        m = _EXIT_CODE_RE.search(str(r)[:4000])
+        if m and int(m.group(1)) != 0:
+            nonzero += 1
+    n = len(calls)
+    return {
+        "planned": float(_behavior_planned(calls)),
+        "scouted": float(_behavior_scouted(calls)),
+        "tested": float(bool(tests)),
+        "tested_after_last_edit": float(bool(
+            tests and (last_edit is None or tests[-1] > last_edit))),
+        "test_runs": float(len(tests)),
+        "edits": float(sum(1 for c in calls if "mutate" in c["kinds"])),
+        "tool_calls": float(n),
+        "tool_errors": float(errors),
+        "nonzero_exits": float(nonzero),
+        "tool_budget_used": (round(n / task.max_tool_calls, 3)
+                             if task.max_tool_calls > 0 else 0.0),
+    }
+
+
 def behavior_rates(
     records: list[dict] | list[BenchmarkResult],
 ) -> dict[str, dict[str, float]]:
@@ -1792,6 +1864,7 @@ def score_outcome(
         tool_subjects=[tool_subject(c) for c in traj.tool_calls
                        if isinstance(c, dict)][:60],
         behavior=behavior_flags(task, traj),
+        process=process_signals(task, traj),
         caveats=caveat_count(traj.text),
         answer_chars=len(str(traj.text or "")),
         denials=traj.denials,
@@ -2168,6 +2241,10 @@ def aggregate_replicates(
         tool_names=tool_names_union,
         tool_subjects=subjects,
         behavior=behavior_agg,
+        process={k: round(sum(float((r.process or {}).get(k, 0.0))
+                              for r in results) / n, 3)
+                 for k in sorted({k for r in results
+                                  for k in (r.process or {})})},
         unmeasured=all_unmeasured,
         verify_quality=(None if not _vq_seen
                         else int(round(_median([float(q) for q in _vq_seen])))),
