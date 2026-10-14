@@ -110,5 +110,7 @@ def test_reading_a_file_through_a_substitution_is_not_running_it(box):
     the substituted text a program."""
     _, bash = box
     out = bash('echo "$(cat d/p)"')
+    # Whether the echo then RUNS depends on the host (off the auto-allow
+    # list, it runs unasked only where the cage holds it, #212); what this
+    # test pins is that the content scan does not treat a read as a run.
     assert SCAN not in out and OWN not in out, out
-    assert "RAN-FLAGGED" in out
