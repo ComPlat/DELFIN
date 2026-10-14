@@ -31,9 +31,6 @@ NOW = 2_000_000_000.0
 UID = 4242
 OTHER_UID = 4343
 
-pytestmark = pytest.mark.skipif(shutil.which("git") is None,
-                                reason="git is required")
-
 
 def _git(cwd: Path, *args: str) -> str:
     env = dict(os.environ)
