@@ -115,3 +115,7 @@ def test_a_marker_without_an_archive_record_is_not_an_explanation(home):
     ss.save_session(SID, mode="solo", chat_messages=_chat(122),
                     engine_messages=forged)
     assert len(ss.load_session(SID)["engine_messages"]) == 122
+
+
+def test_the_marker_the_guard_reads_is_the_one_the_fresh_start_writes():
+    assert ss._FRESH_PREFIX == _FRESH_CONTEXT_MARKER

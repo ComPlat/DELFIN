@@ -849,6 +849,46 @@ def _user_turns(messages) -> int:
                if isinstance(m, dict) and m.get("role") == "user")
 
 
+# repl._FRESH_CONTEXT_MARKER; repeated here because repl imports this module.
+_FRESH_PREFIX = "[Fresh context — full history cut at the token budget]"
+
+
+def _fresh_start_since(session_id: str, first, stored_file: Path) -> bool:
+    """Whether the engine started fresh after ``stored_file`` was written.
+
+    Input: the first message's content of the history about to be saved
+    and the stored session file. Output: True when that content starts
+    with the fresh-context marker AND the transcript archive holds a
+    ``fresh_restart`` record written after the stored file.
+
+    Semantics: a fresh start (``prepare_fresh_turn`` / ``run_turn`` with
+    the context over the model's window) archives the history and keeps
+    the fused prompt; that shorter history is the one the model works
+    with from then on. Keeping the stored one instead would put the
+    session over the window at every resume. Both signals are required:
+    the marker is plain text a message could carry, the archive record is
+    what makes the cut history recoverable. When the archive write failed
+    the stored history is kept, and the next turn starts fresh again --
+    no history is lost, one turn pays the cut twice. Cost: one read of the
+    session's archive file, only on a save that shortens the history.
+    """
+    if isinstance(first, list):
+        first = next((b.get("text") for b in first
+                      if isinstance(b, dict) and isinstance(b.get("text"), str)),
+                     "")
+    if not isinstance(first, str) or not first.startswith(_FRESH_PREFIX):
+        return False
+    try:
+        stored_at = stored_file.stat().st_mtime
+    except OSError:
+        return False
+    for rec in reversed(load_transcript_archive(session_id)):
+        if ((rec.get("info") or {}).get("kind") == "fresh_restart"
+                and float(rec.get("compacted_at") or 0) >= stored_at):
+            return True
+    return False
+
+
 def _keep_engine_history(session_id: str, engine_messages, chat_messages,
                          last_compaction_info):
     """The engine history to save, never silently shorter than the stored one.
@@ -880,6 +920,8 @@ def _keep_engine_history(session_id: str, engine_messages, chat_messages,
         return new, None
     first = new[0].get("content") if new and isinstance(new[0], dict) else ""
     if isinstance(first, str) and first.startswith(_SUMMARY_PREFIX):
+        return new, None
+    if _fresh_start_since(session_id, first, stored_file):
         return new, None
     if (last_compaction_info or None) != (stored.get("last_compaction_info") or None):
         return new, None
