@@ -139,6 +139,7 @@ DOC_FILES = [
     "docs/SETTINGS_AND_SETUP.md",
     "docs/RETRY_LOGIC.md",
     "docs/methodology.md",
+    "docs/SECURITY_MODEL.md",
 ]
 
 

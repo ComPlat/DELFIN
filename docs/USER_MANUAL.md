@@ -1417,7 +1417,9 @@ Rules in `~/.delfin_settings.json` decide single actions in advance, in every le
 
 ### The shell sandbox
 
-Every command runs through an allow-list and then, where available, bubblewrap or firejail. Credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, the network is denied by default, and every command is appended to `~/.cache/delfin/agent-audit.jsonl`. `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}` selects the mechanism; when isolation is unavailable the agent says so rather than running unprotected in silence.
+Every command first passes the permission gate (deny patterns, protected paths, the approval and egress checks). It is then run isolated wherever the host can hold it (`agent.bash_isolation = "auto"`, the default): under bubblewrap, else Landlock, else Seatbelt on macOS. Isolated, a command writes only in the workspace roots, cannot read the credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …), cannot reach your terminal, SSH agent or session sockets, and reaches the network only through the egress proxy, which lets through an allow-list of domains (`agent.sandbox_network`). `--isolate` refuses commands where no isolation is available; `--no-isolate` turns it off for one session. When isolation is unavailable the agent says so rather than running unprotected in silence. The dashboard's approval of a CLI-backend `Bash` call uses its own allow-list sandbox, selected with `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`.
+
+What each layer guarantees on which host, what is out of scope and how to run safest is in the [security model](SECURITY_MODEL.md); how to report a vulnerability privately is in [SECURITY.md](../SECURITY.md).
 
 ### Seeing the boundary before a session starts
 
@@ -2060,5 +2062,7 @@ delfin-pipeline workflow.yaml --cores 8
 - [Settings and Setup](SETTINGS_AND_SETUP.md) — Detailed settings documentation
 - [Methodology](methodology.md) — Scientific methodology and validation
 - [Retry Logic](RETRY_LOGIC.md) — Error recovery details
+- [Security model](SECURITY_MODEL.md) — What the agent's containment protects, against whom, and on which host
+- [Security policy](../SECURITY.md) — Supported versions and how to report a vulnerability
 - [Job Prioritization](job_prioritization.md) — Scheduler behaviour
 - [Example submission scripts](../examples/example_Job_Submission_Scripts/README.md) — HPC templates
