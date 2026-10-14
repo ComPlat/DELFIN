@@ -1,15 +1,20 @@
 /**
  * The window: one session in view, its scrollback, and the footer.
  *
- * Keys go to the open question first (it holds the turn; approval.tsx),
- * then to the composer (completion, history, search), then to the keymap's
- * actions. ctrl+c and ctrl+d work in all of them. Leaving the window
- * (ctrl+d, or ctrl+c twice) never ends a session: it keeps running in the
- * agent service, and the next window attaches to it again.
+ * Keys go to the agent view while it is open (its arrows and ctrl keys;
+ * letters are a new session's prompt), else to the open question (it
+ * holds the turn; approval.tsx), then to the composer (completion,
+ * history, search), then to the keymap's actions. ctrl+c and ctrl+d work
+ * in all of them. Leaving the window (ctrl+d, or ctrl+c twice) never ends
+ * a session: it keeps running in the agent service, and the next window
+ * attaches to it again.
  */
 import type { CliRenderer, KeyEvent } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import { createEffect, createSignal, type JSX } from "solid-js"
+import { createEffect, createSignal, onCleanup, type JSX } from "solid-js"
+import { Pins } from "./agents/pins"
+import type { AgentScreen } from "./agents/screen"
+import { createAgentView, needsInput, peekLines, type AgentRow } from "./agents/view"
 import { createComposer } from "./composer/composer"
 import { History } from "./composer/history"
 import { createApprovalUi } from "./footer/approval"
@@ -40,8 +45,17 @@ export interface AppProps {
   onRedraw: () => void
   /** ctrl+o: the last tool result in full (the session view does it). */
   onExpand?: () => void
-  /** Show a saved session in this window (the resume picker). */
+  /** Show another session in this window -- one that runs in the agent
+   *  service, or a saved one (the resume picker, the agent view). */
   onResume?: (sessionId: string, workspace: string) => void
+  /** Start a new session and show it (the agent view); false when it did
+   *  not start. Prompts sent meanwhile wait for it (`starting`). */
+  onNewSession?: () => Promise<boolean>
+  /** Pinned sessions (the agent view's); in memory only when not given. */
+  pins?: Pins
+  /** The agent view on the alternate screen (agents/screen.ts); without
+   *  it the view grows the footer instead. */
+  agentScreen?: AgentScreen
   /** Thinking shown or hidden from here on (the palette). */
   onThinking?: (show: boolean) => void
   thinking?: () => boolean
@@ -86,16 +100,28 @@ export function App(props: AppProps): JSX.Element {
 
   const picker = createPicker()
 
-  // Prompts sent while the first session starts: they go out once it is up.
+  // Prompts sent while a session starts (the first one, or a new one from
+  // the agent view): they go out to it once it is up.
   const early: { text: string; shown?: string }[] = []
   createEffect(() => {
-    if (!sid() || !early.length) return
-    for (const { text, shown } of early.splice(0)) void send(text, undefined, shown)
+    if (!sid() || store.state.starting || !early.length) return
+    for (const { text, shown } of early.splice(0)) void deliver(text, undefined, shown)
   })
 
+  /** What the composer sends: with the agent view open, it is the view's
+   *  (a new session, a reply, a name). */
   const send = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
+    if (agents.state.open) {
+      typingAt = 0
+      return agents.submit(text)
+    }
+    return deliver(text, how, shown)
+  }
+
+  /** A prompt for the session in view (or the one starting). */
+  const deliver = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
     typingAt = 0
-    if (!sid()) {
+    if (!sid() || store.state.starting) {
       if (!store.state.starting) return false
       early.push({ text, shown })
       say("the session is starting: this goes out as soon as it is up")
@@ -114,7 +140,7 @@ export function App(props: AppProps): JSX.Element {
     if (editor && !how) {
       const outcome = await editPrompt(props.renderer, editor[1] ?? "")
       say(outcome.note)
-      return outcome.text ? send(outcome.text) : true
+      return outcome.text ? deliver(outcome.text) : true
     }
     if (/^\/keys$/.test(text.trim()) && !how) {
       props.onLines?.("keys in this window", keyTable(props.keymap))
@@ -135,6 +161,119 @@ export function App(props: AppProps): JSX.Element {
     send,
   })
 
+  // -- the agent view ----------------------------------------------------------
+  const pins = props.pins ?? new Pins()
+  const [pinned, setPinned] = createSignal(0)
+  const sendTo = async (row: AgentRow, text: string) => {
+    if (row.kind === "elsewhere") {
+      if (await call("session.message", { key: row.id, text })) say(`sent to ${row.name}`)
+      return
+    }
+    const result = await call("session.prompt", { sessionId: row.id, text })
+    if (!result) return
+    say(result.queued ? `queued for ${row.name}: it goes out when its turn ends` : `sent to ${row.name}`)
+  }
+  const startNew = async (text: string) => {
+    early.push({ text })
+    const started = await (props.onNewSession?.() ?? Promise.resolve(false))
+    if (!started) {
+      // Not started (the note says why): what was typed for it comes back.
+      const back = early.splice(0).map((e) => e.shown ?? e.text).join("\n\n")
+      if (back && !composer.value()) composer.setText(back)
+    }
+  }
+  const agents = createAgentView({
+    state: () => store.state,
+    pins: () => {
+      pinned()
+      return pins.all
+    },
+    keymap: props.keymap,
+    togglePin: (id) => {
+      say(pins.toggle(id) ? "pinned: it stays at the top" : "unpinned")
+      setPinned((n) => n + 1)
+    },
+    open: (row) => props.onResume?.(row.id, row.workspace),
+    peek: async (id) => {
+      const got = await props.client.request("session.replay", { sessionId: id, turns: 1 })
+      return peekLines((got?.events ?? []) as Record<string, any>[])
+    },
+    stop: (id) => void call("session.shutdown", { sessionId: id }),
+    rename: (id, title) => {
+      void call("session.setTitle", { sessionId: id, title }).then((r) => r && say(`renamed: ${r.title}`))
+    },
+    message: (row, text) => void sendTo(row, text),
+    newSession: (text) => void startNew(text),
+    draft: () => composer.value(),
+    setDraft: (text) => (text ? composer.setText(text) : composer.clear()),
+    say,
+  })
+  // The alternate screen, while the view is open.
+  createEffect(() => {
+    if (!props.agentScreen) return
+    if (agents.state.open) void props.agentScreen.enter()
+    else props.agentScreen.leave()
+  })
+  // A peeked session that moves on is peeked again (at most twice a second).
+  let peekTimer: ReturnType<typeof setTimeout> | undefined
+  createEffect(() => {
+    const id = agents.state.peek?.id
+    const s = id ? store.state.sessions[id] : undefined
+    void s?.summary?.lastActivity
+    void s?.state
+    if (!s || peekTimer) return
+    peekTimer = setTimeout(() => {
+      peekTimer = undefined
+      agents.refreshPeek()
+    }, 500)
+    ;(peekTimer as { unref?: () => void }).unref?.()
+  })
+  // While the view is open: the other DELFIN sessions (dashboards, other
+  // terminals) and any session this window has not heard of, every 5 s.
+  createEffect(() => {
+    if (!agents.state.open) return
+    let gone = false
+    const poll = async () => {
+      const listed = await props.client.request("sessions.list", {}).catch(() => null)
+      if (gone || !listed) return
+      for (const summary of (listed.sessions ?? []) as any[]) {
+        if (summary?.sessionId && !store.state.sessions[summary.sessionId]) {
+          store.push({ type: "session.summary", session: summary.sessionId, ts: Date.now() / 1000, summary } as never)
+        }
+      }
+      store.update((d) => {
+        d.elsewhere = ((listed.elsewhere ?? []) as any[]).filter((e) => e?.key).map((e) => ({
+          key: String(e.key), sessionId: e.sessionId ?? null, title: e.title ?? null,
+          workspace: String(e.workspace ?? ""), host: String(e.host ?? ""),
+        }))
+      })
+    }
+    void poll()
+    const timer = setInterval(() => void poll(), 5000)
+    ;(timer as { unref?: () => void }).unref?.()
+    onCleanup(() => {
+      gone = true
+      clearInterval(timer)
+    })
+  })
+  /** Sessions other than the one in view that wait for the user. */
+  const othersWaiting = () => Object.values(store.state.sessions)
+    .filter((s) => s.id !== store.state.current && needsInput(s)).length
+  // The terminal's title says when a session waits for the user (the
+  // only notification every terminal shows, also from another tab).
+  let shownTitle = ""
+  createEffect(() => {
+    const waiting = Object.values(store.state.sessions).filter(needsInput).length
+    const title = waiting ? `◉ DELFIN · ${waiting} need${waiting === 1 ? "s" : ""} input` : shownTitle ? "DELFIN" : ""
+    if (title === shownTitle) return
+    shownTitle = title
+    try {
+      props.renderer.setTerminalTitle(title)
+    } catch {
+      // a terminal without titles
+    }
+  })
+
   // -- the palette and the pickers ---------------------------------------------
   const choicesOf = async (what: string, command: string): Promise<Choice[]> => {
     const got = await props.client.request("session.choices", { sessionId: sid(), what })
@@ -153,7 +292,7 @@ export function App(props: AppProps): JSX.Element {
       case "model":
       case "effort":
       case "mode":
-        picker.open(what === "mode" ? "agent mode" : what, choicesOf(what, `/${what}`), (c) => void send(c.value))
+        picker.open(what === "mode" ? "agent mode" : what, choicesOf(what, `/${what}`), (c) => void deliver(c.value))
         return
       case "permissions":
         picker.open("approval posture", [
@@ -211,7 +350,7 @@ export function App(props: AppProps): JSX.Element {
     picker.open("commands", actions, (c) => {
       const [kind, what] = [c.value.slice(0, c.value.indexOf(":")), c.value.slice(c.value.indexOf(":") + 1)]
       if (kind === "pick") openPicker(what)
-      else if (kind === "run") void send(what)
+      else if (kind === "run") void deliver(what)
       // A command with arguments goes in front of what is typed: a draft
       // is never thrown away.
       else if (kind === "type") composer.setText(composer.value().trim() ? `${what} ${composer.value()}` : `${what} `)
@@ -285,6 +424,30 @@ export function App(props: AppProps): JSX.Element {
     const asked = s?.pending[0]
     if (!asked && key.sequence && key.sequence.length >= 1 && !key.ctrl && !key.meta
         && !km.matches("submit", key) && key.name !== "escape") typingAt = Date.now()
+    if (agents.state.open) {
+      // The view has the footer: its keys first, then the composer
+      // (letters are a new session's prompt). A question of the session
+      // in view waits; its row says so.
+      if (key.ctrl && key.name === "c" && !composer.search()) {
+        key.preventDefault()
+        if (draft()) composer.clear()
+        else agents.close()
+        return
+      }
+      if (km.matches("quit", key) && !draft()) {
+        key.preventDefault()
+        props.onQuit()
+        return
+      }
+      if (agents.handleKey(key) || composer.handleKey(key)) key.preventDefault()
+      return
+    }
+    if (km.matches("agents", key) && !composer.value() && !composer.search() && !picker.state.open
+        && !(asked && approval.state.mode === "reason")) {
+      key.preventDefault()
+      agents.open()
+      return
+    }
     if (key.ctrl && key.name === "c" && !composer.search()) {
       key.preventDefault()
       // An open picker or palette is what ctrl+c leaves first.
@@ -380,6 +543,9 @@ export function App(props: AppProps): JSX.Element {
       composer={composer}
       approval={approval}
       picker={picker}
+      agents={agents}
+      agentsOnOwnScreen={Boolean(props.agentScreen)}
+      othersWaiting={othersWaiting}
       focused={() => !picker.state.open}
     />
   )

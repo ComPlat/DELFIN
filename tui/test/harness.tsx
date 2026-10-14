@@ -6,6 +6,7 @@
  */
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
+import { Pins } from "../src/agents/pins"
 import { App, type Requester } from "../src/app"
 import { Keymap } from "../src/keymap/keymap"
 import { startSessionView } from "../src/session"
@@ -27,6 +28,9 @@ export async function mountWindow(options: {
   sid?: string
   show?: boolean
   answerPauseMs?: number
+  onResume?: (id: string, workspace: string) => void
+  onNewSession?: () => Promise<boolean>
+  pins?: Pins
 } = {}) {
   const t = await createTestRenderer({
     width: options.width ?? 100, height: options.height ?? 30, screenMode: "split-footer", footerHeight: 4,
@@ -52,6 +56,7 @@ export async function mountWindow(options: {
     <App renderer={t.renderer} store={store} keymap={new Keymap()} theme={theme} client={client}
          onQuit={() => { quits++ }} onRedraw={() => {}} onExpand={() => view.expandLast()}
          onLines={(title, lines) => view.lines(title, lines)}
+         onResume={options.onResume} onNewSession={options.onNewSession} pins={options.pins}
          answerPauseMs={options.answerPauseMs ?? 0} />
   ), t.renderer)
   const settle = async () => {
@@ -70,6 +75,12 @@ export async function mountWindow(options: {
     view.stop()
     await t.renderer.destroy()
   }
-  return { t, store, view, calls, settle, footer, close, quits: () => quits, sid,
+  // A lone Esc is held 20 ms by the input parser (it may start a sequence).
+  const escape = async () => {
+    t.mockInput.pressEscape()
+    await Bun.sleep(40)
+    await settle()
+  }
+  return { t, keys: t.mockInput, store, view, calls, settle, footer, close, escape, quits: () => quits, sid,
            replies: () => calls.filter((c) => c.method === "permission.reply").map((c) => c.params) }
 }

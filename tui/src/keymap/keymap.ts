@@ -13,7 +13,7 @@ export type Action =
   | "submit" | "newline" | "interrupt" | "steer" | "cycleMode" | "expand"
   | "tasks" | "redraw" | "agents" | "palette" | "quit" | "historyPrev"
   | "historyNext" | "historySearch" | "agentsUp" | "agentsDown" | "agentsOpen"
-  | "agentsPeek" | "agentsBack" | "agentsStop"
+  | "agentsPeek" | "agentsBack" | "agentsStop" | "agentsRename" | "agentsPin"
 
 export const DEFAULT_KEYS: Readonly<Record<Action, readonly string[]>> = {
   submit: ["return"],
@@ -32,12 +32,16 @@ export const DEFAULT_KEYS: Readonly<Record<Action, readonly string[]>> = {
   historyPrev: ["up"],
   historyNext: ["down"],
   historySearch: ["ctrl+r"],
-  agentsUp: ["up", "k"],
-  agentsDown: ["down", "j"],
-  agentsOpen: ["right", "return"],
-  agentsPeek: ["space"],
-  agentsBack: ["escape", "left"],
+  // In the agent view letters are typing (a new session's prompt): its
+  // keys are arrows, space and ctrl keys only.
+  agentsUp: ["up"],
+  agentsDown: ["down"],
+  agentsOpen: ["right", "return"],  // with nothing typed
+  agentsPeek: ["space"],            // with nothing typed
+  agentsBack: ["escape", "left"],   // left with nothing typed
   agentsStop: ["ctrl+x"],
+  agentsRename: ["ctrl+r"],
+  agentsPin: ["ctrl+t"],
 }
 
 export interface Binding {
@@ -139,6 +143,13 @@ export const KEY_HELP: readonly { action?: Action; keys?: string; does: string }
   { action: "palette", does: "The command palette: commands, and pickers for model, posture, effort, mode, resume." },
   { keys: "ctrl+c", does: "End the turn; else clear what is typed; else, twice, leave the window." },
   { keys: "y n A k R e a ?", does: "With a question open: the answers the session offers (? explains each). N refuses with a reason." },
+  { action: "agents", does: "On an empty prompt: the agent view -- every session, grouped by what it needs." },
+  { action: "agentsOpen", does: "In the agent view: open the selected session in this window (alt+1..9: the n-th)." },
+  { action: "agentsPeek", does: "In the agent view: peek at the selected session; type and enter to reply to it." },
+  { action: "agentsStop", does: "In the agent view: stop the selected session (twice); it ends and is saved." },
+  { action: "agentsRename", does: "In the agent view: rename the selected session." },
+  { action: "agentsPin", does: "In the agent view: pin the selected session to the top." },
+  { keys: "typing + enter", does: "In the agent view: a new session, in this window's folder, with what you typed." },
 ]
 
 /** The key table as lines, with the keys this keymap binds. */

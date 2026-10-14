@@ -324,7 +324,7 @@ without Bun installed.
 | 1 Protocol and worker | done (b314a988, reviews applied in cc1e12e0) |
 | 2 Supervisor and launcher | done (96789513; two reviews, 12 bugs fixed in 0d592018); bwUniCluster logout check is on the checklist |
 | 3 TUI foundation | done: transport, generated protocol types, store, rows, footer, keymap, theme, config; the recorded conversation renders the same headless and live in tmux; a review's 12 bugs fixed in 2d37e333 |
-| 4 One session | built: composer (6291c296), tool rows (702c9cc0), approvals and status line (2d37e333, 39e18945), palette, pickers and resize policy (4aef3b0a), /editor /keys /exit and the parity checklist (75627d84, docs/TUI_PARITY.md); a real KIT-model session and a review are running |
-| 5 Agent view | – |
+| 4 One session | done: composer (6291c296), tool rows (702c9cc0), approvals and status line (2d37e333, 39e18945), palette, pickers and resize policy (4aef3b0a), /editor /keys /exit and the parity checklist (75627d84, docs/TUI_PARITY.md); a day with a real KIT model; a review's 15 bugs fixed in 33f58e19, a service re-review's in f57e6498 |
+| 5 Agent view | built: grouped list on the terminal's alternate screen (esc gives the screen back exactly; GNU screen grows the footer instead), peek and reply, open, new session, stop, rename, pin, elsewhere, badge and title; live check `check_agents_tmux.py`. Decision: stopping takes ctrl+x twice (one key must not end a working session) and a third ctrl+x on the ended row removes it |
 | 6 Lifecycle | – |
 | 7 Polish and shipping | – |

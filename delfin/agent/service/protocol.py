@@ -239,17 +239,18 @@ SERVICE_EVENTS: dict[str, dict[str, str]] = {
 }
 
 #: The fields of a session summary (session.summary, sessions.list). The
-#: last four say what the session is about in a few words, for the agent
-#: view's rows (taken from its events; no model writes them): the last
-#: message sent to it, what it does now, the question it waits on, and the
-#: first line of its last answer.
+#: last five say what the session is about in a few words, for the agent
+#: view's rows (taken from its events; no model writes them): the first
+#: message sent to it (an untitled session's name), the last one, what it
+#: does now, the question it waits on, and the first line of its last
+#: answer.
 SESSION_SUMMARY: dict[str, str] = {
     "sessionId": "string", "title": "string?", "workspace": "string",
     "provider": "string", "model": "string", "approval": "string",
     "state": "string", "pending": "integer", "costUsd": "number",
     "createdAt": "number", "lastActivity": "number", "pid": "integer",
-    "lastPrompt": "string?", "activity": "string?", "waiting": "string?",
-    "answer": "string?"}
+    "firstPrompt": "string?", "lastPrompt": "string?", "activity": "string?",
+    "waiting": "string?", "answer": "string?"}
 
 UNKNOWN_SESSION = -32004
 WORKER_GONE = -32005

@@ -219,7 +219,8 @@ class Session:
         self.created_at = time.time()
         self.last_activity = self.created_at
         self.ended_reason = ""
-        # What the agent view's row says (SESSION_SUMMARY's last four).
+        # What the agent view's row says (SESSION_SUMMARY's last five).
+        self.first_prompt = ""
         self.last_prompt = ""
         self.activity = ""
         self.answer = ""
@@ -332,6 +333,7 @@ class Session:
             return self.pending.pop(str(event.get("requestId")), None) is not None
         if kind == "user.message":
             self.last_prompt = _gist(str(event.get("text") or ""))
+            self.first_prompt = self.first_prompt or self.last_prompt
             return True
         if kind == "turn.started":
             self.activity = "thinking…"
@@ -390,6 +392,7 @@ class Session:
                 "createdAt": round(self.created_at, 3),
                 "lastActivity": round(self.last_activity, 3),
                 "pid": self.proc.pid,
+                "firstPrompt": self.first_prompt or None,
                 "lastPrompt": self.last_prompt or None,
                 "activity": self.activity or None,
                 "waiting": _asked_gist(next(iter(self.pending.values()))) if self.pending else None,
@@ -428,6 +431,34 @@ class Session:
         except Exception:
             return
         self.recent.merge_older_sized(older, cut)
+        # A resumed session is named by what it was first asked (as far
+        # back as the replay window reaches), not by the first message of
+        # this run.
+        first = next((e for e, _ in older if e.get("type") == "user.message"), None)
+        if first is not None:
+            self.first_prompt = _gist(str(first.get("text") or "")) or self.first_prompt
+
+
+def _elsewhere(ours: set[str]) -> list[dict]:
+    """The other open DELFIN sessions on this machine and the cluster's
+    shared home -- dashboards and terminal sessions, to watch and message --
+    leaving out ``ours`` (the sessions this service runs)."""
+    out = []
+    try:
+        from .. import session_presence
+        for record in session_presence.open_sessions():
+            sid = str(record.get("session_id") or "")
+            if sid and sid in ours:
+                continue
+            out.append({"key": record.get("key", ""),
+                        "sessionId": sid or None,
+                        "title": record.get("title") or None,
+                        "workspace": record.get("workspace", ""),
+                        "host": record.get("host", ""),
+                        "lastActivity": record.get("updated_at")})
+    except Exception:
+        pass
+    return out
 
 
 class Client:
@@ -699,6 +730,15 @@ class Supervisor:
         if session is None:
             raise _Refusal(UNKNOWN_SESSION, f"no session {sid!r} here")
         rest = {k: v for k, v in params.items() if k != "sessionId"}
+        if method == "session.replay":
+            # From memory, as an attach: the service holds the replay
+            # budget of every session -- what the worker's log would give --
+            # cut where its state stands, and nothing reads a log (an agent
+            # view peeks at a session on every key).
+            problem = protocol.params_problem(protocol.REQUESTS[method], rest)
+            if problem:
+                raise _Refusal(protocol.INVALID_PARAMS, problem)
+            return {"events": session.replay(int(rest.get("turns") or 0))}
         try:
             return await session.request(method, rest, timeout=FORWARD_TIMEOUT_S)
         except asyncio.TimeoutError:
@@ -720,8 +760,11 @@ class Supervisor:
                 "sessions": [s.summary() for s in self.sessions.values()]}
 
     async def _m_sessions_list(self, _client: Client, _params: dict) -> dict:
+        # The presence records are files, on a cluster's shared home: read
+        # on a thread (an agent view asks every few seconds).
+        elsewhere = await asyncio.to_thread(_elsewhere, {s.id for s in self.sessions.values()})
         return {"sessions": [s.summary() for s in self.sessions.values()],
-                "elsewhere": self.elsewhere()}
+                "elsewhere": elsewhere}
 
     async def _m_sessions_past(self, _client: Client, params: dict) -> dict:
         limit = max(1, min(200, int(params.get("limit") or 30)))
@@ -730,27 +773,6 @@ class Supervisor:
         for row in rows:
             row["running"] = row["sessionId"] in self.sessions
         return {"sessions": rows}
-
-    def elsewhere(self) -> list[dict]:
-        """The other open DELFIN sessions on this machine and the cluster's
-        shared home: dashboards and terminal sessions (watch and message)."""
-        ours = {s.id for s in self.sessions.values()}
-        out = []
-        try:
-            from .. import session_presence
-            for record in session_presence.open_sessions():
-                sid = str(record.get("session_id") or "")
-                if sid and sid in ours:
-                    continue
-                out.append({"key": record.get("key", ""),
-                            "sessionId": sid or None,
-                            "title": record.get("title") or None,
-                            "workspace": record.get("workspace", ""),
-                            "host": record.get("host", ""),
-                            "lastActivity": record.get("updated_at")})
-        except Exception:
-            pass
-        return out
 
     async def _m_session_create(self, client: Client, params: dict) -> dict:
         cwd = Path(str(params["cwd"])).expanduser()

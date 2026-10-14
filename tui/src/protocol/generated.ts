@@ -507,6 +507,7 @@ export interface SessionSummary {
   "createdAt": number
   "lastActivity": number
   "pid": number
+  "firstPrompt"?: string | null
   "lastPrompt"?: string | null
   "activity"?: string | null
   "waiting"?: string | null

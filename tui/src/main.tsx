@@ -13,6 +13,8 @@ import { appendFileSync } from "node:fs"
 import { createCliRenderer } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { createSignal } from "solid-js"
+import { Pins } from "./agents/pins"
+import { createAgentScreen } from "./agents/screen"
 import { App } from "./app"
 import { History } from "./composer/history"
 import { loadConfig } from "./config/config"
@@ -94,6 +96,13 @@ store.update((d) => {
   d.mayAct = Boolean(hello.mayAct)
   d.host = String(hello.host ?? "")
 })
+// Every session the service runs, for the agent view (each summary that
+// follows keeps its row up to date).
+for (const summary of (hello.sessions ?? []) as { sessionId?: string }[]) {
+  if (summary?.sessionId) {
+    store.push({ type: "session.summary", session: summary.sessionId, ts: Date.now() / 1000, summary } as never)
+  }
+}
 for (const problem of [...loaded.problems, ...keymap.problems]) view.note(problem)
 
 /** Open the first session: a new one, or the one to resume if it runs here. */
@@ -152,17 +161,72 @@ async function switchTo(id: string, workspace: string): Promise<void> {
     await withReplay(store,
       () => connection.rpc.request("session.attach", { sessionId: target, turns: loaded.config.replayTurns }),
       (attached) => {
-        store.update((d) => { ensureSession(d, target, attached.session) })
+        store.update((d) => {
+          const s = ensureSession(d, target, attached.session)
+          s.state = attached.state
+          s.pending = attached.pending as unknown as Asked[]
+        })
         const title = String(attached.session?.title || "") || target.slice(0, 8)
         view.show(target, { divider: `${running ? "now" : "resumed"}: ${title}` })
         current = target
         return attached.events as unknown as AnyEvent[]
       })
-    if (previous && previous !== target) {
-      await connection.rpc.request("session.detach", { sessionId: previous }).catch(() => undefined)
-    }
+    if (previous && previous !== target) await leave(previous)
   } catch (error) {
     view.note(`could not open that session: ${(error as Error).message}`)
+  }
+}
+
+/**
+ * Stop following a session that left the view: it runs on in the service,
+ * and its row lives on its summaries. What the window knew of its turn is
+ * let go -- no turn.ended would ever end it here.
+ */
+async function leave(id: string): Promise<void> {
+  await connection.rpc.request("session.detach", { sessionId: id }).catch(() => undefined)
+  store.update((d) => {
+    const s = d.sessions[id]
+    if (!s || s.state === "ended") return
+    s.turn = null
+    s.tail = ""
+    s.thinking = ""
+    s.wait = ""
+    s.pending = []
+  })
+}
+
+/**
+ * A new session (the agent view's typing + enter), in this window's
+ * folder with the first session's settings, shown after a divider. The
+ * session in view until now keeps running in the service. Prompts typed
+ * meanwhile wait for it (`starting`).
+ */
+async function newSession(): Promise<boolean> {
+  const { verbose: _verbose, resume: _resume, continue: _continue, fork: _fork, name: _name, ...settings } = start
+  const previous = current
+  store.update((d) => { d.starting = true })
+  try {
+    await withReplay(store,
+      () => connection.rpc.request("session.create", { ...settings, cwd: String(start.cwd ?? process.cwd()) }),
+      (answer) => {
+        const id = answer.sessionId as string
+        store.update((d) => {
+          const s = ensureSession(d, id, answer.session)
+          s.state = answer.state
+          s.pending = answer.pending as unknown as Asked[]
+        })
+        view.show(id, { divider: "a new session" })
+        current = id
+        return [{ type: "session.info", session: id, ts: Date.now() / 1000, seq: 0, ...answer.session } as never,
+                ...((answer.events ?? []) as unknown as AnyEvent[])]
+      })
+    if (previous && previous !== current) await leave(previous)
+    return true
+  } catch (error) {
+    view.note(`the new session could not start: ${(error as Error).message}`)
+    return false
+  } finally {
+    store.update((d) => { d.starting = false })
   }
 }
 
@@ -178,6 +242,8 @@ function quit(): void {
     return
   }
   quitting = true
+  // The scrollback is held while the agent view has the alternate screen.
+  agentScreen?.leave()
   void (async () => {
     if (current) {
       await connection.rpc.request("session.detach", { sessionId: current }, { timeoutMs: 1000 }).catch(() => undefined)
@@ -202,12 +268,22 @@ function leaveNow(): void {
   setTimeout(() => process.exit(0), 100)
 }
 
+// Made once: a JSX prop is read through a getter, each read running its
+// expression again.
+const pins = Pins.load()
+// The agent view on the alternate screen -- except under GNU screen, whose
+// alternate screen is off unless .screenrc turns it on ("altscreen"): there
+// the view grows the footer instead.
+const agentScreen = (process.env.DELFIN_TUI_AGENTS_SCREEN ?? (process.env.STY ? "footer" : "alternate")) === "footer"
+  ? undefined : createAgentScreen(renderer, view.queue)
+
 // The window takes keys from the start: a session that is slow to start
 // (MCP servers, a long resume) can still be left with ctrl+d or ctrl+c.
 await render(() => (
   <App renderer={renderer} store={store} keymap={keymap} theme={theme} history={History.load()} sentAs={view.sentAs}
        client={connection.rpc} onQuit={quit} onRedraw={() => void view.redraw()}
        onExpand={() => view.expandLast()} onResume={(id, ws) => void switchTo(id, ws)}
+       onNewSession={newSession} pins={pins} agentScreen={agentScreen}
        onThinking={(on) => view.setShowThinking(on)} thinking={() => view.showThinking}
        onLines={(title, lines) => view.lines(title, lines)} />
 ), renderer)

@@ -7,7 +7,10 @@
  *   status    spinner · what it does · elapsed · tokens · cost · esc
  *   approval  the open question, with exactly the keys the session offers
  *   composer  ❯ the prompt (grows to 8 rows; completion and search above)
- *   hints     posture · model · keys
+ *   hints     posture · model · keys (◉ when another session waits)
+ *
+ * The agent view (←) takes the whole terminal but its last row: its list
+ * in place of the tail, status and question, the composer under it.
  *
  * Every line is cut to the terminal's width, so the footer knows exactly
  * how many rows it takes (`footerRows`), at any width: a footer taller
@@ -15,6 +18,7 @@
  */
 import { SyntaxStyle, type CliRenderer } from "@opentui/core"
 import { Show, createEffect, createMemo, createSignal, onCleanup, type Accessor, type JSX } from "solid-js"
+import { AgentViewPanel, agentHelp, type AgentView } from "../agents/view"
 import { ComposerView, type Composer } from "../composer/composer"
 import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
@@ -37,7 +41,19 @@ export interface FooterProps {
   composer: Composer
   approval: ApprovalUi
   picker?: Picker
+  /** The agent view; while open it has the footer. */
+  agents?: AgentView
+  /** The view is drawn on the alternate screen: all of it is the view's,
+   *  and the footer keeps its height for the way back. */
+  agentsOnOwnScreen?: boolean
+  /** Sessions other than the one in view that wait for the user. */
+  othersWaiting?: () => number
   focused: () => boolean
+}
+
+/** Rows the footer takes with the agent view open: all but one. */
+export function agentFooterRows(term: { height: number }): number {
+  return Math.max(4, term.height - 1)
 }
 
 function tailRows(tail: string): number {
@@ -117,13 +133,18 @@ export function Footer(props: FooterProps): JSX.Element {
   const term = terminalSize(props.renderer)
   const [tick, setTick] = createSignal(0)
   const [now, setNow] = createSignal(Date.now())
+  // The agent view's ages: once a second is enough (its rows are drawn
+  // again on each change of it).
+  const [clock, setClock] = createSignal(Date.now())
+  const viewOpen = () => Boolean(props.agents?.state.open)
   let timer: ReturnType<typeof setInterval> | undefined
   createEffect(() => {
-    const running = Boolean(props.session()?.turn)
+    const running = Boolean(props.session()?.turn) || viewOpen()
     if (running && !timer) {
       timer = setInterval(() => {
         setTick((n) => n + 1)
         setNow(Date.now())
+        if (Date.now() - clock() >= 1000) setClock(Date.now())
       }, 80)
       ;(timer as { unref?: () => void }).unref?.()        // never what keeps a window alive
     } else if (!running && timer) {
@@ -139,9 +160,15 @@ export function Footer(props: FooterProps): JSX.Element {
   const rule = () => "─".repeat(Math.max(1, cols() - 1))
 
   createEffect(() => {
-    props.renderer.footerHeight = footerRows(props.session(), term(), props.message(), props.composer.height(),
-                                             props.approval, props.picker?.height() ?? 0)
+    props.renderer.footerHeight = viewOpen() && !props.agentsOnOwnScreen
+      ? agentFooterRows(term())
+      : footerRows(props.session(), term(), props.message(), props.composer.height(),
+                   props.approval, props.picker?.height() ?? 0)
   })
+  /** The agent view's list: its rows less the message, the composer and
+   *  its rules, and the hints. */
+  const panelRows = () => Math.max(2, (props.agentsOnOwnScreen ? term().height : agentFooterRows(term()))
+    - (props.message() ? 1 : 0) - 3 - props.composer.height())
 
   const status = (turn: TurnLive) => {
     const s = props.session()
@@ -166,11 +193,29 @@ export function Footer(props: FooterProps): JSX.Element {
 
   // Nothing in the footer shrinks: what does not fit is cut at the top
   // (the composer and the keys are at the bottom), never drawn over.
+  const placeholder = () => {
+    const v = props.agents
+    if (v?.state.open) {
+      if (v.state.renaming) return "the new name…"
+      const peeked = v.state.peek ? v.rows().find((r) => r.id === v.state.peek!.id) : undefined
+      if (peeked) return peeked.kind === "elsewhere" ? `a message for ${peeked.name}…` : `reply to ${peeked.name}…`
+      return "a new session: what should it do?"
+    }
+    return props.starting?.() ? "starting the session…"
+      : props.session()?.turn
+      ? `queue a message… (${props.keymap.label("steer")} sends it into the turn)` : "ask DELFIN…"
+  }
+
   return (
     <box flexDirection="column" width="100%" height="100%" justifyContent="flex-end" overflow="hidden">
+      <Show when={viewOpen()}>
+        <AgentViewPanel view={props.agents!} theme={t} width={cols} height={panelRows} tick={tick} now={clock}
+                        keymap={props.keymap} />
+      </Show>
       <Show when={props.message()}>
         <text flexShrink={0} fg={t().warn} wrapMode="none">{fit(props.message(), cols() - 1)}</text>
       </Show>
+      <Show when={!viewOpen()}>
       <Show when={tailRows(props.session()?.tail ?? "") > 0 && !asked()}>
         <scrollbox flexShrink={0} height={tailRows(props.session()?.tail ?? "")} stickyScroll stickyStart="bottom">
           <markdown content={props.session()?.tail ?? ""} streaming syntaxStyle={style()} conceal width="100%" />
@@ -194,16 +239,15 @@ export function Footer(props: FooterProps): JSX.Element {
       <Show when={props.picker?.state.open && !asked()}>
         <PickerView picker={props.picker!} theme={t} width={cols} />
       </Show>
+      </Show>
       <text flexShrink={0} fg={t().faint} wrapMode="none">{rule()}</text>
       <ComposerView
         composer={props.composer}
         theme={t}
         width={cols}
-        focused={() => props.focused() && !asked()}
-        pasteActive={() => props.focused() && !asked()}
-        placeholder={() => props.starting?.() ? "starting the session…"
-          : props.session()?.turn
-          ? `queue a message… (${props.keymap.label("steer")} sends it into the turn)` : "ask DELFIN…"}
+        focused={() => props.focused() && (viewOpen() || !asked())}
+        pasteActive={() => props.focused() && (viewOpen() || !asked())}
+        placeholder={placeholder}
       />
       <text flexShrink={0} fg={t().faint} wrapMode="none">{rule()}</text>
       <Hints {...props} cols={cols} />
@@ -213,7 +257,14 @@ export function Footer(props: FooterProps): JSX.Element {
 
 function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
   const t = props.theme
+  // Another session waits for the user: said first, where the eye is.
+  const badge = () => {
+    if (props.agents?.state.open) return ""
+    const n = props.othersWaiting?.() ?? 0
+    return n ? `  ◉ ${n} waiting` : ""
+  }
   const text = () => {
+    if (props.agents?.state.open) return "  " + agentHelp(props.agents, props.keymap, props.cols() - 3)
     const s = props.session()
     const parts: string[] = []
     const conn = props.connection()
@@ -224,7 +275,12 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
     if (s?.model) parts.push(s.model)
     if (s?.usage.costUsd && !s.turn) parts.push(`$${s.usage.costUsd.toFixed(4)}`)
     parts.push(`${props.keymap.label("cycleMode")} mode`, `${props.keymap.label("agents")} agents`)
-    return fit("  " + parts.join(" · "), props.cols() - 1)
+    return fit((badge() ? "  · " : "  ") + parts.join(" · "), Math.max(0, props.cols() - 1 - badge().length))
   }
-  return <text flexShrink={0} fg={t().faint} wrapMode="none">{text()}</text>
+  return (
+    <text flexShrink={0} wrapMode="none">
+      <span style={{ fg: t().warn }}>{badge()}</span>
+      <span style={{ fg: t().faint }}>{text()}</span>
+    </text>
+  )
 }

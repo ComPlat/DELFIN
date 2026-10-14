@@ -488,6 +488,22 @@ def test_an_attach_replays_from_memory_not_from_the_log(service):
     assert any(e["type"] == "turn.ended" for e in got["events"])
 
 
+def test_a_peek_is_answered_from_memory_too(service):
+    # The agent view peeks (session.replay) on every key: the service
+    # answers from what it holds, as for an attach, and reads no log.
+    a, b = service.client(), service.client()
+    sid = service.session(a)
+    turn(a, sid, "hello")
+    log = service.scratch / ".delfin" / "agent_service" / "sessions" / f"{sid}.jsonl"
+    log.rename(log.with_suffix(".moved"))
+    got = b.request("session.replay", {"sessionId": sid, "turns": 1})
+    kinds = [e["type"] for e in got["events"]]
+    assert kinds[:2] == ["session.info", "user.message"] and "turn.ended" in kinds
+    with pytest.raises(ServiceError) as refused:
+        b.request("session.replay", {"sessionId": sid, "turns": "two"})
+    assert refused.value.code == protocol.INVALID_PARAMS
+
+
 def _turn_events(n: int, size: int) -> list[dict]:
     events, seq = [], 0
     for t in range(1, n + 1):
