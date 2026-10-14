@@ -380,11 +380,17 @@ _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 # the stereo gate; the stereocentre enumerator no longer counts a mirror frame as a built fold.
 # 6000-pool A/B: never-worse, landing gate open, 1665 affected + 4150 byte-identical,
 # capability 0/0, every loss term 0.
+# LANDING 6 (2026-10-14, AB:detrng6k): Open Babel's contact and angle nudges draw from a fixed
+# seed per call instead of a clock-seeded rand() (#527), so a minimisation that passes through
+# such a contact gives the same geometry in every run.  6000-pool A/B: 5894 byte-identical,
+# 7 changed, every never-worse term 0, absolute hard frames 175 -> 173; the five previously
+# non-reproducible systems byte-identical in seven builds.
 _CHAMPION_EXTRA_ENV = {
     "DELFIN_MIRROR_ENUM": "1",
     "DELFIN_MIRROR_ONE_PER_SYSTEM": "1",
     "DELFIN_MIRROR_STEREO_GATE": "1",
     "DELFIN_STEREOCENTER_SKIP_MIRROR": "1",
+    "DELFIN_OB_DETERMINISTIC_RNG": "1",
 }
 
 

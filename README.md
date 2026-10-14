@@ -165,7 +165,7 @@ source .venv/bin/activate
 pip install -e ".[agent,docs,dev]" -c env/reference-environment.lock
 ```
 
-A byte-identical rebuild of published structures is only to be expected in this environment. CI installs it on every push (job *reference environment* in `.github/workflows/ci.yml`) and runs the MANTA tests in it, so the file keeps resolving and the construction keeps passing there. The lock also pins `pymol-open-source`; as a constraint that only takes effect when the `pymol` extra is requested, so the command above does not ask for it and resolves on glibc 2.34 systems (RHEL 9) as well. The construction does not use PyMOL, so the rebuild is the same with or without it.
+A byte-identical rebuild of published structures is only to be expected in this environment. The C math library belongs to it as well: the structures are built with the `libm` of glibc 2.34 (RHEL 9); another glibc rounds a few transcendental functions differently in the last digit at rare arguments, so a handful of systems can come out different. CI installs it on every push (job *reference environment* in `.github/workflows/ci.yml`) and runs the MANTA tests in it, so the file keeps resolving and the construction keeps passing there. The lock also pins `pymol-open-source`; as a constraint that only takes effect when the `pymol` extra is requested, so the command above does not ask for it and resolves on glibc 2.34 systems (RHEL 9) as well. The construction does not use PyMOL, so the rebuild is the same with or without it.
 
 External QM binaries are not installed by `pip`. For the local binary-based setup of `xtb`, `crest`, `xtb4stda`, `stda`, `std2` and the `xtb4stda` runtime bundle, see `delfin/qm_tools/README.txt`.
 

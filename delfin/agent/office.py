@@ -134,8 +134,13 @@ def _pymupdf():
     """PyMuPDF under its own name, falling back to the historical ``fitz``.
 
     1.28 deprecates ``import fitz`` with a warning on every import and will
-    remove it; asking for ``pymupdf`` first keeps both working.
+    remove it; asking for ``pymupdf`` first keeps both working. The
+    interpreter's C++ runtime is mapped first (``native_libs``), so the
+    wheel cannot load an older one from ``LD_LIBRARY_PATH`` for the
+    whole process.
     """
+    from .native_libs import prefer_own_libstdcxx
+    prefer_own_libstdcxx()
     try:
         import pymupdf
         return pymupdf
