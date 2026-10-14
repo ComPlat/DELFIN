@@ -1,6 +1,6 @@
 # Generalist benchmark
 
-14 tasks (`tasks_generalist.yaml`, task class `generalist`) that measure
+17 tasks (`tasks_generalist.yaml`, task class `generalist`) that measure
 DELFIN on everyday software work in repositories that are not DELFIN.
 Each task is scored on the end state alone: the repository's tests, hidden
 tests run on a scratch copy, its files and its git history. No pattern reads
@@ -24,8 +24,23 @@ the conversation.
 | `generalist_rust_red_to_green` | `stats/` | cargo | a failing integration test; fix the code, not the test |
 | `generalist_go_feature` | `coll/` | go | a generic function plus tests; hidden external test; gofmt and vet graded |
 | `generalist_go_red_to_green` | `netcfg/` | go | a failing test; fix the bound, not the test |
+| `generalist_long_py_feature` | `tasklog/` | Python | long-horizon: one feature through model, persistence (with backward compatibility), ordering, CLI flags, tests, README and CHANGELOG |
+| `generalist_long_ts_symptom` | `orders-ts/` | Node >= 22.6 | long-horizon: an integration test fails two modules away from its cause (a wrong default); the fix at the symptom passes the given test and fails the hidden ones |
+| `generalist_long_rust_spec` | `numerals/` | cargo | long-horizon: implement SPEC.md (strict parsing included), write tests, update the README |
 
 Each task has a German `prompt` (the default) and an English `prompt_en`.
+The three `generalist_long_*` tasks have budgets of 50-70 tool calls and
+20-25 minutes; the others 20-40 calls and 7-12 minutes.
+
+## Process signals
+
+Every generalist record carries `process` (trace-derived, means over
+replicates): `planned`, `scouted`, `tested`, `tested_after_last_edit`,
+`test_runs`, `edits`, `tool_calls`, `tool_errors` (`{"error": ...}`
+results), `nonzero_exits`, `tool_budget_used`. `bench run` prints them under
+each task. They do not change the score. Their job is to show where a failed
+run went wrong: it never planned, edited after its last test run, piled up
+failed calls, or ran out of budget.
 
 ## Scoring
 
@@ -76,11 +91,14 @@ acceptance output.
    task. Alternate the arm order per batch, so a backend slow window does
    not land on one arm.
 3. Decide on the pre-registered rule, per model: keep the change when the
-   generalist pass count rises by >= 3 of 70 (14 tasks x 5) on both models,
+   generalist pass count rises by >= 3 of 85 (17 tasks x 5) on both models,
    no single task loses >= 2 of 5, and median wall time per task rises by no
    more than 1.5x. Report `verify_quality` medians beside the pass counts:
    a change that moves quality without moving passes is evidence of
-   direction, not of a result.
+   direction, not of a result. Judge the three long tasks on their own as
+   well (15 attempts per arm per model), and read their `process` means:
+   a gain in `tested_after_last_edit` without a gain in passes says which
+   step to work on next.
 4. Unmeasured attempts (toolchain missing, endpoint down) are excluded from
    both arms and counted in the report; rerun them rather than imputing.
 

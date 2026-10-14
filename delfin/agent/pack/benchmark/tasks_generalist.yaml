@@ -334,3 +334,84 @@ tasks:
     max_duration_s: 420
     max_cost_usd: 0.60
     max_tool_calls: 20
+
+  # ── long-horizon: planning, several files, verification ──────────────
+  # Larger budgets on purpose: these measure whether a model can carry a
+  # multi-step change to a verified end, and the process signals
+  # (BenchmarkResult.process) say where it stopped when it did not.
+
+  - id: generalist_long_py_feature
+    task_class: generalist
+    mode: solo
+    setup: generalist_long_py_feature.py
+    verify: generalist_long_py_feature_verify.py
+    prompt: >-
+      tasklog/ ist ein kleiner To-do-Verwalter (models, store, query, cli,
+      README, CHANGELOG). Bau Prioritäten durchgehend ein: Task bekommt ein
+      Feld priority mit den Werten "low", "normal", "high" (Standard
+      "normal", alles andere ist ein ValueError); die JSON-Datei speichert
+      es, und Dateien von vor dieser Änderung (ohne den Schlüssel) laden
+      weiterhin als "normal"; "add" bekommt --priority, "list" bekommt
+      --priority zum Filtern; offene Aufgaben werden nach Priorität (high,
+      normal, low) und dann nach id sortiert, "list --all" bleibt in
+      id-Reihenfolge; render hängt bei low/high " (low)" bzw. " (high)" an,
+      normale Aufgaben sehen aus wie bisher. Schreib Tests, aktualisier
+      README (Usage und Dateiformat) und CHANGELOG. Am Ende muss die ganze
+      Suite grün sein.
+    prompt_en: >-
+      tasklog/ is a small to-do keeper (models, store, query, cli, README,
+      CHANGELOG). Add priorities end to end: Task gets a field priority with
+      the values "low", "normal", "high" (default "normal", anything else is
+      a ValueError); the JSON file stores it, and files written before this
+      change (without the key) still load as "normal"; "add" gets
+      --priority, and "list" gets --priority to filter; open tasks are
+      ordered by priority (high, normal, low) and then by id, while
+      "list --all" stays in id order; render appends " (low)" or " (high)"
+      for low/high, and normal tasks look as before. Write tests, update the
+      README (usage and file format) and the CHANGELOG. At the end the whole
+      suite must pass.
+    max_duration_s: 1500
+    max_cost_usd: 2.50
+    max_tool_calls: 70
+
+  - id: generalist_long_ts_symptom
+    task_class: generalist
+    mode: solo
+    setup: generalist_long_ts_symptom.py
+    verify: generalist_long_ts_symptom_verify.py
+    prompt: >-
+      In orders-ts/ ist der Integrationstest test/report.test.ts rot: die
+      gedruckte Summe lautet "Total: 11.899 EUR" statt "Total: 11.90 EUR".
+      Finde die eigentliche Ursache und behebe sie dort; die vorhandenen
+      Tests sind richtig und bleiben unverändert. Füg einen
+      Regressionstest hinzu; npm test muss danach grün sein.
+    prompt_en: >-
+      In orders-ts/ the integration test test/report.test.ts is red: the
+      printed total reads "Total: 11.899 EUR" instead of "Total: 11.90 EUR".
+      Find the actual cause and fix it there; the existing tests are right
+      and stay unchanged. Add a regression test; npm test must pass
+      afterwards.
+    max_duration_s: 1200
+    max_cost_usd: 2.00
+    max_tool_calls: 50
+
+  - id: generalist_long_rust_spec
+    task_class: generalist
+    mode: solo
+    setup: generalist_long_rust_spec.py
+    verify: generalist_long_rust_spec_verify.py
+    prompt: >-
+      In numerals/ liegt ein Rust-Crate mit einer Spezifikation in SPEC.md
+      und zwei noch leeren Funktionen in src/lib.rs. Implementier die
+      Spezifikation vollständig, schreib Tests (auch für abgelehnte
+      Eingaben) und ersetz das TODO im Usage-Abschnitt der README durch
+      eine Beschreibung beider Funktionen. cargo test muss grün sein.
+    prompt_en: >-
+      numerals/ is a Rust crate with a specification in SPEC.md and two
+      empty functions in src/lib.rs. Implement the specification
+      completely, write tests (rejected inputs included), and replace the
+      TODO in the README's Usage section with a description of both
+      functions. cargo test must pass.
+    max_duration_s: 1500
+    max_cost_usd: 2.50
+    max_tool_calls: 60

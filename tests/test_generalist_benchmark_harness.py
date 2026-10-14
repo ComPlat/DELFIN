@@ -286,7 +286,8 @@ def test_no_toolchain_directory_changes_nothing(monkeypatch, tmp_path):
 @pytest.mark.parametrize("setup", [
     "generalist_rust_feature.py", "generalist_rust_red_to_green.py",
     "generalist_go_feature.py", "generalist_go_red_to_green.py",
-    "generalist_ts_feature.py"])
+    "generalist_ts_feature.py", "generalist_long_ts_symptom.py",
+    "generalist_long_rust_spec.py"])
 def test_a_setup_without_its_toolchain_says_so_and_builds_nothing(
         setup, tmp_path):
     """Run on every host: PATH and the toolchain directory are emptied,

@@ -44,7 +44,8 @@ _TASKS = yaml.safe_load(
 _BY_ID = {t["id"]: t for t in _TASKS}
 _TOOLCHAIN_TASKS = {"generalist_ts_feature", "generalist_rust_feature",
                     "generalist_rust_red_to_green", "generalist_go_feature",
-                    "generalist_go_red_to_green"}
+                    "generalist_go_red_to_green", "generalist_long_ts_symptom",
+                    "generalist_long_rust_spec"}
 
 
 def _env(tmp_path) -> dict:
@@ -404,6 +405,195 @@ def go_red_to_green(repo, env, kind):
         _edit(repo, "port_test.go", 'ParsePort("65536")', 'ParsePort("70000")')
 
 
+_LONG_MODELS = '''"""The task record."""
+
+from dataclasses import dataclass
+
+PRIORITIES = ("low", "normal", "high")
+
+
+@dataclass
+class Task:
+    """One to-do item."""
+
+    id: int
+    title: str
+    done: bool = False
+    priority: str = "normal"
+
+    def __post_init__(self):
+        if not self.title.strip():
+            raise ValueError("a task needs a title")
+        if self.priority not in PRIORITIES:
+            raise ValueError(f"unknown priority {self.priority!r}")
+
+    def to_dict(self) -> dict:
+        """The JSON form."""
+        return {"id": self.id, "title": self.title, "done": self.done,
+                "priority": self.priority}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Task":
+        """A Task from its JSON form; records without a priority are
+        normal."""
+        return cls(id=int(data["id"]), title=str(data["title"]),
+                   done=bool(data.get("done", False)),
+                   priority=str(data.get("priority", "normal")))
+'''
+
+
+def long_py_feature(repo, env, kind):
+    models = _LONG_MODELS
+    if kind == "wrong":
+        # Every layer done, but a file from before the change no longer
+        # loads, and the docs were left alone.
+        models = models.replace('str(data.get("priority", "normal"))',
+                                'str(data["priority"])')
+    _put(repo, "tasklog/models.py", models)
+    _put(repo, "tasklog/query.py",
+         '"""Selecting and ordering tasks."""\n\n'
+         '_RANK = {"high": 0, "normal": 1, "low": 2}\n\n\n'
+         "def open_tasks(tasks: list) -> list:\n"
+         '    """Tasks not done yet: high, normal, low, then id."""\n'
+         "    return sorted((t for t in tasks if not t.done),\n"
+         "                  key=lambda t: (_RANK[t.priority], t.id))\n\n\n"
+         "def render(task) -> str:\n"
+         '    """``[x] 3 title``, with `` (high)``/`` (low)`` appended."""\n'
+         '    mark = "x" if task.done else " "\n'
+         '    tail = "" if task.priority == "normal" else f" ({task.priority})"\n'
+         '    return f"[{mark}] {task.id} {task.title}{tail}"\n')
+    _edit(repo, "tasklog/cli.py", '    add.add_argument("title")\n',
+          '    add.add_argument("title")\n'
+          '    add.add_argument("--priority", choices=PRIORITIES,\n'
+          '                     default="normal")\n')
+    _edit(repo, "tasklog/cli.py",
+          '    lst.add_argument("--all", action="store_true", '
+          'help="include done tasks")\n',
+          '    lst.add_argument("--all", action="store_true", '
+          'help="include done tasks")\n'
+          '    lst.add_argument("--priority", choices=PRIORITIES)\n')
+    _edit(repo, "tasklog/cli.py", "from tasklog.models import Task",
+          "from tasklog.models import PRIORITIES, Task")
+    _edit(repo, "tasklog/cli.py",
+          "Task(id=store.next_id(tasks), title=args.title)",
+          "Task(id=store.next_id(tasks), title=args.title,\n"
+          "                    priority=args.priority)")
+    _edit(repo, "tasklog/cli.py", "        for t in shown:\n",
+          "        if args.priority:\n"
+          "            shown = [t for t in shown if t.priority == args.priority]\n"
+          "        for t in shown:\n")
+    _put(repo, "tests/test_priority.py",
+         "import pytest\n\nfrom tasklog import query\n"
+         "from tasklog.models import Task\n\n\n"
+         "def test_priority_defaults_to_normal():\n"
+         "    assert Task(1, 'a').priority == 'normal'\n\n\n"
+         "def test_unknown_priority_is_refused():\n"
+         "    with pytest.raises(ValueError):\n"
+         "        Task(1, 'a', priority='x')\n\n\n"
+         "def test_high_comes_first():\n"
+         "    ts = [Task(1, 'a'), Task(2, 'b', priority='high')]\n"
+         "    assert [t.id for t in query.open_tasks(ts)] == [2, 1]\n")
+    _edit(repo, "CHANGELOG.md", "## [Unreleased]\n",
+          "## [Unreleased]\n\n- Tasks have a priority (low, normal, high): "
+          "`add --priority`, `list --priority`.\n")
+    if kind == "correct":
+        _edit(repo, "README.md", "`--file PATH` selects",
+              "`add --priority high|normal|low` sets a priority (default "
+              "normal); `list --priority P` shows only that priority. Open "
+              "tasks are listed high first.\n\n`--file PATH` selects")
+        _edit(repo, "README.md", '"done": false}', '"done": false, '
+              '"priority": "normal"}')
+
+
+def long_ts_symptom(repo, env, kind):
+    if kind == "correct":
+        _edit(repo, "src/config.ts", "decimals: 3,", "decimals: 2,")
+    else:
+        # The symptom patched where it shows.
+        _edit(repo, "src/report.ts", "total.toFixed(defaults.decimals)",
+              "total.toFixed(2)")
+    _put(repo, "test/regression.test.ts",
+         "import { test } from \"node:test\";\n"
+         "import assert from \"node:assert/strict\";\n"
+         "import { totalLine } from \"../src/report.ts\";\n\n"
+         "test(\"a one-cent line\", () => {\n"
+         "  assert.equal(totalLine([{ price: 0.01, qty: 1 }]), "
+         "\"Total: 0.01 EUR\");\n"
+         "});\n")
+
+
+_ROMAN = '''//! Roman numerals. See SPEC.md.
+
+const TABLE: [(u32, &str); 13] = [
+    (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"),
+    (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"),
+    (4, "IV"), (1, "I"),
+];
+
+/// `n` (1..=3999) in canonical Roman notation.
+pub fn to_roman(n: u32) -> Option<String> {
+    if !(1..=3999).contains(&n) {
+        return None;
+    }
+    let mut rest = n;
+    let mut out = String::new();
+    for (value, letters) in TABLE {
+        while rest >= value {
+            out.push_str(letters);
+            rest -= value;
+        }
+    }
+    Some(out)
+}
+
+/// The value of a canonical Roman numeral.
+pub fn from_roman(s: &str) -> Option<u32> {
+    let mut total = 0u32;
+    let mut rest = s;
+    for (value, letters) in TABLE {
+        while let Some(tail) = rest.strip_prefix(letters) {
+            total += value;
+            rest = tail;
+        }
+    }
+    if !rest.is_empty() || total == 0 {
+        return None;
+    }
+    CHECK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn examples() {
+        assert_eq!(to_roman(1994).as_deref(), Some("MCMXCIV"));
+        assert_eq!(from_roman("MCMXCIV"), Some(1994));
+    }
+
+    #[test]
+    fn rejects_non_canonical() {
+        assert_eq!(from_roman("ix"), None);
+        assert_eq!(to_roman(0), None);
+    }
+}
+'''
+
+
+def long_rust_spec(repo, env, kind):
+    # Correct: greedy parse, then accept only the canonical spelling.
+    # Wrong: the greedy parse alone -- "IIII" and "VV" read as 4 and 10.
+    check = ("if to_roman(total).as_deref() == Some(s) { Some(total) } "
+             "else { None }" if kind == "correct" else "Some(total)")
+    _put(repo, "src/lib.rs", _ROMAN.replace("CHECK", check))
+    _edit(repo, "README.md", "## Usage\n\nTODO\n",
+          "## Usage\n\n```rust\nuse numerals::{from_roman, to_roman};\n\n"
+          "assert_eq!(to_roman(2026).as_deref(), Some(\"MMXXVI\"));\n"
+          "assert_eq!(from_roman(\"MMXXVI\"), Some(2026));\n"
+          "assert_eq!(from_roman(\"IIII\"), None);\n```\n")
+
+
 _SOLUTIONS = {
     "generalist_py_feature": ("textkit", py_feature),
     "generalist_ts_feature": ("invoice-ts", ts_feature),
@@ -419,6 +609,9 @@ _SOLUTIONS = {
     "generalist_rust_red_to_green": ("stats", rust_red_to_green),
     "generalist_go_feature": ("coll", go_feature),
     "generalist_go_red_to_green": ("netcfg", go_red_to_green),
+    "generalist_long_py_feature": ("tasklog", long_py_feature),
+    "generalist_long_ts_symptom": ("orders-ts", long_ts_symptom),
+    "generalist_long_rust_spec": ("numerals", long_rust_spec),
 }
 
 # A second plausible mistake where the first one leaves a route open.
@@ -480,6 +673,10 @@ _CASES = ([(t, "correct") for t in _SOLUTIONS]
           + [(t, "wrong2") for t in _SECOND_WRONG])
 
 
+# Slow: about 4 minutes for the whole file with every toolchain present
+# (cargo and go builds dominate). The fast job's budget is already near
+# its limit; the slow workflow and the toolchains job run these.
+@pytest.mark.slow
 @pytest.mark.parametrize("task_id,kind", _CASES)
 def test_a_scripted_attempt_is_judged_on_the_end_state(task_id, kind,
                                                        tmp_path):
@@ -496,6 +693,7 @@ def test_a_scripted_attempt_is_judged_on_the_end_state(task_id, kind,
         assert q >= 80, report
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("task_id", sorted(_SOLUTIONS))
 def test_the_correct_solution_grades_above_the_wrong_one(task_id, tmp_path):
     a = tmp_path / "a"
@@ -524,5 +722,13 @@ def test_every_generalist_task_has_its_solutions_and_scripts():
 
 
 def test_the_suite_covers_four_toolchains():
-    assert len(_TASKS) == 14
+    assert len(_TASKS) == 17
     assert _TOOLCHAIN_TASKS <= set(_BY_ID)
+
+
+def test_the_long_tasks_carry_long_budgets():
+    long = [t for t in _TASKS if t["id"].startswith("generalist_long_")]
+    assert len(long) == 3
+    short = max(t["max_tool_calls"] for t in _TASKS if t not in long)
+    for t in long:
+        assert t["max_tool_calls"] > short and t["max_duration_s"] >= 1200

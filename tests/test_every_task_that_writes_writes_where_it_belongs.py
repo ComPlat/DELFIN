@@ -249,12 +249,12 @@ def test_the_counts_still_match_what_was_measured():
     # fixture repo from setup/a_fix_claim_repo.py, which writes only
     # into its own folder under the workspace.
     #
-    # generalist 0 -> 14 on 2026-10-14: tasks_generalist.yaml. Each setup
+    # generalist 0 -> 17 on 2026-10-14: tasks_generalist.yaml. Each setup
     # builds one git repository in its own subdirectory of
     # generalist_workspace and refuses an existing one; the acceptance
     # scripts run hidden tests on scratch copies only.
     assert counts == {"office": 13, "behavior": 16, "generic_project": 17,
-                      "science": 23, "chemistry": 5, "generalist": 14,
+                      "science": 23, "chemistry": 5, "generalist": 17,
                       "other": 52}, counts
 
 

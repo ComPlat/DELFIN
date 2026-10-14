@@ -234,7 +234,8 @@ def node_test(repo: Path, files: list[str],
                               cwd=str(work), capture_output=True, text=True,
                               timeout=180)
         lines = (proc.stdout + proc.stderr).strip().splitlines()
-        summary = [ln for ln in lines if ln.startswith(("# pass", "# fail"))]
+        summary = [ln for ln in lines if ln.startswith(
+            ("# pass", "# fail", "ℹ pass", "ℹ fail"))]
         return proc.returncode == 0, " | ".join(summary or lines[-3:])
     except subprocess.TimeoutExpired:
         return False, "node --test timed out"
