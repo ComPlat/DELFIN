@@ -120,7 +120,7 @@ def resolve_choice(record: dict, choice: str) -> list[str]:
 
 def write_choice_answer(record: dict, answers: list[str], *,
                         room: Optional[Path] = None,
-                        by: str = "") -> Path:
+                        by: str = "", code: Optional[str] = None) -> Path:
     """Write the chosen labels beside the request, file_confirm-style.
 
     Same shape and same discipline as ``file_confirm.answer``: written
@@ -131,7 +131,9 @@ def write_choice_answer(record: dict, answers: list[str], *,
     approving something.
 
     Raises ChoiceError, and writes nothing, inside an agent session
-    (``approval_guard.ENV_MARKER``).
+    (``approval_guard.ENV_MARKER``), and when the request needs the
+    session's one-time code and none is given (``file_confirm.answer``
+    has the same rule; ``None`` takes this process's own code).
     """
     from .approval_guard import inside_agent_session, refusal
     if inside_agent_session():
@@ -151,10 +153,19 @@ def write_choice_answer(record: dict, answers: list[str], *,
     request_path = room / f"{request_id}.request.json"
     if not request_path.is_file():
         raise ChoiceError(f"no request file for id {request_id!r}")
+    from . import approval_code as _code
+    if code is None:
+        code = _code.code_for(request_id)
+    if _fc.needs_code(request_path) and not _code.normalize(code):
+        raise ChoiceError(
+            "this answer needs the code the waiting session shows "
+            "(--code)")
     payload = {"id": request_id,
                "decision": "choose",
                "answers": [str(a) for a in answers],
                "by": str(by or "")}
+    if _code.normalize(code):
+        _code.sign(payload, code)
     path = room / f"{request_id}.answer.json"
     tmp = room / f".{request_id}.answer.partial"
     _fc._own_dir(room)
@@ -182,7 +193,8 @@ def find_pending(request_id: str) -> Optional[dict]:
     return None
 
 
-def answer(request_id: str, choice: str, *, by: str = "") -> list[str]:
+def answer(request_id: str, choice: str, *, by: str = "",
+           code: Optional[str] = None) -> list[str]:
     """End-to-end for the CLI: find the question, check it is one,
     resolve the pick, write the answer. Returns the chosen labels.
 
@@ -197,7 +209,7 @@ def answer(request_id: str, choice: str, *, by: str = "") -> list[str]:
             f"request {request_id!r} is not a choice question -- "
             "use approve or deny for it")
     picks = resolve_choice(record, choice)
-    write_choice_answer(record, picks, by=by)
+    write_choice_answer(record, picks, by=by, code=code)
     return picks
 
 

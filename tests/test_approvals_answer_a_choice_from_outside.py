@@ -202,6 +202,9 @@ class TestTransportIntoSession:
         rid = rec_path.name[: -len(".request.json")]
         answer = {"id": rid, "decision": "choose", "answers": ["two"],
                   "by": "op"}
+        # Signed with the code the session showed (approval_code).
+        from delfin.agent import approval_code
+        approval_code.sign(answer, approval_code.code_for(rid))
         ans_path = room / f"{rid}.answer.json"
         ans_path.write_text(json.dumps(answer), encoding="utf-8")
         os.chmod(ans_path, 0o600)
@@ -215,9 +218,13 @@ class TestTheChoiceReaderStaysStrict:
     the user's answer."""
 
     def _write(self, room, rid, answers, mode=0o600):
+        # Signed with a code issued for *rid*, as the waiting process
+        # would have issued it: these cases are about the other checks.
+        from delfin.agent import approval_code
+        record = {"id": rid, "decision": "choose", "answers": answers}
+        approval_code.sign(record, approval_code.issue(rid))
         p = room / f"{rid}.answer.json"
-        p.write_text(json.dumps({"id": rid, "decision": "choose",
-                                 "answers": answers}), encoding="utf-8")
+        p.write_text(json.dumps(record), encoding="utf-8")
         os.chmod(p, mode)
         return p
 
@@ -237,9 +244,11 @@ class TestTheChoiceReaderStaysStrict:
 
     def test_approve_and_deny_are_read_as_before(self, tmp_path):
         from delfin.agent import file_confirm as fc
+        from delfin.agent import approval_code
         p = tmp_path / "r5.answer.json"
-        p.write_text(json.dumps({"id": "r5", "decision": "deny",
-                                 "reason": "no"}), encoding="utf-8")
+        record = {"id": "r5", "decision": "deny", "reason": "no"}
+        approval_code.sign(record, approval_code.issue("r5"))
+        p.write_text(json.dumps(record), encoding="utf-8")
         os.chmod(p, 0o600)
         assert fc._read_answer(p, "r5", 0.0) == (False, "no")
         assert fc._read_choice(p, "r5", 0.0, ["one"]) is None

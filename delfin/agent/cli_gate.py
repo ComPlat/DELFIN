@@ -151,8 +151,11 @@ def _permissions(state: dict, token: str):
             session.append(Path(d))
         except Exception:
             continue
+    # No code: this hook runs inside the external agent's process tree and
+    # has no human channel; DELFIN's Relay answers it from the person's
+    # dialog (approval_code, "What the code does not cover").
     broker = (FileConfirmBroker(session_id=f"cli-gate-{token}",
-                                timeout_s=HOOK_WAIT_S)
+                                timeout_s=HOOK_WAIT_S, require_code=False)
               if state.get("can_ask") else None)
     perms = ac.KitToolPermissions(
         workspace=Path(state["workspace"]),
