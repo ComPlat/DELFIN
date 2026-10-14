@@ -276,6 +276,7 @@ def _json_line(obj: dict) -> None:
 
 
 def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
+                 memory_context: str = "",
                  emit: Any = None,
                  on_tool_result: Any = None,
                  on_permission_denied: Any = None) -> dict[str, Any]:
@@ -305,6 +306,11 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     ``on_permission_denied`` (optional) receives ``(tool_name)`` each
     time the backend refused a call -- same forward-only pattern, so
     the benchmark can count interventions without a key of its own.
+
+    ``memory_context`` (optional) goes to the engine's system prompt;
+    passed only when non-empty, for the same fixed-signature doubles.
+    ``cmd_run`` fills it from ``turn_context``; the scheduler and the
+    benchmark call this directly and send none.
 
     The gate's own decisions are collected by a ``turn_outcome``
     observer for the length of the call: they become
@@ -431,6 +437,8 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         kwargs["on_wait"] = _on_wait
     if on_tool_result is not None:
         kwargs["on_tool_result"] = _forward_tool_result
+    if memory_context:
+        kwargs["memory_context"] = memory_context
     # The same probe once more: the backend's refusals are wanted for the
     # result even when no caller asked for them, but only an engine that
     # takes the keyword may be handed it.
@@ -636,8 +644,15 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         _emit = {"emit": _render_event}
     else:
         _emit = {"emit": _json_line} if stream_json else {}
-    out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096,
-                    **_emit)
+    # What the terminal and the dashboard send with a turn besides the
+    # text: the project instruction files and the per-turn hints. One
+    # helper for the three surfaces (turn_context).
+    from . import turn_context
+    _memory = turn_context.memory_context(engine, prompt)
+    if _memory:
+        _emit = {**_emit, "memory_context": _memory}
+    out = _run_once(engine, turn_context.user_message(prompt),
+                    max_tokens=args.max_tokens or 4096, **_emit)
     sid = _save_session(engine, repo)
 
     def _session_end_stage(name: str, fn) -> None:
