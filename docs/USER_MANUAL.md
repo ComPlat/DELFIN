@@ -1359,6 +1359,31 @@ Choose with `--provider` / `--model` or `/model`. DELFIN detects each model's re
 
 **A model that cannot call tools is refused.** Every non-trivial action is a tool call, so such a model could only talk. Small models automatically get a shorter prompt and a reduced tool surface.
 
+### API keys
+
+```bash
+delfin-agent credentials set KIT_TOOLBOX_API_KEY   # input hidden, never echoed
+delfin-agent credentials list                      # masked, with the store each key is in
+delfin-agent credentials migrate                   # move file entries into the OS keyring
+delfin-agent credentials delete KIT_TOOLBOX_API_KEY
+```
+
+A key is looked up in this order: the environment variable, the operating system's credential store (macOS Keychain, Secret Service on Linux, Windows Credential Manager), then `~/.delfin/credentials.json` (mode 0600). The OS store is used through the optional `keyring` package: `pip install "delfin-complat[keyring]"`.
+
+Where `set` writes is `agent.credentials.store` in `~/.delfin_settings.json` — a workspace settings file cannot choose it:
+
+| Value | Writes go to |
+|-------|--------------|
+| `auto` (default) | the keyring when a secure backend answers in time, otherwise the file |
+| `keyring` | the keyring only; with none usable the key is not stored and the command says why |
+| `file` | the 0600 file |
+
+Every keyring call is bounded: 3 s without a terminal and display (a cluster node, a job, the dashboard), 60 s at a desktop terminal so an unlock dialog can be answered. A keyring that does not answer is not asked again for the rest of the process, so a headless run never waits on a prompt nobody sees. Backends that are not a secure store (keyring's `fail` and `null` backends, the plaintext and encrypted-file backends of `keyrings.alt`) are not used.
+
+Nothing moves on its own. Keys already in the file keep working after the setting changes; `credentials migrate [NAME ...]` copies each into the keyring, reads it back, and removes it from the file only when the read-back is equal. A name whose keyring entry holds a different value is reported and left alone. `~/.delfin/credentials.keyring.json` records which names are in the keyring — names only, never a value.
+
+The agent's own tools read neither store: the credentials file is on the deny list, commands that print a keyring entry (`secret-tool lookup`, `security find-generic-password`, `keyring get`, `python -m keyring`, `keyring.get_password`) are refused, sandboxed commands get no session bus, and every tool result is scrubbed of the exact value of every stored key before the model sees it.
+
 ### Permissions
 
 | Level | Writes | Shell |
@@ -1374,6 +1399,12 @@ A session starts in `default` unless `--permission-mode` or `default_mode` in yo
 Cycle with `/permissions` or Shift+Tab; the cycle deliberately never lands on bypass. Two things hold at **every** level: the sandbox and the deny lists stay in force, and a file that defines the agent's own permissions always requires explicit confirmation.
 
 Settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
+
+#### Answering an approval from another terminal
+
+A waiting approval can also be answered with `delfin-agent approvals approve|deny <id>` (or `answer <id> <n>` for a choice question). Each waiting request has a one-time code, shown only where the session asks: in its terminal dialog, in its dashboard row, or on the controlling terminal of a `chat --supervised` run. Pass it with `--code ABC-DEF`; on a terminal the command asks for it when it is left out. A supervised run with no terminal at all (a batch or cluster job) keeps the code in `~/.delfin/approval_codes/<id>.code` (readable only by you, deleted once answered or expired; on a shared home the same file from every node): `approvals ls`, `show` and `approve` read it from there, so `delfin-agent approvals approve <id>` from your own shell works without typing it. No agent can read the code file through its tools, and the agent's own `approvals` commands never show a code. Inside the shell sandbox it is masked by bubblewrap and Seatbelt in every layout; under Landlock (hosts without usable bubblewrap) it is hidden unless the code directory lies inside a directory the session may write (a granted `~/.delfin`, a workspace that holds your home), because Landlock cannot hide a path there without refusing every new file in that directory. In that one layout the shell's read checks are what keep it out, so prefer not to grant `~/.delfin` to a session on such a host. The code is in no request, answer or log file, and the answer carries a signature made with it rather than the code. An answer without the right code is ignored and shown as a security event; the third one expires the request. A key in the terminal dialog or a click in the dashboard needs no code.
+
+Not covered: a program that can read the DELFIN process's memory (on Linux, `kernel.yama.ptrace_scope` 0 allows any program of your account; 1 or higher allows only DELFIN's own parents), a program that sees the session's terminal itself (an assistant driving it through a pseudo-terminal), the external-CLI backend's own hook, which DELFIN's relay answers from your dialog, and, for a run with no terminal, a program of your account running with no shell sandbox at all, which can read the code file (the same trust an answer file had before codes existed).
 
 ### The action watcher
 
@@ -1421,6 +1452,45 @@ Every command first passes the permission gate (deny patterns, protected paths, 
 
 What each layer guarantees on which host, what is out of scope and how to run safest is in the [security model](SECURITY_MODEL.md); how to report a vulnerability privately is in [SECURITY.md](../SECURITY.md).
 
+### Running commands in a container
+
+The strongest layer: `bash`, `bash_background` and `run_tests` run each command in a container that sees only the session's directories. Opt in in `~/.delfin_settings.json` (the agent cannot change this file):
+
+<!-- recipe: not-runnable — a settings file excerpt -->
+```json
+"agent": {
+  "bash_isolation": "container",
+  "container": {"runtime": "auto", "image": ""}
+}
+```
+
+`runtime` is `auto` (the first of Apptainer, Singularity, Podman, Docker that is installed and has the image), or one of them by name; a named runtime is never swapped for another. `image` empty means `docker.io/library/python:3.11-slim` for Podman and Docker, and `~/.local/share/delfin/containers/python_3.11-slim.sif` for Apptainer. Any image works that has `/bin/bash`; put the tools your commands need into it (a module system or a conda environment of the host is not visible inside unless it lies in a session directory).
+
+Inside the container the writable workspace roots (and the git metadata of a worktree) are mounted read-write, read-only and confirm-write roots, git hooks and the approvals directory read-only, credential directories inside a mounted root are covered, and nothing else of your home exists. The command runs as your uid, without capabilities, with no-new-privileges, on a read-only root filesystem, without network. Only `agent.sandbox_network.mode = "open"` gives it the runtime's normal network; the egress proxy is not reachable from inside a container, so `proxy` means no network here. The permission gate still reads every command first.
+
+If no runtime is installed or the image is missing, commands fall back to bubblewrap, Landlock or Seatbelt, and the security panel says why once. `delfin-agent capabilities` shows `container (<runtime>)` with the image, or the reason it is not used; `delfin-agent doctor` and the session banner say the same.
+
+**HPC (Apptainer, no root needed).** Build the image once on a login node, where the registry is reachable:
+
+<!-- recipe: not-runnable — pulls a container image from a registry; needs Apptainer on an HPC login node -->
+```bash
+mkdir -p ~/.local/share/delfin/containers
+apptainer pull ~/.local/share/delfin/containers/python_3.11-slim.sif docker://python:3.11-slim
+```
+
+Requires Apptainer 1.1 or SingularityCE 3.8 or newer (`--no-mount hostfs,bind-paths`, so the site's default bind paths are not mounted). An image with your own software: `apptainer build my.sif my.def`, then set `"image": "/path/to/my.sif"`.
+
+**Workstation (Podman rootless, or Docker).** Pull the image once; it is never pulled at run time:
+
+<!-- recipe: not-runnable — pulls a container image from a registry; needs Podman or Docker -->
+```bash
+podman pull docker.io/library/python:3.11-slim     # or: docker pull python:3.11-slim
+```
+
+Podman maps your uid into the container (`--userns=keep-id`), so files written in the workspace belong to you. Docker runs with `--user <uid>:<gid>`; with rootless Docker the files can end up owned by a subordinate uid, so prefer Podman there.
+
+Limits: a command's network cannot go through the egress proxy (no network, or open); a Podman or Docker container whose client is killed with SIGKILL may keep running until it ends on its own; environment variables of the host session are not passed in.
+
 ### Seeing the boundary before a session starts
 
 Two read-only commands answer what a session would be allowed to do, for a person or for a program that drives the agent. Both take the session options `chat` takes (`--permission-mode`, `--cwd`, `--add-dir`, `--read-dir`, `--allowed-tools`, `--disallowed-tools`, `--supervised`, `--provider`), plus `--asker terminal|approvals|nobody` for who could answer a question (default: a terminal on stdin, else the approvals directory with `--supervised`, else nobody), and `--json`. Neither starts a session, changes a permission or writes a setting.
@@ -1433,7 +1503,7 @@ delfin-agent gate explain --json --asker nobody -- 'echo x > ../out.txt'
 delfin-agent gate explain --tool write_file --path notes/new.md
 ```
 
-`capabilities` lists the mode and where it came from, the writable, read-only and readable roots, the deny and protected path globs and the masked home directories (names only, never contents), the shell deny patterns and auto-allow list, the session tool lists, who would be asked, the git role resolved for the workspace's repository, and the isolation layers: which mechanism the agent would actually wrap a command in on this host (`bwrap`, `Landlock`, `Seatbelt`, `none`, or `refused`), and whether bubblewrap, Landlock, Seatbelt, the socket guard, the process cage and the process guard are available here.
+`capabilities` lists the mode and where it came from, the writable, read-only and readable roots, the deny and protected path globs and the masked home directories (names only, never contents), the shell deny patterns and auto-allow list, the session tool lists, who would be asked, the git role resolved for the workspace's repository, and the isolation layers: which mechanism the agent would actually wrap a command in on this host (`container (<runtime>)`, `bwrap`, `Landlock`, `Seatbelt`, `none`, or `refused`), and whether bubblewrap, Landlock, Seatbelt, the socket guard, the process cage and the process guard are available here.
 
 `gate explain` asks the permission gate about one `bash` command or one `write_file` and prints the verdict — `allow`, `ask` or `refuse` — with a reason code (`plan_mode`, `deny_pattern`, `secret_path`, `outside_ws`, `not_auto_allowed`, `read_first`, `session_tool_list`, …), the reason text, the questions the gate would put, and for an `ask` what a yes would lead to. It goes through the same gates as a real call and stops after the last one, so nothing is run and nothing is written; the security panel, the audit log, the failure log and the approvals directory are not touched. Put the command after `--`; quote it as one argument to keep its own quoting. An existing `write_file` target counts as read in the session. Limits: only `bash` and `write_file` can be explained; PreToolUse hooks are counted but not run; only the `kit`, `openai` and `ollama` providers run this gate (the `claude` CLI backend has its own hook gate and is refused).
 

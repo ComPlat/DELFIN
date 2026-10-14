@@ -3184,6 +3184,22 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"(?=[^;|&]*\s(?:~|\$\{?HOME\}?|/))"
     r"(?=[^;|&]*\s-(?:delete\b|(?:exec|execdir|ok|okdir)\s+"
     r"(?:rm|rmdir|unlink|shred|truncate|dd)\b))",
+    # Reading the OS credential store, where DELFIN keeps API keys when
+    # agent.credentials.store selects it. The keyring is read by the DELFIN
+    # process only; a command that prints an entry hands the key to the
+    # transcript. Command position for the CLIs (a grep for the word
+    # stays free), anywhere for the Python call and the D-Bus service name.
+    # Not a boundary on its own: the sandbox unsets DBUS_SESSION_BUS_ADDRESS
+    # and the socket guard refuses the bus socket; an obfuscated python -c
+    # is caught there, not here.
+    r"""(?:^|[;|&`(])[\s'\"]*(?:sudo\s+)?(?:/\S*/)?"""
+    r"(?:secret-tool\s+(?:lookup|search)|"
+    r"security\s+(?:find-(?:generic|internet)-password|dump-keychain)|"
+    r"keyring\s+get)\b",
+    r"\bpython[\w.]*\s+(?:-\S+\s+)*-m\s+keyring\b",
+    r"\bkeyring\s*\.\s*get_(?:password|credential)\b",
+    r"\borg\.freedesktop\.secrets\b",
+    r"\bGet-StoredCredential\b",
 )
 
 # Bash patterns that are auto-approved in mode="default" without callback.
@@ -6969,6 +6985,12 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # Common SSH private-key names even outside a .ssh/ directory.
     "id_rsa", "id_rsa.*", "id_dsa", "id_ecdsa", "id_ed25519",
     "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
+    # One-time approval codes of runs with no terminal (approval_code):
+    # read by the person's `delfin-agent approvals`, never by an agent.
+    # By name, not under .delfin only: a test or benchmark run redirects
+    # the directory, and the name is DELFIN's own.
+    "approval_codes", "approval_codes/**",
+    "**/approval_codes", "**/approval_codes/**",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -24892,7 +24914,54 @@ def _home_secret_paths() -> list[str]:
             out.append(str((home / rel).resolve()))
         except OSError:
             continue
+    # The approval-code directory, created and at its redirected location.
+    try:
+        from delfin.agent.sandbox import runtime_masked_dirs
+        out += [d for d in runtime_masked_dirs() if d not in out]
+    except Exception:
+        pass
     return out
+
+
+def _landlock_hide_paths(write_roots) -> list[str]:
+    """``_home_secret_paths()`` for a Landlock cage with these write roots.
+
+    Landlock only grants, and a rule covers everything beneath its path:
+    ``landlock_exec._grant_except`` hides a path inside a write root by
+    granting that root entry by entry, so the root directory itself loses
+    the right to create files and every new top-level file there is
+    refused. For the approval-code directory (``runtime_masked_dirs`` and
+    ``~/.delfin/approval_codes``) inside a write root that cost is not
+    paid: the hide is dropped for this run, and the read gates (path deny
+    globs, the bash read scan, ``approval_guard``) protect the 0600,
+    short-lived code file there. That happens only for a granted
+    ``~/.delfin`` or a workspace holding ``$HOME``. The credential
+    locations keep their behaviour (hidden, at that cost)."""
+    hides = _home_secret_paths()
+    soft: set[str] = set()
+    try:
+        from delfin.agent.sandbox import runtime_masked_dirs
+        soft.update(runtime_masked_dirs())
+    except Exception:
+        pass
+    try:
+        from delfin.agent import approval_code as _ac
+        soft.add(str(_ac.home_codes_dir().resolve()))
+    except Exception:
+        pass
+    roots = []
+    for r in write_roots:
+        try:
+            roots.append(os.path.realpath(str(r)).rstrip("/") or "/")
+        except Exception:
+            continue
+
+    def _inside(path: str) -> bool:
+        real = os.path.realpath(path)
+        return any(real == r or real.startswith(r.rstrip("/") + "/")
+                   for r in roots)
+
+    return [h for h in hides if not (h in soft and _inside(h))]
 
 
 _GIT_ROOTS_CACHE: dict = {}
@@ -25076,9 +25145,11 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
         roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
     git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
     argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve())]
-    for r in list(roots) + [str(Path(p).resolve()) for p in extra_write] + git_roots:
+    write_roots = (list(roots) + [str(Path(p).resolve()) for p in extra_write]
+                   + git_roots)
+    for r in write_roots:
         argv += ["--write", r]
-    for h in _home_secret_paths():
+    for h in _landlock_hide_paths(write_roots + [_private_tmp_dir()]):
         argv += ["--hide", h]
     # git's hooks would run on the user's next git command. bubblewrap and
     # Seatbelt keep them readable-but-not-writable for free; Landlock cannot
@@ -25741,7 +25812,10 @@ def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
             pass
         if _caged_command_names_excluded(cmd):
             return False
-        if _bash_isolation_decision(perms)[0] != "bwrap":
+        _kind, _iso_mode = _bash_isolation_decision(perms)
+        # A container session runs its commands in the container, whose
+        # mounts are not the cage this admission relies on: asked instead.
+        if _kind != "bwrap" or _iso_mode == "container":
             return False
         if not _process_cage_enabled():
             return False
@@ -25927,6 +26001,21 @@ def _bash_isolation_argv(
     # session-scoped choice must not have to write a setting that outlives
     # the session making it. Resolved in _bash_isolation_decision.
     kind, mode = _bash_isolation_decision(perms, mode)
+    if mode == "container":
+        # A container where one can run (container_exec); otherwise the
+        # layers "auto" picks, with a recorded notice -- never a plain shell.
+        # Never for a caged_unasked command: that admission was made for
+        # the bubblewrap cage, which the container is not.
+        boxed = None
+        if not caged_unasked:
+            try:
+                from . import container_exec as _ce
+                boxed = _ce.session_argv(cmd, run_cwd, perms, extra_write)
+            except Exception:
+                boxed = None
+        if boxed:
+            return boxed
+        kind, mode = _bash_isolation_decision(perms, "auto")
     if caged_unasked and (kind != "bwrap" or not _landlock_functional()):
         return _refusal_argv(
             "this command was admitted without a question because the "
@@ -26079,6 +26168,14 @@ def _bash_isolation_argv(
         for room in _approval_guard.answer_rooms():
             if any(room == b or b in room.parents for b in _bound):
                 args += ["--ro-bind-try", str(room), str(room)]
+    except Exception:
+        pass
+    # The approval-code directory is not readable at all, and masked after
+    # every bind so a granted ~/.delfin cannot re-expose it.
+    try:
+        from delfin.agent.sandbox import runtime_masked_dirs
+        for d in runtime_masked_dirs():
+            args += ["--tmpfs", d]
     except Exception:
         pass
     args += ["--chdir", str(Path(run_cwd).resolve())]

@@ -273,6 +273,10 @@ def child_env(tmp_path) -> dict:
     env = dict(os.environ)
     env["HOME"] = str(home)
     env["DELFIN_SCRATCH_STATE"] = str(scratch)
+    # The OS keyring does not follow HOME (it is a D-Bus service or the
+    # login keychain): keyring's own override selects its null backend,
+    # which DELFIN refuses as a store.
+    env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
     return env
 
 
@@ -1010,6 +1014,22 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
 
     monkeypatch.setattr(_user_settings, "get_settings_path", _settings_path)
 
+    # The approval-code directory: beside tmp_path, as ~/.delfin lies
+    # beside a workspace in real use, not in it (the generic redirect above
+    # puts it under tmp_path, and a Landlock cage keeps no hide inside a
+    # write root). A test that moved Path.home gets that home's.
+    # tests/test_a_hidden_code_dir_keeps_its_root_writable.py puts it
+    # inside a workspace on purpose.
+    from delfin.agent import approval_code as _approval_code
+    codes_home = tmp_path.parent / f"{tmp_path.name}-approval-codes"
+
+    def _codes_dir():
+        if _already_isolated():
+            return pathlib.Path.home() / ".delfin" / "approval_codes"
+        return codes_home
+
+    monkeypatch.setattr(_approval_code, "codes_dir", _codes_dir)
+
 
 # ---------------------------------------------------------------------------
 # The sandbox-escape gate
@@ -1098,9 +1118,22 @@ def _ci_parity_no_secrets(tmp_path, monkeypatch):
         from delfin.agent import credentials as _cred
         monkeypatch.setattr(_cred, "_DEFAULT_PATH",
                             tmp_path / "no_credentials.json")
+        # The OS keyring is the user's, on a desktop host reachable from
+        # this process: no test reads or writes it. Tests of the keyring
+        # path install a fake backend behind the real factory themselves.
+        if hasattr(_cred, "_disabled_keyring_factory"):
+            monkeypatch.setattr(_cred, "_keyring_factory",
+                                _cred._disabled_keyring_factory)
+            _cred.reset_keyring_state()
     except Exception:
         pass
     yield
+    try:
+        from delfin.agent import credentials as _cred
+        if hasattr(_cred, "reset_keyring_state"):
+            _cred.reset_keyring_state()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

@@ -54,6 +54,9 @@ class _ConfirmRequest:
     #: with the reason a refusal carried.
     answered_from_outside: bool = False
     outside_reason: str = ""
+    #: Expired by three answers without the code, not by absence: the
+    #: window does not go "away" for it.
+    code_spent: bool = False
 
 
 class KitConfirmBroker:
@@ -216,6 +219,11 @@ class KitConfirmBroker:
                 return True             # a click; it set req.decision
             outside = self._answer_in_the_room(req)
             if outside is None:
+                if req.published is not None:
+                    from . import terminal_confirm as _tc
+                    if _tc.code_spent(req.published):
+                        req.code_spent = True
+                        return False    # three unsigned answers: expired
                 continue
             decision, reason = outside
             # The click path sets decision under the lock and then sets
@@ -230,6 +238,16 @@ class KitConfirmBroker:
                     req.outside_reason = str(reason or "")
             req.event.set()
             return True
+
+    def outside_answer_hint(self, req: "_ConfirmRequest") -> str:
+        """The command and one-time code for answering *req* from another
+        terminal, or "". Shown in this window's row only: the window is
+        the human channel, and the code is in no file."""
+        try:
+            from . import terminal_confirm as _tc
+            return _tc.outside_answer_line(getattr(req, "published", None))
+        except Exception:
+            return ""
 
     def _answer_in_the_room(self, req: "_ConfirmRequest"):
         """The answer left for *req*, or None. Never raises."""
@@ -301,6 +319,9 @@ class KitConfirmBroker:
         # and by file_confirm's checked reader, so one publish here puts
         # every dashboard approval on those surfaces too.
         req.published = self._publish_for_supervisors(req, preview)
+        # Again, now that the row can show the code for an answer from
+        # another terminal (outside_answer_hint).
+        self._refresh_panel()
 
         # Block worker thread until decided or timeout -- unless a window
         # has just expired unanswered. Nobody is there to answer this one
@@ -327,7 +348,7 @@ class KitConfirmBroker:
                 # denied — never retry", which previously poisoned the rest
                 # of the session after every unattended 300s window.
                 self.last_timed_out = True
-                if self._away_since is None:
+                if self._away_since is None and not req.code_spent:
                     self._away_since = time.monotonic()
             else:
                 self.last_timed_out = False
@@ -702,12 +723,17 @@ class KitConfirmBroker:
             f'</pre>'
         )
 
+        hint = self.outside_answer_hint(req)
+        hint_html = (
+            f'<div style="font-size:11px; color:#9aa5b1; margin:2px 0;">'
+            f'<code>{_html_escape(hint)}</code></div>' if hint else "")
         header = widgets.HTML(
             value=(
                 f'<b>#{req.seq} &middot; {tool}</b>'
                 f'{("&nbsp;&middot;&nbsp;" + subtitle) if subtitle else ""}'
                 f'{rationale_html}'
                 f'{preview_pre}'
+                f'{hint_html}'
             )
         )
 

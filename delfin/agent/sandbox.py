@@ -677,14 +677,15 @@ def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str) -> list[str]:
     if mode != "allowlist":
         return base
     try:
-        from .api_client import (_home_secret_paths, _landlock_functional,
+        from .api_client import (_landlock_hide_paths, _landlock_functional,
                                  _private_tmp_dir)
         from . import landlock_exec as _ll
         if not _landlock_functional():
             return base
+        repo = str(Path(repo_dir).resolve())
         argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
-                "--write", str(Path(repo_dir).resolve())]
-        for h in _home_secret_paths():
+                "--write", repo]
+        for h in _landlock_hide_paths([repo, _private_tmp_dir()]):
             argv += ["--hide", h]
         return argv + ["--tmpdir", _private_tmp_dir(), "--strict", "0", "--"] + base
     except Exception:
@@ -708,7 +709,24 @@ _HOME_SECRET_DIRS = (
     # were masked and this one was not, which is the wrong way round: it
     # is the file holding the key the running agent is using.
     ".delfin/credentials.json",
+    # One-time approval codes of runs with no terminal (approval_code):
+    # the person's `delfin-agent approvals` reads them, no agent may.
+    ".delfin/approval_codes",
 )
+
+
+def runtime_masked_dirs() -> list[str]:
+    """The masked directories that appear at run time, created now and
+    resolved: a cage built now masks them instead of skipping a path that
+    does not exist yet, also where the location is redirected (tests, a
+    benchmark attempt). A cage masks these AFTER its binds, so a granted
+    parent cannot re-expose them. Never raises."""
+    try:
+        from . import approval_code as _ac
+        d = _ac.ensure_codes_dir()
+        return [str(d.resolve())] if d is not None else []
+    except Exception:
+        return []
 
 
 def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
@@ -734,6 +752,7 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
     # Mask each secret path individually if it exists on the host. tmpfs
     # only works on directories; for single files we mask with /dev/null
     # (read-only bind of an empty source). Missing paths are skipped.
+    late_masks = runtime_masked_dirs()
     for rel in _HOME_SECRET_DIRS:
         p = Path(home) / rel
         try:
@@ -745,8 +764,10 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
             args += ["--tmpfs", str(p)]
         elif is_file:
             args += ["--ro-bind", "/dev/null", str(p)]
+    args += ["--bind", repo, repo]
+    for d in late_masks:
+        args += ["--tmpfs", d]
     args += [
-        "--bind", repo, repo,
         "--chdir", repo,
         "--unshare-pid",
         "--unshare-ipc",
