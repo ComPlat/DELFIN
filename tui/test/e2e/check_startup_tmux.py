@@ -5,6 +5,10 @@ executable, which this check builds first (scripts/build-binary.ts). From
 source, Bun compiles the TypeScript at every start: that time is reported,
 not held to the budget.
 
+DELFIN_TUI_STARTUP_BUDGET_MS sets another budget. CI does: a shared runner
+is slower than a workstation and not the same from run to run (255 ms on
+one, 385 ms on another, the source launch 1.1 s and 1.9 s there).
+
 Usage (from the repository root):
     DELFIN_PYTHON=<python with delfin> python3 tui/test/e2e/check_startup_tmux.py
 """
@@ -31,6 +35,10 @@ from delfin.agent.service.client import ServiceClient  # noqa: E402
 
 PYTHON = os.environ.get("DELFIN_PYTHON") or sys.executable
 BUDGET_S = 0.300
+try:
+    BUDGET_S = float(os.environ.get("DELFIN_TUI_STARTUP_BUDGET_MS") or 300) / 1000
+except ValueError:
+    pass
 RUNS = 5
 
 
