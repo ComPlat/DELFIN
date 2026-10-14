@@ -16723,6 +16723,10 @@ def create_tab(ctx):
             )
             if _b.returncode == 0:
                 branch_name = _b.stdout.strip()
+            if branch_name == "HEAD":
+                from delfin.agent.held_branch import checkout_label
+                branch_name = (checkout_label(ctx.repo_dir or Path.cwd())
+                               or branch_name)
         except Exception:
             pass
 
@@ -16786,6 +16790,10 @@ def create_tab(ctx):
             )
             if _b.returncode == 0:
                 branch_name = _b.stdout.strip()
+            if branch_name == "HEAD":
+                from delfin.agent.held_branch import checkout_label
+                branch_name = (checkout_label(ctx.repo_dir or Path.cwd())
+                               or branch_name)
         except Exception:
             pass
 
