@@ -8397,6 +8397,7 @@ def create_tab(ctx):
         result = {"answers": []}
         state["_ask_user_event"] = ev
         state["_ask_user_result"] = result
+        state["_ask_user_args"] = dict(args or {})
         from html import escape as _esc
         header_html = (f"<span style='background:#0a84ff;color:white;"
                        f"padding:2px 6px;border-radius:3px;font-size:11px;"
@@ -8405,6 +8406,8 @@ def create_tab(ctx):
         ask_user_label.value = (
             f"<div style='font-size:14px;'>{header_html}"
             f"<b>{_esc(question)}</b></div>"
+            "<div style='color:#888;font-size:11px;margin-top:2px;'>"
+            "Pick an option, or type your own answer in the chat.</div>"
         )
         chosen: set[str] = set()
         button_widgets: list = []
@@ -8529,14 +8532,53 @@ def create_tab(ctx):
         ask_user_box.layout.display = ""
         # Block up to 5 minutes
         ev.wait(timeout=300)
+        _close_ask_user_modal(ev)
+        if not result["answers"]:
+            return {"answers": [], "timed_out": True}
+        return result
+
+    def _close_ask_user_modal(ev) -> None:
+        """Take the question widget off screen and forget the question.
+
+        Called by the asking thread when it wakes and by a chat answer on
+        the UI thread. Only the question ``ev`` belongs to is cleared, so
+        a late call cannot wipe a newer question's state.
+        """
+        if state.get("_ask_user_event") not in (None, ev):
+            return
         ask_user_box.layout.display = "none"
         ask_user_label.value = ""
         ask_user_buttons.children = ()
         state["_ask_user_event"] = None
         state["_ask_user_result"] = None
-        if not result["answers"]:
-            return {"answers": [], "timed_out": True}
-        return result
+        state["_ask_user_args"] = None
+
+    def _answer_ask_from_chat(text: str) -> bool:
+        """A chat line sent while ask_user_question waits is its answer.
+
+        Input: the stripped line from the chat input. Output: True when a
+        question was waiting and took the line (the caller then shows it
+        once in the chat and starts no turn and no steer -- the turn is
+        blocked inside this question and continues with the answer);
+        False when nothing waited. The result is
+        ``approval_answers.typed_answer``, the same one the terminal
+        dialog produces. Measured before: the line was steered into the
+        blocked turn and the question stayed on screen until its 300 s
+        expiry, then returned timed_out.
+        """
+        ev = state.get("_ask_user_event")
+        result = state.get("_ask_user_result")
+        if ev is None or result is None or ev.is_set() or not text:
+            return False
+        from delfin.agent.approval_answers import typed_answer
+        answer = typed_answer(text, state.get("_ask_user_args") or {})
+        if not answer.get("answers"):
+            return False
+        result.clear()
+        result.update(answer)
+        _close_ask_user_modal(ev)
+        ev.set()
+        return True
 
     # exit_plan_mode approval — uses existing plan_accept_btn but flips perms
     # via the structured callback so the tool result reflects the choice.
@@ -9548,6 +9590,25 @@ def create_tab(ctx):
         title = data.get("title", "")[:50] or session_id[:12]
         _record_cycle_event("session", "Session restored", title)
         _append_system_message(f"Session restored: {title}")
+        # The transcript and the model's history are two records in one
+        # file. When the second is empty while the first holds turns, the
+        # chat shows a conversation the model does not have -- say so, or
+        # the next answer reads as the model having forgotten.
+        if (not list(getattr(engine, "messages", None) or ())
+                and any(m.get("role") == "user"
+                        for m in state.get("chat_messages") or ())):
+            _archived = ""
+            try:
+                from delfin.agent.session_store import load_transcript_archive
+                if load_transcript_archive(session_id):
+                    _archived = (" Earlier history of this session is in the "
+                                 f"archive: /session archive {session_id}.")
+            except Exception:
+                pass
+            _append_system_message(
+                "⚠️ This session was saved without the model's side of the "
+                "conversation: the chat above is shown, but the model starts "
+                "without it. Restate what it needs to know." + _archived)
 
     # -- helpers -----------------------------------------------------------
 
@@ -9687,7 +9748,11 @@ def create_tab(ctx):
             except Exception:
                 pass
         state["engine"] = None
-        if carry and carry.get("engine_messages"):
+        # Carried when there is a conversation OR an identity. An engine
+        # with no messages still names the session it belongs to; dropped,
+        # the next engine minted a fresh id and its first save copied the
+        # whole chat transcript into a second session file.
+        if carry and (carry.get("engine_messages") or carry.get("session_id")):
             state["_engine_carry_over"] = carry
         else:
             state.pop("_engine_carry_over", None)
@@ -18057,6 +18122,17 @@ def create_tab(ctx):
         # Hide any pending question UI when user sends a message
         _hide_question_ui()
 
+        # An open ask_user_question takes the line as its answer. Not a
+        # built-in slash command (/stop must still stop), and not what the
+        # session sends on its own -- only the user answers a question.
+        if (not state.get("_on_its_own")
+                and user_text.split()[0].lower()
+                not in _BUILTIN_SLASH_PREFIXES
+                and _answer_ask_from_chat(user_text)):
+            input_textarea.value = ""
+            _append_chat_message("user", user_text)
+            return
+
         # Slash commands execute immediately, even during streaming.
         # But file paths like /home/... are NOT slash commands — only
         # short tokens like /help, /calc, /orca etc. count.
@@ -21218,7 +21294,8 @@ def create_tab(ctx):
             _append_system_message(
                 f"Model switched to {change['new']}. The next message uses it"
                 + (", with the conversation so far."
-                   if state.get("_engine_carry_over") else ".")
+                   if (state.get("_engine_carry_over") or {}).get(
+                       "engine_messages") else ".")
             )
         # Persist the choice
         chosen_effort = ""
