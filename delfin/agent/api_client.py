@@ -28543,6 +28543,22 @@ class OpenAIClient(_BaseClient):
                 if _eff:
                     kwargs["reasoning_effort"] = _eff
 
+            # A stable opaque route key for a model whose profile asks for
+            # one (model_profiles.session_affinity / session_route_key):
+            # the OpenAI `user` field, which a router can pin a session to
+            # one replica by. Not for Ollama: one local server, nothing to
+            # route, and a field it was never asked to accept.
+            if self._provider != "ollama":
+                try:
+                    from .model_profiles import session_route_key as _route_key
+                    _rk = _route_key(
+                        self.model,
+                        str(getattr(self, "metrics_session", "") or ""))
+                except Exception:
+                    _rk = ""
+                if _rk:
+                    kwargs["user"] = _rk
+
             # Advertise tools to the model. Reasoning models (gpt-5.x, o3,
             # o4) DO support function calling — withholding tools from them
             # was the root cause of "the agent does nothing / no filesystem

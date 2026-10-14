@@ -131,6 +131,16 @@ class ModelProfile:
     # passing answers p50 2146 characters against 710 on kit.glm-5.3.
     concise_answers: bool = False
 
+    # Send the OpenAI ``user`` field with an opaque per-session value
+    # (``session_route_key``), so a router that keys sticky routes on it
+    # sends a session's requests to the replica that holds its prefix.
+    # Archive 2026-09-16 .. 10-14, kit.glm-5.3: 408 of 2066 requests cold
+    # (cached/input < 0.2) with system prompt and turn prefix unchanged and
+    # under 300 s since the previous request, ~740 min of time to first
+    # token. The KIT endpoint accepts the field (HTTP 200, 2026-10-14);
+    # whether it routes on it is unmeasured -- the A/B decides.
+    session_affinity: bool = False
+
     # Free-form notes — useful in /agents stats / /model output and
     # for the human reading this file.
     notes: str = ""
@@ -247,6 +257,7 @@ _GLM_5_3 = ModelProfile(
     # before a single tool call, on a 45-line change -- and the arms above
     # showed no answer that low did not give.
     max_effort="low",
+    session_affinity=True,
     notes=(
         "KIT GLM-5.3 — strongest of the KIT-hosted open models, slowest to "
         "start. Reasoning-first: needs the thinking token floor. Cold "
@@ -434,6 +445,7 @@ _COERCE: dict[str, type] = {
     "max_effort": str,
     "terse_tool_rounds": bool,
     "concise_answers": bool,
+    "session_affinity": bool,
 }
 
 
@@ -450,6 +462,28 @@ MODEL_NOTES: dict[str, str] = {
         "No recap of the steps taken, no restated question. Write at length "
         "only when a plan, document or report was asked for."),
 }
+
+
+def session_route_key(model: str, session: str) -> str:
+    """The ``user`` value for *model*'s requests in *session*, or "".
+
+    Input: a model name and the engine's per-session key (its trace
+    session). Output: ``delfin-`` plus 16 hex characters of a SHA-256 over
+    the key, the same for every request of the session; "" when the
+    profile has session_affinity off or there is no key. The key itself
+    never leaves the machine. Never raises.
+    """
+    key = str(session or "").strip()
+    if not key:
+        return ""
+    try:
+        if not bool(get_profile(model).session_affinity):
+            return ""
+    except Exception:
+        return ""
+    import hashlib
+    digest = hashlib.sha256(("delfin-route\0" + key).encode("utf-8")).hexdigest()
+    return "delfin-" + digest[:16]
 
 
 def model_notes(model: str) -> str:
