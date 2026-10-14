@@ -117,6 +117,14 @@ dependencies = [
 pymol = [
     "pymol-open-source>=2.5,<4",
 ]
+# API keys in the operating system's credential store (macOS Keychain,
+# Secret Service, Windows Credential Manager) instead of the 0600 file
+# ~/.delfin/credentials.json (delfin/agent/credentials.py). Optional: on a
+# headless cluster node there is usually no usable backend, and without
+# the package DELFIN keeps using the file.
+keyring = [
+    "keyring>=24",
+]
 csp = [
     "mpi4py",
 ]

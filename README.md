@@ -556,7 +556,8 @@ Your own presets can be added as markdown files in `~/.delfin/subagents/`. Subag
 
 - **Built-in tools**: read/edit/write files, grep, sandboxed bash with long-running background jobs, code navigation, test runner, notebooks, documents and spreadsheets, web search and fetch, task tracking, scheduling, git worktrees, delegation, plus DELFIN-specific calculation and manual search.
 - **MCP (Model Context Protocol)**: connect external MCP servers over stdio or Streamable HTTP — their tools, resources and prompts join the agent's surface (configured in `~/.delfin/mcp_servers.json`). A tool reached through MCP runs in a process DELFIN did not launch a command line for, so the shell sandbox is not around it: give a stdio server `"roots": [...]` (read-write) or `"read_roots": [...]` (read-only) and it starts inside a namespace holding only those paths. Servers that declare neither run uncontained, and the startup banner, `/mcp` and `delfin-agent doctor` all say so. DELFIN's own servers can take their roots from your settings instead — `agent.mcp_isolation: "builtin"` binds the calculations, office, workspace and state folders read-write and the archive and runtime trees read-only; it is off by default because the roots are inferred.
-- **Sandboxed execution**: every shell command goes through a layered defence — allow-list, then bubblewrap or firejail — with credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) masked, network denied by default, and every command appended to `~/.cache/delfin/agent-audit.jsonl`. Configurable with `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`.
+- **Sandboxed execution**: every shell command passes the permission gate and then runs isolated wherever the host can hold it — bubblewrap, else Landlock, else Seatbelt on macOS: writes only in the workspace roots, credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) unreadable, no access to your terminal or SSH agent, and network only through an egress proxy with a domain allow-list. `--isolate` refuses commands where no isolation is available; `--no-isolate` turns it off. The dashboard's approval of a CLI-backend `Bash` call uses its own allow-list sandbox (`DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`).
+- **Security model**: what the containment protects, against whom, what each layer guarantees on which host and the residual risks are in [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md); vulnerabilities are reported privately as described in [SECURITY.md](SECURITY.md).
 - **Permission modes**: `plan` (read-only) · `default` (destructive actions ask) · `diff_approval` (writes stage a diff for `/approve`) · `acceptEdits` (writes allowed, bash still asks) · `bypassPermissions` (no prompts; the sandbox and the deny lists still apply). Per-pattern allow-list rules can be remembered across sessions. Files that define the agent's own permissions always require confirmation, in every mode.
 - **Workspace trust**: settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
 
@@ -959,7 +960,7 @@ Of the AI/ML tools listed below, DELFIN detects and installs all of them, and **
 * Format: `black .` · Lint: `ruff check .`
 * Build a wheel: `pip wheel .`
 
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security problems are reported privately, not as issues — see [SECURITY.md](SECURITY.md).
 
 ---
 

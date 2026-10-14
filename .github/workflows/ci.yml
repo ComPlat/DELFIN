@@ -53,7 +53,9 @@ jobs:
   test:
     name: tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # The fast suite ran 27-34 min on main (2026-10-13) and the open security
+    # PRs add a few thousand gate cases; at 35 the job was cancelled mid-run.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:

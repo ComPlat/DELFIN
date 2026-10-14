@@ -1259,7 +1259,382 @@ _BASH_DIR_LISTERS: frozenset[str] = frozenset({"ls", "find", "tree"})
 # `cd X && cat file` reads X/file by a relative name, which the reader
 # check above never sees. The directory changed into is the thing to ask
 # about. A bare `cd` goes home.
-_BASH_DIR_CHANGERS: frozenset[str] = frozenset({"cd", "pushd"})
+_BASH_DIR_CHANGERS: frozenset[str] = frozenset({"cd", "pushd", "popd"})
+
+#: Where a `cd` leads when the gate cannot know: into a variable, a
+#: command substitution, `cd -` with no earlier cd in the command (the
+#: shell's $OLDPWD), `popd` on a stack this command did not build. No
+#: root contains it, so a path reported under it is refused or asked.
+_UNRESOLVED_DIR = Path(
+    "/<directory this command changed into could not be resolved>")
+
+#: Words that may stand before a command without being it (`if cd x;`,
+#: `then (cd y && …)`, `! cd z`).
+_SHELL_LEAD_WORDS: frozenset[str] = frozenset({
+    "if", "then", "elif", "else", "while", "until", "do", "!", "{", "time",
+})
+
+#: Programs whose own option moves the directory for that one command.
+_CHDIR_OPTIONS: dict[str, tuple[str, ...]] = {
+    "git": ("-C",),
+    "make": ("-C", "--directory"),
+    "gmake": ("-C", "--directory"),
+    "env": ("-C", "--chdir"),
+}
+
+
+#: `$NAME` or `${NAME}`; every other `$` form is not resolved.
+_SHELL_VAR_REF = re.compile(
+    r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+#: Every name: the command can set any variable (`source`, `eval`, `.`).
+_ALL_NAMES = frozenset({"*"})
+
+
+def _shell_names_set_opaquely(cmd: str) -> "frozenset | set":
+    """Variable names whose value at a `cd` the gate cannot read off the
+    command: set by anything other than a standalone `NAME=literal`
+    (`for NAME in`, `read NAME`, `declare NAME=`, `printf -v NAME`,
+    `NAME=$(…)`, `W=x prog` …), or written inside single quotes, where
+    `$NAME` is not expanded at all. ``_ALL_NAMES`` when the command runs
+    `source`, `.` or `eval`, which can set any of them.
+
+    Errs one way only: a name listed here is unresolved, and an
+    unresolved cd is asked about or refused. Never raises.
+    """
+    import shlex
+    try:
+        text = cmd or ""
+        ok: dict = {}
+        for seg in _split_shell_segments(text):
+            try:
+                words = shlex.split(seg)
+            except ValueError:
+                return _ALL_NAMES
+            while words and words[0] in _SHELL_LEAD_WORDS:
+                words = words[1:]
+            if words:
+                words[0] = words[0].lstrip("(")
+            if words and Path(words[0]).name in ("source", ".", "eval"):
+                return _ALL_NAMES
+            if words and words[0] == "export":
+                words = words[1:]
+            if words and all(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)
+                             for w in words):
+                for w in words:
+                    name, value = w.split("=", 1)
+                    if "$(" in value or "`" in value:
+                        continue
+                    ok[name] = ok.get(name, 0) + 1
+        out: set = set()
+        for m in _SHELL_VAR_REF.finditer(text):
+            name = m.group(1) or m.group(2)
+            if name in out:
+                continue
+            bare = [b for b in re.finditer(
+                rf"(?<![\w${{]){re.escape(name)}(?!\w)(?!=)", text)]
+            assigned = len(re.findall(
+                rf"(?<![\w$]){re.escape(name)}=", text))
+            quoted = any(f"${name}" in q or f"${{{name}}}" in q
+                         for q in re.findall(r"'[^']*'", text))
+            if bare or quoted or assigned > ok.get(name, 0):
+                out.add(name)
+        return out
+    except Exception:
+        return _ALL_NAMES
+
+
+class _ShellDirWalk:
+    """The directory a shell command is in, followed command by command.
+
+    Input: ``start`` -- where the command begins, or None for "the
+    caller's base" (a relative name then stays relative, which is what the
+    write scanner hands on to a gate that resolves against its own cwd).
+    ``oldpwd`` is where a `cd -` goes before any cd in this command:
+    unresolved by default, because that is the shell's $OLDPWD.
+
+    Per simple command, ``enter(segment, argv)`` returns ``(argv, moved)``:
+    the words with subshell parentheses removed, and True when the
+    command was `cd`/`pushd`/`popd` and has been followed. ``here`` is the
+    directory the command runs in; ``command_dir(argv)`` adds a `-C` of
+    git/make/env for that one command. ``leave()`` after the command
+    closes the subshells it ended, so ``(cd x) && y`` runs y where the
+    command began. ``visited`` lists every directory reached.
+
+    Followed: `cd X`, `cd` (home), `cd ~/X`, `cd $HOME/X`, `cd -`,
+    `pushd X`, `pushd` (swap), `popd`, `( … )`, `$( … )` (a cd inside a
+    substitution does not move the outer shell), and `if`/`then`/`!`/`{`
+    before a cd. `$NAME`/`${NAME}` in a target resolves from ``env`` (the
+    environment the command will run with) and from standalone literal
+    assignments earlier in the command (`W=sub; cd $W`), unless the
+    command may set NAME some other way (_shell_names_set_opaquely).
+    Unresolved: any other `$` form, an unset or opaquely set name, a
+    backquote, `cd -` with no earlier cd, `popd` on an empty stack,
+    `pushd +N`. CDPATH is not read (a relative cd is taken as relative to
+    the current directory).
+
+    One instance per pass over a command; the read scanner, the write
+    scanner and the script content scan each drive their own, so the three
+    agree on where a relative name lands. Rejected: three hand-kept
+    copies of this state machine, which is how `(cd /x && echo > f)` came
+    to be followed by none of them and `popd` by one.
+    """
+
+    def __init__(self, start: "Path | None", oldpwd: "Path | None" = None,
+                 env: "dict | None" = None, cmd: str = ""):
+        self.here = start
+        self.previous = _UNRESOLVED_DIR if oldpwd is None else oldpwd
+        self.stack: list = []
+        self.frames: list = []       # ("sub", saved state) | ("cmd"|"plain", None)
+        self.pending: "tuple | None" = None
+        self.visited: list = [start]
+        # Variables a cd target may name: the environment the command runs
+        # with (_scrubbed_bash_env) and the literal assignments seen so far
+        # (None = assigned something unknowable). Names the command may set
+        # any other way are never resolved (_shell_names_set_opaquely).
+        self.env = dict(env or {})
+        self.vars: dict = {}
+        self.tainted = _shell_names_set_opaquely(cmd) if env is not None else None
+
+    @property
+    def unresolved(self) -> bool:
+        return self.here == _UNRESOLVED_DIR
+
+    def _state(self) -> tuple:
+        return (self.here, self.previous, list(self.stack), dict(self.vars))
+
+    def _expand(self, text: str) -> "str | None":
+        """*text* with `$NAME` / `${NAME}` replaced, or None when any part
+        cannot be known: a substitution, another `$` form, a name the
+        command sets other than by a literal assignment, an unset name."""
+        if "`" in text or "$(" in text:
+            return None
+        if "$" not in text:
+            return text
+        if self.tainted is None:
+            return None
+        if "$" in _SHELL_VAR_REF.sub("", text):
+            return None              # ${X:-y}, $1, $?, ...
+        unknown = False
+
+        def _value(m: "re.Match") -> str:
+            nonlocal unknown
+            name = m.group(1) or m.group(2)
+            if self.tainted is _ALL_NAMES or name in self.tainted:
+                unknown = True
+                return ""
+            value = (self.vars[name] if name in self.vars
+                     else self.env.get(name))
+            if value is None:
+                unknown = True
+                return ""
+            return value
+
+        out = _SHELL_VAR_REF.sub(_value, text)
+        return None if unknown else out
+
+    def _assign(self, words: list) -> None:
+        """Record `NAME=literal` (also after `export`) as the shell will."""
+        if words and words[0] == "export":
+            words = words[1:]
+        for w in words:
+            m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", w, re.S)
+            if m:
+                self.vars[m.group(1)] = self._expand(m.group(2))
+
+    def _target(self, dest: str) -> "Path | None":
+        dest = _home_expanded(dest)
+        if "$" in dest:
+            dest = self._expand(dest)
+            if dest is None:
+                return _UNRESOLVED_DIR
+        if "`" in dest:
+            return _UNRESOLVED_DIR
+        dest = os.path.expanduser(dest)
+        if dest.startswith("/"):
+            return Path(dest)
+        if self.here == _UNRESOLVED_DIR:
+            return _UNRESOLVED_DIR
+        return Path(dest) if self.here is None else self.here / dest
+
+    def _go(self, target: "Path | None") -> None:
+        self.previous, self.here = self.here, target
+        self.visited.append(target)
+
+    def _follow(self, words: list) -> None:
+        name = Path(words[0]).name
+        args = [a for a in words[1:] if a == "-" or not a.startswith("-")]
+        if name == "popd":
+            self._go(self.stack.pop() if self.stack else _UNRESOLVED_DIR)
+            return
+        if name == "pushd":
+            if not args:
+                if self.stack:
+                    top = self.stack.pop()
+                    self.stack.append(self.here)
+                    self._go(top)
+                return
+            if args[0][:1] in "+" or (args[0][:1] == "-" and args[0] != "-"):
+                self._go(_UNRESOLVED_DIR)
+                return
+            self.stack.append(self.here)
+        if args and args[0] == "-":
+            self._go(self.previous)
+            return
+        self._go(self._target(args[0]) if args else
+                 Path(os.path.expanduser("~")))
+
+    def enter(self, segment: str, argv: list) -> tuple:
+        words = list(argv)
+        depth: list = []             # open substitutions before each word
+        # A here-document body is the program's input, not shell: its
+        # parentheses are code. Only the command line before it counts.
+        if re.search(r"<<(?!<)", segment):
+            segment = segment.split("\n", 1)[0]
+        if "(" in segment or ")" in segment:
+            try:
+                import shlex as _shlex
+                lx = _shlex.shlex(segment, posix=True, punctuation_chars="()")
+                lx.whitespace_split = True
+                toks = list(lx)
+            except ValueError:
+                toks = None
+            if toks is not None:
+                # The re-split words replace the caller's only when a
+                # subshell or substitution opens or closes here; a `(` in
+                # code (`print(x)`, a here-document line) leaves them as
+                # they were.
+                structural = False
+                words = []
+                for tok in toks:
+                    if tok and set(tok) <= {"(", ")"}:
+                        for ch in tok:
+                            if ch == "(":
+                                if words and words[-1].endswith("$"):
+                                    words[-1] = words[-1][:-1]
+                                    if not words[-1]:
+                                        words.pop()
+                                        depth.pop()
+                                    self.frames.append(("cmd", None))
+                                    structural = True
+                                elif all(w in _SHELL_LEAD_WORDS for w in words):
+                                    self.frames.append(("sub", self._state()))
+                                    structural = True
+                                else:
+                                    self.frames.append(("plain", None))
+                            elif self.frames:
+                                kind, saved = self.frames.pop()
+                                if kind == "sub":
+                                    self.pending = saved
+                                structural = structural or kind != "plain"
+                        continue
+                    words.append(tok)
+                    depth.append(sum(1 for k, _ in self.frames if k == "cmd"))
+                if not structural:
+                    words = list(argv)
+                    depth = []
+        if not depth:
+            inside = sum(1 for k, _ in self.frames if k == "cmd")
+            depth = [inside] * len(words)
+        lead = 0
+        while lead < len(words) and words[lead] in _SHELL_LEAD_WORDS:
+            lead += 1
+        i = lead
+        while i < len(words) and re.match(
+                r"^[A-Za-z_][A-Za-z0-9_]*=", words[i]):
+            i += 1
+        if (i < len(words) and depth[i] == 0
+                and Path(words[i]).name in _BASH_DIR_CHANGERS):
+            self._follow(words[i:])
+            return words, True
+        # `W=sub` or `export W=sub` on its own sets a shell variable; one
+        # in front of a program (`W=sub prog`) sets it for that program only.
+        rest = words[lead:]
+        if rest and rest[0] == "export":
+            rest = rest[1:]
+        if (rest and not any(depth[lead:]) and all(
+                re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w) for w in rest)):
+            self._assign(words[lead:])
+        return words, False
+
+    def leave(self) -> None:
+        if self.pending is not None:
+            self.here, self.previous, self.stack, self.vars = self.pending
+            self.pending = None
+
+    def command_dir(self, argv: list) -> "Path | None":
+        """Where this one command runs: ``here``, moved by its own `-C`."""
+        words = [w for w in argv
+                 if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
+        if not words:
+            return self.here
+        opts = _CHDIR_OPTIONS.get(Path(words[0]).name)
+        if not opts:
+            return self.here
+        prog = Path(words[0]).name
+        where = self.here
+        rest = words[1:]
+        k = 0
+        while k < len(rest):
+            w = rest[k]
+            dest = None
+            for opt in opts:
+                if w == opt and k + 1 < len(rest):
+                    dest = rest[k + 1]
+                    k += 1
+                elif w.startswith(opt + "=") and opt.startswith("--"):
+                    dest = w[len(opt) + 1:]
+                elif opt == "-C" and w.startswith("-C") and len(w) > 2:
+                    dest = w[2:]
+            k += 1
+            if dest is None:
+                if w in ("-c", "-u", "-f", "--file", "-I", "-o", "-W", "-S"):
+                    k += 1          # the option's own value
+                elif not w.startswith("-") and prog != "make" and prog != "gmake":
+                    break           # git's subcommand, env's program
+                continue
+            saved = self.here
+            self.here = where
+            where = self._target(dest)
+            self.here = saved
+        if where != self.here:
+            self.visited.append(where)
+        return where
+
+
+def _bash_visited_dirs(cmd: str, base: "str | Path") -> list:
+    """Every known directory a command runs a command in, ``base`` first.
+
+    For checks that look at the names in a command without pairing each
+    name with its command (the secret-link test, the locked scope's
+    symlink test): a relative name is tried in each of these, which can
+    only find more. Unresolvable directories are left out; the content
+    scan and the write scanner, which pair names with commands, handle
+    those. Never raises.
+    """
+    import shlex
+    start = Path(base)
+    walk = _ShellDirWalk(start, oldpwd=start, env=_scrubbed_bash_env(), cmd=cmd or "")
+    try:
+        for seg in _split_shell_segments(cmd or ""):
+            walk.leave()
+            try:
+                toks = shlex.split(seg)
+            except ValueError:
+                toks = seg.split()
+            toks, moved = walk.enter(seg, toks)
+            if not moved:
+                walk.command_dir(toks)
+    except Exception:
+        pass
+    out: list = []
+    for d in walk.visited:
+        if d is None or d == _UNRESOLVED_DIR:
+            continue
+        d = d if d.is_absolute() else start / d
+        if d not in out:
+            out.append(d)
+    return out or [start]
 
 
 def _is_system_path(word: str) -> bool:
@@ -1408,7 +1783,14 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
     except Exception:
         pass
     here: "Path | None" = Path(cwd) if cwd is not None else None
-    previous = here
+    # `cd -` before any cd stays where the command began, as it always did
+    # here; an unknown directory stops the resolving of relative names.
+    walk = _ShellDirWalk(here, oldpwd=here, env=_scrubbed_bash_env(), cmd=cmd)
+
+    def _known(where: "Path | None") -> "Path | None":
+        if where is None or where == _UNRESOLVED_DIR or not where.is_absolute():
+            return None
+        return where
 
     def _add(word: str) -> None:
         word = _home_expanded(word)
@@ -1425,6 +1807,77 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
             if not _read_exempt(full):
                 out.append(full)
 
+    def _segment_reads(argv: list, moved: bool) -> None:
+        if moved:
+            # The directory changed into is itself looked at.
+            words = [w for w in argv if w not in _SHELL_LEAD_WORDS
+                     and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
+            name = Path(words[0]).name
+            rest = [a for a in words[1:] if a == "-" or not a.startswith("-")]
+            if name == "popd" or (rest and rest[0] == "-") or (
+                    name == "pushd" and not rest):
+                return
+            dest = _home_expanded(rest[0]) if rest else "~"
+            target = walk.here
+            if target is None or target == _UNRESOLVED_DIR:
+                return
+            if dest.startswith("/") or dest.startswith("~"):
+                if not _read_exempt(os.path.expanduser(dest)):
+                    out.append(dest)
+            elif target.is_absolute() and not _read_exempt(str(target)):
+                out.append(str(target))
+            return
+        while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+            argv = argv[1:]
+        if not argv:
+            return
+        prog = Path(argv[0]).name
+        args = argv[1:]
+        # `sh -c "…"` runs a whole command line: judge that line too,
+        # from where this one is at that point.
+        if prog in _SHELL_PROGRAMS and "-c" in args and _depth < 3:
+            i = args.index("-c")
+            if i + 1 < len(args):
+                out.extend(_bash_outside_reads(
+                    args[i + 1], here, _depth + 1))
+            return
+        # Input redirection reads, whatever the program.
+        for i, a in enumerate(args):
+            if a == "<" and i + 1 < len(args):
+                _add(args[i + 1])
+            elif a.startswith("<") and not a.startswith("<<") and len(a) > 1:
+                _add(a[1:])
+        if prog in _BASH_NO_FILE_PROGRAMS:
+            return
+        skip_next = False
+        for i, a in enumerate(args):
+            if skip_next:
+                skip_next = False
+                continue
+            if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
+                skip_next = True    # the redirection's own target
+                continue
+            if (a.startswith("<") or a.startswith(">")
+                    or (a[:1] in "0123456789&" and ">" in a[:3])):
+                continue
+            if a.startswith("-"):
+                if "=" in a:
+                    _add(a.split("=", 1)[1])
+                continue
+            if prog == "dd" and a.startswith("if="):
+                _add(a[3:])
+                continue
+            if "=" in a.split("/")[0]:
+                continue
+            looks_like_path = ("/" in a or a.startswith("~")
+                               or a.startswith("$HOME")
+                               or a.startswith("${HOME}")
+                               or a in (".", "..")
+                               or prog in _BASH_CONTENT_READERS
+                               or prog in _BASH_DIR_LISTERS)
+            if looks_like_path:
+                _add(a)
+
     try:
         import shlex
         for segment in _shell_segments(cmd):
@@ -1435,74 +1888,16 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                 argv = shlex.split(segment, comments=True)
             except ValueError:
                 argv = [w.strip("\"'") for w in segment.split()]
-            while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
-                argv = argv[1:]
-            if not argv:
-                continue
-            prog = Path(argv[0]).name
-            args = argv[1:]
-            # `sh -c "…"` runs a whole command line: judge that line too,
-            # from where this one is at that point.
-            if prog in _SHELL_PROGRAMS and "-c" in args and _depth < 3:
-                i = args.index("-c")
-                if i + 1 < len(args):
-                    out.extend(_bash_outside_reads(
-                        args[i + 1], here, _depth + 1))
-                continue
-            if prog in _BASH_DIR_CHANGERS:
-                if "-" in args:
-                    here, previous = previous, here
-                    continue
-                dests = [a for a in args if not a.startswith("-")]
-                dest = _home_expanded(dests[0]) if dests else "~"
-                if dest.startswith("$"):
-                    here = None         # unknown: stop resolving relatives
-                    continue
-                target = (Path(os.path.expanduser(dest)) if
-                          (dest.startswith("/") or dest.startswith("~"))
-                          else (here / dest if here is not None else None))
-                if target is not None and not _read_exempt(str(target)):
-                    out.append(dest if (dest.startswith("/")
-                                        or dest.startswith("~"))
-                               else str(target))
-                previous, here = here, target
-                continue
-            # Input redirection reads, whatever the program.
-            for i, a in enumerate(args):
-                if a == "<" and i + 1 < len(args):
-                    _add(args[i + 1])
-                elif a.startswith("<") and not a.startswith("<<") and len(a) > 1:
-                    _add(a[1:])
-            if prog in _BASH_NO_FILE_PROGRAMS:
-                continue
-            skip_next = False
-            for i, a in enumerate(args):
-                if skip_next:
-                    skip_next = False
-                    continue
-                if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
-                    skip_next = True    # the redirection's own target
-                    continue
-                if (a.startswith("<") or a.startswith(">")
-                        or (a[:1] in "0123456789&" and ">" in a[:3])):
-                    continue
-                if a.startswith("-"):
-                    if "=" in a:
-                        _add(a.split("=", 1)[1])
-                    continue
-                if prog == "dd" and a.startswith("if="):
-                    _add(a[3:])
-                    continue
-                if "=" in a.split("/")[0]:
-                    continue
-                looks_like_path = ("/" in a or a.startswith("~")
-                                   or a.startswith("$HOME")
-                                   or a.startswith("${HOME}")
-                                   or a in (".", "..")
-                                   or prog in _BASH_CONTENT_READERS
-                                   or prog in _BASH_DIR_LISTERS)
-                if looks_like_path:
-                    _add(a)
+            argv, moved = walk.enter(segment, argv)
+            # `make -C d`, `env -C d`, `git -C d`: this command's relative
+            # names land in d; the next command is back in ``here``.
+            if not moved:
+                here = _known(walk.command_dir(argv))
+            try:
+                _segment_reads(argv, moved)
+            finally:
+                walk.leave()
+                here = _known(walk.here)
     except Exception:
         return out
     return out
@@ -2041,26 +2436,41 @@ def _bash_symlink_escapes(cmd: str, workspace: Path) -> list[str]:
         # A bare directory name has no slash, so the patterns above miss it.
         # `cd shared && cat x` needs no `..` and names nothing absolute, and
         # every command after it is then evaluated somewhere else entirely.
-        candidates += re.findall(r"(?:^|[;&|]\s*)cd\s+([^\s;&|<>]+)", text)
+        candidates += re.findall(
+            r"(?:^|[;&|(]\s*)(?:cd|pushd)\s+([^\s;&|<>()]+)", text)
+        # A relative name is opened where the shell is at that point:
+        # `cd sub && cat d/link` opens sub/d/link. Each directory the
+        # command moves into is tried (_bash_visited_dirs).
+        # Directories outside the folder are the absolute-path and `..`
+        # checks' to refuse; joining a name to one would report a plain
+        # outside file as a link.
+        bases = [b for b in _bash_visited_dirs(text, ws)
+                 if (os.path.normpath(str(b)) + "/").startswith(str(ws) + "/")]
+        bases = bases or [ws]
         for token in candidates:
             if token in seen:
                 continue
             seen.add(token)
             try:
                 raw = Path(token).expanduser()
-                joined = raw if raw.is_absolute() else (ws / raw)
-                if not (joined.exists() or joined.parent.exists()):
-                    continue
-                resolved = joined.resolve()
             except (OSError, RuntimeError):
                 continue
-            if str(resolved).startswith(_SYSTEM_PATH_PREFIXES):
-                continue
-            if _is_safe_device(resolved) or _is_safe_device(token):
-                continue
-            if resolved == ws or str(resolved).startswith(str(ws) + "/"):
-                continue
-            out.append(f"{token} -> {resolved}")
+            for base in ([ws] if raw.is_absolute() else bases):
+                try:
+                    joined = raw if raw.is_absolute() else (base / raw)
+                    if not (joined.exists() or joined.parent.exists()):
+                        continue
+                    resolved = joined.resolve()
+                except (OSError, RuntimeError):
+                    continue
+                if str(resolved).startswith(_SYSTEM_PATH_PREFIXES):
+                    continue
+                if _is_safe_device(resolved) or _is_safe_device(token):
+                    continue
+                if resolved == ws or str(resolved).startswith(str(ws) + "/"):
+                    continue
+                out.append(f"{token} -> {resolved}")
+                break
     except Exception:
         return out
     return out
@@ -2167,38 +2577,18 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # open direction, and "could not tell where this writes" is a
         # refusal, not a pass.
         here = None
-        previous = None
-        moved = False
-        _UNRESOLVED = Path("/<directory this command changed into could not be resolved>")
+        _env = _scrubbed_bash_env()
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
 
-        def _follow_cd(argv: list) -> None:
-            nonlocal here, previous, moved
-            if any(a == "-" for a in argv[1:]):
-                # `cd -` goes back: to a directory this walk knew, to the
-                # start directory (None, inside) -- or, before any cd in
-                # this command, to the SHELL's $OLDPWD, which nobody here
-                # knows. Only that last one is unresolved.
-                if not moved:
-                    here, previous = _UNRESOLVED, here
-                else:
-                    here, previous = previous, here
-                return
-            moved = True
-            args = [a for a in argv[1:] if not a.startswith("-")]
-            dest = os.path.expanduser(args[0]) if args else os.path.expanduser("~")
-            if "$" in dest or "`" in dest:
-                previous, here = here, _UNRESOLVED
-                return
-            if dest.startswith("/"):
-                target = Path(dest)
-            elif here is None:
-                # Relative to the gate's cwd: kept relative, so the caller
-                # resolves `sub/f` against its own base. Dropping it named
-                # `f` -- a different file -- and `cd .. && > f` an inside one.
-                target = Path(dest)
-            else:
-                target = here / dest
-            previous, here = here, target
+        def _enter(segment: str, argv: list) -> tuple:
+            """Follow one simple command (_ShellDirWalk). A subshell the
+            previous command closed is closed first, so `(cd /x) && > f`
+            writes where the command began. Returns (argv, moved)."""
+            nonlocal here
+            walk.leave()
+            argv, moved_ = walk.enter(segment, argv)
+            here = walk.here
+            return argv, moved_
 
         # Redirections: > file, >> file, 2> file, &> file (not >&1 / &2) --
         # per segment, so the directory a `cd` set applies to them.
@@ -2237,10 +2627,7 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 argv0 = shlex.split(seg, comments=True)
             except ValueError:
                 argv0 = seg.split()
-            while argv0 and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv0[0]):
-                argv0 = argv0[1:]
-            if argv0 and Path(argv0[0]).name in ("cd", "pushd"):
-                _follow_cd(argv0)
+            if _enter(seg, argv0)[1]:
                 continue
             for m in _redirect.finditer(seg):
                 if any(lo <= _off + m.start() < hi for lo, hi in _text):
@@ -2256,7 +2643,7 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 if not tok.startswith("&"):
                     _add(tok)
         here = None
-        previous = None
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
 
         # What an inline python payload would write.
         #
@@ -2281,9 +2668,8 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # Where that pairing cannot be made (the tokeniser fails, or the
         # counts differ) a command that contains a `cd` reports relative
         # targets as unresolved, so the gate refuses rather than guesses.
-        _moved_before = moved
-        here = previous = None
-        moved = False
+        here = None
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
         _c_dirs: list = []           # (payload, directory)
         _doc_dirs: list = []
         _paired = True
@@ -2301,24 +2687,22 @@ def _bash_write_targets(cmd: str) -> list[str]:
             else:
                 _cmds[-1].append(_t)
         for _argv in _cmds:
-            _words = list(_argv)
-            while _words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", _words[0]):
-                _words = _words[1:]
-            if not _words:
+            _, _mv = _enter(" ".join(_argv), list(_argv))
+            if _mv or not _argv:
                 continue
-            if Path(_words[0]).name in ("cd", "pushd"):
-                _follow_cd(_words)
-                continue
+            # `env -C d python3 -c …` starts the interpreter in d.
+            _where = walk.command_dir(_argv)
             for src in _inline_payload.extract_c_payloads(
                     shlex.join(_argv)) or []:
-                _c_dirs.append((src, here))
+                _c_dirs.append((src, _where))
             if (any(re.match(r"(?:[\w./~+-]*/)?python[0-9.]*$", w)
                     for w in _argv)
                     and any(w.startswith("<<") and not w.startswith("<<<")
                             for w in _argv)):
-                _doc_dirs.append(here)
-        _fallback = _UNRESOLVED if (
-            moved or re.search(r"(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)", cmd)) \
+                _doc_dirs.append(_where)
+        _fallback = _UNRESOLVED_DIR if (
+            len(walk.visited) > 1
+            or re.search(r"(?:^|[\s;&|(])(?:cd|pushd|popd)(?:\s|$)", cmd)) \
             else None
         _c_srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
         _docs = _inline_payload.extract_stdin_payloads(
@@ -2336,8 +2720,8 @@ def _bash_write_targets(cmd: str) -> list[str]:
             here = where
             for tok in _inline_payload.analyze_payload(src).writes:
                 _add(tok)
-        here = previous = None
-        moved = _moved_before
+        here = None
+        walk = _ShellDirWalk(None, env=_env, cmd=cmd)
 
         # Per shell segment: command name + arguments.
         for segment in re.split(r"[;&|]{1,2}|\n", cmd):
@@ -2350,6 +2734,9 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 argv = segment.split()
             if not argv:
                 continue
+            argv, _mv = _enter(segment, argv)
+            if _mv:
+                continue
             # Skip env-var prefixes (FOO=bar cmd ...).
             while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
                 argv = argv[1:]
@@ -2357,9 +2744,6 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 continue
             name = Path(argv[0]).name
             rest = argv[1:]
-            if name in ("cd", "pushd"):
-                _follow_cd(argv)
-                continue
 
             # `cd <dir> && ...` — the destination of the segment's writes.
             if name in ("dd",):
@@ -2800,6 +3184,22 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"(?=[^;|&]*\s(?:~|\$\{?HOME\}?|/))"
     r"(?=[^;|&]*\s-(?:delete\b|(?:exec|execdir|ok|okdir)\s+"
     r"(?:rm|rmdir|unlink|shred|truncate|dd)\b))",
+    # Reading the OS credential store, where DELFIN keeps API keys when
+    # agent.credentials.store selects it. The keyring is read by the DELFIN
+    # process only; a command that prints an entry hands the key to the
+    # transcript. Command position for the CLIs (a grep for the word
+    # stays free), anywhere for the Python call and the D-Bus service name.
+    # Not a boundary on its own: the sandbox unsets DBUS_SESSION_BUS_ADDRESS
+    # and the socket guard refuses the bus socket; an obfuscated python -c
+    # is caught there, not here.
+    r"""(?:^|[;|&`(])[\s'\"]*(?:sudo\s+)?(?:/\S*/)?"""
+    r"(?:secret-tool\s+(?:lookup|search)|"
+    r"security\s+(?:find-(?:generic|internet)-password|dump-keychain)|"
+    r"keyring\s+get)\b",
+    r"\bpython[\w.]*\s+(?:-\S+\s+)*-m\s+keyring\b",
+    r"\bkeyring\s*\.\s*get_(?:password|credential)\b",
+    r"\borg\.freedesktop\.secrets\b",
+    r"\bGet-StoredCredential\b",
 )
 
 # Bash patterns that are auto-approved in mode="default" without callback.
@@ -3066,9 +3466,11 @@ _MCP_BASH_TOOL_BASES: frozenset[str] = frozenset({
 _MCP_BASH_CMD_KEYS: tuple[str, ...] = ("command", "cmd", "script", "code")
 
 # `git push` in a shell command, with any `-C dir` / `-c k=v` / `--flag`
-# ahead of the subcommand.
+# ahead of the subcommand. Each option has exactly one parse: a second
+# `\s+-c\s+\S+` alternative (already inside `-[Cc]`) gave every `-c` two,
+# and `git -c ! -c ! ...` without `push` took 2**n steps to reject.
 _GIT_PUSH_RE = re.compile(
-    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+|\s+-c\s+\S+"
+    r"(?:^|[\s;&|(`])(?:\S*/)?git(?:\s+-[Cc]\s+\S+"
     r"|\s+--[\w-]+(?:=\S+)?)*\s+push\b")
 # A user message that asks for a push ("push", "pushen", "puschen"), and
 # one that says not to. The word alone was the test once, and "der Push
@@ -3142,7 +3544,7 @@ _GIT_PROGRAM_CONFIG_KEY_RE = re.compile(
     r"|diff\.external|diff\..+\.(?:textconv|command)"
     r"|filter\..+\.(?:clean|smudge|process)|merge\..+\.driver"
     r"|(?:difftool|mergetool)\..+\.cmd|interactive\.difffilter"
-    r"|remote\..+\.(?:uploadpack|receivepack)"
+    r"|remote\..+\.(?:uploadpack|receivepack)|submodule\..+\.update"
     r"|pager\..+|alias\..+|include\.path|includeif\..+\.path)")
 #: ``pager.<cmd>`` takes a boolean as well as a program.
 _GIT_BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "on", "off",
@@ -3164,12 +3566,16 @@ def _git_value_runs(key: str, value: Optional[str]) -> bool:
 
     ``value`` None means unknown and counts as a program. An alias runs a
     program when it starts with ``!`` or carries ``-c``/``--config-env``
-    with a program key; ``pager.<cmd>`` not when it is a boolean."""
+    with a program key; ``pager.<cmd>`` not when it is a boolean;
+    ``submodule.<name>.update`` only as ``!<command>`` (``git submodule
+    update`` runs it; checkout/rebase/merge/none run nothing)."""
     k = key.lower()
     if not _GIT_PROGRAM_CONFIG_KEY_RE.fullmatch(k):
         return False
     if value is None:
         return True
+    if k.startswith("submodule."):
+        return value.lstrip().startswith("!")
     if k.startswith("alias."):
         v = value.lstrip()
         return v.startswith("!") or bool(
@@ -3226,6 +3632,31 @@ def _git_one_command_program_key(words: list) -> Optional[str]:
     return None
 
 
+#: ``git config`` options that take the next word as their value.
+_GIT_CONFIG_OPTS_WITH_VALUE = frozenset({"-f", "--file", "--blob", "--type",
+                                         "--default", "--comment",
+                                         "--value", "--url"})
+
+
+def _git_config_opens_an_editor(words: list) -> bool:
+    """Whether the words after ``git config`` open the file in an editor:
+    ``-e``/``--edit`` anywhere, or ``edit`` as the subcommand (the first
+    word that is neither an option nor an option's value)."""
+    if "-e" in words or "--edit" in words:
+        return True
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in _GIT_CONFIG_OPTS_WITH_VALUE:
+            i += 2
+            continue
+        if w.startswith("-"):
+            i += 1
+            continue
+        return w == "edit"
+    return False
+
+
 def _git_program_config_write(cmd: str) -> Optional[str]:
     """The key, when ``cmd`` sets a git configuration key whose value git
     later runs as a program (``_GIT_PROGRAM_CONFIG_KEY_RE``); else None.
@@ -3240,10 +3671,11 @@ def _git_program_config_write(cmd: str) -> Optional[str]:
     Commit messages are blanked first (``_prose_blanked``); ``sh -c``
     bodies are read too.
 
-    Not seen: a key spelled through a variable (``git config "$k" x``), a
-    configuration file written by other means than ``git config``
-    (``.git/config`` is a deny path; ``~/.gitconfig`` or a file later
-    named by ``GIT_CONFIG_GLOBAL`` is not), and ``git config --edit``.
+    ``git config --edit``/``-e``/``edit`` (any file) counts as a program
+    key: the editor can write any key. A configuration file written by
+    other means is ``_is_git_configuration_file``'s.
+
+    Not seen: a key spelled through a variable (``git config "$k" x``).
     Rejected: asking for every ``git config`` write -- ``user.*``,
     ``color.*``, ``branch.*`` are the common writes and run nothing.
     Cost: one regex scan and one ``shlex.split`` per command."""
@@ -3256,6 +3688,8 @@ def _git_program_config_write(cmd: str) -> Optional[str]:
             words = m.group(1).split()
         if _GIT_CONFIG_READ_WORDS & set(words):
             continue
+        if _git_config_opens_an_editor(words):
+            return "--edit"
         for i, w in enumerate(words):
             if i + 1 < len(words) and _git_value_runs(w, words[i + 1]):
                 return w
@@ -3747,13 +4181,14 @@ def _steer_label(text: str) -> str:
     return "💬 [you, mid-run]: "
 
 
-def _links_to_a_secret(perms: Any, rel: str) -> bool:
-    """Whether the workspace-relative token *rel* is, or passes through, a
-    symlink that ends at a secret -- a file on the deny list, or a
-    directory that holds one (a link to ~/.ssh itself). Never raises;
-    a token that is not an existing path is not a link."""
+def _links_to_a_secret(perms: Any, rel: str, base: Any = None) -> bool:
+    """Whether the token *rel*, relative to *base* (default: the
+    workspace), is or passes through a symlink that ends at a secret -- a
+    file on the deny list, or a directory that holds one (a link to ~/.ssh
+    itself). Never raises; a token that is not an existing path is not a
+    link."""
     try:
-        base = Path(perms.workspace)
+        base = Path(base if base is not None else perms.workspace)
         p = base / rel
         if not (p.is_symlink() or os.path.lexists(p)):
             return False
@@ -5681,7 +6116,29 @@ def _mcp_call_refusal(fn_name: str, fn_args: dict,
     if hook_block is not None:
         return json.dumps({"error": "blocked_by_hook",
                            "reason": hook_block[:1200]})
-    gate_block = _doc_executor._gate_mcp_tool(fn_name, fn_args, permissions)
+    # The user's permission rules, as at execute(): deny refuses, ask asks,
+    # and the call is bound for the allow answers inside the gate.
+    asked = False
+    rule_hit = (_permission_rule_hit(permissions, fn_name, fn_args)
+                if fn_name.startswith("mcp__") else None)
+    if rule_hit is not None and rule_hit[0] == "deny":
+        _record_security_event("permission_rule_deny", fn_name,
+                               rule_hit[1].text[:120])
+        return json.dumps({"error": _permission_rule_deny_text(
+            fn_name, rule_hit[1])})
+    if rule_hit is not None:
+        refusal = _doc_executor._ask_by_rule(permissions, fn_name,
+                                             fn_args, rule_hit[1])
+        if refusal is not None:
+            return json.dumps({"error": refusal})
+        asked = True
+    token = _RULE_CALL.set({"name": fn_name, "args": fn_args,
+                            "asked": asked})
+    try:
+        gate_block = _doc_executor._gate_mcp_tool(
+            fn_name, fn_args, permissions)
+    finally:
+        _RULE_CALL.reset(token)
     if gate_block is not None:
         return json.dumps({"error": gate_block})
     return None
@@ -6204,6 +6661,123 @@ def _tool_denied_for_session(
     return _session_tool_refusal(name, allowed, denied)
 
 
+# --- Structured permission rules (permission_rules.py) ----------------------
+# deny and ask are decided once per call at the entry points (execute,
+# _mcp_call_refusal, cli_gate.decide); a deny on a path a tool resolves
+# itself is re-checked in _check_read_access and _gate_write_path. allow is
+# consulted only where the gate would otherwise ask (_rule_answers), so it
+# cannot reach a refusal that comes before that point.
+#
+# The call being decided, for _rule_answers: {"name", "args", "asked"}.
+# "asked" is True when an ask rule already put THIS call to the user and
+# they approved it, so the ordinary dialog for the same call is not raised
+# a second time. Set around one dispatch and reset after it; a nested
+# execute() sets its own. A worker thread sees None, which answers nothing.
+_RULE_CALL: "_contextvars.ContextVar[Optional[dict]]" = (
+    _contextvars.ContextVar("delfin_permission_rule_call", default=None))
+
+
+def _permission_rules(perms):
+    """(module, RuleSet) for ``perms``' workspace, or (None, None)."""
+    try:
+        from . import permission_rules as _pr
+        return _pr, _pr.load(getattr(perms, "workspace", None))
+    except Exception:
+        return None, None
+
+
+def _permission_rule_hit(perms, name: str, args: dict):
+    """("deny"|"ask", Rule) for this call, or None."""
+    if perms is None:
+        return None
+    pr, rs = _permission_rules(perms)
+    if rs is None:
+        return None
+    try:
+        return pr.friction(rs, name, args if isinstance(args, dict) else {},
+                           perms.workspace)
+    except Exception:
+        return None
+
+
+def _rule_source(rule) -> str:
+    return str(getattr(rule, "source", "") or "the settings file")
+
+
+def _permission_rule_deny_text(name: str, rule) -> str:
+    return (f"'{_bare_tool_name(name)}' is refused by the permission rule "
+            f"`{rule.text}` (deny, {_rule_source(rule)}). The rules are the "
+            "user's and cannot be changed from inside the session. Do not "
+            "reach the same effect another way; tell the user what you "
+            "needed it for.")
+
+
+def _rule_denies_path(perms, kind: str, path) -> Optional[str]:
+    """The refusal for a deny rule on a path a tool resolved, or None."""
+    pr, rs = _permission_rules(perms)
+    if rs is None or not rs.deny:
+        return None
+    try:
+        rule = pr.denies_path(rs, kind, path, perms.workspace)
+    except Exception:
+        return None
+    if rule is None:
+        return None
+    _record_security_event("permission_rule_deny", kind,
+                           f"{rule.text}: {path}"[:160])
+    return (f"{kind} denied: '{path}' is refused by the permission rule "
+            f"`{rule.text}` (deny, {_rule_source(rule)}), in every mode and "
+            "whatever is approved. Do not reach it through another tool.")
+
+
+def _rule_answers(perms, site: str, name: str, target=None) -> Optional[str]:
+    """The rule that answers the question at ``site`` for the call being
+    decided, or None to ask as before.
+
+    Called only at a point where the gate would put a question to the user
+    (or refuse because nobody can be asked): the ordinary command dialog
+    ("bash"), a read outside the roots ("read"), the default-mode write
+    dialog ("write") and a side-effecting MCP tool ("tool"). Every hard
+    refusal of those paths comes before these points. A site answers only
+    for a call of its own kind, so an allowed command answers no read
+    question it raises, and a sub-agent call answers nothing for its
+    children."""
+    call = _RULE_CALL.get()
+    if call is None or perms is None:
+        return None
+    cname = str(call.get("name") or "")
+    bare = _bare_tool_name(cname)
+    try:
+        from . import permission_rules as _pr
+    except Exception:
+        return None
+    shell = bare in ("bash", "bash_background")
+    if site == "bash" and not shell:
+        return None
+    if site == "read" and (shell or bare in _pr.WRITE_TOOLS):
+        return None
+    if site == "write" and bare not in _pr.WRITE_TOOLS:
+        return None
+    if site == "tool" and cname != name:
+        return None
+    if call.get("asked"):
+        return "the ask rule the user approved for this call"
+    _, rs = _permission_rules(perms)
+    if rs is None:
+        return None
+    try:
+        rule = _pr.allows(rs, site, cname, call.get("args") or {},
+                          perms.workspace, target)
+    except Exception:
+        return None
+    if rule is None:
+        return None
+    _record_security_event("permission_rule_allow", bare,
+                           f"{rule.text}: {target or ''}"[:160],
+                           blocked=False)
+    return rule.text
+
+
 def unknown_tool_names(
     names: Any, tools: Optional[list[dict[str, Any]]] = None
 ) -> list[str]:
@@ -6443,6 +7017,173 @@ _GIT_CONFIG_PROTECTED_GLOBS: tuple[str, ...] = (
     ".git", "**/.git",
     "HEAD", "**/HEAD",
 )
+
+#: Keys whose value names another file git reads: as configuration
+#: (include paths) or as attributes (``core.attributesFile``, which
+#: selects filter and diff drivers). Lower-cased, as git compares them.
+_GIT_FILE_NAMING_KEY_RE = re.compile(
+    r"include\.path|includeif\..+\.path|core\.attributesfile")
+_GIT_CONFIG_SECTION_RE = re.compile(
+    r'^\[\s*([A-Za-z0-9.-]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\](.*)$')
+_GIT_INCLUDE_DEPTH = 10
+
+
+def _git_config_value(raw: str) -> str:
+    """A configuration value as git reads it: double quotes removed,
+    ``\\``-escapes taken literally, ``#``/``;`` outside quotes end it."""
+    out: list = []
+    quoted = False
+    i = 0
+    while i < len(raw):
+        c = raw[i]
+        if c == "\\" and i + 1 < len(raw):
+            out.append(raw[i + 1])
+            i += 2
+            continue
+        if c == '"':
+            quoted = not quoted
+        elif c in "#;" and not quoted:
+            break
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out).strip()
+
+
+def _git_config_file_naming_entries(path: str) -> list:
+    """``(key, value)`` for every ``_GIT_FILE_NAMING_KEY_RE`` key in one
+    configuration file; empty when it cannot be read. Continuation lines
+    are not joined (git allows them; a path value does not need one)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read(1 << 20)
+    except OSError:
+        return []
+    section = ""
+    found: list = []
+    for line in text.splitlines():
+        s = line.strip()
+        m = _GIT_CONFIG_SECTION_RE.match(s)
+        if m:
+            name, sub, rest = m.groups()
+            section = name.lower() + (f".{sub}" if sub is not None else "")
+            s = rest.strip()
+        if not s or s[0] in "#;" or not section:
+            continue
+        name, eq, value = s.partition("=")
+        key = f"{section}.{name.strip()}".lower()
+        if eq and _GIT_FILE_NAMING_KEY_RE.fullmatch(key):
+            found.append((key, _git_config_value(value)))
+    return found
+
+
+def _enclosing_git_dir(path: Path) -> Optional[str]:
+    """The git directory of the repository whose work tree holds ``path``:
+    the nearest ``.git`` directory above it, or the directory a ``.git``
+    file (``gitdir: <dir>``) names. None outside any repository."""
+    d = path.parent
+    for _ in range(64):
+        dot = d / ".git"
+        try:
+            if dot.is_dir():
+                return str(dot)
+            if dot.is_file():
+                with open(dot, "r", encoding="utf-8", errors="replace") as fh:
+                    head = fh.read(4096).strip()
+                if head.startswith("gitdir:"):
+                    g = Path(head[len("gitdir:"):].strip())
+                    return str(g if g.is_absolute() else d / g)
+                return None
+        except OSError:
+            return None
+        if d.parent == d:
+            return None
+        d = d.parent
+    return None
+
+
+def _git_configuration_files(workspace, target: Optional[Path] = None) -> set:
+    """Absolute paths (as named and as resolved) of the files git reads as
+    configuration or attributes for a command in ``workspace``, outside
+    the work-tree names ``_GIT_CONFIG_PROTECTED_GLOBS`` matches.
+
+    Seeds: ``GIT_CONFIG_GLOBAL``, ``GIT_CONFIG_SYSTEM``, ``GIT_CONFIG``,
+    ``~/.gitconfig``, ``$XDG_CONFIG_HOME/git/config`` and ``attributes``
+    (``~/.config`` when unset), ``/etc/gitconfig``, and ``config``,
+    ``config.worktree`` and ``info/attributes`` of the workspace's git
+    directories and of the repository enclosing ``target``. Each
+    configuration file is read for ``include.path``,
+    ``includeIf.<cond>.path`` (relative to the including file, as named
+    and as resolved through a symlink) and ``core.attributesFile``
+    (relative to the workspace), to depth ``_GIT_INCLUDE_DEPTH``. Every
+    seed counts whether or not it exists or git would read it now (the
+    environment of a later command may differ); ``includeIf`` is followed
+    whatever its condition.
+
+    Cost: measured 0.26 ms per write-gate call for a home with two
+    include levels and no repository (stat and read of a few small
+    files, plus the cached ``git rev-parse`` of ``_git_metadata_roots``);
+    reads and the schema are untouched. Rejected: ``git config
+    --list --show-origin`` -- a subprocess per write, and it follows
+    ``includeIf`` only where the condition holds now."""
+    home = Path.home()
+    env = os.environ
+    xdg = Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "git"
+    configs: list = [str(home / ".gitconfig"), str(xdg / "config"),
+                     "/etc/gitconfig"]
+    plain: list = [str(xdg / "attributes")]
+    for var in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG"):
+        v = env.get(var)
+        if v and v != "/dev/null":
+            configs.append(os.path.expanduser(v))
+    git_dirs = list(_git_metadata_roots(workspace))
+    if target is not None:
+        g = _enclosing_git_dir(target)
+        if g:
+            git_dirs.append(g)
+    for g in git_dirs:
+        configs += [os.path.join(g, "config"),
+                    os.path.join(g, "config.worktree")]
+        plain.append(os.path.join(g, "info", "attributes"))
+    seen: set = set()
+    queue = [(c, 0) for c in configs]
+    while queue:
+        cfg, depth = queue.pop()
+        cfg = os.path.abspath(cfg)
+        if cfg in seen:
+            continue
+        seen.add(cfg)
+        if depth >= _GIT_INCLUDE_DEPTH:
+            continue
+        bases = {os.path.dirname(cfg),
+                 os.path.dirname(os.path.realpath(cfg))}
+        for key, value in _git_config_file_naming_entries(cfg):
+            if not value:
+                continue
+            value = os.path.expanduser(value)
+            if key == "core.attributesfile":
+                plain.append(os.path.join(str(workspace), value))
+                continue
+            for b in bases:
+                queue.append((os.path.join(b, value), depth + 1))
+    out: set = set()
+    for p in list(seen) + plain:
+        p = os.path.abspath(p)
+        out.add(p)
+        out.add(os.path.realpath(p))
+    return out
+
+
+def _is_git_configuration_file(resolved: Path, workspace) -> bool:
+    """Whether a write to ``resolved`` writes a file git reads as
+    configuration or attributes (``_git_configuration_files``). Never
+    raises; an error answers False and leaves the other gates."""
+    try:
+        files = _git_configuration_files(workspace, resolved)
+        p = os.path.abspath(str(resolved))
+        return p in files or os.path.realpath(p) in files
+    except Exception:
+        return False
 
 _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/api_client.py",
@@ -6896,6 +7637,10 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # The watcher's health for the whole session (not per turn):
+    # consecutive failed model calls, down/up, last failure, pending user
+    # notices. See _watcher_record.
+    classifier_health: dict = field(default_factory=dict)
     # Skill name -> the user's own words, for the turn that opened with
     # the user correcting a skill the turn before it used. Set by the
     # engine (_note_skill_correction), read by skill_propose_patch.
@@ -7571,16 +8316,239 @@ class KitToolPermissions:
         return False
 
 
+# Blanking of sed regex bodies, in linear time.
+#
+# The three substitutions below replace these patterns, applied with
+# re.sub in this order:
+#
+#   s:  (?<![\w])s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1([a-zA-Z0-9]*)
+#         -> " s " + flags
+#   /:  /(?:\\.|[^/])*/                  -> " "
+#   \c: \\(.)(?:\\.|(?!\1).)*\1          -> " "
+#
+# Each body loop reads a backslash both as the start of an escape and as
+# a plain character, so ``\a\a\a...`` has 2**n parses, and a body with no
+# closing delimiter took 2**n steps to reject (code scanning py/redos;
+# 30 repetitions held the gate for minutes). An unambiguous rewrite such
+# as (?:\\.|[^\\D])* rejects quickly but ends some bodies elsewhere:
+# ``s/x\\/y/z/`` is s|x\\|y|z under the old pattern and s|x\\/y|z| under
+# the rewrite, which changes what the gate blanks. The functions below
+# reproduce the old pattern's choice exactly.
+#
+# Which end the old pattern chooses. Python's engine tries the parses
+# depth first, escape before plain character, and returns the first whose
+# continuation succeeds; whether a continuation succeeds depends only on
+# the position the body ends at, so revisiting a position never changes
+# the answer, and the order of FIRST visits decides. Following that order
+# with the greedy tokenisation g (escape whenever the next character is
+# not a newline; terminal at the first unescaped D, a newline the body
+# cannot hold, or the end), the candidate ends -- all positions of D, as
+# the continuation starts with D -- are tried in this order:
+#
+#   1. the terminal of g, if it is D;
+#   2. if g's last token is an escaped backslash and the terminal is D:
+#      every candidate of a body starting just after that D (the parse
+#      reading ``\`` + ``\D`` instead of ``\\`` + ``D``), recursively;
+#   3. each D inside g, last first. Every D before the terminal is the
+#      second character of an escape token (a D at a token start would
+#      be the terminal), and reading that backslash as a plain character
+#      ends the body at the D.
+#
+# When D is the backslash, a backslash is never a plain character, so 2.
+# and 3. do not exist; instead the body may stop at the start of each
+# escape token on g (stopping is tried after escaping), last first.
+#
+# Every other node of the search tree is a position already visited or a
+# character that is not D. For the single-body patterns the first
+# candidate always succeeds; ``s///`` needs the second body to close too.
+# Cost: one regex walk (C speed) per body start, memoised per delimiter.
+# Equivalence with the old patterns is asserted on every string literal
+# in tests/, every string of length <= 7 over s / \ a newline x, and
+# 60000 random strings (tests/test_gate_patterns_finish_in_linear_time.py).
+
+_SED_WORD_CHAR_RE = re.compile(r"\w")
+_SED_FLAGS_RE = re.compile(r"[a-zA-Z0-9]*")
+_SED_ESCAPE_RE = re.compile(r"\\[^\n]")
+
+
+class _SedBody:
+    """Delimited sed bodies with delimiter *delim* in *text*.
+
+    ``end(start)`` is where the old pattern's single body
+    ``(?:\\.|(?!D).)*`` (``(?:\\.|[^/])*`` with *newline_plain*) followed
+    by D closes when it starts at *start*, or -1. ``ends(start)`` yields
+    the candidate ends of the first ``s`` body in the old pattern's
+    order."""
+
+    def __init__(self, text: str, delim: str, newline_plain: bool = False):
+        self.text = text
+        self.delim = delim
+        plain = "\\\\" + ("" if newline_plain else "\\n") + re.escape(delim)
+        # Escape, plain character, and (unless the backslash is the
+        # delimiter) a backslash that cannot escape. The three are
+        # disjoint, so the loop has one parse; group 1 is the last token.
+        bare = "" if delim == "\\" else r"|\\(?=\n|\Z)"
+        self._token = re.compile(r"(?:(\\[^\n])|[^" + plain + "]" + bare + ")*")
+        self._end: dict[int, int] = {}
+
+    def _walk(self, start: int) -> tuple[int, int, bool]:
+        """(terminal, start of the last escape token or -1, whether the
+        last token is an escaped backslash)."""
+        m = self._token.match(self.text, start)
+        stop = m.end()
+        return stop, m.start(1), m.end(1) == stop and m.group(1) == "\\\\"
+
+    def end(self, start: int) -> int:
+        hit = self._end.get(start)
+        if hit is None:
+            stop, last_escape, _ = self._walk(start)
+            text, delim = self.text, self.delim
+            if stop < len(text) and text[stop] == delim:
+                hit = stop
+            elif delim != "\\":
+                hit = text.rfind(delim, start, stop)
+            else:
+                # The delimiter is the backslash: the body may stop at any
+                # escape token's start, the last one first.
+                hit = last_escape
+            self._end[start] = hit
+        return hit
+
+    def ends(self, start: int):
+        text, delim = self.text, self.delim
+        regions = []
+        while True:
+            stop, _, last_is_backslash = self._walk(start)
+            closed = stop < len(text) and text[stop] == delim
+            if closed:
+                yield stop
+            regions.append((start, stop))
+            if closed and delim != "\\" and last_is_backslash:
+                start = stop + 1
+                continue
+            break
+        if delim == "\\":
+            # Every escape token starts with the delimiter; stopping there
+            # is tried after the escape, the last token first.
+            low, stop = regions[0]
+            starts = [m.start() for m in _SED_ESCAPE_RE.finditer(text, low, stop)]
+            yield from reversed(starts)
+            return
+        while regions:
+            low, pos = regions.pop()
+            while True:
+                pos = text.rfind(delim, low, pos)
+                if pos < 0:
+                    break
+                yield pos
+
+
+def _line_end(text: str, pos: int) -> int:
+    nl = text.find("\n", pos)
+    return len(text) if nl < 0 else nl
+
+
+def _sed_blank_substitutions(text: str) -> str:
+    """``re.sub(<s pattern above>, lambda m: " s " + m.group(2), text)``.
+    A start needs two delimiters before the line ends; with two, the old
+    pattern always matched (the first is reachable by plain characters,
+    the second likewise), so the check only skips hopeless starts."""
+    out: list[str] = []
+    bodies: dict[str, _SedBody] = {}
+    n, last, i, nl = len(text), 0, 0, -1
+    while True:
+        i = text.find("s", i)
+        if i < 0 or i + 1 >= n:
+            break
+        delim = text[i + 1]
+        if delim == "\n" or (i and _SED_WORD_CHAR_RE.match(text[i - 1])):
+            i += 1
+            continue
+        if nl < i + 2:
+            nl = _line_end(text, i + 2)
+        first = text.find(delim, i + 2, nl)
+        if first < 0 or text.find(delim, first + 1, nl) < 0:
+            i += 1
+            continue
+        body = bodies.get(delim)
+        if body is None:
+            body = bodies[delim] = _SedBody(text, delim)
+        close = -1
+        for mid in body.ends(i + 2):
+            close = body.end(mid + 1)
+            if close >= 0:
+                break
+        if close < 0:
+            i += 1
+            continue
+        flags = _SED_FLAGS_RE.match(text, close + 1)
+        out.append(text[last:i])
+        out.append(" s " + flags.group())
+        last = i = flags.end()
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _sed_blank_slash_regexes(text: str) -> str:
+    """``re.sub(r"/(?:\\.|[^/])*/", " ", text)``."""
+    out: list[str] = []
+    body = _SedBody(text, "/", newline_plain=True)
+    last = i = 0
+    while True:
+        i = text.find("/", i)
+        if i < 0:
+            break
+        close = body.end(i + 1)
+        if close < 0:
+            i += 1
+            continue
+        out.append(text[last:i])
+        out.append(" ")
+        last = i = close + 1
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _sed_blank_custom_regexes(text: str) -> str:
+    """``re.sub(r"\\\\(.)(?:\\\\.|(?!\\1).)*\\1", " ", text)``: sed's
+    ``\\cREGEXc`` address. A start needs its delimiter before the line
+    ends; with one, the old pattern always matched."""
+    out: list[str] = []
+    bodies: dict[str, _SedBody] = {}
+    n, last, i, nl = len(text), 0, 0, -1
+    while True:
+        i = text.find("\\", i)
+        if i < 0 or i + 1 >= n:
+            break
+        delim = text[i + 1]
+        if nl < i + 2:
+            nl = _line_end(text, i + 2)
+        if delim == "\n" or text.find(delim, i + 2, nl) < 0:
+            i += 1
+            continue
+        body = bodies.get(delim)
+        if body is None:
+            body = bodies[delim] = _SedBody(text, delim)
+        close = body.end(i + 2)
+        if close < 0:
+            i += 1
+            continue
+        out.append(text[last:i])
+        out.append(" ")
+        last = i = close + 1
+    out.append(text[last:])
+    return "".join(out)
+
+
 def _sed_script_writes(cmd: str) -> bool:
     """True when a sed script in *cmd* holds a command that writes a file
     or runs one: ``w``/``W`` (write), ``e`` (execute), or the ``s///w``
     and ``s///e`` flags. Regex bodies are blanked first, so a letter in a
     pattern (``/wait/p``) is not read as a command."""
     body = re.sub(r"^\s*sed\b", "", cmd, count=1)
-    body = re.sub(r"(?<![\w])s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1([a-zA-Z0-9]*)",
-                  lambda m: " s " + m.group(2), body)
-    body = re.sub(r"/(?:\\.|[^/])*/", " ", body)
-    body = re.sub(r"\\(.)(?:\\.|(?!\1).)*\1", " ", body)
+    body = _sed_blank_substitutions(body)
+    body = _sed_blank_slash_regexes(body)
+    body = _sed_blank_custom_regexes(body)
     # A flag set after s///, or a command letter standing alone.
     if re.search(r"\bs [a-zA-Z0-9]*[we]", body):
         return True
@@ -11666,6 +12634,36 @@ def _record_security_event(kind: str, tool: str, detail: str,
         pass
 
 
+def _report_file_changed(path) -> None:
+    """Tell the turn observers a write tool changed ``path``. Never raises.
+
+    Called from the change capture every write tool goes through, so the
+    headless ``files_changed`` lists what the undo journal can see; a file
+    a shell command writes is in neither.
+    """
+    try:
+        from . import turn_outcome
+        turn_outcome.file_changed(str(path))
+    except Exception:
+        pass
+
+
+def _record_gate_refusal(code: str, tool: str, detail: str) -> None:
+    """Report a refusal the containment panel does not record.
+
+    ``code`` is one of ``turn_outcome.LOCAL_REASON_CODES`` (or an existing
+    containment kind the panel deliberately skips at this site). Reaches
+    only the turn observers -- the headless result and stream-json --
+    never the panel or the attention inbox, where a plan-mode refusal is
+    routine noise. Best-effort: never affects the gate's decision.
+    """
+    try:
+        from . import turn_outcome
+        turn_outcome.denied(tool, code, detail)
+    except Exception:
+        pass
+
+
 # --- The action classifier: a model's second opinion behind the rules -------
 # The rules decide first and alone. This runs only where they let an action
 # through that NO HUMAN SAW (Bypass, the bash auto-allow list, an
@@ -11677,6 +12675,175 @@ _CLASSIFIER_TIMEOUT_S = 20.0
 _CLASSIFIER_REFUSALS_PER_TURN = 3
 _CLASSIFIED_NETWORK_TOOLS = frozenset({
     "web_fetch", "remote_trigger", "push_notification"})
+
+# The watcher failing. A model error is retried once after this pause (a
+# dropped connection, a 502 from the proxy); a timeout is not, it has
+# already cost _CLASSIFIER_TIMEOUT_S. After _CLASSIFIER_BREAKER_FAILURES
+# consecutive failed model calls in a session the watcher is "down": the
+# user is told once, and the model is probed at most once per
+# _CLASSIFIER_PROBE_INTERVAL_S until it answers. Counted per model call,
+# not per action: a skipped call while down is not new evidence.
+_CLASSIFIER_RETRY_DELAY_S = 0.5
+_CLASSIFIER_BREAKER_FAILURES = 3
+_CLASSIFIER_PROBE_INTERVAL_S = 60.0
+_classifier_clock = time.monotonic
+
+# Commands that reach the network or another machine with no operator a
+# text gate can see. Several are on the default auto-allow list (git
+# fetch/pull); they are what "leaves the workspace" means for a command
+# outside Bypass.
+_LEAVING_BASH = re.compile(r"""(?x)
+    (?:^|[\s;&|(`])
+    (?:git\s+(?:-[Cc]\s+\S+\s+)*
+         (?:fetch|pull|clone|push|ls-remote|submodule|remote\s+update)\b
+     | curl\b | wget\b | ssh\b | scp\b | sftp\b | rsync\b | nc\b | ncat\b
+     | telnet\b | ftp\b | gh\b | huggingface-cli\b
+     | pip3?\s+(?:install|download)\b
+     | python\S*\s+-m\s+pip\s+(?:install|download)\b
+     | (?:conda|mamba|micromamba)\s+(?:install|create|update)\b)
+""")
+
+# Gated tools that run inside the workspace and send nothing out; under
+# Bypass they reach the second opinion with every other gated tool.
+_WORKSPACE_LOCAL_TOOLS = frozenset({"run_tests", "make_plot"})
+
+
+def _leaves_workspace(
+    perms: "KitToolPermissions", action: dict, bypass: bool,
+) -> bool:
+    """Whether *action* reaches beyond the session workspace.
+
+    Input: an action as ``_classifier_action`` builds it, the session's
+    permissions and whether the mode is Bypass. Output: True for a network
+    or remote tool, a message to another agent, a write outside the
+    session and agent workspace or into a file that instructs an agent or
+    configures git, the high-risk command class, a command that reaches
+    the network (_LEAVING_BASH), and under Bypass a command the default
+    auto-allow list does not cover; False for workspace work.
+
+    Decides what a watcher failure does (_classifier_second_opinion): a
+    leaving action asks, or is refused when nobody can be asked; workspace
+    work keeps the rule result. The Bypass rule makes a session whose
+    watcher is down fall back to what default mode runs unasked. Unknown
+    tools count as leaving.
+    """
+    tool = str(action.get("tool") or "")
+    if tool in ("bash", "bash_background"):
+        cmd = _prose_blanked(str(action.get("command") or ""))
+        if _BYPASS_HIGH_RISK_BASH.search(cmd) or _LEAVING_BASH.search(cmd):
+            return True
+        if bypass:
+            try:
+                return not perms.matches_bash_auto_allow(
+                    str(action.get("command") or ""))
+            except Exception:
+                return True
+        return False
+    if tool in ("write_file", "edit_file", "multi_edit"):
+        return _bypass_screened_action(perms, action) is None
+    return tool not in _WORKSPACE_LOCAL_TOOLS
+
+
+def _watcher_health(perms) -> dict:
+    """The session's watcher record on *perms*, created on first use."""
+    health = getattr(perms, "classifier_health", None)
+    if not isinstance(health, dict):
+        health = {}
+        try:
+            perms.classifier_health = health
+        except Exception:
+            pass
+    health.setdefault("failures", 0)
+    health.setdefault("down", False)
+    health.setdefault("last_failure", "")
+    health.setdefault("last_attempt_at", None)
+    health.setdefault("notices", [])
+    return health
+
+
+def _watcher_record(perms, ok: bool, reason: str = "") -> None:
+    """Count one model call's outcome; open or close the breaker.
+
+    A success resets the count and, when the watcher was down, queues the
+    notice that it answers again. A failure stores its reason and, at the
+    _CLASSIFIER_BREAKER_FAILURES-th in a row, marks the watcher down and
+    queues the notice once.
+    """
+    health = _watcher_health(perms)
+    if ok:
+        health["failures"] = 0
+        if health["down"]:
+            health["down"] = False
+            health["notices"].append(
+                "Action watcher answers again: actions that leave the "
+                "workspace are judged as before.")
+            _record_security_event("classifier_up", "classifier", "",
+                                   blocked=False)
+        return
+    health["failures"] = int(health["failures"]) + 1
+    health["last_failure"] = " ".join(str(reason or "").split())[:160]
+    try:
+        health["last_failure_wall"] = time.strftime("%H:%M:%S")
+    except Exception:
+        pass
+    if not health["down"] and health["failures"] >= _CLASSIFIER_BREAKER_FAILURES:
+        health["down"] = True
+        health["down_since"] = health.get("last_failure_wall", "")
+        health["notices"].append(
+            f"Action watcher down: {health['failures']} model calls in a "
+            f"row failed (last: {health['last_failure']}). Reading, "
+            "commands on the auto-allow list and writing inside the "
+            "workspace go on; actions that leave the workspace are asked "
+            "about, or held when nobody can be asked, until it answers "
+            f"again (re-tried at most every "
+            f"{_CLASSIFIER_PROBE_INTERVAL_S:.0f} s).")
+        _record_security_event("classifier_down", "classifier",
+                               health["last_failure"], blocked=True)
+
+
+def drain_watcher_notices(perms) -> list:
+    """The watcher notices queued since the last drain, oldest first.
+
+    Shown to the user by the tool loop; each is returned exactly once.
+    """
+    if perms is None:
+        return []
+    health = getattr(perms, "classifier_health", None)
+    if not isinstance(health, dict) or not health.get("notices"):
+        return []
+    out = list(health["notices"])
+    health["notices"].clear()
+    return out
+
+
+def watcher_status_line(perms) -> str:
+    """One line: the watcher's switch, model, scope and last failure.
+
+    Input: the session's permissions (or None). Output: e.g. "on ·
+    kit.deepseek-v4-flash · scope unattended · no failure", "DOWN since
+    12:03:11 · ... · last failure: ...", or "off (...)" with the reason.
+    Never raises.
+    """
+    try:
+        if perms is None or getattr(perms, "classifier_runner", None) is None:
+            return "off (no model connection on this backend)"
+        cfg = _classifier_settings()
+        if cfg is None:
+            env = os.environ.get("DELFIN_CLASSIFIER", "").strip().lower()
+            why = ("DELFIN_CLASSIFIER=off" if env in ("off", "0", "false", "no")
+                   else "agent.classifier.enabled is false")
+            return f"off ({why})"
+        scope = "all" if cfg.get("broad") else "unattended"
+        health = getattr(perms, "classifier_health", None) or {}
+        last = str(health.get("last_failure") or "")
+        when = str(health.get("last_failure_wall") or "")
+        state = (f"DOWN since {health.get('down_since') or '?'}"
+                 if health.get("down") else "on")
+        tail = (f"last failure{(' ' + when) if when else ''}: {last}"
+                if last else "no failure")
+        return f"{state} · {cfg.get('model')} · scope {scope} · {tail}"
+    except Exception as exc:                              # noqa: BLE001
+        return f"unknown ({type(exc).__name__})"
 
 # Under Bypass the classifier's own failure (error, timeout, no verdict, and
 # every later action of a turn once one timed out) keeps the rule result,
@@ -11853,7 +13020,13 @@ def _classifier_settings() -> Optional[dict]:
     (2026-10-11) -- and the broad scope pays that on every action.
     ``DELFIN_CLASSIFIER=off|on|all`` overrides switch and scope for one
     process: the settings file is one per account and read by every
-    session on it.
+    session on it. In a process an agent session started
+    (``action_classifier.AGENT_SESSION_ENV`` set) "off" is ignored: the
+    agent would otherwise switch its own watcher off by starting a nested
+    DELFIN. "on"/"all" still apply there, they only add judging. The
+    settings file is a protected write path (``.delfin_settings.json`` in
+    _DEFAULT_PATH_PROTECTED_GLOBS) and lives in the home directory, which
+    is no writable root, so ``enabled: false`` stays the user's switch.
     """
     try:
         from delfin.user_settings import load_settings
@@ -11864,8 +13037,10 @@ def _classifier_settings() -> Optional[dict]:
     enabled = bool(cfg.get("enabled", True))
     broad = str(cfg.get("scope") or "").strip().lower() == "all"
     env = os.environ.get("DELFIN_CLASSIFIER", "").strip().lower()
+    from .action_classifier import AGENT_SESSION_ENV as _agent_marker
     if env in ("off", "0", "false", "no"):
-        enabled = False
+        if not str(os.environ.get(_agent_marker, "") or "").strip():
+            enabled = False
     elif env in ("on", "1", "true", "yes"):
         enabled = True
     elif env == "all":
@@ -13556,6 +14731,7 @@ class _DocToolExecutor:
         """Record the pre-image of a just-applied file change in the undo
         journal (change_journal). Never raises — undo bookkeeping must not
         break the write path it observes."""
+        _report_file_changed(resolved)
         try:
             from . import change_journal as _cj
             rec = _cj.record_change(
@@ -13585,6 +14761,7 @@ class _DocToolExecutor:
 
         Never raises, like its text sibling.
         """
+        _report_file_changed(resolved)
         try:
             from . import change_journal as _cj
             if deleted:
@@ -13918,6 +15095,9 @@ class _DocToolExecutor:
         # from this decision (see ``tool_unavailable_reason``), never the
         # other way round.
         session_refusal = _tool_denied_for_session(permissions, name)
+        # The user's permission rules (permission_rules.py): deny refuses
+        # here, in every mode; ask is put to the user just before dispatch.
+        rule_hit = _permission_rule_hit(permissions, name, arguments)
         if permissions is not None and _tool_denied_for_role(auth_role, name):
             from . import action_protocol as _action_protocol
             if (_action_protocol.role_uses_action_protocol(auth_role)
@@ -13930,6 +15110,7 @@ class _DocToolExecutor:
                     _action_protocol.extract_slash_command(name, arguments),
                     role=auth_role, tool_name=name)
             else:
+                _record_gate_refusal("role_denied", name, auth_role)
                 result = json.dumps({"error": (
                     f"Tool '{name}' is not available to the '{auth_role}' role. "
                     "The dashboard guide operates the UI via ACTION: slash-commands "
@@ -13941,11 +15122,17 @@ class _DocToolExecutor:
             # rule the mode check states: report the more permanent reason
             # first. A role denial holds for every session; a session list
             # holds for this whole run; the mode can change within it.
+            _record_gate_refusal("session_denied", name, session_refusal)
             result = json.dumps({"error": (
                 f"Tool '{name}' was excluded from this session — "
                 f"{session_refusal}. The list was set when the session "
                 "started and cannot be changed from inside it."
             )})
+        elif rule_hit is not None and rule_hit[0] == "deny":
+            _record_security_event("permission_rule_deny", name,
+                                   rule_hit[1].text[:120])
+            result = json.dumps({"error": _permission_rule_deny_text(
+                name, rule_hit[1])})
         elif (getattr(permissions, "mode", "") == "plan"
                 and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
                 and not _plan_mode_admits_for_delegate(name, permissions)
@@ -13960,9 +15147,11 @@ class _DocToolExecutor:
             # NEVER use a tool should be told that, not told it is merely
             # the wrong mode. The more permanent reason is more useful.
             # A check_only call is a dry run and stays allowed.
+            _record_gate_refusal("plan_mode", name, "")
             result = json.dumps({"error": _plan_mode_refusal(
                 _bare_tool_name(name))})
         elif block_reason:
+            _record_gate_refusal("blocked_by_hook", name, block_reason[:300])
             result = json.dumps({
                 "error": "blocked_by_hook",
                 "reason": block_reason[:1200],
@@ -13989,7 +15178,8 @@ class _DocToolExecutor:
             # call the schema cannot accept is answered with its shape.
             result = json.dumps({"error": _malformed})
         else:
-            result = self._dispatch(name, arguments, permissions)
+            result = self._dispatch_under_rules(
+                name, arguments, permissions, rule_hit)
 
         # Track mtime after a successful read so the write tools can verify
         # the file hasn't changed since the agent last read it. read_document
@@ -14334,6 +15524,64 @@ class _DocToolExecutor:
                    "event": "completed", "observed_by": name},
         ))
 
+    def _ask_by_rule(self, perms: "KitToolPermissions", name: str,
+                     args: dict, rule) -> Optional[str]:
+        """Put a call an ask rule names to the user. None when approved,
+        else the refusal. With nobody to ask it is refused: an ask rule
+        only adds friction, in every mode."""
+        bare = _bare_tool_name(name)
+        if bare in ("bash", "bash_background"):
+            body = f"$ {(args or {}).get('command') or ''}"
+        else:
+            body = f"{name}\n" + _preview_args(args or {})
+        shown = body[:120]
+        _record_security_event("permission_rule_ask", bare,
+                               f"{rule.text}: {shown}"[:160],
+                               blocked=perms.confirm_callback is None)
+        if perms.confirm_callback is None:
+            return (f"'{bare}' meets the permission rule `{rule.text}` (ask, "
+                    f"{_rule_source(rule)}) and nobody can be asked here, so "
+                    "it is refused. Tell the user what the call is for.")
+        preview = ("[PERMISSION RULE: ask]\n"
+                   f"Your rule `{rule.text}` ({_rule_source(rule)}) asks "
+                   f"before this call.\n\n{body}")
+        self._clear_refusal_reason(perms)
+        try:
+            ok = bool(perms.confirm_callback(name, args or {}, preview))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        if ok:
+            return None
+        if self._confirm_timed_out(perms):
+            return (f"approval for '{bare}' (asked by the rule `{rule.text}`) "
+                    "TIMED OUT — the user is away, this is NOT a denial. Do "
+                    "not retry it now; say what is waiting for them.")
+        _record_security_event("denied_by_user", bare, shown)
+        return (f"user denied '{bare}' (asked by the rule `{rule.text}`). Do "
+                "NOT retry it or reach the same effect another way."
+                + self._said_why(perms))
+
+    def _dispatch_under_rules(
+        self, name: str, arguments: dict,
+        permissions: Optional["KitToolPermissions"], rule_hit,
+    ) -> str:
+        """``_dispatch`` with the permission-rule call bound (_RULE_CALL),
+        after the question an ask rule adds."""
+        asked = False
+        if (permissions is not None and rule_hit is not None
+                and rule_hit[0] == "ask"):
+            refusal = self._ask_by_rule(permissions, name, arguments,
+                                        rule_hit[1])
+            if refusal is not None:
+                return json.dumps({"error": refusal})
+            asked = True
+        token = _RULE_CALL.set({"name": name, "args": arguments,
+                                "asked": asked})
+        try:
+            return self._dispatch(name, arguments, permissions)
+        finally:
+            _RULE_CALL.reset(token)
+
     def _dispatch(
         self,
         name: str,
@@ -14356,10 +15604,13 @@ class _DocToolExecutor:
             # bash_background reuses the bash gate verbatim — the
             # command, cwd, deny-list, secret scanner, and auto-allow
             # check are identical; only the execution model differs.
+            _caged: list = []
             if permissions is not None:
                 gate_name = "bash" if name == "bash_background" else name
                 gate_err = self._run_permission_gate(
-                    gate_name, arguments, permissions)
+                    gate_name, arguments, permissions,
+                    **({"caged_admission": _caged} if gate_name == "bash"
+                       else {}))
                 if gate_err is not None:
                     return json.dumps({"error": gate_err})
             # The network tools and run_tests only needed the gate; their
@@ -14372,8 +15623,14 @@ class _DocToolExecutor:
             if name == "multi_edit":
                 return self._execute_multi_edit(arguments, permissions)
             if name == "bash":
+                if _caged:
+                    return self._execute_bash(arguments, permissions,
+                                              caged_unasked=True)
                 return self._execute_bash(arguments, permissions)
             if name == "bash_background":
+                if _caged:
+                    return self._execute_bash_background(
+                        arguments, permissions, caged_unasked=True)
                 return self._execute_bash_background(arguments, permissions)
 
         # Document writes. The per-path write gate runs inside the
@@ -16044,6 +17301,8 @@ class _DocToolExecutor:
     ) -> "bool | str":
         """Ask the user about a document write. True, or an error string."""
         if perms.confirm_callback is None:
+            _record_gate_refusal("needs_approval", name,
+                                 str((arguments or {}).get("path") or ""))
             return json.dumps({"error": (
                 f"diff-approval mode: '{name}' changes a document, which "
                 "cannot be staged as a text diff, and no approval dialog is "
@@ -16635,6 +17894,7 @@ class _DocToolExecutor:
         # Relative tokens too. Only /, ~ and $HOME were looked at, so
         # `cat .env`, `head config/server.key` and `sed -n p .netrc` ran
         # without a question in default mode (review 2026-09-16).
+        _dirs = None
         for tok in re.findall(r"(?<![^\s;|&<>()=])(?![-/~$])[^\s;|&<>()`'\"=]+", cleaned):
             rel = tok[2:] if tok.startswith("./") else tok
             if not rel or rel.startswith(("http:", "https:")):
@@ -16652,8 +17912,12 @@ class _DocToolExecutor:
             # symlink in the workspace (`cat ssh-link`, `grep -rn KEY
             # sshdir`) names nothing on the deny list, and cat or a
             # recursive grep follows it (red team LA, 2026-09-26). Only
-            # tokens whose path really goes somewhere else are resolved.
-            if _links_to_a_secret(perms, rel):
+            # tokens whose path really goes somewhere else are resolved --
+            # in every directory the command moves into, since
+            # `cd sub && cat ssh-link` opens sub/ssh-link.
+            if _dirs is None:
+                _dirs = _bash_visited_dirs(cmd, perms.workspace)
+            if any(_links_to_a_secret(perms, rel, d) for d in _dirs):
                 return tok
         return None
 
@@ -16702,56 +17966,108 @@ class _DocToolExecutor:
         interpreter, or what an execution wrapper is handed. Everything
         else in a command line is data.
         """
+        return [ref for kind, ref, _ in self._referenced_scripts_where(cmd, None)
+                if kind == "file"]
+
+    def _segment_scripts(self, toks: list) -> list:
+        """(kind, ref) for what one simple command executes from a file:
+        ``file`` (a script path), ``module`` (``python -m name``: the
+        module's file in the directory the interpreter starts in comes
+        first on sys.path), ``makefile`` (``make``'s ``-f`` value, or
+        "" for the default names)."""
+        out: list = []
+        i = 0
+        while i < len(toks) and toks[i] in _SHELL_LEAD_WORDS:
+            i += 1
+        head = True        # the first token of a segment is the program
+        pending = False    # a wrapper is still looking for its program
+        while i < len(toks):
+            tok = toks[i]
+            base = tok.rsplit("/", 1)[-1]
+            if self._SCRIPT_INTERP_RE.match(base):
+                j = i + 1
+                inline = False
+                while j < len(toks):
+                    nt = toks[j]
+                    if nt == "-m" and base.startswith(("python", "pypy")):
+                        if j + 1 < len(toks):
+                            out.append(("module", toks[j + 1]))
+                        inline = True
+                        break
+                    if nt in ("-m", "-c", "-e", "-"):  # inline → no file
+                        inline = True
+                        break
+                    if nt.startswith("-"):
+                        j += 1
+                        continue
+                    break
+                if not inline and j < len(toks):
+                    out.append(("file", toks[j]))
+                i = j + 1
+                head = pending = False
+                continue
+            if (head or pending) and base in ("make", "gmake"):
+                mk = ""
+                for k in range(i + 1, len(toks)):
+                    if toks[k] in ("-f", "--file", "--makefile") and k + 1 < len(toks):
+                        mk = toks[k + 1]
+                    elif toks[k].startswith("--file=") or toks[k].startswith("--makefile="):
+                        mk = toks[k].split("=", 1)[1]
+                    elif toks[k].startswith("-f") and len(toks[k]) > 2:
+                        mk = toks[k][2:]
+                out.append(("makefile", mk))
+                break
+            # `find … -exec prog {} ;` runs prog, and so does a wrapper.
+            if self._EXEC_WRAPPER_RE.match(base) or base in (
+                    "-exec", "-execdir"):
+                head = False
+                pending = True
+                i += 1
+                continue
+            if self._looks_like_a_script_path(tok, base):
+                if head or pending:
+                    out.append(("file", tok))
+                head = pending = False
+                i += 1
+                continue
+            # A plain word at the head of a segment IS the program --
+            # `grep`, `cat`, `cp`. Everything after it is that
+            # program's data. A wrapper's own flags and arguments
+            # (`timeout 5 …`, `env FOO=1 …`) are stepped over, so the
+            # program it eventually names is still found.
+            head = False
+            i += 1
+        return out
+
+    def _referenced_scripts_where(self, cmd: str, base: "Path | None") -> list:
+        """(kind, ref, directory) for every file the command executes.
+
+        ``directory`` is where that command runs -- after every `cd`,
+        `pushd`, `popd` and subshell before it, and its own `-C`
+        (_ShellDirWalk) -- or ``_UNRESOLVED_DIR`` when the gate cannot
+        know it. ``base`` is where the command starts. Also yields
+        ``("payload", source, directory)`` for each inline `-c` payload,
+        whose local imports resolve in that directory."""
         import shlex
-        out: list[str] = []
+        out: list = []
+        walk = _ShellDirWalk(base, env=_scrubbed_bash_env(), cmd=cmd)
         for seg in _split_shell_segments(cmd):
+            walk.leave()
             try:
                 toks = shlex.split(seg)
             except Exception:
                 continue
-            i = 0
-            head = True        # the first token of a segment is the program
-            pending = False    # a wrapper is still looking for its program
-            while i < len(toks):
-                tok = toks[i]
-                base = tok.rsplit("/", 1)[-1]
-                if self._SCRIPT_INTERP_RE.match(base):
-                    j = i + 1
-                    inline = False
-                    while j < len(toks):
-                        nt = toks[j]
-                        if nt in ("-m", "-c", "-e", "-"):  # module / inline → no file
-                            inline = True
-                            break
-                        if nt.startswith("-"):
-                            j += 1
-                            continue
-                        break
-                    if not inline and j < len(toks):
-                        out.append(toks[j])
-                    i = j + 1
-                    head = pending = False
-                    continue
-                # `find … -exec prog {} ;` runs prog, and so does a wrapper.
-                if self._EXEC_WRAPPER_RE.match(base) or base in (
-                        "-exec", "-execdir"):
-                    head = False
-                    pending = True
-                    i += 1
-                    continue
-                if self._looks_like_a_script_path(tok, base):
-                    if head or pending:
-                        out.append(tok)
-                    head = pending = False
-                    i += 1
-                    continue
-                # A plain word at the head of a segment IS the program --
-                # `grep`, `cat`, `cp`. Everything after it is that
-                # program's data. A wrapper's own flags and arguments
-                # (`timeout 5 …`, `env FOO=1 …`) are stepped over, so the
-                # program it eventually names is still found.
-                head = False
-                i += 1
+            toks, moved = walk.enter(seg, toks)
+            if moved:
+                continue
+            where = walk.command_dir(toks)
+            for kind, ref in self._segment_scripts(toks):
+                out.append((kind, ref, where))
+            try:
+                for src in (_inline_payload.extract_c_payloads(seg) or []):
+                    out.append(("payload", src, where))
+            except Exception:
+                pass
         return out
 
     @staticmethod
@@ -16799,7 +18115,8 @@ class _DocToolExecutor:
             return False
 
     def _scan_bash_script_payloads(
-        self, cmd: str, args: dict, perms: "KitToolPermissions"
+        self, cmd: str, args: dict, perms: "KitToolPermissions",
+        unknown: "list | None" = None,
     ) -> Optional[str]:
         """Apply the deny-list + secret-path scan to the CONTENTS of any script
         the command runs. Reuses the curated patterns (so legitimate code using
@@ -16811,22 +18128,35 @@ class _DocToolExecutor:
         no file to open, which is the only reason it escaped before -- and
         so is any module it imports out of the working directory, because
         `import mymod` executes ``mymod.py`` exactly as running the script
-        would.
+        would. So are the local module of ``python -m name`` and the
+        makefile ``make`` reads.
+
+        A relative script is opened where the shell will be when it runs:
+        after each `cd`/`pushd`/`popd`/subshell before it and the command's
+        own `-C` (_ShellDirWalk). It was opened in the session cwd, so
+        `cd sub && python3 y.py` read ./y.py -- or nothing -- and sub/y.py
+        ran unread in every mode (measured on a2f78524: 17 spellings, all
+        ran). Where that directory cannot be known (`cd $VAR`, `cd -` with
+        no earlier cd), the relative name is appended to ``unknown`` for
+        the caller to ask about, and nothing is scanned in its place.
 
         Returns a reason string, or None. Never raises."""
         try:
+            base_dir = Path(perms.workspace)
             cwd_arg = str(args.get("cwd") or "").strip()
-            base_dir = Path(cwd_arg) if cwd_arg else Path(perms.workspace)
+            if cwd_arg:
+                c = Path(cwd_arg).expanduser()
+                base_dir = c if c.is_absolute() else base_dir / c
         except Exception:
             base_dir = Path(perms.workspace)
 
-        def _resolve(ref: str) -> tuple[str, str, Path] | None:
+        def _resolve(ref: str, where: "Path | None" = None
+                     ) -> tuple[str, str, Path] | None:
             """(label, contents, path) for a script path, or None to skip it."""
             try:
-                p = Path(ref)
+                p = Path(_home_expanded(ref)).expanduser()
                 if not p.is_absolute():
-                    p = base_dir / p
-                p = p.expanduser()
+                    p = (where or base_dir) / p
                 if not p.is_file() or p.stat().st_size > 512_000:
                     return None
                 if self._is_reviewed_project_file(p):
@@ -16837,11 +18167,73 @@ class _DocToolExecutor:
             except Exception:
                 return None
 
+        def _module_file(name: str, where: Path) -> "str | None":
+            """The file `python -m name` runs when it is local to *where*:
+            name.py, or a package's __main__.py. None for anything found
+            elsewhere on sys.path (the stdlib, site-packages)."""
+            rel = Path(*name.split("."))
+            for cand in (rel.with_suffix(".py"), rel / "__main__.py"):
+                if (where / cand).is_file():
+                    return str(where / cand)
+            return None
+
+        def _unknown(ref: str) -> None:
+            if unknown is not None and ref not in unknown:
+                unknown.append(ref)
+
         sources: list[tuple[str, str, Path | None]] = []
-        for ref in self._referenced_script_paths(cmd):
-            got = _resolve(ref)
+        try:
+            refs = self._referenced_scripts_where(cmd, base_dir)
+        except Exception:
+            refs = [("file", r, base_dir)
+                    for r in self._referenced_script_paths(cmd)]
+        for kind, ref, where in refs:
+            # The directory a cd led to that the gate cannot know: the file
+            # that runs is unknown too, unless the command names it
+            # absolutely. Scanning the same name in the start directory
+            # would read a different file and call it checked.
+            lost = where == _UNRESOLVED_DIR
+            if kind == "payload":
+                sources.append(("the inline python payload", ref, None))
+                if lost:
+                    if _inline_payload.analyze_payload(ref, None).opaque:
+                        _unknown("the modules the inline python payload imports")
+                    continue
+                for mod in _inline_payload.analyze_payload(
+                        ref, where).local_modules:
+                    got = _resolve(mod, where)
+                    if got is not None:
+                        sources.append(got)
+                continue
+            if kind == "module":
+                if lost:
+                    _unknown(f"module {ref}")
+                    continue
+                found = _module_file(ref, where)
+                got = _resolve(found, where) if found else None
+                if got is not None:
+                    sources.append((f"module {ref} ({found})",) + got[1:])
+                continue
+            if kind == "makefile":
+                names = [ref] if ref else ["GNUmakefile", "makefile", "Makefile"]
+                if lost and not (ref and Path(_home_expanded(ref)).expanduser()
+                                 .is_absolute()):
+                    _unknown(ref or "Makefile")
+                    continue
+                for name in names:
+                    got = _resolve(name, where)
+                    if got is not None:
+                        sources.append(got)
+                        break
+                continue
+            if lost and not Path(_home_expanded(ref)).expanduser().is_absolute():
+                _unknown(ref)
+                continue
+            got = _resolve(ref, where)
             if got is not None:
                 sources.append(got)
+        # The whole command once more, so a payload the per-command split
+        # missed is still read (scanning twice can only refuse more).
         try:
             for src in (_inline_payload.extract_c_payloads(cmd) or []):
                 sources.append(("the inline python payload", src, None))
@@ -16960,6 +18352,11 @@ class _DocToolExecutor:
                 "These are never readable, regardless of mode or confirm."
             )
 
+        # A deny rule of the user's on this path, as resolved by the tool.
+        _rule_refusal = _rule_denies_path(perms, "read", resolved)
+        if _rule_refusal:
+            return _rule_refusal
+
         # Inside any allowed root: free read. Checked BEFORE the refusal
         # ledger on purpose — if the user has since granted the directory
         # (extra_dir / "Erlaubte Verzeichnisse"), that later, explicit
@@ -17006,7 +18403,15 @@ class _DocToolExecutor:
         # ask ME"), not a blanket grant an unattended process inherits
         # from a settings file. A headless run that needs to reach outside
         # has to be configured to, and the message says how.
+        #
+        # An allow rule of the user's (permission_rules) answers this one
+        # read and opens nothing for the session: the grant below is what
+        # a click in the dialog says it does, and no dialog was shown.
+        if _rule_answers(perms, "read", "read_file", resolved):
+            return None
         if perms.confirm_callback is None:
+            _record_gate_refusal("outside_ws", "",
+                                 str(label or resolved))
             return (
                 f"read denied: '{label or resolved}' is outside the allowed "
                 "workspace roots and no confirm callback is configured. "
@@ -17263,6 +18668,9 @@ class _DocToolExecutor:
         resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             return err
+        _rule_refusal = _rule_denies_path(perms, "write", resolved)
+        if _rule_refusal:
+            return _rule_refusal
         if not _write_in_scope(resolved, perms):
             _record_security_event(
                 "out_of_write_scope", name, self._display_path(resolved, perms),
@@ -17342,6 +18750,12 @@ class _DocToolExecutor:
         _is_gitcfg = is_protected and any(
             fnmatch.fnmatchcase(_low, g.lower())
             for g in _GIT_CONFIG_PROTECTED_GLOBS)
+        # A file the configuration names (global file, XDG file, include
+        # target, attributes file): the same reach as `git config` with a
+        # program key, so the same rule -- asked in every mode.
+        if not is_protected and _is_git_configuration_file(
+                resolved, perms.workspace):
+            is_protected = _is_gitcfg = True
         # calc holds the user's ACTIVE calculations — editing one always needs
         # an explicit confirm even in acceptEdits, so the agent can't silently
         # destroy results ("editing only with a confirmation prompt").
@@ -17357,7 +18771,9 @@ class _DocToolExecutor:
         if is_protected or is_calc or was_refused:
             if not was_refused:
                 _record_security_event(
-                    "self_mod" if is_protected else "calc_edit", name, rel_str,
+                    "git_config_program" if _is_gitcfg
+                    else "self_mod" if is_protected else "calc_edit",
+                    name, rel_str,
                     blocked=perms.confirm_callback is None)
             if perms.confirm_callback is None:
                 _what = ("a file git reads as configuration" if _is_gitcfg
@@ -17439,8 +18855,12 @@ class _DocToolExecutor:
         # hatch; writing has no such list, so refusing would leave every
         # unattended run unable to produce anything. A head-less caller
         # picks its own mode, and the sandbox still bounds where it writes.
+        # An allow rule of the user's answers this dialog, for a write tool
+        # and a path the rule names; the second opinion below still looks,
+        # as it does for every write nobody was asked about.
         if (effective_mode(perms) == "default"
-                and perms.confirm_callback is not None):
+                and perms.confirm_callback is not None
+                and not _rule_answers(perms, "write", name, resolved)):
             _cannot = self._edit_cannot_apply(name, args, resolved, perms)
             if _cannot:
                 return _cannot
@@ -17487,11 +18907,24 @@ class _DocToolExecutor:
 
         Called ONLY at a point where the rules have already said yes and no
         human was asked. It never turns a refusal into an allow -- it is not
-        reached after one. Any failure of the classifier itself leaves the
-        rule result standing, except under Bypass for the high-risk class
-        of ``_bypass_failure_asks``: there an error asks, or refuses when
-        nobody can be asked. Under Bypass the actions of
+        reached after one. Under Bypass the actions of
         ``_bypass_screened_action`` get the model-free screen only.
+
+        Which actions are judged: everything under Bypass, messages to
+        other agents and network tools in every mode, every auto-allowed
+        command and auto-accepted edit in the broad scope, and in a
+        session nobody can be asked in, also every auto-allowed action that
+        leaves the workspace (``_leaves_workspace``: ``git fetch``, a write
+        to a granted directory).
+
+        The watcher failing (error after one retry, timeout, no verdict, or
+        a call skipped while it is down): an action that leaves the
+        workspace asks, or is refused when nobody can be asked, with a
+        reason that says what still works; workspace work keeps the rule
+        result. Such a refusal is not cached and does not count towards
+        the three-refusals lockout -- it says nothing about the agent.
+        ``_watcher_record`` keeps the session's failure count and opens the
+        breaker after ``_CLASSIFIER_BREAKER_FAILURES``.
         """
         runner = getattr(perms, "classifier_runner", None)
         if perms is None or runner is None:
@@ -17529,13 +18962,20 @@ class _DocToolExecutor:
                 "refused in this turn, so nothing but reading runs until "
                 "the user has answered. End your turn and tell the user "
                 "what you were trying to do.")
+        can_ask = perms.confirm_callback is not None
+        try:
+            leaves = _leaves_workspace(perms, action, bypass)
+        except Exception:
+            leaves = True
         if not (bypass or cfg.get("broad")
                 or base in ("session_message", "subagent_message")
-                or base in _CLASSIFIED_NETWORK_TOOLS):
+                or base in _CLASSIFIED_NETWORK_TOOLS
+                or (leaves and not can_ask)):
             # The frequent paths -- an auto-allowed command, an
-            # auto-accepted edit -- are judged only in the broad scope.
+            # auto-accepted edit -- are judged only in the broad scope,
+            # or, with nobody to ask, when they leave the workspace.
             return None
-        can_ask = perms.confirm_callback is not None
+        health = _watcher_health(perms)
         try:
             key = hashlib.sha256(json.dumps(
                 [base, args], sort_keys=True, default=str).encode(
@@ -17589,48 +19029,66 @@ class _DocToolExecutor:
         }
         state["calls"].append({"tool": base, "args": shown})
         failed: list = []
+        called: list = []
 
         def _bounded(prompt: str, model: str) -> str:
             # The runner is the client's; the bound is the gate's, so a
             # runner that hangs cannot hold an action for minutes. After
-            # one timeout the rest of the turn does not wait again: the
-            # error behaviour applies at once (user rules and the claim
-            # guard still run, they need no model).
-            if state.get("stalled"):
-                failed.append("stalled")
+            # one timeout in a turn, or while the watcher is down, the
+            # model is not waited for again until the probe interval has
+            # passed: the error behaviour applies at once (user rules and
+            # the claim guard still run, they need no model).
+            last = health.get("last_attempt_at")
+            recent = (last is not None and _classifier_clock() - last
+                      < _CLASSIFIER_PROBE_INTERVAL_S)
+            if (health.get("down") or state.get("stalled")) and recent:
+                failed.append("down" if health.get("down") else "stalled")
                 raise TimeoutError(
-                    "no verdict: the model timed out earlier in this turn")
-            box: dict = {}
+                    "no verdict: the watcher is down" if health.get("down")
+                    else "no verdict: the model timed out earlier in this "
+                    "turn")
+            for attempt in (1, 2):
+                health["last_attempt_at"] = _classifier_clock()
+                called.append(attempt)
+                box: dict = {}
 
-            def _work() -> None:
-                try:
-                    box["out"] = runner(prompt, model)
-                except BaseException as exc:      # noqa: BLE001
-                    box["exc"] = exc
+                def _work() -> None:
+                    try:
+                        box["out"] = runner(prompt, model)
+                    except BaseException as exc:      # noqa: BLE001
+                        box["exc"] = exc
 
-            worker = threading.Thread(
-                target=_work, name="action-classifier", daemon=True)
-            worker.start()
-            worker.join(_CLASSIFIER_TIMEOUT_S)
-            if worker.is_alive():
-                failed.append("timeout")
-                state["stalled"] = True
-                raise TimeoutError(
-                    f"no verdict within {_CLASSIFIER_TIMEOUT_S:.0f} s")
-            if "exc" in box:
-                failed.append(type(box["exc"]).__name__)
-                raise box["exc"]
-            return str(box.get("out") or "")
+                worker = threading.Thread(
+                    target=_work, name="action-classifier", daemon=True)
+                worker.start()
+                worker.join(_CLASSIFIER_TIMEOUT_S)
+                if worker.is_alive():
+                    failed.append("timeout")
+                    state["stalled"] = True
+                    raise TimeoutError(
+                        f"no verdict within {_CLASSIFIER_TIMEOUT_S:.0f} s")
+                if "exc" in box:
+                    if attempt == 1:
+                        # One short retry: a dropped connection or a 502
+                        # from the proxy is usually gone a moment later.
+                        time.sleep(_CLASSIFIER_RETRY_DELAY_S)
+                        continue
+                    failed.append(type(box["exc"]).__name__)
+                    raise box["exc"]
+                return str(box.get("out") or "")
+            raise TimeoutError("no verdict")      # pragma: no cover
 
-        # The classifier failing is not a reason to ask under Bypass: the
-        # user chose the profile that asks nothing, so the rule result
-        # stands -- except for the narrow high-risk class, where it asks
-        # (or refuses when nobody can be asked). A verdict the model gives
+        # The watcher failing. An action that leaves the workspace asks,
+        # or is refused when nobody can be asked: the second look was the
+        # only one it would get. Workspace work keeps the rule result in
+        # every mode -- the rules, the write gate and the sandbox confine
+        # it, the change journal can take it back, and stopping it would
+        # stop a long unattended run on a proxy hiccup. In the broad scope
+        # attended, that is most of what reaches the model: an outage must
+        # not turn each auto-allowed command into a dialog, and the user
+        # sees every step in the transcript. A verdict the model gives
         # with a reason is unaffected.
-        if bypass and _bypass_failure_asks(action):
-            on_error = "ask" if can_ask else "refuse"
-        else:
-            on_error = "allow"
+        on_error = ("ask" if can_ask else "refuse") if leaves else "allow"
         try:
             screened = (_bypass_screened_action(perms, action)
                         if bypass else None)
@@ -17649,13 +19107,37 @@ class _DocToolExecutor:
         except Exception as exc:
             failed.append(type(exc).__name__)
             decision, reason = on_error, f"classifier error: {exc}"
-        if failed or reason.startswith(_ac.ERROR_PREFIX):
+        watcher_failed = bool(failed) or reason.startswith(_ac.ERROR_PREFIX)
+        if called:
+            # Only a real model call is evidence about the watcher; a call
+            # skipped while it is down or stalled is not counted again.
+            _watcher_record(perms, not watcher_failed, reason)
+        if watcher_failed:
             _record_security_event(
                 "classifier_error", base, f"{shown}: {reason[:120]}",
                 blocked=decision != "allow")
         reason = " ".join(reason.split())[:300]
         if not reason.endswith((".", "!", "?")):
             reason += "."
+
+        if watcher_failed and decision == "refuse":
+            # Nobody to ask and an action that leaves the workspace: held,
+            # not judged. Not cached, not counted towards the lockout.
+            _record_security_event(
+                "classifier_held", base, f"{shown}: {reason[:120]}")
+            down = bool(health.get("down"))
+            return (
+                f"'{base}' ({shown}) was not run: the action watcher (the "
+                "model's second opinion behind the permission rules) could "
+                f"not judge it -- {reason} Nobody can be asked here, so an "
+                "action that leaves the workspace waits. "
+                + ("The watcher is down; it is re-tried at most every "
+                   f"{_CLASSIFIER_PROBE_INTERVAL_S:.0f} s and this lifts by "
+                   "itself when it answers. " if down else "")
+                + "Still working: reading, planning, commands on the "
+                "auto-allow list and writing inside the workspace -- carry "
+                "on with that, and name this step in your report if it is "
+                "still needed.")
 
         if decision == "allow":
             state["allowed"].add(key)
@@ -17678,11 +19160,19 @@ class _DocToolExecutor:
                     f"{action['message'][:1200]}")
         else:
             body = f"{base} -> {shown}"
-        preview = (
-            "[ACTION CLASSIFIER -- SECOND OPINION]\n"
-            "The permission rules allow this action. The classifier is not "
-            "sure your request covers it:\n"
-            f"  {reason}\n\n{body}")
+        if watcher_failed:
+            preview = (
+                "[ACTION CLASSIFIER -- SECOND OPINION]\n"
+                "The permission rules allow this action, and it leaves the "
+                "workspace. The action watcher could not judge it"
+                + (" (the watcher is down)" if health.get("down") else "")
+                + f":\n  {reason}\n\n{body}")
+        else:
+            preview = (
+                "[ACTION CLASSIFIER -- SECOND OPINION]\n"
+                "The permission rules allow this action. The classifier is "
+                "not sure your request covers it:\n"
+                f"  {reason}\n\n{body}")
         try:
             ok = bool(perms.confirm_callback(base, args, preview))
         except Exception as exc:
@@ -17746,9 +19236,18 @@ class _DocToolExecutor:
             return None
 
     def _run_permission_gate(
-        self, name: str, args: dict, perms: "KitToolPermissions"
+        self, name: str, args: dict, perms: "KitToolPermissions",
+        *, caged_admission: Optional[list] = None,
     ) -> Optional[str]:
-        """Run the policy + callback gate. Returns error string or None."""
+        """Run the policy + callback gate. Returns error string or None.
+
+        ``caged_admission``: passed (an empty list) only by the native
+        shell dispatch, whose executor runs the command in the cage. When
+        the bash gate admits a command off the auto-allow list because the
+        cage holds it (``_caged_command_may_run_unasked``), it appends True,
+        and the executor then runs it with ``caged_unasked=True``. Without
+        the list (an MCP shell, any other caller) that rule never applies.
+        """
         mode = effective_mode(perms)
         # A reason never outlives its refusal: anything left on the
         # broker from an earlier dialog is dropped before this gate run
@@ -17973,7 +19472,9 @@ class _DocToolExecutor:
                     "Reading or touching .ssh/.env/*.key/credentials via the "
                     "shell is blocked — the read deny-list applies to bash too."
                 )
-            payload_hit = self._scan_bash_script_payloads(cmd, args, perms)
+            _unknown_scripts: list = []
+            payload_hit = self._scan_bash_script_payloads(
+                cmd, args, perms, unknown=_unknown_scripts)
             if payload_hit is not None:
                 _record_security_event("script_payload", "bash", str(payload_hit))
                 refusal = (
@@ -18127,6 +19628,47 @@ class _DocToolExecutor:
                         f"user denied the git configuration change "
                         f"'{cmd[:120]}'. Do NOT retry it or work around it."
                         + self._said_why(perms))
+                _approved_here = True
+            # A script that runs from a directory the gate cannot know
+            # (`cd $VAR && python3 y.py`, `cd - && ./y.sh`) was not read by
+            # the content scan, because the file that runs is not known.
+            # Same rule as above: asked in every mode, refused with nobody
+            # to ask. Scanning `y.py` in the session cwd instead would read
+            # some other file and report it checked.
+            if _unknown_scripts and not _approved_here:
+                _names = ", ".join(_unknown_scripts[:3])
+                _record_security_event("script_dir_unknown", "bash", cmd[:80],
+                                       blocked=perms.confirm_callback is None)
+                if perms.confirm_callback is None:
+                    return (
+                        f"blocked: this command runs {_names} from a "
+                        "directory that cannot be known before it runs (a "
+                        "cd into a variable, a substitution or $OLDPWD), so "
+                        "the script's contents could not be checked, and "
+                        "nobody can be asked here. Use the directory's path "
+                        "as written, or the script's absolute path.")
+                try:
+                    ok = bool(perms.confirm_callback(
+                        "bash", {"command": cmd},
+                        "[SCRIPT IN AN UNKNOWN DIRECTORY]\n"
+                        f"{_names} runs from a directory that cannot be "
+                        "known before the command runs; its contents were "
+                        "not checked.\n\n$ " + cmd))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval for a script in an unknown directory "
+                            "TIMED OUT — the user is away, this is not a "
+                            "refusal. Do not run it now.")
+                    perms.record_denied_action("bash", cmd)
+                    _remember_refusal(perms, "bash", cmd,
+                                      self._refusal_reason(perms))
+                    return (
+                        f"user denied running {_names} from a directory "
+                        f"that could not be checked ('{cmd[:120]}'). Do NOT "
+                        "retry it or work around it." + self._said_why(perms))
                 _approved_here = True
             # A push publishes. Report 20260915-085107 pushed the change it
             # was asked to, then chained a second commit and push onto a fix
@@ -18338,6 +19880,20 @@ class _DocToolExecutor:
                     "read_only_shape", "bash",
                     f"{_ros_shape}: {cmd[:80]}", blocked=False)
                 return self._classifier_second_opinion(perms, name, args, mode)
+            # Off the list, but held by the cage: writes confined to the
+            # session's roots with the protected files read-only, no process
+            # outside visible, network through the egress policy. Every tier
+            # above has already passed; the classifier still has its look,
+            # and the read and write path gates run in the executor.
+            if (caged_admission is not None and not _approved_here
+                    and _caged_command_may_run_unasked(cmd, perms, mode)):
+                verdict = self._classifier_second_opinion(
+                    perms, name, args, mode)
+                if verdict is None:
+                    _record_security_event(
+                        "caged_unasked", "bash", cmd[:80], blocked=False)
+                    caged_admission.append(True)
+                return verdict
             # Not auto-allowed. Whenever a per-action approval dialog is
             # wired (the dashboard KitConfirmBroker), ask the user to
             # approve THIS command — one click — instead of dead-ending
@@ -18360,6 +19916,22 @@ class _DocToolExecutor:
                 # Asked above, with the whole command shown, after every
                 # hard tier and the publish readiness check.
                 return None
+            # An allow rule of the user's (permission_rules) answers the
+            # dialog below -- and the head-less refusal after it, which is
+            # the same question with nobody there -- for one simple command
+            # its words cover. Every hard tier above has already run; the
+            # second opinion looks, as it does for the auto-allow list.
+            # Not for a push nobody asked for: head-less, that one reaches
+            # this point to be refused here, and the refusal is the
+            # one-request rule, not a question. Not for a command the
+            # egress scan flagged either: an upload is sent to this dialog
+            # for the person to see, and a rule naming the command is not
+            # a decision about the data it sends.
+            _ungranted_push = (_is_git_push(cmd)
+                               and not (perms.push_grants or {}).get("push"))
+            if (not _ungranted_push and egress is None
+                    and _rule_answers(perms, "bash", "bash")):
+                return self._classifier_second_opinion(perms, name, args, mode)
             if (mode in ("default", "diff_approval", "acceptEdits")
                     and perms.confirm_callback is not None):
                 _cwd = str(args.get("cwd") or "").strip()
@@ -18543,6 +20115,10 @@ class _DocToolExecutor:
                 # not on the list. The route names what the same check
                 # allows, and the spellings of the command it refuses too.
                 hint = _allow_list_route(cmd, args, perms)
+            _record_gate_refusal(
+                "not_allowlisted", "bash",
+                f"bash: '{cmd[:120]}' is not on the auto-allow list "
+                f"(mode={mode})")
             return (
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
                 f"(mode={mode}). Do NOT try to work around this block with "
@@ -18824,6 +20400,11 @@ class _DocToolExecutor:
         mode = getattr(perms, "mode", "")
         if mode == "bypassPermissions":
             # Nobody is asked here; the second opinion is the one look.
+            return self._classifier_second_opinion(
+                perms, name, args or {}, mode)
+        # An allow rule of the user's naming this tool answers the question
+        # below (and its head-less refusal); the second opinion still looks.
+        if _rule_answers(perms, "tool", name):
             return self._classifier_second_opinion(
                 perms, name, args or {}, mode)
         if perms.confirm_callback is None:
@@ -19442,6 +21023,8 @@ class _DocToolExecutor:
 
         # Always require user confirmation regardless of mode.
         if perms.confirm_callback is None:
+            _record_gate_refusal("needs_approval", "remember_permission",
+                                 f"{kind}: {value}")
             return json.dumps({"error": (
                 "remember_permission needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
@@ -19629,6 +21212,8 @@ class _DocToolExecutor:
         preview = "\n".join(preview_lines)
 
         if perms.confirm_callback is None:
+            _record_gate_refusal("needs_approval",
+                                 "remember_permission_bundle", str(profile))
             return json.dumps({"error": (
                 "remember_permission_bundle needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
@@ -20127,7 +21712,8 @@ class _DocToolExecutor:
         return None
 
     def _execute_bash(
-        self, arguments: dict, perms: "KitToolPermissions"
+        self, arguments: dict, perms: "KitToolPermissions",
+        caged_unasked: bool = False,
     ) -> str:
         cmd = arguments.get("command", "") or ""
         description = arguments.get("description", "") or ""
@@ -20251,7 +21837,10 @@ class _DocToolExecutor:
                 # at the timeout. subprocess.run killed only bash itself.
                 from . import contained_run as _contained
                 proc = _contained.run(
-                    _bash_isolation_argv(cmd, run_cwd, perms),
+                    _bash_isolation_argv(cmd, run_cwd, perms)
+                    if not caged_unasked
+                    else _bash_isolation_argv(cmd, run_cwd, perms,
+                                              caged_unasked=True),
                     cwd=str(run_cwd),
                     env=env,
                     timeout=timeout,
@@ -20356,7 +21945,8 @@ class _DocToolExecutor:
     # ------- Background bash jobs ----------------------------------------
 
     def _execute_bash_background(
-        self, arguments: dict, perms: "KitToolPermissions"
+        self, arguments: dict, perms: "KitToolPermissions",
+        caged_unasked: bool = False,
     ) -> str:
         """Start a long-running shell command in the background.
 
@@ -20416,7 +22006,10 @@ class _DocToolExecutor:
                 workspace=str(perms.workspace),
                 # In the process cage like a foreground command: what the
                 # job starts ends with it, and the job with its kernel.
-                argv=_bash_isolation_argv(cmd, run_cwd, perms),
+                argv=_bash_isolation_argv(cmd, run_cwd, perms)
+                if not caged_unasked
+                else _bash_isolation_argv(cmd, run_cwd, perms,
+                                          caged_unasked=True),
                 **({"session_id": _job_sid} if _job_sid else {}),
             )
         except ValueError as exc:
@@ -23230,7 +24823,7 @@ def _git_metadata_roots(workspace) -> list[str]:
 _SLURM_CONTROLLERS: Optional[list[str]] = None
 
 
-def _sandbox_network_args() -> tuple[list[str], str]:
+def _sandbox_network_args(allow_slurm: bool = True) -> tuple[list[str], str]:
     """Helper flags for an isolated command's network, and the directory of
     the egress proxy's socket ("" without one).
 
@@ -23238,7 +24831,8 @@ def _sandbox_network_args() -> tuple[list[str], str]:
     the network only through the egress proxy, which lets through the
     allowed domains, plus the SLURM controller so job submission works;
     "none" -- no network; "open" -- unrestricted, cloud metadata still
-    refused."""
+    refused. ``allow_slurm=False`` drops the controller route: a job runs
+    outside the cage, so a command nobody approved does not submit one."""
     global _SLURM_CONTROLLERS
     from . import egress_proxy as _ep
     mode = _ep.network_mode()
@@ -23256,7 +24850,7 @@ def _sandbox_network_args() -> tuple[list[str], str]:
                 _SLURM_CONTROLLERS = _ep.slurm_controllers()
             except Exception:
                 _SLURM_CONTROLLERS = []
-        for hp in _SLURM_CONTROLLERS:
+        for hp in (_SLURM_CONTROLLERS if allow_slurm else ()):
             args += ["--allow-tcp", hp]
     return args, proxy_dir
 
@@ -23442,8 +25036,10 @@ def _scrubbed_bash_env() -> dict:
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
     # Every process an agent session starts says so: `delfin-agent
     # approvals approve` and the answer functions refuse under it
-    # (approval_guard). This is the one env every agent child is built
-    # from -- shell tool, background job, test run, external agent CLI.
+    # (approval_guard), and a nested DELFIN ignores DELFIN_CLASSIFIER=off
+    # (_classifier_settings; action_classifier.AGENT_SESSION_ENV is the
+    # same name). This is the one env every agent child is built from --
+    # shell tool, background job, test run, external agent CLI.
     from .approval_guard import ENV_MARKER as _agent_marker
     env[_agent_marker] = str(os.getpid())
     return env
@@ -23811,12 +25407,304 @@ def _on_another_sessions_branch(path_arg: str, workspace) -> str:
         return ""
 
 
+def _bash_isolation_decision(perms, mode: str | None = None) -> tuple[str, str]:
+    """Which confinement the agent's shell command gets on this host.
+
+    Input: the permissions (``scope_locked``, ``mode``) and an explicit
+    isolation mode or None (then ``--isolate``, else
+    ``agent.bash_isolation``, default "auto").
+    Output: ``(kind, resolved_mode)``; kind is "bwrap", "landlock",
+    "seatbelt" (writes confined to the session's roots), "refuse" (the
+    command is not run) or "none" (process cage at most, filesystem as it
+    is). ``_bash_isolation_argv`` builds its argv from exactly this
+    answer, and the bash gate reads it to decide whether a command off the
+    auto-allow list may run unasked -- one decision, so the two cannot
+    drift. No side effects beyond the cached host probes. Never raises.
+    """
+    if mode is None and _BASH_ISOLATION_OVERRIDE:
+        mode = _BASH_ISOLATION_OVERRIDE
+    if mode is None:
+        try:
+            from delfin.user_settings import load_settings
+            mode = str(((load_settings() or {}).get("agent") or {})
+                       .get("bash_isolation", "auto") or "auto")
+        except Exception:
+            mode = "auto"
+    mode = mode.strip().lower()
+    if getattr(perms, "scope_locked", False):
+        if _bwrap_functional():
+            return "bwrap", mode
+        if _landlock_functional():
+            return "landlock", mode
+        if _seatbelt_functional():
+            return "seatbelt", mode
+        return "refuse", mode
+    if mode == "auto":
+        if _bwrap_functional():
+            return "bwrap", mode
+        if _landlock_functional():
+            return "landlock", mode
+        if _seatbelt_functional():
+            return "seatbelt", mode
+        return "none", mode
+    if mode == "bwrap":
+        if shutil.which("bwrap"):
+            return "bwrap", mode
+        if _landlock_functional():
+            return "landlock", mode
+        if _seatbelt_functional():
+            return "seatbelt", mode
+        return "refuse", mode
+    return "none", mode
+
+
+# Words that keep a command off the caged rule (_caged_command_may_run_unasked)
+# wherever they occur in its text, not only as a segment's program: network
+# clients, publishing and package tools (their network subcommands have
+# rules of their own), job schedulers (a job runs outside the cage),
+# signals, privilege changes, deletion and desktop launchers. A version
+# suffix is ignored (pip3.11). Matching a word in a string or a file name
+# only keeps the old dialog.
+_CAGED_UNASKED_EXCLUDED_WORDS: frozenset[str] = frozenset({
+    "curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat",
+    "socat", "telnet", "ftp", "lftp", "tftp", "aria2c", "httpie", "xh",
+    "nmap", "ping", "traceroute", "dig", "nslookup", "whois", "mail",
+    "mailx", "sendmail", "mutt", "s3cmd", "aws", "gcloud", "gsutil", "az",
+    "rclone",
+    "git", "gh", "glab", "hub", "svn", "hg",
+    "pip", "pipx", "uv", "poetry", "conda", "mamba", "micromamba", "npm",
+    "npx", "yarn", "pnpm", "cargo", "go", "gem", "bundle", "apt", "apt-get",
+    "dnf", "yum", "brew", "snap", "flatpak", "spack", "docker", "podman",
+    "singularity", "apptainer",
+    "kill", "pkill", "killall", "skill", "xkill", "nohup", "setsid",
+    "disown", "screen", "tmux", "crontab", "systemctl", "launchctl",
+    "service",
+    "sudo", "su", "doas", "pkexec", "runuser",
+    "rm", "rmdir", "unlink", "shred", "truncate", "dd", "wipefs", "mkfs",
+    "sbatch", "srun", "salloc", "scancel", "scontrol", "qsub", "qdel",
+    "qrsh", "bsub", "bkill",
+    "xdg-open", "notify-send", "dbus-send", "osascript",
+})
+
+_CAGED_UNASKED_EXCLUDED_RE = re.compile(
+    r"://|/dev/(?:tcp|udp)/"
+    r"|\b(?:socket|urllib\d?|requests|httpx|aiohttp|http\.client|http\.server"
+    r"|smtplib|ftplib|telnetlib|paramiko|xmlrpc|websockets?|ssl"
+    r"|os\.(?:kill|killpg|remove|unlink|rmdir|removedirs|set[ug]id)"
+    r"|signal\.(?:pthread_kill|raise_signal)|rmtree)\b"
+    r"|\.unlink\(|(?:^|\s)-delete\b")
+
+# Authoring a file or a program in the command text: a here-document, or
+# tee / cat / printf / echo writing a file. These have a sanctioned
+# control the refusal names (write_file, then `python3 <file>`), and the
+# file then goes through the write gate and the change journal as a file.
+_CAGED_UNASKED_AUTHORING_RE = re.compile(
+    r"<<|(?:^|[;&|('\"]|\$\()\s*(?:tee|cat|printf|echo)\b[^;&|]*(?:>|\btee\b)"
+    r"|(?:^|[;&|(])\s*tee\b")
+
+
+def _caged_command_names_excluded(cmd: str) -> bool:
+    """True when ``cmd`` names anything the caged rule leaves to the
+    existing dialog (``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``), or
+    authors a file in its own text (``_CAGED_UNASKED_AUTHORING_RE``)."""
+    if _CAGED_UNASKED_EXCLUDED_RE.search(cmd):
+        return True
+    if _CAGED_UNASKED_AUTHORING_RE.search(cmd):
+        return True
+    for tok in re.findall(r"[A-Za-z0-9_+.-]+", cmd.lower()):
+        tok = tok.lstrip("-")
+        if tok in _CAGED_UNASKED_EXCLUDED_WORDS:
+            return True
+        if re.sub(r"[\d.]+$", "", tok) in _CAGED_UNASKED_EXCLUDED_WORDS:
+            return True
+    return False
+
+
+def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
+    """Whether a bash command that is NOT on the auto-allow list may run
+    without a question because the filesystem cage holds it.
+
+    Consulted by the bash gate only at its final "not on the auto-allow
+    list" point, after every other tier said yes, and only for the native
+    shell executor. True when all hold:
+      - ``mode`` is "default" or "acceptEdits" (plan, diff_approval and
+        bypass are unchanged);
+      - ``agent.caged_commands_run_unasked`` is not false;
+      - ``_bash_isolation_decision`` answers "bwrap" -- the decision
+        ``_bash_isolation_argv`` builds the argv from -- the process cage
+        is active (``--unshare-pid``: no process outside the command is
+        visible to signal) and the network mode is not "open";
+      - the text names nothing in ``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``.
+    The command then runs with ``caged_unasked=True``: protected files
+    read-only, no SLURM route, refused if the cage is gone by then.
+
+    Rejected: Landlock and Seatbelt as cages for this rule. Landlock cannot
+    make a file read-only inside a writable root (git hooks and config
+    stay writable there), and Seatbelt has no test host here; both keep
+    the dialog. Rejected: admitting by a program allow-list -- the
+    refusals measured were scripts, interpreters, compilers and
+    chemistry programs, an open set; the cage is what bounds them.
+    Never raises; any failure answers False.
+    """
+    try:
+        if mode not in ("default", "acceptEdits"):
+            return False
+        try:
+            from delfin.user_settings import load_settings
+            agent_cfg = (load_settings() or {}).get("agent") or {}
+            if agent_cfg.get("caged_commands_run_unasked", True) is False:
+                return False
+        except Exception:
+            pass
+        if _caged_command_names_excluded(cmd):
+            return False
+        _kind, _iso_mode = _bash_isolation_decision(perms)
+        # A container session runs its commands in the container, whose
+        # mounts are not the cage this admission relies on: asked instead.
+        if _kind != "bwrap" or _iso_mode == "container":
+            return False
+        if not _process_cage_enabled():
+            return False
+        # Reads are confined by Landlock inside the cage; without it the
+        # command could read outside the roots unseen, which default mode
+        # asks about. No Landlock, no admission.
+        if not _landlock_functional():
+            return False
+        from . import egress_proxy as _ep
+        if _ep.network_mode() == "open":
+            return False
+        return True
+    except Exception:
+        return False
+
+
+_CAGED_SYSTEM_READ_PATHS: tuple[str, ...] = (
+    "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc",
+    "/opt", "/tmp", "/proc", "/dev", "/sys", "/run", "/var/lib/sss",
+)
+
+# Environment variables naming tool installs a command may need to read.
+_CAGED_ENV_READ_VARS: tuple[str, ...] = (
+    "PATH", "LD_LIBRARY_PATH", "PYTHONPATH", "CONDA_PREFIX", "VIRTUAL_ENV",
+    "MAMBA_ROOT_PREFIX", "XTBPATH", "XTBHOME", "ORCA_PATH", "ORCADIR",
+)
+
+
+def _caged_read_paths(perms) -> list[str]:
+    """Where a command admitted by the caged rule may read, besides its
+    write roots (which landlock_exec adds itself).
+
+    The session's roots (workspace, extra, read-only, calc, granted read
+    directories, git metadata), the system paths a program needs
+    (``_CAGED_SYSTEM_READ_PATHS``; /etc's secret-bearing files are not
+    readable by the user anyway), this interpreter's prefixes, and every
+    directory named by ``_CAGED_ENV_READ_VARS`` (a ``bin`` entry grants
+    its parent prefix, so an environment's ``lib`` and headers come with
+    it). An entry that would grant ``/``, the home directory or an
+    ancestor of it is skipped: the rest of the home stays unreadable.
+    Credential paths are hidden on top (``--hide``). Real paths,
+    existing only, deduplicated. Never raises."""
+    out: list[str] = []
+    seen: set[str] = set()
+    try:
+        home = os.path.realpath(str(Path.home()))
+    except Exception:
+        home = "/"
+    too_broad = {"/", home}
+    p = home
+    while p not in ("/", ""):
+        p = os.path.dirname(p)
+        too_broad.add(p)
+
+    def _add(path) -> None:
+        try:
+            rp = os.path.realpath(str(path))
+        except OSError:
+            return
+        if (not rp or rp in seen or rp in too_broad
+                or not os.path.exists(rp)):
+            return
+        seen.add(rp)
+        out.append(rp)
+
+    try:
+        for r in perms.all_workspace_roots():
+            _add(r)
+    except Exception:
+        _add(getattr(perms, "workspace", "."))
+    for attr in ("read_only_workspace_dirs", "confirm_write_dirs",
+                 "session_read_dirs", "extra_workspace_dirs"):
+        for d in tuple(getattr(perms, attr, ()) or ()):
+            _add(d)
+    for g in _git_metadata_roots(getattr(perms, "workspace", ".")):
+        _add(g)
+    for d in _CAGED_SYSTEM_READ_PATHS:
+        _add(d)
+    for d in (sys.prefix, sys.base_prefix, sys.exec_prefix,
+              os.path.dirname(os.path.dirname(os.path.realpath(sys.executable)))):
+        _add(d)
+    for var in _CAGED_ENV_READ_VARS:
+        for entry in str(os.environ.get(var) or "").split(os.pathsep):
+            if not entry or not os.path.isabs(entry):
+                continue
+            rp = os.path.realpath(entry)
+            _add(os.path.dirname(rp) if os.path.basename(rp) == "bin" else rp)
+    return out
+
+
+def _caged_readonly_paths(perms) -> list[str]:
+    """Existing paths bound read-only for a command admitted by the caged
+    rule: the git metadata directories, every non-wildcard entry of
+    ``perms.path_protected_globs`` under each workspace root (``.git``,
+    ``.github``, ``.gitattributes``, ``.gitmodules``, ``.delfin/settings*.json``,
+    the agent's own source files), and the calc / read-only roots. Real
+    paths (bwrap cannot mount through a symlink), deduplicated. A path
+    that does not exist yet is not covered; see the PR notes. Never raises.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p) -> None:
+        try:
+            rp = os.path.realpath(str(p))
+            if rp in seen or not os.path.exists(rp):
+                return
+        except OSError:
+            return
+        seen.add(rp)
+        out.append(rp)
+
+    try:
+        roots = [Path(r) for r in perms.all_workspace_roots()]
+    except Exception:
+        roots = [Path(getattr(perms, "workspace", "."))]
+    for g in _git_metadata_roots(getattr(perms, "workspace", ".")):
+        _add(g)
+    rels: set[str] = set()
+    for g in tuple(getattr(perms, "path_protected_globs", ()) or ()):
+        g = str(g)
+        while g.startswith("**/"):
+            g = g[3:]
+        if g.endswith("/**"):
+            g = g[:-3]
+        if g and not any(ch in g for ch in "*?["):
+            rels.add(g)
+    for r in roots:
+        for rel in sorted(rels):
+            _add(r / rel)
+    for d in (tuple(getattr(perms, "confirm_write_dirs", ()) or ())
+              + tuple(getattr(perms, "read_only_workspace_dirs", ()) or ())):
+        _add(d)
+    return out
+
+
 def _bash_isolation_argv(
     cmd: str,
     run_cwd,
     perms,
     mode: str | None = None,
     extra_write=(),
+    caged_unasked: bool = False,
 ) -> list[str]:
     """argv for the agent's bash tool, optionally bwrap-isolated.
 
@@ -23846,32 +25734,38 @@ def _bash_isolation_argv(
     (bypass) run there proceeds and says so in the security panel.
     ``extra_write`` names directories a caller needs writable besides the
     workspace roots (the test runner's report directory).
+
+    ``caged_unasked``: the gate admitted this command without a question
+    because the cage holds it (``_caged_command_may_run_unasked``). It
+    then runs only under bubblewrap -- any other decision now refuses it
+    -- with ``_caged_readonly_paths`` bound read-only and without the
+    SLURM controller route.
     """
     plain = ["/bin/bash", "-c", cmd]
-    if mode is None and _BASH_ISOLATION_OVERRIDE:
-        # Set once per process by `delfin-agent --isolate`. It comes before
-        # the settings file on purpose: a session-scoped choice must not
-        # have to write a setting that outlives the session making it.
-        mode = _BASH_ISOLATION_OVERRIDE
-    if mode is None:
-        try:
-            from delfin.user_settings import load_settings
-            mode = str(((load_settings() or {}).get("agent") or {})
-                       .get("bash_isolation", "auto") or "auto")
-        except Exception:
-            mode = "auto"
-    mode = mode.strip().lower()
+    # The --isolate override (set once per process by `delfin-agent
+    # --isolate`) comes before the settings file on purpose: a
+    # session-scoped choice must not have to write a setting that outlives
+    # the session making it. Resolved in _bash_isolation_decision.
+    kind, mode = _bash_isolation_decision(perms, mode)
     if mode == "container":
         # A container where one can run (container_exec); otherwise the
         # layers "auto" picks, with a recorded notice -- never a plain shell.
-        try:
-            from . import container_exec as _ce
-            boxed = _ce.session_argv(cmd, run_cwd, perms, extra_write)
-        except Exception:
-            boxed = None
+        # Never for a caged_unasked command: that admission was made for
+        # the bubblewrap cage, which the container is not.
+        boxed = None
+        if not caged_unasked:
+            try:
+                from . import container_exec as _ce
+                boxed = _ce.session_argv(cmd, run_cwd, perms, extra_write)
+            except Exception:
+                boxed = None
         if boxed:
             return boxed
-        mode = "auto"
+        kind, mode = _bash_isolation_decision(perms, "auto")
+    if caged_unasked and (kind != "bwrap" or not _landlock_functional()):
+        return _refusal_argv(
+            "this command was admitted without a question because the "
+            "filesystem cage holds it, and the cage is no longer available")
     # "auto" (default): hard-isolate ONLY in the unattended/permissive
     # permission mode (bypassPermissions) where no human approves each
     # command — that's where containment matters most. Interactive modes keep
@@ -23885,12 +25779,12 @@ def _bash_isolation_argv(
     # instead of relying on that parsing — the promise is only worth
     # what the weakest path enforces.
     if getattr(perms, "scope_locked", False):
-        if _bwrap_functional():
+        if kind == "bwrap":
             mode = "bwrap"
-        elif _landlock_functional():
+        elif kind == "landlock":
             _announce_isolation_via_landlock("locked session")
             return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
-        elif _seatbelt_functional():
+        elif kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         else:
             # Say it. A locked scope promises the agent cannot leave one
@@ -23919,15 +25813,15 @@ def _bash_isolation_argv(
         # which is exactly the argument the locked branch above already
         # makes. It does not stop being true because somebody is watching.
         perm_mode = str(getattr(perms, "mode", "") or "").strip()
-        if _bwrap_functional():
+        if kind == "bwrap":
             mode = "bwrap"
             _announce_auto_isolation()
-        elif _landlock_functional():
+        elif kind == "landlock":
             _announce_isolation_via_landlock(
                 "unattended (bypass) run"
                 if perm_mode == "bypassPermissions" else "attended session")
             return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
-        elif _seatbelt_functional():
+        elif kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         elif perm_mode == "bypassPermissions":
             _announce_bypass_without_isolation()
@@ -23939,18 +25833,18 @@ def _bash_isolation_argv(
             # scope makes, where refusing IS the answer. The banner is
             # what tells the user which of the two they have.
             return _in_process_cage(plain, run_cwd)
-    if mode == "bwrap" and not shutil.which("bwrap"):
+    if mode == "bwrap" and kind != "bwrap":
         # Isolation was asked for by name. Landlock gives the same promise;
         # without it the command is refused rather than run without.
-        if _landlock_functional():
+        if kind == "landlock":
             _announce_isolation_via_landlock("forced isolation")
             return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
-        if _seatbelt_functional():
+        if kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         return _refusal_argv(
             "filesystem isolation is switched on, and neither bubblewrap "
             "nor Landlock nor Seatbelt can provide it on this host")
-    if mode != "bwrap":
+    if kind != "bwrap":
         return _in_process_cage(plain, run_cwd)
 
     try:
@@ -24000,6 +25894,12 @@ def _bash_isolation_argv(
     # command: existing hooks stay readable, new ones cannot be written.
     for g in git_roots:
         args += ["--ro-bind-try", str(Path(g) / "hooks"), str(Path(g) / "hooks")]
+    if caged_unasked:
+        # Nobody saw this command. The files whose write is asked about in
+        # every mode (git metadata, CI and workspace configuration, the
+        # agent's own source and settings, calc) are read-only for it.
+        for p in _caged_readonly_paths(perms):
+            args += ["--ro-bind-try", p, p]
     # Where approvals are answered stays read-only inside a writable root
     # (a granted ~/.delfin): a command that builds the answer path at run
     # time is held by the mount, not by reading its text. A room outside
@@ -24021,9 +25921,11 @@ def _bash_isolation_argv(
     try:
         from . import landlock_exec as _ll
         from . import socket_guard as _sg
-        net_args, proxy_dir = _sandbox_network_args()
-        if _sg.available():
-            if proxy_dir:
+        net_args, proxy_dir = (_sandbox_network_args(allow_slurm=False)
+                               if caged_unasked else _sandbox_network_args())
+        guard = _sg.available()
+        if guard or caged_unasked:
+            if guard and proxy_dir:
                 args += ["--ro-bind", proxy_dir, proxy_dir]
             # The helper and its interpreter must be visible inside: a
             # checkout or an environment under /tmp is behind the fresh
@@ -24033,14 +25935,50 @@ def _bash_isolation_argv(
                            str(Path(sys.prefix).resolve())}:
                 if needed.startswith("/tmp/") or needed == "/tmp":
                     args += ["--ro-bind", needed, needed]
-            inner = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
-                     "--fs", "0", *net_args, "--strict", "1"]
-            for r in roots + [str(Path(p).resolve()) for p in extra_write] + ["/tmp"]:
-                inner += ["--allow-socket", r]
+            if caged_unasked:
+                # Reads confined too (Landlock inside the namespace): the
+                # workspace roots and the paths a program needs, nothing
+                # of other users or of the rest of the home directory.
+                fs_part = []
+                for r in roots + [str(Path(p).resolve()) for p in extra_write] \
+                        + ["/tmp"]:
+                    fs_part += ["--write", r]
+                for h in _home_secret_paths():
+                    # The cage's /tmp is a fresh tmpfs: a host path under it
+                    # is not there unless a root brings it in. Naming it
+                    # anyway would make Landlock grant /tmp entry by entry,
+                    # and nothing created in /tmp later would be writable.
+                    if (h.startswith("/tmp/") and not any(
+                            h == r or h.startswith(r.rstrip("/") + "/")
+                            for r in roots)):
+                        continue
+                    fs_part += ["--hide", h]
+                for p in _caged_readonly_paths(perms):
+                    fs_part += ["--read-only", p]
+                for p in _caged_read_paths(perms):
+                    fs_part += ["--read", p]
+            else:
+                fs_part = ["--fs", "0"]
+            if guard:
+                inner = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+                         *fs_part, *net_args, "--strict", "1"]
+                for r in roots + [str(Path(p).resolve()) for p in extra_write] + ["/tmp"]:
+                    inner += ["--allow-socket", r]
+            else:
+                # No connect filter here: a restricted network becomes no
+                # network, as below, and the helper applies only the files.
+                if net_args[1] != "open":
+                    args += ["--unshare-net"]
+                inner = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+                         *fs_part, "--net", "open", "--strict", "0"]
             return args + inner + ["--"] + plain
         if net_args[1] != "open":
             args += ["--unshare-net"]
     except Exception:
+        if caged_unasked:
+            return _refusal_argv(
+                "the read confinement for a command run without a question "
+                "could not be built")
         args += ["--unshare-net"]
     return args + plain
 
@@ -26884,6 +28822,13 @@ class OpenAIClient(_BaseClient):
                     api_messages.append(_harness_row(_run_note))
                     yield StreamEvent(
                         type="notice", text="\n\n" + _run_note + "\n")
+
+                # The watcher went down or answers again: for the user.
+                # The model learns it from the refusal text of each held
+                # action, so the history gets nothing here.
+                for _w_note in drain_watcher_notices(self._permissions):
+                    yield StreamEvent(
+                        type="notice", text="\n\n" + _w_note + "\n")
 
                 # Mid-session memory nudge (package 7): after enough WORK
                 # (tool calls AND produced text) since the last nudge, ask
