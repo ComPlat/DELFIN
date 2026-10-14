@@ -7688,6 +7688,72 @@ def _long_run_probe(perms):
     return _probe, state
 
 
+#: Set by _ask_confirm when it answered "not now" without a dialog; read
+#: by _confirm_timed_out on the same thread right after.
+_APPROVAL_LATCHED = threading.local()
+
+_READ_TOOL_KIND = frozenset({"read_file", "grep_file", "list_files",
+                             "glob_files", "notebook_read"})
+
+
+def _approval_kind(name: str) -> str:
+    """The kind an approval is latched under: "write", "bash", "read" or
+    the tool's own (bare) name."""
+    base = _bare_tool_name(name)
+    if base in _WRITE_TOOL_NAMES or base in ("multi_edit", "write_file"):
+        return "write"
+    if base in ("bash", "bash_background"):
+        return "bash"
+    if base in _READ_TOOL_KIND:
+        return "read"
+    return base
+
+
+def _ask_confirm(perms, name: str, args: dict, preview: str) -> bool:
+    """Ask the user through ``perms.confirm_callback``, unless a dialog of
+    the same kind already expired unanswered in this turn.
+
+    Input: the call to approve. Output: the answer. Semantics: a latched
+    kind is answered False at once, and ``_confirm_timed_out`` then says
+    "absence", so the caller words it as the user being away and records
+    no denial. An expiry latches the kind for ``perms.turn_token``; the
+    next turn, or a message the user types into this one
+    (OpenAIClient.push_steer), opens it again. Without a turn token (no
+    client turn) nothing is latched.
+
+    Measured: 3 of 17 full 300 s waits in the bug archive followed an
+    expiry of the same kind in the same turn. Rejected: a time window
+    (KitConfirmBroker's own latch re-opens after 300 s mid-turn, and the
+    other brokers have none)."""
+    _APPROVAL_LATCHED.value = False
+    kind = _approval_kind(name)
+    away = getattr(perms, "approval_away", None)
+    token = getattr(perms, "turn_token", 0)
+    if isinstance(away, dict) and token and away.get(kind) == token:
+        _APPROVAL_LATCHED.value = True
+        try:
+            _record_security_event(
+                "approval_not_now", _bare_tool_name(name),
+                f"a {kind} approval already went unanswered this turn",
+                blocked=True)
+        except Exception:
+            pass
+        return False
+    ok = bool(perms.confirm_callback(name, args, preview))
+    if (not ok and isinstance(away, dict) and token
+            and _DocToolExecutor._confirm_timed_out(perms)):
+        away[kind] = token
+    return ok
+
+
+def _not_asked_again_note() -> str:
+    """The sentence a "not now" without a dialog adds, or ""."""
+    if getattr(_APPROVAL_LATCHED, "value", False):
+        return (" It was not asked again: an approval of this kind already "
+                "went unanswered this turn.")
+    return ""
+
+
 def _watch_started_job(perms, job_id: str, description: str) -> bool:
     """Put a background job on the session's watch list (what watch_job
     does), so it is named after a compaction and reported when it ends.
@@ -7916,6 +7982,10 @@ class KitToolPermissions:
     #: answered. Globally unique, so a sub-agent's turn (a copy of these
     #: permissions) never shares its parent's token.
     turn_token: int = 0
+    #: Approval kinds (_approval_kind) whose dialog expired unanswered,
+    #: mapped to the turn_token it expired in (_ask_confirm). Shared by
+    #: reference with sub-agents (dataclasses.replace) like denied_actions.
+    approval_away: dict = field(default_factory=dict)
     # Directories a single approved outside-workspace READ opened for the
     # rest of the session. Readable, never writable, never persisted -- see
     # ``add_session_read_dir``.
@@ -15862,7 +15932,7 @@ class _DocToolExecutor:
                        f"before this call.\n\n{body}")
         self._clear_refusal_reason(perms)
         try:
-            ok = bool(perms.confirm_callback(name, args or {}, preview))
+            ok = bool(_ask_confirm(perms, name, args or {}, preview))
         except Exception as exc:
             return f"confirm_callback raised: {exc}"
         if ok:
@@ -17626,7 +17696,7 @@ class _DocToolExecutor:
                 "proceed."
             )})
         try:
-            ok = bool(perms.confirm_callback(name, arguments, preview))
+            ok = bool(_ask_confirm(perms, name, arguments, preview))
         except Exception as exc:
             return json.dumps({"error": f"confirm_callback raised: {exc}"})
         if ok:
@@ -18811,7 +18881,7 @@ class _DocToolExecutor:
                 "session."))
         )
         try:
-            ok = bool(perms.confirm_callback(
+            ok = bool(_ask_confirm(perms, 
                 "read_file", {"path": str(resolved)}, preview
             ))
         except Exception as exc:
@@ -18860,7 +18930,12 @@ class _DocToolExecutor:
         Absence is not a decision: an unattended window must not be
         recorded as a refusal, or every 300 s timeout would permanently
         close a path the user never looked at.
+
+        True as well when _ask_confirm answered "not now" without a
+        dialog because one of the same kind expired earlier this turn.
         """
+        if getattr(_APPROVAL_LATCHED, "value", False):
+            return True
         return bool(getattr(
             getattr(perms.confirm_callback, "__self__", None),
             "last_timed_out", False))
@@ -19176,7 +19251,7 @@ class _DocToolExecutor:
                     + self._build_change_preview(name, args, resolved)
                 )
             try:
-                ok = bool(perms.confirm_callback(name, args, preview))
+                ok = bool(_ask_confirm(perms, name, args, preview))
             except Exception as exc:
                 return f"confirm_callback raised: {exc}"
             if ok:
@@ -19189,11 +19264,16 @@ class _DocToolExecutor:
                 # told the model the user had said no -- twice in one
                 # afternoon, five minutes each (2026-09-17).
                 _record_security_event("approval_timeout", name, rel_str)
+                _kept = self._keep_unapproved_change(
+                    name, args, resolved, perms,
+                    note=preview.split("\n", 1)[0])
                 return (
                     f"approval to change the {_w} '{rel_str}' TIMED OUT — "
-                    "the user is away, this is NOT a denial. Do not try it "
-                    "again now; carry on with work that needs no approval, "
-                    "or end your turn saying what is waiting for them.")
+                    "the user is away, this is NOT a denial."
+                    + _kept + _not_asked_again_note() +
+                    " Do not try it again this turn; carry on with work "
+                    "that needs no approval, or end your turn saying what "
+                    "is waiting for them.")
             self._refuse_write(perms, str(resolved), name, args)
             return (f"user denied '{name}' on {_w} '{rel_str}'"
                     + self._said_why(perms))
@@ -19221,17 +19301,21 @@ class _DocToolExecutor:
             preview = (self._build_change_preview(name, args, resolved)
                        or f"{name} -> {rel_str}")
             try:
-                ok = bool(perms.confirm_callback(name, args, preview))
+                ok = bool(_ask_confirm(perms, name, args, preview))
             except Exception as exc:
                 return f"confirm_callback raised: {exc}"
             if not ok:
                 if self._confirm_timed_out(perms):
                     _record_security_event("approval_timeout", name, rel_str)
+                    _kept = self._keep_unapproved_change(
+                        name, args, resolved, perms)
                     return (
                         f"approval to write '{rel_str}' TIMED OUT — the user "
-                        "is away, this is NOT a denial. Do not try it again "
-                        "now; carry on with work that needs no approval, or "
-                        "end your turn saying what is waiting for them.")
+                        "is away, this is NOT a denial."
+                        + _kept + _not_asked_again_note() +
+                        " Do not try it again this turn; carry on with work "
+                        "that needs no approval, or end your turn saying "
+                        "what is waiting for them.")
                 _record_security_event("denied_by_user", name, rel_str)
                 self._refuse_write(perms, str(resolved), name, args)
                 return (
@@ -19528,7 +19612,7 @@ class _DocToolExecutor:
                 "not sure your request covers it:\n"
                 f"  {reason}\n\n{body}")
         try:
-            ok = bool(perms.confirm_callback(base, args, preview))
+            ok = bool(_ask_confirm(perms, base, args, preview))
         except Exception as exc:
             return f"confirm_callback raised: {exc}"
         if ok:
@@ -19736,7 +19820,7 @@ class _DocToolExecutor:
                 )
             preview = f"{name} -> {target[:400]}"
             try:
-                ok = bool(perms.confirm_callback(name, args, preview))
+                ok = bool(_ask_confirm(perms, name, args, preview))
             except Exception as exc:
                 return f"confirm_callback raised: {exc}"
             _record_security_event("egress", name, target[:120], blocked=not ok)
@@ -20028,7 +20112,7 @@ class _DocToolExecutor:
                         "nobody can be asked here. Tell the user the "
                         "command and why it is needed.")
                 try:
-                    ok = bool(perms.confirm_callback(
+                    ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd},
                         "[GIT CONFIGURATION]\n"
                         f"`{_hook_key}` names a program that git runs, "
@@ -20068,7 +20152,7 @@ class _DocToolExecutor:
                         "nobody can be asked here. Use the directory's path "
                         "as written, or the script's absolute path.")
                 try:
-                    ok = bool(perms.confirm_callback(
+                    ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd},
                         "[SCRIPT IN AN UNKNOWN DIRECTORY]\n"
                         f"{_names} runs from a directory that cannot be "
@@ -20117,7 +20201,7 @@ class _DocToolExecutor:
                 # Asked even after another dialog approved this command:
                 # that one did not name this consequence.
                 try:
-                    ok = bool(perms.confirm_callback(
+                    ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd},
                         "[NO ISOLATION]\n"
                         f"{_unconfinable}. If approved, this one command "
@@ -20256,7 +20340,7 @@ class _DocToolExecutor:
                             "would contain and against which base, and ask."
                             + _handover_line(cmd, "pr_create_unrequested"))
                 try:
-                    ok = bool(perms.confirm_callback(
+                    ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd},
                         f"$ {cmd}\n(opens a pull request; the user has not "
                         "asked for one since their last message)"))
@@ -20288,7 +20372,7 @@ class _DocToolExecutor:
                 preview = (f"$ {cmd}\n(the user has not asked for a push "
                            "since their last message)")
                 try:
-                    ok = bool(perms.confirm_callback(
+                    ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd}, preview))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
@@ -20423,7 +20507,7 @@ class _DocToolExecutor:
                 _cwd = str(args.get("cwd") or "").strip()
                 preview = f"$ {cmd}" + (f"\n(cwd: {_cwd})" if _cwd else "")
                 try:
-                    ok = bool(perms.confirm_callback("bash", {"command": cmd}, preview))
+                    ok = bool(_ask_confirm(perms, "bash", {"command": cmd}, preview))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if ok:
@@ -20910,7 +20994,7 @@ class _DocToolExecutor:
             )
         preview = f"{name}\n" + _preview_args(args)
         try:
-            ok = bool(perms.confirm_callback(name, args or {}, preview))
+            ok = bool(_ask_confirm(perms, name, args or {}, preview))
         except Exception as exc:
             return f"confirm_callback raised: {exc}"
         _record_security_event("mcp_side_effect", name, base, blocked=not ok)
@@ -20940,6 +21024,27 @@ class _DocToolExecutor:
                 old_text = resolved_path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             old_text = ""
+        if name == "apply_patch":
+            # The patch itself IS the change preview — show it verbatim rather
+            # than a synthetic old→new content diff (the new content isn't in
+            # args; it's encoded in the unified diff).
+            _d = str(args.get("diff", "") or "").splitlines()
+            body = "\n".join(_d[:200])
+            if len(_d) > 200:
+                body += f"\n... ({len(_d) - 200} more diff lines truncated)"
+            return body or "(empty diff)"
+        new_text = self._proposed_new_text(name, args, old_text)
+        if new_text is None:
+            return ""
+        return self._make_diff(old_text, new_text, str(resolved_path or args.get("path", "")))
+
+    @staticmethod
+    def _proposed_new_text(name: str, args: dict,
+                           old_text: str) -> Optional[str]:
+        """What write_file / edit_file / multi_edit would make of a file
+        whose text is ``old_text``; None for any other tool. The same
+        computation the approval preview shows, so a change kept for later
+        (_keep_unapproved_change) is the change that was asked about."""
         if name == "write_file":
             new_text = args.get("content", "") or ""
             if str(args.get("mode", "") or "").strip().lower() == "append":
@@ -20983,18 +21088,58 @@ class _DocToolExecutor:
                     new_text = new_text.replace(o, n)
                 else:
                     new_text = new_text.replace(o, n, 1)
-        elif name == "apply_patch":
-            # The patch itself IS the change preview — show it verbatim rather
-            # than a synthetic old→new content diff (the new content isn't in
-            # args; it's encoded in the unified diff).
-            _d = str(args.get("diff", "") or "").splitlines()
-            body = "\n".join(_d[:200])
-            if len(_d) > 200:
-                body += f"\n... ({len(_d) - 200} more diff lines truncated)"
-            return body or "(empty diff)"
         else:
+            return None
+        return new_text
+
+    def _keep_unapproved_change(
+        self, name: str, args: dict, resolved: Path,
+        perms: "KitToolPermissions", note: str = "",
+    ) -> str:
+        """Keep a write whose approval went unanswered as a pending change.
+
+        Input: a write_file / edit_file / multi_edit call on a file inside
+        the workspace. Output: a sentence naming the pending change and
+        how the user applies it, or "" when nothing was kept (another
+        tool, outside the workspace, undecodable text, no change, or the
+        pending store refused -- one pending change per file).
+
+        The store is pending_changes, which diff_approval mode and /approve
+        /reject already use: nothing is written now; an approval checks the
+        file still has the content it was staged against and journals the
+        write for undo. ``note`` (the guard's banner for a protected path)
+        is kept on the record so /pending shows it."""
+        try:
+            if _bare_tool_name(name) not in ("write_file", "edit_file",
+                                             "multi_edit"):
+                return ""
+            target = Path(resolved).resolve()
+            ws = Path(perms.workspace).resolve()
+            if not target.is_relative_to(ws):
+                return ""
+            old: Optional[str]
+            if target.exists():
+                old = target.read_bytes().decode("utf-8")
+            else:
+                old = None
+            new = self._proposed_new_text(_bare_tool_name(name), args,
+                                          old or "")
+            if new is None or new == old:
+                return ""
+            from . import pending_changes as _pc
+            rec = _pc.stage(
+                getattr(perms, "task_session_id", "") or "",
+                tool=_bare_tool_name(name), path=str(target),
+                old_text=old, new_text=new,
+                note=("approval went unanswered. " + str(note or "")).strip())
+            if "error" in rec:
+                return ""
+            cid = rec["id"]
+            return (f" The change is kept as pending change {cid}: nothing "
+                    f"was written; the user applies it with /approve {cid} "
+                    f"(or drops it with /reject {cid}) when they are back.")
+        except Exception:
             return ""
-        return self._make_diff(old_text, new_text, str(resolved_path or args.get("path", "")))
 
     @staticmethod
     def _make_diff(old: str, new: str, label: str, max_lines: int = 200) -> str:
@@ -21522,7 +21667,7 @@ class _DocToolExecutor:
                 "Run inside the dashboard with the KIT confirm panel mounted."
             )})
         try:
-            ok = bool(perms.confirm_callback(
+            ok = bool(_ask_confirm(perms, 
                 "remember_permission",
                 {"kind": kind, "value": value, "scope": scope,
                  "rationale": rationale},
@@ -21711,7 +21856,7 @@ class _DocToolExecutor:
                 "Run inside the dashboard with the KIT confirm panel mounted."
             )})
         try:
-            ok = bool(perms.confirm_callback(
+            ok = bool(_ask_confirm(perms, 
                 "remember_permission_bundle",
                 {"profile": profile, "directory": str(dir_path),
                  "scope": scope, "rationale": rationale,
@@ -27551,6 +27696,14 @@ class OpenAIClient(_BaseClient):
         t = (text or "").strip()
         if t and isinstance(text, _HarnessText):
             t = _HarnessText(t)
+        if (t and not isinstance(t, _HarnessText)
+                and not t.startswith(_MACHINE_MESSAGE_PREFIXES)):
+            # The user is here: approvals latched as unanswered this turn
+            # (_ask_confirm) are asked again.
+            try:
+                getattr(self, "_permissions", None).approval_away.clear()
+            except Exception:
+                pass
         if t:
             with self._steer_lock:
                 self._steer_msgs.append(t)
