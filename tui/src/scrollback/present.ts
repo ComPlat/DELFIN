@@ -48,11 +48,16 @@ export class Presenter {
   private lastOutput: { name: string; output: string } | null = null
   private n = 0
 
+  /** `groups` numbers the turns (shared by the window's presenters): a
+   *  replay capped by turns keeps the newest. */
   constructor(readonly sessionId: string, private readonly transcript: Transcript,
-              private readonly options: PresentOptions) {}
+              private readonly options: PresentOptions, private readonly groups: { n: number } = { n: 0 }) {}
 
   private add(kind: string, fields: Fields): void {
-    void this.transcript.append({ id: `${this.sessionId}:${++this.n}`, kind, ...fields })
+    // A message that starts a turn starts its group; a queued or steered
+    // one stays in the turn it was sent into.
+    if (kind === "user" && (fields.source === "user" || fields.source === "harness" || !fields.source)) this.groups.n++
+    void this.transcript.append({ id: `${this.sessionId}:${++this.n}`, kind, group: this.groups.n, ...fields })
   }
 
   /** Every event of a batch; only this session's are shown. */

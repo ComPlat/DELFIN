@@ -34,7 +34,7 @@ export async function mountWindow(options: {
   })
   const store = createAppStore()
   const theme = () => DARK
-  const view = startSessionView(t.renderer, store, theme, { showThinking: false, replayLimit: 400 })
+  const view = startSessionView(t.renderer, store, theme, { showThinking: false, replayTurns: 20 })
   const calls: Call[] = []
   const client = options.client ?? {
     request: async (method: string, params: Record<string, any> = {}) => {

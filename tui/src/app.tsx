@@ -14,6 +14,7 @@ import { createComposer } from "./composer/composer"
 import { History } from "./composer/history"
 import { createApprovalUi } from "./footer/approval"
 import { Footer } from "./footer/footer"
+import { createPicker, type Choice } from "./footer/picker"
 import type { Keymap } from "./keymap/keymap"
 import type { Asked, SessionState } from "./store/state"
 import type { AppStore } from "./store/store"
@@ -38,6 +39,11 @@ export interface AppProps {
   onRedraw: () => void
   /** ctrl+o: the last tool result in full (the session view does it). */
   onExpand?: () => void
+  /** Show a saved session in this window (the resume picker). */
+  onResume?: (sessionId: string, workspace: string) => void
+  /** Thinking shown or hidden from here on (the palette). */
+  onThinking?: (show: boolean) => void
+  thinking?: () => boolean
   /** The pause before a key answers a question (approval.tsx); tests set 0. */
   answerPauseMs?: number
 }
@@ -75,20 +81,117 @@ export function App(props: AppProps): JSX.Element {
   }
   const sid = () => store.state.current ?? ""
 
+  const picker = createPicker()
+
+  const send = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
+    if (!sid()) return false
+    // A bare /model, /effort, /mode or /resume opens its picker; with an
+    // argument the command goes to the session as typed.
+    const bare = /^\/(model|effort|mode|resume)$/.exec(text.trim())
+    if (bare && !how) {
+      openPicker(bare[1]!)
+      return true
+    }
+    // The session strips the text it shows, as a typed line is stripped.
+    if (shown) props.sentAs?.set(text.trim(), shown)
+    const result = await call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })
+    return result !== undefined
+  }
+
   const composer = createComposer({
     request: (method, params) => props.client.request(method, params),
     sessionId: sid,
     history: props.history ?? new History(),
     keymap: props.keymap,
     say,
-    send: async (text, how, shown) => {
-      if (!sid()) return false
-      // The session strips the text it shows, as a typed line is stripped.
-      if (shown) props.sentAs?.set(text.trim(), shown)
-      const result = await call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })
-      return result !== undefined
-    },
+    send,
   })
+
+  // -- the palette and the pickers ---------------------------------------------
+  const choicesOf = async (what: string, command: string): Promise<Choice[]> => {
+    const got = await props.client.request("session.choices", { sessionId: sid(), what })
+    return ((got?.choices ?? []) as { value: string; detail?: string }[])
+      .filter((c) => c.value)
+      .map((c) => ({ label: c.value, detail: c.detail, value: `${command} ${c.value}`, current: c.value === got.current }))
+  }
+  const age = (secs: number) => {
+    const d = Math.max(0, Date.now() / 1000 - secs)
+    return d < 3600 ? `${Math.round(d / 60)}m ago` : d < 86400 ? `${Math.round(d / 3600)}h ago` : `${Math.round(d / 86400)}d ago`
+  }
+  const openPicker = (what: string) => {
+    const s = session()
+    if (!s) return
+    switch (what) {
+      case "model":
+      case "effort":
+      case "mode":
+        picker.open(what === "mode" ? "agent mode" : what, choicesOf(what, `/${what}`), (c) => void send(c.value))
+        return
+      case "permissions":
+        picker.open("approval posture", [
+          { label: "plan", detail: "read and plan; every write and command asked", value: "plan" },
+          { label: "default", detail: "ask before each write and each command", value: "default" },
+          { label: "acceptEdits", detail: "writes go through; commands still asked", value: "acceptEdits" },
+        ].map((c) => ({ ...c, current: c.value === s.approval })), (c) => {
+          void call("session.setMode", { sessionId: sid(), mode: c.value })
+        })
+        return
+      case "resume":
+        // The sessions running in the service first, then the saved ones of
+        // this workspace (the agent view will show the running ones too).
+        picker.open("resume a session", Promise.all([
+          props.client.request("sessions.list", {}).catch(() => ({ sessions: [] })),
+          props.client.request("sessions.past", { workspace: s.workspace, limit: 50 }),
+        ]).then(([listed, past]) => {
+          const running = ((listed?.sessions ?? []) as any[]).map((r) => ({
+            label: r.title || "(untitled)",
+            detail: ["running here", r.state, r.model, String(r.sessionId).slice(0, 8)].filter(Boolean).join(" · "),
+            value: `${r.sessionId}\t${r.workspace}`,
+            current: r.sessionId === s.id,
+          }))
+          const saved = ((past?.sessions ?? []) as any[]).filter((r) => !r.running).map((r) => ({
+            label: r.title || "(untitled)",
+            detail: [age(r.updatedAt), r.model, `${r.messages} messages`, String(r.sessionId).slice(0, 8)]
+              .filter(Boolean).join(" · "),
+            value: `${r.sessionId}\t${r.workspace}`,
+          }))
+          return [...running, ...saved]
+        }), (c) => {
+          const [id, workspace] = c.value.split("\t")
+          if (id && id !== sid()) props.onResume?.(id, workspace ?? "")
+        })
+        return
+    }
+  }
+  const openPalette = () => {
+    const actions: Choice[] = [
+      { label: "model…", detail: "switch the model", value: "pick:model" },
+      { label: "permissions…", detail: "the approval posture (also shift+tab)", value: "pick:permissions" },
+      { label: "effort…", detail: "reasoning effort", value: "pick:effort" },
+      { label: "mode…", detail: "the agent mode", value: "pick:mode" },
+      { label: "resume…", detail: "a saved session, in this window", value: "pick:resume" },
+      { label: props.thinking?.() ? "hide thinking" : "show thinking", detail: "the model's thinking, dimmed", value: "do:thinking" },
+      { label: "expand the last result", detail: props.keymap.label("expand"), value: "do:expand" },
+      { label: "task list on/off", detail: props.keymap.label("tasks"), value: "do:tasks" },
+      { label: "redraw", detail: props.keymap.label("redraw"), value: "do:redraw" },
+      { label: "leave the window", detail: `${props.keymap.label("quit")} — the session keeps running`, value: "do:quit" },
+    ]
+    const commands = props.client.request("session.commands", { sessionId: sid() })
+      .then((got) => ((got?.commands ?? []) as any[]).map((c) => ({
+        label: c.name, detail: c.summary, value: `${c.takesArgs ? "type" : "run"}:${c.name}`,
+      })))
+    picker.open("commands", actions, (c) => {
+      const [kind, what] = [c.value.slice(0, c.value.indexOf(":")), c.value.slice(c.value.indexOf(":") + 1)]
+      if (kind === "pick") openPicker(what)
+      else if (kind === "run") void send(what)
+      else if (kind === "type") composer.setText(`${what} `)
+      else if (what === "thinking") props.onThinking?.(!props.thinking?.())
+      else if (what === "expand") props.onExpand?.()
+      else if (what === "tasks") void call("session.toggleTasks", { sessionId: sid() })
+      else if (what === "redraw") props.onRedraw()
+      else if (what === "quit") props.onQuit()
+    }, commands)
+  }
 
   const reply = async (asked: Asked, params: Record<string, unknown>): Promise<boolean> => {
     const result = await call("permission.reply", { sessionId: sid(), requestId: asked.requestId, ...params })
@@ -100,7 +203,11 @@ export function App(props: AppProps): JSX.Element {
                                       pauseMs: props.answerPauseMs })
   // The question's own state starts when it appears (its typeahead pause
   // counts from then), and ends with it.
-  createEffect(() => approval.sync(session()?.pending[0]))
+  createEffect(() => {
+    const asked = session()?.pending[0]
+    approval.sync(asked)
+    if (asked) picker.close()             // a question takes the footer from a picker
+  })
 
   const cycleMode = () => {
     const s = session()
@@ -140,12 +247,23 @@ export function App(props: AppProps): JSX.Element {
     }
     if (asked) {
       key.preventDefault()
+      picker.close()                       // the question holds the turn: it has the keys
       // ctrl+d leaves the window; the question stays open for any window.
       if (km.matches("quit", key)) {
         props.onQuit()
         return
       }
       approval.handleKey(asked, key)
+      return
+    }
+    if (picker.state.open) {
+      key.preventDefault()
+      picker.handleKey(key)
+      return
+    }
+    if (km.matches("palette", key)) {
+      key.preventDefault()
+      if (s && s.state !== "ended") openPalette()
       return
     }
     if (composer.handleKey(key)) {
@@ -200,7 +318,8 @@ export function App(props: AppProps): JSX.Element {
       message={message}
       composer={composer}
       approval={approval}
-      focused={() => true}
+      picker={picker}
+      focused={() => !picker.state.open}
     />
   )
 }

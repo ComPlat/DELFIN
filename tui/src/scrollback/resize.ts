@@ -24,6 +24,10 @@ export interface ReplayPolicy {
   settleMs?: number
   /** Items to write again; older ones are left out (0 = all). */
   limit?: number
+  /** Instead of the default replay: what to do once the width settled
+   *  (the session view replays by turns, or prints a divider where the
+   *  terminal cannot clear its scrollback). */
+  onSettled?: (width: number) => void
 }
 
 /** Watch ``source``; replay ``transcript`` after each settled width change. */
@@ -47,7 +51,8 @@ export function replayOnWidthChange(
       timer = undefined
       if (source.terminalWidth === width) return
       width = source.terminalWidth
-      void transcript.replay(policy.limit ?? 0)
+      if (policy.onSettled) policy.onSettled(width)
+      else void transcript.replay(policy.limit ?? 0)
     }, settleMs)
   }
   source.on("resize", onResize)

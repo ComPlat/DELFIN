@@ -38,7 +38,7 @@ async function renderFixture(width: number): Promise<{ text: string; footer: str
   })
   const store = createAppStore()
   const theme = () => DARK
-  const view = startSessionView(setup.renderer, store, theme, { showThinking: false, replayLimit: 400 })
+  const view = startSessionView(setup.renderer, store, theme, { showThinking: false, replayTurns: 20 })
   store.update((d) => { ensureSession(d, "s1", fixture.session) })
   view.show("s1")
   await render(() => (

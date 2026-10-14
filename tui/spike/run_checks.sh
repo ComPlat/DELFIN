@@ -53,6 +53,7 @@ echo "== the window, live"
 if command -v tmux >/dev/null; then
   run "delfin-agent tui in tmux shows its snapshot" "$DELFIN_PYTHON" test/e2e/check_tui_tmux.py
   run "the composer in tmux: completion, new lines, pastes, history" "$DELFIN_PYTHON" test/e2e/check_composer_tmux.py
+  run "switching sessions in tmux: resume picker, divider, replay" "$DELFIN_PYTHON" test/e2e/check_switch_tmux.py
 else
   skip "the live window (no tmux)"
 fi

@@ -26,8 +26,6 @@ import { ServiceConnection, type ServiceHello } from "./transport/rpc"
 // The kitty-graphics probe retitles tmux panes; this TUI draws no images.
 process.env.OPENTUI_GRAPHICS ??= "0"
 
-const REPLAY_LIMIT = 400
-
 const socket = process.env.DELFIN_TUI_SOCKET ?? ""
 if (!socket) {
   console.error("Start the window with `delfin-agent tui`: it needs the agent service.")
@@ -72,7 +70,7 @@ const mode = loaded.config.theme === "auto"
 const [theme] = createSignal(themeFor(mode, loaded.config.colors))
 // `--verbose` shows the thinking, as in chat; tui.json can make it the default.
 const showThinking = loaded.config.showThinking || Boolean(start.verbose)
-const view = startSessionView(renderer, store, theme, { showThinking, replayLimit: REPLAY_LIMIT })
+const view = startSessionView(renderer, store, theme, { showThinking, replayTurns: loaded.config.replayTurns })
 store.update((d) => {
   d.mayAct = Boolean(hello.mayAct)
   d.host = String(hello.host ?? "")
@@ -110,6 +108,41 @@ async function openFirst(): Promise<string> {
               ...((answer.events ?? []) as unknown as AnyEvent[])]
     })
   return created.sessionId as string
+}
+
+/**
+ * Show another session in this window (the resume picker): a divider, its
+ * last turns, then its live events. One that runs in the service is
+ * attached; a saved one is started again from the session store first.
+ * The session left keeps running in the service.
+ */
+async function switchTo(id: string, workspace: string): Promise<void> {
+  try {
+    const listed = await connection.rpc.request("sessions.list", {})
+    const running = (listed.sessions as { sessionId: string }[]).some((s) => s.sessionId === id)
+    let target = id
+    if (!running) {
+      // The id the resumed session runs under is the one to attach to.
+      const created = await connection.rpc.request("session.create",
+                                                   { cwd: workspace || process.cwd(), resume: id, attach: false })
+      target = String(created.sessionId)
+    }
+    const previous = current
+    await withReplay(store,
+      () => connection.rpc.request("session.attach", { sessionId: target, turns: loaded.config.replayTurns }),
+      (attached) => {
+        store.update((d) => { ensureSession(d, target, attached.session) })
+        const title = String(attached.session?.title || "") || target.slice(0, 8)
+        view.show(target, { divider: `${running ? "now" : "resumed"}: ${title}` })
+        current = target
+        return attached.events as unknown as AnyEvent[]
+      })
+    if (previous && previous !== target) {
+      await connection.rpc.request("session.detach", { sessionId: previous }).catch(() => undefined)
+    }
+  } catch (error) {
+    view.note(`could not open that session: ${(error as Error).message}`)
+  }
 }
 
 let current = ""
@@ -162,6 +195,7 @@ if (current) {
   await render(() => (
     <App renderer={renderer} store={store} keymap={keymap} theme={theme} history={History.load()} sentAs={view.sentAs}
          client={connection.rpc} onQuit={quit} onRedraw={() => void view.redraw()}
-         onExpand={() => view.expandLast()} />
+         onExpand={() => view.expandLast()} onResume={(id, ws) => void switchTo(id, ws)}
+         onThinking={(on) => view.setShowThinking(on)} thinking={() => view.showThinking} />
   ), renderer)
 }

@@ -21,6 +21,7 @@ import type { Asked, SessionState, TurnLive } from "../store/state"
 import { SPINNER, markdownStyles, type Theme } from "../theme/theme"
 import { fit } from "../text"
 import { ApprovalPanel, approvalRows, type ApprovalUi } from "./approval"
+import { PickerView, type Picker } from "./picker"
 
 export const TAIL_MAX = 6
 
@@ -33,6 +34,7 @@ export interface FooterProps {
   message: () => string
   composer: Composer
   approval: ApprovalUi
+  picker?: Picker
   focused: () => boolean
 }
 
@@ -42,8 +44,8 @@ function tailRows(tail: string): number {
 
 /** Rows the footer needs; never more than the terminal has (less one). */
 export function footerRows(s: SessionState | null, term: { width: number; height: number }, message: string,
-                           composerRows = 1, approval: ApprovalUi | null = null): number {
-  let rows = 3 + composerRows                    // rule, composer, rule, hints
+                           composerRows = 1, approval: ApprovalUi | null = null, pickerRows = 0): number {
+  let rows = 3 + composerRows + pickerRows      // rule, composer, rule, hints
   if (s?.turn || s?.wait) rows += 1
   if (s) rows += tailRows(s.tail)
   rows += approvalRows(s?.pending[0], approval?.state ?? null, term.width)
@@ -122,7 +124,7 @@ export function Footer(props: FooterProps): JSX.Element {
 
   createEffect(() => {
     props.renderer.footerHeight = footerRows(props.session(), term(), props.message(), props.composer.height(),
-                                             props.approval)
+                                             props.approval, props.picker?.height() ?? 0)
   })
 
   const status = (turn: TurnLive) => {
@@ -159,6 +161,9 @@ export function Footer(props: FooterProps): JSX.Element {
       </Show>
       <Show when={asked()} keyed>
         {(a: Asked) => <ApprovalPanel asked={a} ui={props.approval} theme={t} width={cols} />}
+      </Show>
+      <Show when={props.picker?.state.open && !asked()}>
+        <PickerView picker={props.picker!} theme={t} width={cols} />
       </Show>
       <text fg={t().faint} wrapMode="none">{rule()}</text>
       <ComposerView
