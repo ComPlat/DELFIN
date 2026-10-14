@@ -11146,7 +11146,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "session_message",
             "description": (
                 "Open sessions (no `to`); message one (to=<key> or "
-                "unique exact title) or all (to=all), not as the user; "
+                "unique title) or all (to=all), not as the user; "
                 "status=<id>/ls for receipts."
             ),
             "parameters": {
@@ -23351,6 +23351,18 @@ class _DocToolExecutor:
             _folded = to.strip().casefold()
             _named = [r for r in others
                       if str(r.get("title", "")).strip().casefold() == _folded]
+            if not _named:
+                # A key the peer held before it was re-opened: the
+                # presence layer remembers which conversation a key
+                # belonged to, and the conversation is still open under
+                # its new key (10 of 140 sends failed in the field on an
+                # old key or a partial title).
+                _sid = _presence.session_id_for_key(to)
+                if _sid:
+                    _named = [r for r in others
+                              if r.get("session_id") == _sid]
+            if not _named:
+                _named = _presence.sessions_named_by_part(to, others)
             if len(_named) == 1:
                 target = _named[0]
             elif len(_named) > 1:

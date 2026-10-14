@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import time
@@ -90,6 +91,8 @@ def announce(key: str, *, session_id: str = "", title: str = "",
         "host": socket.gethostname(),
         "pid": os.getpid(),
     }
+    if record["session_id"]:
+        _remember_alias(key, record["session_id"])
     body = json.dumps(record, sort_keys=True)
     last = _last_written.get(key)
     now = time.time()
@@ -102,6 +105,78 @@ def announce(key: str, *, session_id: str = "", title: str = "",
         _last_written[key] = (body, now)
     except Exception:
         pass
+
+
+def _alias_path(key: str) -> Path:
+    # Beside the record directory, not in it: every *.json there is read
+    # as a record and reaped by age.
+    return _DIR.parent / "session_key_aliases" / _safe(key)
+
+
+def _remember_alias(key: str, session_id: str) -> None:
+    """Record which conversation ``key`` addressed. Never raises.
+
+    A session opened before its conversation had an id gets a random key,
+    and a later re-open gets the stable one, so a peer that wrote to it
+    earlier holds an address no open record carries. One small file per
+    key, written only when it changes."""
+    try:
+        p = _alias_path(key)
+        try:
+            if p.read_text(encoding="utf-8") == session_id:
+                return
+        except OSError:
+            pass
+        from .state_paths import ensure_dir, write_text_atomic
+        ensure_dir(p.parent)
+        write_text_atomic(p, session_id)
+    except Exception:
+        pass
+
+
+def session_id_for_key(key: str) -> str:
+    """The conversation ``key`` was last announced for, or ""."""
+    key = str(key or "").strip()
+    if not key:
+        return ""
+    try:
+        return _alias_path(key).read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+#: Separators after which a sender appends a description to a name
+#: ("Session A - denials report").
+_NAME_TAIL_RE = re.compile(r"\s+[—–:|-]\s+|\s*[—–]\s*")
+
+
+def sessions_named_by_part(name: str, rows: list[dict]) -> list[dict]:
+    """Rows whose title and ``name`` contain one another (case-folded).
+
+    Input: the name a sender used, and the open-session rows. Output: the
+    matching rows; the caller delivers only on exactly one. If nothing
+    matches, the part of ``name`` before a dash or colon is tried, so
+    'Session A - denials report' finds 'Hallo Session A'. Names shorter
+    than three characters match nothing. Field shapes: 'Session A' and
+    'Session A - denials report' for a session titled 'Hallo Session A'.
+    """
+    def _match(n: str) -> list[dict]:
+        n = n.strip().casefold()
+        if len(n) < 3:
+            return []
+        out = []
+        for r in rows:
+            t = str(r.get("title", "")).strip().casefold()
+            if t and (n in t or t in n):
+                out.append(r)
+        return out
+
+    found = _match(str(name or ""))
+    if not found:
+        head = _NAME_TAIL_RE.split(str(name or ""), maxsplit=1)[0]
+        if head.strip() != str(name or "").strip():
+            found = _match(head)
+    return found
 
 
 def withdraw(key: str) -> None:
