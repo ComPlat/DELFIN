@@ -582,6 +582,15 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
     elif not prepare(engine):
         # chat -p: the shared set-up binds --supervised (_bind_supervised).
         return 2
+    # The start check cmd_chat runs too (isolation_posture), once per run
+    # for both doors (`run` and chat -p; neither prepare path runs it):
+    # without a layer, bypass is confirmed when a terminal can answer,
+    # else the run continues in default and says so here. After the
+    # session is opened, as in cmd_chat, so it judges the mode the run
+    # will actually have.
+    from .isolation_posture import apply_at_start
+    for _note in apply_at_start(engine, can_ask=sys.stdin.isatty()):
+        print(_note, file=sys.stderr)
     import time as _time
     _t0 = _time.monotonic()
     stream_json = (getattr(args, "output_format", "text") == "stream-json")
@@ -1083,30 +1092,21 @@ def _startup_banner(engine, report, workspace: Path,
     if perms_mode:
         lines.append(f"approval   {perms_mode}"
                      + (f"  [{why}]" if why else ""))
-        if isolation_note:
+        if any(str(n).startswith("isolation  ") for n in notes or ()):
+            pass        # the start check's line says it, with its outcome
+        elif isolation_note:
             lines.append(isolation_note)
         else:
-            # Which mechanism will actually run, asked of the one place
-            # that knows -- the doctor reads the same three probes
-            # _bash_isolation_argv picks from, in the same order, so the
-            # line cannot drift from the behaviour it describes.
+            # isolation_status reads the mode (flag, then setting) and the
+            # same three probes _bash_isolation_argv picks from, so the
+            # line cannot drift from the behaviour it describes -- a
+            # setting that switched it off included.
             try:
-                from .doctor import _isolation_mechanism
-                held_by = _isolation_mechanism()
+                from .isolation_posture import isolation_status
+                lines.append(f"isolation  {isolation_status(engine.kit_permissions).line()}")
             except Exception:
-                held_by = ""
-            if held_by:
-                lines.append(
-                    f"isolation  on ({held_by}) — a command the agent runs "
-                    "writes only inside the workspace (--no-isolate)")
-            else:
-                # Not a detail to leave out. The agent starts at the safest
-                # posture the host can give; where that is none, the user
-                # is the one who has to know it.
-                lines.append(
-                    "isolation  off — neither bubblewrap, Landlock nor "
-                    "Seatbelt works here, so a command the agent runs can "
-                    "write outside the workspace")
+                lines.append("isolation  unknown — the status could not "
+                             "be read")
         # The model second opinion behind the rules: whether it runs, on
         # which model and scope, and its last failure.
         try:
@@ -1762,6 +1762,10 @@ def cmd_chat(args: argparse.Namespace) -> int:
             engine.set_kit_permission_mode(posture)
     except Exception:
         pass          # a backend with no gate has no posture to set
+    # The same start check as cmd_run: bypass without isolation is
+    # confirmed once here, else the session starts in default.
+    from .isolation_posture import apply_at_start
+    start_notes = tuple(apply_at_start(engine, can_ask=sys.stdin.isatty()))
 
     from .repl import ReplOptions, TerminalAgent
     from .terminal_confirm import TerminalConfirmBroker
@@ -1818,7 +1822,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
         session_name=getattr(args, "session_name", "") or "",
         banner=(_startup_banner(engine, report, workspace, why,
                                 isolation_note,
-                                tuple(_bounding_notices(args, engine)))
+                                tuple(_bounding_notices(args, engine))
+                                + start_notes)
                 + (f"\n\n{notices}" if notices else "")),
     ))
     try:

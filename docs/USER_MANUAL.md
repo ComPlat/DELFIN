@@ -1507,6 +1507,16 @@ delfin-agent gate explain --tool write_file --path notes/new.md
 
 `gate explain` asks the permission gate about one `bash` command or one `write_file` and prints the verdict — `allow`, `ask` or `refuse` — with a reason code (`plan_mode`, `deny_pattern`, `secret_path`, `outside_ws`, `not_auto_allowed`, `read_first`, `session_tool_list`, …), the reason text, the questions the gate would put, and for an `ask` what a yes would lead to. It goes through the same gates as a real call and stops after the last one, so nothing is run and nothing is written; the security panel, the audit log, the failure log and the approvals directory are not touched. Put the command after `--`; quote it as one argument to keep its own quoting. An existing `write_file` target counts as read in the session. Limits: only `bash` and `write_file` can be explained; PreToolUse hooks are counted but not run; only the `kit`, `openai` and `ollama` providers run this gate (the `claude` CLI backend has its own hook gate and is refused).
 
+Whether a command is held by a filesystem layer (bubblewrap, Landlock or Seatbelt) is shown in the start banner, by `/status` and, when it is not, as `unisolated` in the status line. Without a layer -- none works on the host, or you switched it off with `--no-isolate` or `agent.bash_isolation: "off"` -- what stops a command is a reading of its text, so:
+
+| Start mode | Attended | Nobody to ask (`-p` from a script, a pipe) |
+|------------|----------|---------------------------------------------|
+| `bypassPermissions` | asked once per session (terminal; in the dashboard, in the approval panel while the session runs in `default`); yes keeps it, no starts in `default` | starts in `default`, with a notice on stderr; a command off the auto-allow list is judged by the action classifier and runs only when it allows |
+| `acceptEdits` | starts, with a notice | starts, with a notice |
+| `default`, `plan` | unchanged | unchanged |
+
+A session that promises confinement (a locked folder, `--isolate`) on a host with no layer asks before each command it would otherwise refuse (`[NO ISOLATION]`, in every mode); with nobody to ask that command is refused, and the file tools keep working.
+
 ### Pushing, pull requests and the git role
 
 A push publishes, so the agent pushes only after you asked for one, one push per request; unattended it does not push unasked, a force push is refused, and a push the remote rejects is reported as failed. Whether it may push onto a repository's default branch (`main`/`master`) or run `gh pr merge` is the repository's **git role**:

@@ -6708,6 +6708,7 @@ def create_tab(ctx):
                     perm_dropdown.value = target_profile
                 finally:
                     state["_chip_syncing_perm"] = False
+            _settle_isolation_posture(eng)
         _refresh_kit_mode_chip()
 
     kit_mode_chip.on_click(_cycle_kit_mode)
@@ -6867,6 +6868,33 @@ def create_tab(ctx):
                 state["_kit_confirm_broker"] = None
         _refresh_kit_dirs_status()
         return state.get("_kit_confirm_broker")
+
+    def _settle_isolation_posture(engine):
+        """The CLI's start check (isolation_posture.apply_at_start) for
+        this tab: bypass without isolation is asked in the approval panel,
+        on a thread of its own, and the session runs in default until the
+        answer. Called after an engine is built and after a live switch of
+        its mode; a mode other than bypass, or an isolated host, is left
+        alone. Never raises."""
+        try:
+            from delfin.agent.isolation_posture import apply_at_start
+            broker = _ensure_kit_broker()
+
+            def _ask_in_panel(question):
+                return broker.callback(
+                    "bypassPermissions", {"isolation": "none"},
+                    "[NO ISOLATION]\n" + question)
+
+            ask = _ask_in_panel if broker is not None else None
+            notes = apply_at_start(
+                engine, can_ask=ask is not None, ask=ask, background=True,
+                on_confirmed=_refresh_kit_mode_chip)
+            for note in notes:
+                _append_system_message(note)
+            if notes:
+                _refresh_kit_mode_chip()
+        except Exception:
+            pass
 
     def _show_kit_confirm_panel(visible: bool) -> None:
         kit_confirm_container.layout.display = "flex" if visible else "none"
@@ -9437,6 +9465,7 @@ def create_tab(ctx):
             _chip = _PROFILE_TO_CHIP.get(_restored_perm)
             if _chip and hasattr(engine, "set_kit_permission_mode"):
                 if engine.set_kit_permission_mode(_chip):
+                    _settle_isolation_posture(engine)
                     _refresh_kit_mode_chip()
         except Exception:
             pass
@@ -9901,6 +9930,7 @@ def create_tab(ctx):
 
             state["engine"] = engine
             ctx.agent_engine = engine
+            _settle_isolation_posture(engine)
             # `delfin-agent pause <session>` reaches a dashboard session by
             # its presence key, as it reaches a terminal one by its name.
             try:
@@ -21300,6 +21330,7 @@ def create_tab(ctx):
                     _append_system_message(
                         f"Permissions → **{new_profile}** (KIT mode: {chip_target})."
                     )
+                    _settle_isolation_posture(engine)
                     return
             if state["streaming"]:
                 # Live switch not available on this backend: the change

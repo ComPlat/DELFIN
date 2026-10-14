@@ -7643,6 +7643,13 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # Set by isolation_posture.apply_at_start when a bypass start was
+    # lowered to default because no layer isolates commands. With nobody
+    # to ask, a command off the auto-allow list is then judged by the
+    # action classifier instead of refused outright
+    # (_unisolated_fallback_verdict). A field, so a sub-agent's copy
+    # (dataclasses.replace) carries it.
+    unisolated_fallback: bool = False
     # The watcher's health for the whole session (not per turn):
     # consecutive failed model calls, down/up, last failure, pending user
     # notices. See _watcher_record.
@@ -19204,6 +19211,72 @@ class _DocToolExecutor:
         return _refused(reason, by_user=True) + self._said_why(perms)
 
     @staticmethod
+    def _unisolated_fallback_verdict(perms, name: str, args: dict
+                                     ) -> Optional[str]:
+        """None when the action classifier allows ``args['command']``,
+        else the refusal the model reads.
+
+        Reached only for a command off the auto-allow list in a session
+        whose bypass start was lowered to default (no layer isolates it)
+        and that has nobody to ask, after every hard tier. Judged as in
+        scope "all" through ``action_classifier.judge`` with
+        ``default_on_error="refuse"``; anything but allow -- doubt, refuse,
+        no runner, the classifier switched off, an error, no verdict within
+        ``_CLASSIFIER_TIMEOUT_S`` -- is a refusal naming what still works.
+        Rejected: ``_classifier_second_opinion``, which lets the rule
+        result stand when the classifier fails; here the rule result is a
+        refusal."""
+        cmd = str((args or {}).get("command") or "")
+        works = (" What still works with nobody to ask: read_file, "
+                 "write_file, edit_file, list_files and grep in the "
+                 "workspace, run_tests, and the auto-allowed commands.")
+        head = (f"blocked: '{cmd[:120]}' is not on the auto-allow list, and "
+                "this session runs without isolation in default mode with "
+                "nobody to ask")
+        runner = getattr(perms, "classifier_runner", None)
+        cfg = _classifier_settings() if runner is not None else None
+        if runner is None or cfg is None:
+            _record_security_event("classifier_error", "bash",
+                                   f"{cmd[:80]}: no classifier")
+            return head + ", and no action classifier is available." + works
+        box: dict = {}
+
+        def _work() -> None:
+            try:
+                from . import action_classifier as _ac
+                task, earlier = _classifier_context_users(
+                    _classifier_user_texts(
+                        getattr(perms, "classifier_messages", None)))
+                box["v"] = _ac.judge(
+                    _classifier_action(name, args),
+                    {"task": task, "recent_user": earlier,
+                     "recent_calls": []},
+                    model=cfg["model"], runner=runner, rules=cfg["rules"],
+                    default_on_error="refuse")
+            except BaseException as exc:          # noqa: BLE001
+                box["exc"] = exc
+
+        worker = threading.Thread(target=_work, daemon=True,
+                                  name="fallback-classifier")
+        worker.start()
+        worker.join(_CLASSIFIER_TIMEOUT_S)
+        verdict = box.get("v")
+        if verdict is not None and verdict.decision == "allow":
+            _record_security_event("classifier_allow", "bash", cmd[:80],
+                                   blocked=False)
+            return None
+        if verdict is not None:
+            reason = " ".join(str(verdict.reason or "").split())[:300]
+            why = f"the action classifier did not allow it ({verdict.decision}: {reason})"
+        elif "exc" in box:
+            why = f"the action classifier failed ({type(box['exc']).__name__})"
+        else:
+            why = "the action classifier gave no verdict in time"
+        _record_security_event("classifier_refuse", "bash",
+                               f"{cmd[:80]}: {why[:120]}")
+        return head + "; " + why + "." + works
+
+    @staticmethod
     def _own_written_file(path: "Path | None", perms) -> "Path | None":
         """``path`` resolved, when its current bytes are the ones this
         session last wrote to it (newest change-journal record of the file,
@@ -19676,6 +19749,63 @@ class _DocToolExecutor:
                         f"that could not be checked ('{cmd[:120]}'). Do NOT "
                         "retry it or work around it." + self._said_why(perms))
                 _approved_here = True
+            # A command this session promises to confine (locked scope,
+            # forced isolation) on a host where no layer can confine it.
+            # _bash_isolation_argv would refuse it at run time; asked here
+            # instead, in every mode, so a person present decides about
+            # this one command, and with nobody to ask it is refused with
+            # the routes that still work. The approval is for this command
+            # text once (_take_unconfined_approval). Placed after every
+            # other own-dialog check and not gated on _approved_here, so an
+            # approval given there never skips this consequence, and this
+            # approval never skips theirs.
+            _unconfinable = _isolation_refusal_reason(perms)
+            if _unconfinable:
+                _record_security_event("isolation_missing", "bash", cmd[:80],
+                                       blocked=perms.confirm_callback is None)
+                if perms.confirm_callback is None:
+                    return (
+                        f"blocked: {_unconfinable}, so this command cannot "
+                        "run confined, and nobody can be asked to run it "
+                        "unconfined. What works: read_file, write_file, "
+                        "edit_file, list_files and grep, whose gates do not "
+                        "depend on confining a command. A command needs an "
+                        "attended session (it is then asked) or a host "
+                        "with bubblewrap or Landlock; tell the user which "
+                        "command and why.")
+                # Asked even after another dialog approved this command:
+                # that one did not name this consequence.
+                try:
+                    ok = bool(perms.confirm_callback(
+                        "bash", {"command": cmd},
+                        "[NO ISOLATION]\n"
+                        f"{_unconfinable}. If approved, this one command "
+                        "runs unconfined and can write outside the "
+                        "workspace.\n\n$ " + cmd))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval to run this command unconfined TIMED "
+                            "OUT — the user is away, this is not a refusal. "
+                            "Do not run it now.")
+                    perms.record_denied_action("bash", cmd)
+                    _remember_refusal(perms, "bash", cmd,
+                                      self._refusal_reason(perms))
+                    return (
+                        f"user denied running '{cmd[:120]}' unconfined. "
+                        "Do NOT retry it or work around it."
+                        + self._said_why(perms))
+                _approved_here = True
+                try:
+                    approved = getattr(perms, "_unconfined_approved", None)
+                    if approved is None:
+                        approved = set()
+                        setattr(perms, "_unconfined_approved", approved)
+                    approved.add(cmd)
+                except Exception:
+                    pass
             # A push publishes. Report 20260915-085107 pushed the change it
             # was asked to, then chained a second commit and push onto a fix
             # nobody asked for -- in all_free, which asks nothing, so nothing
@@ -19973,6 +20103,12 @@ class _DocToolExecutor:
                     "it or work around it — ask the user what to do instead."
                     + self._said_why(perms)
                 )
+            # A bypass start lowered to default for want of isolation, with
+            # nobody to ask: every hard tier above has passed, and the
+            # action classifier decides instead of the outright refusal
+            # below, so a long unattended run keeps working.
+            if getattr(perms, "unisolated_fallback", False):
+                return self._unisolated_fallback_verdict(perms, name, args)
             # default / acceptEdits without a UI callback (head-less / CLI):
             # the command must match an auto-allow regex; otherwise tell the
             # user the exact command and let them add an allow_pattern or switch
@@ -25323,6 +25459,74 @@ def set_bash_isolation_override(mode: str) -> None:
     _BASH_ISOLATION_OVERRIDE = str(mode or "")
 
 
+def _bash_isolation_setting() -> tuple[str, str]:
+    """``(mode, source)`` of the shell-isolation mode for this process.
+
+    mode: "auto" (default), "off", "bwrap", or what the setting holds,
+    lower-cased. source: the flag (``--no-isolate``/``--isolate``) when
+    the process override is set, else ``agent.bash_isolation``. One
+    reading for ``_bash_isolation_argv`` and the session status
+    (``isolation_posture``), so the two cannot disagree."""
+    if _BASH_ISOLATION_OVERRIDE:
+        mode = _BASH_ISOLATION_OVERRIDE.strip().lower()
+        return mode, ("--no-isolate" if mode == "off" else "--isolate")
+    try:
+        from delfin.user_settings import load_settings
+        mode = str(((load_settings() or {}).get("agent") or {})
+                   .get("bash_isolation", "auto") or "auto")
+    except Exception:
+        mode = "auto"
+    return mode.strip().lower(), "agent.bash_isolation"
+
+
+_REFUSAL_LOCKED = ("this session is locked to its folder, and neither "
+                   "bubblewrap, Landlock nor Seatbelt can confine a command "
+                   "on this host")
+_REFUSAL_FORCED = ("filesystem isolation is switched on, and neither "
+                   "bubblewrap nor Landlock nor Seatbelt can provide it on "
+                   "this host")
+
+
+def _isolation_refusal_reason(perms, mode: str | None = None) -> str:
+    """Why ``_bash_isolation_argv`` would refuse every command, or "".
+
+    Input: the session's permissions; ``mode`` as the caller would pass it
+    (None reads ``_bash_isolation_setting``). Output: the refusal text for
+    a locked scope or a forced isolation on a host where no layer can
+    confine a command; "" where a command runs (confined, or unconfined by
+    the session's own posture). Read from ``_bash_isolation_decision``,
+    the answer ``_bash_isolation_argv`` builds its argv from, so the gate's
+    question and the run-time refusal cannot disagree; no announcement, no
+    proxy, no side effect. An error answers "": the argv then still
+    refuses at run time."""
+    try:
+        kind, mode = _bash_isolation_decision(perms, mode)
+        if kind != "refuse":
+            return ""
+        # The two branches of _bash_isolation_argv that turn "refuse" into
+        # a refusal argv; nowhere else does it refuse.
+        if getattr(perms, "scope_locked", False):
+            return _REFUSAL_LOCKED
+        if mode == "bwrap":
+            return _REFUSAL_FORCED
+        return ""
+    except Exception:
+        return ""
+
+
+def _take_unconfined_approval(perms, cmd: str) -> bool:
+    """Consume a one-command approval to run ``cmd`` unconfined.
+
+    Set by the bash gate when the user approved a command that no layer
+    can confine ([NO ISOLATION] dialog); used once, by the next
+    ``_bash_isolation_argv`` for exactly that command text."""
+    approved = getattr(perms, "_unconfined_approved", None)
+    if not approved or cmd not in approved:
+        return False
+    approved.discard(cmd)
+    return True
+
+
 def _handover_hint(resolved, workspace) -> str:
     """A clause naming the shared directory, when the refused path is
     another session's worktree. Otherwise "".
@@ -25476,16 +25680,11 @@ def _bash_isolation_decision(perms, mode: str | None = None) -> tuple[str, str]:
     auto-allow list may run unasked -- one decision, so the two cannot
     drift. No side effects beyond the cached host probes. Never raises.
     """
-    if mode is None and _BASH_ISOLATION_OVERRIDE:
-        mode = _BASH_ISOLATION_OVERRIDE
     if mode is None:
-        try:
-            from delfin.user_settings import load_settings
-            mode = str(((load_settings() or {}).get("agent") or {})
-                       .get("bash_isolation", "auto") or "auto")
-        except Exception:
-            mode = "auto"
-    mode = mode.strip().lower()
+        # The process override first, then the setting
+        # (_bash_isolation_setting, shared with the session status).
+        mode = _bash_isolation_setting()[0]
+    mode = str(mode or "").strip().lower()
     if getattr(perms, "scope_locked", False):
         if _bwrap_functional():
             return "bwrap", mode
@@ -25852,10 +26051,12 @@ def _bash_isolation_argv(
             _announce_isolation_unavailable(perms)
             # A locked scope promises one folder. With nothing on this host
             # able to hold a command to it, the command is not run: a
-            # parser of command text is no containment.
-            return _refusal_argv(
-                "this session is locked to its folder, and neither "
-                "bubblewrap, Landlock nor Seatbelt can confine a command on this host")
+            # parser of command text is no containment -- unless the user
+            # approved this one command unconfined ([NO ISOLATION] in the
+            # bash gate), which is a decision about this command only.
+            if _take_unconfined_approval(perms, cmd):
+                return _in_process_cage(plain, run_cwd)
+            return _refusal_argv(_REFUSAL_LOCKED)
     elif mode == "auto":
         # Wherever this host can actually hold a command, not only in the
         # unattended profile. "auto" used to isolate under bypass and for
@@ -25896,9 +26097,11 @@ def _bash_isolation_argv(
             return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
         if kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
-        return _refusal_argv(
-            "filesystem isolation is switched on, and neither bubblewrap "
-            "nor Landlock nor Seatbelt can provide it on this host")
+        # Unless the user approved this one command unconfined ([NO
+        # ISOLATION] in the bash gate), a decision about this command only.
+        if _take_unconfined_approval(perms, cmd):
+            return _in_process_cage(plain, run_cwd)
+        return _refusal_argv(_REFUSAL_FORCED)
     if kind != "bwrap":
         return _in_process_cage(plain, run_cwd)
 
