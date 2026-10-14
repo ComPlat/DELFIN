@@ -36,6 +36,7 @@ export interface SessionReplayParams {
 }
 export interface SessionShutdownParams {
   "ifIdle"?: boolean | null
+  "dryRun"?: boolean | null
 }
 export interface PermissionReplyParams {
   "requestId": string

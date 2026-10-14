@@ -74,7 +74,7 @@ types are generated from that. This page explains what the messages mean.
 | `session.setMode` | `mode` | `approval` | Approval posture: `plan`, `default` or `acceptEdits`. Never `bypassPermissions`; that needs a new session started with `--unattended`. |
 | `session.status` | | engine counters, `state`, `approval`, `queued` | The engine's token and cost counters, plus the session's state. |
 | `session.replay` | `turns?` | `events[]` | The durable events from the start of the `turns`-th last turn (0 means all). See "Replay". |
-| `session.shutdown` | | `closing` | End the session as described in Lifecycle. |
+| `session.shutdown` | `ifIdle?`, `dryRun?` | `closing`, `busy?` | End the session as described in Lifecycle. `ifIdle`: only when nothing runs (a turn, a question, a background shell, a subagent); otherwise `closing: false` and `busy` says what runs. `dryRun`: only say so, never close (an update deciding whether a restart would cut anything). |
 | `permission.reply` | `requestId`, `choice?`, `answers?`, `reason?`, `persist?` | `applied`, `message` | Answer an open approval. See "Approvals". |
 | `session.commands` | | `commands[]`: `name`, `summary`, `category`, `takesArgs`, `source` | Every `/command` a line may start with. See "Completion and pickers". |
 | `session.completePath` | `fragment` | `paths[]` | What `@fragment` completes to, under the workspace only. |
@@ -317,7 +317,7 @@ closes; the next window attaches to them again.
 
 | Method | Params | Result |
 |---|---|---|
-| `hello` | `protocolVersion`, `client?` | `protocolVersion`, `serviceVersion`, `pid`, `host`, `mayAct`, `sessions[]`. Must come first. |
+| `hello` | `protocolVersion`, `client?` | `protocolVersion`, `serviceVersion`, `release`, `pid`, `host`, `mayAct`, `sessions[]`. Must come first. `serviceVersion` says what the service does beyond the protocol (2: a dry-run `session.shutdown`; a service before it ignores `dryRun` and would end the session, so a launcher never asks it). |
 | `sessions.list` | | `sessions[]` (summaries), `elsewhere[]`: other open DELFIN sessions (dashboards, terminals) with `key`, `sessionId?`, `title?`, `workspace`, `host` |
 | `session.create` | `cwd`, `name?`, `model?`, `provider?`, `effort?`, `mode?`, `permissionMode?`, `resume?`, `continue?`, `fork?`, `addDirs?`, `readDirs?`, `isolate?`, `noIsolate?`, `fake?`, `fakeDelay?`, `attach?` | `sessionId`, `session`, `state`, `pending[]`. Starts a worker with chat's own flags; the creating window is attached unless `attach: false`. A session that cannot start is refused with its reason (-32005). |
 | `session.attach` | `sessionId`, `turns?` | `session`, `state`, `pending[]`, `summary`, `events[]`: the replay of the last `turns` turns (all for 0), then live events. |

@@ -198,8 +198,9 @@ def _pane_pid(tmux: Tmux) -> int:
 
 def _window_of(tmux: Tmux, runtime: Path) -> int:
     """The window this check started: a direct child of its own pane's
-    shell, running main.tsx, with this check's private runtime directory.
-    Nothing else is ever signalled (0 when it is not found)."""
+    shell, running main.tsx or the built window (the launcher prefers a
+    fresh build), with this check's private runtime directory. Nothing
+    else is ever signalled (0 when it is not found)."""
     shell = _pane_pid(tmux)
     if shell <= 1:
         return 0
@@ -210,7 +211,8 @@ def _window_of(tmux: Tmux, runtime: Path) -> int:
             stat = (entry / "stat").read_text()
             if int(stat.rsplit(")", 1)[1].split()[1]) != shell:
                 continue
-            if b"main.tsx" not in (entry / "cmdline").read_bytes():
+            cmdline = (entry / "cmdline").read_bytes()
+            if b"main.tsx" not in cmdline and b"/dist/delfin-tui-" not in cmdline:
                 continue
             environ = (entry / "environ").read_bytes().split(b"\0")
             if f"DELFIN_RUNTIME_DIR={runtime}".encode() in environ:

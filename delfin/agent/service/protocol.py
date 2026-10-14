@@ -57,9 +57,10 @@ REQUESTS: dict[str, dict[str, str]] = {
     # attaches to a session already in progress.
     "session.replay": {"turns": "integer?"},
     # ifIdle: only if nothing would be cut -- no turn, nothing queued, no
-    # question open, no background shell running (the service putting an
-    # unused session to sleep); else answered closing: false, with why.
-    "session.shutdown": {"ifIdle": "boolean?"},
+    # question open, no background shell or subagent running (the service
+    # putting an unused session to sleep); else answered closing: false,
+    # with why. dryRun: only say what it would cut (closing: false, busy).
+    "session.shutdown": {"ifIdle": "boolean?", "dryRun": "boolean?"},
     # The answer to a permission.asked event: ``choice`` is one of the
     # option keys it offered (confirm, plan); ``answers`` the chosen labels
     # of a question (ask). ``persist`` is the second "yes" the keys that

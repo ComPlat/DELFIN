@@ -46,7 +46,10 @@ from typing import Any
 
 from . import eventlog, protocol, rundir
 
-SERVICE_VERSION = 1
+#: What this service does beyond its protocol, for a launcher deciding
+#: what it may ask. 2: a dry-run session.shutdown only says what it would
+#: cut -- a service before it ignores dryRun and would end the session.
+SERVICE_VERSION = 2
 
 #: Requests a window sends to the service itself (the one definition is
 #: protocol.SERVICE_REQUESTS, which the TUI's types are generated from).
@@ -115,6 +118,11 @@ RESUME_SETTINGS = ("cwd", "name", "model", "provider", "effort", "mode", "permis
 #: How long a wake waits for the worker of a service that died to finish
 #: saving the session (it ends on its own when its pipe closes).
 OLD_WORKER_WAIT_S = 30.0
+
+#: Summary changes the roster may take with the next write (half a second
+#: on): a turn's activity, many a second. Every other change -- state,
+#: posture, name, a question -- is written at once.
+ACTIVITY_EVENTS = frozenset({"turn.started", "tool.started", "text.started"})
 
 
 LINUX = sys.platform.startswith("linux")
@@ -412,7 +420,8 @@ class Session:
                 continue                     # already in that window's replay
             client.send_bytes(data)
         if changed:
-            self.supervisor.broadcast_summary(self)
+            self.supervisor.broadcast_summary(
+                self, roster_now=str(event.get("type") or "") not in ACTIVITY_EVENTS)
 
     # -- what windows see ---------------------------------------------------------------
     def summary(self) -> dict:
@@ -442,6 +451,11 @@ class Session:
         out = {k: v for k, v in self.settings.items()
                if k in RESUME_SETTINGS and v not in (None, "", [])}
         out["cwd"] = str(self.settings.get("cwd") or self.info.get("workspace") or "")
+        # Renamed, or switched to another effort or agent mode since it
+        # started: it wakes as it is.
+        for key, info_key in (("name", "title"), ("effort", "effort"), ("mode", "mode")):
+            if self.info.get(info_key):
+                out[key] = str(self.info[info_key])
         approval = str(self.info.get("approval") or "")
         if approval in ("plan", "default", "acceptEdits"):
             out["permissionMode"] = approval
@@ -589,6 +603,7 @@ class Supervisor:
         #: "since", "why", "oldPid"}; kept in the roster for a later service.
         self.dormant: dict[str, dict] = {}
         self._waking: dict[str, asyncio.Future] = {}
+        self._roster_timer: asyncio.TimerHandle | None = None
         self.idle_exit_s = float(idle_exit_s)
         self.sleep_after_s = float(sleep_after_s)
         self.worker_cmd = worker_cmd or [sys.executable, "-m",
@@ -654,11 +669,18 @@ class Supervisor:
                     client.send_bytes(data)
             # What ends with the service is saved; a later service offers
             # it again, to be woken (an update, a `service stop`).
-            stopped = [self._dormant_record(s, "the agent service stopped")
-                       for s in self.sessions.values() if s.id]
-            await self.end_all_sessions()
-            for record in stopped:
+            # Kept before the sessions end: a service killed while they
+            # save loses none of them. A restart's windows are let go
+            # first -- they reconnect to the next service, and the end of
+            # a session that only sleeps across it is not theirs to show.
+            for record in [self._dormant_record(s, "the agent service stopped")
+                           for s in self.sessions.values() if s.id]:
                 self.dormant[record["summary"]["sessionId"]] = record
+            if self.restart:
+                for session in self.sessions.values():
+                    session.subscribers.clear()
+            self._write_roster()
+            await self.end_all_sessions()
             for client in list(self.clients):
                 client.close()
             try:
@@ -812,6 +834,12 @@ class Supervisor:
     async def _forward(self, client: Client, method: str, params: dict) -> Any:
         sid = str(params.get("sessionId") or "")
         rest = {k: v for k, v in params.items() if k != "sessionId"}
+        if sid in self._waking and method == "session.shutdown":
+            # Being woken: stop what the wake brings up, not a record.
+            try:
+                await asyncio.shield(self._waking[sid])
+            except Exception:
+                pass                     # the wake failed: whatever is left is stopped below
         if sid not in self.sessions and sid in self.dormant:
             # What a dormant session can answer without a worker; anything
             # else wakes it.
@@ -823,11 +851,27 @@ class Supervisor:
                 return {"events": await asyncio.to_thread(
                     _dormant_replay, record, int(rest.get("turns") or 0))}
             if method == "session.shutdown":
+                if rest.get("dryRun"):
+                    return {"closing": False, "busy": ""}     # asleep: nothing to cut
                 self._forget_dormant(sid, "stopped while asleep")
                 return {"closing": True}
             if method == "session.status":
                 return {"state": "sleeping", "approval": record["summary"].get("approval", ""),
                         "queued": 0}
+            if method == "session.setTitle":
+                # Cut as the worker cuts it (its _m_session_setTitle).
+                title = " ".join(str(rest.get("title") or "").split())[:80]
+                if not title:
+                    raise _Refusal(protocol.INVALID_PARAMS, "a name needs some text")
+                record["summary"]["title"] = title
+                record["settings"]["name"] = title
+                self._make_dormant(record)
+                return {"title": title}
+            if method == "session.setMode" and str(rest.get("mode") or "") in ("plan", "default", "acceptEdits"):
+                record["summary"]["approval"] = str(rest["mode"])
+                record["settings"]["permissionMode"] = str(rest["mode"])
+                self._make_dormant(record)
+                return {"approval": str(rest["mode"])}
             if method == "session.cancel":
                 return {"stopping": False, "refused": 0}
         session = await self._awake(client, sid)
@@ -937,11 +981,14 @@ class Supervisor:
                            f"{os.getpid()}-{self._spawned}.log")
         log_fd = os.open(log_name, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
+            # Started in the runtime directory (ours alone, 0700): `-m` puts
+            # the working directory first on sys.path, and a json.py of the
+            # user's home would be imported instead of the standard one.
             proc = await asyncio.create_subprocess_exec(
                 *args, stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=log_fd,
                 start_new_session=True, limit=protocol.MAX_LINE_BYTES + 1,
-                cwd=str(Path.home()))
+                cwd=str(rundir.ensure_runtime_dir()))
         finally:
             os.close(log_fd)
         session = Session(self, proc, dict(params))
@@ -1043,9 +1090,20 @@ class Supervisor:
         return {"stopping": True, "sessions": count}
 
     # -- sessions ---------------------------------------------------------------------------
-    def broadcast_summary(self, session: Session) -> None:
+    def broadcast_summary(self, session: Session, *, roster_now: bool = False) -> None:
+        """A session's summary changed: every window hears it, and the
+        roster follows -- at once when what changed is what a later
+        service or launcher acts on (``roster_now``: its state, posture,
+        name, a question), before any window can see it."""
         if not session.id:
             return
+        if roster_now and not self.closing:
+            if self._roster_timer is not None:
+                self._roster_timer.cancel()
+                self._roster_timer = None
+            self._write_roster()
+        else:
+            self._roster_soon()
         message = protocol.event({"type": "session.summary", "session": session.id,
                                   "ts": round(time.time(), 3),
                                   "summary": session.summary()})
@@ -1065,15 +1123,19 @@ class Supervisor:
                 self.quiet_since = time.monotonic()
             return
         if session.id and self.sessions.pop(session.id, None) is not None:
-            message = protocol.event({"type": "session.removed",
-                                      "session": session.id,
-                                      "ts": round(time.time(), 3),
-                                      "reason": session.ended_reason or _how_it_died(session.proc.returncode),
-                                      "exitCode": session.proc.returncode})
-            data = protocol.encode(message)
-            for client in list(self.clients):
-                if client.greeted:
-                    client.send_bytes(data)
+            # Ended for a restart, it sleeps across it: the next service
+            # offers it, and its windows reconnect to it -- for them it
+            # goes on, and was never removed.
+            if not (self.restart and session.id in self.dormant):
+                message = protocol.event({"type": "session.removed",
+                                          "session": session.id,
+                                          "ts": round(time.time(), 3),
+                                          "reason": session.ended_reason or _how_it_died(session.proc.returncode),
+                                          "exitCode": session.proc.returncode})
+                data = protocol.encode(message)
+                for client in list(self.clients):
+                    if client.greeted:
+                        client.send_bytes(data)
             self._write_roster()
         if not self.sessions:
             self.quiet_since = time.monotonic()
@@ -1132,6 +1194,24 @@ class Supervisor:
         waiting = [s.done for s in sessions if not s.done.done()]
         if waiting:
             await asyncio.wait(waiting, timeout=timeout)
+
+    def _roster_soon(self) -> None:
+        """The roster again half a second on, for what changes in bursts (a
+        turn's activity). What a later service -- after a crash -- or a
+        launcher of another release deciding whether a restart would cut
+        anything acts on is written at once (broadcast_summary)."""
+        if self._roster_timer is not None or self.closing:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        def write() -> None:
+            self._roster_timer = None
+            self._write_roster()
+
+        self._roster_timer = loop.call_later(0.5, write)
 
     def _write_roster(self, *, live: bool = True) -> None:
         """Which sessions run here (with what resumes them) and which are
@@ -1249,27 +1329,37 @@ class Supervisor:
             return True
         if not isinstance(data, dict):
             return True
-        old = int(data.get("pid") or 0)
+        try:
+            old = int(data.get("pid") or 0)
+        except (TypeError, ValueError):
+            old = 0
         if old and old != os.getpid() and _alive_service(old):
             return False                 # another service's, alive: not ours to take
         if data.get("socket") not in (None, str(rundir.socket_path())):
             return False
         now = time.time()
         for record in data.get("dormant") or []:
-            if isinstance(record, dict) and _usable_record(record) \
-                    and now - float(record.get("since") or 0) < DORMANT_KEEP_S:
-                self.dormant[record["summary"]["sessionId"]] = record
+            try:
+                if isinstance(record, dict) and _usable_record(record) \
+                        and now - float(record.get("since") or 0) < DORMANT_KEEP_S:
+                    self.dormant[str(record["summary"]["sessionId"])] = record
+            except (TypeError, ValueError, KeyError):
+                continue                 # a damaged record costs itself only
         for entry in data.get("sessions") or []:
-            if not isinstance(entry, dict) or not isinstance(entry.get("settings"), dict):
+            try:
+                if not isinstance(entry, dict) or not isinstance(entry.get("settings"), dict):
+                    continue
+                entry = dict(entry)
+                settings = entry.pop("settings")
+                record = {"summary": {**entry, "state": "sleeping", "pending": 0, "pid": 0,
+                                      "activity": None, "waiting": None},
+                          "settings": settings, "since": round(now, 3),
+                          "why": "the agent service ended unexpectedly",
+                          "oldPid": int(entry.get("pid") or 0)}
+                if _usable_record(record):
+                    self.dormant[str(record["summary"]["sessionId"])] = record
+            except (TypeError, ValueError, KeyError):
                 continue
-            settings = entry.pop("settings")
-            record = {"summary": {**entry, "state": "sleeping", "pending": 0, "pid": 0,
-                                  "activity": None, "waiting": None},
-                      "settings": settings, "since": round(now, 3),
-                      "why": "the agent service ended unexpectedly",
-                      "oldPid": int(entry.get("pid") or 0)}
-            if _usable_record(record):
-                self.dormant[record["summary"]["sessionId"]] = record
         return True
 
     async def _old_worker_gone(self, record: dict) -> None:

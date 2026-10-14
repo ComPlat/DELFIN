@@ -111,3 +111,23 @@ describe("isDrawableDiff", () => {
     expect(isDrawableDiff("not a diff")).toBe(false)
   })
 })
+
+test("a session that runs again after it ended says its next end too", async () => {
+  const { Presenter } = await import("../../src/scrollback/present")
+  const appended: { kind: string; text?: unknown }[] = []
+  const transcript = { append: async (item: { kind: string; text?: unknown }) => { appended.push(item) } }
+  const p = new Presenter("s1", transcript as never, { showThinking: false })
+  const draft = { sessions: { s1: { tail: "", thinking: "" } } } as never
+  const ev = (type: string, fields: Record<string, unknown> = {}) => ({ type, session: "s1", ts: 0, ...fields }) as never
+  p.handle([ev("session.info", { seq: 1, workspace: "/w" }), ev("session.ended", { seq: 2, reason: "shutdown" })], draft)
+  // Woken (a new run's session.info), then its real end.
+  p.handle([ev("session.info", { seq: 3, workspace: "/w" }), ev("session.ended", { seq: 4, reason: "exit" })], draft)
+  // Woken under a replay that leaves the new run's session.info out (the
+  // header stands for it): its first message says it goes on.
+  p.handle([ev("user.message", { seq: 6, text: "again", source: "user" }), ev("session.removed", { reason: "stopped" })], draft)
+  // A removal after the worker's own last word is not said twice.
+  p.handle([ev("session.ended", { seq: 7, reason: "exit" })], draft)
+  expect(appended.filter((i) => i.kind === "ended").map((i) => i.text)).toEqual(["session ended (shutdown)",
+                                                                              "session ended (exit)",
+                                                                              "session ended (stopped)"])
+})

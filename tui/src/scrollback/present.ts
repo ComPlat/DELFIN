@@ -73,6 +73,10 @@ export class Presenter {
     const setTail = (tail: string) => {
       if (s) s.tail = tail
     }
+    // Said to have ended, and it goes on (woken, resumed: what its new run
+    // logs -- the store lets only events not seen yet through): its next
+    // end is the window's to say again.
+    if (this.ended && typeof e.seq === "number" && e.seq > 0 && e.type !== "session.ended") this.ended = false
     switch (e.type) {
       case "session.info":
         if (!this.bannered) {

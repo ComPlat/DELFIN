@@ -17,10 +17,15 @@ import sys
 import time
 from pathlib import Path
 
-from . import client, eventlog, rundir
+from . import client, eventlog, protocol, rundir
 
 #: How long a starting service gets before the window gives up on it.
 START_TIMEOUT_S = 20.0
+
+#: The first service that answers a dry-run shutdown (its hello's
+#: serviceVersion): one before it ignores dryRun -- asked what a restart
+#: would cut, it would end the session.
+DRY_RUN_SERVICE_VERSION = 2
 
 #: How long a service that holds the host but does not listen yet is
 #: waited for: it is stopping (its sessions save; the stop is bounded at
@@ -55,9 +60,12 @@ def start_service(*, idle_exit_s: float | None = None) -> subprocess.Popen:
     if idle_exit_s is not None:
         cmd += ["--idle-exit", str(float(idle_exit_s))]
     try:
+        # In the runtime directory (ours alone, 0700): `-m` puts the working
+        # directory first on sys.path, and a json.py there would be
+        # imported instead of the standard one.
         return subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                                 stdout=fd, stderr=fd, start_new_session=True,
-                                close_fds=True, cwd=str(Path.home()),
+                                close_fds=True, cwd=str(rundir.ensure_runtime_dir()),
                                 env=_service_env())
     finally:
         os.close(fd)
@@ -71,13 +79,15 @@ def ensure_service(*, timeout: float = START_TIMEOUT_S,
     one that is starting answers soon, one that is stopping (`service
     stop` a moment ago) is gone soon, and a new one is started then.
 
-    One of an older DELFIN release, or of another protocol version (an
-    update), is moved over to this one when nothing in it would be cut --
-    no turn running, no question open: it stops (its sessions are saved
-    and come back asleep, its windows reconnect) and a new one starts. A
-    busy one of another protocol, or one that never answers, is named,
-    with how to end it -- never stopped from here; a busy one of the same
-    protocol is used as it is, and the note says how to move it over.
+    One of an older DELFIN release is moved over to this one when nothing
+    in it would be cut -- each session is asked (a turn, a question, a
+    background shell, a subagent): it stops (its sessions are saved and
+    come back asleep, its windows reconnect) and a new one starts. One of
+    an older protocol cannot be asked: it is moved over only when its
+    roster lists no live session. A busy one of another protocol, a newer
+    one, or one that never answers is named, with how to end it -- never
+    stopped from here; a busy one of the same protocol is used as it is,
+    and the note says how to move it over.
     """
     deadline = time.monotonic() + timeout
     hello, why = client.probe()
@@ -167,9 +177,32 @@ def _older_release(hello: dict) -> bool:
 
 
 def _idle(sessions: list) -> bool:
-    """Nothing a restart would cut: no turn running, no question open."""
+    """Nothing a restart would cut, as the summaries say: no turn running,
+    no question open."""
     return all(isinstance(s, dict) and s.get("state") in ("idle", "sleeping", "ended")
                and not s.get("pending") for s in sessions)
+
+
+def _busy_sessions(svc, sessions: list) -> list[str]:
+    """What each live session says a restart would cut -- a background
+    shell or a subagent runs where the summary says "idle". A session
+    that cannot say counts as busy. Only for a service that answers dry
+    runs (DRY_RUN_SERVICE_VERSION): one before it would end the session."""
+    busy = []
+    for s in sessions:
+        if not isinstance(s, dict) or s.get("state") in ("sleeping", "ended"):
+            continue
+        try:
+            answer = svc.request("session.shutdown", {"sessionId": s.get("sessionId"), "dryRun": True},
+                                 timeout=10)
+            why = str((answer or {}).get("busy") or "")
+            if (answer or {}).get("closing") is not False:
+                why = why or "it would have closed"
+        except Exception as exc:                 # noqa: BLE001
+            why = f"it cannot say ({exc})"
+        if why:
+            busy.append(f"{s.get('title') or str(s.get('sessionId'))[:8]}: {why}")
+    return busy
 
 
 def _move_over(hello: dict) -> bool:
@@ -178,10 +211,29 @@ def _move_over(hello: dict) -> bool:
     left as it is (said once): its turns must not be cut."""
     pid = int(hello.get("pid") or 0)
     sessions = list(hello.get("sessions") or [])
+    live = [s for s in sessions if not (isinstance(s, dict) and s.get("state") in ("sleeping", "ended"))]
+    try:
+        can_ask = int(hello.get("serviceVersion") or 0) >= DRY_RUN_SERVICE_VERSION
+    except (TypeError, ValueError):
+        can_ask = False
     if not _idle(sessions):
+        busy = ["a turn runs or a question is open"]
+    elif not live:
+        busy = []                                # nothing a restart could cut
+    elif not can_ask:
+        # Asking it would end the session: each live one counts as busy.
+        busy = [f"{len(live)} live session{'s' * (len(live) != 1)}: a service of before "
+                "this release cannot say what a restart would cut"]
+    else:
+        try:
+            with client.ServiceClient(client="delfin-agent tui") as svc:
+                busy = _busy_sessions(svc, live)
+        except Exception as exc:                 # noqa: BLE001
+            busy = [f"it could not be asked ({exc})"]
+    if busy:
         print(f"note: the agent service runs DELFIN {hello.get('release') or 'of before'}, "
               f"this is {_release()}; `delfin-agent service restart` moves it over once its "
-              "sessions are done", file=sys.stderr)
+              f"sessions are done ({'; '.join(busy)[:200]})", file=sys.stderr)
         return False
     print(f"moving the agent service from DELFIN {hello.get('release') or 'of before'} to "
           f"{_release()} ({len(sessions)} session{'s' * (len(sessions) != 1)} kept)...",
@@ -203,12 +255,21 @@ def _stop_idle_other_protocol() -> bool:
     pid = rundir.service_pid()
     if not pid:
         return False
+    # Only an older one: a newer service is not stopped by an old launcher.
+    run = rundir.read_run_file() or {}
+    try:
+        if int(run.get("protocolVersion") or 0) >= protocol.PROTOCOL_VERSION:
+            return False
+    except (TypeError, ValueError):
+        return False
     try:
         roster = json.loads(rundir.roster_file().read_text())
     except (OSError, ValueError):
         return False
+    # It cannot be asked (another protocol), and a roster does not see
+    # background shells: only one with no live session at all is stopped.
     if not isinstance(roster, dict) or int(roster.get("pid") or 0) != pid \
-            or not _idle(list(roster.get("sessions") or [])):
+            or list(roster.get("sessions") or []):
         return False
     print("the agent service is of another DELFIN version and idle: restarting it...",
           file=sys.stderr, flush=True)
@@ -223,15 +284,18 @@ def other_host_notes() -> list[str]:
     """What runs on the other login nodes (their run files and rosters on
     the shared home): a window says where those sessions are."""
     notes = []
-    for other in rundir.other_hosts():
-        host = str(other.get("host") or "")
+    here = rundir.hostname()
+    hosts = {str(o.get("host") or "") for o in rundir.other_hosts()}
+    # A node whose service stopped keeps its sessions in its roster only.
+    hosts |= {p.name[:-len(".roster")] for p in (eventlog.service_dir() / "run").glob("*.roster")}
+    for host in sorted(h for h in hosts if h and h != here):
         try:
             roster = json.loads(rundir.roster_file(host).read_text())
-        except (OSError, ValueError):
+            if not isinstance(roster, dict) or time.time() - float(roster.get("updatedAt") or 0) > 7 * 86400:
+                continue
+            n = len(roster.get("sessions") or []) + len(roster.get("dormant") or [])
+        except (OSError, ValueError, TypeError):
             continue
-        if not isinstance(roster, dict) or time.time() - float(roster.get("updatedAt") or 0) > 7 * 86400:
-            continue
-        n = len(roster.get("sessions") or []) + len(roster.get("dormant") or [])
         if n:
             shown = "".join(ch for ch in host if ch.isprintable())[:60]
             notes.append(f"{n} session{'s' * (n != 1)} of yours {'are' if n != 1 else 'is'} on "
@@ -256,7 +320,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def service_command() -> list[str]:
-    """The command that starts the service when none runs: for a window."""
+    """The command that starts the service when none runs: for a window,
+    which runs it in the runtime directory (never the project folder: `-m`
+    imports from the working directory first)."""
     return [sys.executable, "-m", "delfin.agent.service.launcher"]
 
 
@@ -314,9 +380,10 @@ def tui_binary() -> Path | None:
     if built.is_file() and os.access(built, os.X_OK):
         # Built from the sources, the dependencies and their patches.
         root = tui_root()
-        sources = [*(root / "src").rglob("*"), *(root / "patches").rglob("*"),
-                   root / "package.json", root / "bun.lock"]
-        newest = max((f.stat().st_mtime for f in sources if f.is_file()), default=0.0)
+        # Folders too: a deleted source changes only its folder's time.
+        sources = [root / "src", *(root / "src").rglob("*"), root / "patches",
+                   *(root / "patches").rglob("*"), root / "package.json", root / "bun.lock"]
+        newest = max((f.stat().st_mtime for f in sources if f.exists()), default=0.0)
         if built.stat().st_mtime >= newest:
             return built
     return None

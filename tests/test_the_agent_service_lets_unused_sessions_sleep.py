@@ -22,13 +22,14 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
 from conftest import child_env
 from delfin.agent.service import protocol, rundir, supervisor
 from delfin.agent.service.client import ServiceError
-from tui_service import ServiceProcess, of, turn
+from tui_service import ServiceProcess, turn
 
 
 def _sleepy(tmp_path, after: float = 1.0) -> ServiceProcess:
@@ -50,6 +51,15 @@ def _wait_state(c, sid: str, state: str, timeout: float = 30) -> dict:
             return row
         time.sleep(0.2)
     raise AssertionError(f"{sid} never became {state}: {_listed(c, sid)}")
+
+
+def _wait(cond, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if cond():
+            return True
+        time.sleep(0.05)
+    return bool(cond())
 
 
 def _gone(pid: int, timeout: float = 30) -> bool:
@@ -244,11 +254,18 @@ def test_a_stop_on_purpose_is_said_to_the_windows_first(tmp_path, restart):
     svc = ServiceProcess(tmp_path)
     try:
         a, b = svc.client(), svc.client()
-        mark = len(b.events)
+        sid = svc.session(a)                     # in view in window a
+        mark_a, mark = len(a.events), len(b.events)
         a.request("service.shutdown", {"restart": True} if restart else {})
         said, _ = b.wait_for(lambda e: e.get("type") == "service.stopping", after=mark, timeout=30)
         assert said["reason"] == ("restart" if restart else "stop") and said["restart"] is restart
         assert svc.proc.wait(timeout=60) == 0
+        _wait(lambda: a.closed and b.closed, 10)
+        # A restart's sessions sleep across it, and its windows reconnect:
+        # neither window is told the session ended. A stop's did end.
+        ended = {e["type"] for e in [*a.events[mark_a:], *b.events[mark:]]
+                 if e.get("session") == sid and e.get("type") in ("session.ended", "session.removed")}
+        assert ended == (set() if restart else {"session.ended", "session.removed"})
     finally:
         svc.stop()
 
@@ -398,3 +415,144 @@ def test_an_attach_while_a_busy_session_refuses_to_sleep_is_answered():
         return await asyncio.wait_for(sup._awake(SimpleNamespace(may_act=True), "s1"), 5)
 
     assert asyncio.run(run()).id == "s1"
+
+
+def _roster(svc: ServiceProcess) -> dict:
+    path = next((svc.scratch / ".delfin" / "agent_service" / "run").glob("*.roster"))
+    return json.loads(path.read_text())
+
+
+def test_the_roster_says_at_once_what_a_window_sees_and_a_crash_keeps_its_posture(tmp_path):
+    # A later service (after a crash) and a launcher of another release
+    # read the roster: once a window sees a change, the roster says it --
+    # a crash right then loses none of it.
+    svc = ServiceProcess(tmp_path)
+
+    def seen(c, mark, sid, **want):
+        c.wait_for(lambda e: e.get("type") == "session.summary" and e["summary"]["sessionId"] == sid
+                   and all(e["summary"].get(k) == v for k, v in want.items()), after=mark, timeout=30)
+        return next(s for s in _roster(svc)["sessions"] if s["sessionId"] == sid)
+
+    try:
+        a = svc.client()
+        sid = svc.session(a, permissionMode="acceptEdits")
+        mark = len(a.events)
+        a.request("session.setMode", {"sessionId": sid, "mode": "plan"})
+        a.request("session.setTitle", {"sessionId": sid, "title": "renamed scan"})
+        entry = seen(a, mark, sid, approval="plan", title="renamed scan")
+        assert entry["approval"] == "plan" and entry["title"] == "renamed scan"
+        assert entry["settings"]["permissionMode"] == "plan" and entry["settings"]["name"] == "renamed scan"
+        # A question: what a launcher of another release must not cut.
+        other = svc.session(a, permissionMode="default")
+        mark = len(a.events)
+        a.request("session.prompt", {"sessionId": other, "text": "please edit the parser"})
+        entry = seen(a, mark, other, state="needs_input", pending=1)
+        assert entry["state"] == "needs_input" and entry["pending"] == 1
+        os.kill(svc.proc.pid, signal.SIGKILL)
+        svc.proc.wait(timeout=30)
+        time.sleep(1.0)
+        svc.start()
+        b = svc.client()
+        b.request("session.attach", {"sessionId": sid, "turns": 0}, timeout=120)
+        assert b.request("session.status", {"sessionId": sid})["approval"] == "plan"
+        assert _listed(b, sid)["title"] == "renamed scan"
+    finally:
+        svc.stop()
+
+
+def test_a_sleeping_session_is_renamed_without_waking_and_wakes_under_its_name(tmp_path):
+    svc = _sleepy(tmp_path)
+    try:
+        a = svc.client()
+        sid = svc.session(a, attach=False, name="first name")
+        _wait_state(a, sid, "sleeping")
+        # Kept as an awake session keeps a name: one line, at most 80 characters.
+        assert a.request("session.setTitle", {"sessionId": sid, "title": " long\nname " * 20}) \
+            == {"title": " ".join(["long name"] * 20)[:80]}
+        assert a.request("session.setTitle", {"sessionId": sid, "title": "second name"}) == {"title": "second name"}
+        assert _listed(a, sid)["state"] == "sleeping"                 # not woken for that
+        a.request("session.attach", {"sessionId": sid, "turns": 0}, timeout=120)
+        assert _listed(a, sid)["title"] == "second name"
+    finally:
+        svc.stop()
+
+
+def test_a_dry_run_shutdown_only_says_what_it_would_cut(tmp_path):
+    svc = ServiceProcess(tmp_path)
+    try:
+        a = svc.client()
+        sid = svc.session(a)
+        assert a.request("session.shutdown", {"sessionId": sid, "dryRun": True}) == {"closing": False, "busy": ""}
+        time.sleep(0.5)
+        assert _listed(a, sid)["state"] == "idle"                     # still there
+    finally:
+        svc.stop()
+
+
+def test_the_service_a_window_starts_runs_in_the_runtime_directory(tmp_path):
+    # `python -m` imports from the working directory first: never the
+    # project folder a window runs in. (Its workers: the planted ~/json.py
+    # test below.)
+    import shutil
+    import tempfile
+    from delfin.agent.service import launcher as _launcher
+    svc = ServiceProcess(tmp_path, start=False)
+    fresh = Path(tempfile.mkdtemp(prefix="dsvr", dir="/tmp"))
+    env = child_env(tmp_path)
+    env.update(DELFIN_RUNTIME_DIR=str(fresh), PYTHONPATH=svc.env["PYTHONPATH"])
+    out = subprocess.run(_launcher.service_command(), env=env, capture_output=True, text=True,
+                         timeout=120, cwd=str(svc.workspace()))
+    assert out.returncode == 0, out.stderr
+    pid = int(out.stdout.strip())
+    try:
+        assert Path(os.readlink(f"/proc/{pid}/cwd")) == fresh / f"delfin-{os.getuid()}"
+    finally:
+        os.kill(pid, signal.SIGTERM)
+        _gone(pid)
+        shutil.rmtree(fresh, ignore_errors=True)
+
+
+def test_a_damaged_roster_costs_its_bad_records_not_the_start(tmp_path, monkeypatch):
+    monkeypatch.setenv("DELFIN_RUNTIME_DIR", str(tmp_path / "rt"))
+    monkeypatch.setenv("DELFIN_AGENT_SERVICE_DIR", str(tmp_path / "service"))
+    (tmp_path / "rt").mkdir()
+    path = rundir.roster_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    good = {"summary": {"sessionId": "ok1", "state": "sleeping"}, "settings": {"cwd": str(tmp_path)},
+            "since": time.time(), "why": "asleep"}
+    path.write_text(json.dumps({"pid": "1234x", "dormant": [
+        {"summary": {"sessionId": "bad"}, "settings": {"cwd": "/x"}, "since": "2026-10-14T06:00:00"},
+        good,
+    ], "sessions": [{"sessionId": "s2", "pid": "no", "settings": {"cwd": str(tmp_path)}}]}))
+    sup = supervisor.Supervisor()
+    assert sup._load_dormant() is True
+    assert set(sup.dormant) == {"ok1"}
+
+
+def test_the_notes_name_a_node_whose_service_stopped(tmp_path, monkeypatch):
+    from delfin.agent.service import launcher as _launcher
+    monkeypatch.setenv("DELFIN_RUNTIME_DIR", str(tmp_path / "rt"))
+    monkeypatch.setenv("DELFIN_AGENT_SERVICE_DIR", str(tmp_path / "service"))
+    run = tmp_path / "service" / "run"
+    run.mkdir(parents=True)
+    (run / "loginc.roster").write_text(json.dumps({"pid": 0, "updatedAt": time.time(), "sessions": [],
+                                                   "dormant": [{"summary": {"sessionId": "x"}}]}))
+    (run / "logind.roster").write_text(json.dumps({"pid": 0, "updatedAt": "not a time"}))
+    notes = _launcher.other_host_notes()
+    assert len(notes) == 1 and "loginc" in notes[0]
+
+
+def test_a_module_in_the_home_is_never_imported_by_a_worker(tmp_path):
+    # Workers ran `python -m` in $HOME: a ~/json.py was imported instead
+    # of the standard library's (and ran inside every session).
+    svc = ServiceProcess(tmp_path, start=False)
+    marker = tmp_path / "planted-json-ran"
+    (svc.home / "json.py").write_text(f"open({str(marker)!r}, 'w').write('ran')\nraise ImportError('planted')\n")
+    svc.start()
+    try:
+        a = svc.client()
+        sid = svc.session(a)
+        turn(a, sid, "hello")
+        assert not marker.exists(), "a module of the home was imported by a worker"
+    finally:
+        svc.stop()

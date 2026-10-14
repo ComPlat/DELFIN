@@ -10,6 +10,7 @@
  * only the footer is live. Leaving the window leaves the sessions running.
  */
 import { appendFileSync } from "node:fs"
+import { dirname } from "node:path"
 import { createCliRenderer } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { createSignal } from "solid-js"
@@ -72,7 +73,11 @@ const serviceCommand: unknown = (() => {
 })()
 const startService = Array.isArray(serviceCommand) && serviceCommand.length && serviceCommand.every((a) => typeof a === "string")
   ? async (): Promise<boolean> => {
-      const proc = Bun.spawn(serviceCommand as string[], { stdin: "ignore", stdout: "ignore", stderr: "pipe" })
+      // In the runtime directory (the socket's, ours alone): `python -m`
+      // imports from the working directory first, and this window's is
+      // the project folder -- a json.py there would run outside the cage.
+      const proc = Bun.spawn(serviceCommand as string[], { stdin: "ignore", stdout: "ignore", stderr: "pipe",
+                                                           cwd: dirname(socket) })
       const timer = setTimeout(() => proc.kill(), 150_000)
       const code = await proc.exited
       clearTimeout(timer)
@@ -156,6 +161,23 @@ try {
  */
 let wanted = 0
 
+/** The session the newest open asks for, and the id it runs under once
+ *  known (a resumed one may run under another). An open it superseded
+ *  lets its session go -- unless it is this one: the newer open is about
+ *  to show it, and a detach now would leave it in view unfollowed. */
+let wantedId = ""
+let wantedTarget = ""
+
+/** Whether a superseded open may let ``id`` go: not the session in view,
+ *  nor the one the newest open asks for. */
+function letGo(id: string): boolean {
+  return Boolean(id) && id !== current && id !== wantedId && id !== wantedTarget
+}
+
+/** The longest an attach may take -- a wake starts a worker, its MCP
+ *  servers and a resume -- before its hold lets the session's events go. */
+const ATTACH_TIMEOUT_MS = 240_000
+
 /** What a resume needs of the window's settings: a --fake window resumes
  *  fake sessions (never a real model in one started for tests). */
 function resumeSettings(): Record<string, unknown> {
@@ -170,9 +192,13 @@ async function openFirst(): Promise<string> {
   const mine = ++wanted
   const running = (hello.sessions ?? []) as { sessionId: string }[]
   const resume = String(start.resume ?? "")
+  wantedId = resume
+  wantedTarget = ""
   if (resume && running.some((s) => s.sessionId === resume)) {
+    let shown = false
     await withReplay(store,
-      () => connection.rpc.request("session.attach", { sessionId: resume, turns: loaded.config.replayTurns }),
+      () => connection.rpc.request("session.attach", { sessionId: resume, turns: loaded.config.replayTurns },
+                                   { timeoutMs: ATTACH_TIMEOUT_MS }),
       (attached) => {
         store.update((d) => {
           const s = ensureSession(d, resume, attached.session)
@@ -183,8 +209,10 @@ async function openFirst(): Promise<string> {
         if (mine !== wanted) return []
         view.show(resume)
         current = resume
+        shown = true
         return attached.events as unknown as AnyEvent[]
       }, eventsOf(resume))
+    if (!shown && letGo(resume)) await leave(resume)
     return resume
   }
   const { verbose: _verbose, ...settings } = start
@@ -197,7 +225,10 @@ async function openFirst(): Promise<string> {
         s.state = answer.state
         s.pending = answer.pending as unknown as Asked[]
       })
-      if (mine !== wanted) return []
+      if (mine !== wanted) {
+        if (letGo(id)) void leave(id)
+        return []
+      }
       view.show(id)
       current = id
       // The banner (the session as the service saw it start), then what
@@ -216,10 +247,12 @@ async function openFirst(): Promise<string> {
  */
 async function switchTo(id: string, workspace: string): Promise<void> {
   const mine = ++wanted
+  wantedId = id
+  wantedTarget = ""
+  let target = id
   try {
     const listed = await connection.rpc.request("sessions.list", {})
     const running = (listed.sessions as { sessionId: string }[]).some((s) => s.sessionId === id)
-    let target = id
     if (!running) {
       // The id the resumed session runs under is the one to attach to.
       const created = await connection.rpc.request("session.create",
@@ -228,11 +261,13 @@ async function switchTo(id: string, workspace: string): Promise<void> {
       target = String(created.sessionId)
     }
     if (mine !== wanted) return
+    wantedTarget = target
     let shown = false
     // Shown before in this window: its replay is new rows again.
     store.unsee(target)
     await withReplay(store,
-      () => connection.rpc.request("session.attach", { sessionId: target, turns: loaded.config.replayTurns }),
+      () => connection.rpc.request("session.attach", { sessionId: target, turns: loaded.config.replayTurns },
+                                   { timeoutMs: ATTACH_TIMEOUT_MS }),
       (attached) => {
         store.update((d) => {
           const s = ensureSession(d, target, attached.session)
@@ -249,8 +284,15 @@ async function switchTo(id: string, workspace: string): Promise<void> {
         if (previous && previous !== target) void leave(previous)
         return attached.events as unknown as AnyEvent[]
       }, eventsOf(target))
-    if (!shown) await leave(target)
+    if (!shown && letGo(target)) await leave(target)
   } catch (error) {
+    if (mine === wanted) {
+      // The newest open failed: nothing it asked for stays followed out of
+      // view, an older open of the same session included.
+      wantedId = ""
+      wantedTarget = ""
+      if (letGo(target)) void leave(target)
+    }
     view.note(`could not open that session: ${(error as Error).message}`)
   }
 }
@@ -282,6 +324,8 @@ async function leave(id: string): Promise<void> {
  */
 async function newSession(): Promise<string | null> {
   const mine = ++wanted
+  wantedId = ""
+  wantedTarget = ""
   const { verbose: _verbose, resume: _resume, continue: _continue, fork: _fork, name: _name, ...settings } = start
   let id = ""
   let shown = false
@@ -305,7 +349,7 @@ async function newSession(): Promise<string | null> {
                 ...((answer.events ?? []) as unknown as AnyEvent[])]
       }, eventsOfUnknown(store))
     // Asked for something else meanwhile: it runs on, in the agent view.
-    if (!shown) await leave(id)
+    if (!shown && letGo(id)) await leave(id)
     return id
   } catch (error) {
     view.note(`the new session could not start: ${(error as Error).message}`)
@@ -357,11 +401,14 @@ function leaveNow(): void {
 // session, still shown "in a window", would never sleep).
 let signalled = 0
 for (const [name, number] of [["SIGHUP", 1], ["SIGINT", 2], ["SIGQUIT", 3], ["SIGTERM", 15]] as const) {
-  process.on(name, () => { signalled ||= number })
+  // Before OpenTUI's own listener, which destroys the renderer at once.
+  process.prependListener(name, () => { signalled ||= number })
 }
 renderer.on("destroy", () => {
   if (quitting) return
   quitting = true
+  // The shell's way: a window ended by a signal exits with 128 + its number.
+  if (signalled) process.exitCode = 128 + signalled
   connection.close()
   view.stop()
   ;(setTimeout(() => process.exit(signalled ? 128 + signalled : 0), 1500) as { unref?: () => void }).unref?.()
@@ -420,14 +467,14 @@ connection.onUp(async (again) => {
   const id = current
   try {
     await withReplay(store,
-      () => connection.rpc.request("session.attach", { sessionId: id, turns: 0 }),
+      () => connection.rpc.request("session.attach", { sessionId: id, turns: 0 }, { timeoutMs: ATTACH_TIMEOUT_MS }),
       (attached) => {
         store.update((d) => {
           const s = ensureSession(d, id, attached.session)
           s.state = attached.state
           s.pending = attached.pending as unknown as Asked[]
           s.ended = null
-          if (attached.state !== "running") {
+          if (attached.state === "idle") {
             s.turn = null
             s.tail = ""
             s.thinking = ""

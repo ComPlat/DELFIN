@@ -759,6 +759,14 @@ def busy_reason(agent, broker) -> str:
         running = []
     if running:
         return f"{len(running)} background shell{'s' * (len(running) != 1)} running"
+    try:
+        from .. import subagents
+        mine = [e for e in subagents.read_running().values()
+                if int((e or {}).get("owner_pid") or 0) == os.getpid()]
+    except Exception:
+        mine = []
+    if mine:
+        return f"{len(mine)} subagent{'s' * (len(mine) != 1)} running"
     return ""
 
 
@@ -1048,8 +1056,10 @@ class Worker:
                                             "initialize first"))
             return
         if method == "session.shutdown":
-            busy = busy_reason(self.agent, self.broker) if params.get("ifIdle") else ""
-            if busy:
+            busy = busy_reason(self.agent, self.broker) if params.get("ifIdle") or params.get("dryRun") else ""
+            if busy or params.get("dryRun"):
+                # Busy: not now. A dry run only asks (an update deciding
+                # whether a restart would cut anything).
                 if msg_id is not None:
                     self.writer.send(protocol.result(msg_id, {"closing": False, "busy": busy}))
                 return

@@ -41,8 +41,9 @@ clean up on the VM. Each item says why it could not be closed here.
 
 6. **CI**: `.github/workflows/tui.yml` runs the window's and the service's
    tests, the live tmux checks and builds the binaries. GitHub keeps Actions
-   off on forks until you enable them (Settings → Actions). The macOS
-   runner labels may need updating.
+   off on forks until you enable them (Settings → Actions). The macOS jobs
+   run on `macos-14` (Apple silicon) and `macos-15-intel`; GitHub retires
+   runner images now and then, so a label may need updating.
 7. **OpenTUI upstream**: we carry opentui PR #1665 and three startup fixes
    of our own (`tui/patches/`). Offering the three fixes upstream means
    posting on their repository: your call.
@@ -65,7 +66,9 @@ clean up on the VM. Each item says why it could not be closed here.
 11. Packages installed for the terminal matrix: xterm, xvfb, imagemagick,
     xclip, screen (see `/var/log/apt/history.log`).
 12. The SSH test key `~/.ssh/delfin_tui_localhost_test` and its
-    `from="127.0.0.1,::1"` line in `~/.ssh/authorized_keys`.
+    `from="127.0.0.1,::1"` line in `~/.ssh/authorized_keys`; the three
+    `localhost` host keys in `~/.ssh/known_hosts` (and `known_hosts.old`)
+    came with it (`ssh-keygen -R localhost` removes them).
 13. In the real `~/.delfin`: two old test session records (0cc8db05…,
     32cfddf4…), and audit-log entries of the real-model test sessions
     (four of e974faa0, two of the agent-view check's) -- kept on purpose:
@@ -95,3 +98,12 @@ clean up on the VM. Each item says why it could not be closed here.
     engine with its MCP servers, depends on the workspace.
 21. The binary is ~108 MB (it carries the Bun runtime); linux-arm64 and
     macOS binaries are built in CI only, not run here.
+22. An update that changes the protocol between window and service: an
+    older service that still runs sessions is never stopped by the new
+    window -- it cannot be asked what a stop would cut (a turn, a
+    background shell). The window names it; `delfin-agent service stop`
+    ends it when you choose (its sessions save and come back asleep). An
+    older service of the same protocol is asked, session by session, and
+    moved over by itself once nothing would be cut; one from before this
+    branch's last review cannot be asked (it would end the session it is
+    asked about) and is moved over only when no session of it is live.

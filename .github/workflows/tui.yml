@@ -104,7 +104,8 @@ jobs:
           # macOS: the prebuilt native library for now -- the patched build
           # script does not build Darwin yet (on the user checklist).
           - { os: macos-14, target: bun-darwin-arm64, patched: false }
-          - { os: macos-13, target: bun-darwin-x64, patched: false }
+          # macos-13 is retired; macos-15-intel is the x86_64 image.
+          - { os: macos-15-intel, target: bun-darwin-x64, patched: false }
     steps:
       - name: Checkout
         uses: actions/checkout@v7
