@@ -29649,10 +29649,18 @@ class OpenAIClient(_BaseClient):
                 # counter.
                 try:
                     from . import memory_nudge as _memory_nudge
+                    # The same arithmetic the memory-write cap applies
+                    # above, so the nudge never asks for a write that the
+                    # next check refuses.
                     _nudge = _memory_nudge.maybe_nudge(
                         self._memory_nudge_state,
                         tool_calls=_nudge_round_calls,
-                        chars=_nudge_round_chars)
+                        chars=_nudge_round_chars,
+                        writes_left=(
+                            _memory_cap
+                            + _work_calls // _MEMORY_WRITE_EARN_EVERY
+                            - _memory_writes) if _memory_cap else None,
+                        plan_mode=effective_mode(self._permissions) == "plan")
                     if _nudge:
                         api_messages.append(_harness_row(_nudge))
                 except Exception:
