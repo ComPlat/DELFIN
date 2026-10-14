@@ -116,6 +116,13 @@ ACTING = [
     "delfin-json",
     # a path that merely starts with "delfin"
     "delfin/scripts/run_all.sh",
+    # the same programs by module name
+    "python -m delfin",
+    "python3 -m delfin --recalc",
+    "python -m delfin.cli cleanup",
+    "python3 -m delfin.agent.cli stop-all --yes",
+    "python -m delfin.agent.cli bench run",
+    "python3.11 -m delfin.cli_pipeline run",
 ]
 
 READ_ONLY = [
@@ -173,8 +180,10 @@ READ_ONLY = [
     "delfin csp_check",
     "delfin mlp_check",
     "delfin analysis_check",
-    "delfin-pipeline --help",
-    "delfin-docs-index --help",
+    "delfin-agent bench list 2>&1",
+    "python -m delfin --help",
+    "python3 -m delfin.agent.cli capabilities --json",
+    "python -m delfin.agent.cli stop-all --check",
 ]
 
 
@@ -257,7 +266,9 @@ def test_an_acting_command_is_refused_headless_with_its_name(
         ws, ran, mode, cmd):
     out = _bash(_perms(ws, mode, None), cmd)
     assert ran == [], f"{cmd!r} ran headless in {mode}: {out}"
-    assert cmd.split()[0] in out, out
+    # The refusal names the command -- or the earlier rule that refused
+    # it outright (the secret-path deny names the word it matched).
+    assert cmd.split()[0] in out or "secret-deny path ('credentials')" in out, out
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -319,3 +330,45 @@ def test_every_credentials_form_is_refused_by_the_secret_path_deny(
     out = _bash(_perms(ws, "acceptEdits", asked), cmd)
     assert ran == [] and asked == [], out
     assert "secret-deny" in out, out
+
+
+def _entry_modules() -> list[str]:
+    """The modules behind [project.scripts], read from pyproject.toml."""
+    root = Path(A.__file__).resolve().parents[2]
+    text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    block = text.split("[project.scripts]", 1)[1].split("\n[", 1)[0]
+    mods = []
+    for line in block.splitlines():
+        if "=" in line and ":" in line:
+            mods.append(line.split("=", 1)[1].strip().strip('"').split(":")[0])
+    assert len(mods) >= 15, mods
+    return [m[: -len(".__main__")] if m.endswith(".__main__") else m
+            for m in mods]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_every_console_script_module_is_asked_by_module_name(
+        ws, ran, mode):
+    """`python -m <entry module>` is the program by another name; a new
+    console script whose module the exclusion does not know would be
+    free under the general `python -m <module>` entry."""
+    free = []
+    for mod in _entry_modules() + ["delfin"]:
+        cmd = f"python3 -m {mod}"
+        ran.clear()
+        _bash(_perms(ws, mode, None), cmd)
+        if ran:
+            free.append(cmd)
+    assert free == []
+
+
+@pytest.mark.parametrize("cmd", [
+    "python -m molkit run",
+    "python3 -m delfin_tools_x",
+    "python -m delfin.agent.bench_tasks",
+])
+def test_another_module_still_runs_unasked(ws, ran, cmd):
+    """Control: the exclusion is the entry modules, not every module whose
+    name starts with delfin."""
+    out = _bash(_perms(ws, "default", None), cmd)
+    assert ran == [cmd], out
