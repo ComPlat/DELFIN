@@ -32,7 +32,7 @@ def _hard(text, root, **kw):
 
 
 @pytest.mark.parametrize("text", [
-    "Sobald Session A antwortet, schreibe ich die Tests und lasse "
+    "Sobald Session A antwortet, schreibe ich die Tests, lasse "
     "`pytest tests/test_delfin_doctor.py -q` grün laufen.",
     "Next I will create `delfin/agent/report_costs.py` with collect().",
     "Soll die Funktion als eigenes Modul (z.B. `delfin/chemdarwin_space.py`) "
@@ -44,6 +44,11 @@ def _hard(text, root, **kw):
     "the job's sandbox.",
     "Sobald du grünes Licht gibst, legt Session B `delfin/fitness_oracle.py` "
     "an.",
+    # Asked about, not asserted; offered, not claimed.
+    "Gibt es `delfin/doctor.py` schon auf einem Branch, und was steht in "
+    "der Schnittstelle?Session A hat noch nichts committet.",
+    "Wenn du magst, fülle ich inzwischen das leere "
+    "`02_research/frontier-methods.md` mit der Recherche.",
 ])
 def test_a_file_named_as_future_or_absent_is_not_called_invented(
         text, tmp_path):
