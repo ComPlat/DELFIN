@@ -68,8 +68,11 @@ GATED_PROVIDERS = ("kit", "openai", "ollama")
 #: a command, not why one was allowed or refused, so they never become a
 #: reason code (and a once-per-process event cannot make two otherwise
 #: identical decisions look different).
+#: ``network`` / ``network_missing`` are api_client._announce_child_network:
+#: what holds the network of the commands, recorded by the first command
+#: of a process.
 _ANNOUNCEMENTS = frozenset({"isolation", "isolation_missing",
-                            "handover_root"})
+                            "handover_root", "network", "network_missing"})
 
 #: Events that record the answer to a question rather than its cause.
 _ANSWERS = frozenset({"denied_by_user", "approval_timeout"})
@@ -318,6 +321,9 @@ def _events_into(events: list):
         except Exception:
             return ["--net", "none"], ""
 
+    # The network notice is spent once per process. The dry run must leave
+    # it for the session that really runs a command here.
+    announced = ac._CHILD_NETWORK_ANNOUNCED
     security_events.record = _capture
     ac._sandbox_network_args = _net_without_proxy
     try:
@@ -325,6 +331,7 @@ def _events_into(events: list):
     finally:
         security_events.record = real_record
         ac._sandbox_network_args = real_net
+        ac._CHILD_NETWORK_ANNOUNCED = announced
 
 
 @contextlib.contextmanager

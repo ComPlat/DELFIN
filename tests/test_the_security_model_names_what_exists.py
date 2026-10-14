@@ -190,5 +190,9 @@ def test_open_pull_requests_are_named_only_as_changes_in_review(title):
     outside = text.replace(review, "")
     stray = re.findall(r"#\d{2,}", outside)
     assert stray == [], f"pull requests named outside '{title}': {stray}"
-    assert re.findall(r"#\d{2,}", review), "the review section names no PR"
+    # An empty list is stated, not left blank: "None at present." keeps
+    # the section (and this rule) in place for the next open change.
+    assert (re.findall(r"#\d{2,}", review)
+            or "None at present." in review), \
+        "the review section names no PR and does not say there is none"
     assert "not on `main`" in review
