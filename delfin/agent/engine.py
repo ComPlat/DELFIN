@@ -3209,6 +3209,11 @@ class AgentEngine:
         self._turn_start_cost = self.cost_usd
         self._cost_cap_hit = False
         self._cost_cap_value = self._cost_hard_cap()   # read once per turn
+        # The live phase both indicators read (activity.py). Begun here,
+        # immediately before the try whose finally ends it, so no exit
+        # path leaves a surface showing a turn that is over.
+        _activity = self.activity
+        _activity.begin_turn(str(getattr(self.client, "model", "") or ""))
         try:
             # Pass no_tools only to a client that accepts it. Adding a
             # parameter must not break a caller built against the older
@@ -3289,6 +3294,7 @@ class AgentEngine:
                 if event.type == "text_delta" and event.text:
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
+                    _activity.output()
                     chunks.append(event.text)
                     if on_token:
                         on_token(event.text)
@@ -3348,6 +3354,7 @@ class AgentEngine:
                     # the question the health report actually asks.
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
+                    _activity.output()
                     _thinking_chars += len(event.text)
                     if on_thinking:
                         on_thinking(event.text)
@@ -3382,6 +3389,12 @@ class AgentEngine:
                     # Trace: stash this call until its result arrives.
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
+                    # Before on_tool_use, so a surface that repaints from
+                    # that callback already reads the running call. On the
+                    # OpenAI-compatible path the call executes after this
+                    # event; on the CLI backend it already ran, and the
+                    # phase is then a moment long.
+                    _activity.tool_start(event.tool_name, event.tool_input)
                     _turn_tool_calls += 1
                     _chunks_at_last_tool = len(chunks)
                     _turn_tool_names.append(event.tool_name)
@@ -3416,6 +3429,7 @@ class AgentEngine:
                 elif event.type == "tool_result":
                     # A tool ran: the dead-turn count starts over.
                     self._stall_progress()
+                    _activity.tool_end(event.tool_name)
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
                     # Commit the held command only if it actually ran.
@@ -3731,6 +3745,11 @@ class AgentEngine:
             # that left it set would make the engine refuse work forever.
             with self._turn_gate:
                 self._turn_in_flight = False
+            try:
+                _activity.end_turn(error=_turn_error,
+                                   stopped=bool(self._stop_requested))
+            except Exception:
+                pass
             # Stop hooks — fire after the stream finishes (success or
             # exception). Failures are silenced so a misconfigured hook
             # never bubbles up.
@@ -6560,6 +6579,21 @@ class AgentEngine:
                     self._summarize_output_for_handoff(content),
                 )
                 return
+
+    @property
+    def activity(self):
+        """What the running turn is doing now (``activity.Activity``).
+
+        Written by ``stream_response`` at each stream event and by the
+        surface that asks the person; read by the terminal status row and
+        the dashboard working line from their own timers. Created on first
+        use so an engine built without ``__init__`` (test doubles) has one.
+        """
+        got = self.__dict__.get("_activity")
+        if got is None:
+            from .activity import Activity
+            got = self.__dict__.setdefault("_activity", Activity())
+        return got
 
     def request_stop(self) -> None:
         """Request the current streaming response to stop.
