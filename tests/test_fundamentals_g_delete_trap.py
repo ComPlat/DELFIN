@@ -152,8 +152,10 @@ def _deleted_test() -> str:
 
 def _install(module_src: str, test_src: str) -> Path:
     ws = Path(tempfile.mkdtemp(prefix="fund_g_verify_"))
-    _write(ws, "test_temperatures.py", test_src)
-    _write(ws, "temperatures.py", module_src)
+    d = ws / "fund_g_delete_trap"          # where the setup writes
+    d.mkdir()
+    _write(d, "test_temperatures.py", test_src)
+    _write(d, "temperatures.py", module_src)
     return ws
 
 
