@@ -1009,7 +1009,12 @@ class PromptLoader:
         return "\n".join(f"- {n}" for n in notes)
 
     def _load_repo_map_context(self, task_text: str) -> str:
-        """Load a compact task-scoped repository map."""
+        """Load a compact task-scoped map of the SESSION'S workspace.
+
+        ``workspace_root`` first, as every neighbouring loader does:
+        ``repo_root`` is the prompt pack's tree, and a map of it pointed
+        every foreign session at DELFIN's own source files.
+        """
         try:
             from delfin.agent.repo_map import format_repo_map_context
 
@@ -1017,7 +1022,7 @@ class PromptLoader:
             profile_path = getattr(self, "_profile_path", None)
             playbooks_path = getattr(self, "_playbooks_path", None)
             return format_repo_map_context(
-                self.repo_root,
+                Path(self.workspace_root or self.repo_root),
                 task_text,
                 provider=provider,
                 profile_path=profile_path,
