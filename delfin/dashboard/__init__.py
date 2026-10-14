@@ -1149,7 +1149,14 @@ def _run_git_capture(repo_dir, *args):
 @contextlib.contextmanager
 def _dashboard_git_write_lock(repo_dir, action_name, timeout=15.0):
     """Serialize repo-changing dashboard Git actions across kernels/processes."""
-    lock_path = Path(repo_dir) / '.git' / 'delfin-dashboard.lock'
+    try:
+        git_dir = Path(subprocess.check_output(
+            ['git', '-C', str(repo_dir), 'rev-parse', '--absolute-git-dir'],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip())
+    except Exception:
+        git_dir = Path(repo_dir) / '.git'
+    lock_path = git_dir / 'delfin-dashboard.lock'
     with open(lock_path, 'a+', encoding='utf-8') as handle:
         deadline = time.monotonic() + timeout
         while True:
