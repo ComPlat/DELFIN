@@ -14,12 +14,19 @@ front-matter::
 
     1. Inspect every changed file for hardcoded secrets …
 
-Search order (later wins on name collision):
+Search order (built-in < user on a name collision):
 
+  0. ``delfin/agent/pack/skills/``                  — built-in
   1. ``~/.delfin/skills/<name>/SKILL.md``        — user-global
   2. ``~/.delfin/skills/<name>.md``              — user-global flat
   3. ``<workspace>/.delfin/skills/<name>/SKILL.md`` — project-scoped
   4. ``<workspace>/.delfin/skills/<name>.md``    — project-scoped flat
+
+Project skills (3, 4) load only after the user trusted that directory's
+content (``/trust grant skills``, workspace_trust kind ``skills``,
+digest-bound), only from files inside the workspace, and never replace a
+built-in or user skill of the same name: that name keeps its meaning and
+the refusal is reported (``shadow_notices``).
 
 The loader is intentionally permissive: missing front-matter is
 tolerated (the file's first heading becomes the description). Only
@@ -129,8 +136,8 @@ _PACK_SKILLS_DIR = Path(__file__).resolve().parent / "pack" / "skills"
 
 def _skill_dirs(workspace: Path | None) -> list[Path]:
     # Pack (built-in) skills first — the lowest-precedence curated base — then
-    # user-global, then project-scoped. Later dirs override earlier ones on a
-    # name collision (project > user > pack). Without the pack dir the 9
+    # user-global, then project-scoped. user overrides pack; a project
+    # skill only fills names nobody else has (discover_skills). Without the pack dir the 9
     # shipped chemistry skills were undiscoverable by the `skill` tool.
     out: list[Path] = [_PACK_SKILLS_DIR, Path.home() / ".delfin" / "skills"]
     if workspace is not None:
@@ -153,6 +160,100 @@ def _candidates_in_dir(d: Path) -> Iterable[Path]:
     except OSError:
         pass
     return found
+
+
+def skill_files_in(d: Path, root: Path | None = None) -> list[Path]:
+    """The skill files the loader reads in ``d``, sorted.
+
+    With ``root``, a file that resolves outside it (a link out of the
+    workspace) is left out. The trust digest (workspace_trust, kind
+    ``skills``) and the loader both call this, so what the user trusted
+    is exactly what is read.
+    """
+    out: list[Path] = []
+    resolved_root = None
+    if root is not None:
+        try:
+            resolved_root = Path(root).resolve()
+        except (OSError, RuntimeError):
+            return []
+    for p in _candidates_in_dir(Path(d)):
+        if resolved_root is not None:
+            try:
+                p.resolve().relative_to(resolved_root)
+            except (OSError, RuntimeError, ValueError):
+                continue
+        out.append(p)
+    return sorted(out)
+
+
+def _project_skill_dir(workspace: Path) -> Path | None:
+    """``<ws>/.delfin/skills`` when the user trusted exactly its content,
+    else None. The trust gate announces a withheld directory once."""
+    try:
+        from . import workspace_trust as _trust
+        decision = _trust.gate(_trust.KIND_SKILLS, workspace)
+    except Exception:
+        return None
+    return decision.paths[0] if decision.trusted and decision.paths else None
+
+
+def _load_project_skills(
+    workspace: Path, taken: dict[str, "Skill"],
+) -> tuple[list["Skill"], list[str]]:
+    """Trusted project skills, and the names refused for colliding.
+
+    A project skill never replaces a built-in or a user skill: the name
+    the user knows keeps its meaning, and the refusal is reported
+    (``shadow_notices``). Rejected: namespacing (``project-<name>``) --
+    the skill would still load under a name the user never chose, and a
+    second name for the same procedure is one more thing to misread.
+    """
+    d = _project_skill_dir(workspace)
+    if d is None:
+        return [], []
+    loaded: list[Skill] = []
+    refused: list[str] = []
+    for path in skill_files_in(d, workspace):
+        sk = _load_one(path)
+        if sk is None:
+            continue
+        if sk.name in taken:
+            refused.append(sk.name)
+            continue
+        loaded.append(sk)
+    return loaded, refused
+
+
+def shadow_notices(workspace: Path | str | None) -> list[str]:
+    """One line per trusted project skill refused for having the name of
+    a built-in or user skill. Empty when there is none."""
+    if not workspace:
+        return []
+    taken = {sk.name: sk for sk in discover_skills(None)}
+    _, refused = _load_project_skills(Path(workspace), taken)
+    return [
+        f"project skill '{name}' in .delfin/skills was NOT loaded: a "
+        f"{'built-in' if _PACK_SKILLS_DIR in taken[name].source.parents else 'user'} "
+        f"skill has that name and keeps it; rename the project skill to "
+        f"use it"
+        for name in sorted(set(refused))
+    ]
+
+
+def trust_this_workspace(workspace: Path | str) -> dict:
+    """Record that the USER trusts *workspace*'s skills. Called only from
+    ``/trust grant skills``; workspace_trust refuses any other actor."""
+    from . import workspace_trust as _trust
+    return _trust.trust_workspace(
+        workspace, [_trust.KIND_SKILLS], actor=_trust.ACTOR_USER)
+
+
+def untrust_this_workspace(workspace: Path | str) -> bool:
+    """Withdraw skill trust for *workspace*. ``/trust revoke skills``."""
+    from . import workspace_trust as _trust
+    return _trust.revoke_workspace(
+        workspace, [_trust.KIND_SKILLS], actor=_trust.ACTOR_USER)
 
 
 def _load_one(path: Path) -> Skill | None:
@@ -187,22 +288,31 @@ def _load_one(path: Path) -> Skill | None:
 def discover_skills(
     workspace: Path | str | None = None, domain: str = "",
 ) -> list[Skill]:
-    """Return all skills found in user + project directories.
+    """Return the built-in, user and (trusted) project skills.
 
-    On name collisions the later (project-scoped) skill wins, mirroring
-    the canonical "project overrides user" semantics.
+    Built-in < user on a name collision. A project skill is read only
+    when the user trusted the workspace's ``.delfin/skills`` content
+    (workspace_trust, kind ``skills``, digest-bound), only from files
+    inside the workspace, and never replaces a built-in or user skill
+    of the same name (see ``shadow_notices``).
 
     With ``domain`` set, only the skills that apply there are returned.
     The default returns everything, so a caller that never learned about
     domains sees exactly what it saw before.
     """
+    ws = Path(workspace) if workspace else None
+    project_dir = ws / ".delfin" / "skills" if ws is not None else None
     by_name: dict[str, Skill] = {}
-    for d in _skill_dirs(Path(workspace) if workspace else None):
+    for d in _skill_dirs(ws):
+        if project_dir is not None and Path(d) == project_dir:
+            project, _ = _load_project_skills(ws, by_name)
+            for sk in project:
+                by_name[sk.name] = sk
+            continue
         for path in _candidates_in_dir(d):
             sk = _load_one(path)
-            if sk is None:
-                continue
-            by_name[sk.name] = sk
+            if sk is not None:
+                by_name[sk.name] = sk
     found = sorted(by_name.values(), key=lambda s: s.name)
     if not domain:
         return found

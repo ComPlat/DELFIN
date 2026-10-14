@@ -1003,9 +1003,22 @@ class PromptLoader:
         try:
             from . import workspace_trust as _trust
             root = self.workspace_root or self.repo_root
-            notes = _trust.pending_notices(root, short=True)
+            # --bare switches skill discovery off for the session; the
+            # skills kind is then not looked at (and not announced).
+            bare = bool(self.skip_external_memory)
+            notes = _trust.pending_notices(
+                root, short=True,
+                skip=(_trust.KIND_SKILLS,) if bare else ())
         except Exception:
             return ""
+        # A trusted project skill refused for having a built-in's or a
+        # user skill's name is withheld too, and as silently otherwise.
+        if not bare:
+            try:
+                from .skills import shadow_notices
+                notes = list(notes) + shadow_notices(root)
+            except Exception:
+                pass
         return "\n".join(f"- {n}" for n in notes)
 
     def _load_repo_map_context(self, task_text: str) -> str:

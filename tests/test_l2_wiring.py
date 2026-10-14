@@ -177,3 +177,8 @@ def test_diff_shown_equals_the_diff_stored(isolated):
     stored = skill_proposals.get_proposal(out["name"])
     assert stored is not None
     assert stored.text == out["new_text"]
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")
