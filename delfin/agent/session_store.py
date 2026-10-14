@@ -841,6 +841,72 @@ def load_elided_record(session_id: str, ref: str) -> dict[str, Any] | None:
     return found
 
 
+_SUMMARY_PREFIX = "[Conversation summary"
+
+
+def _user_turns(messages) -> int:
+    return sum(1 for m in messages or []
+               if isinstance(m, dict) and m.get("role") == "user")
+
+
+def _keep_engine_history(session_id: str, engine_messages, chat_messages,
+                         last_compaction_info):
+    """The engine history to save, never silently shorter than the stored one.
+
+    A save writes what the engine holds at that moment. When an engine was
+    rebuilt without its history (a dashboard session after a reload, a
+    model switch whose hand-over was lost), that is one message, and the
+    save replaced a session's whole history with it; every later resume
+    then restored that one message while the transcript still showed
+    everything (2026-10-14: 902 transcript entries, 1 engine message).
+
+    A shorter history is legitimate in three cases, and only these: the
+    engine compacted (its history starts with the summary, or the
+    compaction record changed), the transcript was cleared with it (a new
+    cycle), or the drop is the size the sliding window takes. Anything
+    else keeps the stored history and appends what is new; the file as it
+    was is kept beside it. Returns ``(messages, kept_note_or_None)``.
+    """
+    new = list(engine_messages or [])
+    try:
+        stored_file = _SESSIONS_DIR / f"{session_id}.json"
+        if not stored_file.exists():
+            return new, None
+        stored = json.loads(stored_file.read_text(encoding="utf-8"))
+    except Exception:
+        return new, None
+    old = stored.get("engine_messages") or []
+    if not isinstance(old, list) or len(new) >= len(old):
+        return new, None
+    first = new[0].get("content") if new and isinstance(new[0], dict) else ""
+    if isinstance(first, str) and first.startswith(_SUMMARY_PREFIX):
+        return new, None
+    if (last_compaction_info or None) != (stored.get("last_compaction_info") or None):
+        return new, None
+    if len(chat_messages or []) < len(stored.get("chat_messages") or []):
+        return new, None
+    if len(new) * 2 >= len(old) and _user_turns(new) * 2 >= _user_turns(old):
+        return new, None                      # a sliding-window trim
+    tail = old[-len(new) - 4:] if new else []
+    seen = {(m.get("role"), json.dumps(m.get("content"), sort_keys=True,
+                                        ensure_ascii=False, default=str))
+            for m in tail if isinstance(m, dict)}
+    added = [m for m in new if not isinstance(m, dict)
+             or (m.get("role"), json.dumps(m.get("content"), sort_keys=True,
+                                           ensure_ascii=False, default=str))
+             not in seen]
+    kept_aside = stored_file.with_name(
+        f"{stored_file.name}.history-kept-{int(time.time())}")
+    try:
+        _atomic_write_text(kept_aside, stored_file.read_text(encoding="utf-8"))
+    except OSError:
+        pass
+    note = (f"engine history kept: a save would have replaced "
+            f"{len(old)} messages by {len(new)} with no compaction and no "
+            f"new cycle; kept the stored history and appended {len(added)}")
+    return old + added, note
+
+
 def save_session(
     session_id: str,
     *,
@@ -953,6 +1019,13 @@ def save_session(
                 if len(text) > 80:
                     title += "..."
                 break
+
+    engine_messages, _history_kept = _keep_engine_history(
+        session_id, engine_messages, chat_messages, last_compaction_info)
+    if _history_kept:
+        import logging
+        logging.getLogger(__name__).warning(
+            "session %s: %s", session_id, _history_kept)
 
     data = {
         # Unrecognised exporter keys first, so a named parameter always
