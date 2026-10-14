@@ -14893,6 +14893,84 @@ class _DocToolExecutor:
         except Exception:
             pass
 
+    def _shell_snapshot(self, perms: "KitToolPermissions"):
+        """The writable roots before a shell command (shell_changes).
+        None when it cannot be taken. Never raises."""
+        try:
+            from . import change_journal as _cj
+            from . import shell_changes as _sc
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            recs = _cj.list_changes(sid) or []
+            start = max((int(r.get("seq", 0) or 0) for r in recs),
+                        default=0)
+            return _sc.before(perms.all_workspace_roots(),
+                              session_id=sid, start_seq=start)
+        except Exception:
+            return None
+
+    def _journal_shell_changes(
+        self, tool: str, snap, perms: "KitToolPermissions",
+    ) -> list[str]:
+        """Journal what a shell command changed under the roots, one
+        entry per file, and return the notes to show (roots or
+        directories not tracked, each said once per session).
+
+        A path the session journalled itself while the command ran (a
+        redirect target the executor captured, a write_file during a
+        background job: seq after the snapshot) is not journalled twice.
+        Never raises."""
+        if snap is None:
+            return []
+        try:
+            from . import change_journal as _cj
+            from . import shell_changes as _sc
+            changes = _sc.after(snap)
+            notes = _sc.take_notes(snap)
+            if not changes:
+                return notes
+            sid = snap.session_id
+            already = {
+                os.path.realpath(str(r.get("path", "")))
+                for r in (_cj.list_changes(sid) or [])
+                if int(r.get("seq", 0) or 0) > snap.start_seq
+                and r.get("path")}
+            for ch in changes:
+                if ch.path in already:
+                    continue
+                p = Path(ch.path)
+                if ch.reason:
+                    post = ""
+                    if ch.kind != "deleted":
+                        try:
+                            if p.stat().st_size <= _sc.MAX_HASH_BYTES:
+                                post = _cj.sha256_file_bytes(p) or ""
+                        except OSError:
+                            post = ""
+                    _report_file_changed(p)
+                    rec = _cj.record_change_without_undo(
+                        sid, tool=tool, path=str(p), reason=ch.reason,
+                        created=ch.kind == "created",
+                        deleted=ch.kind == "deleted", post_hash=post)
+                    self._note_change_seq(rec, perms)
+                elif ch.kind == "deleted":
+                    self._capture_raw_change(tool, p, ch.pre, perms,
+                                             deleted=True)
+                else:
+                    self._capture_raw_change(tool, p, ch.pre, perms)
+                # The session's own write moves its edit baseline, as for
+                # a redirect -- only for a file it had read: a file it
+                # never read keeps needing a read before an edit.
+                tracker = getattr(perms, "read_tracker", None)
+                if (ch.kind != "deleted" and isinstance(tracker, dict)
+                        and str(p) in tracker):
+                    try:
+                        tracker[str(p)] = p.stat().st_mtime
+                    except OSError:
+                        pass
+            return notes
+        except Exception:
+            return []
+
     def _note_change_seq(
         self, rec: "Optional[dict]", perms: "KitToolPermissions",
     ) -> None:
@@ -22106,6 +22184,9 @@ class _DocToolExecutor:
                     _pre_shell[_tp] = None
         except Exception:
             _pre_shell = {}
+        # Everything else it may change under the roots: an interpreter,
+        # a script or a compiler writes past any reading of the text.
+        _snap = self._shell_snapshot(perms)
 
         t0 = time.monotonic()
         try:
@@ -22133,6 +22214,8 @@ class _DocToolExecutor:
                     budget=True,
                 )
         except subprocess.TimeoutExpired:
+            # What it wrote before it was ended is still its work.
+            self._journal_shell_changes("bash", _snap, perms)
             # Say what to do instead. The default window is a minute or
             # two, and a run that needs longer has two sanctioned ways
             # to be run -- neither of which the refusal named, so a
@@ -22197,6 +22280,7 @@ class _DocToolExecutor:
                 perms.read_tracker[str(_tp)] = _tp.stat().st_mtime
             except Exception:
                 pass
+        _journal_notes = self._journal_shell_changes("bash", _snap, perms)
 
         out = proc.stdout or ""
         err = proc.stderr or ""
@@ -22217,6 +22301,8 @@ class _DocToolExecutor:
         _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
         if _ssh_note:
             payload["hint"] = _ssh_note
+        if _journal_notes:
+            payload["untracked_changes"] = " ".join(_journal_notes)
         watched = _auto_watch_submitted_jobs(proc.stdout or "", perms)
         if watched:
             payload["watched_slurm_jobs"] = watched
@@ -22276,6 +22362,14 @@ class _DocToolExecutor:
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
 
+        # The job's file changes are journalled when it ends, in its
+        # watcher thread, against the roots as they were at its start.
+        _snap = self._shell_snapshot(perms)
+
+        def _journal_job_changes():
+            return self._journal_shell_changes(
+                "bash_background", _snap, perms)
+
         try:
             from . import bash_jobs as _bj
             _job_sid = str(getattr(perms, "task_session_id", "") or "")
@@ -22296,6 +22390,7 @@ class _DocToolExecutor:
                 else _bash_isolation_argv(cmd, run_cwd, perms,
                                           caged_unasked=True),
                 **({"session_id": _job_sid} if _job_sid else {}),
+                on_finish=_journal_job_changes,
             )
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
