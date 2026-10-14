@@ -14,6 +14,18 @@ from pathlib import Path
 
 import pytest
 
+# The suite runs every test in one process, and a process maps one C++
+# runtime: the first library that needs it decides for all later ones.
+# Test files import PyMuPDF directly (importorskip), past the product's
+# own preload in office._pymupdf, and on a host whose LD_LIBRARY_PATH
+# names an older runtime (an ORCA install) that import mapped it and every
+# later `import sqlite3` failed -- three manual tests failed after
+# tests/test_doctor.py and passed alone. The interpreter's runtime is
+# mapped here, before any test module is imported.
+from delfin.agent.native_libs import prefer_own_libstdcxx  # noqa: E402
+
+prefer_own_libstdcxx()
+
 
 # ---------------------------------------------------------------------------
 # The checkout itself is a sink, and it was invisible
