@@ -7837,6 +7837,11 @@ class KitToolPermissions:
     # would be a route around the flag.
     skip_hook_discovery: bool = False
     skip_skill_discovery: bool = False
+    # Which optional tool groups (chemistry, office) this session is
+    # offered -- toolsets.WorkspaceToolsets, decided once from the
+    # workspace. A sub-agent built by ``dataclasses.replace`` shares its
+    # parent's object, so a group enabled in either is enabled in both.
+    toolsets: Any = None
 
     def __setattr__(self, key: str, value: Any) -> None:
         # The mode an administrator's managed policy disallows is never
@@ -7923,6 +7928,16 @@ class KitToolPermissions:
         ):
             self.bash_auto_allow_patterns = (
                 _DEFAULT_BASH_AUTO_ALLOW + _DELFIN_BASH_AUTO_ALLOW
+            )
+        if self.toolsets is None:
+            from .toolsets import WorkspaceToolsets
+            # Lazy: nothing is scanned until the first turn asks.
+            self.toolsets = WorkspaceToolsets(
+                self.workspace,
+                is_delfin_workspace=self.is_delfin_workspace,
+                calc_dirs=self.confirm_write_dirs,
+                session_dirs=(*self.extra_workspace_dirs,
+                              *self.read_only_workspace_dirs),
             )
 
     @property
@@ -27965,6 +27980,26 @@ class OpenAIClient(_BaseClient):
                 not in _DELFIN_ONLY_TOOL_NAMES
             ]
 
+        # Optional tool groups (chemistry, office): offered where the
+        # workspace calls for them -- see delfin.agent.toolsets. Decided
+        # once per session; a group the history already used is enabled
+        # here, at the turn boundary, and never withdrawn. Advertising
+        # only: the executor's authorisation is untouched.
+        _hidden_groups: frozenset[str] = frozenset()
+        _toolsets = getattr(self._permissions, "toolsets", None)
+        if _toolsets is not None:
+            try:
+                from .toolsets import (
+                    drop_hidden as _drop_hidden,
+                    tool_names_in_messages as _used_names,
+                )
+                _toolsets.note_used(_used_names(messages))
+                _hidden_groups = _toolsets.hidden_groups(role=_agent_role)
+                advertised_tools = _drop_hidden(advertised_tools,
+                                                _hidden_groups)
+            except Exception:
+                _hidden_groups = frozenset()
+
         # Weak-model core-tool filter. Small local models (gemma-7b,
         # llama-8b, qwen-7b, phi-3.5, mistral-7b, codellama-7b) routinely
         # pick the wrong tool out of 45 options and end up calling
@@ -28092,9 +28127,16 @@ class OpenAIClient(_BaseClient):
                 getattr(_caps, "context_window", 0) if _caps else 0)
             _mcp_spent = 0
             _mcp_dropped: list[str] = []
+            if _hidden_groups:
+                from .toolsets import tool_group as _tool_group
             for _tool in _mcp_tools:
                 if tool_unavailable_reason(
                         _tool.namespaced_name, _surface_ctx) is not None:
+                    continue
+                # A hidden group also spends none of the MCP budget, so
+                # a user's own server is not crowded out by it.
+                if (_hidden_groups and _tool_group(_tool.namespaced_name)
+                        in _hidden_groups):
                     continue
                 _entry = {
                     "type": "function",
