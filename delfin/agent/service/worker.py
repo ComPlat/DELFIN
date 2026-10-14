@@ -1496,6 +1496,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.fake:
             from .fake_engine import FakeEngine
             engine = FakeEngine(str(workspace), delay=args.fake_delay)
+            if args.resume:
+                # As a real resume (cli._open_session restores the id): the
+                # session goes on under its id, in the same log.
+                engine.session_id = args.resume
             if args.permission_mode:
                 engine.set_kit_permission_mode(args.permission_mode,
                                                announce=False)

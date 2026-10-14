@@ -75,6 +75,16 @@ def test_the_run_file_is_the_users_and_only_its_service_removes_it(runtime):
     assert rundir.read_run_file() is None
 
 
+def test_a_run_file_names_this_shells_service_only_for_its_socket(runtime, monkeypatch):
+    # Another DELFIN_RUNTIME_DIR (the same HOME) writes the same run file;
+    # its service is not this shell's to wait for, name or stop.
+    monkeypatch.setattr(rundir, "_looks_like_the_service", lambda pid: True)
+    rundir.write_run_file({"pid": os.getpid(), "socket": "/elsewhere/agent.sock"})
+    assert rundir.service_pid() == 0
+    rundir.write_run_file({"pid": os.getpid(), "socket": str(rundir.socket_path())})
+    assert rundir.service_pid() == os.getpid()
+
+
 def test_services_on_other_login_nodes_are_found_by_their_run_files(runtime):
     here = rundir.write_run_file({"pid": 1, "host": rundir.hostname()})
     other = here.parent / "login2.json"

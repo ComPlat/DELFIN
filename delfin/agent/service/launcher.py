@@ -21,6 +21,11 @@ from . import client, eventlog, rundir
 #: How long a starting service gets before the window gives up on it.
 START_TIMEOUT_S = 20.0
 
+#: How long a service that holds the host but does not listen yet is
+#: waited for: it is stopping (its sessions save; the stop is bounded at
+#: about 40 s) or starting.
+STOP_WAIT_S = 90.0
+
 
 class ServiceDidNotStart(RuntimeError):
     """The service was started and never answered; the message says why."""
@@ -76,8 +81,14 @@ def ensure_service(*, timeout: float = START_TIMEOUT_S,
         raise ServiceDidNotStart(_running_but(why))
     proc: subprocess.Popen | None = None
     started = 0.0
+    began = time.monotonic()
     while time.monotonic() < deadline:
-        if not rundir.service_pid() and (proc is None or proc.poll() is not None) \
+        holder = rundir.service_pid()
+        if proc is None and holder and why == "none":
+            # One holds the host and does not listen: it is stopping (its
+            # sessions save) or starting. Wait for it, not for a new one.
+            deadline = max(deadline, began + STOP_WAIT_S)
+        if not holder and (proc is None or proc.poll() is not None) \
                 and time.monotonic() - started > 1.0:
             if proc is not None and proc.returncode not in (0, None):
                 raise ServiceDidNotStart(
@@ -89,6 +100,9 @@ def ensure_service(*, timeout: float = START_TIMEOUT_S,
             rundir.ensure_runtime_dir()
             proc = start_service(idle_exit_s=idle_exit_s)
             started = time.monotonic()
+            # A new one gets its whole start time, also after a wait for
+            # an old one to stop.
+            deadline = max(deadline, min(started + timeout, began + STOP_WAIT_S + timeout))
         hello, why = client.probe(timeout=1.0)
         if hello is not None:
             return hello
@@ -103,10 +117,16 @@ def ensure_service(*, timeout: float = START_TIMEOUT_S,
                              f"{_log_tail()}")
 
 
+def why_in_words(why: str) -> str:
+    """probe()'s reason, said: "none" there is a service that holds the
+    host and does not listen (yet, or any more)."""
+    return "it is not listening: it is starting or stopping" if why in ("", "none") else why
+
+
 def _running_but(why: str) -> str:
     pid = rundir.service_pid()
     who = f" (pid {pid})" if pid else ""
-    return (f"an agent service runs on this host{who}, but {why}. "
+    return (f"an agent service runs on this host{who}, but {why_in_words(why)}. "
             "`delfin-agent service stop` ends it -- its sessions save and can "
             "be resumed -- then start the window again.")
 

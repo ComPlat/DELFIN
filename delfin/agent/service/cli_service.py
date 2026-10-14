@@ -128,7 +128,7 @@ def _service(action: str) -> int:
         pid = rundir.service_pid()
         if pid:
             print(f"an agent service runs on {rundir.hostname()} (pid {pid}), "
-                  f"but {why or 'it does not answer'}")
+                  f"but {launcher.why_in_words(why)}")
             if action == "stop":
                 return _stop_unanswering(pid)
             print("  `delfin-agent service stop` ends it (its sessions save)")
@@ -195,6 +195,10 @@ def _stop_unanswering(pid: int) -> int:
         print("stopped")
         return 0
     if _gone(pid, UNANSWERING_TERM_WAIT_S):
+        print("stopped")
+        return 0
+    if rundir.service_pid() != pid:
+        # Gone meanwhile, or the pid is no longer this host's service.
         print("stopped")
         return 0
     print("it did not react: SIGKILL (its sessions end and save on their own)",

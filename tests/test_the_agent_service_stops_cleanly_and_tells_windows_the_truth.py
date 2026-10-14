@@ -3,14 +3,17 @@ tells a window agrees with what it shows.
 
 * A session started while the service stops is refused or ended with the
   rest; no worker outlives the service. A stop noticed before the service
-  serves is obeyed. Every session is asked to end at once.
+  serves is obeyed. Every session is asked to end at once, one still
+  starting is ended at once, and one that stops reading holds nothing up.
 * `service stop` returns once the service is gone, so the next window
-  starts at once; a service that does not say hello (stuck, another
-  protocol version) is named, and `service stop` still ends it.
+  starts at once, and a window opened during a stop waits for it; a
+  service that does not say hello (stuck, another protocol version) is
+  named, and `service stop` still ends it -- only this shell's service.
 * An attach answer and its replay stand at the same point, the replay
   comes from memory (no log read in the service's loop) and fits its
-  budget; what a worker says right after it started reaches the window
-  that created it.
+  budget; a resumed session replays how it is now, not how it ended; what
+  a worker says right after it started reaches the window that created
+  it. Granted folders are absolute, as the session's own folder is.
 * A window that stops reading is dropped with its backlog; one that reads
   survives a burst.
 """
@@ -148,6 +151,8 @@ def test_every_session_is_asked_to_end_at_once():
     asked: list[float] = []
 
     class Slow:
+        id = "s"                              # started: it is asked, not signalled
+
         def __init__(self, loop):
             self.done = loop.create_future()
             self.proc = SimpleNamespace(returncode=None, send_signal=lambda s: None,
@@ -170,6 +175,56 @@ def test_every_session_is_asked_to_end_at_once():
     took = asyncio.run(run())
     assert took < 1.5                         # one after another would be 2 s
     assert max(asked) - min(asked) < 0.2
+
+
+def test_a_session_still_starting_is_ended_at_once():
+    signals: list[int] = []
+
+    class Starting:
+        id = ""                               # its initialize not answered yet
+
+        def __init__(self, loop):
+            self.done = loop.create_future()
+            self.proc = SimpleNamespace(returncode=None, send_signal=self._signal,
+                                        kill=lambda: None)
+
+        def _signal(self, sig):
+            signals.append(sig)
+            self.proc.returncode = -sig
+            self.done.set_result(-sig)
+
+        async def request(self, method, params=None, timeout=None):
+            raise AssertionError("a worker still starting reads no request")
+
+    async def run() -> float:
+        sup = supervisor.Supervisor()
+        started = time.monotonic()
+        await sup._end([Starting(asyncio.get_running_loop())])
+        return time.monotonic() - started
+
+    assert asyncio.run(run()) < 1             # not the 5 s ask + 20 s grace
+    assert signals == [signal.SIGTERM]
+
+
+def test_a_worker_that_stops_reading_holds_no_request_and_no_stop():
+    class FullPipe:
+        def write(self, data):
+            pass
+
+        async def drain(self):
+            await asyncio.Event().wait()      # never: nobody reads the pipe
+
+    async def run() -> float:
+        sup = supervisor.Supervisor()
+        proc = SimpleNamespace(stdin=FullPipe(), returncode=None, pid=0)
+        session = supervisor.Session(sup, proc, {})
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            await session.request("session.shutdown", timeout=0.3)
+        assert session._waiting == {}
+        return time.monotonic() - started
+
+    assert asyncio.run(run()) < 2
 
 
 def test_service_stop_returns_once_the_service_is_gone(service):
@@ -242,6 +297,62 @@ def test_a_service_of_another_protocol_version_is_named(tmp_path):
         svc.stop()
 
 
+def test_a_service_of_another_runtime_dir_is_not_this_shells(service):
+    # The same HOME, another DELFIN_RUNTIME_DIR: the run file names the
+    # service, but not this shell's socket -- nothing to name or stop here.
+    other = _env(service)
+    other["DELFIN_RUNTIME_DIR"] = str(service.tmp / "rt-other")
+    stopped = subprocess.run([sys.executable, "-m", "delfin.agent.cli", "service", "stop"],
+                             env=other, capture_output=True, text=True, timeout=60)
+    assert "no agent service runs" in stopped.stdout, stopped.stdout + stopped.stderr
+    time.sleep(0.5)
+    assert service.proc.poll() is None
+    assert service.client().request("service.status")
+
+
+def test_a_window_waits_for_a_service_that_is_stopping(tmp_path):
+    # A session that takes its time to save (its worker stopped, SIGSTOP)
+    # holds the service's stop up; a window opened meanwhile waits for the
+    # stop and then starts the next service -- it never fails half-way
+    # with "run `service stop`". The grace is cut short for the test.
+    svc = ServiceProcess(tmp_path, start=False)
+    code = textwrap.dedent("""
+        import sys
+        import delfin.agent.service.supervisor as supervisor   # (its command line says so)
+        supervisor.SHUTDOWN_GRACE_S = 4.0
+        sys.exit(supervisor.main(sys.argv[1:]))
+    """)
+    svc.proc = subprocess.Popen([sys.executable, "-c", code, "--idle-exit", "120"],
+                                env=svc.env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        svc.wait_until_up()
+        a = svc.client()
+        sid = svc.session(a)
+        worker = next(s["pid"] for s in a.request("sessions.list")["sessions"]
+                      if s["sessionId"] == sid)
+        assert worker in _children_of(svc.proc.pid)
+        os.kill(worker, signal.SIGSTOP)
+        old = svc.proc.pid
+        a.request("service.shutdown")
+        status = _cli(svc, "status")
+        assert "starting or stopping" in status.stdout, status.stdout
+        opened = subprocess.run(
+            [sys.executable, "-c", "from delfin.agent.service import launcher; "
+                                   "print(launcher.ensure_service(timeout=5)['pid'])"],
+            env=_env(svc), capture_output=True, text=True, timeout=120)
+        assert opened.returncode == 0, opened.stdout + opened.stderr
+        new = int(opened.stdout.strip())
+        assert new != old and not _alive(old) and not _alive(worker)
+        os.kill(new, signal.SIGTERM)
+    finally:
+        try:
+            os.kill(worker, signal.SIGCONT)
+        except (ProcessLookupError, UnboundLocalError):
+            pass
+        svc.stop()
+
+
 def test_the_cli_says_when_this_shell_may_not_act(service):
     service.session(service.client())
     env = _env(service)
@@ -269,6 +380,46 @@ def test_a_session_folder_must_be_an_absolute_existing_path(service):
         with pytest.raises(ServiceError) as refused:
             a.request("session.create", {"cwd": cwd, "fake": True})
         assert refused.value.code == protocol.INVALID_PARAMS
+
+
+def test_a_folder_granted_to_a_session_must_be_absolute(service):
+    a = service.client()
+    for key in ("addDirs", "readDirs"):
+        # Taken relative to the service's own folder ($HOME), it would grant that.
+        with pytest.raises(ServiceError) as refused:
+            a.request("session.create", {"cwd": str(service.workspace()), "fake": True,
+                                         key: ["data"]})
+        assert refused.value.code == protocol.INVALID_PARAMS
+        assert key in refused.value.message
+
+
+def test_a_resumed_session_replays_how_it_is_now_not_how_it_ended(service):
+    a = service.client()
+    sid = service.session(a, permissionMode="default")
+    a.request("session.setMode", {"sessionId": sid, "mode": "plan"})
+    turn(a, sid, "hello")
+    mark = len(a.events)
+    a.request("session.shutdown", {"sessionId": sid})
+    a.wait_for(lambda e: e.get("type") == "session.removed" and e.get("session") == sid,
+               after=mark, timeout=60)
+    created = a.request("session.create", {"cwd": str(service.workspace()), "fake": True,
+                                           "fakeDelay": 0.003, "resume": sid,
+                                           "permissionMode": "acceptEdits",
+                                           "attach": False}, timeout=120)
+    assert created["sessionId"] == sid
+    got = a.request("session.attach", {"sessionId": sid, "turns": 4})
+    kinds = [e["type"] for e in got["events"]]
+    # The earlier run's end and posture are history: a window told
+    # "ended" closes the session, one told "plan" shows the wrong posture.
+    assert "session.ended" not in kinds and "session.updated" not in kinds
+    assert kinds.count("session.info") == 1 and kinds[0] == "session.info"
+    assert got["events"][0]["approval"] == "acceptEdits" == got["session"]["approval"]
+    assert "user.message" in kinds and got["state"] == "idle"
+    # One session, one worker: a second resume while it runs is refused.
+    with pytest.raises(ServiceError) as refused:
+        a.request("session.create", {"cwd": str(service.workspace()), "fake": True,
+                                     "resume": sid}, timeout=60)
+    assert refused.value.code == protocol.NOT_ALLOWED
 
 
 def test_the_creator_hears_of_its_session_in_the_answer_first(service):
@@ -368,13 +519,56 @@ def test_a_replay_keeps_the_newest_whole_turns_that_fit_its_budget():
     assert huge.events() and huge.events()[-1]["type"] == "turn.ended"
 
 
-def test_older_turns_merge_under_the_ones_seen_live():
+def _log(tmp_path: Path, events: list[dict], tail: bytes = b"") -> Path:
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b"".join(protocol.encode(e) for e in events) + tail)
+    return path
+
+
+def test_older_turns_merge_under_the_ones_seen_live(tmp_path):
     window = eventlog.RecentEvents(10**6)
     events = _turn_events(3, 10)
     for e in events[4:]:
         window.add(e)                        # seen live: turns 2 and 3
-    window.merge_older(events)               # the log: all of it
+    older, cut = eventlog.read_newest(_log(tmp_path, events), 10**6)
+    window.merge_older_sized(older, cut)     # the log: all of it
     assert [e["seq"] for e in window.events()] == [e["seq"] for e in events]
+    assert not window.dropped
+
+
+def test_a_resumed_log_is_read_from_its_end_within_the_budget(tmp_path):
+    events = _turn_events(10, 1000)
+    # A line still being written at the end, and one damaged on the way.
+    path = _log(tmp_path, events, tail=b'{"type": "text.ended", "te')
+    lines = path.read_bytes().split(b"\n")
+    lines[3] = b"garbage"
+    path.write_bytes(b"\n".join(lines))
+    whole = eventlog.read_events(path)
+    for chunk in (7, 1000, 1 << 20):         # lines across the read blocks
+        got, cut = eventlog.read_newest(path, 10**9, chunk=chunk)
+        assert [e for e, _ in got] == whole and not cut
+        assert all(size == len(protocol.encode(e)) for e, size in got)
+        newest, cut = eventlog.read_newest(path, 3500, chunk=chunk)
+        assert cut and [e for e, _ in newest] == whole[-len(newest):]
+        assert sum(size for _, size in newest) <= 3500
+    assert eventlog.read_newest(tmp_path / "missing.jsonl", 100) == ([], False)
+
+
+def test_a_replay_under_the_current_header_drops_what_it_supersedes():
+    header = {"type": "session.info", "session": "s", "seq": 0, "approval": "acceptEdits"}
+    run1 = [{"type": "session.info", "session": "s", "seq": 1, "approval": "default"},
+            {"type": "session.updated", "session": "s", "seq": 2, "approval": "plan"},
+            *[{**e, "seq": e["seq"] + 2} for e in _turn_events(1, 10)],
+            {"type": "session.ended", "session": "s", "seq": 7, "reason": "exit"}]
+    run2 = [{"type": "session.info", "session": "s", "seq": 8, "approval": "acceptEdits"}]
+    picked = eventlog.tail_turns(run1 + run2, 0, header=header)
+    assert picked[0] is header
+    assert [e["type"] for e in picked[1:]] == ["user.message", "turn.started",
+                                                "text.ended", "turn.ended"]
+    # The end of the run that ends now is the window's to hear.
+    ending = run1 + run2 + [{"type": "session.ended", "session": "s", "seq": 9,
+                             "reason": "shutdown"}]
+    assert eventlog.tail_turns(ending, 0, header=header)[-1]["seq"] == 9
 
 
 def test_a_window_that_stops_reading_is_dropped_with_its_backlog(monkeypatch):

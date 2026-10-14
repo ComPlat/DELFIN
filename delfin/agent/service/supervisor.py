@@ -246,17 +246,28 @@ class Session:
         msg_id = self._next_id
         future = asyncio.get_running_loop().create_future()
         self._waiting[msg_id] = future
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
         try:
             self.proc.stdin.write(protocol.encode(
                 protocol.request(msg_id, method, params or {})))
-            await self.proc.stdin.drain()
+            # Under the same time limit as the answer: a worker that stops
+            # reading its stdin (a full pipe) must not hold this request --
+            # or the service's stop -- for ever.
+            if deadline is None:
+                await self.proc.stdin.drain()
+            else:
+                await asyncio.wait_for(self.proc.stdin.drain(), max(0.0, deadline - loop.time()))
         except (BrokenPipeError, ConnectionError, RuntimeError):
             self._waiting.pop(msg_id, None)
             raise WorkerFailed(WORKER_GONE, "the session has ended") from None
+        except asyncio.TimeoutError:
+            self._waiting.pop(msg_id, None)
+            raise
         try:
-            if timeout is None:
+            if deadline is None:
                 return await future
-            return await asyncio.wait_for(future, timeout)
+            return await asyncio.wait_for(future, max(0.0, deadline - loop.time()))
         finally:
             self._waiting.pop(msg_id, None)
 
@@ -408,11 +419,15 @@ class Session:
         read live since. Read on a thread: a long log must not stall the
         service."""
         try:
-            older = await asyncio.to_thread(eventlog.read_events,
-                                            eventlog.log_path(self.id))
+            # Read from its end, cut to the budget and sized off the event
+            # loop: the loop only splices what fits (a 200 MB log must not
+            # stall every window, nor be held in memory whole).
+            older, cut = await asyncio.to_thread(eventlog.read_newest,
+                                                 eventlog.log_path(self.id),
+                                                 REPLAY_BUDGET_BYTES)
         except Exception:
             return
-        self.recent.merge_older(older)
+        self.recent.merge_older_sized(older, cut)
 
 
 class Client:
@@ -745,8 +760,20 @@ class Supervisor:
             raise _Refusal(protocol.INVALID_PARAMS, "cwd must be an absolute path")
         if not cwd.is_dir():
             raise _Refusal(protocol.INVALID_PARAMS, f"no such folder: {cwd}")
+        for key in ("addDirs", "readDirs"):
+            for path in params.get(key) or []:
+                # As for cwd: a relative grant would be resolved against the
+                # service's own folder ($HOME) and grant that.
+                if not Path(str(path)).expanduser().is_absolute():
+                    raise _Refusal(protocol.INVALID_PARAMS, f"{key} must be absolute paths: {path!r}")
         if self.closing:
             raise _Refusal(protocol.NOT_ALLOWED, "the agent service is stopping")
+        resume = str(params.get("resume") or "")
+        if resume and (resume in self.sessions or any(
+                str(s.settings.get("resume") or "") == resume for s in self.starting)):
+            # One session, one worker: two would append to the same log.
+            raise _Refusal(protocol.NOT_ALLOWED,
+                           f"session {resume} runs here already; attach to it")
         self._creating += 1
         try:
             return await self._create(client, params, cwd)
@@ -933,6 +960,15 @@ class Supervisor:
 
     async def _end(self, sessions: list[Session]) -> None:
         async def ask(session: Session) -> None:
+            if not session.id:
+                # Still starting (its initialize not answered): nothing of
+                # it to save, and it may not read its stdin before its
+                # engine is built -- it ends at once.
+                try:
+                    session.proc.send_signal(signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                return
             try:
                 await session.request("session.shutdown", timeout=5)
             except Exception:

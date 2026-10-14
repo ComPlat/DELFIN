@@ -77,6 +77,65 @@ def read_events(path: Path) -> list[dict]:
     return events
 
 
+def _without_superseded(events: list[dict]) -> list[dict]:
+    """What a replay under a current header leaves out: the session.info
+    and session.updated events (the header says how the session is NOW;
+    an older one after it would turn the posture back), and a
+    session.ended that later events follow (an earlier run of a resumed
+    session -- a window told it ended would close it)."""
+    last_durable = max((i for i, e in enumerate(events) if isinstance(e.get("seq"), int)), default=-1)
+    out = []
+    for i, e in enumerate(events):
+        kind = e.get("type")
+        if kind in ("session.info", "session.updated"):
+            continue
+        if kind == "session.ended" and i != last_durable:
+            continue
+        out.append(e)
+    return out
+
+
+def read_newest(path: Path, budget: int,
+                chunk: int = 1 << 20) -> tuple[list[tuple[dict, int]], bool]:
+    """The newest complete events of ``path`` within ``budget`` bytes, each
+    with its size (its line's, which is what encode() makes of it), and
+    whether older ones were left out: what a replay window can hold (for
+    RecentEvents.merge_older_sized). Read from the end, so a resumed
+    session's 200 MB log costs what fits, not all of it."""
+    try:
+        fh = open(path, "rb")
+    except FileNotFoundError:
+        return [], False
+    out: list[tuple[dict, int]] = []
+    total = 0
+    with fh:
+        pos = fh.seek(0, os.SEEK_END)
+        rest = b""                    # the start of a line begun before pos
+        while pos > 0:
+            step = min(chunk, pos)
+            pos -= step
+            fh.seek(pos)
+            lines = (fh.read(step) + rest).split(b"\n")
+            rest = lines.pop(0) if pos > 0 else b""
+            for line in reversed(lines):
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue          # a line still being written, or damage
+                if not isinstance(event, dict):
+                    continue
+                size = len(line) + 1
+                if total + size > budget and out:
+                    out.reverse()
+                    return out, True
+                out.append((event, size))
+                total += size
+    out.reverse()
+    return out, False
+
+
 def tail_turns(events: list[dict], turns: int,
                header: dict | None = None, max_bytes: int = 0) -> list[dict]:
     """The events from the start of the ``turns``-th last turn onwards.
@@ -96,8 +155,8 @@ def tail_turns(events: list[dict], turns: int,
     Every reader bounds its lines, so an answer that carries a replay must
     stay well below that.
     """
-    events = [e for e in events if e.get("type") != "session.info"] \
-        if header is not None else events
+    if header is not None:
+        events = _without_superseded(events)
     info = header if header is not None else next(
         (e for e in reversed(events) if e.get("type") == "session.info"), None)
     start = 0
@@ -145,22 +204,22 @@ class RecentEvents:
         self._bytes += size
         self._trim()
 
-    def merge_older(self, older: list[dict]) -> None:
-        """Put the events that came before the first one held in front
-        (a resumed session's log), newest kept when they do not all fit."""
+    def merge_older_sized(self, older: list[tuple[dict, int]], cut: bool = False) -> None:
+        """Put the events that came before the first one held in front (a
+        resumed session's log, read and sized off the event loop by
+        read_newest), newest kept when they do not all fit; ``cut``: the
+        log held more than these."""
         held = [e for e, _ in self._events]
         cutoff = int(held[0].get("seq", 0) or 0) if held else 0
-
-        def earlier(event: dict) -> bool:
-            seq = int(event.get("seq", 0) or 0)
-            return seq > 0 and (not held or seq < cutoff)
-
-        before = sorted(filter(earlier, older), key=lambda e: int(e.get("seq", 0) or 0))
+        before = [(e, size) for e, size in older
+                  if int(e.get("seq", 0) or 0) > 0
+                  and (not held or int(e.get("seq", 0) or 0) < cutoff)]
+        if cut:
+            self.dropped = True
         if not before:
             return
-        sized = [(e, len(encode(e))) for e in before]
-        self._events.extendleft(reversed(sized))
-        self._bytes += sum(size for _, size in sized)
+        self._events.extendleft(reversed(before))
+        self._bytes += sum(size for _, size in before)
         self._trim()
 
     def _trim(self) -> None:

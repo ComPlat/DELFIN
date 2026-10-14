@@ -187,6 +187,11 @@ def service_pid() -> int:
         return 0
     if pid <= 0:
         return 0
+    # Only the service of this shell's socket: one with another
+    # DELFIN_RUNTIME_DIR writes the same run file, and is not ours to wait
+    # for, name or stop.
+    if str((info or {}).get("socket") or "") not in ("", str(socket_path())):
+        return 0
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
