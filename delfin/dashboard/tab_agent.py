@@ -4074,6 +4074,8 @@ def _render_pdf_preview(p) -> str | None:
     came out blank.
     """
     try:
+        from delfin.agent.native_libs import prefer_own_libstdcxx
+        prefer_own_libstdcxx()
         try:
             import pymupdf as fitz      # its own name since 1.28
         except ImportError:

@@ -27,7 +27,7 @@
 
 Inputs outside the constructor's scope (it covers one metal centre with coordination number 4, 5 or 6 and ligands below a size cap per donor arm), or whose isomers all fail the self-gate, are built entirely by a **legacy path** that minimises UFF over the whole complex with the metal as a typed, fixed atom. The two paths are either-or per system; their outputs are not combined.
 
-Construction uses fixed seeds and total orders in enumeration, selection and de-duplication, so it is **deterministic for all but a few systems**: the same SMILES on the same commit and environment gives byte-identical frames. The known exception is the UFF step of the legacy path with soft donor-distance restraints, which can differ between repeats under machine load.
+Construction uses fixed seeds and total orders in enumeration, selection and de-duplication, and the champion configuration also seeds the random nudges Open Babel's force fields apply at near-zero contacts (previously drawn from a clock-seeded generator), so the same SMILES on the same commit and environment gives **byte-identical frames**. Across machines, byte identity also needs the same C math library: different glibc versions round a few transcendental functions differently in the last digit at rare arguments, which can change a de-duplication or ranking decision; the [reference environment](../../README.md#reference-environment-for-reproducible-manta-builds) names the one we build in.
 
 ## Usage
 
