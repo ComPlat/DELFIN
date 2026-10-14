@@ -187,6 +187,16 @@ def skill_files_in(d: Path, root: Path | None = None) -> list[Path]:
     return sorted(out)
 
 
+def is_user_skill_dir(d: Path) -> bool:
+    """Whether ``d`` is the user's own ``~/.delfin/skills`` (a session
+    rooted in the home directory sees it as ``<ws>/.delfin/skills``)."""
+    try:
+        return (Path(d).resolve()
+                == (Path.home() / ".delfin" / "skills").resolve())
+    except (OSError, RuntimeError):
+        return False
+
+
 def _project_skill_dir(workspace: Path) -> Path | None:
     """``<ws>/.delfin/skills`` when the user trusted exactly its content,
     else None. The trust gate announces a withheld directory once."""
@@ -302,6 +312,9 @@ def discover_skills(
     """
     ws = Path(workspace) if workspace else None
     project_dir = ws / ".delfin" / "skills" if ws is not None else None
+    if project_dir is not None and is_user_skill_dir(project_dir):
+        # Workspace == home: that directory is the user's own.
+        project_dir = None
     by_name: dict[str, Skill] = {}
     for d in _skill_dirs(ws):
         if project_dir is not None and Path(d) == project_dir:

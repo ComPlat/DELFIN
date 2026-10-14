@@ -207,7 +207,10 @@ def _read_skills(path: Path, root: Path) -> Any:
     ``<ws>/.delfin/skills`` the loader would read, sorted. A file that
     resolves outside the workspace is left out: the loader refuses it
     too, so it is neither trusted nor read."""
-    from .skills import skill_files_in
+    from .skills import is_user_skill_dir, skill_files_in
+    if is_user_skill_dir(path):
+        # The user's own directory (workspace == home): offers nothing.
+        return []
     out: list[list[str]] = []
     for f in skill_files_in(path, root):
         try:
