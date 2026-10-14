@@ -131,6 +131,17 @@ def test_the_users_own_skills_need_no_trust(tmp_path, monkeypatch):
     assert "mine" in _names(tmp_path / "anywhere")
 
 
+def test_a_session_in_the_home_directory_keeps_the_users_skills(
+        tmp_path, monkeypatch):
+    """Workspace == home: <ws>/.delfin/skills IS ~/.delfin/skills, the
+    user's own directory, which needs no trust and is not 'withheld'."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    _skill(home, "mine", "my own procedure")
+    assert "mine" in _names(home)
+    assert not any("skill" in n for n in WT.pending_notices(home))
+
+
 def test_the_skill_directory_needs_a_confirm_to_write():
     import fnmatch
     from delfin.agent import api_client as A
