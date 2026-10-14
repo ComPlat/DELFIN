@@ -603,6 +603,53 @@ def _resolve_fresh_budget(context_budget, engine) -> int:
     return int(context_budget or 0)
 
 
+#: The compaction kinds that leave a summary of the compacted messages in
+#: the history. ``summary_unavailable`` (nothing could be summarised) and the
+#: trim-only kinds do not, and count as a compaction that did not happen.
+_SUMMARY_KINDS = ("summary", "deterministic_digest")
+
+
+def _compact_to_fit(engine, budget: int) -> bool:
+    """Try a forced compaction before a fresh start; True when it fits.
+
+    Input: an engine whose current context is over ``budget``. Output: True
+    when ``engine._compact_history(force=True)`` produced a summary and the
+    context is then at or under ``budget``; False when the engine has no
+    compaction, it raised, it summarised nothing, or the result is still
+    over (the kept recent messages alone can exceed a small window).
+
+    Semantics: a switch to a model with a smaller window put the history
+    over the budget, and the fresh start archived it wholesale -- the next
+    turn knew only the working-state block and the open tasks. A
+    compaction keeps a summary of the task in context and archives the
+    compacted messages the same way, so it is tried first; the fresh start
+    stays the fallback. A compaction that ran and does not fit is kept: the
+    fresh start then cuts the compacted history, whose older part is
+    already in the archive.
+
+    Cost: one summariser call (max_tokens 1500, input capped at 60k chars by
+    ``_llm_summarize_old_messages``), only on a turn whose context is over
+    the fresh-start budget; extractive and free on the CLI backend. Rejected:
+    compacting at the model switch itself -- the switch has no worker
+    thread of its own, and the first turn after it is where the window is
+    checked on both surfaces anyway.
+    """
+    compact = getattr(engine, "_compact_history", None)
+    if not callable(compact):
+        return False
+    before = getattr(engine, "last_compaction_info", None)
+    try:
+        compact(force=True)
+    except Exception:
+        return False
+    info = getattr(engine, "last_compaction_info", None)
+    if info is before or not isinstance(info, dict):
+        return False
+    if info.get("kind") not in _SUMMARY_KINDS:
+        return False
+    return _context_tokens(engine) <= budget
+
+
 def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
                        task_state=None, context_budget=None) -> str:
     """The message to send for this turn, starting fresh when over budget.
@@ -615,6 +662,9 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
     try:
         budget = _resolve_fresh_budget(context_budget, engine)
         if budget <= 0:
+            return prompt
+        if (_context_tokens(engine) > budget
+                and _compact_to_fit(engine, budget)):
             return prompt
         block = ""
         try:
@@ -639,7 +689,7 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
 
 
 def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
-             max_tokens: int = 0, memory_context: str = "",
+             max_tokens: int = 0, memory_context: str | None = None,
              context_budget=None, task_state=None,
              working_state_block: str = "") -> TurnResult:
     """One turn, with every callback turned into a RenderItem.
@@ -657,6 +707,11 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     message, and fuses the block with the prompt this turn must answer, so
     the current user message is never lost. Under the budget (or with a 0
     budget) it arms nothing and the caller keeps the full history.
+
+    ``memory_context`` None (the default) takes what every surface sends
+    with a turn: the project instruction files and the per-turn hints of
+    ``turn_context``, the same call ``cli.cmd_run`` and the dashboard
+    make. A string is sent as given.
 
     ``sink`` is called from whatever thread ``stream_response`` runs on.
     It must not touch the terminal; in the REPL it is a queue put, and the
@@ -752,9 +807,14 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         _emit(RenderItem("denied", name=name))
 
     in_before, out_before = _usage(engine)
+    from . import turn_context
+    if memory_context is None:
+        memory_context = turn_context.memory_context(engine, prompt)
+    prompt = turn_context.user_message(prompt)
     user_message = prompt
     budget = _resolve_fresh_budget(context_budget, engine)
-    if budget > 0:
+    if budget > 0 and (_context_tokens(engine) <= budget
+                       or not _compact_to_fit(engine, budget)):
         try:
             fresh = fresh_context_for_turn(
                 engine, task_state, token_budget=budget,
@@ -923,8 +983,12 @@ class ReplOptions:
     #: Above this CURRENT-context token budget (per ``_estimate_context_tokens``)
     #: the terminal starts the next turn from a small fresh context (engine
     #: ``start_fresh`` one-shot) instead of re-sending the whole history.
-    #: 0 disables the restart hook (default).
-    context_budget: int = 0
+    #: None (default) resolves it as the dashboard and ``cmd_run`` do:
+    #: the engine's ``context_budget``, else min(900k, the model's window)
+    #: (``_resolve_fresh_budget``). 0 disables the restart hook. The
+    #: default was 0, so the terminal was the one surface that never
+    #: started fresh.
+    context_budget: int | None = None
 
 
 def _is_a_note(text: str) -> bool:
@@ -1149,6 +1213,10 @@ class TerminalAgent:
         # Typed during a turn: queued, never injected. A queued message
         # cannot be lost and cannot land in a context nobody could see.
         self.queued: list[str] = []
+        # The first prompt the user gave this process (not a wake, not a
+        # continuation): the task the session end records an outcome and
+        # an episode for (cli._end_session). "" until one is sent.
+        self.first_task = ""
         self._quit = False
 
     # -- input -----------------------------------------------------------
@@ -1261,6 +1329,8 @@ class TerminalAgent:
             return ""
 
     def turn(self, prompt: str) -> TurnResult:
+        if not self.first_task and not isinstance(prompt, HarnessText):
+            self.first_task = str(prompt)
         # The fresh-start decision lives in run_turn (the public turn path),
         # which both the interactive and the headless route share: it judges
         # the CURRENT context, ARCHIVES the history it drops, arms the

@@ -276,6 +276,7 @@ def _json_line(obj: dict) -> None:
 
 
 def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
+                 memory_context: str = "",
                  emit: Any = None,
                  on_tool_result: Any = None,
                  on_permission_denied: Any = None) -> dict[str, Any]:
@@ -305,6 +306,11 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     ``on_permission_denied`` (optional) receives ``(tool_name)`` each
     time the backend refused a call -- same forward-only pattern, so
     the benchmark can count interventions without a key of its own.
+
+    ``memory_context`` (optional) goes to the engine's system prompt;
+    passed only when non-empty, for the same fixed-signature doubles.
+    ``cmd_run`` fills it from ``turn_context``; the scheduler and the
+    benchmark call this directly and send none.
 
     The gate's own decisions are collected by a ``turn_outcome``
     observer for the length of the call: they become
@@ -431,6 +437,8 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         kwargs["on_wait"] = _on_wait
     if on_tool_result is not None:
         kwargs["on_tool_result"] = _forward_tool_result
+    if memory_context:
+        kwargs["memory_context"] = memory_context
     # The same probe once more: the backend's refusals are wanted for the
     # result even when no caller asked for them, but only an engine that
     # takes the keyword may be handed it.
@@ -533,11 +541,114 @@ def _save_session(engine, repo_root: Path, *, title: str = "") -> str:
             "model", str(getattr(getattr(engine, "client", None), "model", "")
                          or ""))
         estate.setdefault("provider", str(getattr(engine, "provider", "") or ""))
+        # The save guard compares this record with the stored one: a new
+        # record explains a shorter history. The dashboard passes it; this
+        # saver (terminal, -p/run, scheduler) did not, and restore_state
+        # reads it back so a resumed session compares against its own.
+        estate.setdefault("last_compaction_info",
+                          getattr(engine, "last_compaction_info", None))
         _ss.save_session(chat_messages=_display_messages(engine),
                          workspace=str(repo_root), **estate)
     except Exception as exc:
         print(f"WARN: session save failed: {exc}", file=sys.stderr)
     return sid
+
+
+def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
+                 t0: float | None) -> None:
+    """The session-end stages, one list for ``run``, ``chat -p`` and the
+    interactive session.
+
+    Input: the engine, the saved session id, the workspace, the task the
+    user gave (the -p prompt; the first typed prompt of a terminal
+    session, "" when none was typed), whether the session ended on an
+    error, and its monotonic start. Output: none; each stage is
+    best-effort and a failing one is said on stderr.
+
+    Stages, in order: session report, skill learning, indexing, cycle
+    outcome (outcome history + provider profile), episodic memory, eval
+    loop. Without a task -- a terminal session left before its first
+    prompt -- the cycle outcome and the episode are skipped: there is no
+    turn to judge, and a PASS for nothing would enter the history the
+    briefing quotes. The terminal used to run the first three only.
+    """
+    verdict = "FAIL" if failed else "PASS"
+
+    def _session_end_stage(name: str, fn) -> None:
+        """One best-effort session-end stage, said when it fails.
+
+        Best-effort stays right — a report write must never break the
+        answer's exit code — but a stage that fails on EVERY scheduled
+        unattended run vanished silently here: the run printed its
+        answer and the failure was indistinguishable from a stage that
+        did its job. The warning is the same shape as the save-failure
+        line above.
+        """
+        try:
+            fn()
+        except Exception as exc:
+            print(f"WARN: session-end stage {name} failed: {exc}",
+                  file=sys.stderr)
+
+    # Session report: best-effort Markdown write; never breaks exit.
+    def _report_stage(sid_, engine_):
+        from .session_report import write_session_report
+        write_session_report(sid_ or getattr(engine_, "session_id", ""))
+
+    def _learn_stage(engine_, sid_):
+        from .session_end import learn_at_session_end
+        learn_at_session_end(
+            _display_messages(engine_),
+            session_id=str(sid_ or getattr(engine_, "session_id", "") or ""))
+
+    def _index_stage(sid_):
+        from .session_end import index_at_session_end
+        index_at_session_end(str(sid_ or ""))
+
+    def _episode_stage(engine_, sid_, repo_):
+        from .episodes import build_episode_from_state, save_episode
+        fields = build_episode_from_state(engine_.export_state(), [])
+        save_episode(
+            sid_,
+            repo_root=repo_,
+            verdict=verdict,
+            **fields,
+        )
+
+    def _eval_stage():
+        from .eval_loop import maybe_run_scheduled
+        maybe_run_scheduled()
+
+    _session_end_stage("report", lambda: _report_stage(sid, engine))
+    # Shared session-end stage: skill learning, same hook as the CLI
+    # chat and the dashboard. Best-effort; never breaks the run.
+    _session_end_stage("skill learning", lambda: _learn_stage(engine, sid))
+    # Session-end stage (Paket 5): the ended session becomes searchable.
+    _session_end_stage("indexing", lambda: _index_stage(sid))
+
+    # Learning signal: record the outcome so provider profiles learn from
+    # CLI/headless usage too — previously only dashboard cycles fed the
+    # profile, so KIT/CLI sessions contributed nothing.
+    if task:
+        _session_end_stage(
+            "cycle outcome",
+            lambda: engine.record_cycle_outcome(
+                verdict,
+                task,
+                error_type=("cli_error" if failed else None),
+                start_time=t0,
+            ))
+    # Episodic memory: persist one compact per-session record so a future
+    # session can recall similar past work (best-effort, LLM-free) —
+    # without this the saved session state is write-only.
+    if task:
+        _session_end_stage(
+            "episodic memory",
+            lambda: _episode_stage(engine, sid, repo))
+    # Close the eval loop opportunistically (opt-in, LLM-free, max 1/day).
+    _session_end_stage(
+        "eval loop",
+        lambda: _eval_stage())
 
 
 def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
@@ -630,83 +741,32 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         _emit = {"emit": _render_event}
     else:
         _emit = {"emit": _json_line} if stream_json else {}
-    out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096,
+    # What the terminal and the dashboard send with a turn besides the
+    # text: the project instruction files and the per-turn hints. One
+    # helper for the three surfaces (turn_context).
+    from . import turn_context
+    _memory = turn_context.memory_context(engine, prompt)
+    if _memory:
+        _emit = {**_emit, "memory_context": _memory}
+    # Over the context budget, the turn starts from a small fresh block,
+    # as it does in the terminal (repl.run_turn) and the dashboard: the
+    # same helper, under the budget a no-op. A restored session (--session,
+    # --continue, --resume) is the case it exists for. Applied after the
+    # hint, in run_turn's order.
+    from .repl import prepare_fresh_turn
+    prompt_sent = prepare_fresh_turn(
+        engine, turn_context.user_message(prompt), workspace=repo)
+    # 0 is "the role decides" (the engine's max_tokens_for_role), the value
+    # chat declares as its default and run --max-tokens 0 asks for. It used
+    # to be replaced by 4096 here, so chat -p ran at an eighth of the
+    # terminal's solo budget. run keeps 4096 through its parser default.
+    out = _run_once(engine, prompt_sent,
+                    max_tokens=int(getattr(args, "max_tokens", 0) or 0),
                     **_emit)
     sid = _save_session(engine, repo)
 
-    def _session_end_stage(name: str, fn) -> None:
-        """One best-effort session-end stage, said when it fails.
-
-        Best-effort stays right — a report write must never break the
-        answer's exit code — but a stage that fails on EVERY scheduled
-        unattended run vanished silently here: the run printed its
-        answer and the failure was indistinguishable from a stage that
-        did its job. The warning is the same shape as the save-failure
-        line above.
-        """
-        try:
-            fn()
-        except Exception as exc:
-            print(f"WARN: session-end stage {name} failed: {exc}",
-                  file=sys.stderr)
-
-    # Session report: best-effort Markdown write; never breaks exit.
-    def _report_stage(sid_, engine_):
-        from .session_report import write_session_report
-        write_session_report(sid_ or getattr(engine_, "session_id", ""))
-
-    def _learn_stage(engine_, sid_):
-        from .session_end import learn_at_session_end
-        learn_at_session_end(
-            _display_messages(engine_),
-            session_id=str(sid_ or getattr(engine_, "session_id", "") or ""))
-
-    def _index_stage(sid_):
-        from .session_end import index_at_session_end
-        index_at_session_end(str(sid_ or ""))
-
-    def _episode_stage(engine_, sid_, repo_, out_):
-        from .episodes import build_episode_from_state, save_episode
-        fields = build_episode_from_state(engine_.export_state(), [])
-        save_episode(
-            sid_,
-            repo_root=repo_,
-            verdict="FAIL" if out_["error"] else "PASS",
-            **fields,
-        )
-
-    def _eval_stage():
-        from .eval_loop import maybe_run_scheduled
-        maybe_run_scheduled()
-
-    _session_end_stage("report", lambda: _report_stage(sid, engine))
-    # Shared session-end stage: skill learning, same hook as the CLI
-    # chat and the dashboard. Best-effort; never breaks the run.
-    _session_end_stage("skill learning", lambda: _learn_stage(engine, sid))
-    # Session-end stage (Paket 5): the ended session becomes searchable.
-    _session_end_stage("indexing", lambda: _index_stage(sid))
-
-    # Learning signal: record the outcome so provider profiles learn from
-    # CLI/headless usage too — previously only dashboard cycles fed the
-    # profile, so KIT/CLI sessions contributed nothing.
-    _session_end_stage(
-        "cycle outcome",
-        lambda: engine.record_cycle_outcome(
-            "FAIL" if out["error"] else "PASS",
-            prompt,
-            error_type=("cli_error" if out["error"] else None),
-            start_time=_t0,
-        ))
-    # Episodic memory: persist one compact per-session record so a future
-    # session can recall similar past work (best-effort, LLM-free) —
-    # without this the saved session state is write-only.
-    _session_end_stage(
-        "episodic memory",
-        lambda: _episode_stage(engine, sid, repo, out))
-    # Close the eval loop opportunistically (opt-in, LLM-free, max 1/day).
-    _session_end_stage(
-        "eval loop",
-        lambda: _eval_stage())
+    _end_session(engine, sid, repo, task=prompt, failed=bool(out["error"]),
+                 t0=_t0)
 
     from .repl import TURN_KEYS
     if stream_json:
@@ -1514,6 +1574,9 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
         rules = permission_rules.load(where)
         for line in permission_rules.error_lines(rules):
             notes.append(f"permissions {line}")
+        scope = permission_rules.scope_notice(rules)
+        if scope:
+            notes.append(f"permissions {scope}")
         from .api_client import unknown_tool_names
         named = [r.value for r in rules.deny + rules.ask + rules.allow
                  if r.kind == "tool"]
@@ -1899,36 +1962,22 @@ def cmd_chat(args: argparse.Namespace) -> int:
                                 + start_notes)
                 + (f"\n\n{notices}" if notices else "")),
     ))
+    import time as _time
+    _t0 = _time.monotonic()
     try:
         return agent.run(positional)
     finally:
-        _save_session(engine, workspace,
-                      title=getattr(args, "session_name", "") or "")
-        # Session report: best-effort Markdown write; never breaks exit.
-        try:
-            from .session_report import write_session_report
-            write_session_report(getattr(engine, "session_id", "") or "")
-        except Exception:
-            pass
-        # Shared session-end stage: skill learning (the same call the
-        # dashboard's session end uses). The CLI chat previously never
-        # distilled NOR learned; this is the single shared hook. Its own
-        # failure never breaks the exit.
-        try:
-            from .session_end import learn_at_session_end
-            learn_at_session_end(
-                _display_messages(engine),
-                session_id=str(getattr(engine, "session_id", "") or ""))
-        except Exception:
-            pass
-        # Session-end stage (Paket 5): the ended session becomes
-        # searchable. Own try/except, same rule as the learning stage.
-        try:
-            from .session_end import index_at_session_end
-            index_at_session_end(
-                str(getattr(engine, "session_id", "") or ""))
-        except Exception:
-            pass
+        sid = _save_session(engine, workspace,
+                            title=getattr(args, "session_name", "") or "")
+        # The stages cmd_run runs, in its order: the task is the first
+        # prompt typed in this process, the verdict the last turn's.
+        _last = getattr(agent, "_last_turn_result", None)
+        _end_session(
+            engine, sid or str(getattr(engine, "session_id", "") or ""),
+            workspace,
+            task=str(getattr(agent, "first_task", "") or ""),
+            failed=bool(getattr(_last, "error", "")),
+            t0=_t0)
         try:
             os.chdir(_cwd_before)
         except Exception:
@@ -4919,6 +4968,37 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_watch.add_argument("--status", action="store_true",
                             help="Report daemon, setting and watched count "
                                  "(default)")
+
+    # ops status -- checkouts, dashboard servers, sessions and leftovers in
+    # one read-only view (delfin/agent/ops_status.py). Every flag reads:
+    # the bash auto-allow entry for this command depends on that, and
+    # tests/test_ops_status_reads_the_machinery.py pins the flag set.
+    def _cmd_ops(args):
+        from delfin.agent import ops_status
+        return ops_status.main(json_out=bool(args.json),
+                               repo=str(args.repo or ""))
+
+    ops_p = sub.add_parser(
+        "ops",
+        help="DELFIN's own machinery: `ops status` lists checkouts and "
+             "worktrees, dashboard servers, sessions and leftovers with a "
+             "safe next step per problem (read-only)",
+    )
+    ops_sub = ops_p.add_subparsers(dest="ops_action", required=True)
+    ops_status_p = ops_sub.add_parser(
+        "status",
+        help="Read-only overview: checkouts (branch / detached / held by), "
+             "dashboard servers of yours, session locks, stale locks and "
+             "worktrees; one 'problem → next step' line each; changes nothing",
+    )
+    ops_status_p.add_argument("--json", action="store_true",
+                              help="Print the status as JSON "
+                                   "(schema delfin.ops_status/1)")
+    ops_status_p.add_argument("--repo", default="",
+                              help="A checkout of the repository to inspect "
+                                   "(default: the current directory, else "
+                                   "the checkout DELFIN runs from)")
+    ops_status_p.set_defaults(func=_cmd_ops)
 
     # T6: run a session's tests on a SLURM compute node from a node-local
     # copy. The handler lives in delfin/agent/slurm_tests.py; it is imported

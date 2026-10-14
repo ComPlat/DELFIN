@@ -329,6 +329,12 @@ class PromptLoader:
         # False suppresses DELFIN's own product context, which neither
         # applies to nor helps a session working in a user project.
         self.is_delfin_workspace: bool | None = None
+        # The session's optional-tool-group decision (toolsets.
+        # WorkspaceToolsets), shared with the permissions that filter the
+        # tool list, so the prompt never describes a tool that is not
+        # offered. None: no decision (CLI backend, tests) -- every block
+        # is kept, as before.
+        self.toolsets: Any = None
         self._context_tracker: Any = None  # set by AgentEngine
         self._progressive_disclosure: bool = False  # set by AgentEngine
         # Backend statefulness (set by AgentEngine). Only the persistent CLI
@@ -351,6 +357,57 @@ class PromptLoader:
         # process. Nothing is written to any settings file — a settings file
         # belongs to every later session, and this bounds one.
         self.skip_external_memory: bool = False
+
+    def _session_toolsets(self):
+        """The session's WorkspaceToolsets, or None.
+
+        ``self.toolsets`` holds the object or a getter for it (the engine
+        installs a getter). Anything else -- a test double's attribute --
+        counts as no decision, so a stand-in can never put its repr into
+        the prompt.
+        """
+        source = self.toolsets
+        try:
+            value = source() if callable(source) else source
+        except Exception:
+            return None
+        from .toolsets import WorkspaceToolsets
+        return value if isinstance(value, WorkspaceToolsets) else None
+
+    def _hidden_tool_groups_note(self, role_id: str = "") -> str:
+        """The one line naming optional tool groups this session is not
+        offered, or "" (also "" without a toolsets decision)."""
+        toolsets = self._session_toolsets()
+        if toolsets is None:
+            return ""
+        try:
+            return toolsets.hidden_note(role=role_id)
+        except Exception:
+            return ""
+
+    def _foreign_project_context(self, role_id: str = "") -> str:
+        """Project context for a workspace that is not DELFIN's tree.
+
+        Stable for the session: it changes only when a hidden tool group
+        is enabled, which is a turn-boundary event (toolsets).
+        """
+        text = ("DELFIN is the quantum-chemistry platform hosting this "
+                "agent. You are NOT working on DELFIN's own source here — "
+                "work in the user's workspace shown under Session "
+                "Environment.")
+        toolsets = self._session_toolsets()
+        chemistry_offered = True
+        if toolsets is not None:
+            try:
+                chemistry_offered = toolsets.offered("chemistry",
+                                                     role=role_id)
+            except Exception:
+                chemistry_offered = True
+        if chemistry_offered:
+            text += (" DELFIN's chemistry tooling stays available through "
+                     "your tools.")
+        note = self._hidden_tool_groups_note(role_id)
+        return text + (f" {note}" if note else "")
 
     def reset_session_prompt_state(self, session_key: str) -> None:
         """Forget prompt-injection state for a session.
@@ -401,7 +458,9 @@ class PromptLoader:
             from delfin.agent.provider_profile import format_profile_context
             provider = getattr(self, "_active_provider", "claude")
             profile_path = getattr(self, "_profile_path", None)
-            return format_profile_context(provider, profile_path, mode_id=mode_id)
+            delfin, _stacks = self._workspace_selection()
+            return format_profile_context(provider, profile_path,
+                                          mode_id=mode_id, domain=delfin)
         except Exception:
             return ""
 
@@ -1032,6 +1091,10 @@ class PromptLoader:
         Triggered when the task contains chemistry keywords.  Code-enforced
         rather than prompt-only to ensure compliance.
         """
+        # The protocol mandates search_docs over DELFIN's doc index, which
+        # is offered only in a DELFIN tree (_DELFIN_ONLY_TOOL_NAMES).
+        if self.is_delfin_workspace is False:
+            return ""
         try:
             from delfin.agent.briefing import classify_task
             if classify_task(task_text) != "chemistry":
@@ -1306,8 +1369,75 @@ class PromptLoader:
         return "\n\n".join(parts)
 
     def load_role_prompt(self, role_id: str) -> str:
-        """Load agents/{role_id}.md."""
-        return self._cached_read(self.agent_dir / "agents" / f"{role_id}.md")
+        """Load agents/{role_id}.md, with its workspace blocks selected."""
+        return self._select_workspace_blocks(
+            self._cached_read(self.agent_dir / "agents" / f"{role_id}.md"))
+
+    # ------- Workspace blocks (DELFIN context, language stack) ------------
+
+    # ``<!-- context:delfin -->`` ... ``<!-- /context -->`` holds text that
+    # only applies where DELFIN's chemistry context does (a DELFIN tree, a
+    # calc folder, chemistry files). ``<!-- stack:X -->`` ... ``<!--
+    # /stack -->`` holds advice for one language stack (python, node,
+    # rust, go, generic). Regions do not nest, and unlike the lazy
+    # modules they may sit anywhere in the file: what selects them is
+    # decided once per session, so their position costs the prefix cache
+    # nothing within a session.
+    _REGION_RE = re.compile(
+        r"^<!--\s*(context|stack):([a-z_]+)\s*-->[ \t]*\n(.*?)"
+        r"^<!--\s*/\1\s*-->[ \t]*\n",
+        re.MULTILINE | re.DOTALL,
+    )
+
+    def _workspace_selection(self) -> tuple[bool, frozenset[str]]:
+        """``(delfin_context, stacks)`` for the block selection.
+
+        Without a toolsets decision (CLI backend, a loader built in a
+        test) every DELFIN block is kept and the Python advice is shown:
+        the text this file carried before the regions existed. With one,
+        the DELFIN context follows the chemistry group (or a DELFIN tree)
+        and the stacks are the workspace's, ``generic`` when none is
+        detected.
+        """
+        toolsets = self._session_toolsets()
+        if toolsets is None:
+            return True, frozenset({"python"})
+        try:
+            delfin = bool(toolsets.is_delfin_workspace
+                          or toolsets.offered("chemistry"))
+            stacks = frozenset(toolsets.stacks()) or frozenset({"generic"})
+        except Exception:
+            return True, frozenset({"python"})
+        return delfin, stacks
+
+    def _select_workspace_blocks(self, text: str) -> str:
+        if not text or "<!-- " not in text:
+            return text
+        delfin, stacks = self._workspace_selection()
+
+        def _keep(m: "re.Match[str]") -> str:
+            kind, name, body = m.group(1), m.group(2), m.group(3)
+            if kind == "context":
+                return body if (name == "delfin" and delfin) else ""
+            return body if name in stacks else ""
+
+        return self._REGION_RE.sub(_keep, text)
+
+    def _excluded_modules(self, role_id: str = "") -> frozenset[str]:
+        """Lazy modules that describe a tool group this session is not
+        offered: they are dropped whatever the task text says."""
+        toolsets = self._session_toolsets()
+        if toolsets is None:
+            return frozenset()
+        out: set[str] = set()
+        try:
+            if not toolsets.offered("chemistry", role=role_id):
+                out.add("chemistry")
+            if not toolsets.offered("office", role=role_id):
+                out.add("documents")
+        except Exception:
+            return frozenset()
+        return frozenset(out)
 
     # ------- Progressive disclosure (lazy-load heavy prompt modules) ------
 
@@ -1653,7 +1783,8 @@ class PromptLoader:
         except Exception:
             _enabled = True
             _compact_setting = False
-        if not _enabled:
+        excluded = self._excluded_modules(role_id)
+        if not _enabled and not excluded:
             # Just strip the marker comments but keep all content
             return self._MODULE_MARKER_RE.sub("", text)
 
@@ -1697,8 +1828,14 @@ class PromptLoader:
         # a tidiness question. A test keeps them at the tail.
         active = self._detect_active_modules(
             task_text, mode_id, session_key=session_key, role_id=role_id,
-            conversation_text=conversation_text, everything=_everything,
+            conversation_text=conversation_text,
+            everything=_everything or not _enabled,
         )
+        if not _enabled:
+            _compact = False
+        # A module describing a tool group the session is not offered is
+        # out whatever triggered: the tools it names are not in the list.
+        active -= excluded
         lines = text.splitlines(keepends=True)
         out: list[str] = []
         i = 0
@@ -1965,17 +2102,15 @@ class PromptLoader:
                 # nor is free, and naming its internals invites drift into
                 # the source tree.
                 add("project_context", self.LAYER_STABLE,
-                    "--- Project Context ---\nDELFIN is the "
-                    "quantum-chemistry platform hosting this agent. You are "
-                    "NOT working on DELFIN's own source here — work in the "
-                    "user's workspace shown under Session Environment. "
-                    "DELFIN's chemistry tooling stays available through your "
-                    "tools.")
+                    "--- Project Context ---\n"
+                    + self._foreign_project_context(role_id))
             else:
                 ctx_text = _shared("delfin_context.md")
                 if ctx_text:
+                    _note = self._hidden_tool_groups_note(role_id)
                     add("project_context", self.LAYER_STABLE,
-                        f"--- Project Context ---\n{ctx_text}")
+                        f"--- Project Context ---\n{ctx_text}"
+                        + (f"\n{_note}" if _note else ""))
 
             if progressive:
                 # Static menu of on-demand sections — belongs in the head.
@@ -2148,11 +2283,7 @@ class PromptLoader:
                 # Naming DELFIN's internals here also invites the model to
                 # drift into the source tree.
                 add("shared_context", self.LAYER_STABLE,
-                    "DELFIN is the quantum-chemistry platform hosting this "
-                    "agent. You are NOT working on DELFIN's own source here "
-                    "— work in the user's workspace shown under Session "
-                    "Environment. DELFIN's chemistry tooling stays available "
-                    "through your tools.")
+                    self._foreign_project_context(role_id))
             else:
                 # Brief context: short intro only. Detailed guidance comes from
                 # the relevant playbook and repo map to keep prompts cheap.

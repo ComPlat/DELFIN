@@ -3616,6 +3616,15 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # `test -f export.py && echo exists`).
     r"^\s*cmp\b", r"^\s*comm\b",
     r"^\s*test\s+", r"^\s*\[\s+",
+    # DELFIN's own status view (delfin/agent/ops_status.py): it reads git
+    # with --no-optional-locks, the process table of this uid and the
+    # session records, and writes nothing. End-anchored with a token
+    # whitelist, so no other subcommand, flag, redirect or substitution
+    # rides on it; the --repo path is a literal (no $ ( ` ;). In every
+    # workspace, not only DELFIN's, because the question it answers is
+    # about the installation, not the project.
+    r"^\s*delfin-agent\s+ops\s+status(?:\s+(?:--json|-h|--help|"
+    r"--repo(?:=|\s+)[A-Za-z0-9_./~@:+=-]+))*\s*$",
 )
 
 # DELFIN-specific bash auto-allow patterns — merged into the auto-allow
@@ -8006,6 +8015,9 @@ class KitToolPermissions:
     # until a later typed message asks for the direct push. Shared by
     # reference with sub-agents, whose prompts never change it.
     pr_route_repos: set = field(default_factory=set)
+    #: Headings of the git-errors skill already quoted into a tool result
+    #: in this session (repo_error_hints.tool_hint): each is said once.
+    repo_error_hints_shown: set = field(default_factory=set)
     #: Asked while a command or a test run is waited on, so Stop reaches
     #: work that is already running. Installed by the engine; None in a
     #: caller that has no session, which behaves exactly as before.
@@ -8030,6 +8042,11 @@ class KitToolPermissions:
     # would be a route around the flag.
     skip_hook_discovery: bool = False
     skip_skill_discovery: bool = False
+    # Which optional tool groups (chemistry, office) this session is
+    # offered -- toolsets.WorkspaceToolsets, decided once from the
+    # workspace. A sub-agent built by ``dataclasses.replace`` shares its
+    # parent's object, so a group enabled in either is enabled in both.
+    toolsets: Any = None
 
     def __setattr__(self, key: str, value: Any) -> None:
         # The mode an administrator's managed policy disallows is never
@@ -8116,6 +8133,16 @@ class KitToolPermissions:
         ):
             self.bash_auto_allow_patterns = (
                 _DEFAULT_BASH_AUTO_ALLOW + _DELFIN_BASH_AUTO_ALLOW
+            )
+        if self.toolsets is None:
+            from .toolsets import WorkspaceToolsets
+            # Lazy: nothing is scanned until the first turn asks.
+            self.toolsets = WorkspaceToolsets(
+                self.workspace,
+                is_delfin_workspace=self.is_delfin_workspace,
+                calc_dirs=self.confirm_write_dirs,
+                session_dirs=(*self.extra_workspace_dirs,
+                              *self.read_only_workspace_dirs),
             )
 
     @property
@@ -22539,6 +22566,22 @@ class _DocToolExecutor:
         _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
         if _ssh_note:
             payload["hint"] = _ssh_note
+        # A known repository error: its section of the git-errors skill
+        # (cause, fix, what not to do), once per session. Scanned on the
+        # raw streams, so truncation cannot cut the line git printed last.
+        # A session without skill discovery reads no skill from disk.
+        if not getattr(perms, "skip_skill_discovery", False):
+            try:
+                from . import repo_error_hints as _reh
+                _seen = getattr(perms, "repo_error_hints_shown", None)
+                _skill_hint = _reh.tool_hint(
+                    (proc.stderr or "") + "\n" + (proc.stdout or ""),
+                    _seen if isinstance(_seen, set) else None,
+                    str(perms.workspace))
+                if _skill_hint:
+                    payload["skill_hint"] = _skill_hint
+            except Exception:
+                pass
         if _journal_notes:
             payload["untracked_changes"] = " ".join(_journal_notes)
         watched = _auto_watch_submitted_jobs(proc.stdout or "", perms)
@@ -28228,6 +28271,26 @@ class OpenAIClient(_BaseClient):
                 not in _DELFIN_ONLY_TOOL_NAMES
             ]
 
+        # Optional tool groups (chemistry, office): offered where the
+        # workspace calls for them -- see delfin.agent.toolsets. Decided
+        # once per session; a group the history already used is enabled
+        # here, at the turn boundary, and never withdrawn. Advertising
+        # only: the executor's authorisation is untouched.
+        _hidden_groups: frozenset[str] = frozenset()
+        _toolsets = getattr(self._permissions, "toolsets", None)
+        if _toolsets is not None:
+            try:
+                from .toolsets import (
+                    drop_hidden as _drop_hidden,
+                    tool_names_in_messages as _used_names,
+                )
+                _toolsets.note_used(_used_names(messages))
+                _hidden_groups = _toolsets.hidden_groups(role=_agent_role)
+                advertised_tools = _drop_hidden(advertised_tools,
+                                                _hidden_groups)
+            except Exception:
+                _hidden_groups = frozenset()
+
         # Weak-model core-tool filter. Small local models (gemma-7b,
         # llama-8b, qwen-7b, phi-3.5, mistral-7b, codellama-7b) routinely
         # pick the wrong tool out of 45 options and end up calling
@@ -28355,9 +28418,16 @@ class OpenAIClient(_BaseClient):
                 getattr(_caps, "context_window", 0) if _caps else 0)
             _mcp_spent = 0
             _mcp_dropped: list[str] = []
+            if _hidden_groups:
+                from .toolsets import tool_group as _tool_group
             for _tool in _mcp_tools:
                 if tool_unavailable_reason(
                         _tool.namespaced_name, _surface_ctx) is not None:
+                    continue
+                # A hidden group also spends none of the MCP budget, so
+                # a user's own server is not crowded out by it.
+                if (_hidden_groups and _tool_group(_tool.namespaced_name)
+                        in _hidden_groups):
                     continue
                 _entry = {
                     "type": "function",

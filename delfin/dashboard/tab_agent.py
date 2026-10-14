@@ -17,6 +17,8 @@ import ipywidgets as widgets
 # rather than lazily like the rest of delfin.agent because it is a pure
 # data module with no imports of its own beyond the stdlib.
 from delfin.agent import pricing as _pricing
+# The turn composition shared with the terminal paths; stdlib-only at import.
+from delfin.agent import turn_context
 from delfin.agent.harness_rows import HarnessText
 
 
@@ -534,40 +536,9 @@ def _build_plan_hint(user_text: str) -> str:
     return ""
 
 
-# Fact-question shapes: the user is asking for exact ORCA / chemistry
-# keyword names, which is exactly where confident hallucination happens.
-_VERIFY_HINT_PATTERNS = re.compile(
-    r"(?i)("
-    r"welche[s]?\s+(?:exakten?\s+)?keyword|"        # "welche keyword(s)"
-    r"keyword[- ]?name|"                              # "keyword-name"
-    r"\bexakt(?:e|en)?\b.*\b(?:keyword|name|block)|"  # "exakte ... keyword"
-    r"nutzt\s+orca|"                                  # "nutzt ORCA"
-    r"in\s+orca|"                                     # "in ORCA"
-    r"gibt\s+es\s+(?:ein|den|das)?\s*\b\w*\s*(?:keyword|block|flag|option)|"
-    r"wie\s+hei[ßs]t\b|"                              # "wie heißt"
-    r"%\w+\s*[- ]?block"                              # "%casscf-block"
-    r")"
-)
-
-
-def _build_verify_hint(user_text: str, mode: str = "") -> str:
-    """Return a one-line ground-yourself reminder when the user asks a
-    factual ORCA/keyword question, else empty string.
-
-    Mirrors :func:`_build_plan_hint`: cheap, non-blocking, just nudges
-    the model to look the answer up instead of reciting from memory.
-    The runtime verify-guard (delfin.agent.verify_guard) still checks
-    the answer afterwards — this hint just front-loads the grounding.
-    """
-    if not user_text or len(user_text) > 4000:
-        return ""
-    if _VERIFY_HINT_PATTERNS.search(user_text):
-        return (
-            "(Factual question detected — look it up via search_docs/Read in "
-            "the manual/code BEFORE answering; only mention keywords that "
-            "are actually documented, none from memory.)"
-        )
-    return ""
+# The verify hint is shared with the terminal paths (one matcher, not one
+# per surface); the name stays for the dashboard's call sites and tests.
+_build_verify_hint = turn_context.verify_hint
 
 
 def _self_verification_note(verified: bool) -> str:
@@ -19397,15 +19368,9 @@ def create_tab(ctx):
                 # nothing but a greeting, and the glued hint made every
                 # first hallo pay the whole surface (37,193 tokens against
                 # 11,101, measured 2026-09-11).
-                try:
-                    from delfin.agent.engine import AgentEngine as _AE
-                    if _AE.is_bare_greeting(user_text):
-                        state["_pending_turn_hint"] = (
-                            "The user's message is a greeting and nothing "
-                            "else: reply with ONE short sentence; do NOT "
-                            "call any tools.")
-                except Exception:
-                    pass
+                _greeting = turn_context.greeting_hint(user_text)
+                if _greeting:
+                    state["_pending_turn_hint"] = _greeting
 
                 # Live mode-switch handoff: if the user just changed mode,
                 # _on_mode_change stashed a full-transcript block here.
@@ -19509,21 +19474,9 @@ def create_tab(ctx):
                     # of truth: ~/.delfin/projects/<slug>/memory/MEMORY.md +
                     # files, the "External Memory" block). Here we only load
                     # the project instruction files (DELFIN.MD / AGENTS.md)
-                    # from cwd up.
-                    from delfin.agent.project_memory import load_project_memory
-                    _memory = ""
-                    try:
-                        _kperms = engine.kit_permissions
-                        _extra = list(_kperms.extra_workspace_dirs) if _kperms else []
-                        _ws = _kperms.workspace if _kperms else None
-                    except Exception:
-                        _extra = []
-                        _ws = None
-                    _proj_mem = load_project_memory(
-                        cwd=_ws, extra_roots=_extra,
-                    )
-                    if _proj_mem:
-                        _memory = (_memory + "\n\n" + _proj_mem).strip() if _memory else _proj_mem
+                    # from the workspace up -- the loader the terminal paths
+                    # use too (turn_context).
+                    _memory = turn_context.project_instructions(engine)
                     _boot_brief = str(state.pop("_pending_boot_brief", "") or "")
                     if _boot_brief:
                         _memory = (_boot_brief + "\n\n" + _memory).strip() if _memory else _boot_brief
