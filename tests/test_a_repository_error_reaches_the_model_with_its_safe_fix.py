@@ -251,14 +251,30 @@ def test_the_bash_tool_result_carries_the_section_once(held_main,
         return json.loads(ex.execute(
             "bash", {"command": cmd, "cwd": "dashboard"}, perms))
 
-    first = run("git switch main")
-    assert first.get("exit_code") not in (0, None), first
-    assert "already used by worktree" in first["stderr"]
-    hint = first.get("skill_hint", "")
-    assert "## Branch held by another worktree" in hint
-    assert "git switch --detach origin/<branch>" in hint
-    assert "Detached HEAD" not in hint
+    # A held branch no longer fails: the executor checks out the same
+    # commit detached (#238) and says so. git's own refusal text still
+    # names the held-branch section, once.
+    detached = run("git switch main")
+    assert detached.get("exit_code") == 0, detached
+    if "skill_hint" in detached:
+        assert "## Branch held by another worktree" in detached["skill_hint"]
     assert "skill_hint" not in run("git switch main")
+    # A real git error still carries its section once: a stale index.lock.
+    gitdir = Path(_git("rev-parse", "--absolute-git-dir",
+                       cwd=held_main["dash"], env=held_main["env"]
+                       ).stdout.strip())
+    (gitdir / "index.lock").write_text("")
+    first = run("git switch dash")
+    assert first.get("exit_code") not in (0, None), first
+    assert "index.lock" in first["stderr"]
+    hint = first.get("skill_hint", "")
+    assert "## index.lock exists" in hint
+    assert "Detached HEAD" not in hint
+    assert "skill_hint" not in run("git switch dash")
+    # The checkout is detached now; git status says so, and that section
+    # too is carried once.
+    status = run("git status")
+    assert "## Detached HEAD" in status.get("skill_hint", ""), status
     assert "skill_hint" not in run("git status")
 
 
