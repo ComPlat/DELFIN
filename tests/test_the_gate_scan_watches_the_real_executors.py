@@ -72,12 +72,16 @@ EXPLAINED = {
 }
 
 #: Executor -> why it is still flagged.
-OPEN: dict[str, str] = {}
+OPEN: dict[str, str] = {
+    "_execute_task_update":
+        "_check_completion reads the session's own tool trace "
+        "(tool_trace.read(task_session_id), a harness path with a "
+        "sanitised id); not driven through the executor here yet",
+}
 
-#: Flagged only with a pending change to the completion check, which reads
-#: the session's own tool trace (harness state, not a model path).  Allowed
-#: either way so the merge order does not matter.
-EXPECTED_SOON = {"_execute_task_update"}
+#: Executors allowed to be flagged or not while a pending change lands.
+#: Empty: an entry here hides a flag, so a known one belongs in OPEN.
+EXPECTED_SOON: set[str] = set()
 
 #: Clean, with file access, and flagged once their gate calls are removed.
 WATCHED = (
