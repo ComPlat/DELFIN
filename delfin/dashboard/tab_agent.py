@@ -4074,6 +4074,8 @@ def _render_pdf_preview(p) -> str | None:
     came out blank.
     """
     try:
+        from delfin.agent.native_libs import prefer_own_libstdcxx
+        prefer_own_libstdcxx()
         try:
             import pymupdf as fitz      # its own name since 1.28
         except ImportError:
@@ -4851,7 +4853,9 @@ def _format_solo_domain_state(snapshot: dict) -> str:
         - ``control`` (dict): {functional, basis, pal, charge, mult, ...}
         - ``orca_builder`` (dict): {method, basis, charge, mult, ...}
         - ``job_summary`` (str): one-line job overview ("2 RUNNING, 5 PENDING")
-        - ``workspace_files`` (list[str]): file names in agent_workspace/
+        - ``workspace_dir`` (str): the session's workspace (where its
+          tools resolve relative paths)
+        - ``workspace_files`` (list[str]): top-level file names in it
         - ``active_tab`` (str): currently open dashboard tab
         - ``perm_profile`` (str): active permission profile
     """
@@ -4904,11 +4908,15 @@ def _format_solo_domain_state(snapshot: dict) -> str:
     if job_summary:
         lines.append(f"jobs: {job_summary}")
 
+    ws_dir = str(snapshot.get("workspace_dir") or "").strip()
     ws = snapshot.get("workspace_files") or []
     if isinstance(ws, list) and ws:
         preview = ", ".join(str(f) for f in ws[:8])
         tail = f" (+{len(ws) - 8} more)" if len(ws) > 8 else ""
-        lines.append(f"workspace: {preview}{tail}")
+        where = f" {ws_dir} --" if ws_dir else ""
+        lines.append(f"workspace:{where} {preview}{tail}")
+    elif ws_dir:
+        lines.append(f"workspace: {ws_dir}")
 
     active_tab = (snapshot.get("active_tab") or "").strip()
     if active_tab:
@@ -5458,6 +5466,15 @@ def create_tab(ctx):
 
     Returns ``(tab_widget, refs_dict)``.
     """
+    # Every writer lock this kernel takes names the kernel, so the page
+    # that replaces it on a reload can ask the server whether it still has
+    # a window (window_state.may_take_over). Empty outside a kernel.
+    try:
+        from delfin.agent.session_store import set_lock_identity
+        from delfin.dashboard.session import kernel_id as _own_kernel_id
+        set_lock_identity(kernel=_own_kernel_id())
+    except Exception:
+        pass
     # -- check if pyyaml is available (needed for prompt loading) ----------
     try:
         import yaml  # noqa: F401
@@ -6708,6 +6725,7 @@ def create_tab(ctx):
                     perm_dropdown.value = target_profile
                 finally:
                     state["_chip_syncing_perm"] = False
+            _settle_isolation_posture(eng)
         _refresh_kit_mode_chip()
 
     kit_mode_chip.on_click(_cycle_kit_mode)
@@ -6867,6 +6885,33 @@ def create_tab(ctx):
                 state["_kit_confirm_broker"] = None
         _refresh_kit_dirs_status()
         return state.get("_kit_confirm_broker")
+
+    def _settle_isolation_posture(engine):
+        """The CLI's start check (isolation_posture.apply_at_start) for
+        this tab: bypass without isolation is asked in the approval panel,
+        on a thread of its own, and the session runs in default until the
+        answer. Called after an engine is built and after a live switch of
+        its mode; a mode other than bypass, or an isolated host, is left
+        alone. Never raises."""
+        try:
+            from delfin.agent.isolation_posture import apply_at_start
+            broker = _ensure_kit_broker()
+
+            def _ask_in_panel(question):
+                return broker.callback(
+                    "bypassPermissions", {"isolation": "none"},
+                    "[NO ISOLATION]\n" + question)
+
+            ask = _ask_in_panel if broker is not None else None
+            notes = apply_at_start(
+                engine, can_ask=ask is not None, ask=ask, background=True,
+                on_confirmed=_refresh_kit_mode_chip)
+            for note in notes:
+                _append_system_message(note)
+            if notes:
+                _refresh_kit_mode_chip()
+        except Exception:
+            pass
 
     def _show_kit_confirm_panel(visible: bool) -> None:
         kit_confirm_container.layout.display = "flex" if visible else "none"
@@ -8367,6 +8412,7 @@ def create_tab(ctx):
         result = {"answers": []}
         state["_ask_user_event"] = ev
         state["_ask_user_result"] = result
+        state["_ask_user_args"] = dict(args or {})
         from html import escape as _esc
         header_html = (f"<span style='background:#0a84ff;color:white;"
                        f"padding:2px 6px;border-radius:3px;font-size:11px;"
@@ -8375,6 +8421,8 @@ def create_tab(ctx):
         ask_user_label.value = (
             f"<div style='font-size:14px;'>{header_html}"
             f"<b>{_esc(question)}</b></div>"
+            "<div style='color:#888;font-size:11px;margin-top:2px;'>"
+            "Pick an option, or type your own answer in the chat.</div>"
         )
         chosen: set[str] = set()
         button_widgets: list = []
@@ -8499,14 +8547,53 @@ def create_tab(ctx):
         ask_user_box.layout.display = ""
         # Block up to 5 minutes
         ev.wait(timeout=300)
+        _close_ask_user_modal(ev)
+        if not result["answers"]:
+            return {"answers": [], "timed_out": True}
+        return result
+
+    def _close_ask_user_modal(ev) -> None:
+        """Take the question widget off screen and forget the question.
+
+        Called by the asking thread when it wakes and by a chat answer on
+        the UI thread. Only the question ``ev`` belongs to is cleared, so
+        a late call cannot wipe a newer question's state.
+        """
+        if state.get("_ask_user_event") not in (None, ev):
+            return
         ask_user_box.layout.display = "none"
         ask_user_label.value = ""
         ask_user_buttons.children = ()
         state["_ask_user_event"] = None
         state["_ask_user_result"] = None
-        if not result["answers"]:
-            return {"answers": [], "timed_out": True}
-        return result
+        state["_ask_user_args"] = None
+
+    def _answer_ask_from_chat(text: str) -> bool:
+        """A chat line sent while ask_user_question waits is its answer.
+
+        Input: the stripped line from the chat input. Output: True when a
+        question was waiting and took the line (the caller then shows it
+        once in the chat and starts no turn and no steer -- the turn is
+        blocked inside this question and continues with the answer);
+        False when nothing waited. The result is
+        ``approval_answers.typed_answer``, the same one the terminal
+        dialog produces. Measured before: the line was steered into the
+        blocked turn and the question stayed on screen until its 300 s
+        expiry, then returned timed_out.
+        """
+        ev = state.get("_ask_user_event")
+        result = state.get("_ask_user_result")
+        if ev is None or result is None or ev.is_set() or not text:
+            return False
+        from delfin.agent.approval_answers import typed_answer
+        answer = typed_answer(text, state.get("_ask_user_args") or {})
+        if not answer.get("answers"):
+            return False
+        result.clear()
+        result.update(answer)
+        _close_ask_user_modal(ev)
+        ev.set()
+        return True
 
     # exit_plan_mode approval — uses existing plan_accept_btn but flips perms
     # via the structured callback so the tool result reflects the choice.
@@ -9270,6 +9357,20 @@ def create_tab(ctx):
             except Exception:
                 _holder = None
             if _holder:
+                # A reload: the holder is this dashboard's previous kernel,
+                # kept by the server for the grace with no window and no
+                # turn running. The conversation goes to the page the
+                # person is looking at, and the old kernel's saves stop.
+                try:
+                    from delfin.dashboard.window_state import may_take_over
+                    from delfin.agent.session_store import (
+                        take_over_session_lock)
+                    if (may_take_over(_holder) and take_over_session_lock(
+                            session_id, _holder["pid"])):
+                        _holder = None
+                except Exception:
+                    pass
+            if _holder:
                 _where = (f" on {_holder['host']}" if _holder.get("elsewhere")
                           else "")
                 _append_system_message(
@@ -9437,6 +9538,7 @@ def create_tab(ctx):
             _chip = _PROFILE_TO_CHIP.get(_restored_perm)
             if _chip and hasattr(engine, "set_kit_permission_mode"):
                 if engine.set_kit_permission_mode(_chip):
+                    _settle_isolation_posture(engine)
                     _refresh_kit_mode_chip()
         except Exception:
             pass
@@ -9517,6 +9619,25 @@ def create_tab(ctx):
         title = data.get("title", "")[:50] or session_id[:12]
         _record_cycle_event("session", "Session restored", title)
         _append_system_message(f"Session restored: {title}")
+        # The transcript and the model's history are two records in one
+        # file. When the second is empty while the first holds turns, the
+        # chat shows a conversation the model does not have -- say so, or
+        # the next answer reads as the model having forgotten.
+        if (not list(getattr(engine, "messages", None) or ())
+                and any(m.get("role") == "user"
+                        for m in state.get("chat_messages") or ())):
+            _archived = ""
+            try:
+                from delfin.agent.session_store import load_transcript_archive
+                if load_transcript_archive(session_id):
+                    _archived = (" Earlier history of this session is in the "
+                                 f"archive: /session archive {session_id}.")
+            except Exception:
+                pass
+            _append_system_message(
+                "⚠️ This session was saved without the model's side of the "
+                "conversation: the chat above is shown, but the model starts "
+                "without it. Restate what it needs to know." + _archived)
 
     # -- helpers -----------------------------------------------------------
 
@@ -9656,7 +9777,11 @@ def create_tab(ctx):
             except Exception:
                 pass
         state["engine"] = None
-        if carry and carry.get("engine_messages"):
+        # Carried when there is a conversation OR an identity. An engine
+        # with no messages still names the session it belongs to; dropped,
+        # the next engine minted a fresh id and its first save copied the
+        # whole chat transcript into a second session file.
+        if carry and (carry.get("engine_messages") or carry.get("session_id")):
             state["_engine_carry_over"] = carry
         else:
             state.pop("_engine_carry_over", None)
@@ -9901,6 +10026,7 @@ def create_tab(ctx):
 
             state["engine"] = engine
             ctx.agent_engine = engine
+            _settle_isolation_posture(engine)
             # `delfin-agent pause <session>` reaches a dashboard session by
             # its presence key, as it reaches a terminal one by its name.
             try:
@@ -16462,13 +16588,19 @@ def create_tab(ctx):
         except Exception:
             pass
 
-        # Workspace inventory (small)
+        # Workspace inventory (small): the SESSION's workspace, the one its
+        # tools resolve relative paths against (_agent_workspace_path reads
+        # the engine's permission workspace first). It listed ctx.agent_dir,
+        # shared by every session of the dashboard and possibly the launch
+        # checkout: a session in a worktree was told about a task file that
+        # did not exist where it works, and went looking for it.
         try:
-            files = sorted(
-                p.name for p in ctx.agent_dir.iterdir() if p.is_file()
-            )
-            if files:
-                snap["workspace_files"] = files[:20]
+            _ws = Path(_agent_workspace_path())
+            if _ws.is_dir():
+                snap["workspace_dir"] = str(_ws)
+                files = sorted(p.name for p in _ws.iterdir() if p.is_file())
+                if files:
+                    snap["workspace_files"] = files[:20]
         except Exception:
             pass
 
@@ -16591,6 +16723,10 @@ def create_tab(ctx):
             )
             if _b.returncode == 0:
                 branch_name = _b.stdout.strip()
+            if branch_name == "HEAD":
+                from delfin.agent.held_branch import checkout_label
+                branch_name = (checkout_label(ctx.repo_dir or Path.cwd())
+                               or branch_name)
         except Exception:
             pass
 
@@ -16629,11 +16765,18 @@ def create_tab(ctx):
 
         commits: list[str] = []
         branch_name = ""
+        # Branch and commits of the session's workspace, not ctx.repo_dir
+        # (the launch checkout): a session in a worktree works on the
+        # worktree's branch.
+        try:
+            _git_cwd = _agent_workspace_path() or str(ctx.repo_dir or Path.cwd())
+        except Exception:
+            _git_cwd = str(ctx.repo_dir or Path.cwd())
         try:
             import subprocess as _sp
             _r = _sp.run(
                 ["git", "log", "-3", "--oneline"],
-                cwd=str(ctx.repo_dir or Path.cwd()),
+                cwd=_git_cwd,
                 capture_output=True, text=True, timeout=2,
             )
             if _r.returncode == 0:
@@ -16642,11 +16785,15 @@ def create_tab(ctx):
                 ]
             _b = _sp.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=str(ctx.repo_dir or Path.cwd()),
+                cwd=_git_cwd,
                 capture_output=True, text=True, timeout=2,
             )
             if _b.returncode == 0:
                 branch_name = _b.stdout.strip()
+            if branch_name == "HEAD":
+                from delfin.agent.held_branch import checkout_label
+                branch_name = (checkout_label(ctx.repo_dir or Path.cwd())
+                               or branch_name)
         except Exception:
             pass
 
@@ -17789,6 +17936,7 @@ def create_tab(ctx):
                            or str(getattr(engine, "repo_dir", "") or "")
                            or None),
                 repo_dir=str(ctx.repo_dir) if ctx.repo_dir else None,
+                surface="dashboard",
             )
             short = str(report_dir).replace(str(Path.home()), "~")
             # Ship it to the shared remote archive over SSH (same transfer
@@ -18024,6 +18172,17 @@ def create_tab(ctx):
 
         # Hide any pending question UI when user sends a message
         _hide_question_ui()
+
+        # An open ask_user_question takes the line as its answer. Not a
+        # built-in slash command (/stop must still stop), and not what the
+        # session sends on its own -- only the user answers a question.
+        if (not state.get("_on_its_own")
+                and user_text.split()[0].lower()
+                not in _BUILTIN_SLASH_PREFIXES
+                and _answer_ask_from_chat(user_text)):
+            input_textarea.value = ""
+            _append_chat_message("user", user_text)
+            return
 
         # Slash commands execute immediately, even during streaming.
         # But file paths like /home/... are NOT slash commands — only
@@ -21186,7 +21345,8 @@ def create_tab(ctx):
             _append_system_message(
                 f"Model switched to {change['new']}. The next message uses it"
                 + (", with the conversation so far."
-                   if state.get("_engine_carry_over") else ".")
+                   if (state.get("_engine_carry_over") or {}).get(
+                       "engine_messages") else ".")
             )
         # Persist the choice
         chosen_effort = ""
@@ -21300,6 +21460,7 @@ def create_tab(ctx):
                     _append_system_message(
                         f"Permissions → **{new_profile}** (KIT mode: {chip_target})."
                     )
+                    _settle_isolation_posture(engine)
                     return
             if state["streaming"]:
                 # Live switch not available on this backend: the change

@@ -50,9 +50,12 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # The keys `cli._run_once` returns, and therefore what --output-format json
 # promises. Named here so the two paths can be asserted equal instead of
-# drifting into two shapes of the same answer.
+# drifting into two shapes of the same answer. The last four are
+# turn_outcome's: what the turn ended as, for a program reading the result
+# (schema documented in docs/USER_MANUAL.md, "Headless runs").
 TURN_KEYS: frozenset[str] = frozenset({
     "text", "tool_calls", "input_tokens", "output_tokens", "error",
+    "schema_version", "stop_reason", "denials", "files_changed",
 })
 
 
@@ -379,6 +382,10 @@ class TurnResult:
     input_tokens: int = 0
     output_tokens: int = 0
     error: str = ""
+    schema_version: int = 1
+    stop_reason: str = "done"
+    denials: list[dict] = field(default_factory=list)
+    files_changed: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -387,6 +394,10 @@ class TurnResult:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "error": self.error,
+            "schema_version": self.schema_version,
+            "stop_reason": self.stop_reason,
+            "denials": self.denials,
+            "files_changed": self.files_changed,
         }
 
 
@@ -681,8 +692,14 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         if text:
             _emit(RenderItem("thinking", text=text))
 
+    from . import turn_outcome
+    observer = turn_outcome.TurnObserver(
+        workspace=getattr(getattr(engine, "kit_permissions", None),
+                          "workspace", None))
+
     def _on_tool_use(name: str, input_json: str) -> None:
         parsed = rr._as_dict(input_json)
+        observer.saw_tool_use(name)
         tool_calls.append({"name": name, "input": parsed})
         tool_inputs.append((name, parsed))
         _emit(RenderItem("tool_use", name=name, text=input_json or ""))
@@ -731,6 +748,7 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
 
     def _on_denied(name: str) -> None:
         _take_tool_input(name)
+        turn_outcome.denied(name, "backend_denied", "")
         _emit(RenderItem("denied", name=name))
 
     in_before, out_before = _usage(engine)
@@ -757,24 +775,33 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
             user_message = fresh + "\n\n" + prompt
             if isinstance(prompt, HarnessText):
                 user_message = HarnessText(user_message)
-    try:
-        full_text = engine.stream_response(
-            user_message=user_message,
-            memory_context=memory_context,
-            on_token=_on_token,
-            on_notice=_on_notice,
-            on_wait=_on_wait,
-            on_thinking=_on_thinking,
-            on_tool_use=_on_tool_use,
-            on_tool_result=_on_tool_result,
-            on_tool_result_meta=_on_tool_result_meta,
-            on_permission_denied=_on_denied,
-            max_tokens=max_tokens,
-        ) or ""
-    except Exception as exc:
-        result.error = str(exc)
-        full_text = ""
-        _emit(RenderItem("error", text=result.error))
+    with observer:
+        try:
+            full_text = engine.stream_response(
+                user_message=user_message,
+                memory_context=memory_context,
+                on_token=_on_token,
+                on_notice=_on_notice,
+                on_wait=_on_wait,
+                on_thinking=_on_thinking,
+                on_tool_use=_on_tool_use,
+                on_tool_result=_on_tool_result,
+                on_tool_result_meta=_on_tool_result_meta,
+                on_permission_denied=_on_denied,
+                max_tokens=max_tokens,
+            ) or ""
+        except Exception as exc:
+            result.error = str(exc)
+            full_text = ""
+            _emit(RenderItem("error", text=result.error))
+    _outcome = observer.summary(
+        error=result.error,
+        engine_stop_reason=str(
+            getattr(engine, "last_turn_stop_reason", "") or ""))
+    result.schema_version = _outcome["schema_version"]
+    result.stop_reason = _outcome["stop_reason"]
+    result.denials = _outcome["denials"]
+    result.files_changed = _outcome["files_changed"]
 
     _flush_pending()
     in_after, out_after = _usage(engine)
@@ -1438,6 +1465,16 @@ class TerminalAgent:
         if event.kind == rk.SUBMIT:
             text = event.text.strip()
             self._clear_input_line()
+            # A choice question that arrived while this line was being
+            # typed takes the line as its answer; it is then not queued.
+            if text and self.broker is not None:
+                try:
+                    took = self.broker.answer_question_with_text(text)
+                except Exception:
+                    took = False
+                if took:
+                    self._show_user_input(text)
+                    return
             if text:
                 self._show_user_input(text, queued=True)
                 self.queued.append(text)
@@ -1534,6 +1571,11 @@ class TerminalAgent:
         """
         order = ["plan", "default", "acceptEdits"]
         try:
+            from . import managed_policy as _mp
+            order = [m for m in order if _mp.mode_refusal(m) is None] or order
+        except Exception:
+            pass
+        try:
             current = str(getattr(self.engine.kit_permissions, "mode", "")
                           or "default")
         except Exception:
@@ -1604,7 +1646,14 @@ class TerminalAgent:
         from . import repl_commands as rc
         return rc.ReplContext(
             engine=self.engine, workspace=self.opts.cwd,
-            session_id=str(getattr(self.engine, "session_id", "") or ""))
+            session_id=str(getattr(self.engine, "session_id", "") or ""),
+            # getattr: an agent built without __init__ (tests) has neither.
+            ask=getattr(self, "_read_line", None), say=self._say_chrome)
+
+    def _say_chrome(self, text: str) -> None:
+        """Print a handler's mid-command text as chrome, line by line."""
+        for line in str(text or "").splitlines():
+            self.transcript.chrome(line)
 
     def _start_fresh(self) -> None:
         try:
@@ -1922,16 +1971,34 @@ class TerminalAgent:
         return self._read_key(raw, {"y", "n", "\x1b"}) == "y"
 
     def _answer_question(self, req, raw) -> None:
-        """ask_user_question: numbered options, one key."""
+        """ask_user_question: a number key picks, a typed line answers.
+
+        A digit on an empty line picks that option; any other printable
+        key starts a free-text answer, sent with Enter
+        (``approval_answers.typed_answer``: an option when the line names
+        one, free text otherwise). Esc on an empty line skips the
+        question; on a typed line it clears the line.
+        """
+        from .approval_answers import option_labels, typed_answer
         payload = req.payload or {}
         question = str(payload.get("question", "") or "(no question given)")
-        options = [str(o) for o in (payload.get("options") or [])][:9]
+        # Labels, never str(dict): the options arrive normalised as
+        # {label, description}, and their repr was shown AND returned.
+        options = option_labels(payload.get("options"))[:9]
         self.transcript.chrome(self.transcript.theme.bold(f"? {question}"))
         for i, opt in enumerate(options, 1):
             self.transcript.chrome(f"  {i}. {rr.strip_control(opt)}")
+        from . import terminal_confirm as tc
+        outside = tc.outside_answer_line(getattr(req, "published", None),
+                                         choice=True)
+        if outside and options:
+            self.transcript.chrome(self.transcript.theme.dim("  " + outside))
         if not options:
             self._apply(req, {"answers": []})
             return
+        self.transcript.chrome(self.transcript.theme.dim(
+            f"  1-{len(options)} picks · or type your own answer and press "
+            "Enter · esc skips"))
         allowed = {str(i) for i in range(1, len(options) + 1)} | {"\x1b"}
         while True:
             # Same as _answer_request: an answer from outside ends the
@@ -1939,14 +2006,75 @@ class TerminalAgent:
             if getattr(req, "resolved", False):
                 self._say_ended_elsewhere(req)
                 return
-            key = self._read_key(raw, allowed,
-                                 stop=lambda: getattr(req, "resolved", False))
+            key = self._read_answer(raw, allowed,
+                                    stop=lambda: getattr(req, "resolved", False))
             if not key:
                 continue                # answered while waiting
+            if isinstance(key, tuple):  # ("text", line)
+                if self._apply(req, typed_answer(key[1], payload)):
+                    self.transcript.chrome(
+                        f"  → {rr.strip_control(key[1])}")
+                return
             if key == "\x1b":
                 self._apply(req, {"answers": []})
                 return
             self._apply(req, {"answers": [options[int(key) - 1]]})
+            return
+
+    def _read_answer(self, raw, allowed: set[str], *, stop=None):
+        """One choice key, or a typed line, for a choice question.
+
+        Returns a key from ``allowed`` (a digit picks, Esc skips), a
+        ``("text", line)`` tuple for a line ended with Enter, or "" when
+        ``stop`` ended the wait. Digits only pick on an empty line; once
+        typing has started they belong to the text. Without a terminal it
+        is ``_read_key``: an unanswerable question is skipped, never
+        answered with invented text.
+        """
+        from . import repl_keys as rk
+
+        if raw is None or not getattr(raw, "active", False):
+            return self._read_key(raw, allowed, stop=stop)
+        line = ""
+        while True:
+            if stop is not None and stop():
+                return ""
+            chunk = raw.read_ready(0.1)
+            if not chunk:
+                continue
+            if chunk[0] == "\x1b":
+                if not line:
+                    return "\x1b"
+                line = ""                # Esc / an arrow clears the line
+                self._echo_answer(line)
+                continue
+            for ch in chunk:
+                if ch == "\x04":
+                    raise rk.TerminalLeft("ctrl+d", 0)
+                if ch in ("\r", "\n"):
+                    if line.strip():
+                        self._echo_answer("", done=True)
+                        return ("text", line.strip())
+                    continue
+                if ch in ("\x7f", "\x08"):
+                    line = line[:-1]
+                    continue
+                if not line and ch in allowed:
+                    return ch
+                if ch.isprintable():
+                    line += ch
+            self._echo_answer(line)
+
+    def _echo_answer(self, line: str, *, done: bool = False) -> None:
+        """Show the answer being typed on one redrawn row (terminals only)."""
+        if not self._can_redraw():
+            return
+        try:
+            row = "" if done else "  > " + rr.strip_control(line)
+            self.err.write("\r\x1b[2K" + row[: max(10, self.transcript.width - 1)])
+            self.err.flush()
+        except Exception:
+            pass
 
     def _read_key(self, raw, allowed: set[str], *, stop=None) -> str:
         """One keystroke, from the reader the key layer already owns.
@@ -2247,6 +2375,21 @@ class TerminalAgent:
         bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
         if mode:
             bits.append(mode)
+            # Said only when a command is not held by a layer; an
+            # isolated session's line is unchanged. Read once per session:
+            # this line is redrawn several times a second, and the
+            # isolation of a process does not change while it runs.
+            _iso = getattr(self, "_isolation_word", None)
+            if _iso is None:
+                try:
+                    from .isolation_posture import isolation_status
+                    _iso = isolation_status(
+                        self.engine.kit_permissions).short()
+                except Exception:
+                    _iso = ""
+                self._isolation_word = _iso
+            if _iso:
+                bits.append(_iso)
         bits.append(f"↑{tin} {out_bits}")
         if cost > 0:
             bits.append(f"${cost:.4f}")

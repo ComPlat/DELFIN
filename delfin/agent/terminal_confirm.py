@@ -205,7 +205,13 @@ def publish_waiting(*, surface: str, session_id: str = "",
         # race: its own resolve() is the single point that decides, and
         # the first answer takes it.
         "answer_at": str(answer_at or f"{surface} or supervisor"),
+        # An answer from outside must be signed with the code this
+        # process shows on its own surface (approval_code); the code
+        # itself is never in the record.
+        "needs_code": True,
     }
+    from . import approval_code as _code
+    _code.issue(record["id"])
     # The same filename file_confirm uses, so its reader, its lister and
     # its answer writer apply here unchanged -- with every careful part
     # they carry: not a symlink, this user's, not group-writable, naming
@@ -257,13 +263,55 @@ def _asker_is_gone(record: dict) -> bool:
 
 
 def _withdraw_pending(path) -> None:
-    """Take a published question away once it has been answered."""
+    """Take a published question away once it has been answered, and its
+    code with it."""
     if not path:
         return
+    try:
+        from . import approval_code as _code
+        _code.forget(request_id_of(path))
+    except Exception:
+        pass
     try:
         Path(path).unlink()
     except OSError:
         pass
+
+
+def request_id_of(published) -> str:
+    """The request id of a published record's path, or ""."""
+    name = Path(str(published or "")).name
+    suffix = ".request.json"
+    return name[:-len(suffix)] if name.endswith(suffix) else ""
+
+
+def code_spent(published) -> bool:
+    """True once the published request has seen three unsigned answers."""
+    try:
+        from . import approval_code as _code
+        return _code.spent(request_id_of(published))
+    except Exception:
+        return False
+
+
+def outside_answer_line(published, *, choice: bool = False) -> str:
+    """The line that tells the person how to answer from another terminal,
+    with the code. For the asking surface only (the terminal frame, the
+    dashboard row): it is the human channel. "" when not published.
+    *choice* names the ``answer <id> <n>`` form of a choice question."""
+    rid = request_id_of(published)
+    if not rid:
+        return ""
+    try:
+        from . import approval_code as _code
+        code = _code.code_for(rid)
+    except Exception:
+        code = ""
+    if not code:
+        return ""
+    verb = f"answer {rid} <n>" if choice else f"approve|deny {rid}"
+    return (f"from another terminal: delfin-agent approvals {verb} "
+            f"--code {_code.display(code)}")
 
 
 def pending_for_supervisors() -> list[dict]:
@@ -370,7 +418,7 @@ def _note_outside_answer(req: ConfirmRequest, session_key: str,
 
 
 def answer_waiting(request_id: str, decision: bool, *, by: str = "",
-                   reason: str = "") -> bool:
+                   reason: str = "", code: "str | None" = None) -> bool:
     """Answer a question a terminal session is stuck on. Never raises.
 
     The decision this reverses is the one the first published record
@@ -389,7 +437,7 @@ def answer_waiting(request_id: str, decision: bool, *, by: str = "",
         # (approval_guard); this goes through it, not around it.
         return bool(_fc.answer(str(request_id), bool(decision),
                                room=_PENDING_DIR, by=str(by or ""),
-                               reason=str(reason or "")))
+                               reason=str(reason or ""), code=code))
     except Exception:
         return False
 
@@ -528,6 +576,10 @@ def render_request(req: ConfirmRequest, *, theme: rr.Theme | None = None,
             "│  [y] reads it and opens its directory for READS for the rest "
             "of this session; [R] keeps that for every session. Neither "
             "grants writing."))
+
+    outside = outside_answer_line(getattr(req, "published", None))
+    if outside:
+        lines.append(theme.dim("│  " + outside))
 
     # What a persisting key saves, on screen before the key is pressed.
     # It sat behind [?] only, and [k]'s pattern is the one thing about
@@ -718,6 +770,8 @@ class TerminalConfirmBroker:
                 _note_outside_answer(req, self.session_key, outside[0])
                 self._audit_dialog(req, by="outside")
                 return req.decision
+            if code_spent(req.published):
+                break           # three unsigned answers: expired
             if deadline is not None and _time.monotonic() >= deadline:
                 break
         with self._lock:
@@ -807,6 +861,26 @@ class TerminalConfirmBroker:
         req.published = None
         req.event.set()
         return True
+
+    def answer_question_with_text(self, text: str) -> bool:
+        """Resolve the oldest waiting ask_user_question with a typed line.
+
+        Input: a line the user typed while the question was open. Output:
+        True when a question took it (the line is then the answer and must
+        not also be sent as a message), False when none was waiting. The
+        decision is ``approval_answers.typed_answer``: an option when the
+        line names one, free text otherwise. Approvals (CONFIRM) and plan
+        approvals are never answered this way -- a typed sentence is not
+        a yes.
+        """
+        from .approval_answers import typed_answer
+        with self._lock:
+            req = next((r for r in self._queue
+                        if r.kind == ASK and not r.resolved), None)
+        if req is None or not str(text or "").strip():
+            return False
+        # The waiting thread writes the dialog's audit record when it wakes.
+        return self.resolve(req, typed_answer(text, req.payload))
 
     def abort_all(self) -> list[ConfirmRequest]:
         """Deny everything in flight, and everything that arrives after."""

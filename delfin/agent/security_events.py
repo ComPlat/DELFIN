@@ -72,6 +72,11 @@ _KINDS = {
     "no_sandbox_mcp": ("🚫", "MCP tool refused: no sandbox configured"),
     "egress":         ("🌐", "Outbound data transfer"),
     "egress_blocked": ("🌐", "Network destination blocked (sandbox)"),
+    # The network of programs a command starts: which layer holds it.
+    "network":        ("🌐", "Command network held by the egress proxy"),
+    "network_missing": ("⚠", "Command network NOT (fully) held"),
+    "egress_asked":   ("🌐", "Command network: destination asked"),
+    "egress_upload":  ("📤", "Command upload to an allowed host"),
     "key_exported":   ("🔑", "Provider key exported in the environment"),
     # A commit message naming a home directory, an account or a machine.
     # The repository is public, and a name in a public history is paid
@@ -84,6 +89,12 @@ _KINDS = {
     # An agent session reaching for an approval: the answer command, an
     # answer function, or a write where answers and the CLI gate state live.
     "approval_self_answer": ("🚫", "Agent tried to answer an approval"),
+    # An answer from outside the waiting process without the one-time
+    # code it showed (file_confirm reads it; cli refuses to write it).
+    "approval_code_refused": ("🚫", "Approval answer without the session's code"),
+    "approval_code_missing": ("🚫", "Approval answer not written: no code"),
+    # A hand-over directory every session on the repository can write.
+    "handover_root":  ("📂", "Shared hand-over directory in use"),
     "settings_updated": ("🛡", "Settings changed by a security update"),
     "push_unrequested": ("📤", "Push nobody asked for"),
     "pr_create_unrequested": ("📤", "Pull request nobody asked for"),
@@ -113,6 +124,9 @@ _KINDS = {
     # dialog said, so it is recorded like the other floors that hold
     # against an approving user.
     "unbounded_allow_pattern": ("🔓", "Auto-allow rule that matched everything"),
+    # The administrator's managed policy (managed_policy.py).
+    "managed_policy_deny": ("🏛", "Refused by the managed policy"),
+    "managed_policy_ask":  ("🏛", "Asked by the managed policy"),
     # MCP dispatch bypasses the native executor, so its refusals are their
     # own kinds.
     "plan_mode_mcp":     ("📝", "Plan mode: MCP tool refused"),
@@ -127,8 +141,10 @@ _KINDS = {
     # The action classifier: a model's second opinion on what the rules let
     # through unseen. It only ever adds friction.
     "read_only_shape":   ("✅", "Harmless command form approved by rule"),
+    "caged_unasked":     ("🧱", "Command run unasked inside the filesystem cage"),
     "classifier_ask":    ("❓", "Action classifier asked the user"),
     "classifier_refuse": ("🛑", "Action classifier refused an allowed action"),
+    "classifier_allow":  ("✅", "Action classifier allowed an unasked command (no isolation)"),
     "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
     "classifier_held":   ("⏸️", "Held: watcher could not judge, nobody to ask"),
     "classifier_down":   ("🔌", "Action watcher down"),
@@ -217,6 +233,11 @@ def record(kind: str, tool: str, detail: str, *, blocked: bool = True) -> None:
             except Exception:
                 pass
         _raise_alert(ev)
+        if blocked:
+            # The same decision, for a turn that reports its refusals as
+            # data (turn_outcome: the headless result and stream-json).
+            from . import turn_outcome
+            turn_outcome.denied(tool, kind, str(detail))
     except Exception:
         pass
 

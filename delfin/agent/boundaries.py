@@ -68,8 +68,11 @@ GATED_PROVIDERS = ("kit", "openai", "ollama")
 #: a command, not why one was allowed or refused, so they never become a
 #: reason code (and a once-per-process event cannot make two otherwise
 #: identical decisions look different).
+#: ``network`` / ``network_missing`` are api_client._announce_child_network:
+#: what holds the network of the commands, recorded by the first command
+#: of a process.
 _ANNOUNCEMENTS = frozenset({"isolation", "isolation_missing",
-                            "handover_root"})
+                            "handover_root", "network", "network_missing"})
 
 #: Events that record the answer to a question rather than its cause.
 _ANSWERS = frozenset({"denied_by_user", "approval_timeout"})
@@ -83,6 +86,7 @@ _READ_ONLY_SINKS = frozenset({
 #: Refusal text -> reason code, for refusals that record no security
 #: event. First match wins; matched case-insensitively.
 _TEXT_CODES: tuple[tuple[str, str], ...] = (
+    ("managed policy", "managed_policy"),
     ("plan mode", "plan_mode"),
     ("was excluded from this session", "session_tool_list"),
     ("is not available to the", "role"),
@@ -317,6 +321,9 @@ def _events_into(events: list):
         except Exception:
             return ["--net", "none"], ""
 
+    # The network notice is spent once per process. The dry run must leave
+    # it for the session that really runs a command here.
+    announced = ac._CHILD_NETWORK_ANNOUNCED
     security_events.record = _capture
     ac._sandbox_network_args = _net_without_proxy
     try:
@@ -324,6 +331,7 @@ def _events_into(events: list):
     finally:
         security_events.record = real_record
         ac._sandbox_network_args = real_net
+        ac._CHILD_NETWORK_ANNOUNCED = announced
 
 
 @contextlib.contextmanager
@@ -425,7 +433,11 @@ def _describe_argv(argv: list) -> dict:
         return {"command_isolation": "refused",
                 "detail": argv[-1] if argv else ""}
     in_cage = bool(argv) and argv[0] == "bwrap" and "--unshare-pid" in argv
-    if argv and argv[0] == "bwrap" and argv[1:4] == ["--ro-bind", "/", "/"]:
+    from .container_exec import RUNTIMES
+    runtime = Path(argv[0]).name if argv else ""
+    if runtime in RUNTIMES and argv[1:2] in (["run"], ["exec"]):
+        fs = f"container ({runtime})"
+    elif argv and argv[0] == "bwrap" and argv[1:4] == ["--ro-bind", "/", "/"]:
         fs = "bwrap"
     elif helper in argv and "--write" in argv:
         fs = "Landlock"
@@ -478,6 +490,15 @@ def _sandbox_layers(perms) -> dict:
     except Exception:
         pass
     out["isolation_setting"] = ac._BASH_ISOLATION_OVERRIDE or setting
+    if out["isolation_setting"].strip().lower() == "container":
+        try:
+            from . import container_exec
+            c = container_exec.choose()
+            out["container"] = {"runtime": c.runtime, "image": c.image,
+                                "unavailable_because": c.reason}
+        except Exception as exc:
+            out["container"] = {"runtime": "", "image": "",
+                                "unavailable_because": str(exc)}
     try:
         from . import egress_proxy
         out["network"] = egress_proxy.network_mode()
@@ -499,6 +520,28 @@ def _git(workspace: Path) -> dict:
     return {"repository_key": key or "", "role": role, "source": source}
 
 
+def _managed_summary() -> dict:
+    """managed_policy.summary(), or an inactive one when it cannot load."""
+    try:
+        from . import managed_policy
+        return managed_policy.summary()
+    except Exception as exc:
+        return {"active": False, "sources": [], "errors": [str(exc)]}
+
+
+def _rules_summary(workspace: Path) -> dict:
+    """The permission rules in force, managed and the user's and the
+    project's together, each with its origin and source file
+    (permission_rules.rule_records), in evaluation order."""
+    try:
+        from . import permission_rules as PR
+        rs = PR.load(workspace)
+        return {"rules": PR.rule_records(rs),
+                "errors": PR.error_lines(rs)}
+    except Exception as exc:
+        return {"rules": [], "errors": [f"cannot be read: {exc}"]}
+
+
 #: Home-relative paths the bwrap sandbox hides (``masked_home_dirs`` in
 #: the report). Path names, not secrets. A separate literal on purpose:
 #: code scanning classifies the sandbox's list by its variable name as a
@@ -513,6 +556,7 @@ MASKED_HOME_ENTRIES: tuple[str, ...] = (
     ".git-credentials", ".npmrc", ".pypirc",
     ".anthropic", ".openai", ".claude",
     ".delfin/credentials.json",
+    ".delfin/approval_codes",
 )
 
 
@@ -555,6 +599,8 @@ def capabilities(*, cwd: Any = ".", permission_mode: str = "",
         "sandbox": sandbox,
         "git": _git(workspace),
         "pre_tool_hooks": _hook_count(workspace),
+        "managed_policy": _managed_summary(),
+        "permission_rules": _rules_summary(workspace),
         "launch": {"refused": bool(report.refused),
                    "findings": [{"level": f.level, "code": f.code,
                                  "message": f.message}
@@ -607,6 +653,11 @@ def format_capabilities(caps: dict) -> str:
                  + (f", with {' and '.join(held)}" if held else "")
                  + f"  (setting: {sb['isolation_setting']}, network: "
                  f"{sb.get('network') or '?'})")
+    box = sb.get("container")
+    if box:
+        lines.append("container   " + (
+            f"{box['runtime']}, image {box['image']}" if box["runtime"]
+            else f"not used: {box['unavailable_because']}"))
     lines.append(f"layers      bwrap {yes(sb['bwrap'])} · Landlock "
                  f"{yes(sb['landlock'])}"
                  + (f" (ABI {sb['landlock_abi']})" if sb["landlock_abi"]
@@ -621,6 +672,17 @@ def format_capabilities(caps: dict) -> str:
                     else "") + "]")
     if caps["pre_tool_hooks"]:
         lines.append(f"hooks       {caps['pre_tool_hooks']} PreToolUse")
+    managed = caps.get("managed_policy") or {}
+    if managed.get("active") or managed.get("errors"):
+        from . import managed_policy
+        # Its deny/ask/only_allow are listed with the user's rules below.
+        lines.extend(managed_policy.summary_lines(include_rules=False))
+    rules = caps.get("permission_rules") or {}
+    for i, r in enumerate(rules.get("rules") or ()):
+        lines.append(f"{'rules' if i == 0 else '':<11} {r['list']:<10} "
+                     f"{r['rule']}  [{r['origin']}: {r['source']}]")
+    for err in rules.get("errors") or ():
+        lines.append(f"rules       {err}")
     if caps["launch"]["refused"]:
         lines.append("launch      REFUSED: " + "; ".join(
             f["message"] for f in caps["launch"]["findings"]

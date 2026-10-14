@@ -1360,6 +1360,31 @@ Choose with `--provider` / `--model` or `/model`. DELFIN detects each model's re
 
 **A model that cannot call tools is refused.** Every non-trivial action is a tool call, so such a model could only talk. Small models automatically get a shorter prompt and a reduced tool surface.
 
+### API keys
+
+```bash
+delfin-agent credentials set KIT_TOOLBOX_API_KEY   # input hidden, never echoed
+delfin-agent credentials list                      # masked, with the store each key is in
+delfin-agent credentials migrate                   # move file entries into the OS keyring
+delfin-agent credentials delete KIT_TOOLBOX_API_KEY
+```
+
+A key is looked up in this order: the environment variable, the operating system's credential store (macOS Keychain, Secret Service on Linux, Windows Credential Manager), then `~/.delfin/credentials.json` (mode 0600). The OS store is used through the optional `keyring` package: `pip install "delfin-complat[keyring]"`.
+
+Where `set` writes is `agent.credentials.store` in `~/.delfin_settings.json` — a workspace settings file cannot choose it:
+
+| Value | Writes go to |
+|-------|--------------|
+| `auto` (default) | the keyring when a secure backend answers in time, otherwise the file |
+| `keyring` | the keyring only; with none usable the key is not stored and the command says why |
+| `file` | the 0600 file |
+
+Every keyring call is bounded: 3 s without a terminal and display (a cluster node, a job, the dashboard), 60 s at a desktop terminal so an unlock dialog can be answered. A keyring that does not answer is not asked again for the rest of the process, so a headless run never waits on a prompt nobody sees. Backends that are not a secure store (keyring's `fail` and `null` backends, the plaintext and encrypted-file backends of `keyrings.alt`) are not used.
+
+Nothing moves on its own. Keys already in the file keep working after the setting changes; `credentials migrate [NAME ...]` copies each into the keyring, reads it back, and removes it from the file only when the read-back is equal. A name whose keyring entry holds a different value is reported and left alone. `~/.delfin/credentials.keyring.json` records which names are in the keyring — names only, never a value.
+
+The agent's own tools read neither store: the credentials file is on the deny list, commands that print a keyring entry (`secret-tool lookup`, `security find-generic-password`, `keyring get`, `python -m keyring`, `keyring.get_password`) are refused, sandboxed commands get no session bus, and every tool result is scrubbed of the exact value of every stored key before the model sees it.
+
 ### Permissions
 
 | Level | Writes | Shell |
@@ -1375,6 +1400,16 @@ A session starts in `default` unless `--permission-mode` or `default_mode` in yo
 Cycle with `/permissions` or Shift+Tab; the cycle deliberately never lands on bypass. Two things hold at **every** level: the sandbox and the deny lists stay in force, and a file that defines the agent's own permissions always requires explicit confirmation.
 
 Settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
+
+#### Answering a choice question in your own words
+
+When the agent asks a choice question (numbered options in the terminal, buttons in the dashboard), you can also type the answer. In the dashboard, a message sent from the normal chat input while the question waits answers it: the buttons disappear and the turn continues with what you typed. In the terminal dialog, a number key on an empty line picks that option; any other key starts a typed answer, sent with Enter (Esc clears it, Esc on an empty line skips the question). A typed answer that is an option's label or number counts as that option; anything else reaches the agent as your free-text answer, marked as typed rather than picked, also when the question offered fixed options only. A typed answer is not sent a second time as a message. Slash commands such as `/stop` keep their meaning while a question waits.
+
+#### Answering an approval from another terminal
+
+A waiting approval can also be answered with `delfin-agent approvals approve|deny <id>` (or `answer <id> <n>` for a choice question). Each waiting request has a one-time code, shown only where the session asks: in its terminal dialog, in its dashboard row, or on the controlling terminal of a `chat --supervised` run. Pass it with `--code ABC-DEF`; on a terminal the command asks for it when it is left out. A supervised run with no terminal at all (a batch or cluster job) keeps the code in `~/.delfin/approval_codes/<id>.code` (readable only by you, deleted once answered or expired; on a shared home the same file from every node): `approvals ls`, `show` and `approve` read it from there, so `delfin-agent approvals approve <id>` from your own shell works without typing it. No agent can read the code file through its tools, and the agent's own `approvals` commands never show a code. Inside the shell sandbox it is masked by bubblewrap and Seatbelt in every layout; under Landlock (hosts without usable bubblewrap) it is hidden unless the code directory lies inside a directory the session may write (a granted `~/.delfin`, a workspace that holds your home), because Landlock cannot hide a path there without refusing every new file in that directory. In that one layout the shell's read checks are what keep it out, so prefer not to grant `~/.delfin` to a session on such a host. The code is in no request, answer or log file, and the answer carries a signature made with it rather than the code. An answer without the right code is ignored and shown as a security event; the third one expires the request. A key in the terminal dialog or a click in the dashboard needs no code.
+
+Not covered: a program that can read the DELFIN process's memory (on Linux, `kernel.yama.ptrace_scope` 0 allows any program of your account; 1 or higher allows only DELFIN's own parents), a program that sees the session's terminal itself (an assistant driving it through a pseudo-terminal), the external-CLI backend's own hook, which DELFIN's relay answers from your dialog, and, for a run with no terminal, a program of your account running with no shell sandbox at all, which can read the code file (the same trust an answer file had before codes existed).
 
 ### The action watcher
 
@@ -1415,10 +1450,61 @@ Rules in `~/.delfin_settings.json` decide single actions in advance, in every le
 - A rule that cannot be read grants nothing. Broken rules, and rules naming a tool that does not exist, are listed when the terminal starts; a broken deny or ask is marked `ERROR`.
 - `/permissions` in the terminal shows the level, every rule in force with its file, and what is not in force; `/permissions rules` shows the rules alone. You edit the file yourself: the agent cannot write it from any tool or command.
 - On the CLI backend, deny and ask apply to its tools through the same hook that keeps its file boundary; allow is not used there.
+- An administrator's managed policy (below) uses the same rules, matched the same way, and is evaluated before yours: its deny and ask come first, and its `only_allow` bounds your allow rules — an allow outside it answers nothing. `/permissions` lists both, each rule with its source (`managed`, `user` or `project` and the file).
 
 ### The shell sandbox
 
-Every command runs through an allow-list and then, where available, bubblewrap or firejail. Credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, the network is denied by default, and every command is appended to `~/.cache/delfin/agent-audit.jsonl`. `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}` selects the mechanism; when isolation is unavailable the agent says so rather than running unprotected in silence.
+Every command first passes the permission gate (deny patterns, protected paths, the approval and egress checks). It is then run isolated wherever the host can hold it (`agent.bash_isolation = "auto"`, the default): under bubblewrap, else Landlock, else Seatbelt on macOS. Isolated, a command writes only in the workspace roots, cannot read the credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …), cannot reach your terminal, SSH agent or session sockets, and reaches the network only through the egress proxy, which lets through an allow-list of domains (`agent.sandbox_network`). `--isolate` refuses commands where no isolation is available; `--no-isolate` turns it off for one session. When isolation is unavailable the agent says so rather than running unprotected in silence. The dashboard's approval of a CLI-backend `Bash` call uses its own allow-list sandbox, selected with `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`.
+
+What each layer guarantees on which host, what is out of scope and how to run safest is in the [security model](SECURITY_MODEL.md); how to report a vulnerability privately is in [SECURITY.md](../SECURITY.md).
+
+### Running commands in a container
+
+The strongest layer: `bash`, `bash_background` and `run_tests` run each command in a container that sees only the session's directories. Opt in in `~/.delfin_settings.json` (the agent cannot change this file):
+
+<!-- recipe: not-runnable — a settings file excerpt -->
+```json
+"agent": {
+  "bash_isolation": "container",
+  "container": {"runtime": "auto", "image": ""}
+}
+```
+
+`runtime` is `auto` (the first of Apptainer, Singularity, Podman, Docker that is installed and has the image), or one of them by name; a named runtime is never swapped for another. `image` empty means `docker.io/library/python:3.11-slim` for Podman and Docker, and `~/.local/share/delfin/containers/python_3.11-slim.sif` for Apptainer. Any image works that has `/bin/bash`; put the tools your commands need into it (a module system or a conda environment of the host is not visible inside unless it lies in a session directory).
+
+Inside the container the writable workspace roots (and the git metadata of a worktree) are mounted read-write, read-only and confirm-write roots, git hooks and the approvals directory read-only, credential directories inside a mounted root are covered, and nothing else of your home exists. The command runs as your uid, without capabilities, with no-new-privileges, on a read-only root filesystem, without network. Only `agent.sandbox_network.mode = "open"` gives it the runtime's normal network; the egress proxy is not reachable from inside a container, so `proxy` means no network here. The permission gate still reads every command first.
+
+If no runtime is installed or the image is missing, commands fall back to bubblewrap, Landlock or Seatbelt, and the security panel says why once. `delfin-agent capabilities` shows `container (<runtime>)` with the image, or the reason it is not used; `delfin-agent doctor` and the session banner say the same.
+
+**HPC (Apptainer, no root needed).** Build the image once on a login node, where the registry is reachable:
+
+<!-- recipe: not-runnable — pulls a container image from a registry; needs Apptainer on an HPC login node -->
+```bash
+mkdir -p ~/.local/share/delfin/containers
+apptainer pull ~/.local/share/delfin/containers/python_3.11-slim.sif docker://python:3.11-slim
+```
+
+Requires Apptainer 1.1 or SingularityCE 3.8 or newer (`--no-mount hostfs,bind-paths`, so the site's default bind paths are not mounted). An image with your own software: `apptainer build my.sif my.def`, then set `"image": "/path/to/my.sif"`.
+
+**Workstation (Podman rootless, or Docker).** Pull the image once; it is never pulled at run time:
+
+<!-- recipe: not-runnable — pulls a container image from a registry; needs Podman or Docker -->
+```bash
+podman pull docker.io/library/python:3.11-slim     # or: docker pull python:3.11-slim
+```
+
+Podman maps your uid into the container (`--userns=keep-id`), so files written in the workspace belong to you. Docker runs with `--user <uid>:<gid>`; with rootless Docker the files can end up owned by a subordinate uid, so prefer Podman there.
+
+Limits: a command's network cannot go through the egress proxy (no network, or open); a Podman or Docker container whose client is killed with SIGKILL may keep running until it ends on its own; environment variables of the host session are not passed in.
+
+**The network of programs a command starts.** A script or binary the agent runs reaches the network only through DELFIN's egress proxy. The kernel makes the proxy the only way out: the socket guard (seccomp), a network namespace (bubblewrap), or Landlock's TCP restriction (Linux 6.7+, TCP only). The proxy applies the same domain decisions as `web_fetch`:
+
+- Always reachable: PyPI, conda channels, GitHub, and whatever the session is configured to use (its model endpoint, the workspace's git remotes, the pip/conda indexes from the environment and config files, `agent.sandbox_network.allowed_domains`). SSH git remotes, the SLURM controller and license servers named in `*_LICENSE_FILE` are reached directly.
+- Permission rules: `web_fetch(domain:…)` rules deny, ask or allow first.
+- Unknown domains: you are asked when the session has an approval dialog and is not in plan or bypass mode. Otherwise the request is refused, and the message names the domain and the rule that would allow it.
+- Uploads: a request body above `agent.sandbox_network.upload_ask_bytes` (default 1 MiB), or any POST/PUT to an unknown host, is asked. With nobody to ask, an upload to a known host passes and is recorded.
+
+`agent.sandbox_network.mode` is `"proxy"` (default), `"none"` or `"open"`. A session reads it at start and cannot loosen it while it runs. Where the host has none of the three layers, the startup banner, the security panel and `delfin-agent doctor` ("command network") say so.
 
 ### Seeing the boundary before a session starts
 
@@ -1432,9 +1518,61 @@ delfin-agent gate explain --json --asker nobody -- 'echo x > ../out.txt'
 delfin-agent gate explain --tool write_file --path notes/new.md
 ```
 
-`capabilities` lists the mode and where it came from, the writable, read-only and readable roots, the deny and protected path globs and the masked home directories (names only, never contents), the shell deny patterns and auto-allow list, the session tool lists, who would be asked, the git role resolved for the workspace's repository, and the isolation layers: which mechanism the agent would actually wrap a command in on this host (`bwrap`, `Landlock`, `Seatbelt`, `none`, or `refused`), and whether bubblewrap, Landlock, Seatbelt, the socket guard, the process cage and the process guard are available here.
+`capabilities` lists the mode and where it came from, the writable, read-only and readable roots, the deny and protected path globs and the masked home directories (names only, never contents), the shell deny patterns and auto-allow list, the session tool lists, who would be asked, the git role resolved for the workspace's repository, and the isolation layers: which mechanism the agent would actually wrap a command in on this host (`container (<runtime>)`, `bwrap`, `Landlock`, `Seatbelt`, `none`, or `refused`), and whether bubblewrap, Landlock, Seatbelt, the socket guard, the process cage and the process guard are available here.
 
-`gate explain` asks the permission gate about one `bash` command or one `write_file` and prints the verdict — `allow`, `ask` or `refuse` — with a reason code (`plan_mode`, `deny_pattern`, `secret_path`, `outside_ws`, `not_auto_allowed`, `read_first`, `session_tool_list`, …), the reason text, the questions the gate would put, and for an `ask` what a yes would lead to. It goes through the same gates as a real call and stops after the last one, so nothing is run and nothing is written; the security panel, the audit log, the failure log and the approvals directory are not touched. Put the command after `--`; quote it as one argument to keep its own quoting. An existing `write_file` target counts as read in the session. Limits: only `bash` and `write_file` can be explained; PreToolUse hooks are counted but not run; only the `kit`, `openai` and `ollama` providers run this gate (the `claude` CLI backend has its own hook gate and is refused).
+`gate explain` asks the permission gate about one `bash` command or one `write_file` and prints the verdict — `allow`, `ask` or `refuse` — with a reason code (`plan_mode`, `deny_pattern`, `secret_path`, `outside_ws`, `not_auto_allowed`, `read_first`, `session_tool_list`, …), the reason text, the questions the gate would put, and for an `ask` what a yes would lead to (a refusal by the administrator's policy has the code `managed_policy`). It goes through the same gates as a real call and stops after the last one, so nothing is run and nothing is written; the security panel, the audit log, the failure log and the approvals directory are not touched. Put the command after `--`; quote it as one argument to keep its own quoting. An existing `write_file` target counts as read in the session. Limits: only `bash` and `write_file` can be explained; PreToolUse hooks are counted but not run; only the `kit`, `openai` and `ollama` providers run this gate (the `claude` CLI backend has its own hook gate and is refused).
+
+### For administrators: a managed policy
+
+On a shared installation (a cluster, a teaching lab) an administrator can set restrictions that no user setting, project setting, command-line flag or agent action loosens. DELFIN reads them from
+
+| Path | Host |
+|------|------|
+| `/etc/delfin/managed_policy.json` | Linux |
+| `/Library/Application Support/DELFIN/managed_policy.json` | macOS |
+| `managed_policy.json` beside the installed `delfin` package | any |
+
+The file must be readable by every user. It is **trusted** only when the file and every directory above it are owned by root, or by the account that installed the package (the owner of the package directory, when that is not the user running DELFIN), and none of them is group- or world-writable (a sticky directory such as `/tmp` is accepted as an ancestor). A file that fails this check, and any file named by `DELFIN_MANAGED_POLICY` (the user controls the environment), is still read, but **only for restrictions**: it cannot choose the audit destination, and since several files are merged by the union of their restrictions and the intersection of their allow-lists and domain lists, it can never remove what a trusted file imposes. It is announced as `NOT TRUSTED` at every start. A trusted file that cannot be read or parsed fails closed: `bypassPermissions` and `acceptEdits` are unavailable until it is fixed.
+
+<!-- recipe: not-runnable — a policy file installed by an administrator; tests/test_managed_policy_holds_in_the_real_gate.py loads it as a policy -->
+```json
+{
+  "permissions": {
+    "deny": ["bash(sudo)", "read(/projects/restricted/**)", "web_search"],
+    "ask": ["bash(sbatch)", "mcp__mail"],
+    "only_allow": ["bash(ls:*)", "bash(git status)", "bash(squeue:*)"]
+  },
+  "disallowed_modes": ["bypassPermissions"],
+  "require_isolation": true,
+  "container_backend": "bwrap",
+  "network": {"allowed_domains_max": ["pypi.org", "files.pythonhosted.org", "*.github.com", "github.com"]},
+  "disable_classifier_off": true,
+  "audit_log": "/var/log/delfin/{user}.jsonl"
+}
+```
+
+| Key | Effect |
+|-----|--------|
+| `permissions.deny` | Refused in every mode, `bypassPermissions` included, before any user allow pattern, remembered permission or approval. Rules: `bash(<words>)` (the words anywhere in the command, a chain or a quoted `sh -c` body), `read(<glob>)` / `write(<glob>)` (a relative glob is relative to the workspace; `*` is one path segment, `**` any number; a glob without a wildcard covers everything below it; a `read` rule also covers writes and shell commands that name the path), `web_fetch(domain:<host>)`, `mcp__<server>[__<tool>]`, or a bare tool name. |
+| `permissions.ask` | Put to the person in every mode; refused when nobody can be asked (an unattended run). |
+| `permissions.only_allow` | The most any grant may cover — the shell auto-allow list, the user's `allow` rules and a command the sandbox would run unasked: a command runs unasked only if each of its parts starts with the words of one of these `bash(...)` rules (`:*` = followed by anything), it has no substitution or redirection, and no part runs a program from its words (`env …`, `xargs …`, `sh -c …`). A user `read`/`write`/tool allow rule answers only for a call one of these rules also covers. Everything else is asked, or refused unattended. |
+| `disallowed_modes` | These modes are never held: an unattended run and a mode from a settings file fall back to `default` (`plan` if `default` is disallowed too) and say so, Shift+Tab skips them; an interactive session started with the mode named on the command line, and `/permissions <mode>`, are refused with the reason. |
+| `require_isolation` | No shell command runs outside a sandbox (bubblewrap, else Landlock, else Seatbelt, else the command is refused); `--no-isolate` and `agent.bash_isolation = "off"` are ignored. On a host with no working layer an interactive session does not start, and an unattended run is capped at `default`. `container_backend: "bwrap"` accepts bubblewrap only. |
+| `network.allowed_domains_max` | The ceiling for sandboxed network access and for `web_fetch`: the user's `agent.sandbox_network.allowed_domains` intersected with it; `sandbox_network.mode = "open"` becomes `proxy`. |
+| `disable_classifier_off` | The action watcher (the model second opinion) stays on whatever `agent.classifier.enabled` or `DELFIN_CLASSIFIER` say. It still needs a model connection to run. |
+| `audit_log` | Every audit record is also appended to this absolute path (`{user}` and `{uid}` are expanded), in addition to the user's own log. Create the directory so each user can append and not read others' files (for example mode `1733`); DELFIN does not rotate it. |
+
+The rules are those of the user's permission rules, parsed and matched by the same code (a `web_fetch(domain:*.example.org)` rule names the subdomains only). `delfin-agent capabilities`, the start banner (stderr for `delfin-agent run`) and `/permissions` name each policy file, whether it is trusted, and what it enforces; `capabilities` and `/permissions` list the managed rules together with the user's and the project's, each with its source. A managed refusal is reported to a program as a `permission_denied` event with the reason code `managed_policy_deny` (`managed_policy_ask` for an ask nobody could answer, which makes the turn `needs_approval`). The policy file is unwritable through every write tool and shell command of the agent, in every mode. Limits: the rules bind DELFIN's own gate (native tools, MCP tools and the `claude` CLI backend's hook); a process the user starts outside DELFIN is not governed by it, which is what operating-system permissions are for.
+
+Whether a command is held by a filesystem layer (bubblewrap, Landlock or Seatbelt) is shown in the start banner, by `/status` and, when it is not, as `unisolated` in the status line. Without a layer -- none works on the host, or you switched it off with `--no-isolate` or `agent.bash_isolation: "off"` -- what stops a command is a reading of its text, so:
+
+| Start mode | Attended | Nobody to ask (`-p` from a script, a pipe) |
+|------------|----------|---------------------------------------------|
+| `bypassPermissions` | asked once per session (terminal; in the dashboard, in the approval panel while the session runs in `default`); yes keeps it, no starts in `default` | starts in `default`, with a notice on stderr; a command off the auto-allow list is judged by the action classifier and runs only when it allows |
+| `acceptEdits` | starts, with a notice | starts, with a notice |
+| `default`, `plan` | unchanged | unchanged |
+
+A session that promises confinement (a locked folder, `--isolate`) on a host with no layer asks before each command it would otherwise refuse (`[NO ISOLATION]`, in every mode); with nobody to ask that command is refused, and the file tools keep working.
 
 ### Pushing, pull requests and the git role
 
@@ -1665,7 +1803,7 @@ Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
 
 | Group | Commands |
 |-------|----------|
-| Session | `/help` `/status` `/cost` `/usage` `/context` `/compact` `/export` `/undo` `/clear` |
+| Session | `/help` `/status` `/cost` `/usage` `/context` `/compact` `/export` `/undo` `/bug` `/clear` |
 | Setup | `/model` `/mode` `/permissions` `/effort` `/doctor` `/init` `/mcp` `/trust` `/tools` `/agents` `/skills` |
 | History | `/session` `/rewind` `/tasks` `/memories` `/plans` |
 | Changes | `/pending` `/approve` `/reject` `/undo-file` |
@@ -1673,6 +1811,22 @@ Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
 | DELFIN (dashboard) | `/control key <key> <value>` · `/orca set` · `/calc ls\|read\|info\|tree` · `/analyze energy\|convergence\|errors` · `/recalc check-all\|auto` · `/submit` `/cancel` |
 
 `!` runs a shell command directly. A markdown file in `~/.delfin/commands/` (user-wide) or `<workspace>/.delfin/commands/` (project) becomes a slash command of its own; placeholders `$ARGUMENTS`, `$1`, `$2` are substituted. A **skill** (`~/.delfin/skills/<name>/SKILL.md`) can be invoked by you or chosen by the model; DELFIN ships skills for diagnosing a failed run, recalculating one, setting up TD-DFT and CASSCF, frequency thermochemistry, solvation, and tuning CONTROL.
+
+### Reporting a bug
+
+The dashboard has a **Bug Report** button. In the terminal, type `/bug` followed by one line saying what went wrong (or type `/bug` alone and you are asked for it). DELFIN lists what the report will contain (message, tool-call and refused-command counts, model, provider, mode, session, size) and where it will be written, and asks `File this report? [y/N]`. Anything but `y` writes nothing.
+
+For a session that has already ended, file it from a shell:
+
+```bash
+delfin-agent bug report --session latest -m "the plot came back empty"
+```
+
+`--session` takes `latest` (the newest session of the current directory, or of `--workspace`), a session id, or the first characters of one as `/session ls` prints them. Without `--yes` the same preview and question come first; with no terminal to ask on, `--yes` is required.
+
+All three ways write the same report: conversation, engine messages, tool trace, turn and request timings, refused commands, model/provider/mode/effort/permissions, an allow-listed settings excerpt, versions and git head. Each report records which way it came (`dashboard`, `terminal` or `cli`), and `delfin-agent bug ls` shows it. Before anything is written, every credential DELFIN holds (credential file, keyring, the well-known key variables in the environment) and anything shaped like a key, token or password is redacted; a `REDACTIONS.txt` in the report says how many.
+
+Reports go to `$DELFIN_BUG_ARCHIVE` if set, else to `agent.bug_archive_dir` in `~/.delfin_settings.json`, else to `~/.delfin/agent_bugs`. To send reports to your group's maintainers, point either one at the shared archive directory, for example `"agent": {"bug_archive_dir": "/path/to/shared/AGENT_BUGS"}`. When a transfer target is configured (`transfer.host`, `transfer.remote_path`), the report is also copied there over SSH; the local copy is always kept.
 
 ### MCP servers
 
@@ -1697,6 +1851,27 @@ Without `--check` the same command is the emergency stop: it ends every agent of
 
 The dashboard's **Agent Activity** tab shows running and recent agent and subagent work.
 
+### Scheduled runs
+
+`delfin-agent scheduler start` runs the scheduler daemon, which gives each due entry one headless turn in the entry's workspace, with nobody to ask. A scheduled run starts in `default` — a command off the auto-allow list is refused unless the cage holds it, and writes inside the workspace are allowed. It does **not** take `default_mode` from your permission settings: a `bypassPermissions` written there once for an interactive task would otherwise make every scheduled run unattended.
+
+A different start mode is chosen in `~/.delfin_settings.json` (the agent cannot write this file):
+
+<!-- recipe: not-runnable — a settings file excerpt; tests/test_the_security_wave_holds_together.py drives the scheduler's engine factory with it -->
+```json
+"agent": {
+  "scheduler": {"permission_mode": "bypassPermissions", "unattended": true}
+}
+```
+
+| `permission_mode` | Scheduled runs start in |
+|-------------------|-------------------------|
+| `plan`, `default`, `acceptEdits` | that mode |
+| `bypassPermissions` with `"unattended": true` | `bypassPermissions` — the scheduler's counterpart of `--permission-mode bypassPermissions --unattended` |
+| `bypassPermissions` without `"unattended": true`, missing, or anything else | `default` |
+
+An administrator's managed policy still decides: a mode in its `disallowed_modes` falls back to `default` (`plan` if `default` is disallowed too). As for `delfin-agent run`, bypass on a host where no layer isolates a command starts in `default`, since nobody is there to confirm it.
+
 ### Driving DELFIN from another program or agent
 
 A script, a scheduler or another agent runs DELFIN as one headless turn per process: a prompt in, one JSON object per line out, an exit code at the end.
@@ -1720,8 +1895,9 @@ A prompt piped to `delfin-agent --output-format stream-json` on stdin works like
 | `--cwd DIR` | The workspace. Your home directory, a parent of it, a system directory and a missing directory are refused (exit 2) |
 | `--session ID` / `--session latest` | Continue a saved session; `latest` is this workspace's last one, or the newest on the machine when the workspace has none. The `session_id` is in the `result` line |
 | `--mode`, `--provider`, `--model`, `--bare` | As in an interactive session |
+| `--supervised` | A step that needs a person is written to the approvals directory instead of being refused, and the run waits up to 300 s for the answer (`delfin-agent approvals`). The stream reports it as a `permission_request` |
 
-**Taken only by an interactive session today.** On a `-p` run these flags are accepted and not applied: `--supervised`, `--unattended`, `--add-dir`, `--read-dir`, `--isolate`, `--no-isolate`, `--continue`, `--resume`, `--fork-session`, `--confirm-timeout` (`--add-dir` and `--read-dir` are still checked, and a refused path stops the run). In particular a `-p` run with `--session ID --fork-session` continues — and saves over — the original session, and `--add-dir` grants nothing (directories in your permission settings still apply). Give a `-p` run a workspace that holds everything it must write, and resume by explicit `--session`.
+**The same set-up as an interactive session.** A `-p` run applies `--add-dir`, `--read-dir`, `--isolate`, `--no-isolate`, `--session`, `--continue`, `--resume ID`, `--fork-session` (a copy; the original is left untouched), `--supervised` and `--confirm-timeout` exactly as a terminal session does. A bare `--resume` (the picker) needs a terminal and exits 2.
 
 #### What a driver sees
 
@@ -1731,34 +1907,51 @@ A prompt piped to `delfin-agent --output-format stream-json` on stdin works like
 | `tool_use` | `name`, `input` | A tool call. A report, not a request: the call is not held until the driver has read it |
 | `notice` | `text` | Harness speech: a retry, the tool-round cap, a budget stop. Never part of the answer |
 | `wait` | `text` | The endpoint has not answered yet ("waiting for the model … Ns"). Each one replaces the one before |
-| `result` | `text`, `tool_calls`, `input_tokens`, `output_tokens`, `error`, `session_id` | Always the last line; `error` is empty unless the turn failed |
+| `permission_request` | `request_id`, `tool`, `shown`, `preview`, `answered_by`, `mode`, `approvals_dir` | A step is waiting for a person (`--supervised` only). `answered_by` is always `"human"`: the line says who decides, it does not ask the driver to. `request_id` is the id `delfin-agent approvals` shows; `approvals_dir` is `true` when the question is in the approvals directory; `shown` is the command or path, `preview` what the person sees |
+| `permission_denied` | `tool`, `reason_code`, `needs_approval`, `text` | The permission gate refused a call. `reason_code` is stable (below); `needs_approval` is `true` when a person could have allowed it; `text` is the gate's own sentence |
+| `result` | `schema_version`, `stop_reason`, `denials`, `files_changed`, `text`, `tool_calls`, `input_tokens`, `output_tokens`, `error`, `session_id` | Always the last line. `--output-format json` prints the same object without `type` |
+
+Credential-looking values in `shown`, `preview` and `text` are masked the way the approval prompt masks them (`TOKEN=<redacted>`).
+
+| `result` key | Meaning |
+|--------------|---------|
+| `schema_version` | `1`. Raised when a key changes meaning or is removed; a new key does not raise it |
+| `stop_reason` | Why the turn ended: `done`, `error`, `needs_approval`, `refused`, `max_turns`, `budget` or `timeout` (exit codes below) |
+| `denials` | Every refusal of the turn in order, `[{"tool": ..., "reason_code": ...}]`, including one the model then worked around |
+| `files_changed` | Files the write tools (`write_file`, `edit_file`, `apply_patch`, the document writers) changed, relative to the workspace. A file a shell command wrote is not listed |
+| `error` | Empty unless the turn failed |
 
 | State | How to tell |
 |-------|-------------|
 | Running | `text` and `tool_use` lines arrive |
 | Waiting for the model | The newest line is a `wait` |
-| Waiting for an approval | Not reachable on a `-p` run: a step that would ask is refused instead (below). An interactive session — in a terminal, also one you run in a pty, or in the dashboard — publishes the question it waits on; `delfin-agent approvals watch` prints one line per new one |
-| Finished | A `result` line, then exit 0 |
-| Failed | A `result` line with a non-empty `error`, then exit 1 |
+| Waiting for an approval | With `--supervised`: the newest line is a `permission_request`. Without it a step that would ask is refused instead (below). An interactive session — in a terminal, also one you run in a pty, or in the dashboard — publishes the question it waits on; `delfin-agent approvals watch` prints one line per new one |
+| Finished | A `result` line; `stop_reason` and the exit code say how |
 | Refused before starting | No JSON at all; the reason on stderr, exit 2 or 3 |
 
-A tool call that is refused (a write in `plan`, a step that would have to ask, a path outside the workspace, a tool you disallowed) does not end the turn: the refusal goes back to the model as the tool's result, and the model carries on or says why it stopped. The stream has no event of its own for it today; the `tool_use` line is there, the outcome is in the model's text.
+A tool call that is refused (a write in `plan`, a step that would have to ask, a path outside the workspace, a tool you disallowed) does not end the turn: the refusal goes back to the model as the tool's result, and the model carries on or says why it stopped. The stream reports it as a `permission_denied` line, emitted where the gate decides. `reason_code` is either a kind from the dashboard's Containment panel (`deny_pattern`, `secret_path`, `self_mod`, `egress`, `denied_by_user`, `approval_timeout`, …) or one of the refusals the panel does not record: `not_allowlisted` (a shell command outside the auto-allow list, nobody to ask), `needs_approval` (a dialog was required and none is bound), `plan_mode`, `role_denied`, `session_denied` (`--allowed-tools` / `--disallowed-tools`), `blocked_by_hook`, `backend_denied` (an external CLI backend's own gate, which gives no category).
 
-| Exit code | Meaning |
-|-----------|---------|
-| 0 | The turn ran; includes refusals and a budget or tool-round stop |
-| 1 | The turn failed (`error` in the `result` line), or the agent's principles file was changed and it refused to start |
-| 2 | Usage error, a workspace or `--add-dir`/`--read-dir` path refused, a start-up question nobody can answer from a pipe, or nothing on stdin |
-| 3 | The engine could not be built (provider, key or model) |
-| 130 | Interrupted (SIGINT) |
+| Exit code | `stop_reason` | Meaning |
+|-----------|---------------|---------|
+| 0 | `done` | The turn finished. A refusal the model worked around in a later tool call is in `denials` and does not change this |
+| 1 | `error` | The turn failed (`error` in the `result` line) or the engine stopped it (a loop breaker, the context limit, a stop); also: the agent's principles file was changed and it refused to start |
+| 4 | `needs_approval` | The turn's last tool call was refused, and a person could have allowed it (nobody could be asked, or the approval window expired) |
+| 5 | `refused` | The turn's last tool call was refused by a rule no approval lifts (a secret path, the deny list), or the person answered no |
+| 6 | `max_turns` | `--max-turns` was reached |
+| 7 | `budget` | `--max-budget-usd`, the session's turn ceiling or the per-turn cost limit was reached |
+| 8 | `timeout` | `--max-run-seconds` was reached |
+| 2 | — | Usage error, a workspace or `--add-dir`/`--read-dir` path refused, a start-up question nobody can answer from a pipe, or nothing on stdin |
+| 3 | — | The engine could not be built (provider, key or model) |
+| 130 | — | Interrupted (SIGINT) |
 
 Keep a wall-clock limit of your own and start the process in its own process group, so that a stop ends whatever it started.
 
 #### The security contract
 
 - **A driver never answers an approval itself.** It may show a pending question to its human — `delfin-agent approvals ls`, `show REQUEST_ID` with the whole preview — and pass the human's decision on with `approve`, `deny --reason` or `answer`. The approvals directory takes an answer from any process of your user, so this is a rule for the driver to keep, not a lock that keeps it; an answer given to a terminal session from outside it is recorded as a security event.
-- **`bypassPermissions` drops the asking, not the boundary.** The workspace roots, the deny lists, the sandbox and the confirmation for files that define the agent's own permissions stay in force; reading outside the roots is refused. An interactive session accepts it only together with `--unattended`, and does not inherit it from your settings. A `-p` run does not have that check today: it takes `--permission-mode bypassPermissions` as given, and a `bypassPermissions` default from your settings when you pass no mode — another reason to always pass one.
+- **`bypassPermissions` drops the asking, not the boundary.** The workspace roots, the deny lists, the sandbox and the confirmation for files that define the agent's own permissions stay in force; reading outside the roots is refused. Every session — terminal, `-p` and `delfin-agent run` — accepts it only together with `--unattended` and never inherits it from your settings: without the flag a `-p` or `run` invocation exits 2; with it, a settings default of bypass starts in `default`.
 - **Isolation is on by default.** With `agent.bash_isolation: "auto"` every shell command runs under bubblewrap, else Landlock, else Seatbelt, whichever this host can run, in every permission mode; its network goes only through DELFIN's egress proxy to the allowed domains. Where none of the three works, an attended command runs without filesystem isolation and a bypass run says so.
+- **A caged command is not asked about.** In `default` and `acceptEdits`, a shell command that is not on the auto-allow list runs without a question when bubblewrap holds it and Landlock can confine its reads. It must pass every other check, and the network must not be `open`. It reads only the session's folders, the system and toolchain paths (`/usr`, `/etc`, `/opt`, the environments on `PATH`) and nothing else of your home directory. It runs with git metadata, `.github`, `.gitattributes`/`.gitmodules`, the agent's own settings and source, and calc read-only, and it cannot submit SLURM jobs. Commands that name a network client, git/gh, a package manager, a job scheduler, a signal, sudo or a deletion are still asked about, and so are commands that write a file from their own text (here-document, `tee`, a redirect of `cat`/`printf`/`echo`). Hosts without both bubblewrap and Landlock keep asking. `agent.caged_commands_run_unasked: false` restores the question everywhere.
 - **Nothing a driver passes widens what the agent may do.** The tool lists only narrow; the flags write no setting; settings, hooks and MCP servers from a checked-out repository wait for `/trust`; and the permission settings live outside every directory the agent may write.
 - **A driver does not run in your stores.** With `DELFIN_SCRATCH_STATE=DIR` in its environment a run keeps its session history and memory under `DIR/.delfin` instead of yours.
 
@@ -1786,6 +1979,10 @@ try:
             print("waiting:", event["text"])
         elif kind == "notice":
             print("notice:", event["text"].strip())
+        elif kind == "permission_request":
+            print("waiting for a person:", event["request_id"], event["shown"])
+        elif kind == "permission_denied":
+            print("refused:", event["tool"], event["reason_code"])
         elif kind == "result":
             result = event
     code = proc.wait(timeout=1200)
@@ -1794,10 +1991,11 @@ except subprocess.TimeoutExpired:
     code = proc.wait()
 if result is None:
     print("refused before starting:", proc.stderr.read().strip(), "exit", code)
-elif result["error"]:
-    print("failed:", result["error"], "exit", code)
+elif result["stop_reason"] != "done":
+    print("stopped:", result["stop_reason"], result["denials"], "exit", code)
 else:
-    print(result["text"], "session", result["session_id"])
+    print(result["text"], "changed", result["files_changed"],
+          "session", result["session_id"])
 ```
 
 The `wait` timeout covers only the time after the stream ended; a driver that must bound the whole run reads the lines in a thread, or kills the process group from a timer.
@@ -2222,5 +2420,7 @@ delfin-pipeline workflow.yaml --cores 8
 - [Settings and Setup](SETTINGS_AND_SETUP.md) — Detailed settings documentation
 - [Methodology](methodology.md) — Scientific methodology and validation
 - [Retry Logic](RETRY_LOGIC.md) — Error recovery details
+- [Security model](SECURITY_MODEL.md) — What the agent's containment protects, against whom, and on which host
+- [Security policy](../SECURITY.md) — Supported versions and how to report a vulnerability
 - [Job Prioritization](job_prioritization.md) — Scheduler behaviour
 - [Example submission scripts](../examples/example_Job_Submission_Scripts/README.md) — HPC templates

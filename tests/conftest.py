@@ -14,6 +14,18 @@ from pathlib import Path
 
 import pytest
 
+# The suite runs every test in one process, and a process maps one C++
+# runtime: the first library that needs it decides for all later ones.
+# Test files import PyMuPDF directly (importorskip), past the product's
+# own preload in office._pymupdf, and on a host whose LD_LIBRARY_PATH
+# names an older runtime (an ORCA install) that import mapped it and every
+# later `import sqlite3` failed -- three manual tests failed after
+# tests/test_doctor.py and passed alone. The interpreter's runtime is
+# mapped here, before any test module is imported.
+from delfin.agent.native_libs import prefer_own_libstdcxx  # noqa: E402
+
+prefer_own_libstdcxx()
+
 
 # ---------------------------------------------------------------------------
 # The checkout itself is a sink, and it was invisible
@@ -273,6 +285,10 @@ def child_env(tmp_path) -> dict:
     env = dict(os.environ)
     env["HOME"] = str(home)
     env["DELFIN_SCRATCH_STATE"] = str(scratch)
+    # The OS keyring does not follow HOME (it is a D-Bus service or the
+    # login keychain): keyring's own override selects its null backend,
+    # which DELFIN refuses as a store.
+    env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
     return env
 
 
@@ -609,6 +625,32 @@ _SHARED_LEDGERS = (
 
 
 @pytest.fixture(autouse=True)
+def _each_test_starts_its_own_network_mode(monkeypatch):
+    """``egress_proxy.network_mode`` keeps the first answer of a process
+    as its ceiling (a session cannot loosen it). In the suite one process
+    runs every test, so the ceiling is reset per test."""
+    try:
+        from delfin.agent import egress_proxy as _ep
+        monkeypatch.setattr(_ep, "_MODE_AT_START", None)
+    except Exception:
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _each_test_starts_with_no_failed_wrap(monkeypatch):
+    """``api_client._BWRAP_RUNTIME_FAILURE`` withdraws the caged admission
+    for the rest of a process once a wrap failed at run time; reset per
+    test so one test's failed wrap does not change another's verdicts."""
+    try:
+        from delfin.agent import api_client as _ac
+        monkeypatch.setattr(_ac, "_BWRAP_RUNTIME_FAILURE", None)
+    except Exception:
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_shared_ledgers():
     """Each test gets its own copy of the shared evidence ledgers.
 
@@ -742,6 +784,21 @@ def _reset_workspace_trust_caches():
     wt.reset_announcements()
     yield
     wt.reset_announcements()
+
+
+@pytest.fixture(autouse=True)
+def _no_host_managed_policy(monkeypatch):
+    """The host's managed policy (/etc/delfin/managed_policy.json, the
+    package-side copy, DELFIN_MANAGED_POLICY) is shadowed, not read: a
+    policy an administrator installed would otherwise change what every
+    gate test decides on that machine and on no other. Tests of the
+    policy inject their own path."""
+    from delfin.agent import managed_policy as mp
+    monkeypatch.setattr(mp, "_PATHS_OVERRIDE", ())
+    monkeypatch.delenv(mp.ENV_VAR, raising=False)
+    mp.clear_cache()
+    yield
+    mp.clear_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -893,6 +950,22 @@ def _no_watcher_ends_the_test_run(monkeypatch):
         monkeypatch.setattr(_lifeline, "watch", lambda on_gone, **kw: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_session_list_outlives_its_test():
+    """A session list (``agent_sessions.create_tab``) starts a refresh loop
+    that announces its sessions every few seconds into
+    ``session_presence._DIR`` and rewrites ``_OPEN_SESSIONS_PATH`` -- both
+    redirected into each test's own home. Left running, the loop of one
+    test wrote into the home of every later one. Stopped (and its running
+    tick waited for) when the test ends, before the next test's redirect.
+    Only if the module was imported: this must not import the dashboard."""
+    yield
+    import sys
+    mod = sys.modules.get("delfin.dashboard.agent_sessions")
+    if mod is not None and hasattr(mod, "stop_refresh_loops"):
+        mod.stop_refresh_loops()
+
+
 @pytest.fixture
 def real_lifeline_watch(monkeypatch):
     """The real ``lifeline.watch``, for a test that checks the watch itself
@@ -1010,6 +1083,22 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
 
     monkeypatch.setattr(_user_settings, "get_settings_path", _settings_path)
 
+    # The approval-code directory: beside tmp_path, as ~/.delfin lies
+    # beside a workspace in real use, not in it (the generic redirect above
+    # puts it under tmp_path, and a Landlock cage keeps no hide inside a
+    # write root). A test that moved Path.home gets that home's.
+    # tests/test_a_hidden_code_dir_keeps_its_root_writable.py puts it
+    # inside a workspace on purpose.
+    from delfin.agent import approval_code as _approval_code
+    codes_home = tmp_path.parent / f"{tmp_path.name}-approval-codes"
+
+    def _codes_dir():
+        if _already_isolated():
+            return pathlib.Path.home() / ".delfin" / "approval_codes"
+        return codes_home
+
+    monkeypatch.setattr(_approval_code, "codes_dir", _codes_dir)
+
 
 # ---------------------------------------------------------------------------
 # The sandbox-escape gate
@@ -1098,9 +1187,22 @@ def _ci_parity_no_secrets(tmp_path, monkeypatch):
         from delfin.agent import credentials as _cred
         monkeypatch.setattr(_cred, "_DEFAULT_PATH",
                             tmp_path / "no_credentials.json")
+        # The OS keyring is the user's, on a desktop host reachable from
+        # this process: no test reads or writes it. Tests of the keyring
+        # path install a fake backend behind the real factory themselves.
+        if hasattr(_cred, "_disabled_keyring_factory"):
+            monkeypatch.setattr(_cred, "_keyring_factory",
+                                _cred._disabled_keyring_factory)
+            _cred.reset_keyring_state()
     except Exception:
         pass
     yield
+    try:
+        from delfin.agent import credentials as _cred
+        if hasattr(_cred, "reset_keyring_state"):
+            _cred.reset_keyring_state()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

@@ -407,7 +407,11 @@ def test_the_banner_points_at_the_flag_that_exists():
     import inspect
     import re
 
-    src = inspect.getsource(agent_cli._startup_banner)
+    from delfin.agent import isolation_posture
+    # The isolation line is written by IsolationStatus.line, which the
+    # banner, /status and the start check share.
+    src = (inspect.getsource(agent_cli._startup_banner)
+           + inspect.getsource(isolation_posture.IsolationStatus.line))
     named = set(re.findall(r"--[a-z][a-z-]+", src))
     assert named, "the banner names no flag at all"
     parser_src = inspect.getsource(agent_cli.build_parser)

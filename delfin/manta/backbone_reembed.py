@@ -41,6 +41,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 import delfin.manta._bond_decollapse as _bd
+import delfin.manta._lone_pair_space as _lps
 
 # Deterministic ETKDG seed base (42, 43, ...).  PYTHONHASHSEED=0 + single thread.
 _SEED0 = 42
@@ -199,7 +200,7 @@ def _orthobasis(axis: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 def _graft_ligand(lsyms: List[str], lcoords: List[np.ndarray],
                   donor_local: List[int], native_donor_pos: np.ndarray,
-                  metal_pos: np.ndarray, n_axis_spin: int
+                  metal_pos: np.ndarray, n_axis_spin: int, lp_mol=None
                   ) -> List[np.ndarray]:
     """Graft every accepted free-ligand conformer onto the FROZEN core.
 
@@ -257,6 +258,13 @@ def _graft_ligand(lsyms: List[str], lcoords: List[np.ndarray],
             if nlp < 1e-6:
                 lp_dir = np.array([0.0, 0.0, 1.0]); nlp = 1.0
             lp_dir = lp_dir / nlp
+            # LONE PAIRS TAKE UP SPACE (DELFIN_FFFREE_LONE_PAIR_SPACE): the caller passes the
+            # ligand mol only with the switch on; a group-16 sp3 donor then points a FREE
+            # tetrahedral vertex at the metal instead of the in-plane centroid direction.
+            if lp_mol is not None:
+                _a = _lps.metal_direction(lp_mol, lP, di)
+                if _a is not None:
+                    lp_dir = _a
             R0 = _rot_a_to_b(lp_dir, axis)                  # lone pair -> M-donor axis
             base = (lP - lP[di]) @ R0.T + donor_pos
             e1, e2 = _orthobasis(axis)
@@ -379,8 +387,14 @@ def reembed_complex(metal: str, lig_groups: List[Dict], native: Tuple[List[str],
         lsyms, lcoords = ec
         if len(lsyms) != len(gidx):
             return []
+        _lp_mol = None
+        if len(donor_local) == 1 and _lps.lone_pair_space_enabled():
+            try:
+                _lp_mol = Chem.AddHs(Chem.Mol(lg["mol"]))   # same atom order as _etkdg_confs
+            except Exception:
+                _lp_mol = None
         grafted = _graft_ligand(lsyms, lcoords, donor_local, native_donor_pos,
-                                metal_pos, n_axis)
+                                metal_pos, n_axis, lp_mol=_lp_mol)
         if not grafted:
             # this ligand produced no acceptable fold -> keep it at its NATIVE coords
             grafted = [P[gidx]]

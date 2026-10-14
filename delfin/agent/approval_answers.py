@@ -118,9 +118,59 @@ def resolve_choice(record: dict, choice: str) -> list[str]:
     return out
 
 
+def option_labels(options: Any) -> list[str]:
+    """Display labels of an ask_user_question option list.
+
+    Input: the normalised list of ``{label, description}`` dicts, or plain
+    strings (older callers and test doubles). Output: the labels in order,
+    blanks dropped. A dict is never rendered through ``str()``: that put
+    ``{'label': ..., 'description': ''}`` on the terminal and returned it
+    to the model as the picked answer.
+    """
+    out: list[str] = []
+    for opt in options if isinstance(options, list) else []:
+        label = opt.get("label") if isinstance(opt, dict) else opt
+        if isinstance(label, str) and label.strip():
+            out.append(label)
+    return out
+
+
+def typed_answer(text: str, payload: Optional[dict] = None) -> dict:
+    """The ask_user_question result for a line typed into the chat.
+
+    Input: the line the user sent while the question waited, and the
+    question's payload. Output: ``{"answers": [...], "answered_in_chat":
+    True}``, plus ``"free_text": True`` when the line is not an option.
+    A line that names an option -- its label (case-insensitive) or its
+    number, as ``resolve_choice`` reads an outside answer -- is that
+    option; anything else is kept verbatim as the single answer, also
+    for a question whose options were meant to be exhaustive, so the
+    model receives what the user said instead of an empty choice.
+
+    Used by both surfaces (dashboard chat input, terminal dialog), so the
+    tool result does not depend on where the line was typed. Rejected:
+    refusing free text for a fixed-option question -- the user has
+    already answered, and an empty result reads as "chose nothing".
+    """
+    line = str(text or "").strip()
+    record = {"kind": "ask", "payload": {
+        "options": [{"label": l} for l in
+                    option_labels((payload or {}).get("options"))],
+        "multiSelect": bool((payload or {}).get("multiSelect"))}}
+    try:
+        picks = (resolve_choice(record, " ".join(line.split()))
+                 if line and "\n" not in line else [])
+    except ChoiceError:
+        picks = []
+    if picks:
+        return {"answers": picks, "answered_in_chat": True}
+    return {"answers": [line] if line else [], "answered_in_chat": True,
+            "free_text": True}
+
+
 def write_choice_answer(record: dict, answers: list[str], *,
                         room: Optional[Path] = None,
-                        by: str = "") -> Path:
+                        by: str = "", code: Optional[str] = None) -> Path:
     """Write the chosen labels beside the request, file_confirm-style.
 
     Same shape and same discipline as ``file_confirm.answer``: written
@@ -131,7 +181,9 @@ def write_choice_answer(record: dict, answers: list[str], *,
     approving something.
 
     Raises ChoiceError, and writes nothing, inside an agent session
-    (``approval_guard.ENV_MARKER``).
+    (``approval_guard.ENV_MARKER``), and when the request needs the
+    session's one-time code and none is given (``file_confirm.answer``
+    has the same rule; ``None`` takes this process's own code).
     """
     from .approval_guard import inside_agent_session, refusal
     if inside_agent_session():
@@ -151,10 +203,19 @@ def write_choice_answer(record: dict, answers: list[str], *,
     request_path = room / f"{request_id}.request.json"
     if not request_path.is_file():
         raise ChoiceError(f"no request file for id {request_id!r}")
+    from . import approval_code as _code
+    if code is None:
+        code = _code.code_for(request_id)
+    if _fc.needs_code(request_path) and not _code.normalize(code):
+        raise ChoiceError(
+            "this answer needs the code the waiting session shows "
+            "(--code)")
     payload = {"id": request_id,
                "decision": "choose",
                "answers": [str(a) for a in answers],
                "by": str(by or "")}
+    if _code.normalize(code):
+        _code.sign(payload, code)
     path = room / f"{request_id}.answer.json"
     tmp = room / f".{request_id}.answer.partial"
     _fc._own_dir(room)
@@ -182,7 +243,8 @@ def find_pending(request_id: str) -> Optional[dict]:
     return None
 
 
-def answer(request_id: str, choice: str, *, by: str = "") -> list[str]:
+def answer(request_id: str, choice: str, *, by: str = "",
+           code: Optional[str] = None) -> list[str]:
     """End-to-end for the CLI: find the question, check it is one,
     resolve the pick, write the answer. Returns the chosen labels.
 
@@ -197,7 +259,7 @@ def answer(request_id: str, choice: str, *, by: str = "") -> list[str]:
             f"request {request_id!r} is not a choice question -- "
             "use approve or deny for it")
     picks = resolve_choice(record, choice)
-    write_choice_answer(record, picks, by=by)
+    write_choice_answer(record, picks, by=by, code=code)
     return picks
 
 

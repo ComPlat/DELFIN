@@ -737,6 +737,14 @@ def _isolation_mechanism() -> str:
     answer is what will actually run rather than what is installed.
     """
     try:
+        from delfin.agent import container_exec as _ce
+        if _ce._configured_mode() == "container":
+            choice = _ce.choose()
+            if choice.runtime:
+                return f"container ({choice.runtime})"
+    except Exception:
+        pass
+    try:
         from delfin.agent.api_client import (
             _bwrap_functional, _landlock_functional, _seatbelt_functional)
     except Exception:
@@ -862,6 +870,21 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     no_mechanism = ("install bubblewrap, or run on a kernel with Landlock "
                     "(Linux 5.13+); the write-target gate stays active "
                     "either way")
+    if mode == "container":
+        if held_by.startswith("container"):
+            return [_row("bash isolation", PASS,
+                         f"{held_by} for every command")]
+        reason = ""
+        try:
+            from delfin.agent import container_exec as _ce
+            reason = _ce.choose().reason
+        except Exception:
+            pass
+        return [_row("bash isolation", WARN,
+                     f"container requested, not used: {reason}; commands "
+                     f"fall back to {held_by or 'the write-target gate only'}",
+                     "install apptainer, podman or docker and the image "
+                     "(docs/USER_MANUAL.md, container isolation)")]
     if mode == "bwrap":
         if held_by:
             return [{"check": "bash isolation", "status": "PASS",
@@ -1046,8 +1069,31 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("memory store", "_check_memory_store"),
     ("disk space", "_check_disk"),
     ("bash isolation", "_check_bash_isolation"),
+    ("command network", "_check_child_network"),
     ("document backends", "_check_document_backends"),
 )
+
+
+def _check_child_network(ctx: dict) -> list[dict]:
+    """What holds the network of a program a shell command starts.
+
+    The domain rules and the egress scan read the command text; only a
+    kernel layer (socket guard, network namespace, Landlock TCP) holds a
+    script's own sockets to the egress proxy. Reported from
+    ``api_client.child_network_enforcement``, the same probes the shell
+    wrapper picks from. PASS only where the layer holds every connect."""
+    try:
+        from delfin.agent.api_client import child_network_enforcement
+        state = child_network_enforcement()
+    except Exception as exc:
+        return [_row("command network", WARN, f"not verified: {exc}")]
+    if state["enforced"] and not state["partial"]:
+        return [_row("command network", PASS, state["notice"])]
+    fix = ("set agent.sandbox_network.mode = \"proxy\" (the default)"
+           if state["layer"] == "off" else
+           "a kernel with seccomp user notification (Linux 5.6+, x86_64 or "
+           "aarch64), a working bubblewrap, or Landlock ABI 4 (Linux 6.7+)")
+    return [_row("command network", WARN, state["notice"], fix)]
 
 
 def _normalise(row: Any, group: str) -> dict:

@@ -1131,6 +1131,15 @@ def _smiles_to_xyz_isomers_impl(
                 # frame if a real centre flips.  Measured with the eye's detectors on
                 # 2144 frames: clashes 80->48, hard HH contacts 225->142,
                 # methyl violations in 133->103 files.
+                # LONE PAIRS TAKE UP SPACE (#525, DELFIN_FFFREE_LONE_PAIR_SPACE, default OFF ->
+                # the module returns _ff itself): planar/linear monodentate group-16 donors get a
+                # free tetrahedral vertex onto the metal once all neighbours stand.  Before the
+                # H placement and the mirror, so both hands carry it.
+                try:
+                    from delfin.manta import _lone_pair_space as _lps_seat
+                    _ff = _lps_seat.seat_results(_ff, smiles)
+                except Exception as _lps_exc:   # pragma: no cover
+                    logger.debug("lone-pair seat nicht angewandt: %s", _lps_exc)
                 _ff = _apply_h_placement_if_enabled(_ff)
                 _ff = _apply_mirror_enum_if_enabled(_ff)
                 # --- TORSION ENUMERATION, now ALSO on the FF-free path (27.08.) ---

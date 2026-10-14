@@ -2717,6 +2717,29 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
         _PLY.set_current_cn(d.get("cn"))
     except Exception:
         pass
+    # Oxidation state for the ionic O-H donor length (DELFIN_FFFREE_LONE_PAIR_MD, default
+    # OFF -> never computed, byte-identical).  Ligand balance of the whole complex; None
+    # (unknown) leaves every distance on its covalent sum.
+    try:
+        from delfin.manta import _lone_pair_space as _LPS
+        if _LPS.lone_pair_md_enabled():
+            from rdkit import Chem as _ChemOS
+            from delfin.manta._oxidation_state import _ox_cut as _oxs  # #528: the cut, not the donor table
+            _om = _ChemOS.MolFromSmiles(smiles)
+            if _om is None:
+                _om = _ChemOS.MolFromSmiles(smiles, sanitize=False)
+            _ox = None
+            if _om is not None:
+                _mi = [a.GetIdx() for a in _om.GetAtoms() if a.GetSymbol() == d.get("metal")]
+                if len(_mi) == 1:
+                    _r = _oxs(_om, _mi[0])
+                    _ox = _r[0] if _r else None
+            _LPS.set_current_os(_ox)
+    except Exception:
+        try:
+            _LPS.set_current_os(None)
+        except Exception:
+            pass
     geom_key = _GEOM_TO_POLYA.get(d["geometry"])
     if geom_key is None or geom_key not in PIC._GROUPS:
         return _scope_no("GEOM_NOT_IN_POLYA",

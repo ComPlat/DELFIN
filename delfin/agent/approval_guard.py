@@ -61,7 +61,8 @@ ENV_MARKER = "DELFIN_AGENT_SESSION"
 #: The answer locations under ``~/.delfin``, by name. The module
 #: attributes below may be redirected (tests, a benchmark attempt); both
 #: the redirected and the canonical location are protected.
-_ROOM_NAMES = ("approvals", "terminal_confirmations", "cli_gate")
+_ROOM_NAMES = ("approvals", "terminal_confirmations", "cli_gate",
+               "approval_codes")
 
 #: The subcommands that answer. ``ls``, ``show`` and ``watch`` read.
 _ANSWER_VERBS = ("approve", "deny", "answer")
@@ -100,7 +101,8 @@ _SERVICE_ROOM_RE = re.compile(
 # word ``terminal_confirmations`` in the code stays allowed.
 _ANSWER_FILE_RE = re.compile(
     r"[\w-]\.answer\.(?:json|partial)\b"
-    r"|\.delfin[\s/,]+(?:approvals|terminal_confirmations|cli_gate)(?![\w-])",
+    r"|\.delfin[\s/,]+(?:approvals|terminal_confirmations|cli_gate"
+    r"|approval_codes)(?![\w-])",
     re.IGNORECASE)
 
 
@@ -134,6 +136,13 @@ def answer_rooms() -> tuple[Path, ...]:
     try:
         from . import cli_gate as _cg
         _add(_cg.state_dir())
+    except Exception:
+        pass
+    try:
+        # Not an answer room but a code room: the deny globs and the cages
+        # keep it unreadable; here it is kept unwritable too.
+        from . import approval_code as _ac
+        _add(_ac.codes_dir())
     except Exception:
         pass
     try:

@@ -62,8 +62,28 @@ def env(tmp_path, monkeypatch):
     (far / "data.txt").write_text("FAR_MARKER\n")
     PR._CACHE.clear()
     security_events.clear()
+    # The allow tests observe the question an off-list command gets; a
+    # caged command is not asked at all (#212), so these run uncaged. The
+    # caged case is pinned by test_rules_hold_for_a_command_the_cage_admits.
+    monkeypatch.setattr(A, "_caged_command_may_run_unasked",
+                        lambda *a, **k: False)
     return {"home": home, "settings": settings, "ws": ws, "far": far,
             "tmp": tmp_path}
+
+
+def test_rules_hold_for_a_command_the_cage_admits(env, monkeypatch):
+    """A command the cage would run unasked still meets the user's deny and
+    ask rules first: they are checked before the gate's last tier."""
+    monkeypatch.setattr(A, "_caged_command_may_run_unasked",
+                        lambda *a, **k: True)
+    _rules(env, deny=["bash(./run.sh)"])
+    out = _run(_perms(env, answer=True), "bash", {"command": "./run.sh"})
+    assert "RUN_MARKER" not in out
+    _rules(env, ask=["bash(./run.sh)"])
+    perms = _perms(env, answer=False)
+    out = _run(perms, "bash", {"command": "./run.sh"})
+    assert "RUN_MARKER" not in out
+    assert perms.confirm_callback.asked, "the ask rule was not put to the person"
 
 
 def _rules(env, **lists):

@@ -130,6 +130,13 @@ def append(
         # Audit must not crash the agent. If the user removed the home
         # dir or ran out of disk, the action proceeds without logging.
         pass
+    # The administrator's destination (managed_policy ``audit_log``), in
+    # addition to the user's own log; never rotated here.
+    try:
+        from .managed_policy import append_audit_line
+        append_audit_line(line)
+    except Exception:
+        pass
 
 
 def read_last_n(n: int = 100, *, log_path: Optional[Path] = None) -> list[dict]:
@@ -264,14 +271,17 @@ _WRITE_TOOLS = frozenset({
 # on, so the targets are known, and the foreground executor now reads
 # each one before running and journals the ones whose bytes moved.
 #
-# It is honest about its limits rather than declared complete: what the
-# target scanner cannot see, the journal does not get. A program the
-# shell RUNS that writes files of its own (``python3 build.py``) leaves
-# no pre-image, and that file then simply has no journal entry — the
-# per-file lookup below is what reports it as unrecoverable, which is
-# the right granularity for a tool that is only partly capturable.
+# What the target scanner cannot see -- a program the shell RUNS that
+# writes files of its own (``python3 build.py``) -- is journalled from a
+# snapshot of the writable roots taken around the command
+# (``shell_changes``), for ``bash`` and, when the job ends, for
+# ``bash_background``, which came off this list for that reason. Its
+# limits are per file, not per tool: a file whose pre-image was not held
+# is a record without undo, and a root over the file cap is not tracked
+# (the command's result says so); the per-file lookup below reports
+# both as unrecoverable.
 _UNJOURNALLED_WRITE_TOOLS = frozenset({
-    "bash_background", "fill_series", "publish_report",
+    "fill_series", "publish_report",
 })
 _COMMAND_TOOLS = frozenset({"bash", "bash_background"})
 _PERSIST_TOOLS = frozenset({"remember_permission", "remember_permission_bundle"})

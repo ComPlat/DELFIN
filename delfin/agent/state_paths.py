@@ -604,6 +604,9 @@ USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     # ~/.delfin and their next landing page then offered a session that
     # was a test fixture.
     ("delfin.dashboard.session", "RECORD_DIR", "kept_sessions"),
+    # Kernels the server recorded as having no window. A test's record
+    # would let a real reload take a conversation from a live kernel.
+    ("delfin.dashboard.window_state", "RECORD_DIR", "windowless_kernels"),
     # Which agent sessions the session list had open, so the next dashboard
     # reopens them. A test's list would reopen fixtures in the real one.
     ("delfin.dashboard.agent_sessions", "_OPEN_SESSIONS_PATH",
@@ -732,6 +735,8 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # the answer in the real directory, where the next session polling
     # there could read a decision nobody made about its own request.
     ("delfin.agent.file_confirm", "requests_dir", "approvals"),
+    # One-time codes of approvals asked by a run with no terminal.
+    ("delfin.agent.approval_code", "codes_dir", "approval_codes"),
     ("delfin.agent.change_journal", "_undo_root", "undo"),
     ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
     ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),
