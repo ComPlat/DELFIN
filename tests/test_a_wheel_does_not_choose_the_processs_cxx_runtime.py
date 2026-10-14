@@ -47,12 +47,17 @@ def _repo() -> str:
     return str(Path(__file__).resolve().parents[1])
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"),
-                    reason="/proc/self/maps and LD_LIBRARY_PATH are Linux")
-@pytest.mark.skipif(not _OWN.exists(),
-                    reason="the interpreter brings no C++ runtime of its own; "
-                           "there is no newer copy a foreign one could displace")
 def test_pymupdf_maps_the_interpreters_own_runtime(tmp_path):
+    if not sys.platform.startswith("linux") or not _OWN.exists():
+        # No /proc maps, or the interpreter brings no C++ runtime of its
+        # own: there is nothing newer to prefer, and the helper must leave
+        # the process exactly as it is. Asserted, not skipped, so the test
+        # says something on every host.
+        from delfin.agent import native_libs
+        before = (native_libs._mapped()
+                  if sys.platform.startswith("linux") else "")
+        assert native_libs.prefer_own_libstdcxx() == before
+        return
     pytest.importorskip("pymupdf")
     foreign = tmp_path / "foreign_lib"
     foreign.mkdir()
