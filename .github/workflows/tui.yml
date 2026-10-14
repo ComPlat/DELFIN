@@ -85,7 +85,8 @@ jobs:
         run: |
           sudo apt-get install -y -q tmux
           for check in check_tui_tmux check_composer_tmux check_switch_tmux check_agents_tmux \
-                       check_lifecycle_tmux check_resize_tmux check_fullscreen_tmux check_startup_tmux; do
+                       check_attention_tmux check_lifecycle_tmux check_resize_tmux check_fullscreen_tmux \
+                       check_startup_tmux; do
             echo "== $check"
             DELFIN_PYTHON="$(command -v python)" python "tui/test/e2e/$check.py"
           done
