@@ -116,6 +116,14 @@ class ModelProfile:
     # carries a level above it.
     max_effort: str = ""
 
+    # Add MODEL_NOTES["terse_tool_rounds"] to the solo prompt: at most one
+    # short line beside a tool call. For a model whose decode, not its
+    # prefill, is the cost. Archive 2026-09-16 .. 10-14: kit.deepseek-v4-
+    # flash wrote prose beside 38 of 38 tool calls, p50 593 characters,
+    # at ~6 s per 100 output tokens -- about 11 s per tool round. GLM-flash
+    # decodes at ~0.9 s per 100 and stays off.
+    terse_tool_rounds: bool = False
+
     # Free-form notes — useful in /agents stats / /model output and
     # for the human reading this file.
     notes: str = ""
@@ -253,6 +261,7 @@ _DEEPSEEK_V4_FLASH = ModelProfile(
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     stale_kill_after_s=120.0,
+    terse_tool_rounds=True,
     notes=(
         "KIT DeepSeek V4 Flash — fast on this deployment, cold and warm "
         "alike. Coding line, native function calling."
@@ -415,7 +424,37 @@ _COERCE: dict[str, type] = {
     "stale_kill_after_s": float,
     "all_prompt_modules": bool,
     "max_effort": str,
+    "terse_tool_rounds": bool,
 }
+
+
+# The prompt text behind each note-type knob, by field name. English, one
+# or two sentences: it rides in the stable head of every solo request for
+# the model that has the knob on, and nowhere else.
+MODEL_NOTES: dict[str, str] = {
+    "terse_tool_rounds": (
+        "Beside a tool call write one short line or nothing. Do not restate "
+        "the task, the plan or the previous result before each call; the "
+        "call says what you are doing."),
+}
+
+
+def model_notes(model: str) -> str:
+    """The notes *model*'s profile switches on, joined, or "".
+
+    Input: a model name. Output: a block headed ``--- Model notes ---``
+    with one line per enabled note, in MODEL_NOTES order, so the bytes are
+    the same on every turn for the same profile. Never raises.
+    """
+    try:
+        prof = get_profile(model)
+    except Exception:
+        return ""
+    lines = [text for name, text in MODEL_NOTES.items()
+             if bool(getattr(prof, name, False))]
+    if not lines:
+        return ""
+    return "--- Model notes ---\n" + "\n".join(f"- {t}" for t in lines)
 
 _OVERRIDES_CACHE: tuple[float, dict] | None = None
 
