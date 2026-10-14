@@ -425,7 +425,11 @@ def _describe_argv(argv: list) -> dict:
         return {"command_isolation": "refused",
                 "detail": argv[-1] if argv else ""}
     in_cage = bool(argv) and argv[0] == "bwrap" and "--unshare-pid" in argv
-    if argv and argv[0] == "bwrap" and argv[1:4] == ["--ro-bind", "/", "/"]:
+    from .container_exec import RUNTIMES
+    runtime = Path(argv[0]).name if argv else ""
+    if runtime in RUNTIMES and argv[1:2] in (["run"], ["exec"]):
+        fs = f"container ({runtime})"
+    elif argv and argv[0] == "bwrap" and argv[1:4] == ["--ro-bind", "/", "/"]:
         fs = "bwrap"
     elif helper in argv and "--write" in argv:
         fs = "Landlock"
@@ -478,6 +482,15 @@ def _sandbox_layers(perms) -> dict:
     except Exception:
         pass
     out["isolation_setting"] = ac._BASH_ISOLATION_OVERRIDE or setting
+    if out["isolation_setting"].strip().lower() == "container":
+        try:
+            from . import container_exec
+            c = container_exec.choose()
+            out["container"] = {"runtime": c.runtime, "image": c.image,
+                                "unavailable_because": c.reason}
+        except Exception as exc:
+            out["container"] = {"runtime": "", "image": "",
+                                "unavailable_because": str(exc)}
     try:
         from . import egress_proxy
         out["network"] = egress_proxy.network_mode()
@@ -608,6 +621,11 @@ def format_capabilities(caps: dict) -> str:
                  + (f", with {' and '.join(held)}" if held else "")
                  + f"  (setting: {sb['isolation_setting']}, network: "
                  f"{sb.get('network') or '?'})")
+    box = sb.get("container")
+    if box:
+        lines.append("container   " + (
+            f"{box['runtime']}, image {box['image']}" if box["runtime"]
+            else f"not used: {box['unavailable_because']}"))
     lines.append(f"layers      bwrap {yes(sb['bwrap'])} · Landlock "
                  f"{yes(sb['landlock'])}"
                  + (f" (ABI {sb['landlock_abi']})" if sb["landlock_abi"]

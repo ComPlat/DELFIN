@@ -26,7 +26,18 @@ from pathlib import Path
 
 import pytest
 
+from delfin.agent import api_client as _A
 from delfin.agent.api_client import KitToolPermissions, _doc_executor
+
+
+@pytest.fixture(autouse=True)
+def _uncaged(monkeypatch):
+    """These tests pin default mode's question for an off-list command.
+    Where bubblewrap and Landlock hold it, such a command runs unasked
+    (_caged_command_may_run_unasked, pinned in its own test file); without
+    this the verdict would depend on the host."""
+    monkeypatch.setattr(_A, "_caged_command_may_run_unasked",
+                        lambda *a, **k: False)
 
 
 class _Asker:

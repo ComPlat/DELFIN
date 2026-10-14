@@ -90,10 +90,10 @@ def test_the_json_payload_keeps_its_exact_shape(wired, monkeypatch, capsys):
     out, _ = capsys.readouterr()
     assert rc == 0
     payload = json.loads(out)
-    assert set(payload) == {
-        "text", "tool_calls", "input_tokens", "output_tokens",
-        "error", "session_id",
-    }
+    # The shape is repl.TURN_KEYS plus the session; the key list itself is
+    # pinned in test_a_headless_run_reports_a_state_a_program_can_read.
+    from delfin.agent.repl import TURN_KEYS
+    assert set(payload) == set(TURN_KEYS) | {"session_id"}
     assert payload["session_id"] == "sid-1"
 
 
@@ -130,9 +130,9 @@ def test_the_prompt_itself_never_lands_in_the_answer(monkeypatch):
 
 def test_one_turn_reports_the_keys_the_json_contract_promises(monkeypatch):
     """Pins `_run_once` itself, not just what main() does with it."""
+    from delfin.agent.repl import TURN_KEYS
     keys = agent_cli._run_once(_StubEngine(), "hello")
-    assert set(keys) == {
-        "text", "tool_calls", "input_tokens", "output_tokens", "error"}
+    assert set(keys) == set(TURN_KEYS)
 
 
 def test_a_pipe_with_nothing_in_it_is_refused(wired, monkeypatch, capsys):

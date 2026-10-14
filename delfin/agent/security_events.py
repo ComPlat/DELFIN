@@ -127,6 +127,7 @@ _KINDS = {
     # The action classifier: a model's second opinion on what the rules let
     # through unseen. It only ever adds friction.
     "read_only_shape":   ("✅", "Harmless command form approved by rule"),
+    "caged_unasked":     ("🧱", "Command run unasked inside the filesystem cage"),
     "classifier_ask":    ("❓", "Action classifier asked the user"),
     "classifier_refuse": ("🛑", "Action classifier refused an allowed action"),
     "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
@@ -217,6 +218,11 @@ def record(kind: str, tool: str, detail: str, *, blocked: bool = True) -> None:
             except Exception:
                 pass
         _raise_alert(ev)
+        if blocked:
+            # The same decision, for a turn that reports its refusals as
+            # data (turn_outcome: the headless result and stream-json).
+            from . import turn_outcome
+            turn_outcome.denied(tool, kind, str(detail))
     except Exception:
         pass
 
