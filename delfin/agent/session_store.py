@@ -951,7 +951,48 @@ def load_elided_record(session_id: str, ref: str) -> dict[str, Any] | None:
     return found
 
 
-_SUMMARY_PREFIX = "[Conversation summary"
+# The headers the compactions write, repeated here (engine and
+# in_turn_compaction import this module); a test pins each to its writer.
+_SUMMARY_MARKER = "[Conversation summary — older messages compacted]"
+_IN_TURN_SUMMARY_MARKER = (
+    "[Conversation summary — earlier rounds of this turn compacted]")
+_WORKING_STATE_HEADER = (
+    "[Working state — session recap, rebuilt at each compaction]")
+# working_state._MAX_BLOCK_CHARS plus its trim marker: the farthest the
+# summary marker can sit behind a block the compaction wrote.
+_WORKING_STATE_MAX_CHARS = 2200 + len("\n... [working state trimmed]\n") + 1
+
+
+def _begins_with_compaction_summary(first) -> bool:
+    """Whether a history's first message is a compaction's summary.
+
+    Input: the first message's content (a string, or a list of blocks whose
+    first text block is read). Output: True when it starts with the summary
+    marker ``AgentEngine._compact_history`` or the in-turn compaction
+    writes, or when it starts with the working-state header and the summary
+    marker opens a line within the block's size ceiling after it -- the
+    compaction composes the block AHEAD of the summary.
+
+    Semantics: exact markers, at the positions the writers use. The former
+    test, a ``"[Conversation summary"`` prefix, missed every compaction
+    that had a working-state block, so a save without the compaction record
+    kept the long history and appended the compacted one. A marker quoted
+    later in a message, or after more text than a block can hold, is not a
+    compaction. Cost: two prefix tests and one bounded find.
+    """
+    if isinstance(first, list):
+        first = next((b.get("text") for b in first
+                      if isinstance(b, dict) and isinstance(b.get("text"), str)),
+                     "")
+    if not isinstance(first, str):
+        return False
+    if first.startswith((_SUMMARY_MARKER, _IN_TURN_SUMMARY_MARKER)):
+        return True
+    if not first.startswith(_WORKING_STATE_HEADER):
+        return False
+    at = first.find("\n" + _SUMMARY_MARKER + "\n", len(_WORKING_STATE_HEADER),
+                    _WORKING_STATE_MAX_CHARS + len(_SUMMARY_MARKER) + 2)
+    return at >= 0
 
 
 def _user_turns(messages) -> int:
@@ -1029,7 +1070,7 @@ def _keep_engine_history(session_id: str, engine_messages, chat_messages,
     if not isinstance(old, list) or len(new) >= len(old):
         return new, None
     first = new[0].get("content") if new and isinstance(new[0], dict) else ""
-    if isinstance(first, str) and first.startswith(_SUMMARY_PREFIX):
+    if _begins_with_compaction_summary(first):
         return new, None
     if _fresh_start_since(session_id, first, stored_file):
         return new, None

@@ -603,6 +603,53 @@ def _resolve_fresh_budget(context_budget, engine) -> int:
     return int(context_budget or 0)
 
 
+#: The compaction kinds that leave a summary of the compacted messages in
+#: the history. ``summary_unavailable`` (nothing could be summarised) and the
+#: trim-only kinds do not, and count as a compaction that did not happen.
+_SUMMARY_KINDS = ("summary", "deterministic_digest")
+
+
+def _compact_to_fit(engine, budget: int) -> bool:
+    """Try a forced compaction before a fresh start; True when it fits.
+
+    Input: an engine whose current context is over ``budget``. Output: True
+    when ``engine._compact_history(force=True)`` produced a summary and the
+    context is then at or under ``budget``; False when the engine has no
+    compaction, it raised, it summarised nothing, or the result is still
+    over (the kept recent messages alone can exceed a small window).
+
+    Semantics: a switch to a model with a smaller window put the history
+    over the budget, and the fresh start archived it wholesale -- the next
+    turn knew only the working-state block and the open tasks. A
+    compaction keeps a summary of the task in context and archives the
+    compacted messages the same way, so it is tried first; the fresh start
+    stays the fallback. A compaction that ran and does not fit is kept: the
+    fresh start then cuts the compacted history, whose older part is
+    already in the archive.
+
+    Cost: one summariser call (max_tokens 1500, input capped at 60k chars by
+    ``_llm_summarize_old_messages``), only on a turn whose context is over
+    the fresh-start budget; extractive and free on the CLI backend. Rejected:
+    compacting at the model switch itself -- the switch has no worker
+    thread of its own, and the first turn after it is where the window is
+    checked on both surfaces anyway.
+    """
+    compact = getattr(engine, "_compact_history", None)
+    if not callable(compact):
+        return False
+    before = getattr(engine, "last_compaction_info", None)
+    try:
+        compact(force=True)
+    except Exception:
+        return False
+    info = getattr(engine, "last_compaction_info", None)
+    if info is before or not isinstance(info, dict):
+        return False
+    if info.get("kind") not in _SUMMARY_KINDS:
+        return False
+    return _context_tokens(engine) <= budget
+
+
 def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
                        task_state=None, context_budget=None) -> str:
     """The message to send for this turn, starting fresh when over budget.
@@ -615,6 +662,9 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
     try:
         budget = _resolve_fresh_budget(context_budget, engine)
         if budget <= 0:
+            return prompt
+        if (_context_tokens(engine) > budget
+                and _compact_to_fit(engine, budget)):
             return prompt
         block = ""
         try:
@@ -754,7 +804,8 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     in_before, out_before = _usage(engine)
     user_message = prompt
     budget = _resolve_fresh_budget(context_budget, engine)
-    if budget > 0:
+    if budget > 0 and (_context_tokens(engine) <= budget
+                       or not _compact_to_fit(engine, budget)):
         try:
             fresh = fresh_context_for_turn(
                 engine, task_state, token_budget=budget,
