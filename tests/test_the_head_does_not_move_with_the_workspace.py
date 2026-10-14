@@ -59,3 +59,20 @@ def test_the_head_does_not_move_within_a_session(tmp_path):
                             "spreadsheet")
     for name in ("role_prompt", "project_context"):
         assert first.get(name) == second.get(name), name
+
+
+def test_the_decision_waits_for_the_first_turn(tmp_path):
+    """Taken at the first turn, not at construction: the benchmark seeds
+    a chemistry fixture between building the engine and sending the
+    task (benchmark_runner: engine_factory, then run_setup)."""
+    ws = tmp_path / "chem_ws"
+    ws.mkdir()
+    eng = E.AgentEngine(repo_dir=ws, backend="api", provider="kit",
+                        api_key="stub-key", model=MODEL, mode="solo",
+                        permission_mode="default")
+    eng._load_mode("solo")
+    (ws / "chem" / "benzene").mkdir(parents=True)
+    (ws / "chem" / "benzene" / "start.xyz").write_text("1\n\nC 0 0 0\n")
+    sections = _sections(eng, "optimise the geometry")
+    assert eng.kit_permissions.toolsets.offered("chemistry")
+    assert "Not loaded here: chemistry" not in sections["project_context"]
