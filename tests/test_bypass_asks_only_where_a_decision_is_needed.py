@@ -102,9 +102,11 @@ def _agent_ws(tmp_path):
 @pytest.mark.parametrize("cmd", [
     "python3 build.py",
     "cp notes.md reports/notes.md",
-    "git clone https://github.com/x/y.git reports/y",
 ])
 def test_a_failure_keeps_the_rule_result_for_a_routine_command(tmp_path, cmd):
+    # Routine = on the default auto-allow list and not leaving the
+    # workspace. A clone fetches from the network and now asks
+    # (test_the_watcher_fails_closed_where_nobody_looks).
     dialog = Dialog()
     perms = _perms(tmp_path, Runner(), dialog)
     assert _gate(perms, "bash", {"command": cmd}) is None
