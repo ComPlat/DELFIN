@@ -130,7 +130,7 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
         </box>
       )
     case "turnEnd":
-      return <text fg={f.ok === false ? t.err : t.faint}>{"  " + String(f.text ?? "")}</text>
+      return <text fg={f.ok === false ? t.err : f.stopped ? t.warn : t.faint}>{"  " + String(f.text ?? "")}</text>
     case "divider": {
       const label = ` ${String(f.text ?? "")} `
       const side = Math.max(2, Math.floor((props.width - label.length) / 2))

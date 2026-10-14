@@ -322,9 +322,9 @@ without Bun installed.
 |---|---|
 | 0 Spike | done: GO (c35d85e1; exact-row matrix and three startup fixes in phase 0b, see TUI_REWRITE.md) |
 | 1 Protocol and worker | done (b314a988, reviews applied in cc1e12e0) |
-| 2 Supervisor and launcher | built (96789513); reviews running; bwUniCluster logout check is on the checklist |
-| 3 TUI foundation | done: transport, generated protocol types, store, rows, footer, keymap, theme, config; the recorded conversation renders the same headless and live in tmux |
-| 4 One session | – |
+| 2 Supervisor and launcher | done (96789513; two reviews, 12 bugs fixed in 0d592018); bwUniCluster logout check is on the checklist |
+| 3 TUI foundation | done: transport, generated protocol types, store, rows, footer, keymap, theme, config; the recorded conversation renders the same headless and live in tmux; a review's 12 bugs fixed in 2d37e333 |
+| 4 One session | built: composer (6291c296), tool rows (702c9cc0), approvals and status line (2d37e333, 39e18945), palette, pickers and resize policy (4aef3b0a), /editor /keys /exit and the parity checklist (75627d84, docs/TUI_PARITY.md); a real KIT-model session and a review are running |
 | 5 Agent view | – |
 | 6 Lifecycle | – |
 | 7 Polish and shipping | – |

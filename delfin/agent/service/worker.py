@@ -585,7 +585,8 @@ def _agent_class():
                     outputTokens=max(0, after[1] - before[1]),
                     costUsd=round(max(0.0, after[2] - before[2]), 6),
                     toolCalls=self.transcript.tool_calls,
-                    error=error or None)
+                    error=error or None,
+                    stopped=True if self.cancel_requested else None)
                 if late:
                     self._emit("notice", text=(
                         "A message sent into the turn arrived after it had "
@@ -1194,6 +1195,20 @@ class Worker:
         agent.post(lambda: agent.transcript.chrome(
             agent.transcript.theme.dim(f"task list {'on' if on else 'off'}")))
         return {"showTasks": on}
+
+    def _m_session_setTitle(self, params: dict) -> dict:
+        """The session's name: what the store saves it under, what its
+        checkpoints carry, what every window shows."""
+        title = " ".join(str(params.get("title") or "").split())[:80]
+        if not title:
+            raise _Refusal(protocol.INVALID_PARAMS, "a name needs some text")
+        self.name = title
+        try:
+            self.agent.opts.session_name = title
+        except Exception:
+            pass
+        self.agent.post(lambda: self.emitter.emit("session.updated", title=title))
+        return {"title": title}
 
     def _m_session_choices(self, params: dict) -> dict:
         try:

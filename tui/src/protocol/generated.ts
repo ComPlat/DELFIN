@@ -50,6 +50,9 @@ export interface SessionChoicesParams {
   "what": string
 }
 export interface SessionToggleTasksParams {}
+export interface SessionSetTitleParams {
+  "title": string
+}
 export interface WorkerRequests {
   "initialize": InitializeParams
   "session.prompt": SessionPromptParams
@@ -63,6 +66,7 @@ export interface WorkerRequests {
   "session.completePath": SessionCompletePathParams
   "session.choices": SessionChoicesParams
   "session.toggleTasks": SessionToggleTasksParams
+  "session.setTitle": SessionSetTitleParams
 }
 export interface InitializeResult {
   "protocolVersion": number
@@ -111,6 +115,9 @@ export interface SessionChoicesResult {
 export interface SessionToggleTasksResult {
   "showTasks": boolean
 }
+export interface SessionSetTitleResult {
+  "title": string
+}
 export interface WorkerResults {
   "initialize": InitializeResult
   "session.prompt": SessionPromptResult
@@ -124,6 +131,7 @@ export interface WorkerResults {
   "session.completePath": SessionCompletePathResult
   "session.choices": SessionChoicesResult
   "session.toggleTasks": SessionToggleTasksResult
+  "session.setTitle": SessionSetTitleResult
 }
 export interface WorkerReadyEvent {
   "protocolVersion": number
@@ -195,6 +203,7 @@ export interface TurnEndedEvent {
   "costUsd": number
   "toolCalls": number
   "error"?: string | null
+  "stopped"?: boolean | null
   "type": "turn.ended"
   "session": string
   "ts": number
@@ -498,6 +507,10 @@ export interface SessionSummary {
   "createdAt": number
   "lastActivity": number
   "pid": number
+  "lastPrompt"?: string | null
+  "activity"?: string | null
+  "waiting"?: string | null
+  "answer"?: string | null
 }
 
 /** Every event a window can receive: a session's own, and the service's. */

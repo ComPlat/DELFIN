@@ -74,6 +74,8 @@ REQUESTS: dict[str, dict[str, str]] = {
     # ctrl+t: show or hide the open task list at the end of each turn, as
     # in the REPL (its notice says which).
     "session.toggleTasks": {},
+    # The session's name (the agent view's ctrl+r): what it is saved under.
+    "session.setTitle": {"title": "string"},
 }
 
 # ---------------------------------------------------------------------------
@@ -102,6 +104,7 @@ RESULTS: dict[str, dict[str, str]] = {
     # choices: value, detail? (where a model runs, what it costs)
     "session.choices": {"current": "string", "choices": "[object]"},
     "session.toggleTasks": {"showTasks": "boolean"},
+    "session.setTitle": {"title": "string"},
 }
 
 # ---------------------------------------------------------------------------
@@ -128,10 +131,11 @@ EVENTS: dict[str, dict[str, str]] = {
     # finished job, a message from another session, a continuation)
     "user.message": {"text": "string", "source": "string"},
     "turn.started": {"turnId": "string", "source": "string"},
+    # stopped: ended by a cancel (Esc), not on its own.
     "turn.ended": {"turnId": "string", "durationMs": "integer",
                    "inputTokens": "integer", "outputTokens": "integer",
                    "costUsd": "number", "toolCalls": "integer",
-                   "error": "string?"},
+                   "error": "string?", "stopped": "boolean?"},
     "text.started": {"turnId": "string", "partId": "string"},
     "text.delta": {"partId": "string", "delta": "string"},
     "text.ended": {"turnId": "string", "partId": "string", "text": "string"},
@@ -234,12 +238,18 @@ SERVICE_EVENTS: dict[str, dict[str, str]] = {
     "session.removed": {"reason": "string", "exitCode": "integer?"},
 }
 
-#: The fields of a session summary (session.summary, sessions.list).
+#: The fields of a session summary (session.summary, sessions.list). The
+#: last four say what the session is about in a few words, for the agent
+#: view's rows (taken from its events; no model writes them): the last
+#: message sent to it, what it does now, the question it waits on, and the
+#: first line of its last answer.
 SESSION_SUMMARY: dict[str, str] = {
     "sessionId": "string", "title": "string?", "workspace": "string",
     "provider": "string", "model": "string", "approval": "string",
     "state": "string", "pending": "integer", "costUsd": "number",
-    "createdAt": "number", "lastActivity": "number", "pid": "integer"}
+    "createdAt": "number", "lastActivity": "number", "pid": "integer",
+    "lastPrompt": "string?", "activity": "string?", "waiting": "string?",
+    "answer": "string?"}
 
 UNKNOWN_SESSION = -32004
 WORKER_GONE = -32005

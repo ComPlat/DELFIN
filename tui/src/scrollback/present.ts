@@ -166,7 +166,10 @@ export class Presenter {
         this.parts.clear()
         setTail("")
         const secs = (Number(e.durationMs ?? 0) / 1000).toFixed(1)
-        if (e.error) {
+        if (e.stopped) {
+          // Ended by a cancel: neither done nor failed.
+          this.add("turnEnd", { text: `◼ stopped · ${secs}s`, ok: true, stopped: true })
+        } else if (e.error) {
           // The error row already said it: the line ends the turn only.
           const said = this.lastError && String(e.error).includes(firstLine(this.lastError, 400))
           this.add("turnEnd", { text: said ? `✗ ${secs}s` : `✗ ${secs}s · ${firstLine(String(e.error), 120)}`, ok: false })
@@ -227,7 +230,9 @@ export class Presenter {
  */
 export function bannerOf(info: Fields): { head: string; lines: string[] } {
   const raw = ((info.banner as string[] | undefined) ?? []).map((l) => stripControl(String(l ?? "")).trimEnd())
-  const lines = raw.filter((l) => l.trim() && !/^[╭│╰]/.test(l))
+  // Chat's key hint ("esc interrupt · … · ctrl+d exit") is chat's: the
+  // window has its own, and ctrl+d does not end the session here.
+  const lines = raw.filter((l) => l.trim() && !/^[╭│╰]/.test(l) && !/^esc interrupt\b/.test(l.trim()))
   const first = lines.findIndex((l) => l.startsWith("delfin-agent"))
   let head = [info.provider && info.model ? `${info.provider}/${info.model}` : info.model, info.mode]
     .filter(Boolean).join(" · ")

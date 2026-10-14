@@ -56,12 +56,13 @@ FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
                        "session.status", "session.replay", "session.shutdown",
                        "permission.reply", "session.commands",
                        "session.completePath", "session.choices",
-                       "session.toggleTasks"})
+                       "session.toggleTasks", "session.setTitle"})
 
 #: What a watch-only connection may not do.
 ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
                     "session.setMode", "session.shutdown", "permission.reply",
-                    "session.message", "service.shutdown", "session.toggleTasks"})
+                    "session.message", "service.shutdown", "session.toggleTasks",
+                    "session.setTitle"})
 
 UNKNOWN_SESSION = protocol.UNKNOWN_SESSION
 WORKER_GONE = protocol.WORKER_GONE
@@ -135,6 +136,46 @@ def _peer_pid(sock: socket.socket) -> int:
     return 0
 
 
+def _gist(text: str, limit: int = 120) -> str:
+    """The first line that says something, cut to ``limit``."""
+    for line in str(text or "").splitlines():
+        line = " ".join(line.split()).lstrip("#*->` ").strip()
+        if line:
+            return line if len(line) <= limit else line[:limit - 1] + "…"
+    return ""
+
+
+def _tool_gist(event: dict) -> str:
+    """A tool call in a few words: its name and the argument that matters."""
+    name = str(event.get("name") or "tool")
+    if name.startswith("mcp__"):
+        parts = name.split("__", 2)
+        if len(parts) == 3:
+            name = f"{parts[1]}:{parts[2]}"
+    args = event.get("input") or {}
+    if isinstance(args, dict):
+        for key in ("command", "path", "file_path", "pattern", "query", "url", "description", "name"):
+            value = args.get(key)
+            if isinstance(value, str) and value.strip():
+                return f"{name}  {_gist(value, 80)}"
+    return name
+
+
+def _asked_gist(asked: dict) -> str:
+    """The question a session waits on, in a few words."""
+    if asked.get("kind") == "ask":
+        return _gist(str(asked.get("question") or "a question"))
+    if asked.get("kind") == "plan":
+        return "the plan"
+    preview = str(asked.get("preview") or "")
+    target = ""
+    for line in preview.splitlines():
+        if line.startswith("+++ "):
+            target = line[4:].removeprefix("b/").strip()
+            break
+    return f"{asked.get('tool') or 'a tool'} {target or _gist(preview.lstrip('$ '), 70)}".strip()
+
+
 def _environ_of(pid: int) -> bytes | None:
     """The environment of ``pid`` (one of the user's own processes), or
     None when it cannot be read. Linux reads /proc; macOS asks ps, which
@@ -178,6 +219,10 @@ class Session:
         self.created_at = time.time()
         self.last_activity = self.created_at
         self.ended_reason = ""
+        # What the agent view's row says (SESSION_SUMMARY's last four).
+        self.last_prompt = ""
+        self.activity = ""
+        self.answer = ""
         self.subscribers: dict["Client", int] = {}    # client -> last seq replayed
         self._next_id = 0
         self._waiting: dict[int, asyncio.Future] = {}
@@ -274,9 +319,27 @@ class Session:
             return True
         if kind == "permission.resolved":
             return self.pending.pop(str(event.get("requestId")), None) is not None
+        if kind == "user.message":
+            self.last_prompt = _gist(str(event.get("text") or ""))
+            return True
+        if kind == "turn.started":
+            self.activity = "thinking…"
+            return True
+        if kind == "tool.started":
+            self.activity = _tool_gist(event)
+            return True
+        if kind == "text.started":
+            self.activity = "writing…"
+            return True
+        if kind == "text.ended":
+            gist = _gist(str(event.get("text") or ""))
+            if gist:
+                self.answer = gist
+            return False
         if kind == "turn.ended":
             if count_cost:
                 self.cost += float(event.get("costUsd") or 0.0)
+            self.activity = ""
             return True
         if kind == "session.ended":
             self.ended_reason = str(event.get("reason") or "")
@@ -315,7 +378,11 @@ class Session:
                 "costUsd": round(self.cost, 6),
                 "createdAt": round(self.created_at, 3),
                 "lastActivity": round(self.last_activity, 3),
-                "pid": self.proc.pid}
+                "pid": self.proc.pid,
+                "lastPrompt": self.last_prompt or None,
+                "activity": self.activity or None,
+                "waiting": _asked_gist(next(iter(self.pending.values()))) if self.pending else None,
+                "answer": self.answer or None}
 
     def header(self) -> dict:
         event = {"type": "session.info", "session": self.id, "seq": 0,

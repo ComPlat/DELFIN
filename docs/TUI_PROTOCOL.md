@@ -80,6 +80,7 @@ types are generated from that. This page explains what the messages mean.
 | `session.completePath` | `fragment` | `paths[]` | What `@fragment` completes to, under the workspace only. |
 | `session.choices` | `what`: `model`, `effort` or `mode` | `current`, `choices[]`: `value`, `detail?` | What a picker offers. |
 | `session.toggleTasks` | | `showTasks` | ctrl+t: the open task list at the end of each turn, on or off, as in the REPL (a notice says which). |
+| `session.setTitle` | `title` | `title` | The session's name: what it is saved under (a `session.updated` follows). |
 
 ### Completion and pickers
 
@@ -176,7 +177,7 @@ carry their final values.
 | `session.ended` | `reason`, `exitCode` | ✓ |
 | `user.message` | `text`, `source`: `user`, `queued`, `steer` or `harness` | ✓ |
 | `turn.started` | `turnId`, `source`: `user` or `harness` | ✓ |
-| `turn.ended` | `turnId`, `durationMs`, `inputTokens`, `outputTokens`, `costUsd`, `toolCalls`, `error?` | ✓ |
+| `turn.ended` | `turnId`, `durationMs`, `inputTokens`, `outputTokens`, `costUsd`, `toolCalls`, `error?`, `stopped?` (ended by a cancel) | ✓ |
 | `text.started` / `text.delta` / `text.ended` | `partId`; `delta`; full `text` | ended ✓ |
 | `reasoning.started` / `.delta` / `.ended` | as for text | ended ✓ |
 | `tool.started` | `turnId`, `callId`, `name`, `input` | ✓ |
@@ -329,15 +330,15 @@ closes; the next window attaches to them again.
 Every session request of the worker protocol (`session.prompt`,
 `session.cancel`, `session.setMode`, `session.status`, `session.replay`,
 `session.shutdown`, `permission.reply`, `session.commands`,
-`session.completePath`, `session.choices`, `session.toggleTasks`) is sent
-with `sessionId` and
+`session.completePath`, `session.choices`, `session.toggleTasks`,
+`session.setTitle`) is sent with `sessionId` and
 forwarded to that session's worker; its answer comes back unchanged.
 
 Events from the service itself, to every window:
 
 | Event | Fields |
 |---|---|
-| `session.summary` | `summary`: `sessionId`, `title?`, `workspace`, `provider`, `model`, `approval`, `state`, `pending` (open questions), `costUsd`, `createdAt`, `lastActivity`, `pid`. Sent whenever one of them changes: what the agent view draws. |
+| `session.summary` | `summary`: `sessionId`, `title?`, `workspace`, `provider`, `model`, `approval`, `state`, `pending` (open questions), `costUsd`, `createdAt`, `lastActivity`, `pid`, and what a row says about it, taken from its events (no model writes them): `lastPrompt?` (the last message sent to it), `activity?` (what it does now: "bash  pytest -q", "writing…"), `waiting?` (the question it waits on), `answer?` (the first line of its last answer). Sent whenever one of them changes: what the agent view draws. |
 | `session.removed` | `reason`, `exitCode`: the session's worker ended (shut down, exited, or failed). |
 
 **Attaching while a session runs.** The replay is read from the session's

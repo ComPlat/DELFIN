@@ -25,10 +25,11 @@ test("the REPL's banner: its wordmark becomes the head, its safety lines stay", 
     "approval   default",
     "isolation  on (bubblewrap) — a command the agent runs writes only inside the workspace (--no-isolate)",
     "session    25016b8f",
+    "esc interrupt · shift+tab approval mode · /help · ctrl+d exit",
   ]
   expect(bannerOf({ banner, provider: "kit", model: "kit.deepseek-v4-flash", title: "parser fix" })).toEqual({
     head: "kit/kit.deepseek-v4-flash · solo · parser fix",
-    lines: banner.slice(5),
+    lines: banner.slice(5, -1),
   })
   expect(bannerOf({ banner: [], provider: "fake", model: "m", mode: "solo" }).head).toBe("fake/m · solo")
 })
@@ -64,4 +65,15 @@ test("a wait between turns is shown, and goes when the answer comes", async () =
   w.store.push(ev("text.delta", { partId: "p1", delta: "back" }))
   await w.settle()
   expect(w.footer().join("\n")).not.toContain("the endpoint is down")
+})
+
+test("a turn ended by a cancel says it stopped", async () => {
+  const w = open = await mountWindow({ width: 100 })
+  w.store.push(ev("turn.started", { seq: 1, turnId: "t1", source: "user" }))
+  w.store.push(ev("turn.ended", { seq: 2, turnId: "t1", durationMs: 20100, inputTokens: 0, outputTokens: 0,
+                                  costUsd: 0, toolCalls: 0, stopped: true }))
+  await w.settle()
+  const text = w.t.externalOutput.takeText()
+  expect(text).toContain("◼ stopped · 20.1s")
+  expect(text).not.toContain("✓ 20.1s")
 })
