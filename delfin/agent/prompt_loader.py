@@ -1036,7 +1036,20 @@ class PromptLoader:
 
         Triggered when the task contains chemistry keywords.  Code-enforced
         rather than prompt-only to ensure compliance.
+
+        Only in a chemistry context: never when ``is_delfin_workspace`` is
+        False, because that is exactly when the tool surface strips
+        ``search_docs`` (``_DELFIN_ONLY_TOOL_NAMES``), and the protocol's
+        first step is to call it. The keyword classifier alone reads
+        "method", "functional", "scan", "spin" and "charge" as chemistry,
+        so on a code repository it fired on ordinary coding wording
+        (4 of 4 foreign probe repos). ``None`` (a caller that never set
+        the flag) keeps the old behaviour.
+        Rejected: tightening the shared classifier, which also keys the
+        outcome-history briefing and would re-bucket recorded history.
         """
+        if self.is_delfin_workspace is False:
+            return ""
         try:
             from delfin.agent.briefing import classify_task
             if classify_task(task_text) != "chemistry":
