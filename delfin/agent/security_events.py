@@ -72,6 +72,11 @@ _KINDS = {
     "no_sandbox_mcp": ("🚫", "MCP tool refused: no sandbox configured"),
     "egress":         ("🌐", "Outbound data transfer"),
     "egress_blocked": ("🌐", "Network destination blocked (sandbox)"),
+    # The network of programs a command starts: which layer holds it.
+    "network":        ("🌐", "Command network held by the egress proxy"),
+    "network_missing": ("⚠", "Command network NOT (fully) held"),
+    "egress_asked":   ("🌐", "Command network: destination asked"),
+    "egress_upload":  ("📤", "Command upload to an allowed host"),
     "key_exported":   ("🔑", "Provider key exported in the environment"),
     # A commit message naming a home directory, an account or a machine.
     # The repository is public, and a name in a public history is paid

@@ -25155,25 +25155,39 @@ def _git_metadata_roots(workspace) -> list[str]:
 _SLURM_CONTROLLERS: Optional[list[str]] = None
 
 
-def _sandbox_network_args(allow_slurm: bool = True) -> tuple[list[str], str]:
+def _sandbox_network_args(perms=None, allow_slurm: bool = True) -> tuple[list[str], str]:
     """Helper flags for an isolated command's network, and the directory of
     the egress proxy's socket ("" without one).
 
     ``agent.sandbox_network.mode``: "proxy" (default) -- the command reaches
-    the network only through the egress proxy, which lets through the
-    allowed domains, plus the SLURM controller so job submission works;
-    "none" -- no network; "open" -- unrestricted, cloud metadata still
-    refused. ``allow_slurm=False`` drops the controller route: a job runs
-    outside the cage, so a command nobody approved does not submit one."""
+    the network only through the egress proxy, which decides per domain
+    for the session ``perms`` belongs to (``EgressProxy.settle``), plus the
+    direct TCP endpoints that are not HTTP (SLURM controller, git remotes
+    over SSH, license servers); "none" -- no network; "open" --
+    unrestricted, cloud metadata still refused.
+
+    ``allow_slurm=False`` is the profile of a command the gate admitted
+    without a question (``caged_unasked``). A job runs outside the cage,
+    and an SSH remote or a license server is a door to another host's
+    processes, so it gets NO direct TCP endpoint at all -- only HTTP(S)
+    through the proxy. A configured "open" becomes "proxy" for it: a
+    command nobody saw never gets an unrestricted network.
+
+    Rejected: keeping the SSH git remotes for it. Whether a remote can
+    start work (a forced command, a hook on the server) is not visible
+    from here, so the conservative answer is none."""
     global _SLURM_CONTROLLERS
     from . import egress_proxy as _ep
     mode = _ep.network_mode()
+    if not allow_slurm and mode == "open":
+        mode = "proxy"
     args = ["--net", mode]
     proxy_dir = ""
     if mode == "proxy":
         try:
             proxy = _ep.get_proxy()
-            args += ["--proxy-socket", proxy.socket_path]
+            args += ["--proxy-socket", proxy.socket_path,
+                     "--proxy-token-file", proxy.token_file_for(perms)]
             proxy_dir = os.path.dirname(proxy.socket_path)
         except Exception:
             args = ["--net", "none"]
@@ -25182,9 +25196,92 @@ def _sandbox_network_args(allow_slurm: bool = True) -> tuple[list[str], str]:
                 _SLURM_CONTROLLERS = _ep.slurm_controllers()
             except Exception:
                 _SLURM_CONTROLLERS = []
-        for hp in (_SLURM_CONTROLLERS if allow_slurm else ()):
+        direct: list[str] = []
+        if allow_slurm:
+            direct = list(_SLURM_CONTROLLERS)
+            try:
+                direct += _ep.direct_tcp_endpoints(getattr(perms, "workspace", None))
+            except Exception:
+                pass
+        for hp in sorted(set(direct)):
             args += ["--allow-tcp", hp]
     return args, proxy_dir
+
+
+_CHILD_NETWORK_ANNOUNCED = False
+
+
+def child_network_enforcement() -> dict:
+    """What holds the network of a program the bash tool starts, on this
+    host and with these settings.
+
+    Output: ``{"layer", "enforced", "partial", "notice"}``. ``layer`` is
+    "socket guard" (seccomp user notification: every connect judged),
+    "network namespace" (bubblewrap --unshare-net, the proxy bound in),
+    "Seatbelt", "Landlock TCP" (ABI 4: TCP connects to the proxy port
+    only; partial), "none", or "off" (a setting turned it off). The same
+    probes and order as ``_bash_isolation_argv``; never raises."""
+    from . import egress_proxy as _ep
+    from . import landlock_exec as _ll
+    from . import socket_guard as _sg
+
+    def out(layer, enforced, notice, partial=False):
+        return {"layer": layer, "enforced": enforced, "partial": partial,
+                "notice": notice}
+
+    try:
+        mode = _ep.network_mode()
+        iso = (_BASH_ISOLATION_OVERRIDE or "").strip().lower()
+        if not iso:
+            try:
+                from delfin.user_settings import load_settings
+                iso = str(((load_settings() or {}).get("agent") or {})
+                          .get("bash_isolation", "auto") or "auto").strip().lower()
+            except Exception:
+                iso = "auto"
+        if mode == "open":
+            return out("off", False, "network of commands NOT restricted: "
+                       "agent.sandbox_network.mode is \"open\" (cloud metadata "
+                       "still refused)")
+        if iso == "off":
+            return out("off", False, "network of commands NOT restricted: "
+                       "agent.bash_isolation is \"off\"")
+        guard = _sg.available()
+        fs = _bwrap_functional() or _landlock_functional()
+        what = "no network" if mode == "none" else "network only through the egress proxy"
+        if guard:
+            return out("socket guard", True, f"{what} (socket guard)")
+        if _bwrap_functional():
+            return out("network namespace", True, f"{what} (network namespace)")
+        if _seatbelt_functional():
+            return out("Seatbelt", True, f"{what} (Seatbelt)")
+        if fs and _ll.abi_version() >= 4:
+            return out("Landlock TCP", True, (
+                f"{what} for TCP (Landlock): the kernel rule names a port, "
+                "not an address, and UDP is NOT restricted"), partial=True)
+        return out("none", False, (
+            "network of commands NOT restricted on this host: no socket guard "
+            "(seccomp user notification), no network namespace (bubblewrap) "
+            "and no Landlock TCP (Linux 6.7+). Domain rules apply to the "
+            "command text only; a program it starts can connect anywhere"))
+    except Exception as exc:
+        return out("none", False, f"network of commands NOT verified ({exc})")
+
+
+def _announce_child_network() -> None:
+    """Record once what holds the network of the commands, and say it
+    plainly where nothing does or only partly."""
+    global _CHILD_NETWORK_ANNOUNCED
+    if _CHILD_NETWORK_ANNOUNCED:
+        return
+    _CHILD_NETWORK_ANNOUNCED = True
+    try:
+        state = child_network_enforcement()
+        _record_security_event(
+            "network" if state["enforced"] and not state["partial"] else "network_missing",
+            "bash", state["notice"], blocked=False)
+    except Exception:
+        pass
 
 
 def _session_doors() -> list[str]:
@@ -25232,6 +25329,28 @@ def _guard_without_cage(argv: list[str]) -> list[str]:
         return argv
 
 
+def _network_only(plain: list[str], perms) -> list[str]:
+    """``plain`` with its network held and the filesystem as it is, for a
+    host where no filesystem layer works: the socket guard (with the
+    session doors denied, as ``_guard_without_cage``), else unchanged --
+    ``child_network_enforcement`` then reports "none"."""
+    try:
+        from . import egress_proxy as _ep
+        from . import landlock_exec as _ll
+        from . import socket_guard as _sg
+        if sys.platform == "darwin" or not _sg.available() \
+                or _ep.network_mode() == "open":
+            return plain
+        net_args, _proxy_dir = _sandbox_network_args(perms)
+        wrapped = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+                   "--fs", "0", *net_args, "--allow-socket", "/"]
+        for door in _session_doors():
+            wrapped += ["--deny-socket", door]
+        return wrapped + ["--"] + plain
+    except Exception:
+        return plain
+
+
 def _seatbelt_functional() -> bool:
     """macOS: Seatbelt runs a profile here."""
     try:
@@ -25264,7 +25383,7 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
         try:
             proxy = _ep.get_proxy()
             port = proxy.ensure_tcp()
-            url = f"http://delfin:{proxy.token}@127.0.0.1:{port}"
+            url = f"http://delfin:{proxy.token_for(perms)}@127.0.0.1:{port}"
             env_prefix += [f"{k}={url}" for k in ("http_proxy", "https_proxy",
                                                    "HTTP_PROXY", "HTTPS_PROXY")]
         except Exception:
@@ -25303,7 +25422,7 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
     # strict: where not even a filter can keep the command from the user's
     # sessions (tmux, the SSH agent, systemd), a locked or forced isolation
     # refuses the command; an unattended run proceeds on Landlock alone.
-    net_args, _proxy_dir = _sandbox_network_args()
+    net_args, _proxy_dir = _sandbox_network_args(perms)
     argv += net_args
     argv += ["--tmpdir", _private_tmp_dir(), "--strict", "1" if strict else "0", "--"]
     return argv + plain
@@ -26172,6 +26291,7 @@ def _bash_isolation_argv(
     SLURM controller route.
     """
     plain = ["/bin/bash", "-c", cmd]
+    _announce_child_network()
     # The --isolate override (set once per process by `delfin-agent
     # --isolate`) comes before the settings file on purpose: a
     # session-scoped choice must not have to write a setting that outlives
@@ -26271,14 +26391,15 @@ def _bash_isolation_argv(
             return _seatbelt_argv(plain, perms, extra_write)
         elif perm_mode == "bypassPermissions":
             _announce_bypass_without_isolation()
-            return _in_process_cage(plain, run_cwd)
+            return _in_process_cage(_network_only(plain, perms), run_cwd)
         else:
             # Nothing here can hold it. The command still runs: refusing
             # every command in an attended session would be secure and
             # useless, and it is a different promise from the one a locked
             # scope makes, where refusing IS the answer. The banner is
-            # what tells the user which of the two they have.
-            return _in_process_cage(plain, run_cwd)
+            # what tells the user which of the two they have. Its network
+            # is still held where the socket guard works.
+            return _in_process_cage(_network_only(plain, perms), run_cwd)
     if mode == "bwrap" and kind != "bwrap":
         # Isolation was asked for by name. Landlock gives the same promise;
         # without it the command is refused rather than run without.
@@ -26372,16 +26493,27 @@ def _bash_isolation_argv(
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])
     # The network: the socket guard inside the namespace holds the command
-    # to the egress proxy (and the SLURM controller); where the kernel
-    # cannot hand connects to it, a restricted network becomes no network.
+    # to the egress proxy (and the SLURM controller). Where the kernel
+    # cannot hand connects to it, a network namespace of its own holds it,
+    # and the helper's forwarder inside that namespace still leads to the
+    # proxy -- it used to be no network at all, so pip and git broke.
     try:
         from . import landlock_exec as _ll
         from . import socket_guard as _sg
-        net_args, proxy_dir = (_sandbox_network_args(allow_slurm=False)
-                               if caged_unasked else _sandbox_network_args())
+        # A caged_unasked command: no SLURM or other direct endpoint, and
+        # never an open network (_sandbox_network_args, allow_slurm=False).
+        net_args, proxy_dir = _sandbox_network_args(
+            perms, allow_slurm=not caged_unasked)
+        if caged_unasked and net_args[1] == "open":
+            raise RuntimeError("a caged_unasked command got an open network")
         guard = _sg.available()
-        if guard or caged_unasked:
-            if guard and proxy_dir:
+        if guard or caged_unasked or net_args[1] != "open":
+            if not guard:
+                # A network namespace of its own holds it; the helper's
+                # forwarder inside leads to the proxy (none: no way out).
+                args += ["--unshare-net"]
+                net_args = net_args + ["--guard", "0", "--netns", "1"]
+            if proxy_dir:
                 args += ["--ro-bind", proxy_dir, proxy_dir]
             # The helper and its interpreter must be visible inside: a
             # checkout or an environment under /tmp is behind the fresh
@@ -26415,21 +26547,11 @@ def _bash_isolation_argv(
                     fs_part += ["--read", p]
             else:
                 fs_part = ["--fs", "0"]
-            if guard:
-                inner = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
-                         *fs_part, *net_args, "--strict", "1"]
-                for r in roots + [str(Path(p).resolve()) for p in extra_write] + ["/tmp"]:
-                    inner += ["--allow-socket", r]
-            else:
-                # No connect filter here: a restricted network becomes no
-                # network, as below, and the helper applies only the files.
-                if net_args[1] != "open":
-                    args += ["--unshare-net"]
-                inner = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
-                         *fs_part, "--net", "open", "--strict", "0"]
+            inner = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+                     *fs_part, *net_args, "--strict", "1"]
+            for r in roots + [str(Path(p).resolve()) for p in extra_write] + ["/tmp"]:
+                inner += ["--allow-socket", r]
             return args + inner + ["--"] + plain
-        if net_args[1] != "open":
-            args += ["--unshare-net"]
     except Exception:
         if caged_unasked:
             return _refusal_argv(
@@ -26880,6 +27002,13 @@ class OpenAIClient(_BaseClient):
         kwargs: dict[str, Any] = {"api_key": resolved_key}
         if base_url:
             kwargs["base_url"] = base_url
+            # A script the agent starts may call the same endpoint: the
+            # egress proxy treats its host as a configured one.
+            try:
+                from .egress_proxy import note_endpoint
+                note_endpoint(base_url)
+            except Exception:
+                pass
         # Explicit per-request timeout so a stalled endpoint (no bytes) is
         # abandoned on a bounded schedule instead of hanging on the SDK's
         # implicit default. Generous — legitimate streams emit chunks far more

@@ -1107,6 +1107,16 @@ def _startup_banner(engine, report, workspace: Path,
             except Exception:
                 lines.append("isolation  unknown — the status could not "
                              "be read")
+        # The network of what a command starts, said only where it is not
+        # (fully) held: the line exists to keep the banner from implying
+        # a protection this host does not give.
+        try:
+            from .api_client import child_network_enforcement
+            _net = child_network_enforcement()
+            if not _net["enforced"] or _net["partial"]:
+                lines.append(f"network    {_net['notice']}")
+        except Exception:
+            pass
         # The model second opinion behind the rules: whether it runs, on
         # which model and scope, and its last failure.
         try:
