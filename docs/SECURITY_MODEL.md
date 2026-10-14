@@ -138,6 +138,16 @@ The mechanisms, in order of preference:
   the git metadata (hooks write-denied) and a private temp directory; the
   credential locations unreadable; Unix sockets only in the roots.
 
+In `default` and `acceptEdits`, a command off the auto-allow list runs without
+a question when bubblewrap with the process cage, Landlock read confinement
+and a network mode other than open all hold it
+(`api_client._caged_command_may_run_unasked`). Its word list
+(`api_client._CAGED_UNASKED_EXCLUDED_WORDS`) only adds questions and carries
+no security weight: the cage, the Landlock read confinement and the network
+mode are what bound such a command. A bubblewrap that fails at run time (a
+nested sandbox) runs nothing in its place, and withdraws this admission for
+the rest of the process (`api_client._note_wrap_failure`).
+
 Two guards complete the Linux mechanisms:
 
 - The **socket guard** (`socket_guard.Supervisor`) receives every `connect()`
@@ -255,6 +265,11 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
   by `GIT_CONFIG_GLOBAL` and `git config --edit` are not covered by the git
   configuration checks; on the Landlock row, hooks are guarded by command
   text only.
+- **Files reached through a symlink inside an allowed folder.** Any executor
+  that walks a folder the gate admitted and opens what it finds can follow a
+  link placed there to a file outside the roots, unless it checks each entry
+  itself. The executors not yet shown to do so are listed in `OPEN` in
+  tests/test_the_gate_scan_watches_the_real_executors.py.
 - **MCP servers** without declared roots are outside every containment.
 - **Kernel and sandbox bugs.** Bubblewrap, Landlock, seccomp and Seatbelt
   are only as strong as their implementations. DELFIN does not defend against
