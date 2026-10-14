@@ -5471,7 +5471,26 @@ def _github_push_plan(cmd: str, run_cwd) -> Optional[dict]:
         else:
             return None
     url = _git_out(run_cwd, "remote", "get-url", "--push", remote) or ""
-    if not _GITHUB_SSH_URL_RE.match(url):
+    via = ""
+    if _GITHUB_SSH_URL_RE.match(url):
+        transport = ["-c", "protocol.ssh.allow=always",
+                     "-c", f"core.sshCommand={_GITHUB_PUSH_SSH}"]
+    elif _GITHUB_HTTPS_URL_RE.match(url):
+        # HTTPS with the user's gh login (`gh auth login`). Inside the
+        # cage ~/.config/gh is masked, so the push failed there with a
+        # login the user had just made (field report 2026-10-14). Here
+        # the token goes from gh to this one git process and nowhere else.
+        gh = shutil.which("gh")
+        if not gh or _checkout_configures_transport(run_cwd):
+            return None
+        scheme = url.split("://", 1)[0].lower()
+        transport = ["-c", f"protocol.{scheme}.allow=always",
+                     "-c", "core.askPass=",
+                     "-c", "credential.helper=",
+                     "-c", f"credential.helper=!{shlex.quote(gh)} auth "
+                           "git-credential"]
+        via = "gh"
+    else:
         return None
     if _git_out(run_cwd, "config", "--get", f"remote.{remote}.vcs"):
         return None
@@ -5480,13 +5499,44 @@ def _github_push_plan(cmd: str, run_cwd) -> Optional[dict]:
             "-c", "core.fsmonitor=false",
             "-c", "push.recurseSubmodules=no",
             "-c", "protocol.allow=never",
-            "-c", "protocol.ssh.allow=always",
-            "-c", f"core.sshCommand={_GITHUB_PUSH_SSH}",
+            *transport,
             "push", *tokens]
-    return {"argv": argv, "remote": remote, "url": url,
+    return {"argv": argv, "remote": remote, "url": url, "via": via,
             "merge_stderr": bool(match.group(2)),
             "filter": match.group(3) or "",
             "lines": int(match.group(4) or 0)}
+
+
+#: An HTTPS push URL on github.com; the gh route of _github_push_plan.
+_GITHUB_HTTPS_URL_RE = re.compile(
+    r"^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+?(?:\.git)?/?$")
+
+#: Checkout-scope configuration that would steer an HTTPS push or its
+#: credential: a proxy, TLS settings, extra headers, another helper, a
+#: URL rewrite. .git/config is writable by an agent's commands.
+_TRANSPORT_CONFIG_RE = r"^(http|https|credential|url)\.|^core\.askpass$"
+
+
+def _checkout_configures_transport(run_cwd) -> bool:
+    """True when the checkout's own (local or worktree) configuration has
+    any key matching _TRANSPORT_CONFIG_RE; also True when that cannot be
+    read. The user's global and system configuration are theirs and are
+    not looked at."""
+    for scope in ("--local", "--worktree"):
+        try:
+            r = subprocess.run(
+                ["git", "config", scope, "--name-only", "--get-regexp",
+                 _TRANSPORT_CONFIG_RE], cwd=str(run_cwd),
+                capture_output=True, text=True, timeout=15,
+                env={k: v for k, v in os.environ.items()
+                     if not k.startswith("GIT_")})
+        except Exception:
+            return True
+        if r.returncode == 0 and r.stdout.strip():
+            return True
+        if r.returncode not in (0, 1) and scope == "--local":
+            return True
+    return False
 
 
 def _run_github_push(plan: dict, run_cwd, env: dict,
@@ -22818,7 +22868,9 @@ class _DocToolExecutor:
                 _record_security_event(
                     "isolation", "bash",
                     f"git push to {_push['url']} ran outside the process cage "
-                    "(hooks off, SSH hardened)", blocked=False)
+                    + ("(hooks off, HTTPS only, credential from gh auth)"
+                       if _push.get("via") == "gh" else
+                       "(hooks off, SSH hardened)"), blocked=False)
                 proc = _run_github_push(_push, run_cwd, env, timeout)
             else:
                 # Contained on every host: its own session and process
@@ -22966,6 +23018,17 @@ class _DocToolExecutor:
                     _pd = ""
                 if _pd:
                     payload["hint"] = _pd
+                if (_push is not None and _push.get("via") == "gh"
+                        and re.search(r"could not read Username|terminal "
+                                      r"prompts disabled|Authentication "
+                                      r"failed|Missing or invalid",
+                                      _ptext, re.I)):
+                    payload["hint"] = (
+                        "push failed: no credentials reachable — DELFIN's "
+                        "push path ran `gh auth git-credential` outside the "
+                        "sandbox and gh gave no login for github.com. The "
+                        "user runs `gh auth login` (then `gh auth status` "
+                        "says Logged in); varying the command does not help.")
         if _journal_notes:
             payload["untracked_changes"] = " ".join(_journal_notes)
         watched = _auto_watch_submitted_jobs(proc.stdout or "", perms)
