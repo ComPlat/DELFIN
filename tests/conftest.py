@@ -638,6 +638,19 @@ def _each_test_starts_its_own_network_mode(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _each_test_starts_with_no_failed_wrap(monkeypatch):
+    """``api_client._BWRAP_RUNTIME_FAILURE`` withdraws the caged admission
+    for the rest of a process once a wrap failed at run time; reset per
+    test so one test's failed wrap does not change another's verdicts."""
+    try:
+        from delfin.agent import api_client as _ac
+        monkeypatch.setattr(_ac, "_BWRAP_RUNTIME_FAILURE", None)
+    except Exception:
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_shared_ledgers():
     """Each test gets its own copy of the shared evidence ledgers.
 

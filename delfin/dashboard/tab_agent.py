@@ -4853,7 +4853,9 @@ def _format_solo_domain_state(snapshot: dict) -> str:
         - ``control`` (dict): {functional, basis, pal, charge, mult, ...}
         - ``orca_builder`` (dict): {method, basis, charge, mult, ...}
         - ``job_summary`` (str): one-line job overview ("2 RUNNING, 5 PENDING")
-        - ``workspace_files`` (list[str]): file names in agent_workspace/
+        - ``workspace_dir`` (str): the session's workspace (where its
+          tools resolve relative paths)
+        - ``workspace_files`` (list[str]): top-level file names in it
         - ``active_tab`` (str): currently open dashboard tab
         - ``perm_profile`` (str): active permission profile
     """
@@ -4906,11 +4908,15 @@ def _format_solo_domain_state(snapshot: dict) -> str:
     if job_summary:
         lines.append(f"jobs: {job_summary}")
 
+    ws_dir = str(snapshot.get("workspace_dir") or "").strip()
     ws = snapshot.get("workspace_files") or []
     if isinstance(ws, list) and ws:
         preview = ", ".join(str(f) for f in ws[:8])
         tail = f" (+{len(ws) - 8} more)" if len(ws) > 8 else ""
-        lines.append(f"workspace: {preview}{tail}")
+        where = f" {ws_dir} --" if ws_dir else ""
+        lines.append(f"workspace:{where} {preview}{tail}")
+    elif ws_dir:
+        lines.append(f"workspace: {ws_dir}")
 
     active_tab = (snapshot.get("active_tab") or "").strip()
     if active_tab:
@@ -8406,6 +8412,7 @@ def create_tab(ctx):
         result = {"answers": []}
         state["_ask_user_event"] = ev
         state["_ask_user_result"] = result
+        state["_ask_user_args"] = dict(args or {})
         from html import escape as _esc
         header_html = (f"<span style='background:#0a84ff;color:white;"
                        f"padding:2px 6px;border-radius:3px;font-size:11px;"
@@ -8414,6 +8421,8 @@ def create_tab(ctx):
         ask_user_label.value = (
             f"<div style='font-size:14px;'>{header_html}"
             f"<b>{_esc(question)}</b></div>"
+            "<div style='color:#888;font-size:11px;margin-top:2px;'>"
+            "Pick an option, or type your own answer in the chat.</div>"
         )
         chosen: set[str] = set()
         button_widgets: list = []
@@ -8538,14 +8547,53 @@ def create_tab(ctx):
         ask_user_box.layout.display = ""
         # Block up to 5 minutes
         ev.wait(timeout=300)
+        _close_ask_user_modal(ev)
+        if not result["answers"]:
+            return {"answers": [], "timed_out": True}
+        return result
+
+    def _close_ask_user_modal(ev) -> None:
+        """Take the question widget off screen and forget the question.
+
+        Called by the asking thread when it wakes and by a chat answer on
+        the UI thread. Only the question ``ev`` belongs to is cleared, so
+        a late call cannot wipe a newer question's state.
+        """
+        if state.get("_ask_user_event") not in (None, ev):
+            return
         ask_user_box.layout.display = "none"
         ask_user_label.value = ""
         ask_user_buttons.children = ()
         state["_ask_user_event"] = None
         state["_ask_user_result"] = None
-        if not result["answers"]:
-            return {"answers": [], "timed_out": True}
-        return result
+        state["_ask_user_args"] = None
+
+    def _answer_ask_from_chat(text: str) -> bool:
+        """A chat line sent while ask_user_question waits is its answer.
+
+        Input: the stripped line from the chat input. Output: True when a
+        question was waiting and took the line (the caller then shows it
+        once in the chat and starts no turn and no steer -- the turn is
+        blocked inside this question and continues with the answer);
+        False when nothing waited. The result is
+        ``approval_answers.typed_answer``, the same one the terminal
+        dialog produces. Measured before: the line was steered into the
+        blocked turn and the question stayed on screen until its 300 s
+        expiry, then returned timed_out.
+        """
+        ev = state.get("_ask_user_event")
+        result = state.get("_ask_user_result")
+        if ev is None or result is None or ev.is_set() or not text:
+            return False
+        from delfin.agent.approval_answers import typed_answer
+        answer = typed_answer(text, state.get("_ask_user_args") or {})
+        if not answer.get("answers"):
+            return False
+        result.clear()
+        result.update(answer)
+        _close_ask_user_modal(ev)
+        ev.set()
+        return True
 
     # exit_plan_mode approval — uses existing plan_accept_btn but flips perms
     # via the structured callback so the tool result reflects the choice.
@@ -16540,13 +16588,19 @@ def create_tab(ctx):
         except Exception:
             pass
 
-        # Workspace inventory (small)
+        # Workspace inventory (small): the SESSION's workspace, the one its
+        # tools resolve relative paths against (_agent_workspace_path reads
+        # the engine's permission workspace first). It listed ctx.agent_dir,
+        # shared by every session of the dashboard and possibly the launch
+        # checkout: a session in a worktree was told about a task file that
+        # did not exist where it works, and went looking for it.
         try:
-            files = sorted(
-                p.name for p in ctx.agent_dir.iterdir() if p.is_file()
-            )
-            if files:
-                snap["workspace_files"] = files[:20]
+            _ws = Path(_agent_workspace_path())
+            if _ws.is_dir():
+                snap["workspace_dir"] = str(_ws)
+                files = sorted(p.name for p in _ws.iterdir() if p.is_file())
+                if files:
+                    snap["workspace_files"] = files[:20]
         except Exception:
             pass
 
@@ -16707,11 +16761,18 @@ def create_tab(ctx):
 
         commits: list[str] = []
         branch_name = ""
+        # Branch and commits of the session's workspace, not ctx.repo_dir
+        # (the launch checkout): a session in a worktree works on the
+        # worktree's branch.
+        try:
+            _git_cwd = _agent_workspace_path() or str(ctx.repo_dir or Path.cwd())
+        except Exception:
+            _git_cwd = str(ctx.repo_dir or Path.cwd())
         try:
             import subprocess as _sp
             _r = _sp.run(
                 ["git", "log", "-3", "--oneline"],
-                cwd=str(ctx.repo_dir or Path.cwd()),
+                cwd=_git_cwd,
                 capture_output=True, text=True, timeout=2,
             )
             if _r.returncode == 0:
@@ -16720,7 +16781,7 @@ def create_tab(ctx):
                 ]
             _b = _sp.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=str(ctx.repo_dir or Path.cwd()),
+                cwd=_git_cwd,
                 capture_output=True, text=True, timeout=2,
             )
             if _b.returncode == 0:
@@ -18102,6 +18163,17 @@ def create_tab(ctx):
 
         # Hide any pending question UI when user sends a message
         _hide_question_ui()
+
+        # An open ask_user_question takes the line as its answer. Not a
+        # built-in slash command (/stop must still stop), and not what the
+        # session sends on its own -- only the user answers a question.
+        if (not state.get("_on_its_own")
+                and user_text.split()[0].lower()
+                not in _BUILTIN_SLASH_PREFIXES
+                and _answer_ask_from_chat(user_text)):
+            input_textarea.value = ""
+            _append_chat_message("user", user_text)
+            return
 
         # Slash commands execute immediately, even during streaming.
         # But file paths like /home/... are NOT slash commands — only
