@@ -91,8 +91,9 @@ _CHEMISTRY_EXTS = frozenset({
 _CHEMISTRY_NAMES = frozenset({"CONTROL.txt", "control.txt", "coord"})
 _SNIFF_EXTS = frozenset({".out", ".inp", ".log"})
 _CHEMISTRY_SNIFF_RE = re.compile(
-    r"O\s{2,}R\s{2,}C\s{2,}A|\bx\s?T\s?B\b|xtb version|Entering Gaussian"
-    r"|TURBOMOLE|^\s*\*\s*xyzfile?\b|^\s*%(?:pal|maxcore|scf)\b",
+    r"O\s{2,}R\s{2,}C\s{2,}A|\bx T B\b|(?i:\bxtb\b)|Entering Gaussian"
+    r"|TURBOMOLE|FINAL SINGLE POINT ENERGY|HOMO-LUMO GAP"
+    r"|^\s*\*\s*xyzfile?\b|^\s*%(?:pal|maxcore|scf)\b",
     re.MULTILINE)
 _OFFICE_EXTS = frozenset({
     ".xlsx", ".xlsm", ".xls", ".ods", ".docx", ".doc", ".odt", ".pdf",
