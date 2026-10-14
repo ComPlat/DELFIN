@@ -458,7 +458,9 @@ class PromptLoader:
             from delfin.agent.provider_profile import format_profile_context
             provider = getattr(self, "_active_provider", "claude")
             profile_path = getattr(self, "_profile_path", None)
-            return format_profile_context(provider, profile_path, mode_id=mode_id)
+            delfin, _stacks = self._workspace_selection()
+            return format_profile_context(provider, profile_path,
+                                          mode_id=mode_id, domain=delfin)
         except Exception:
             return ""
 
@@ -1089,6 +1091,10 @@ class PromptLoader:
         Triggered when the task contains chemistry keywords.  Code-enforced
         rather than prompt-only to ensure compliance.
         """
+        # The protocol mandates search_docs over DELFIN's doc index, which
+        # is offered only in a DELFIN tree (_DELFIN_ONLY_TOOL_NAMES).
+        if self.is_delfin_workspace is False:
+            return ""
         try:
             from delfin.agent.briefing import classify_task
             if classify_task(task_text) != "chemistry":
@@ -1363,8 +1369,75 @@ class PromptLoader:
         return "\n\n".join(parts)
 
     def load_role_prompt(self, role_id: str) -> str:
-        """Load agents/{role_id}.md."""
-        return self._cached_read(self.agent_dir / "agents" / f"{role_id}.md")
+        """Load agents/{role_id}.md, with its workspace blocks selected."""
+        return self._select_workspace_blocks(
+            self._cached_read(self.agent_dir / "agents" / f"{role_id}.md"))
+
+    # ------- Workspace blocks (DELFIN context, language stack) ------------
+
+    # ``<!-- context:delfin -->`` ... ``<!-- /context -->`` holds text that
+    # only applies where DELFIN's chemistry context does (a DELFIN tree, a
+    # calc folder, chemistry files). ``<!-- stack:X -->`` ... ``<!--
+    # /stack -->`` holds advice for one language stack (python, node,
+    # rust, go, generic). Regions do not nest, and unlike the lazy
+    # modules they may sit anywhere in the file: what selects them is
+    # decided once per session, so their position costs the prefix cache
+    # nothing within a session.
+    _REGION_RE = re.compile(
+        r"^<!--\s*(context|stack):([a-z_]+)\s*-->[ \t]*\n(.*?)"
+        r"^<!--\s*/\1\s*-->[ \t]*\n",
+        re.MULTILINE | re.DOTALL,
+    )
+
+    def _workspace_selection(self) -> tuple[bool, frozenset[str]]:
+        """``(delfin_context, stacks)`` for the block selection.
+
+        Without a toolsets decision (CLI backend, a loader built in a
+        test) every DELFIN block is kept and the Python advice is shown:
+        the text this file carried before the regions existed. With one,
+        the DELFIN context follows the chemistry group (or a DELFIN tree)
+        and the stacks are the workspace's, ``generic`` when none is
+        detected.
+        """
+        toolsets = self._session_toolsets()
+        if toolsets is None:
+            return True, frozenset({"python"})
+        try:
+            delfin = bool(toolsets.is_delfin_workspace
+                          or toolsets.offered("chemistry"))
+            stacks = frozenset(toolsets.stacks()) or frozenset({"generic"})
+        except Exception:
+            return True, frozenset({"python"})
+        return delfin, stacks
+
+    def _select_workspace_blocks(self, text: str) -> str:
+        if not text or "<!-- " not in text:
+            return text
+        delfin, stacks = self._workspace_selection()
+
+        def _keep(m: "re.Match[str]") -> str:
+            kind, name, body = m.group(1), m.group(2), m.group(3)
+            if kind == "context":
+                return body if (name == "delfin" and delfin) else ""
+            return body if name in stacks else ""
+
+        return self._REGION_RE.sub(_keep, text)
+
+    def _excluded_modules(self, role_id: str = "") -> frozenset[str]:
+        """Lazy modules that describe a tool group this session is not
+        offered: they are dropped whatever the task text says."""
+        toolsets = self._session_toolsets()
+        if toolsets is None:
+            return frozenset()
+        out: set[str] = set()
+        try:
+            if not toolsets.offered("chemistry", role=role_id):
+                out.add("chemistry")
+            if not toolsets.offered("office", role=role_id):
+                out.add("documents")
+        except Exception:
+            return frozenset()
+        return frozenset(out)
 
     # ------- Progressive disclosure (lazy-load heavy prompt modules) ------
 
@@ -1710,7 +1783,8 @@ class PromptLoader:
         except Exception:
             _enabled = True
             _compact_setting = False
-        if not _enabled:
+        excluded = self._excluded_modules(role_id)
+        if not _enabled and not excluded:
             # Just strip the marker comments but keep all content
             return self._MODULE_MARKER_RE.sub("", text)
 
@@ -1754,8 +1828,14 @@ class PromptLoader:
         # a tidiness question. A test keeps them at the tail.
         active = self._detect_active_modules(
             task_text, mode_id, session_key=session_key, role_id=role_id,
-            conversation_text=conversation_text, everything=_everything,
+            conversation_text=conversation_text,
+            everything=_everything or not _enabled,
         )
+        if not _enabled:
+            _compact = False
+        # A module describing a tool group the session is not offered is
+        # out whatever triggered: the tools it names are not in the list.
+        active -= excluded
         lines = text.splitlines(keepends=True)
         out: list[str] = []
         i = 0
