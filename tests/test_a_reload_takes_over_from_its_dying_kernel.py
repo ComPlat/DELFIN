@@ -43,9 +43,7 @@ import sys
 from delfin.agent import session_store as ss
 from pathlib import Path
 ss._SESSIONS_DIR = Path(sys.argv[1])
-_identify = getattr(ss, "set_lock_identity", None)
-if _identify:
-    _identify(kernel=sys.argv[3])
+ss.set_lock_identity(kernel=sys.argv[3])
 ss.acquire_session_lock(sys.argv[2])
 print("HELD", flush=True)
 for line in sys.stdin:
@@ -206,3 +204,64 @@ def test_a_conversation_refused_on_start_stays_in_the_open_list(
     _widget, refs = AS.create_tab(ctx, build=_build)
     refs["refresh"]()
     assert [r["session_id"] for r in AS.load_open_sessions()] == [SID]
+
+
+# ---------------------------------------------------------------------------
+# The rules underneath
+# ---------------------------------------------------------------------------
+
+def test_the_server_record_follows_the_window(tmp_path):
+    from delfin.dashboard import window_state as W
+    manager = _server(windows_left=0)
+    assert W.is_windowless(OLD_KERNEL)
+    manager.notify_connect(OLD_KERNEL)          # the window came back
+    assert not W.is_windowless(OLD_KERNEL)
+    manager.notify_disconnect(OLD_KERNEL)
+    asyncio.run(manager.shutdown_kernel(OLD_KERNEL))
+    assert not W.is_windowless(OLD_KERNEL), "an ended kernel leaves no record"
+
+
+def test_no_takeover_from_a_kernel_running_a_turn(tmp_path, monkeypatch):
+    from delfin.dashboard import turn_record, window_state as W
+    _server(windows_left=0)
+    holder = {"pid": 1, "host": ss._this_host(), "elsewhere": False,
+              "kernel": OLD_KERNEL}
+    assert W.may_take_over(holder)
+    monkeypatch.setattr(turn_record, "running_kernel_ids",
+                        lambda **k: {OLD_KERNEL})
+    assert not W.may_take_over(holder)
+
+
+@pytest.mark.parametrize("holder", [
+    None,
+    {"pid": 1, "elsewhere": True, "kernel": OLD_KERNEL},   # another node
+    {"pid": 1, "elsewhere": False, "kernel": ""},          # a CLI, no kernel
+])
+def test_only_a_windowless_kernel_here_is_taken_over(holder):
+    from delfin.dashboard import window_state as W
+    _server(windows_left=0)
+    assert not W.may_take_over(holder)
+
+
+def test_a_refresh_in_the_instant_of_the_handover_does_not_win(
+        tmp_path, monkeypatch, holder):
+    """The old holder rewrote its lock right after the handover: the
+    handover record decides, so the new kernel keeps saving and the old
+    one is refused."""
+    proc, _history = holder
+    import os
+    assert ss.take_over_session_lock(SID, proc.pid)
+    lock = ss._SESSIONS_DIR / f"{SID}.lock"
+    lock.write_text(json.dumps({"pid": proc.pid, "ts": time.time(),
+                                "host": ss._this_host()}))
+    ss.acquire_session_lock(SID)
+    assert json.loads(lock.read_text())["pid"] == os.getpid()
+    assert _ask_holder_to_save(proc) == f"REFUSED {os.getpid()}"
+    ss.release_session_lock(SID)
+    assert not (ss._SESSIONS_DIR / f"{SID}.handover").exists()
+
+
+def test_a_takeover_needs_the_holder_it_was_decided_for(holder):
+    proc, _history = holder
+    assert not ss.take_over_session_lock(SID, proc.pid + 100000)
+    assert _ask_holder_to_save(proc) == "SAVED"
