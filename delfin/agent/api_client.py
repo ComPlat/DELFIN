@@ -3425,6 +3425,15 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # `test -f export.py && echo exists`).
     r"^\s*cmp\b", r"^\s*comm\b",
     r"^\s*test\s+", r"^\s*\[\s+",
+    # DELFIN's own status view (delfin/agent/ops_status.py): it reads git
+    # with --no-optional-locks, the process table of this uid and the
+    # session records, and writes nothing. End-anchored with a token
+    # whitelist, so no other subcommand, flag, redirect or substitution
+    # rides on it; the --repo path is a literal (no $ ( ` ;). In every
+    # workspace, not only DELFIN's, because the question it answers is
+    # about the installation, not the project.
+    r"^\s*delfin-agent\s+ops\s+status(?:\s+(?:--json|-h|--help|"
+    r"--repo(?:=|\s+)[A-Za-z0-9_./~@:+=-]+))*\s*$",
 )
 
 # DELFIN-specific bash auto-allow patterns — merged into the auto-allow

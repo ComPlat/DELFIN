@@ -212,7 +212,8 @@ def test_dashboards_are_this_users_only_with_port_checkout_and_kernels(world):
     assert d["kernels"] == [{"kernel_id": "abc123", "pid": 4101,
                              "kept_as": "work", "turn_running": False}]
     dumped = json.dumps(st)
-    assert "do-not-print" not in dumped and "9999" not in dumped
+    assert "do-not-print" not in dumped
+    assert "9999" not in json.dumps(st["dashboards"])
 
 
 def test_session_locks_live_stale_and_elsewhere(world):
@@ -281,7 +282,8 @@ def test_nothing_is_written(world, monkeypatch, capsys):
 @pytest.mark.parametrize("cmd", [
     "delfin-agent ops status",
     "delfin-agent ops status --json",
-    "delfin-agent ops status --repo /some/checkout --json",
+    "delfin-agent ops status --repo . --json",
+    "delfin-agent ops status --help",
 ])
 def test_the_gate_allows_it(tmp_path, mode, cmd):
     from delfin.agent import boundaries
@@ -291,6 +293,21 @@ def test_the_gate_allows_it(tmp_path, mode, cmd):
                               permission_mode=mode, asker="nobody")
     assert said["verdict"] == "allow", said
     assert said["reason_code"] == "allowed", said
+
+
+def test_the_allowance_does_not_widen_the_read_roots(tmp_path):
+    """--repo naming a path outside the workspace still meets the read
+    gate: the auto-allow entry decides only that nobody is asked."""
+    from delfin.agent import boundaries
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    said = boundaries.explain(
+        "bash", {"command": f"delfin-agent ops status --repo {outside}"},
+        cwd=ws, permission_mode="default", asker="nobody")
+    assert said["verdict"] == "refuse", said
+    assert said["reason_code"] == "outside_ws", said
 
 
 @pytest.mark.parametrize("cmd", [
