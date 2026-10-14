@@ -7,6 +7,7 @@ over tampered principles does not start, and says why.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -46,3 +47,36 @@ def test_a_session_over_tampered_principles_does_not_start_and_says_why(tmp_path
         w.close()
     assert "refusing to start" in ended["reason"] and "a test" in ended["reason"], ended
     assert w.proc.returncode == 2
+
+
+def test_inline_is_asked_of_the_window_by_its_flag(monkeypatch, tmp_path):
+    # `delfin-agent tui --inline` hands the window DELFIN_TUI_SCREEN=inline;
+    # without it the window takes the whole terminal (its own default).
+    from delfin.agent import cli
+    from delfin.agent.service import cli_service, launcher
+
+    handed: list[dict] = []
+
+    class Exec(Exception):
+        pass
+
+    def execvpe(path, argv, env):
+        handed.append(dict(env))
+        raise Exec()
+
+    monkeypatch.setattr(cli_service, "_security_preamble", lambda: None)
+    monkeypatch.setattr(launcher, "ensure_service", lambda: {"pid": 1})
+    monkeypatch.setattr(launcher, "tui_command", lambda: ["/bin/true"])
+    monkeypatch.setattr(launcher, "service_command", lambda: ["svc"])
+    monkeypatch.setattr(launcher, "other_host_notes", lambda: [])
+    monkeypatch.setattr(cli_service.os, "execvpe", execvpe)
+    monkeypatch.delenv("DELFIN_TUI_SCREEN", raising=False)
+    parser = cli.build_parser()
+    for argv, screen in ((["tui", "--cwd", str(tmp_path)], None),
+                         (["tui", "--inline", "--cwd", str(tmp_path)], "inline")):
+        try:
+            cli_service.cmd_tui(parser.parse_args(argv))
+        except Exec:
+            pass
+        assert handed[-1].get("DELFIN_TUI_SCREEN") == screen, argv
+        assert "inline" not in json.loads(handed[-1]["DELFIN_TUI_START"])      # not a session's setting

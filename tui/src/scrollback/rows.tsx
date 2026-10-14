@@ -15,7 +15,7 @@ import { DOLPHIN, DOLPHIN_WIDTH } from "../theme/logo"
 import { GUTTER, markdownStyles, type Theme } from "../theme/theme"
 import type { DiffRow, ToolResult } from "./tools"
 import type { Item } from "./transcript"
-import { commitSurface, markdownBlock } from "./writers"
+import { SETTLE_MS, commitSurface, markdownBlock, type QuietTarget } from "./writers"
 
 type Fields = Record<string, any>
 
@@ -38,30 +38,32 @@ const SOURCE_MARK: Record<string, string> = {
   user: "❯ ", queued: "❯ ", steer: "↳ ", harness: "◇ ",
 }
 
-function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
+export function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
   const f = props.item as Fields
   const t = props.theme
   switch (props.item.kind) {
     case "banner": {
       // The dolphin beside what the session is, where both have room;
       // the words alone (under the mark ◆) where they do not.
-      const logo = props.width >= DOLPHIN_WIDTH + LOGO_GAP + BANNER_TEXT_MIN
+      // A function: a full-screen row follows the width (rows.tsx is drawn
+      // once into the scrollback, but lives on in the window).
+      const logo = () => props.width >= DOLPHIN_WIDTH + LOGO_GAP + BANNER_TEXT_MIN
       return (
         <box flexDirection="row" paddingTop={1} paddingBottom={1}>
-          <Show when={logo}>
+          <Show when={logo()}>
             <box flexDirection="column" flexShrink={0} width={DOLPHIN_WIDTH + LOGO_GAP}>
               <For each={DOLPHIN}>{(row) => <text fg={t.accent} wrapMode="none">{row}</text>}</For>
             </box>
           </Show>
           {/* A basis of 0: the words wrap at what is left, and every wrapped
               row is counted (an auto basis measured them unwrapped). */}
-          <box flexDirection="column" flexGrow={1} flexShrink={1} flexBasis={0} paddingTop={logo ? 1 : 0}>
+          <box flexDirection="column" flexGrow={1} flexShrink={1} flexBasis={0} paddingTop={logo() ? 1 : 0}>
             <text>
-              <span style={{ fg: t.accent, bold: true }}>{logo ? "DELFIN" : "◆ DELFIN"}</span>
+              <span style={{ fg: t.accent, bold: true }}>{logo() ? "DELFIN" : "◆ DELFIN"}</span>
               <span style={{ fg: t.muted }}>{"  " + String(f.head ?? "")}</span>
             </text>
             <For each={(f.lines ?? []) as string[]}>
-              {(line) => <text fg={t.faint}>{(logo ? "" : "  ") + line}</text>}
+              {(line) => <text fg={t.faint}>{(logo() ? "" : "  ") + line}</text>}
             </For>
           </box>
         </box>
@@ -135,15 +137,15 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
     case "divider": {
       // A column short of the right edge, as the gutter is at the left;
       // the label in columns (a name in CJK takes two each), cut to fit.
-      const span = props.width - GUTTER
-      const label = ` ${fit(String(f.text ?? ""), Math.max(4, span - 6))} `
-      const side = Math.max(2, Math.floor((span - width(label)) / 2))
+      const span = () => props.width - GUTTER
+      const label = () => ` ${fit(String(f.text ?? ""), Math.max(4, span() - 6))} `
+      const side = () => Math.max(2, Math.floor((span() - width(label())) / 2))
       return (
         <box paddingTop={1}>
           <text>
-            <span style={{ fg: t.accent }}>{"━".repeat(side)}</span>
-            <span style={{ fg: t.accentSoft, bold: true }}>{label}</span>
-            <span style={{ fg: t.accent }}>{"━".repeat(Math.max(0, span - side - width(label)))}</span>
+            <span style={{ fg: t.accent }}>{"━".repeat(side())}</span>
+            <span style={{ fg: t.accentSoft, bold: true }}>{label()}</span>
+            <span style={{ fg: t.accent }}>{"━".repeat(Math.max(0, span() - side() - width(label())))}</span>
           </text>
         </box>
       )
@@ -166,7 +168,7 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
 function ToolResultRows(props: { result: ToolResult; theme: Theme; width: number }): JSX.Element {
   const t = props.theme
   const r = props.result
-  const room = Math.max(10, props.width - 6)
+  const room = () => Math.max(10, props.width - 6)
   if (r.kind === "blocked") {
     return <text fg={t.err} wrapMode="none">{"  ⎿ " + fit(`blocked: ${r.reason}`, props.width - 4)}</text>
   }
@@ -188,7 +190,7 @@ function ToolResultRows(props: { result: ToolResult; theme: Theme; width: number
           {(row) => (
             <text wrapMode="none">
               <span>{"      "}</span>
-              <span style={{ fg: tone(row), bg: bg(row) }}>{fit(row.text, room)}</span>
+              <span style={{ fg: tone(row), bg: bg(row) }}>{fit(row.text, room())}</span>
             </text>
           )}
         </For>
@@ -201,7 +203,7 @@ function ToolResultRows(props: { result: ToolResult; theme: Theme; width: number
   return (
     <box flexDirection="column">
       <text fg={r.ok ? t.muted : t.err} wrapMode="none">{"  ⎿ " + fit(r.summary, props.width - 4)}</text>
-      <For each={r.lines}>{(line) => <text fg={t.faint} wrapMode="none">{"      " + fit(line, room)}</text>}</For>
+      <For each={r.lines}>{(line) => <text fg={t.faint} wrapMode="none">{"      " + fit(line, room())}</text>}</For>
     </box>
   )
 }
@@ -223,13 +225,20 @@ export function shownText(item: Item): string {
   }
 }
 
-export function itemWriter(renderer: CliRenderer, theme: () => Theme) {
-  return async (item: Item): Promise<void> => {
+export function itemWriter(renderer: CliRenderer, theme: () => Theme,
+                           options: { release?: (item: Item) => void } = {}) {
+  return async (item: Item, how?: { first: boolean }): Promise<void> => {
     const f = item as Fields
     const t = theme()
     if (item.kind === "markdown") {
+      // A block the footer still shows (held, written the first time):
+      // the footer lets go of it in the same step its rows are queued.
+      const release = options.release
+      const handOff = how?.first && f.held && release
+        ? { renderer: renderer as unknown as QuietTarget, release: () => release(item) } : undefined
       await commitSurface(renderer, markdownBlock(String(f.text ?? ""),
-                                                  { styles: markdownStyles(t), marginTop: 1, gutter: GUTTER }))
+                                                  { styles: markdownStyles(t), marginTop: 1, gutter: GUTTER }),
+                          SETTLE_MS, handOff)
       return
     }
     // Every row starts a column in (the gutter); its width is what is left.

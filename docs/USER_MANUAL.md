@@ -1452,17 +1452,24 @@ If you ask for the pull-request route in a message ("über PR", "per Pull Reques
 ### The terminal window: `delfin-agent tui`
 
 `delfin-agent tui` is a terminal window over all your agent sessions. It
-draws inline, like `delfin-agent chat`: finished output goes into the
-terminal's own scrollback, only the bottom of the screen is live. Unlike
-`chat`, the sessions do not live in the window: they run in the **agent
-service**, one background process per user and host, so closing the window
-(ctrl+d, or ctrl+c twice) leaves them running, and the next window finds
-them again.
+takes the whole terminal: the conversation scrolls inside the window -- the
+mouse wheel, PgUp/PgDn, ctrl+home/end -- above the prompt, which stays at
+the bottom; a drag selects text and copies it (OSC 52, also over SSH;
+shift+drag gives the terminal's own selection). Closing it gives the shell
+its lines back as they were, with a line on how to come back.
+`delfin-agent tui --inline` (or `"screen": "inline"` in `tui.json`) draws
+the way `delfin-agent chat` does instead: under the shell's last line,
+finished output in the terminal's own scrollback, only the bottom live --
+the default under GNU screen. Unlike `chat`, the sessions do not live in
+the window: they run in the **agent service**, one background process per
+user and host, so closing the window (ctrl+d, or ctrl+c twice) leaves them
+running, and the next window finds them again.
 
 ```bash
 delfin-agent tui                       # a new session in the current folder
 delfin-agent tui --resume <id>         # a saved session (or one that runs)
 delfin-agent tui --model kit.deepseek-v4-flash --permission-mode acceptEdits
+delfin-agent tui --inline              # in the terminal's own scrollback
 delfin-agent service status            # the service, its sessions, its windows
 delfin-agent service stop              # end it; sessions are saved
 delfin-agent service restart           # e.g. after an update
@@ -1516,10 +1523,11 @@ what the session needs or does in a few words.
 | alt+1 … alt+9 | open the n-th session |
 | esc or ← | back |
 
-The view uses the terminal's alternate screen, so esc gives the screen back
-exactly as it was. Under GNU screen, whose alternate screen is off unless
-`altscreen on` is in your `.screenrc`, it grows the footer instead (set
-`DELFIN_TUI_AGENTS_SCREEN=alternate` if yours is on). When a session other
+Full screen, the view takes the window's screen and esc gives the
+conversation back. Inline, it uses the terminal's alternate screen, so esc
+gives the screen back exactly as it was; under GNU screen, whose alternate
+screen is off unless `altscreen on` is in your `.screenrc`, it grows the
+footer instead (set `DELFIN_TUI_AGENTS_SCREEN=alternate` if yours is on). When a session other
 than the one in view waits for you, the hints line says so (◉) and so does
 the terminal's title.
 
@@ -1544,10 +1552,11 @@ the service and its sessions running for as long as the node allows;
 `delfin-agent service stop` before you log out ends them cleanly. A
 window whose SSH connection drops ends; its sessions run on.
 
-**Resizing.** After the terminal's width changes, the window erases the
-scrollback and writes the last `replayTurns` turns again at the new width
-(under GNU screen, which cannot erase its scrollback, a divider says the
-width changed instead).
+**Resizing.** Full screen, the conversation re-wraps at the new width by
+itself (ctrl+l draws every cell again). Inline, after the terminal's width
+changes the window erases the scrollback and writes the last `replayTurns`
+turns again at the new width (under GNU screen, which cannot erase its
+scrollback, a divider says the width changed instead).
 
 **Settings: `~/.delfin/tui.json`** (`DELFIN_TUI_CONFIG` moves it):
 
@@ -1566,9 +1575,10 @@ width changed instead).
 |---------|---------|
 | `theme` | `auto` (from the terminal's background), `dark`, `light`, or `mono` (the terminal's own colours; also chosen when `NO_COLOR` is set and the theme is `auto`) |
 | `colors` | overrides for theme tokens: `accent`, `accentSoft`, `text`, `bright`, `muted`, `faint`, `ok`, `warn`, `err`, `code`, `string`, `added`, `removed` (`#rrggbb`) |
-| `keys` | rebinds actions: `submit`, `newline`, `interrupt`, `steer`, `cycleMode`, `expand`, `tasks`, `redraw`, `agents`, `palette`, `quit`, `historyPrev`, `historyNext`, `historySearch`, `agentsUp`, `agentsDown`, `agentsOpen`, `agentsPeek`, `agentsBack`, `agentsStop`, `agentsRename`, `agentsPin`; a key is `ctrl+g`, `shift+tab`, `escape`, `left`, `alt+return`, … |
+| `keys` | rebinds actions: `submit`, `newline`, `interrupt`, `steer`, `cycleMode`, `expand`, `tasks`, `redraw`, `agents`, `palette`, `quit`, `historyPrev`, `historyNext`, `historySearch`, `agentsUp`, `agentsDown`, `agentsOpen`, `agentsPeek`, `agentsBack`, `agentsStop`, `agentsRename`, `agentsPin`, `scrollUp`, `scrollDown`, `scrollTop`, `scrollBottom`; a key is `ctrl+g`, `shift+tab`, `escape`, `left`, `alt+return`, … |
 | `replayTurns` | turns written again on opening a session or after a resize (0: all) |
 | `showThinking` | show the model's thinking (as `-v`) |
+| `screen` | `auto` (the whole terminal; inline under GNU screen), `full` or `inline`; `DELFIN_TUI_SCREEN` and `--inline` come first |
 
 A setting that cannot be read is reported in the window and the default
 applies. The window keeps its prompt history in `~/.delfin/tui_history.jsonl`

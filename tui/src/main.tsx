@@ -11,14 +11,14 @@
  */
 import { appendFileSync } from "node:fs"
 import { dirname } from "node:path"
-import { createCliRenderer } from "@opentui/core"
+import { createCliRenderer, getTreeSitterClient } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { createSignal } from "solid-js"
 import { Pins } from "./agents/pins"
 import { createAgentScreen } from "./agents/screen"
 import { App } from "./app"
 import { History } from "./composer/history"
-import { loadConfig } from "./config/config"
+import { loadConfig, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent } from "./protocol/generated"
 import { startSessionView } from "./session"
@@ -27,6 +27,7 @@ import { createAppStore, eventsOf, eventsOfUnknown, listed, withReplay } from ".
 import { readState, updateState } from "./config/state"
 import { noColor, themeFor } from "./theme/theme"
 import { bounded } from "./scrollback/queue"
+import { createScreenItems } from "./scrollback/screenview"
 import { ServiceConnection, type ServiceHello } from "./transport/rpc"
 
 // The kitty-graphics probe retitles tmux panes; this TUI draws no images.
@@ -102,11 +103,22 @@ try {
 }
 
 step("hello answered")
+// The whole terminal (the default) or inline under the shell's output
+// (`--inline`, tui.json "screen", GNU screen): config.ts screenModeOf.
+const full = screenModeOf(loaded.config.screen) === "full"
 const renderer = await createCliRenderer({
-  screenMode: "split-footer",
+  screenMode: full ? "alternate-screen" : "split-footer",
   footerHeight: 4,
-  externalOutputMode: "capture-stdout",
-  useMouse: false,
+  // Captured stdout is a split-footer thing (it goes to the scrollback);
+  // the window itself never writes to stdout while it runs.
+  externalOutputMode: full ? "passthrough" : "capture-stdout",
+  // Full screen takes the mouse: the wheel scrolls the conversation, a
+  // drag selects and copies (shift+drag is the terminal's own selection).
+  // Buttons and drags only (no reports of every move: nothing hovers), and
+  // a click never takes the keys from the prompt (its focus is the app's).
+  useMouse: full,
+  enableMouseMovement: false,
+  autoFocus: false,
   exitOnCtrlC: false,
   targetFps: 30,
   maxFps: 60,
@@ -114,6 +126,10 @@ const renderer = await createCliRenderer({
   useKittyKeyboard: {},
 })
 step("renderer created")
+// The highlighter starts its worker and loads the markdown grammar when it
+// is first used -- some hundreds of ms in which the first finished block
+// waits to be shown: started now, while the session is attached.
+void getTreeSitterClient().highlightOnce("# DELFIN\n\n**ready**", "markdown").catch(() => undefined)
 // NO_COLOR asks for no colours of the window's own, unless tui.json names
 // a theme. "auto" draws at once with the theme the terminal said last time
 // and asks it again meanwhile: waiting for the answer before the first
@@ -135,7 +151,8 @@ if (auto) {
 }
 // `--verbose` shows the thinking, as in chat; tui.json can make it the default.
 const showThinking = loaded.config.showThinking || Boolean(start.verbose)
-const view = startSessionView(renderer, store, theme, { showThinking, replayTurns: loaded.config.replayTurns })
+const screen = full ? createScreenItems() : undefined
+const view = startSessionView(renderer, store, theme, { showThinking, replayTurns: loaded.config.replayTurns, screen })
 store.update((d) => {
   d.mayAct = Boolean(hello.mayAct)
   d.host = String(hello.host ?? "")
@@ -382,7 +399,35 @@ function quit(): void {
     // OpenTUI flushes queued scrollback after destroy; the process ends on
     // its own once that is written (never exit from onDestroy).
     renderer.destroy()
+    // Full screen gives the shell its lines back as they were: one line
+    // says what became of the session -- written as the process ends, when
+    // the terminal is surely the shell's again (OpenTUI restores it after
+    // destroy() returns).
+    if (full) {
+      const note = leavingNote()
+      process.once("exit", () => {
+        try {
+          process.stdout.write(note)
+        } catch {
+          // a terminal already gone
+        }
+      })
+    }
   })()
+}
+
+/** What leaving a full-screen window says: why it closed when the service
+ *  went (said in the window too, but that screen is gone), else whether
+ *  the session runs on -- and how to come back to it. */
+function leavingNote(): string {
+  const plain = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+  if (connection.problem) return `DELFIN: ${plain(connection.problem)}\n`
+  const s = current ? store.state.sessions[current] : undefined
+  if (!s) return ""
+  const name = s.title || s.summary?.title || `session ${s.id.slice(0, 8)}`
+  if (s.state === "ended") return `DELFIN: ${plain(name)} has ended${s.ended?.reason ? ` (${plain(s.ended.reason)})` : ""}.\n`
+  return `DELFIN: ${plain(name)} keeps running in the agent service -- `
+    + `delfin-agent tui --resume ${s.id} opens it again (or ← in any window).\n`
 }
 
 function leaveNow(): void {
@@ -420,7 +465,8 @@ const pins = Pins.load()
 // The agent view on the alternate screen -- except under GNU screen, whose
 // alternate screen is off unless .screenrc turns it on ("altscreen"): there
 // the view grows the footer instead.
-const agentScreen = (process.env.DELFIN_TUI_AGENTS_SCREEN ?? (process.env.STY ? "footer" : "alternate")) === "footer"
+// Full screen has the view in the window already: no screen to switch to.
+const agentScreen = full || (process.env.DELFIN_TUI_AGENTS_SCREEN ?? (process.env.STY ? "footer" : "alternate")) === "footer"
   ? undefined : createAgentScreen(renderer, view.queue)
 
 // The window takes keys from the start: a session that is slow to start
@@ -429,7 +475,7 @@ await render(() => (
   <App renderer={renderer} store={store} keymap={keymap} theme={theme} history={History.load()} sentAs={view.sentAs}
        client={connection.rpc} onQuit={quit} onRedraw={() => void view.redraw()}
        onExpand={() => view.expandLast()} onResume={(id, ws) => void switchTo(id, ws)}
-       onNewSession={newSession} pins={pins} agentScreen={agentScreen}
+       onNewSession={newSession} pins={pins} agentScreen={agentScreen} screen={screen}
        onThinking={(on) => view.setShowThinking(on)} thinking={() => view.showThinking}
        onLines={(title, lines) => view.lines(title, lines)} />
 ), renderer)

@@ -9,7 +9,7 @@
  * An approval leaves one line saying how it was answered.
  */
 import type { AnyEvent } from "../protocol/generated"
-import type { AppState } from "../store/state"
+import type { AppState, SessionState } from "../store/state"
 import { AnswerBlocks, splitMarkdown } from "./blocks"
 import { resultBody, shortToolName, stripControl, toolHeadline, toolResult } from "./tools"
 import type { Transcript } from "./transcript"
@@ -21,6 +21,9 @@ export interface PresentOptions {
   /** A message as the user typed it, when this window sent it with its
    *  pastes put back (the placeholder reads better than the paste). */
   shownAs?: (text: string) => string | undefined
+  /** A finished block's rows are drawn: it leaves the footer (the
+   *  session's `held`). */
+  release?: (session: string, key: string) => void
 }
 
 function compact(n: number): string {
@@ -47,17 +50,33 @@ export class Presenter {
   private lastError = ""
   private lastOutput: { name: string; output: string } | null = null
   private n = 0
+  /** The session's state in the batch being handled: an answer's blocks
+   *  finish over many batches. */
+  private s: SessionState | undefined
+  private static made = 0
+  private readonly no = ++Presenter.made
 
   /** `groups` numbers the turns (shared by the window's presenters): a
    *  replay capped by turns keeps the newest. */
   constructor(readonly sessionId: string, private readonly transcript: Transcript,
               private readonly options: PresentOptions, private readonly groups: { n: number } = { n: 0 }) {}
 
-  private add(kind: string, fields: Fields): void {
+  /** Resolves once the item's rows are drawn. */
+  private add(kind: string, fields: Fields): Promise<void> {
     // A message that starts a turn starts its group; a queued or steered
     // one stays in the turn it was sent into.
     if (kind === "user" && (fields.source === "user" || fields.source === "harness" || !fields.source)) this.groups.n++
-    void this.transcript.append({ id: `${this.sessionId}:${++this.n}`, kind, group: this.groups.n, ...fields })
+    return this.transcript.append({ id: `${this.sessionId}:${++this.n}`, kind, group: this.groups.n, ...fields })
+  }
+
+  /** A block of a streamed answer is final: into the rows -- and on in the
+   *  footer, under the key it streamed with, until its rows are drawn. */
+  private hold(text: string, key: string): void {
+    this.s?.held?.push({ key, text })
+    // The writer lets go of it as its rows are drawn (in one step with
+    // them); this is for a write that failed or drew nothing.
+    void this.add("markdown", { text, held: key, session: this.sessionId })
+      .finally(() => this.options.release?.(this.sessionId, key))
   }
 
   /** Every event of a batch; only this session's are shown. */
@@ -70,6 +89,7 @@ export class Presenter {
 
   private one(e: Fields, draft: AppState): void {
     const s = draft.sessions[this.sessionId]
+    this.s = s
     const setTail = (tail: string) => {
       if (s) s.tail = tail
     }
@@ -89,12 +109,12 @@ export class Presenter {
         this.add("user", { text: this.options.shownAs?.(String(e.text ?? "")) ?? e.text, source: e.source })
         break
       case "text.started":
-        this.part(String(e.partId ?? ""), setTail)
+        this.part(String(e.partId ?? ""))
         break
       case "text.delta": {
         const id = String(e.partId ?? "")
         if (this.endedParts.has(id)) break
-        this.part(id, setTail)?.append(String(e.delta ?? ""))
+        this.part(id)?.append(String(e.delta ?? ""))
         break
       }
       case "text.ended": {
@@ -215,10 +235,18 @@ export class Presenter {
     this.add("lines", { title: `${this.lastOutput.name}, in full`, lines: body ? body.split("\n") : ["(no output)"] })
   }
 
-  private part(id: string, setTail: (tail: string) => void): AnswerBlocks | null {
+  private part(id: string): AnswerBlocks | null {
     let blocks = this.parts.get(id)
     if (!blocks) {
-      blocks = new AnswerBlocks((block) => this.add("markdown", { text: block }), setTail)
+      // This presenter's own: a session shown again gets a new presenter,
+      // whose parts start their count anew while the last one's blocks
+      // may still be held.
+      const key = (n: number) => `${this.no}.${id}#${n}`
+      blocks = new AnswerBlocks((block, n) => this.hold(block, key(n)), (tail, n) => {
+        if (!this.s) return
+        this.s.tail = tail
+        this.s.tailKey = key(n)
+      })
       this.parts.set(id, blocks)
     }
     return blocks

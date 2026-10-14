@@ -19,10 +19,47 @@ import {
   type ScrollbackSurface,
 } from "@opentui/core"
 import { parsePatch } from "diff"
+import { drawPlain } from "./highlighter"
 import { bounded } from "./queue"
 
 export interface SurfaceTarget {
   createScrollbackSurface(options?: { startOnNewLine?: boolean }): ScrollbackSurface
+}
+
+/** What tells whether the renderer is between frames with nothing waiting
+ *  to be written (OpenTUI keeps both to itself). */
+export interface QuietTarget {
+  readonly rendering?: boolean
+  readonly externalOutputQueue?: { readonly size: number }
+  /** "explicit_suspended" while the terminal is handed over (/editor):
+   *  no frame comes then, and nothing is waited for. */
+  readonly controlState?: string
+}
+
+/** How long a hand-off waits for the renderer to be quiet before it goes
+ *  anyway (no frame may come at all: the window is suspended or closing). */
+const QUIET_WAIT_MS = 60
+
+/**
+ * Resolves when no frame is being drawn and nothing waits to be written.
+ * A change of the footer's height made then is applied at once; made
+ * while a frame is drawn or rows wait to go out, OpenTUI applies it a
+ * frame later -- the footer would have let go of a block's text and kept
+ * its rows for a frame, blank above the block's rows.
+ */
+export async function whenQuiet(target: QuietTarget, ms = QUIET_WAIT_MS): Promise<void> {
+  const until = Date.now() + ms
+  while ((target.rendering || (target.externalOutputQueue?.size ?? 0) > 0) && Date.now() < until
+         && target.controlState !== "explicit_suspended") {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+}
+
+/** A footer that shows the text of a block being committed: it lets go of
+ *  it right before the block's rows are queued, in the same step. */
+export interface HandOff {
+  renderer: QuietTarget
+  release: () => void
 }
 
 export interface Built {
@@ -37,6 +74,7 @@ export async function commitSurface(
   target: SurfaceTarget,
   build: (ctx: RenderContext) => Built,
   settleMs: number = SETTLE_MS,
+  handOff?: HandOff,
 ): Promise<void> {
   const surface = target.createScrollbackSurface({ startOnNewLine: true })
   let built: Built | undefined
@@ -44,8 +82,27 @@ export async function commitSurface(
     built = build(surface.renderContext)
     surface.root.add(built.root)
     surface.render()
-    await bounded(surface.settle(settleMs), settleMs + 250)
-    if (surface.height > 0) surface.commitRows(0, surface.height)
+    try {
+      await bounded(surface.settle(settleMs), settleMs + 250)
+    } catch {
+      // The highlighter did not answer in time (a busy node, a large
+      // code block): the rows go without colour -- never without text,
+      // which is what a block drawn before its highlighting shows.
+      drawPlain(built.root)
+      surface.render()
+    }
+    if (handOff) {
+      await whenQuiet(handOff.renderer)
+      handOff.release()
+    }
+    if (surface.isDestroyed) return
+    try {
+      if (surface.height > 0) surface.commitRows(0, surface.height)
+    } catch {
+      // The terminal changed size meanwhile: drawn again at the new one.
+      surface.render()
+      if (surface.height > 0) surface.commitRows(0, surface.height)
+    }
   } finally {
     surface.destroy()
     built?.dispose?.()

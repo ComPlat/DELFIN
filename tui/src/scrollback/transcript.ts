@@ -25,23 +25,27 @@ export interface ReplayTarget {
   resetSplitFooterForReplay(options?: { clearSavedLines?: boolean }): void
 }
 
-export type ItemWriter = (item: Item) => void | Promise<void>
+/** `first`: the item's first write (not a replay's). */
+export type ItemWriter = (item: Item, how: { first: boolean }) => void | Promise<void>
 
 export class Transcript {
   readonly items: Item[] = []
   private replays = 0
 
+  /** `keep`: what was written is kept for a replay (the scrollback's; the
+   *  full screen's rows live in its own list and are never replayed). */
   constructor(
     private readonly queue: CommitQueue,
     private readonly target: ReplayTarget,
     private readonly write: ItemWriter,
+    private readonly keep: boolean = true,
   ) {}
 
   /** Write `item` after everything queued before it, and keep it. */
   append(item: Item): Promise<void> {
     return this.queue.run(async () => {
-      await this.write(item)
-      this.items.push(item)
+      await this.write(item, { first: true })
+      if (this.keep) this.items.push(item)
     })
   }
 
@@ -56,7 +60,7 @@ export class Transcript {
     return this.queue.run(async () => {
       this.replays++
       this.target.resetSplitFooterForReplay({ clearSavedLines: true })
-      for (const item of this.pick(limit, unit, lead)) await this.write(item)
+      for (const item of this.pick(limit, unit, lead)) await this.write(item, { first: false })
     })
   }
 

@@ -4589,6 +4589,9 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--no-isolate", action="store_true")
     tui.add_argument("-v", "--verbose", action="store_true",
                      help="Show the model's thinking, as chat --verbose does")
+    tui.add_argument("--inline", action="store_true",
+                     help="Draw under the shell's last line, the conversation in the "
+                          "terminal's own scrollback, instead of taking the whole terminal")
     # Scripted sessions, no model: for working on the window and its tests.
     tui.add_argument("--fake", action="store_true", help=argparse.SUPPRESS)
     tui.set_defaults(func=_cmd_tui)

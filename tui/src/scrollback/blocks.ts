@@ -72,7 +72,8 @@ export function splitMarkdown(text: string, final: boolean): MarkdownSplit {
 
 /**
  * Feeds an answer delta by delta and calls `commit` once for each block as
- * it becomes final, and `onTail` with whatever is still unfinished.
+ * it becomes final, and `onTail` with whatever is still unfinished (and
+ * the number that block will have when it is committed).
  *
  * What is committed is a prefix of the text, and only the text after it
  * is split again: a later delta can change how earlier text lexes (a
@@ -88,7 +89,7 @@ export class AnswerBlocks {
 
   constructor(
     private readonly commit: (block: string, index: number) => void,
-    private readonly onTail: (tail: string) => void = () => {},
+    private readonly onTail: (tail: string, index: number) => void = () => {},
   ) {}
 
   get content(): string {
@@ -145,6 +146,6 @@ export class AnswerBlocks {
     const { blocks, tail, consumed } = splitMarkdown(rest, final)
     for (const block of blocks) this.commit(block, this.n++)
     this.offset += consumed
-    this.onTail(tail)
+    this.onTail(tail, this.n)
   }
 }

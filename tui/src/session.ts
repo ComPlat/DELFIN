@@ -10,12 +10,18 @@
  * GNU screen, which cannot clear its scrollback (no ED3), a replay would
  * duplicate every row: a divider says the width changed instead, and the
  * rows above keep their old width.
+ *
+ * Full screen (`screen` given): the rows go to the window's own list
+ * (scrollback/screenview.tsx) instead of the terminal's scrollback; they
+ * re-wrap by themselves, so nothing is replayed, and a session put in view
+ * starts the list again -- its own rows, not a divider under another's.
  */
 import type { CliRenderer } from "@opentui/core"
 import { CommitQueue } from "./scrollback/queue"
 import { Presenter } from "./scrollback/present"
 import { replayOnWidthChange } from "./scrollback/resize"
 import { itemWriter } from "./scrollback/rows"
+import type { ScreenItems } from "./scrollback/screenview"
 import { Transcript, type Item } from "./scrollback/transcript"
 import type { AppStore } from "./store/store"
 import type { Theme } from "./theme/theme"
@@ -27,6 +33,8 @@ export interface SessionViewOptions {
   /** Print a divider instead of replaying after a resize (GNU screen).
    *  Defaults to whether $STY says GNU screen. */
   dividerOnResize?: boolean
+  /** Full screen: the rows' list in the window (none: the scrollback). */
+  screen?: ScreenItems
 }
 
 export interface SessionView {
@@ -49,6 +57,16 @@ export interface SessionView {
   readonly showThinking: boolean
   redraw(): Promise<void>
   stop(): void
+}
+
+/** Full screen's ctrl+l: every cell written again, so what a terminal left
+ *  of an earlier frame goes (xterm leaves pixels of a block glyph beside
+ *  it). OpenTUI keeps its own flag for that -- it repaints so after a
+ *  resize or a resume -- and no call to set it. */
+function repaint(renderer: CliRenderer): void {
+  if (renderer.isDestroyed) return             // a timer after the window closed
+  ;(renderer as unknown as { forceFullRepaintRequested: boolean }).forceFullRepaintRequested = true
+  renderer.requestRender()
 }
 
 export function startSessionView(renderer: CliRenderer, store: AppStore, theme: () => Theme,
@@ -76,12 +94,26 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
     void transcript.append(own("notice", { text: `could not draw a row: ${String(error)}` }))
       .finally(() => { reporting = false })
   })
-  const transcript = new Transcript(queue, target, itemWriter(renderer, theme))
+  /** A finished block's rows are drawn: the footer lets go of it. */
+  const release = (session: string, key: string) => {
+    if (!store.state.sessions[session]?.held.some((h) => h.key === key)) return
+    store.update((d) => {
+      const held = d.sessions[session]?.held
+      const at = held?.findIndex((h) => h.key === key) ?? -1
+      if (at >= 0) held!.splice(at, 1)
+    })
+  }
+  const screen = options.screen
+  const transcript = screen
+    ? new Transcript(queue, { resetSplitFooterForReplay: () => {} }, (item) => screen.push(item), false)
+    : new Transcript(queue, target, itemWriter(renderer, theme, {
+        release: (item) => release(String(item.session ?? ""), String(item.held ?? "")),
+      }))
   const presentOptions = { showThinking: options.showThinking, shownAs: (text: string) => {
     const shown = sentAs.get(text)
     if (shown !== undefined) sentAs.delete(text)
     return shown
-  } }
+  }, release }
 
   /** When turns were left out of a replay: the banner of the session they
    *  belonged to, and a note saying how many. */
@@ -94,7 +126,8 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
   }
   const replay = () => transcript.replay(options.replayTurns, "turns", lead)
   const divider = options.dividerOnResize ?? Boolean(process.env.STY)
-  const stopResize = replayOnWidthChange(renderer, transcript, {
+  // Full screen re-wraps by itself: no replay after a resize.
+  const stopResize = screen ? () => {} : replayOnWidthChange(renderer, transcript, {
     onSettled: (width, widthChanged) => {
       if (divider) {
         // GNU screen cannot clear its scrollback: a replay would print
@@ -115,7 +148,11 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
     sentAs,
     show(id, how = {}) {
       off?.()
-      if (how.divider) {
+      if (screen && how.divider) {
+        // Its own rows from the top: the list is the session's, not a log.
+        groups.n++
+        void queue.run(() => screen.clear())
+      } else if (how.divider) {
         groups.n++
         void transcript.append(own("divider", { text: how.divider }))
       }
@@ -137,7 +174,8 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
     },
     // ctrl+l: the session written again -- or, where the scrollback cannot
     // be cleared (GNU screen), the footer drawn again.
-    redraw: () => (divider ? Promise.resolve(renderer.requestRender()) : replay()),
+    redraw: () => (screen ? Promise.resolve(repaint(renderer))
+      : divider ? Promise.resolve(renderer.requestRender()) : replay()),
     stop() {
       off?.()
       stopResize()

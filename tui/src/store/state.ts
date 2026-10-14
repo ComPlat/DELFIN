@@ -52,6 +52,14 @@ export interface SessionState {
   usage: { inputTokens: number; outputTokens: number; costUsd: number }
   turn: TurnLive | null
   tail: string               // the answer's unfinished block (footer)
+  /** Which block of the answer the tail is (its part and number): the
+   *  footer draws a block with one element from its first delta until its
+   *  rows are drawn. */
+  tailKey: string
+  /** Blocks of the answer that are finished but whose rows are not drawn
+   *  yet (their highlighting, a commit): still shown with the tail, so a
+   *  block never leaves the screen on its way into the rows. */
+  held: { key: string; text: string }[]
   thinking: string           // the live reasoning (footer, when shown)
   lastSeq: number
   summary: SessionSummary | null
@@ -89,7 +97,7 @@ export function newSession(id: string, info: Record<string, unknown> = {}): Sess
   const s: SessionState = {
     id, title: "", workspace: "", provider: "", model: "", mode: "", approval: "",
     effort: "", state: "starting", pending: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
-    turn: null, tail: "", thinking: "", lastSeq: 0, summary: null, ended: null, wait: "",
+    turn: null, tail: "", tailKey: "", held: [], thinking: "", lastSeq: 0, summary: null, ended: null, wait: "",
   }
   applyInfo(s, info)
   return s

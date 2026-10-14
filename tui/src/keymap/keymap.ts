@@ -14,6 +14,7 @@ export type Action =
   | "tasks" | "redraw" | "agents" | "palette" | "quit" | "historyPrev"
   | "historyNext" | "historySearch" | "agentsUp" | "agentsDown" | "agentsOpen"
   | "agentsPeek" | "agentsBack" | "agentsStop" | "agentsRename" | "agentsPin"
+  | "scrollUp" | "scrollDown" | "scrollTop" | "scrollBottom"
 
 export const DEFAULT_KEYS: Readonly<Record<Action, readonly string[]>> = {
   submit: ["return"],
@@ -42,6 +43,12 @@ export const DEFAULT_KEYS: Readonly<Record<Action, readonly string[]>> = {
   agentsStop: ["ctrl+x"],
   agentsRename: ["ctrl+r"],
   agentsPin: ["ctrl+t"],
+  // The conversation, when the window has the whole terminal (the wheel
+  // scrolls it too).
+  scrollUp: ["pageup"],
+  scrollDown: ["pagedown"],
+  scrollTop: ["ctrl+home"],
+  scrollBottom: ["ctrl+end"],
 }
 
 export interface Binding {
@@ -150,6 +157,11 @@ export const KEY_HELP: readonly { action?: Action; keys?: string; does: string }
   { action: "agentsRename", does: "In the agent view: rename the selected session." },
   { action: "agentsPin", does: "In the agent view: pin the selected session to the top." },
   { keys: "typing + enter", does: "In the agent view: a new session, in this window's folder, with what you typed." },
+  { action: "scrollUp", does: "Full screen: scroll the conversation up a page (so does the wheel)." },
+  { action: "scrollDown", does: "Full screen: scroll it down a page; at the bottom it follows the session again." },
+  { action: "scrollTop", does: "Full screen: to the start of what the window holds." },
+  { action: "scrollBottom", does: "Full screen: back to the end, following the session." },
+  { keys: "drag", does: "Full screen: select text; it is copied when you let go (shift+drag: the terminal's own selection)." },
 ]
 
 /** The key table as lines, with the keys this keymap binds. */

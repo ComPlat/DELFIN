@@ -57,6 +57,7 @@ if command -v tmux >/dev/null; then
   run "the agent view in tmux: list, peek, reply, open, new session" "$DELFIN_PYTHON" test/e2e/check_agents_tmux.py
   run "the window's life in tmux: service killed, stopped, window hung up" "$DELFIN_PYTHON" test/e2e/check_lifecycle_tmux.py
   run "a resize storm in tmux: one replay at the final width" "$DELFIN_PYTHON" test/e2e/check_resize_tmux.py
+  run "full screen in tmux: the window's own scrolling, the shell given back" "$DELFIN_PYTHON" test/e2e/check_fullscreen_tmux.py
   run "launch to footer in tmux: under 300 ms with the binary" "$DELFIN_PYTHON" test/e2e/check_startup_tmux.py
 else
   skip "the live window (no tmux)"

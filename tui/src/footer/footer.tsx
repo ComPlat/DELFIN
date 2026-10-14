@@ -3,7 +3,8 @@
  * now, the question it waits on, and the line the user types into.
  *
  *   message   a short note of the window's own (one row)
- *   tail      the answer's unfinished block, as markdown (≤ 6 rows)
+ *   tail      the answer's unfinished block, as markdown (≤ 6 rows), after
+ *             the blocks that finished but are not in the rows yet
  *   status    spinner · what it does · elapsed · tokens · cost · esc
  *   approval  the open question, with exactly the keys the session offers
  *   composer  ❯ the prompt (grows to 8 rows; completion and search above)
@@ -16,18 +17,20 @@
  * how many rows it takes (`footerRows`), at any width: a footer taller
  * than its content wastes rows, a shorter one draws over itself.
  */
-import { SyntaxStyle, type CliRenderer } from "@opentui/core"
-import { Show, createEffect, createMemo, createSignal, onCleanup, type Accessor, type JSX } from "solid-js"
+import { infoStringToFiletype, type CliRenderer, type ScrollBoxRenderable, type SyntaxStyle } from "@opentui/core"
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, type Accessor, type JSX } from "solid-js"
 import { AgentViewPanel, agentHelp, type AgentView } from "../agents/view"
 import { ComposerView, type Composer } from "../composer/composer"
 import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
-import { GUTTER, SPINNER, markdownStyles, postureLook, type Theme } from "../theme/theme"
+import { GUTTER, SPINNER, postureLook, type Theme } from "../theme/theme"
 import { fit, width } from "../text"
+import { TranscriptView, themedStyle, type ScreenItems } from "../scrollback/screenview"
+import { fenceOf, liveBlocks, liveRows } from "./live"
 import { ApprovalPanel, approvalRows, type ApprovalUi } from "./approval"
 import { PickerView, type Picker } from "./picker"
 
-export const TAIL_MAX = 6
+export { TAIL_MAX } from "./live"
 
 export interface FooterProps {
   renderer: CliRenderer
@@ -49,6 +52,14 @@ export interface FooterProps {
   /** Sessions other than the one in view that wait for the user. */
   othersWaiting?: () => number
   focused: () => boolean
+  /** Full screen: the footer is the window -- the session's rows (or the
+   *  agent view) above, the composer at the bottom -- and the answer's
+   *  tail streams at the rows' end instead of above the composer. */
+  screen?: ScreenItems
+  /** The rows' scroll box, for the keys that scroll it. */
+  scrollRef?: (box: ScrollBoxRenderable) => void
+  /** The wheel turned over the rows. */
+  onUserScroll?: () => void
 }
 
 /** Rows the footer takes with the agent view open: all but one. */
@@ -56,9 +67,6 @@ export function agentFooterRows(term: { height: number }): number {
   return Math.max(4, term.height - 1)
 }
 
-function tailRows(tail: string): number {
-  return Math.min(TAIL_MAX, tail.trimEnd().split("\n").filter((l) => l.trim()).length)
-}
 
 /** The rows everything but the approval panel takes. */
 function fixedRows(s: SessionState | null, message: string, composerRows: number, pickerRows: number): number {
@@ -78,8 +86,9 @@ export function footerRows(s: SessionState | null, term: { width: number; height
   let rows = fixedRows(s, message, composerRows, pickerRows)
   const asked = s?.pending[0]
   // With a question open the turn waits: its tail is empty (a question
-  // closes the text part), and the panel has the room.
-  if (s && !asked) rows += tailRows(s.tail)
+  // closes the text part) -- what is left is a block on its way into the
+  // rows, there for a moment.
+  if (s) rows += liveRows(s, term.width - GUTTER)
   rows += approvalRows(asked, approval?.state ?? null, term.width - GUTTER,
                        approvalBudget(s, term, message, composerRows, pickerRows))
   return Math.max(4, Math.min(rows, Math.max(4, term.height - 1)))
@@ -154,12 +163,19 @@ export function Footer(props: FooterProps): JSX.Element {
   })
   onCleanup(() => timer && clearInterval(timer))
 
-  const style = createMemo(() => SyntaxStyle.fromStyles(markdownStyles(t()), props.renderer.nativeScene!))
+  const style = themedStyle(props.renderer, t)
   const asked = () => props.session()?.pending[0]
   // What the footer draws in: the terminal's width less the gutter at the
   // left; every line is cut a column short of the right edge as well.
   const cols = () => Math.max(10, term().width - GUTTER)
   const rule = () => "─".repeat(Math.max(1, cols() - 1))
+  // The live blocks by key (strings: <For> keeps an element per key, so a
+  // block keeps its element from its first delta until it leaves).
+  const live = createMemo(() => liveBlocks(props.session(), cols()))
+  const liveKeys = createMemo(() => live().map((b) => b.key), [],
+                              { equals: (a, b) => a.length === b.length && a.every((k, i) => k === b[i]) })
+  const liveText = (key: string) => live().find((b) => b.key === key)?.text ?? ""
+  const liveHeight = () => liveRows(props.session(), cols())
   /** The prompt box's top border, with the session's name on it at the
    *  right (/rename, -n), as Claude Code shows it; not in the agent view,
    *  whose box is for another session. */
@@ -172,7 +188,10 @@ export function Footer(props: FooterProps): JSX.Element {
     return { left: "─".repeat(Math.max(1, total - width(chip) - 1)), chip, right: "─" }
   }
 
+  const full = () => Boolean(props.screen)
   createEffect(() => {
+    // Full screen has no footer of a height: the window is all of it.
+    if (full()) return
     props.renderer.footerHeight = viewOpen() && !props.agentsOnOwnScreen
       ? agentFooterRows(term())
       : footerRows(props.session(), term(), props.message(), props.composer.height(),
@@ -180,7 +199,7 @@ export function Footer(props: FooterProps): JSX.Element {
   })
   /** The agent view's list: its rows less the message, the composer and
    *  its rules, and the hints. */
-  const panelRows = () => Math.max(2, (props.agentsOnOwnScreen ? term().height : agentFooterRows(term()))
+  const panelRows = () => Math.max(2, (props.agentsOnOwnScreen || full() ? term().height : agentFooterRows(term()))
     - (props.message() ? 1 : 0) - 3 - props.composer.height())
 
   const status = (turn: TurnLive) => {
@@ -226,14 +245,29 @@ export function Footer(props: FooterProps): JSX.Element {
         <AgentViewPanel view={props.agents!} theme={t} width={cols} height={panelRows} tick={tick} now={clock}
                         keymap={props.keymap} />
       </Show>
+      {/* Mounted for as long as the window is full screen -- hidden while
+          the agent view has the screen, so closing the view keeps its
+          scroll position and does not lay out every row again. */}
+      <Show when={full()}>
+        <TranscriptView renderer={props.renderer} screen={props.screen!} theme={t} width={cols}
+                        visible={() => !viewOpen()} ref={props.scrollRef} onUserScroll={props.onUserScroll} />
+      </Show>
       <Show when={props.message()}>
         <text flexShrink={0} fg={t().warn} wrapMode="none">{fit(props.message(), cols() - 1)}</text>
       </Show>
       <Show when={!viewOpen()}>
-      <Show when={tailRows(props.session()?.tail ?? "") > 0 && !asked()}>
-        <scrollbox flexShrink={0} height={tailRows(props.session()?.tail ?? "")} stickyScroll stickyStart="bottom">
-          <markdown content={props.session()?.tail ?? ""} streaming syntaxStyle={style()} conceal width="100%" />
-        </scrollbox>
+      {/* The answer's unfinished block, under the rows in both screens: a
+          delta lays out this box only, never the whole conversation. A
+          block that finishes stays until its rows are drawn, with the
+          element that drew it while it streamed -- a new one shows
+          nothing until highlighted -- and goes in the frame they come. */}
+      <Show when={liveHeight() > 0}>
+        {/* Its last rows, at the bottom: what does not fit is cut at the top. */}
+        <box flexShrink={0} height={liveHeight()} flexDirection="column" justifyContent="flex-end" overflow="hidden">
+          <For each={liveKeys()}>
+            {(key, i) => <LiveBlockView text={() => liveText(key)} first={() => i() === 0} syntax={style} />}
+          </For>
+        </box>
       </Show>
       <Show when={!props.session()?.turn && props.session()?.wait}>
         <text flexShrink={0} wrapMode="none" fg={t().warn}>{fit(`… ${props.session()?.wait ?? ""}`, cols() - 1)}</text>
@@ -275,6 +309,29 @@ export function Footer(props: FooterProps): JSX.Element {
       <text flexShrink={0} fg={t().faint} wrapMode="none">{rule()}</text>
       <Hints {...props} cols={cols} />
     </box>
+  )
+}
+
+/**
+ * One live block. Markdown, not drawn `streaming` -- OpenTUI's preview of
+ * a streaming block is its raw text ("## " before a heading) until each
+ * delta's highlighting lands; this keeps the last highlighted text. A
+ * fenced code block is drawn as code that streams: as part of markdown it
+ * would lose its colours for a frame on every delta.
+ */
+function LiveBlockView(props: { text: () => string; first: () => boolean; syntax: () => SyntaxStyle }): JSX.Element {
+  const fence = () => fenceOf(props.text())
+  return (
+    // Content last: an element builds its blocks when it is set, with the
+    // style it has by then (props go in in order).
+    <Show when={fence()} fallback={
+      <markdown syntaxStyle={props.syntax()} conceal width="100%" flexShrink={0} marginTop={props.first() ? 0 : 1}
+                tableOptions={{ widthMode: "content" }} content={props.text()} />
+    }>
+      <code syntaxStyle={props.syntax()} streaming drawUnstyledText={false} conceal={false} width="100%"
+            flexShrink={0} marginTop={props.first() ? 0 : 1} filetype={infoStringToFiletype(fence()?.lang ?? "")}
+            content={fence()?.code ?? ""} />
+    </Show>
   )
 }
 

@@ -347,6 +347,9 @@ def _agent_class():
             #: Steers routed into the running turn (to take back unread).
             self._steered = 0
             self._checkpoint = checkpoint
+            # One save at a time: the turn's own and a rename's would race,
+            # and the one that read the old title could finish last.
+            self._save_lock = threading.Lock()
             self._post_lock = threading.Lock()
             self._pumping = False
             self._state_lock = threading.Lock()
@@ -488,11 +491,13 @@ def _agent_class():
             a crash would lose a rename."""
             if not self._checkpoint:
                 return
-            try:
-                from ..cli import _save_session
-                _save_session(self.engine, Path(self.opts.cwd), title=self.session_title)
-            except Exception:
-                pass
+            with self._save_lock:
+                try:
+                    from ..cli import _save_session
+                    # Read inside the lock: the last save has the latest name.
+                    _save_session(self.engine, Path(self.opts.cwd), title=self.session_title)
+                except Exception:
+                    pass
 
         def _announce_presence(self) -> None:
             """The REPL's announcement, with the title the session has now
@@ -1311,14 +1316,28 @@ class Worker:
         def say() -> None:
             self.emitter.emit("session.updated", title=title)
             self.agent._announce_presence()
-            # Saved at once when nothing runs -- a turn's end saves it
-            # otherwise -- so a session killed before its next turn keeps
-            # the name; under the loop's lock, so no turn starts meanwhile.
-            with self.agent.cond:
-                if not self.agent.busy:
-                    self.agent._checkpoint_session()
         self.agent.post(say)
+        self._save_when_idle()
         return {"title": title}
+
+    def _save_when_idle(self) -> None:
+        """The session saved under its new title as soon as no turn runs:
+        a session killed before its next turn's end keeps the name. Waited
+        for on a thread of its own -- a rename comes in the middle of a
+        turn too, or just as one ends (its turn.ended goes out before it
+        stops being busy) -- and saved under the loop's lock, so no turn
+        starts while it is written."""
+        agent = self.agent
+
+        def wait_then_save() -> None:
+            deadline = time.monotonic() + 3600
+            with agent.cond:
+                while agent.busy and not agent.ended and time.monotonic() < deadline:
+                    agent.cond.wait(0.2)
+                if not agent.busy and not agent.ended:
+                    agent._checkpoint_session()
+
+        threading.Thread(target=wait_then_save, name="save-title", daemon=True).start()
 
     def _m_session_choices(self, params: dict) -> dict:
         try:

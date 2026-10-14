@@ -9,10 +9,11 @@ import { render } from "@opentui/solid"
 import { Pins } from "../src/agents/pins"
 import { App, type Requester } from "../src/app"
 import { Keymap } from "../src/keymap/keymap"
+import { createScreenItems } from "../src/scrollback/screenview"
 import { startSessionView } from "../src/session"
 import { ensureSession } from "../src/store/state"
 import { createAppStore } from "../src/store/store"
-import { DARK } from "../src/theme/theme"
+import { DARK, type Theme } from "../src/theme/theme"
 import { ungutter } from "./gutter"
 
 export const FIXTURE = await Bun.file(`${import.meta.dir}/fixtures/fake-conversation.json`).json()
@@ -32,14 +33,23 @@ export async function mountWindow(options: {
   onResume?: (id: string, workspace: string) => void
   onNewSession?: () => Promise<string | null>
   pins?: Pins
+  /** The whole terminal (the window's default) instead of inline. */
+  full?: boolean
+  /** The theme, as a signal (dark by default). */
+  theme?: () => Theme
 } = {}) {
   const t = await createTestRenderer({
-    width: options.width ?? 100, height: options.height ?? 30, screenMode: "split-footer", footerHeight: 4,
-    externalOutputMode: "capture-stdout", useMouse: false, exitOnCtrlC: false,
+    width: options.width ?? 100, height: options.height ?? 30,
+    screenMode: options.full ? "alternate-screen" : "split-footer", footerHeight: 4,
+    externalOutputMode: options.full ? "passthrough" : "capture-stdout", useMouse: Boolean(options.full),
+    // As main.tsx: buttons and drags only, and no click-to-focus.
+    enableMouseMovement: false, autoFocus: false,
+    exitOnCtrlC: false,
   })
   const store = createAppStore()
-  const theme = () => DARK
-  const view = startSessionView(t.renderer, store, theme, { showThinking: false, replayTurns: 20 })
+  const theme = options.theme ?? (() => DARK)
+  const screen = options.full ? createScreenItems() : undefined
+  const view = startSessionView(t.renderer, store, theme, { showThinking: false, replayTurns: 20, screen })
   const calls: Call[] = []
   const client = options.client ?? {
     request: async (method: string, params: Record<string, any> = {}) => {
@@ -58,7 +68,7 @@ export async function mountWindow(options: {
          onQuit={() => { quits++ }} onRedraw={() => {}} onExpand={() => view.expandLast()}
          onLines={(title, lines) => view.lines(title, lines)}
          onResume={options.onResume} onNewSession={options.onNewSession} pins={options.pins}
-         answerPauseMs={options.answerPauseMs ?? 0} />
+         answerPauseMs={options.answerPauseMs ?? 0} screen={screen} />
   ), t.renderer)
   const settle = async () => {
     store.flush()
@@ -82,6 +92,9 @@ export async function mountWindow(options: {
     await Bun.sleep(40)
     await settle()
   }
+  /** The whole screen's lines, without the gutter (full screen). */
+  const screenLines = () => t.captureCharFrame().split("\n").map(ungutter)
   return { t, keys: t.mockInput, store, view, calls, settle, footer, close, escape, quits: () => quits, sid,
+           screen, screenLines,
            replies: () => calls.filter((c) => c.method === "permission.reply").map((c) => c.params) }
 }

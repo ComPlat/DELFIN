@@ -6,7 +6,8 @@
  *     "colors": { "accent": "#6290C0", ... },       // theme token overrides
  *     "keys": { "steer": ["ctrl+g"], ... },          // keymap overrides
  *     "replayTurns": 20,                              // turns shown on attach
- *     "showThinking": false
+ *     "showThinking": false,
+ *     "screen": "auto" | "full" | "inline"           // see screenModeOf()
  *   }
  *
  * A file that cannot be read or does not parse costs its settings, never
@@ -21,6 +22,7 @@ export interface Config {
   keys: Record<string, string[]>
   replayTurns: number
   showThinking: boolean
+  screen: "auto" | "full" | "inline"
 }
 
 export const DEFAULTS: Config = {
@@ -29,6 +31,7 @@ export const DEFAULTS: Config = {
   keys: {},
   replayTurns: 20,
   showThinking: false,
+  screen: "auto",
 }
 
 export function configPath(env: Record<string, string | undefined> = process.env): string {
@@ -87,6 +90,10 @@ export function parseConfig(text: string): Loaded {
         if (typeof value === "boolean") config.showThinking = value
         else problems.push("showThinking must be true or false")
         break
+      case "screen":
+        if (value === "auto" || value === "full" || value === "inline") config.screen = value
+        else problems.push(`screen must be "auto", "full" or "inline"`)
+        break
       default:
         problems.push(`unknown setting ${JSON.stringify(key)}`)
     }
@@ -103,4 +110,23 @@ export async function loadConfig(path: string = configPath()): Promise<Loaded> {
   } catch (error) {
     return { config: { ...DEFAULTS }, problems: [`${path}: ${(error as Error).message}`] }
   }
+}
+
+/**
+ * Which screen the window takes. "full" (the default): the whole terminal
+ * -- its alternate screen, the conversation scrolling inside the window,
+ * the composer fixed at the bottom, the shell's lines back as they were
+ * when it closes. "inline": under the shell's last line, the conversation
+ * in the terminal's own scrollback (`delfin-agent chat`'s way).
+ *
+ * DELFIN_TUI_SCREEN (which `delfin-agent tui --inline` sets) before the
+ * setting; with neither, inline under GNU screen, whose alternate screen
+ * is off unless .screenrc turns it on ("altscreen on"), else full.
+ */
+export function screenModeOf(setting: Config["screen"],
+                             env: Record<string, string | undefined> = process.env): "full" | "inline" {
+  const asked = String(env.DELFIN_TUI_SCREEN ?? "").trim().toLowerCase()
+  if (asked === "full" || asked === "inline") return asked
+  if (setting === "full" || setting === "inline") return setting
+  return env.STY ? "inline" : "full"
 }

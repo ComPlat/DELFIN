@@ -4,7 +4,7 @@
  * the presenter's summaries.
  */
 import { describe, expect, test } from "bun:test"
-import { DEFAULTS, parseConfig } from "../src/config/config"
+import { DEFAULTS, parseConfig, screenModeOf } from "../src/config/config"
 import { Keymap, describe as describeKey, parseBinding } from "../src/keymap/keymap"
 import { askedWhat } from "../src/scrollback/present"
 import { applyEvent, emptyState, ensureSession } from "../src/store/state"
@@ -178,5 +178,25 @@ describe("NO_COLOR", () => {
     expect(noColor({ NO_COLOR: "" })).toBe(false)
     expect(noColor({})).toBe(false)
     expect(parseConfig(JSON.stringify({ theme: "mono" })).config.theme).toBe("mono")
+  })
+})
+
+describe("which screen the window takes", () => {
+  test("the whole terminal by default; inline under GNU screen, by the setting, or as asked", () => {
+    expect(screenModeOf("auto", {})).toBe("full")
+    expect(screenModeOf("auto", { STY: "1234.pts-0.host" })).toBe("inline")
+    expect(screenModeOf("full", { STY: "1234.pts-0.host" })).toBe("full")
+    expect(screenModeOf("inline", {})).toBe("inline")
+    // DELFIN_TUI_SCREEN (`delfin-agent tui --inline`) before the setting.
+    expect(screenModeOf("full", { DELFIN_TUI_SCREEN: "inline" })).toBe("inline")
+    expect(screenModeOf("inline", { DELFIN_TUI_SCREEN: " Full " })).toBe("full")
+    expect(screenModeOf("auto", { DELFIN_TUI_SCREEN: "sideways" })).toBe("full")
+  })
+
+  test("tui.json's screen is checked", () => {
+    expect(parseConfig(JSON.stringify({ screen: "inline" })).config.screen).toBe("inline")
+    const bad = parseConfig(JSON.stringify({ screen: "half" }))
+    expect(bad.config.screen).toBe("auto")
+    expect(bad.problems.join(" ")).toContain('screen must be "auto", "full" or "inline"')
   })
 })

@@ -15,9 +15,9 @@ with Claude Code's way of working with sessions: one window, an agent view on
 | Topic | Decision |
 |---|---|
 | Stack | TypeScript on Bun, OpenTUI + SolidJS (OpenCode's stack). |
-| Screen | Inline. Finished output goes into the terminal's own scrollback; only a footer (composer, status, running tools, approvals, menus) is live. OpenTUI `screenMode: "split-footer"`; blueprint: `opencode mini` (`anomalyco/opencode`, `packages/tui/src/mini/`). |
+| Screen | Full screen (since 2026-10-14, after a first try): the window takes the terminal's alternate screen, the conversation scrolls inside it (wheel, PgUp/PgDn), the composer stays at the bottom, a drag selects and copies (OSC 52), and the shell's lines come back as they were. Inline stays as an option (`--inline`, tui.json `"screen"`, the default under GNU screen): finished output goes into the terminal's own scrollback; only a footer (composer, status, running tools, approvals, menus) is live. OpenTUI `screenMode: "alternate-screen"` and `"split-footer"`; blueprints: OpenCode's TUI and `opencode mini` (`anomalyco/opencode`, `packages/tui/src/mini/`). |
 | Look and feel | Must look good and feel smooth: no flicker, no torn lines, responsive while the agent works. "DELFIN blue, restrained": neutral text, with the logo's steel blue (`#6290C0`) as the single accent; green, amber and red only for state; truecolor with a fallback; the light or dark variant follows the terminal. |
-| Resize | Re-wrap by replay, like `opencode mini`. After a resize settles, the screen and the terminal's scrollback are cleared and the session is reprinted at the new width (capped at a configurable number of turns). |
+| Resize | Full screen: the rows re-wrap in place; nothing is written again. Inline: re-wrap by replay, like `opencode mini` -- after a resize settles, the screen and the terminal's scrollback are cleared and the session is reprinted at the new width (capped at a configurable number of turns). |
 | Sessions | Every session is part of the agent view from the moment it starts; there is no "backgrounding" step. Sessions keep running when the window closes, and the next window re-attaches. A session left idle (waiting for your next message) and unattached sleeps after about an hour and wakes when you reply. |
 | Agent view | `←` on an empty prompt. A Claude Code-style list grouped into Needs input / Working / Done. It covers every session on this machine across projects, plus other open DELFIN sessions (dashboard, `delfin-agent chat`) as read-only rows. It is drawn on the terminal's alternate screen (decided in phase 5): closing it gives the screen back exactly as it was, where growing the footer pushed the session's rows into history. Under GNU screen, whose alternate screen is off by default, it grows the footer. |
 | Switching | A labelled divider, then a replay of the selected session's last few turns into the scrollback. Nothing is erased. |
@@ -280,6 +280,22 @@ names every missing row.
       the rows above keep their old width") instead of replaying.
     - Detect screen by `STY`. TERM doesn't tell it apart, because tmux sets
       `screen*` too.
+13. **A block on its way from the live tail into the rows is shown by one
+    of them in every frame** (found 2026-10-14; `handoff.test.tsx`).
+    - A new markdown element draws nothing (or, `streaming`, its raw text)
+      until its highlighting lands a few ms later. Keep the finished block
+      in the footer (`held`), drawn by the element that drew it while it
+      streamed, until its rows are drawn; on the full screen lay the new
+      element out at no height until it is highlighted.
+    - Inline, the rows and the footer reach the terminal on two channels:
+      commit a held block's rows at a frame's start (a frame callback), so
+      the footer has let go of it before that frame is painted.
+    - Don't draw the live block `streaming`: OpenTUI's preview of each
+      delta is the raw text ("## ") until it is highlighted again.
+    - OpenTUI highlights in a frame's pass over what is visible: a block
+      culled (below the view) or hidden (behind the agent view) is never
+      highlighted, and blank when it comes into view. Start it by hand
+      (`whenHighlighted`), after passing the element's style on.
 
 ## Risks
 

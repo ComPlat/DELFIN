@@ -17,6 +17,9 @@ clean up on the VM. Each item says why it could not be closed here.
    - The watch-only rule for an agent's own processes uses `ps -wwE` on
      macOS: check that a window can act and that `delfin-agent service
      stop` typed inside an agent's shell is refused.
+   - Full screen: Terminal.app takes no OSC 52 (the window says so after a
+     drag); a selection of the terminal's own needs fn (Terminal.app) or
+     option (iTerm2) held while dragging.
 2. **bwUniCluster** (or another cluster).
    - Does the service survive a logout (systemd's `KillUserProcesses`)?
      The docs say "as long as the node allows".
@@ -28,14 +31,16 @@ clean up on the VM. Each item says why it could not be closed here.
      only known by running it.
 3. **xterm.js terminals**: VS Code Remote-SSH and JupyterLab's terminal.
    The scrollback was checked in xterm.js headless (phase 0); a look in the
-   real ones is still due.
+   real ones is still due -- full screen too: the wheel, a drag that copies
+   (OSC 52; VS Code may ask to allow the clipboard), shift+drag.
 4. **A look at the design** in your usual terminal: colours ("DELFIN blue,
    restrained"), the agent view, approval panels, light and dark themes,
    `NO_COLOR=1`.
-5. **GNU screen with `altscreen on`**: set `DELFIN_TUI_AGENTS_SCREEN=alternate`
-   and check the agent view gives the screen back; without it (screen's
-   default) the view grows the footer and the prompt sits at the top after
-   it closes.
+5. **GNU screen**: the window is inline there by default (screen's
+   alternate screen is off). With `altscreen on`, `"screen": "full"` in
+   tui.json should work like elsewhere; inline, set
+   `DELFIN_TUI_AGENTS_SCREEN=alternate` and check the agent view gives the
+   screen back; without it the view grows the footer.
 
 ## Decisions for you
 

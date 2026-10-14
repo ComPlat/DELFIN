@@ -38,7 +38,7 @@ def main() -> int:
     for d in (tmp / "home", tmp / "scratch" / ".delfin", ws):
         d.mkdir(parents=True)
     env = {"HOME": str(tmp / "home"), "DELFIN_SCRATCH_STATE": str(tmp / "scratch"),
-           "DELFIN_RUNTIME_DIR": str(runtime), "PYTHONPATH": str(REPO),
+           "DELFIN_RUNTIME_DIR": str(runtime), "PYTHONPATH": str(REPO), "DELFIN_TUI_SCREEN": "inline",
            "PATH": f"{Path.home()}/.bun/bin:{os.environ.get('PATH', '')}"}
     command = (f"cd {REPO} && env {' '.join(f'{k}={v}' for k, v in env.items())} "
                f"{PYTHON} -m delfin.agent.cli tui --fake --cwd {ws}; echo TUI_EXIT=$?")

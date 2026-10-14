@@ -9,7 +9,7 @@
  * a session: it keeps running in the agent service, and the next window
  * attaches to it again.
  */
-import type { CliRenderer, KeyEvent } from "@opentui/core"
+import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
@@ -25,6 +25,7 @@ import { editPrompt } from "./composer/editor"
 import { keyTable, type Keymap } from "./keymap/keymap"
 import type { Asked, SessionState } from "./store/state"
 import { listed, type AppStore } from "./store/store"
+import type { ScreenItems } from "./scrollback/screenview"
 import type { Theme } from "./theme/theme"
 
 export interface Requester {
@@ -65,6 +66,9 @@ export interface AppProps {
   onLines?: (title: string, lines: string[]) => void
   /** The pause before a key answers a question (approval.tsx); tests set 0. */
   answerPauseMs?: number
+  /** Full screen: the session's rows in the window (session.ts), scrolled
+   *  by the wheel and the keys; a selection is copied when the drag ends. */
+  screen?: ScreenItems
 }
 
 /** shift+tab's order, as in the REPL (never onto bypass). */
@@ -99,6 +103,75 @@ export function App(props: AppProps): JSX.Element {
     }
   }
   const sid = () => store.state.current ?? ""
+
+  // -- full screen: scrolling and copying ----------------------------------------
+  let scrollBox: ScrollBoxRenderable | null = null
+  /** The reader scrolled (keys, the wheel): the next rest repaints. Rows
+   *  that only follow the session do not count -- a stream repaints none. */
+  let userScrolled = false
+  /** PgUp/PgDn a page (less a row, for the eye), ctrl+home/end to the
+   *  start or back to the end -- where the box follows the session again. */
+  const scroll = (how: "up" | "down" | "top" | "bottom") => {
+    const box = scrollBox
+    if (!box) return
+    userScrolled = true
+    const page = Math.max(1, (box.viewport?.height ?? 10) - 1)
+    if (how === "top") box.scrollTo(0)
+    else if (how === "bottom") box.scrollTo(box.scrollHeight)
+    else box.scrollBy(how === "up" ? -page : page)
+  }
+  /** What a drag selected, to the clipboard -- OSC 52, which reaches the
+   *  terminal's clipboard also over SSH; a terminal without it is said. */
+  const copy = (selection: Selection | null): boolean => {
+    const text = selection?.getSelectedText?.() ?? ""
+    if (!text.trim()) return false
+    const done = props.renderer.copyToClipboardOSC52(text)
+    say(done ? `copied ${text.length} character${text.length === 1 ? "" : "s"}`
+      : "this terminal takes no OSC 52 copy: shift+drag selects with its own")
+    return true
+  }
+  if (props.screen) {
+    // On release: copied, and the selection let go a moment later (shown
+    // that long) -- one left behind would hold the next ctrl+c, and a
+    // plain click leaves an empty one.
+    let letGo: ReturnType<typeof setTimeout> | null = null
+    const onSelection = (selection: Selection) => {
+      if (selection?.isDragging) return
+      const copied = copy(selection)
+      if (letGo) clearTimeout(letGo)
+      letGo = setTimeout(() => {
+        letGo = null
+        if (!props.renderer.isDestroyed) props.renderer.clearSelection()
+      }, copied ? 300 : 0)
+      ;(letGo as { unref?: () => void }).unref?.()
+    }
+    props.renderer.on("selection", onSelection)
+    // Once the conversation has come to rest after a scroll, every cell is
+    // written once more: some terminals (xterm) leave pixels of a block
+    // glyph beside where it stood. Only after the reader scrolled.
+    let lastTop = -1
+    let rest: ReturnType<typeof setTimeout> | null = null
+    const onFrame = () => {
+      const top = scrollBox?.scrollTop ?? -1
+      if (top === lastTop) return
+      lastTop = top
+      if (!userScrolled) return
+      if (rest) clearTimeout(rest)
+      rest = setTimeout(() => {
+        rest = null
+        userScrolled = false
+        if (!props.renderer.isDestroyed) props.onRedraw()
+      }, 150)
+      ;(rest as { unref?: () => void }).unref?.()
+    }
+    props.renderer.on("frame", onFrame)
+    onCleanup(() => {
+      props.renderer.off("selection", onSelection)
+      props.renderer.off("frame", onFrame)
+      if (rest) clearTimeout(rest)
+      if (letGo) clearTimeout(letGo)
+    })
+  }
 
   /** /rename: what a session is called -- the prompt box, the agent view
    *  and the terminal's title show it; without a name, after what it was
@@ -498,6 +571,20 @@ export function App(props: AppProps): JSX.Element {
     const s = session()
     const km = props.keymap
     const asked = s?.pending[0]
+    if (props.screen) {
+      // The conversation's own scroll keys (a drag copies on release, so
+      // ctrl+c keeps its ladder).
+      if (!agents.state.open) {
+        for (const [action, how] of [["scrollUp", "up"], ["scrollDown", "down"], ["scrollTop", "top"],
+                                     ["scrollBottom", "bottom"]] as const) {
+          if (km.matches(action, key)) {
+            key.preventDefault()
+            scroll(how)
+            return
+          }
+        }
+      }
+    }
     if (!asked && key.sequence && key.sequence.length >= 1 && !key.ctrl && !key.meta
         && !km.matches("submit", key) && key.name !== "escape") typingAt = Date.now()
     if (agents.state.open) {
@@ -624,6 +711,9 @@ export function App(props: AppProps): JSX.Element {
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       othersWaiting={othersWaiting}
       focused={() => !picker.state.open}
+      screen={props.screen}
+      scrollRef={(box) => { scrollBox = box }}
+      onUserScroll={() => { userScrolled = true }}
     />
   )
 }
