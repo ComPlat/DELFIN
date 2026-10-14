@@ -14,13 +14,14 @@ import { dirname } from "node:path"
 import { createCliRenderer, getTreeSitterClient } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { createSignal } from "solid-js"
+import { briefOf, openingOf, shortPath, suggestedPrompt } from "./agents/attention"
 import { Pins } from "./agents/pins"
 import { createAgentScreen } from "./agents/screen"
 import { App } from "./app"
 import { History } from "./composer/history"
 import { loadConfig, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
-import type { AnyEvent } from "./protocol/generated"
+import type { AnyEvent, AttentionItem } from "./protocol/generated"
 import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
 import { createAppStore, eventsOf, eventsOfUnknown, listed, withReplay } from "./store/store"
@@ -160,6 +161,33 @@ store.update((d) => {
 // Every session the service runs, for the agent view (each summary that
 // follows keeps its row up to date).
 listed(store, (hello.sessions ?? []) as { sessionId?: string }[])
+
+/**
+ * What needs the user, from every DELFIN process (a service of version 3
+ * and later; one before it has nothing to say): the list now, then its
+ * changes as attention.updated. Into the store's queue like those, so a
+ * change that came before the answer cannot overwrite it afterwards.
+ */
+async function loadAttention(service: ServiceHello): Promise<void> {
+  const event = (items: unknown, version?: number) =>
+    ({ type: "attention.updated", session: "", ts: Date.now() / 1000, items, version }) as never
+  if (Number(service.serviceVersion ?? 0) < 3) {
+    store.update((d) => {
+      d.attention = []
+      d.attentionVersion = -1
+    })
+    return
+  }
+  try {
+    // Versioned (from the service's start on): an update that came before
+    // this answer, though read after it, is not overwritten by it.
+    const got = await connection.rpc.request("attention.list", {})
+    store.push(event(got?.items ?? [], typeof got?.version === "number" ? got.version : undefined))
+  } catch {
+    // The next attention.updated brings it.
+  }
+}
+void loadAttention(hello)
 for (const problem of [...loaded.problems, ...keymap.problems]) view.note(problem)
 // Where else this user's sessions are (other login nodes), from the launcher.
 try {
@@ -256,13 +284,27 @@ async function openFirst(): Promise<string> {
   return created.sessionId as string
 }
 
+interface SwitchOptions {
+  /** A saved session is opened as a copy, under a new id: another
+   *  process has it open (two writing one conversation lose saves). */
+  fork?: boolean
+  /** The divider's words, given the session's title. */
+  divider?: (title: string, resumed: boolean) => string
+  /** What went wrong is the caller's to say. */
+  quiet?: boolean
+}
+
+/** Shown; or not: superseded by a newer open (no error), or why not. */
+type Switched = { shown: true; id: string } | { shown: false; error?: string }
+
 /**
  * Show another session in this window (the resume picker, the agent
  * view): a divider, its last turns, then its live events. One that runs
  * in the service (or sleeps there) is attached; a saved one is started
- * again from the session store first. The session left keeps running.
+ * again from the session store first (or a copy of it). The session left
+ * keeps running.
  */
-async function switchTo(id: string, workspace: string): Promise<void> {
+async function switchTo(id: string, workspace: string, options: SwitchOptions = {}): Promise<Switched> {
   const mine = ++wanted
   wantedId = id
   wantedTarget = ""
@@ -274,10 +316,10 @@ async function switchTo(id: string, workspace: string): Promise<void> {
       // The id the resumed session runs under is the one to attach to.
       const created = await connection.rpc.request("session.create",
                                                    { cwd: workspace || process.cwd(), resume: id, attach: false,
-                                                     ...resumeSettings() })
+                                                     ...(options.fork ? { fork: true } : {}), ...resumeSettings() })
       target = String(created.sessionId)
     }
-    if (mine !== wanted) return
+    if (mine !== wanted) return { shown: false }
     wantedTarget = target
     let shown = false
     // Shown before in this window: its replay is new rows again.
@@ -295,13 +337,14 @@ async function switchTo(id: string, workspace: string): Promise<void> {
         if (mine !== wanted) return []
         const previous = current
         const title = String(attached.session?.title || "") || target.slice(0, 8)
-        view.show(target, { divider: `${running ? "now" : "resumed"}: ${title}` })
+        view.show(target, { divider: options.divider?.(title, !running) ?? `${running ? "now" : "resumed"}: ${title}` })
         current = target
         shown = true
         if (previous && previous !== target) void leave(previous)
         return attached.events as unknown as AnyEvent[]
       }, eventsOf(target))
     if (!shown && letGo(target)) await leave(target)
+    return shown ? { shown: true, id: target } : { shown: false }
   } catch (error) {
     if (mine === wanted) {
       // The newest open failed: nothing it asked for stays followed out of
@@ -310,7 +353,9 @@ async function switchTo(id: string, workspace: string): Promise<void> {
       wantedTarget = ""
       if (letGo(target)) void leave(target)
     }
-    view.note(`could not open that session: ${(error as Error).message}`)
+    const said = (error as Error).message
+    if (!options.quiet) view.note(`could not open that session: ${said}`)
+    return mine === wanted ? { shown: false, error: said || "it did not start" } : { shown: false }
   }
 }
 
@@ -332,6 +377,29 @@ async function leave(id: string): Promise<void> {
   })
 }
 
+interface NewOptions {
+  /** Its folder (this window's by default). */
+  cwd?: string
+  /** What it is to look into (an attention item): its first row, and in
+   *  front of its first prompt. */
+  brief?: string
+  briefTitle?: string
+  /** What it is called (the agent view, the prompt box's chip). */
+  title?: string
+  divider?: string
+  /** What went wrong is the caller's to say. */
+  quiet?: boolean
+}
+
+/** A new session asked for: its id (null when it did not start, and
+ *  why); superseded when something else was opened meanwhile -- then it
+ *  runs on in the agent view, out of view. */
+interface Started {
+  id: string | null
+  superseded: boolean
+  error: string
+}
+
 /**
  * A new session (the agent view's typing + enter), in this window's
  * folder with the first session's settings, shown after a divider -- if
@@ -339,16 +407,23 @@ async function leave(id: string): Promise<void> {
  * stays in view and keeps running in the service. Its id, or null when it
  * did not start (the note says why).
  */
-async function newSession(): Promise<string | null> {
+async function newSession(options: NewOptions = {}): Promise<string | null> {
+  return (await startSession(options)).id
+}
+
+async function startSession(options: NewOptions = {}): Promise<Started> {
   const mine = ++wanted
   wantedId = ""
   wantedTarget = ""
   const { verbose: _verbose, resume: _resume, continue: _continue, fork: _fork, name: _name, ...settings } = start
+  const brief = options.brief ? { brief: options.brief, briefTitle: options.briefTitle ?? "" } : {}
+  const named = options.title ? { title: options.title } : {}
   let id = ""
   let shown = false
   try {
     await withReplay(store,
-      () => connection.rpc.request("session.create", { ...settings, cwd: String(start.cwd ?? process.cwd()) }),
+      () => connection.rpc.request("session.create", { ...settings, ...brief, ...named,
+                                                       cwd: options.cwd || String(start.cwd ?? process.cwd()) }),
       (answer) => {
         id = answer.sessionId as string
         store.update((d) => {
@@ -358,7 +433,7 @@ async function newSession(): Promise<string | null> {
         })
         if (mine !== wanted) return []
         const previous = current
-        view.show(id, { divider: "a new session" })
+        view.show(id, { divider: options.divider ?? "a new session" })
         current = id
         shown = true
         if (previous && previous !== id) void leave(previous)
@@ -367,11 +442,94 @@ async function newSession(): Promise<string | null> {
       }, eventsOfUnknown(store))
     // Asked for something else meanwhile: it runs on, in the agent view.
     if (!shown && letGo(id)) await leave(id)
-    return id
+    return { id, superseded: !shown, error: "" }
   } catch (error) {
-    view.note(`the new session could not start: ${(error as Error).message}`)
+    const said = (error as Error).message
+    if (!options.quiet) view.note(`the new session could not start: ${said}`)
+    return { id: null, superseded: mine !== wanted, error: said || "it did not start" }
+  }
+}
+
+/** What a session asked that is answered there now (a parked question,
+ *  a confirmation, a plan): said under its replay, where the answer goes. */
+function sayWhatItAsked(item: AttentionItem): void {
+  const lines = item.kind === "question"
+    ? [item.detail || item.text.replace(/^question:\s*/, ""), ...item.options.map((o, i) => `${i + 1}. ${o}`)]
+    : (item.detail || item.text).split("\n")
+  const what = item.kind === "question" ? "it asked, and nobody was there to answer"
+    : item.kind === "plan" ? "it put up a plan, and nobody was there to approve it"
+    : "it asked for a confirmation, and nobody was there to give it"
+  // After the replay: the store's queue is presented first.
+  store.flush()
+  view.lines(`${what} -- answer it here`, lines.filter((l) => l.trim()))
+}
+
+/**
+ * → on an item of what needs the user (attention.ts): its session, resumed
+ * in this window -- or, while another process has it open, a copy; a
+ * failed job's diagnosis session; else (or when that cannot be opened) a
+ * new session about it, in its folder, with the item as its brief. The
+ * prompt a new session suggests (for the prompt box: nothing is sent
+ * until the user presses enter), or null.
+ */
+async function openItem(item: AttentionItem): Promise<string | null> {
+  const opening = openingOf(item)
+  const folder = item.workspace || String(start.cwd ?? process.cwd())
+  const first = (text: string) => text.split("\n")[0]
+  // What the window says about how it opened it: once that is in view --
+  // said before, full screen would clear it with the screen.
+  const said: string[] = []
+  const sayNow = () => {
+    store.flush()
+    for (const text of said.splice(0)) view.note(text)
+  }
+  if (opening.how !== "new") {
+    const where = item.host && item.host !== store.state.host ? ` on ${item.host}` : " elsewhere"
+    // Named as the list named it: a copy's own title says "(fork)".
+    const copy = () => `a copy of ${opening.title} (still open${where})`
+    const plain = (title: string) => opening.how === "diagnosis" ? `${opening.title}: ${title}` : `resumed: ${title}`
+    let copying = opening.how === "session" && opening.copy
+    let got = await switchTo(opening.id, folder, { fork: copying, quiet: true, divider: copying ? copy : plain })
+    if (!got.shown && got.error && /being written by another process/i.test(got.error)) {
+      // Open elsewhere after all (no presence said so yet): a copy.
+      copying = true
+      got = await switchTo(opening.id, folder, { fork: true, quiet: true, divider: copy })
+    }
+    if (got.shown) {
+      if (copying) said.push(`this is a copy of ${opening.title}, which is still open${where}: what is done here does not reach it`)
+      sayNow()
+      if (item.blocking) {
+        // Answered there, as an ordinary message: the inbox's entry is
+        // closed, so no answer to it goes out a second time.
+        void connection.rpc.request("attention.dismiss", { id: item.id }).catch(() => undefined)
+        sayWhatItAsked(item)
+      }
+      return null
+    }
+    if (got.error === undefined) return null          // something newer was asked for
+    said.push(`${opening.title} could not be opened (${first(got.error)}): a new session about it instead`)
+  }
+  // Named after it: found again in the agent view by what it is about.
+  const about = { brief: briefOf(item), briefTitle: item.name, title: item.name, divider: `about: ${item.name}`,
+                  quiet: true }
+  let made = await startSession({ ...about, cwd: folder })
+  if (made.superseded) return null                    // something newer was asked for
+  const here = String(start.cwd ?? process.cwd())
+  if (!made.id && folder !== here) {
+    // Its folder takes no session (gone, on another machine, refused):
+    // this window's folder then, with the item as its brief all the same.
+    said.push(`${shortPath(folder)} could not take a session (${first(made.error)}): started in ${shortPath(here)}`)
+    made = await startSession({ ...about, cwd: here })
+    if (made.superseded) return null
+  }
+  if (!made.id) {
+    sayNow()
+    view.note(`the session about ${item.name} could not start: ${first(made.error)}`)
     return null
   }
+  sayNow()
+  // Its prompt only for it: not when something else was opened meanwhile.
+  return current === made.id ? suggestedPrompt(item) : null
 }
 
 let current = ""
@@ -477,7 +635,7 @@ await render(() => (
        onExpand={() => view.expandLast()} details={view.details} canShowDetails={() => view.canShowDetails}
        onDetails={() => view.toggleDetails()}
        onResume={(id, ws) => void switchTo(id, ws)}
-       onNewSession={newSession} pins={pins} agentScreen={agentScreen} screen={screen}
+       onNewSession={() => newSession()} onOpenItem={openItem} pins={pins} agentScreen={agentScreen} screen={screen}
        onThinking={(on) => view.setShowThinking(on)} thinking={() => view.showThinking}
        onLines={(title, lines) => view.lines(title, lines)} />
 ), renderer)
@@ -511,6 +669,7 @@ try {
 connection.onUp(async (again) => {
   // What this (maybe new) service runs is what the window knows now.
   listed(store, (again.sessions ?? []) as { sessionId?: string }[])
+  void loadAttention(again)
   if (!current) return
   const id = current
   try {

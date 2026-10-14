@@ -1516,10 +1516,20 @@ full instead. The whole of the last result: "expand the last result" in
 the palette. With a question open, ctrl+o writes out its whole preview.
 
 **The agent view.** ← on an empty prompt opens the oversight of every
-session, grouped as NEEDS INPUT, WORKING and DONE (pinned ones on top),
+session, grouped as NEEDS YOU, WORKING and DONE (pinned ones on top),
 plus the other open DELFIN sessions (the dashboard, other terminals,
 other login nodes) under ELSEWHERE, to watch and message. Each row says
 what the session needs or does in a few words.
+
+NEEDS YOU also lists what needs you from every other DELFIN process -- the
+attention inbox (`/attention` in the dashboard) and the job monitor's
+findings: a question a dashboard or REPL session parked when nobody
+answered, a confirmation or a plan waiting, a failed job (with the
+monitor's diagnosis and a prepared fix, if any), a security alert. Under
+NOTICES, quietly, what happened and needs nothing: finished jobs and
+runs, budget warnings. A row says what it is about, what it needs, where
+(its folder, `open on <node>` when another process has its session open,
+the machine when it is not this one) and how old it is.
 
 | Key | In the agent view |
 |-----|-------------------|
@@ -1533,13 +1543,41 @@ what the session needs or does in a few words.
 | alt+1 … alt+9 | open the n-th session |
 | esc or ← | back |
 
+On a row of what needs you:
+
+| Key | |
+|-----|-|
+| space | everything it says: the whole question and its choices, the job's errors, diagnosis and prepared fix, the alert |
+| → or enter | open it here, wherever it came from (below) |
+| typing + enter, with its peek open | the answer to a question, confirmation or plan: it goes to the next session started in its folder (as `/attention` answers do) |
+| ctrl+x | dismiss it: a notice at once, what waits or failed only when pressed twice (nobody waiting on it gets an answer) |
+
+→ opens every item in this window. A session the store keeps is resumed,
+with its conversation; while another process (the dashboard, a terminal)
+still has it open, a copy is opened instead -- "(fork)" in its name, and a
+line saying that what is done there does not reach the original. A parked
+question's session opens with the question under its last turn, and the
+question leaves the list: you answer it there. A failed job the monitor
+diagnosed opens its diagnosis session. Anything else -- a failed or
+finished job, an alert, a notice whose session is gone -- starts a new
+session in its folder, named after it, with the item as its opening
+context (one row; ctrl+o shows all of it) and a suggested prompt in the
+box ("Job 4711 failed with OUT_OF_MEMORY. What went wrong, and what should
+we change?"). Nothing is sent until you press enter. A prepared job fix is
+applied in the dashboard (`/fix`).
+
+From anywhere in the window, the hints line ends with a quiet count of
+what waits for you and what failed (`◉ 3 · ✗ 1`, notices not counted); a
+new one names itself there for a few seconds (`◉ relax Fe complex asks`),
+and the terminal's title carries the count: `(4) DELFIN · name`.
+
 Full screen, the view takes the window's screen and esc gives the
 conversation back. Inline, it uses the terminal's alternate screen, so esc
 gives the screen back exactly as it was; under GNU screen, whose alternate
 screen is off unless `altscreen on` is in your `.screenrc`, it grows the
 footer instead (set `DELFIN_TUI_AGENTS_SCREEN=alternate` if yours is on). When a session other
-than the one in view waits for you, the hints line says so (◉) and so does
-the terminal's title.
+than the one in view waits for you, the count at the right of the hints
+line says so (◉) and so does the terminal's title.
 
 **Sleeping sessions.** A session that no window shows, with nothing to do
 and nothing to ask, sleeps after an hour: its process ends, it is saved,

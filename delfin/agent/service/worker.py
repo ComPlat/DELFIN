@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import sys
 import threading
@@ -59,6 +60,7 @@ from typing import Any, Callable
 
 from . import choices, protocol
 from .approvals import ProtocolBroker
+from .redact import Redactor
 from .eventlog import REPLAY_BUDGET_BYTES, EventLog, log_path, service_dir
 from .transcript import ProtocolTranscript
 
@@ -172,61 +174,120 @@ class _NoTerminal:
 # Events
 # ---------------------------------------------------------------------------
 
-class Redactor:
-    """Masks credentials in what a session shows and keeps.
 
-    Two passes, as ``output_guard.scrub_secrets`` does: the exact values of
-    the credentials DELFIN holds (a KIT key has no recognisable shape), then
-    everything shaped like a credential. The known values are read once a
-    minute, not once per string.
+
+#: The longest brief kept (session.create's): a failed job's context is a
+#: few hundred characters; this only stops a runaway one.
+BRIEF_MAX = 20_000
+#: What the model reads before the brief.
+BRIEF_HEADER = ("What this session was started to look into, from the DELFIN "
+                "window's list of what needs the user:\n\n")
+#: Between the brief and the prompt it goes in front of: a line no brief
+#: holds by chance (a job's details may hold a Markdown rule).
+BRIEF_END = "\n\n[end of what this session was started to look into]\n\n"
+
+#: A restored conversation the event log has nothing of -- it ran in the
+#: dashboard or the REPL, or it is a copy -- is shown when the session
+#: opens: its last HISTORY_TURNS turns, texts cut to HISTORY_TEXT, tool
+#: output to HISTORY_OUTPUT (the details of a row; the model has it all).
+HISTORY_TURNS = 20
+HISTORY_TEXT = 8000
+HISTORY_OUTPUT = 2000
+
+
+def _content_text(content: Any) -> str:
+    """A message's text: a string, or the text parts of a list of parts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(part.get("text") or "") for part in content
+                         if isinstance(part, dict)
+                         and part.get("type") in ("text", "input_text", "output_text"))
+    return ""
+
+
+def _cut_input(value: Any) -> Any:
+    """A tool call's input as a row shows it: long strings cut."""
+    if isinstance(value, str):
+        return value if len(value) <= 400 else value[:399] + "…"
+    if isinstance(value, dict):
+        return {str(k): _cut_input(v) for k, v in list(value.items())[:40]}
+    if isinstance(value, list):
+        return [_cut_input(v) for v in value[:40]]
+    return value
+
+
+def history_events(messages: Any, turns: int = HISTORY_TURNS) -> list[tuple[str, dict]]:
+    """A saved conversation as the window's events, the last ``turns``
+    turns of it: what the user wrote, the tools each answer called and
+    what came back, what it said.
+
+    Rows the harness wrote between the user's messages (follow-ups, job
+    notes, the job monitor's diagnosis prompt: ``harness_rows``) are shown
+    as the window shows them live (◇, source "harness"); the brief a
+    session about an attention item put in front of its first prompt is
+    left out of it. A notice first says what this is, and how many turns
+    are left out.
     """
+    from ..harness_rows import is_harness_row
 
-    _REFRESH_S = 60.0
-
-    def __init__(self):
-        self._known: list[str] = []
-        self._loaded = -1e9
-        try:
-            from ..output_guard import _redact_secrets
-            self._shapes: Callable[[str, list], str] | None = _redact_secrets
-        except Exception:
-            self._shapes = None
-
-    def _known_values(self) -> list[str]:
-        now = time.monotonic()
-        if now - self._loaded > self._REFRESH_S:
-            self._loaded = now
-            try:
-                from ..web_tools import _known_secret_values
-                self._known = sorted(set(_known_secret_values()), key=len,
-                                     reverse=True)
-            except Exception:
-                self._known = []
-        return self._known
-
-    def text(self, text: str) -> str:
-        for secret in self._known_values():
-            if secret in text:
-                text = text.replace(secret, "[redacted:credential]")
-        if self._shapes is not None:
-            try:
-                text = self._shapes(text, [])
-            except Exception:
-                pass
-        return text
-
-    def value(self, value: Any) -> Any:
-        if isinstance(value, str):
-            return self.text(value)
-        if isinstance(value, dict):
-            return {k: self.value(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [self.value(v) for v in value]
-        return value
-
-    def event(self, event: dict) -> dict:
-        return {k: (v if k in _IDENTIFIERS else self.value(v))
-                for k, v in event.items()}
+    out: list[list[tuple[str, dict]]] = []
+    calls: dict[str, str] = {}
+    for m in messages if isinstance(messages, list) else []:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role == "user":
+            text = _content_text(m.get("content")).strip()
+            harness = is_harness_row(m)
+            if not harness and text.startswith(BRIEF_HEADER) and BRIEF_END in text:
+                text = text.split(BRIEF_END, 1)[1].strip()
+            if text:
+                out.append([("user.message", {"text": text[:HISTORY_TEXT],
+                                              "source": "harness" if harness else "user"})])
+            continue
+        if not out:
+            continue                    # nothing the user said to hang it on
+        turn = out[-1]
+        tag = f"h{len(out)}.{len(turn)}"
+        if role == "assistant":
+            text = _content_text(m.get("content")).strip()
+            if text:
+                turn.append(("text.ended", {"partId": tag, "text": text[:HISTORY_TEXT]}))
+            asked = m.get("tool_calls")
+            for i, call in enumerate(asked if isinstance(asked, list) else []):
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function")
+                fn = fn if isinstance(fn, dict) else {}
+                cid = str(call.get("id") or f"{tag}.{i}")
+                raw = fn.get("arguments")
+                try:
+                    args = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                except ValueError:
+                    args = {"arguments": str(raw)}
+                name = str(fn.get("name") or "tool")
+                calls[cid] = name
+                turn.append(("tool.started", {"callId": cid, "name": name,
+                                              "input": _cut_input(args if isinstance(args, dict)
+                                                                  else {"value": args})}))
+        elif role == "tool":
+            cid = str(m.get("tool_call_id") or "")
+            if cid in calls:
+                turn.append(("tool.ended", {"callId": cid, "name": calls.pop(cid),
+                                            "output": _content_text(m.get("content"))[:HISTORY_OUTPUT],
+                                            "meta": {}}))
+    if not out:
+        return []
+    kept = out[-turns:] if turns > 0 else out
+    left = len(out) - len(kept)
+    said = "earlier in this session, as it was saved"
+    if left:
+        said += f" ({left} earlier turn{'s' if left != 1 else ''} not shown)"
+    events: list[tuple[str, dict]] = [("notice", {"text": said})]
+    for turn in kept:
+        events.extend(turn)
+    return events
 
 
 class Emitter:
@@ -248,7 +309,7 @@ class Emitter:
                                      "ts": round(time.time(), 3)}
             event.update({k: v for k, v in fields.items() if v is not None})
             if type_ not in _UNREDACTED:
-                event = self.redactor.event(event)
+                event = self.redactor.event(event, _IDENTIFIERS)
             with self._lock:
                 self.log.stamp(event)
                 self.writer.send(protocol.event(event))
@@ -562,6 +623,10 @@ def _agent_class():
                     return
                 super()._begin_turn_resets_the_abort()
 
+        #: The Worker's (prompt with its brief, what became of the turn):
+        #: the brief goes with the first turn that reaches the model.
+        brief_hooks: tuple | None = None
+
         def turn(self, prompt: str):
             harness = isinstance(prompt, HarnessText)
             with self.cond:
@@ -598,6 +663,9 @@ def _agent_class():
                     # Esc right after Enter: the turn never starts.
                     error = "cancelled before it started"
                     return TurnResult(error=error)
+                hooks = self.brief_hooks
+                if hooks and not harness:
+                    prompt = hooks[0](prompt)
                 result = super().turn(prompt)
                 error = str(getattr(result, "error", "") or "")
                 return result
@@ -609,6 +677,12 @@ def _agent_class():
                 self.transcript.finish()
                 late = self._take_back_steers()
                 after = self._status()
+                hooks = self.brief_hooks
+                if hooks and not harness and not skip:
+                    try:
+                        hooks[1](error, max(0, after[1] - before[1]))
+                    except Exception:
+                        pass
                 self._emit(
                     "turn.ended", turnId=turn_id,
                     durationMs=int((time.monotonic() - started) * 1000),
@@ -985,7 +1059,24 @@ class Worker:
         self.save = save
         sid = str(getattr(engine, "session_id", "") or "")
         self.notices = list(notices)
+        #: What the session was started to look into (session.create's
+        #: brief), put in front of the first prompt that reaches the model.
+        self.brief = ""
+        self._brief_used = False
+        #: The turn running now carries it: what becomes of it decides
+        #: whether it was handed over.
+        self._brief_turn = False
         self.log = EventLog(log_path(sid), on_error=self._log_failed)
+        #: A restored conversation this log has nothing of (it ran
+        #: elsewhere, or it is a copy): shown when the session opens. Only
+        #: a picture of it: a saved row it cannot read leaves it out,
+        #: never the session.
+        self._history: list[tuple[str, dict]] = []
+        if getattr(engine, "_history_restored", False) and self.log.empty:
+            try:
+                self._history = history_events(getattr(engine, "messages", None))
+            except Exception:
+                self._history = []
         self.emitter = Emitter(writer, self.log, sid)
         emit = self.emitter.emit
         try:
@@ -1005,6 +1096,7 @@ class Worker:
             engine, broker=self.broker, emit=emit, checkpoint=save,
             opts=ReplOptions(cwd=workspace, session_name=name, banner=""))
         self.agent.session_title = self.title
+        self.agent.brief_hooks = (self._brief_for_turn, self._brief_after_turn)
         # Turn ids stay unique in the session's log across resumes.
         self.agent._turn_seq = self.log.turns
         self.banner = banner
@@ -1094,7 +1186,7 @@ class Worker:
         event = {"type": "session.info", "session": self.emitter.session_id,
                  "seq": 0, "ts": round(time.time(), 3)}
         event.update({k: v for k, v in self.info().items() if v is not None})
-        return self.emitter.redactor.event(event)
+        return self.emitter.redactor.event(event, _IDENTIFIERS)
 
     # -- requests ------------------------------------------------------------------
     def handle(self, message: dict) -> None:
@@ -1165,10 +1257,40 @@ class Worker:
             raise _Refusal(protocol.VERSION_MISMATCH,
                            f"worker speaks protocol {protocol.PROTOCOL_VERSION},"
                            f" client {version}")
+        brief = str(params.get("brief") or "").strip()
+        if brief and not self._initialized:
+            # Shown before the answer, so the window that started the
+            # session has it with its first events -- once: a session woken
+            # again (asleep, a new service) is given its brief again, and
+            # its log says whether it is shown already and went out.
+            self.brief = brief[:BRIEF_MAX]
+            if not self.log.has_context:
+                self.emitter.emit("context", title=protocol.clean_title(params.get("briefTitle")) or "context",
+                                  text=self.brief)
+            self._brief_used = self.log.user_turn_after_context
         self._initialized = True
         return {"protocolVersion": protocol.PROTOCOL_VERSION, "pid": os.getpid(),
                 "session": self.info(), "state": self.agent.state,
                 "pending": [self.broker.describe(r) for r in self.broker.pending()]}
+
+    def _brief_for_turn(self, prompt: str) -> str:
+        """The prompt of a turn that reaches the model -- a line the user
+        sent, never a /command, a !shell line or a # note (none of those is
+        a turn) -- with the brief in front, until a turn has taken it."""
+        if not self.brief or self._brief_used:
+            return prompt
+        self._brief_turn = True
+        return f"{BRIEF_HEADER}{self.brief}{BRIEF_END}{prompt}"
+
+    def _brief_after_turn(self, error: str, output_tokens: int) -> None:
+        """Taken, unless its turn failed before the model said anything
+        (the endpoint refused it, it was cancelled at once): then the next
+        prompt carries it."""
+        if not self._brief_turn:
+            return
+        self._brief_turn = False
+        if not (error and output_tokens <= 0):
+            self._brief_used = True
 
     def _m_session_prompt(self, params: dict) -> dict:
         # Stripped as the REPL strips a typed line: "  !ls" is a shell
@@ -1180,6 +1302,9 @@ class Worker:
         if how not in ("queue", "steer"):
             raise _Refusal(protocol.INVALID_PARAMS, "how must be queue or steer")
         agent = self.agent
+        # As typed: the brief goes in front of the first prompt when its turn
+        # starts (_brief_for_turn), not here -- a line can still be dropped.
+        said = text
         with agent.cond:
             if agent.closing.is_set():
                 raise _Refusal(protocol.NOT_ALLOWED, "the session is closing")
@@ -1188,7 +1313,7 @@ class Worker:
             if how == "steer" and agent.busy and agent._turn_active.is_set():
                 route = "steer"
             elif agent.idle:
-                agent.inbox.append(text)
+                agent.inbox.append(said)
                 agent.cond.notify_all()
                 route = "next"
                 # Shown now, under the lock: before the loop can take it and
@@ -1198,14 +1323,14 @@ class Worker:
                 # During a turn, or between a turn and its follow-up: like
                 # a line typed during the turn, it goes before any
                 # follow-up, which is dropped.
-                agent.queued.append(text)
+                agent.queued.append(said)
                 route = "queued"
         agent.wake.set()
         if route == "steer":
-            if agent.steer_text(text):
+            if agent.steer_text(said):
                 return {"accepted": True, "steered": True}
             with agent.cond:
-                agent.queued.append(text)
+                agent.queued.append(said)
             route = "queued"
         if route == "queued":
             agent.post(lambda: self.emitter.emit(
@@ -1446,6 +1571,11 @@ class Worker:
         self.emitter.emit("worker.ready", protocolVersion=protocol.PROTOCOL_VERSION,
                           pid=os.getpid())
         self.emitter.emit("session.info", **self.info())
+        # The restored conversation, before anything can run: no turn's
+        # events are mixed into it.
+        for type_, fields in self._history:
+            self.emitter.emit(type_, **fields)
+        self._history = []
         self.agent.refresh_state()
         threading.Thread(target=self._read_requests, name="protocol-reader",
                          daemon=True).start()
@@ -1630,8 +1760,30 @@ def main(argv: list[str] | None = None) -> int:
             engine = FakeEngine(str(workspace), delay=args.fake_delay)
             if args.resume:
                 # As a real resume (cli._open_session restores the id): the
-                # session goes on under its id, in the same log.
+                # session goes on under its id, in the same log -- with what
+                # the store kept of it (a --fake-save session), and as a
+                # copy under a new id with --fork-session.
                 engine.session_id = args.resume
+                try:
+                    from .. import session_store
+                    saved = session_store.load_session(args.resume)
+                except Exception:
+                    saved = None
+                if saved:
+                    engine.restore_state(saved)
+                    engine._history_restored = bool(engine.messages)
+                if args.fork_session:
+                    # The store's own copy where it has the session (a new
+                    # id, the title marked as a fork), as a real one gets.
+                    import uuid
+                    new_id = uuid.uuid4().hex
+                    forked = None
+                    if saved:
+                        try:
+                            forked = session_store.fork_session(args.resume, new_id=new_id)
+                        except Exception:
+                            forked = None
+                    engine.session_id = str(forked or new_id)
             if args.permission_mode:
                 engine.set_kit_permission_mode(args.permission_mode,
                                                announce=False)

@@ -8,7 +8,8 @@
  *   status    spinner · what it does · elapsed · tokens · cost · esc
  *   approval  the open question, with exactly the keys the session offers
  *   composer  ❯ the prompt (grows to 8 rows; completion and search above)
- *   hints     posture · model · keys (◉ when another session waits)
+ *   hints     posture · model · keys; at its right, quietly, what needs
+ *             the user (◉ 3 · ✗ 1), or for a moment what just arrived
  *
  * The agent view (←) takes the whole terminal but its last row: its list
  * in place of the tail, status and question, the composer under it.
@@ -20,7 +21,7 @@
 import { infoStringToFiletype, type CliRenderer, type Renderable, type ScrollBoxRenderable,
          type SyntaxStyle } from "@opentui/core"
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type Accessor, type JSX } from "solid-js"
-import { AgentViewPanel, agentHelp, type AgentView } from "../agents/view"
+import { AgentViewPanel, agentHelp, takesAnswer, type AgentView } from "../agents/view"
 import { ComposerView, type Composer } from "../composer/composer"
 import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
@@ -51,8 +52,10 @@ export interface FooterProps {
   /** The view is drawn on the alternate screen: all of it is the view's,
    *  and the footer keeps its height for the way back. */
   agentsOnOwnScreen?: boolean
-  /** Sessions other than the one in view that wait for the user. */
-  othersWaiting?: () => number
+  /** What needs the user, for the right end of the hints line: what waits
+   *  for an answer (other sessions here, questions parked anywhere), what
+   *  failed, and a new one's note, shown for a few seconds instead. */
+  attention?: () => { asks: number; failed: number; note: string }
   focused: () => boolean
   /** Full screen: the footer is the window -- the session's rows (or the
    *  agent view) above, the composer at the bottom -- and the answer's
@@ -235,6 +238,10 @@ export function Footer(props: FooterProps): JSX.Element {
     if (v?.state.open) {
       if (v.state.renaming) return "the new name…"
       const peeked = v.state.peek ? v.rows().find((r) => r.id === v.state.peek!.id) : undefined
+      if (peeked?.kind === "attention") {
+        return takesAnswer(peeked.item) ? `the answer for ${peeked.name}…`
+          : `${props.keymap.label("agentsOpen")} opens it in a session`
+      }
       if (peeked) return peeked.kind === "elsewhere" ? `a message for ${peeked.name}…` : `reply to ${peeked.name}…`
       return "a new session: what should it do?"
     }
@@ -347,18 +354,49 @@ function LiveBlockView(props: { text: () => string; first: () => boolean; syntax
   )
 }
 
+/** The right end of the hints line: the marks in their colours, the rest
+ *  faint -- `◉ 3 · ✗ 1`, or a new item's `◉ relax Fe complex asks`. */
+export function attentionCorner(a: { asks: number; failed: number; note: string } | undefined,
+                                room: number): Corner {
+  const none = { mark: "", text: "", sep: "", mark2: "", text2: "", note: false }
+  if (!a || room < 6) return none
+  if (a.note) {
+    const mark = a.note.slice(0, 1)
+    return { ...none, mark, text: fit(a.note.slice(1), Math.max(0, room - 1)), note: true }
+  }
+  const parts = [a.asks ? { mark: "◉", text: ` ${a.asks}` } : null, a.failed ? { mark: "✗", text: ` ${a.failed}` } : null]
+    .filter(Boolean) as { mark: string; text: string }[]
+  if (!parts.length) return none
+  const [first, second] = parts
+  return { mark: first!.mark, text: first!.text, sep: second ? " · " : "", mark2: second?.mark ?? "", text2: second?.text ?? "",
+           note: false }
+}
+
+export interface Corner {
+  mark: string
+  text: string
+  sep: string
+  mark2: string
+  text2: string
+  /** A new item's note (its words muted), not the count (faint). */
+  note: boolean
+}
+
 function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
   const t = props.theme
-  // Another session waits for the user: said first, where the eye is.
-  const badge = () => {
-    if (props.agents?.state.open) return ""
-    const n = props.othersWaiting?.() ?? 0
-    return n ? `  ◉ ${n} waiting` : ""
+  /** What needs the user, at the right end (not while the agent view is
+   *  open: its own head says it). At most half the line. */
+  const corner = createMemo(() => props.agents?.state.open ? attentionCorner(undefined, 0)
+    : attentionCorner(props.attention?.(), Math.floor((props.cols() - 1) / 2)))
+  const cornerWidth = () => {
+    const c = corner()
+    return width(c.mark + c.text + c.sep + c.mark2 + c.text2)
   }
   /** The line in three parts -- what is wrong first, then the posture in
-   *  its colour, then the model and the keys -- cut from the right. */
+   *  its colour, then the model and the keys -- cut from the right, then
+   *  spaces up to the corner. */
   const line = createMemo(() => {
-    const room = Math.max(0, props.cols() - 1 - width(badge()))
+    const room = Math.max(0, props.cols() - 1 - (cornerWidth() ? cornerWidth() + 2 : 0))
     if (props.agents?.state.open) {
       return { lead: fit("  " + agentHelp(props.agents, props.keymap, props.cols() - 3), room), posture: null, rest: "" }
     }
@@ -373,7 +411,7 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
     if (s?.usage.costUsd && !s.turn) rest.push(`$${s.usage.costUsd.toFixed(4)}`)
     rest.push(`${props.keymap.label("cycleMode")} mode`, `${props.keymap.label("agents")} agents`)
     const look = s?.approval ? postureLook(s.approval, t()) : null
-    const head = (badge() ? "  · " : "  ") + lead.map((part) => `${part} · `).join("")
+    const head = "  " + lead.map((part) => `${part} · `).join("")
     if (!look) return { lead: fit(head + rest.join(" · "), room), posture: null, rest: "" }
     // The posture keeps its room: a note before it is cut first.
     const postureText = fit(look.text, Math.max(0, room - 2))
@@ -381,14 +419,25 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
     const restText = fit(rest.length ? ` · ${rest.join(" · ")}` : "", Math.max(0, room - width(leadText) - width(postureText)))
     return { lead: leadText, posture: postureText ? { ...look, text: postureText } : null, rest: restText }
   })
+  const gap = () => {
+    if (!cornerWidth()) return ""
+    const used = width(line().lead) + width(line().posture?.text ?? "") + width(line().rest)
+    return " ".repeat(Math.max(2, props.cols() - 1 - used - cornerWidth()))
+  }
+  const markTone = (mark: string) => mark === "✗" ? t().err : t().warn
   return (
     <text flexShrink={0} wrapMode="none">
-      <span style={{ fg: t().warn }}>{badge()}</span>
       <span style={{ fg: t().faint }}>{line().lead}</span>
       <span style={{ fg: line().posture?.color ?? t().faint, bold: Boolean(line().posture?.marked) }}>
         {line().posture?.text ?? ""}
       </span>
       <span style={{ fg: t().faint }}>{line().rest}</span>
+      <span style={{ fg: t().faint }}>{gap()}</span>
+      <span style={{ fg: markTone(corner().mark) }}>{corner().mark}</span>
+      <span style={{ fg: corner().note ? t().muted : t().faint }}>{corner().text}</span>
+      <span style={{ fg: t().faint }}>{corner().sep}</span>
+      <span style={{ fg: markTone(corner().mark2) }}>{corner().mark2}</span>
+      <span style={{ fg: t().faint }}>{corner().text2}</span>
     </text>
   )
 }

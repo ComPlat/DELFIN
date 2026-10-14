@@ -802,8 +802,18 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
 
     if sid and getattr(args, "fork_session", False):
         try:
-            forked = _ss.fork_session(sid)
-            sid = str((forked or {}).get("session_id", "") or sid)
+            # The copy's id (session_store.fork_session returns it, not a
+            # record: reading it as a dict raised, the warning below said
+            # "fork failed", and every --fork-session resumed the original).
+            # An id of its own: the store's default has one-second steps,
+            # and two copies of one session in a second would share a file.
+            import uuid
+            forked = _ss.fork_session(sid, new_id=uuid.uuid4().hex)
+            if isinstance(forked, dict):
+                forked = forked.get("session_id")
+            if not forked:
+                raise ValueError(f"session {sid} could not be read")
+            sid = str(forked)
             print(f"Forked to {sid}; the original is untouched.",
                   file=sys.stderr)
         except Exception as exc:

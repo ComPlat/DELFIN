@@ -8,6 +8,7 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
 import { Pins } from "../src/agents/pins"
 import { App, type Requester } from "../src/app"
+import type { AttentionItem } from "../src/protocol/generated"
 import { Keymap } from "../src/keymap/keymap"
 import { createScreenItems } from "../src/scrollback/screenview"
 import { startSessionView } from "../src/session"
@@ -32,6 +33,9 @@ export async function mountWindow(options: {
   answerPauseMs?: number
   onResume?: (id: string, workspace: string) => void
   onNewSession?: () => Promise<string | null>
+  onOpenItem?: (item: AttentionItem) => Promise<string | null>
+  /** The bottom-right note's timings (App's `arrival`). */
+  arrival?: { shownMs: number; quietMs: number }
   pins?: Pins
   /** The whole terminal (the window's default) instead of inline. */
   full?: boolean
@@ -73,6 +77,7 @@ export async function mountWindow(options: {
          details={view.details} canShowDetails={() => view.canShowDetails} onDetails={() => view.toggleDetails()}
          onLines={(title, lines) => view.lines(title, lines)}
          onResume={options.onResume} onNewSession={options.onNewSession} pins={options.pins}
+         onOpenItem={options.onOpenItem} arrival={options.arrival ?? { shownMs: 5000, quietMs: 600_000 }}
          answerPauseMs={options.answerPauseMs ?? 0} screen={screen} />
   ), t.renderer)
   const settle = async () => {

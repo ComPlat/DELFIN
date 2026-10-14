@@ -44,12 +44,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import eventlog, protocol, rundir
+from . import attention_feed, eventlog, protocol, rundir
 
 #: What this service does beyond its protocol, for a launcher deciding
 #: what it may ask. 2: a dry-run session.shutdown only says what it would
 #: cut -- a service before it ignores dryRun and would end the session.
-SERVICE_VERSION = 2
+#: 3: attention.list/answer/dismiss and attention.updated (what needs the
+#: user, from every DELFIN process), and session.create's brief.
+SERVICE_VERSION = 3
 
 #: Requests a window sends to the service itself (the one definition is
 #: protocol.SERVICE_REQUESTS, which the TUI's types are generated from).
@@ -66,7 +68,7 @@ FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
 ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
                     "session.setMode", "session.shutdown", "permission.reply",
                     "session.message", "service.shutdown", "session.toggleTasks",
-                    "session.setTitle"})
+                    "session.setTitle", "attention.answer", "attention.dismiss"})
 
 UNKNOWN_SESSION = protocol.UNKNOWN_SESSION
 WORKER_GONE = protocol.WORKER_GONE
@@ -111,13 +113,25 @@ SLEEP_AFTER_S = 3600.0
 #: died) is kept to be woken; a later service forgets older ones.
 DORMANT_KEEP_S = 7 * 86400.0
 
-#: The create settings a session is resumed with.
+#: The create settings a session is resumed with -- its brief too: a
+#: session about an item waits for the user, and may sleep (or move to a
+#: new service) before its first prompt; the worker's log says whether
+#: the brief went out already.
 RESUME_SETTINGS = ("cwd", "name", "title", "model", "provider", "effort", "mode", "permissionMode",
-                   "addDirs", "readDirs", "isolate", "noIsolate", "fake", "fakeDelay")
+                   "addDirs", "readDirs", "isolate", "noIsolate", "fake", "fakeDelay", "fakeSave",
+                   "brief", "briefTitle")
 
 #: How long a wake waits for the worker of a service that died to finish
 #: saving the session (it ends on its own when its pipe closes).
 OLD_WORKER_WAIT_S = 30.0
+
+#: How often the attention records are looked at (their size and age: a
+#: change there means reading them); on a cluster they are on a network
+#: file system, where a timed look is surer than a change notification.
+ATTENTION_POLL_S = 2.0
+#: Read again at least this often though nothing changed: a notice
+#: expires, a session elsewhere closes.
+ATTENTION_FULL_S = 60.0
 
 #: Summary changes the roster may take with the next write (half a second
 #: on): a turn's activity, many a second. Every other change -- state,
@@ -626,6 +640,17 @@ class Supervisor:
         #: what has to end before it is gone.
         self._tasks: set[asyncio.Task] = set()
         self.server: asyncio.base_events.Server | None = None
+        #: What needs the user (attention_feed), as last sent to the windows,
+        #: and its version: a window keeps the newest of a list and an
+        #: event that cross on the socket.
+        self.attention_items: list[dict] = []
+        #: From the service's start (seconds, times a million) on: a later
+        #: service's lists are newer than any of an earlier one's.
+        self.attention_version = int(time.time()) * 1_000_000
+        self._attention_fp: tuple | None = None
+        self._attention_at = 0.0
+        self._attention_titles = attention_feed.Titles()
+        self._attention_lock = asyncio.Lock()
 
     def spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -655,11 +680,13 @@ class Supervisor:
             os.umask(old)
         os.chmod(path, 0o600)
         idle = self.spawn(self._watch_idle())
+        attention = self.spawn(self._watch_attention())
         try:
             await self.stopping.wait()
         finally:
             self.closing = True
             idle.cancel()
+            attention.cancel()
             self.server.close()
             # Said before anything closes: a window leaves (or, for a
             # restart, reconnects) instead of starting a new service.
@@ -979,6 +1006,8 @@ class Supervisor:
                 args.append(flag)
         if params.get("fake") and params.get("fakeDelay") is not None:
             args += ["--fake-delay", str(float(params["fakeDelay"]))]
+        if params.get("fake") and params.get("fakeSave"):
+            args.append("--fake-save")
         for path in params.get("addDirs") or []:
             args += ["--add-dir", str(path)]
         for path in params.get("readDirs") or []:
@@ -1009,10 +1038,14 @@ class Supervisor:
                 # The service began to stop while the worker started; it
                 # ends with the rest (end_all_sessions takes `starting`).
                 raise _Refusal(protocol.NOT_ALLOWED, "the agent service is stopping")
-            init = await session.request("initialize",
-                                         {"protocolVersion": protocol.PROTOCOL_VERSION,
-                                          "client": "delfin-agent service"},
-                                         timeout=CREATE_TIMEOUT_S)
+            hello = {"protocolVersion": protocol.PROTOCOL_VERSION,
+                     "client": "delfin-agent service"}
+            if str(params.get("brief") or "").strip():
+                # Handed over in the initialize request -- not in argv,
+                # which every user of a login node can read.
+                hello["brief"] = str(params["brief"])
+                hello["briefTitle"] = str(params.get("briefTitle") or "")
+            init = await session.request("initialize", hello, timeout=CREATE_TIMEOUT_S)
         except (WorkerFailed, asyncio.TimeoutError) as exc:
             self.starting.discard(session)
             if proc.returncode is None:
@@ -1098,6 +1131,66 @@ class Supervisor:
         self.restart = bool(params.get("restart"))
         asyncio.get_running_loop().call_soon(self.stop, "restart" if self.restart else "stop")
         return {"stopping": True, "sessions": count}
+
+    # -- what needs the user ---------------------------------------------------------------
+    async def _m_attention_list(self, _client: Client, _params: dict) -> dict:
+        stale = time.monotonic() - self._attention_at >= ATTENTION_POLL_S
+        await self._refresh_attention(force=stale)
+        return {"items": self.attention_items, "version": self.attention_version}
+
+    async def _m_attention_answer(self, _client: Client, params: dict) -> dict:
+        text = str(params["text"]).strip()
+        if not text:
+            raise _Refusal(protocol.INVALID_PARAMS, "an answer needs some text")
+        done = await asyncio.to_thread(attention_feed.answer, str(params["id"]), text)
+        await self._refresh_attention(force=True)
+        return {"ok": bool(done.get("ok")), "error": str(done.get("error") or "") or None}
+
+    async def _m_attention_dismiss(self, _client: Client, params: dict) -> dict:
+        done = await asyncio.to_thread(attention_feed.dismiss, str(params["id"]))
+        await self._refresh_attention(force=True)
+        return {"ok": bool(done.get("ok")), "error": str(done.get("error") or "") or None}
+
+    async def _watch_attention(self) -> None:
+        """While a window is there to tell: the attention records looked at
+        every ATTENTION_POLL_S, and what changed sent to every window."""
+        while True:
+            await asyncio.sleep(ATTENTION_POLL_S)
+            if self.closing or not any(c.greeted for c in self.clients):
+                continue
+            try:
+                await self._refresh_attention()
+            except Exception:
+                pass                  # a record that cannot be read now is read at the next look
+
+    async def _refresh_attention(self, *, force: bool = False) -> None:
+        """The items again when a record changed (or force, or a minute
+        went by); every window hears of them when they differ."""
+        async with self._attention_lock:
+            # The sessions this service runs say what they need themselves;
+            # one that sleeps here may be open in a dashboard by now, whose
+            # questions are the list's. A session starting or ending here
+            # changes what is left out: looked at again at the next poll.
+            own = frozenset(self.sessions)
+            fp = (await asyncio.to_thread(attention_feed.fingerprint), own)
+            now = time.monotonic()
+            if not force and fp == self._attention_fp and now - self._attention_at < ATTENTION_FULL_S:
+                return
+            items = await asyncio.to_thread(attention_feed.snapshot, own,
+                                            titles=self._attention_titles)
+            self._attention_fp = fp
+            self._attention_at = now
+            if items == self.attention_items:
+                return
+            self.attention_items = items
+            self.attention_version += 1
+            version = self.attention_version
+        data = protocol.encode(protocol.event({"type": "attention.updated", "session": "",
+                                               "ts": round(time.time(), 3), "items": items,
+                                               "version": version}))
+        for client in list(self.clients):
+            if client.greeted:
+                client.send_bytes(data)
 
     # -- sessions ---------------------------------------------------------------------------
     def broadcast_summary(self, session: Session, *, roster_now: bool = False) -> None:

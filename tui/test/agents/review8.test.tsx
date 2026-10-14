@@ -75,7 +75,7 @@ test("a session whose ended row was taken out and that runs again is listed agai
   await w.escape()
   const hints = w.footer().join("\n")
   console.log("R1 hints after esc:\n" + hints)
-  expect(hints).toContain("◉ 1 waiting")         // the badge counts it ...
+  expect(hints).toMatch(/◉ 1 *$/m)              // the count at the right counts it ...
   expect(text).toContain("write the report")    // ... but the view does not show it
 })
 

@@ -282,6 +282,24 @@ class EventLog:
         #: Turns the log already holds: a resumed session numbers on.
         self.turns = sum(1 for e in existing if e.get("type") == "turn.started")
 
+        #: A brief shown already (a session woken again is given it again),
+        #: and whether a turn the user started took it after that: one that
+        #: did not fail before the model said anything (the worker's rule).
+        at = max((i for i, ev in enumerate(existing) if ev.get("type") == "context"), default=-1)
+        self.has_context = at >= 0
+        mine = {ev.get("turnId") for ev in existing[at + 1:]
+                if ev.get("type") == "turn.started" and ev.get("source") == "user"} if at >= 0 else set()
+        self.user_turn_after_context = any(
+            ev.get("type") == "turn.ended" and ev.get("turnId") in mine
+            and not (ev.get("error") and int(ev.get("outputTokens") or 0) <= 0)
+            for ev in existing[at + 1:]) if mine else False
+
+    @property
+    def empty(self) -> bool:
+        """No durable event yet: a session that never ran in this service
+        (a resume of one from the dashboard, the REPL; a copy)."""
+        return self._seq == 0
+
     def _end_torn_line(self) -> None:
         """A worker killed mid-write leaves a last line without its newline;
         the next event appended to it would be lost with it. End it first."""

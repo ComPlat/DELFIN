@@ -184,6 +184,7 @@ carry their final values.
 | `tool.ended` | `turnId`, `callId`, `name`, `output`, `meta` | ✓ |
 | `tool.denied` | `turnId`, `callId?`, `name` | ✓ |
 | `notice` | `text` | ✓ |
+| `context` | `title`, `text`: what the session was started to look into (`session.create`'s brief), shown as one row | ✓ |
 | `wait` | `text`: a progress line the next one replaces | |
 | `error` | `text` | ✓ |
 | `usage` | `inputTokens`, `outputTokens`, `costUsd`: session totals, sampled during a turn | |
@@ -317,15 +318,42 @@ closes; the next window attaches to them again.
 
 | Method | Params | Result |
 |---|---|---|
-| `hello` | `protocolVersion`, `client?` | `protocolVersion`, `serviceVersion`, `release`, `pid`, `host`, `mayAct`, `sessions[]`. Must come first. `serviceVersion` says what the service does beyond the protocol (2: a dry-run `session.shutdown`; a service before it ignores `dryRun` and would end the session, so a launcher never asks it). |
+| `hello` | `protocolVersion`, `client?` | `protocolVersion`, `serviceVersion`, `release`, `pid`, `host`, `mayAct`, `sessions[]`. Must come first. `serviceVersion` says what the service does beyond the protocol (2: a dry-run `session.shutdown`; a service before it ignores `dryRun` and would end the session, so a launcher never asks it. 3: the `attention.*` requests and event, and `session.create`'s `brief`). |
 | `sessions.list` | | `sessions[]` (summaries), `elsewhere[]`: other open DELFIN sessions (dashboards, terminals) with `key`, `sessionId?`, `title?`, `workspace`, `host` |
-| `session.create` | `cwd`, `name?`, `title?`, `model?`, `provider?`, `effort?`, `mode?`, `permissionMode?`, `resume?`, `continue?`, `fork?`, `addDirs?`, `readDirs?`, `isolate?`, `noIsolate?`, `fake?`, `fakeDelay?`, `attach?` | `sessionId`, `session`, `state`, `pending[]`. Starts a worker with chat's own flags; the creating window is attached unless `attach: false`. `name` is the session's address (chat's `-n`), `title` what it is called (the name when not given; a session resumed without either comes back under the title it was saved with, never under the store's stand-in, its first message). A session that cannot start is refused with its reason (-32005). |
+| `session.create` | `cwd`, `name?`, `title?`, `model?`, `provider?`, `effort?`, `mode?`, `permissionMode?`, `resume?`, `continue?`, `fork?`, `addDirs?`, `readDirs?`, `isolate?`, `noIsolate?`, `fake?`, `fakeDelay?`, `fakeSave?`, `attach?`, `brief?`, `briefTitle?` | `sessionId`, `session`, `state`, `pending[]`. Starts a worker with chat's own flags; the creating window is attached unless `attach: false`. A resumed or copied session whose conversation this service's event log has nothing of (it ran in the dashboard or the REPL; a copy has a new id) shows it as it opens: a notice, then its last 20 turns as `user.message`, `tool.started`/`tool.ended` and `text.ended` events (durable: a later attach replays them), without the rows the harness wrote. `fake` sessions (tests) are scripted and not saved, unless `fakeSave`; resumed, they restore what the store kept, and `fork` copies them under a new id. `name` is the session's address (chat's `-n`), `title` what it is called (the name when not given; a session resumed without either comes back under the title it was saved with, never under the store's stand-in, its first message). A session that cannot start is refused with its reason (-32005); one another process writes is refused with a hint to open a copy (`resume` with `fork`). `brief`: what the session is started to look into (an item of the agent view's list): the worker gets it in `initialize`, not on its command line (every user of a login node can read that), shows it as a durable `context` event (`title` is `briefTitle`) and puts it in front of the first ordinary prompt (not a `/command` or `!` line); the `user.message` event keeps what was typed. |
 | `session.attach` | `sessionId`, `turns?` | `session`, `state`, `pending[]`, `summary`, `events[]`: the replay of the last `turns` turns (all for 0), then live events. |
 | `session.detach` | `sessionId` | `detached` |
 | `session.message` | `key`, `text` | `sent`: the text goes into that session's inbox, as a message from another session (`session_messages`) |
 | `sessions.past` | `workspace?`, `query?`, `limit?` | `sessions[]`: saved sessions, newest first, with `sessionId`, `title`, `workspace`, `model`, `provider`, `updatedAt`, `messages`, `costUsd` and `running` (whether it runs in this service). `workspace` scopes the list, `query` searches titles and first messages (the session store's own listing and search). |
 | `service.status` | | `pid`, `host`, `startedAt`, `sessions[]`, `windows`, `socket` |
 | `service.shutdown` | | `stopping`, `sessions` |
+| `attention.list` | | `items[]`: what needs the user, from every DELFIN process (below); `version`: grows with every change, from the service's start on (seconds × 10⁶): a window keeps the newest list or event |
+| `attention.answer` | `id`, `text` | `ok`, `error?`: a parked question's answer, written into the attention inbox; the next session that starts a turn in its workspace gets it, once (`attention.drain_resolved`, scoped by the engine to its own workspace; an item with no workspace goes to the next session anywhere). Not for a watch-only connection |
+| `attention.dismiss` | `id` | `ok`, `error?`: cleared without an answer, never handed to a model. Not for a watch-only connection |
+
+**What needs the user** (`attention_feed.py`). The service reads the
+attention inbox (`~/.delfin/attention_inbox.jsonl`: questions a session
+parked, confirmations, failed and finished runs, budget and security
+notices, from dashboards, the REPL, the job monitor and the scheduler) and
+the job monitor's findings (`~/.delfin/monitor_findings.jsonl`), through the
+modules' own readers. It looks at their size and age every 2 s while a
+window is connected (and reads them again at least every minute), and sends
+`attention.updated` to every window when the items differ. An item:
+`id` (the inbox's), `kind` (question, confirm, plan, failed, alert,
+finished, budget, notice), `group` (needs: what blocks someone or failed;
+notices), `blocking`, `name` (what it is about), `text` (one line), `detail`,
+`workspace`, `host` (which node wrote it), `sessionId`, `sessionTitle?`,
+`sessionOpen?` (another process has the session open: a window opens a
+copy), `sessionSaved?` (the store has it: a window resumes it),
+`createdAt`, `options[]`, and for a job `job`: `id`, `state`, `folder`,
+`signatures`, `diagnosisSession`, `summary`, `fix` (the job monitor's
+assessment; the prepared fix, if any, under its own `fix`). The inbox
+decides what is open: a finding shows only while its job's `run_failed`
+entry is pending. An entry of a session this service runs right now is
+left out (the session says it itself; looked at again when one starts or
+ends), as are expired notices. Every text is masked as a session's events
+are (`redact.Redactor`): the records hold what other processes wrote, and
+every window and watching agent process receives them.
 
 Every session request of the worker protocol (`session.prompt`,
 `session.cancel`, `session.setMode`, `session.status`, `session.replay`,
@@ -340,6 +368,7 @@ Events from the service itself, to every window:
 |---|---|
 | `session.summary` | `summary`: `sessionId`, `title?`, `workspace`, `provider`, `model`, `approval`, `state`, `pending` (open questions), `costUsd`, `createdAt`, `lastActivity`, `pid`, and what a row says about it, taken from its events (no model writes them): `lastPrompt?` (the last message sent to it), `activity?` (what it does now: "bash  pytest -q", "writing…"), `waiting?` (the question it waits on), `answer?` (the first line of its last answer). Sent whenever one of them changes: what the agent view draws. |
 | `session.removed` | `reason`, `exitCode`: the session's worker ended (shut down, exited, or failed). |
+| `attention.updated` | `items[]`: all of them, as `attention.list` has them; `version`, as there. |
 
 **Attaching while a session runs.** The replay is read from the session's
 event log in the same step of the service's loop in which the window is

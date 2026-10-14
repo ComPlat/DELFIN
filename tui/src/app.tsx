@@ -14,8 +14,9 @@ import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
 import { WINDOW_COMMANDS, nameFromPrompt, renameOf } from "./commands"
+import { arrivalNote, attentionCounts, markOf } from "./agents/attention"
 import type { AgentScreen } from "./agents/screen"
-import { createAgentView, needsInput, peekLines, type AgentRow } from "./agents/view"
+import { createAgentView, needsInput, peekLines, sessionName, type AgentRow } from "./agents/view"
 import { createComposer } from "./composer/composer"
 import { History } from "./composer/history"
 import { createApprovalUi, setFullPreviewKey } from "./footer/approval"
@@ -23,6 +24,7 @@ import { Footer } from "./footer/footer"
 import { createPicker, type Choice } from "./footer/picker"
 import { editPrompt } from "./composer/editor"
 import { keyTable, type Keymap } from "./keymap/keymap"
+import type { AttentionItem } from "./protocol/generated"
 import type { Asked, SessionState } from "./store/state"
 import { listed, type AppStore } from "./store/store"
 import type { ScreenItems } from "./scrollback/screenview"
@@ -59,6 +61,10 @@ export interface AppProps {
    *  when it did not start (the reason is noted). The session in view stays
    *  in view, and takes what is typed, until the new one is up. */
   onNewSession?: () => Promise<string | null>
+  /** → on an attention item: opened in this window (its session, a copy,
+   *  the diagnosis, a new session about it); the prompt a new one
+   *  suggests, for the prompt box -- or null. */
+  onOpenItem?: (item: AttentionItem) => Promise<string | null>
   /** Pinned sessions (the agent view's); in memory only when not given. */
   pins?: Pins
   /** The agent view on the alternate screen (agents/screen.ts); without
@@ -71,10 +77,21 @@ export interface AppProps {
   onLines?: (title: string, lines: string[]) => void
   /** The pause before a key answers a question (approval.tsx); tests set 0. */
   answerPauseMs?: number
+  /** How long a new item names itself at the bottom right, and for how
+   *  long after the window opens nothing is news (tests shorten them). */
+  arrival?: { shownMs: number; quietMs: number }
   /** Full screen: the session's rows in the window (session.ts), scrolled
    *  by the wheel and the keys; a selection is copied when the drag ends. */
   screen?: ScreenItems
 }
+
+/** How long a new item names itself at the bottom right. */
+export const ARRIVAL_SHOWN_MS = 5000
+/** Items older than this when they arrive are no news (an inbox read
+ *  after a reconnect). */
+const ARRIVAL_WINDOW_S = 180
+/** What the window finds when it opens is no news. */
+const ARRIVAL_QUIET_MS = 2500
 
 /** shift+tab's order, as in the REPL (never onto bypass). */
 export const POSTURES = ["plan", "default", "acceptEdits"] as const
@@ -226,6 +243,10 @@ export function App(props: AppProps): JSX.Element {
           say(`${row.name} runs elsewhere: it is renamed where it runs`)
           return true
         }
+        if (row.kind === "attention") {
+          say(`this is no session: ${props.keymap.label("agentsOpen")} opens it, ${props.keymap.label("agentsStop")} dismisses it`)
+          return true
+        }
         return rename(row.id, named)
       }
       return agents.submit(text)
@@ -319,6 +340,20 @@ export function App(props: AppProps): JSX.Element {
     agents.open()
     composer.setText(composer.value() ? `${composer.value()}\n${text}` : text)
   }
+  /** An attention item answered or dismissed: true when the inbox took
+   *  it; else the note says why. */
+  const settle = async (method: string, params: Record<string, unknown>, what: string): Promise<boolean> => {
+    const result = await call(method, params)
+    if (!result) return false                 // not asked: the note says why
+    if (!result.ok) say(`${what}: ${result.error || "it is not waiting any more"}`)
+    return Boolean(result.ok)
+  }
+  /** → on an item: shown in this window; a new session about it gets its
+   *  suggested prompt in the box -- sent only when enter is pressed. */
+  const openItem = async (item: AttentionItem) => {
+    const suggested = await (props.onOpenItem?.(item) ?? Promise.resolve(null))
+    if (suggested && !composer.value().trim() && !agents.state.open) composer.setText(suggested)
+  }
   const agents = createAgentView({
     state: () => store.state,
     pins: () => {
@@ -344,6 +379,9 @@ export function App(props: AppProps): JSX.Element {
     },
     message: (row, text) => void sendTo(row, text),
     newSession: (text) => void startNew(text),
+    openItem: (item) => void openItem(item),
+    dismiss: (item) => settle("attention.dismiss", { id: item.id }, "not dismissed"),
+    answer: (item, text) => settle("attention.answer", { id: item.id, text }, "not answered"),
     draft: () => composer.value(),
     setDraft: (text) => (text ? composer.setText(text) : composer.clear()),
     say,
@@ -397,14 +435,62 @@ export function App(props: AppProps): JSX.Element {
   /** Sessions other than the one in view that wait for the user. */
   const othersWaiting = () => Object.values(store.state.sessions)
     .filter((s) => s.id !== store.state.current && needsInput(s)).length
+  // -- what needs the user, seen from anywhere in the window ----------------------
+  // Quiet, at the bottom right of the hints line: what waits for an answer
+  // (other sessions here, questions parked anywhere) and what failed. A new
+  // one names itself there for a few seconds instead of the count.
+  const [arrival, setArrival] = createSignal("")
+  let arrivalTimer: ReturnType<typeof setTimeout> | undefined
+  const arrive = (text: string) => {
+    setArrival(text)
+    if (arrivalTimer) clearTimeout(arrivalTimer)
+    arrivalTimer = setTimeout(() => setArrival(""), props.arrival?.shownMs ?? ARRIVAL_SHOWN_MS)
+    ;(arrivalTimer as { unref?: () => void }).unref?.()
+  }
+  onCleanup(() => arrivalTimer && clearTimeout(arrivalTimer))
+  // What the window starts with is no news: only what comes after.
+  const openedAt = Date.now()
+  const news = () => Date.now() - openedAt > (props.arrival?.quietMs ?? ARRIVAL_QUIET_MS)
+  const known = new Set<string>()
+  createEffect(() => {
+    const now = Date.now() / 1000
+    const fresh: typeof store.state.attention = []
+    for (const item of store.state.attention) {
+      if (known.has(item.id)) continue
+      known.add(item.id)
+      // A notice is quiet; an old item the window had not heard of (a
+      // reconnect, a service started again) is no news either.
+      if (markOf(item) === "notice" || !news() || (item.createdAt && now - item.createdAt > ARRIVAL_WINDOW_S)) continue
+      fresh.push(item)
+    }
+    // Of what came together, the most urgent (the list's order: what
+    // waits first), and how many more.
+    if (fresh.length) arrive(arrivalNote(fresh[0]!) + (fresh.length > 1 ? ` (+${fresh.length - 1} more)` : ""))
+  })
+  const waitingBefore = new Set<string>()
+  createEffect(() => {
+    for (const s of Object.values(store.state.sessions)) {
+      if (!needsInput(s)) {
+        waitingBefore.delete(s.id)
+        continue
+      }
+      if (waitingBefore.has(s.id)) continue
+      waitingBefore.add(s.id)
+      if (s.id !== store.state.current && news()) arrive(`◉ ${sessionName(s)} asks`)
+    }
+  })
+  const attention = () => ({ ...attentionCounts(store.state, othersWaiting()), note: arrival() })
   // The terminal's title says when a session waits for the user (the
-  // only notification every terminal shows, also from another tab).
+  // only notification every terminal shows, also from another tab), and
+  // how much needs the user: (3) DELFIN · name.
   let shownTitle = ""
   createEffect(() => {
     const waiting = Object.values(store.state.sessions).filter(needsInput).length
+    const counts = attentionCounts(store.state, waiting)
+    const n = counts.asks + counts.failed
     // Named (/rename, -n): the tab says which session it is, as Claude Code's does.
     const name = session()?.title || session()?.summary?.title || ""
-    const title = waiting ? `◉ DELFIN · ${waiting} need${waiting === 1 ? "s" : ""} input`
+    const title = n ? `(${n}) DELFIN${name ? ` · ${name}` : ""}`
       : name ? `DELFIN · ${name}` : shownTitle ? "DELFIN" : ""
     if (title === shownTitle) return
     shownTitle = title
@@ -727,7 +813,7 @@ export function App(props: AppProps): JSX.Element {
       picker={picker}
       agents={agents}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
-      othersWaiting={othersWaiting}
+      attention={attention}
       focused={() => !picker.state.open}
       screen={props.screen}
       scrollRef={(box) => { scrollBox = box }}

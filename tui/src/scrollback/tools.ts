@@ -321,7 +321,9 @@ export type ToolResult =
   | { kind: "blocked"; reason: string }
   | { kind: "edit"; action: "Edited" | "Created" | "Deleted"; label: string; adds: number; dels: number;
       rows: DiffRow[]; omitted: number }
-  | { kind: "text"; summary: string; lines: string[]; ok: boolean; exitCode?: number }
+  | { kind: "text"; summary: string; lines: string[]; ok: boolean; exitCode?: number
+      /** Its lines are prose (a session's context): wrapped, not cut. */
+      wrap?: boolean }
 
 /** What came back, and whether it worked (repl_render.tool_result_line). */
 export function toolResult(name: string, output: string, meta: Fields = {}, input: Fields = {}): ToolResult {

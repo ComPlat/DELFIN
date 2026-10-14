@@ -1,10 +1,75 @@
 # Everything that needs you, in one place (plan)
 
-**Status:** a plan, not built yet. Decided with the user on 2026-10-14:
-→ opens every item (a copy when the session is still open elsewhere, a new
-session with the item as its context when there is no session); new
-sessions wait for the user; the note in a conversation is quiet, at the
-bottom right. The rest of the plan stands as written unless changed.
+**Status:** phases 1 and 2 built (2026-10-14); phase 3 is for later.
+Decided with the user on 2026-10-14: → opens every item (a copy when the
+session is still open elsewhere, a new session with the item as its
+context when there is no session); new sessions wait for the user; the
+note in a conversation is quiet, at the bottom right.
+
+What building it added to the plan:
+- **A resumed conversation is shown.** The window's replay comes from the
+  agent service's event log, which has nothing of a session that ran in
+  the dashboard or the REPL, nor of a copy. The worker now shows such a
+  conversation as it opens: a notice and its last 20 turns, without the
+  rows the harness wrote. Before, such a session opened on its banner alone.
+- **`--fork-session` copies again.** `cli._open_session` read the copy's
+  id from `session_store.fork_session` as a record; it is a string, the
+  read raised, and every `--fork-session` (the window's copies included)
+  resumed the original with a warning. Its test had a stand-in returning
+  a record; a test against the store itself now pins it.
+- **A session open elsewhere is looked up in the store too**, so → opens a
+  copy of it rather than a new session; a session the store does not have
+  yet is asked again at the next look.
+- **A prepared fix** is the job monitor's assessment's `fix` (the
+  assessment is always there, the fix only when one could be prepared).
+- **Names:** a question with no session is named for its folder ("a
+  question in benzene"); a session started about an item is named after
+  it ("job 4711 failed").
+- A `#` note before the first prompt leaves the brief for the prompt.
+- Live check: `tui/test/e2e/check_attention_tmux.py`.
+
+What the two reviews of it found, and what changed (each with a test):
+- **A late answer went to the next session anywhere.** The engine drained
+  answered items without its workspace, so an answer to a question about
+  one project was handed to a session working in another, mid-turn, as
+  "act on them now". It now drains with the folder the question was
+  parked in (paths compared as paths); an item with no folder still goes
+  to the next session.
+- **The monitor's diagnosis session opened empty.** It was saved for the
+  dashboard's display only, so a resumed engine had nothing of it. It is
+  now saved as engine history too (its prompt marked as the monitor's),
+  with the job's folder.
+- **The brief goes with the first turn that reaches the model**, attached
+  where a prompt becomes a turn: Esc right after enter, or a first turn
+  the endpoint refuses before any output, leaves it for the next prompt.
+  It is kept with the session's settings, so a session about an item that
+  sleeps (or moves to a new service) before its first prompt still hands
+  it over, and shows its context row once.
+- **Items are masked** as a session's events are (`redact.Redactor`,
+  moved out of the worker): a confirmation's command line can hold a
+  token, and every window and watching agent process receives the items.
+- **The inbox's other writers take its cross-process lock.** Noting a
+  delivery, pruning and clearing rewrote the file under a thread lock
+  only: a desktop notification noted by the job monitor could undo a
+  dismissal made in the window, or drop another process's new event.
+- **Smaller:** a session asleep in this service is no longer left out of
+  the list (it may be open in a dashboard by now), and a session starting
+  or ending here is noticed at the next poll; a saved title is read again
+  when its record changes; the list carries a version (from the service's
+  start on), so an update that crosses an `attention.list` answer on the
+  socket is not overwritten; the history is shown before the session can
+  run anything; a copy gets an id of its own (two in one second shared
+  one); a brief ends with a line no brief holds by chance.
+- **In the window:** a refused answer comes back with its peek, so enter
+  tries it again instead of starting a session with it; ctrl+x pressed
+  twice by habit dismisses one notice, not the one that moves up under
+  it; `/rename` on an item renames nothing; a peek whose item was answered
+  elsewhere closes, or says so while something is typed for it; of items
+  that arrive together the one that waits names itself ("(+1 more)"); a
+  newer open is never taken over by an older one's fallback; the notes on
+  how an item was opened come after the session is in view.
+
+The rest of this document is the plan as decided.
 
 The agent view shows what this window's sessions need. DELFIN knows a lot
 more that waits for you, and today it is spread over four places:

@@ -44,7 +44,9 @@ NOT_ALLOWED = -32003
 REQUESTS: dict[str, dict[str, str]] = {
     # Must be the first request. The worker answers with its version and
     # the session it runs; a client that speaks another version is refused.
-    "initialize": {"protocolVersion": "integer", "client": "string?"},
+    # brief: what the session was started to look into (session.create's).
+    "initialize": {"protocolVersion": "integer", "client": "string?",
+                   "brief": "string?", "briefTitle": "string?"},
     # A line exactly as the user typed it: a message, a /command, !shell or
     # a # note. While a turn runs, how="queue" (the default) waits for the
     # turn to end and how="steer" sends it into the running turn.
@@ -178,6 +180,10 @@ EVENTS: dict[str, dict[str, str]] = {
     # by: client | outside | expired | abort
     "permission.resolved": {"requestId": "string", "decision": "string",
                             "by": "string"},
+    # What a session was started with to look into (session.create's
+    # brief: a failed job, a finished run, an alert from the agent view):
+    # shown as one row, and put in front of the session's first prompt.
+    "context": {"title": "string", "text": "string"},
 }
 
 # ---------------------------------------------------------------------------
@@ -201,7 +207,10 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
                        "fork": "boolean?", "addDirs": "[string]?",
                        "readDirs": "[string]?", "isolate": "boolean?",
                        "noIsolate": "boolean?", "fake": "boolean?",
-                       "fakeDelay": "number?", "attach": "boolean?"},
+                       "fakeDelay": "number?", "fakeSave": "boolean?", "attach": "boolean?",
+                       # What to look into (the context event); its title
+                       # names the row.
+                       "brief": "string?", "briefTitle": "string?"},
     "session.attach": {"sessionId": "string", "turns": "integer?"},
     "session.detach": {"sessionId": "string"},
     # A message for a session elsewhere (dashboard, another terminal).
@@ -215,6 +224,12 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     # restart: a new service follows at once (an update); windows reconnect
     # to it instead of leaving.
     "service.shutdown": {"restart": "boolean?"},
+    # What needs the user, from every DELFIN process (attention_feed.py):
+    # the items of ATTENTION_ITEM. answer: a parked question's answer, for
+    # the next session in its workspace; dismiss: cleared, never answered.
+    "attention.list": {},
+    "attention.answer": {"id": "string", "text": "string"},
+    "attention.dismiss": {"id": "string"},
 }
 
 SERVICE_RESULTS: dict[str, dict[str, str]] = {
@@ -240,6 +255,9 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
                        "startedAt": "number", "sessions": "[object]",
                        "windows": "integer", "socket": "string"},
     "service.shutdown": {"stopping": "boolean", "sessions": "integer"},
+    "attention.list": {"items": "[object]", "version": "integer?"},
+    "attention.answer": {"ok": "boolean", "error": "string?"},
+    "attention.dismiss": {"ok": "boolean", "error": "string?"},
 }
 
 #: Events from the service itself, to every window.
@@ -257,7 +275,25 @@ SERVICE_EVENTS: dict[str, dict[str, str]] = {
     # follows at once; reconnect to it.
     "service.stopping": {"reason": "string", "restart": "boolean"},
     "session.removed": {"reason": "string", "exitCode": "integer?"},
+    # The attention items changed (a file the service watches did, or one
+    # was answered or dismissed): all of them, as attention.list has them.
+    "attention.updated": {"items": "[object]", "version": "integer?"},
 }
+
+#: An attention item (attention.list, attention.updated). kind: question |
+#: confirm | plan | failed | alert | finished | budget | notice; group:
+#: needs | notices; blocking: someone waits for an answer. name: what it is
+#: about (a session's title, "job 4711 failed"); text: one line on what it
+#: needs; detail: what a peek shows. sessionId: the session it belongs to,
+#: if any -- sessionOpen: another process has it open (open a copy),
+#: sessionSaved: the store has it (resume it). job: a job's id, state,
+#: folder, error signatures, the diagnosis session, summary and fix.
+ATTENTION_ITEM: dict[str, str] = {
+    "id": "string", "kind": "string", "group": "string", "blocking": "boolean",
+    "name": "string", "text": "string", "detail": "string", "workspace": "string",
+    "host": "string", "sessionId": "string", "sessionTitle": "string?",
+    "sessionOpen": "boolean?", "sessionSaved": "boolean?", "createdAt": "number",
+    "options": "[string]", "job": "object?"}
 
 #: The fields of a session summary (session.summary, sessions.list). The
 #: last five say what the session is about in a few words, for the agent
@@ -285,7 +321,7 @@ DURABLE_EVENTS = frozenset({
     "user.message", "turn.started", "turn.ended",
     "text.ended", "reasoning.ended",
     "tool.started", "tool.ended", "tool.denied",
-    "notice", "error", "permission.asked", "permission.resolved",
+    "notice", "error", "permission.asked", "permission.resolved", "context",
 })
 
 
@@ -535,6 +571,7 @@ def json_schema() -> dict:
             "results": {m: _object_schema(s) for m, s in SERVICE_RESULTS.items()},
             "events": {t: event_schema(t, s) for t, s in SERVICE_EVENTS.items()},
             "sessionSummary": _object_schema(SESSION_SUMMARY),
+            "attentionItem": _object_schema(ATTENTION_ITEM),
         },
         "errors": {name: value for name, value in globals().items()
                    if name.isupper() and isinstance(value, int)

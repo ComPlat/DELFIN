@@ -161,6 +161,18 @@ export class Presenter {
       case "tool.denied":
         this.add("denied", { name: shortToolName(String(e.name ?? "")) })
         break
+      case "context": {
+        // What the session was started to look into (an item of the agent
+        // view): one row like a tool call's, all of it with the details.
+        const text = stripControl(String(e.text ?? "")).replace(/\n+$/, "")
+        const lines = text.split("\n")
+        const n = lines.filter((l) => l.trim()).length
+        this.lastOutput = { name: "context", output: text }
+        this.add("tool", { name: "context", arg: String(e.title ?? ""),
+                           result: { kind: "text", ok: true, wrap: true, lines,
+                                     summary: `${n} line${n === 1 ? "" : "s"}, given to the model with the first prompt` } })
+        break
+      }
       case "notice":
         this.add("notice", { text: e.text })
         break

@@ -81,7 +81,10 @@ def main() -> int:
             other.request("session.prompt", {"sessionId": c, "text": "please edit the parser"})
             other.wait_for(lambda e: e.get("type") == "permission.asked" and e.get("session") == c,
                            after=mark, timeout=30)
-        expect(r"◉ 1 waiting", "the hints' badge", 15, where="screen")
+        # At the right end of the hints line: first the session that asks
+        # names itself for a few seconds, then the count takes its place.
+        expect(r"◉ third-asks asks|agents\s+◉ 1\b", "the note at the hints' right", 15, where="screen")
+        expect(r"agents\s+◉ 1\b", "the count at the hints' right", 15, where="screen")
         # Opened and closed again, the view leaves the screen as it was.
         time.sleep(0.5)
         before = tmux.screen()
@@ -93,13 +96,13 @@ def main() -> int:
             problems.append(f"closing the view changed the screen:\n--- before\n{before}\n--- after\n{tmux.screen()}")
         # ← opens the view over the terminal.
         tmux.key("Left")
-        expect(r"◆ AGENTS\s+3 sessions · 1 needs input", "the agent view", 15, where="screen")
+        expect(r"◆ AGENTS\s+3 sessions · 1 needs you", "the agent view", 15, where="screen")
         screen = tmux.screen()
-        for title in ("NEEDS INPUT", "third-asks", "DONE", "second-session"):
+        for title in ("NEEDS YOU", "third-asks", "DONE", "second-session"):
             if title not in screen:
                 problems.append(f"the agent view lacks {title!r}\n{screen}")
-        if screen.index("NEEDS INPUT") > screen.index("DONE"):
-            problems.append("NEEDS INPUT should come before DONE")
+        if screen.index("NEEDS YOU") > screen.index("DONE"):
+            problems.append("NEEDS YOU should come before DONE")
         # Peek at B (one up from this window's row) and reply to it.
         tmux.key("Up")
         time.sleep(0.3)

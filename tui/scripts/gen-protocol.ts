@@ -103,6 +103,8 @@ export function generate(schema: any): string {
     ...map("ServiceEvents", schema.service.events, "Event"),
     `export interface SessionSummary {\n${fields(schema.service.sessionSummary)}\n}`,
     "",
+    `export interface AttentionItem {\n${fields(schema.service.attentionItem)}\n}`,
+    "",
     "/** Every event a window can receive: a session's own, and the service's. */",
     "export type AnyEvent = WorkerEvents[keyof WorkerEvents] | ServiceEvents[keyof ServiceEvents]",
     "",

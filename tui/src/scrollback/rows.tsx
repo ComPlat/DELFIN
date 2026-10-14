@@ -235,7 +235,13 @@ function ToolResultRows(props: { result: ToolResult; theme: Theme; width: number
     <box flexDirection="column">
       <text fg={r.ok ? t.muted : t.err} wrapMode="none">{"  ⎿ " + fit(r.summary, props.width - 4)}</text>
       <Show when={props.expanded}>
-        <For each={r.lines}>{(line) => <text fg={t.faint} wrapMode="none">{"      " + fit(line, room())}</text>}</For>
+        <Show when={r.wrap} fallback={
+          <For each={r.lines}>{(line) => <text fg={t.faint} wrapMode="none">{"      " + fit(line, room())}</text>}</For>
+        }>
+          <box flexDirection="column" paddingLeft={6}>
+            <For each={r.lines}>{(line) => <text fg={t.faint} wrapMode="word">{line}</text>}</For>
+          </box>
+        </Show>
       </Show>
     </box>
   )

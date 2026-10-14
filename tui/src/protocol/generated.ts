@@ -3,7 +3,7 @@
 
 export const PROTOCOL_VERSION = 1
 
-export const DURABLE_EVENTS: ReadonlySet<string> = new Set(["error","notice","permission.asked","permission.resolved","reasoning.ended","session.ended","session.info","session.updated","text.ended","tool.denied","tool.ended","tool.started","turn.ended","turn.started","user.message"])
+export const DURABLE_EVENTS: ReadonlySet<string> = new Set(["context","error","notice","permission.asked","permission.resolved","reasoning.ended","session.ended","session.info","session.updated","text.ended","tool.denied","tool.ended","tool.started","turn.ended","turn.started","user.message"])
 
 export const ERRORS = {
   VERSION_MISMATCH: -32001,
@@ -21,6 +21,8 @@ export const ERRORS = {
 export interface InitializeParams {
   "protocolVersion": number
   "client"?: string | null
+  "brief"?: string | null
+  "briefTitle"?: string | null
 }
 export interface SessionPromptParams {
   "text": string
@@ -345,6 +347,14 @@ export interface PermissionResolvedEvent {
   "ts": number
   "seq": number
 }
+export interface ContextEvent {
+  "title": string
+  "text": string
+  "type": "context"
+  "session": string
+  "ts": number
+  "seq": number
+}
 export interface WorkerEvents {
   "worker.ready": WorkerReadyEvent
   "session.info": SessionInfoEvent
@@ -369,6 +379,7 @@ export interface WorkerEvents {
   "usage": UsageEvent
   "permission.asked": PermissionAskedEvent
   "permission.resolved": PermissionResolvedEvent
+  "context": ContextEvent
 }
 export interface HelloParams {
   "protocolVersion": number
@@ -393,7 +404,10 @@ export interface SessionCreateParams {
   "noIsolate"?: boolean | null
   "fake"?: boolean | null
   "fakeDelay"?: number | null
+  "fakeSave"?: boolean | null
   "attach"?: boolean | null
+  "brief"?: string | null
+  "briefTitle"?: string | null
 }
 export interface SessionAttachParams {
   "sessionId": string
@@ -415,6 +429,14 @@ export interface ServiceStatusParams {}
 export interface ServiceShutdownParams {
   "restart"?: boolean | null
 }
+export interface AttentionListParams {}
+export interface AttentionAnswerParams {
+  "id": string
+  "text": string
+}
+export interface AttentionDismissParams {
+  "id": string
+}
 export interface ServiceRequests {
   "hello": HelloParams
   "sessions.list": SessionsListParams
@@ -425,6 +447,9 @@ export interface ServiceRequests {
   "sessions.past": SessionsPastParams
   "service.status": ServiceStatusParams
   "service.shutdown": ServiceShutdownParams
+  "attention.list": AttentionListParams
+  "attention.answer": AttentionAnswerParams
+  "attention.dismiss": AttentionDismissParams
 }
 export interface HelloResult {
   "protocolVersion": number
@@ -474,6 +499,18 @@ export interface ServiceShutdownResult {
   "stopping": boolean
   "sessions": number
 }
+export interface AttentionListResult {
+  "items": Record<string, unknown>[]
+  "version"?: number | null
+}
+export interface AttentionAnswerResult {
+  "ok": boolean
+  "error"?: string | null
+}
+export interface AttentionDismissResult {
+  "ok": boolean
+  "error"?: string | null
+}
 export interface ServiceResults {
   "hello": HelloResult
   "sessions.list": SessionsListResult
@@ -484,6 +521,9 @@ export interface ServiceResults {
   "sessions.past": SessionsPastResult
   "service.status": ServiceStatusResult
   "service.shutdown": ServiceShutdownResult
+  "attention.list": AttentionListResult
+  "attention.answer": AttentionAnswerResult
+  "attention.dismiss": AttentionDismissResult
 }
 export interface SessionSummaryEvent {
   "summary": Record<string, unknown>
@@ -505,10 +545,18 @@ export interface SessionRemovedEvent {
   "session": string
   "ts": number
 }
+export interface AttentionUpdatedEvent {
+  "items": Record<string, unknown>[]
+  "version"?: number | null
+  "type": "attention.updated"
+  "session": string
+  "ts": number
+}
 export interface ServiceEvents {
   "session.summary": SessionSummaryEvent
   "service.stopping": ServiceStoppingEvent
   "session.removed": SessionRemovedEvent
+  "attention.updated": AttentionUpdatedEvent
 }
 export interface SessionSummary {
   "sessionId": string
@@ -528,6 +576,25 @@ export interface SessionSummary {
   "activity"?: string | null
   "waiting"?: string | null
   "answer"?: string | null
+}
+
+export interface AttentionItem {
+  "id": string
+  "kind": string
+  "group": string
+  "blocking": boolean
+  "name": string
+  "text": string
+  "detail": string
+  "workspace": string
+  "host": string
+  "sessionId": string
+  "sessionTitle"?: string | null
+  "sessionOpen"?: boolean | null
+  "sessionSaved"?: boolean | null
+  "createdAt": number
+  "options": string[]
+  "job"?: Record<string, unknown> | null
 }
 
 /** Every event a window can receive: a session's own, and the service's. */

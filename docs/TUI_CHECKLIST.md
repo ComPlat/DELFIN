@@ -146,3 +146,13 @@ clean up on the VM. Each item says why it could not be closed here.
 24. ctrl+o differs from the REPL on purpose: it shows or hides every tool
     call's details (the window draws a call as its headline and what came
     back); the last result in full is in the palette.
+25. What needs you (docs/TUI_ATTENTION.md) comes from the attention inbox
+    and the job monitor's findings, read every 2 s. A dashboard session
+    that waits for an answer right now shows only once its question timed
+    out and was parked (phase 3: presence that says it waits). A prepared
+    job fix is applied in the dashboard (`/fix`), not from the window.
+26. A resumed conversation is shown from the agent service's event log
+    when that has its turns; when it has none (the session ran in the
+    dashboard or the REPL, or it is a copy), from the store: its last 20
+    turns. A session that ran in a window and then went on in the
+    dashboard shows the window's turns only -- the model has all of them.

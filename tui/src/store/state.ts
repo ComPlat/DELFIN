@@ -6,7 +6,7 @@
  * of events (store.ts). What becomes scrollback is not state -- committed
  * rows cannot change -- and is the presenter's job (present.ts).
  */
-import type { AnyEvent, SessionSummary } from "../protocol/generated"
+import type { AnyEvent, AttentionItem, SessionSummary } from "../protocol/generated"
 import { toolHeadline } from "../scrollback/tools"
 
 export interface Asked {
@@ -86,11 +86,39 @@ export interface AppState {
   elsewhere: Elsewhere[]
   /** The first session is being started (the window is up already). */
   starting: boolean
+  /** What needs the user from every DELFIN process -- parked questions,
+   *  failed jobs, alerts, notices (the service's attention feed), in the
+   *  service's order. Empty with a service before serviceVersion 3. */
+  attention: AttentionItem[]
+  /** The version of that list (the service counts its changes): a list
+   *  and an event that crossed on the socket -- the newer one stays. -1
+   *  until the service of this connection has said one. */
+  attentionVersion: number
 }
 
 export function emptyState(): AppState {
   return { connection: "connecting", mayAct: true, host: "", sessions: {}, order: [],
-           current: null, elsewhere: [], starting: false }
+           current: null, elsewhere: [], starting: false, attention: [], attentionVersion: -1 }
+}
+
+/** The attention items a service sent (attention.list, attention.updated),
+ *  each field as its type says -- an item that has no id is left out. */
+export function attentionItems(raw: unknown): AttentionItem[] {
+  if (!Array.isArray(raw)) return []
+  const out: AttentionItem[] = []
+  for (const r of raw as Record<string, unknown>[]) {
+    if (!r || typeof r !== "object" || !r.id) continue
+    out.push({
+      id: str(r.id), kind: str(r.kind) || "notice", group: r.group === "needs" ? "needs" : "notices",
+      blocking: Boolean(r.blocking), name: str(r.name), text: str(r.text), detail: str(r.detail),
+      workspace: str(r.workspace), host: str(r.host), sessionId: str(r.sessionId),
+      sessionTitle: str(r.sessionTitle), sessionOpen: Boolean(r.sessionOpen), sessionSaved: Boolean(r.sessionSaved),
+      createdAt: Number(r.createdAt ?? 0) || 0,
+      options: Array.isArray(r.options) ? r.options.map(str) : [],
+      job: r.job && typeof r.job === "object" ? r.job as Record<string, unknown> : null,
+    })
+  }
+  return out
 }
 
 export function newSession(id: string, info: Record<string, unknown> = {}): SessionState {
@@ -168,6 +196,13 @@ export function applyEvent(state: AppState, event: AnyEvent, now: number = Date.
     const s = state.sessions[id]
     if (!s) return
     endSession(s, e)
+    return
+  }
+  if (type === "attention.updated") {
+    const version = typeof e.version === "number" ? e.version : null
+    if (version !== null && version < state.attentionVersion) return     // older than what is shown
+    state.attention = attentionItems(e.items)
+    if (version !== null) state.attentionVersion = version
     return
   }
   const s = state.sessions[id]

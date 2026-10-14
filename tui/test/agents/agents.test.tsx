@@ -124,11 +124,11 @@ describe("the agent view", () => {
     expect(w.t.renderer.footerHeight).toBe(29)
     const text = panel()
     expect(text).toContain("◆ AGENTS")
-    expect(text).toContain("4 sessions · 1 needs input · 1 working")
-    for (const title of ["NEEDS INPUT", "WORKING", "DONE", "plan the scan", "optimise benzene", "write the report"]) {
+    expect(text).toContain("4 sessions · 1 needs you · 1 working")
+    for (const title of ["NEEDS YOU", "WORKING", "DONE", "plan the scan", "optimise benzene", "write the report"]) {
       expect(text).toContain(title)
     }
-    expect(text.indexOf("NEEDS INPUT")).toBeLessThan(text.indexOf("WORKING"))
+    expect(text.indexOf("NEEDS YOU")).toBeLessThan(text.indexOf("WORKING"))
     expect(text).toContain("waiting for you: bash: sbatch scan.sh")
     expect(text).toContain("type to start a new session")              // the hints line is the view's
     await w.escape()
@@ -367,7 +367,7 @@ describe("the agent view", () => {
     await w.settle()
     const text = panel()
     expect(text.indexOf("PINNED")).toBeLessThan(text.indexOf("write the report"))
-    expect(text.indexOf("write the report")).toBeLessThan(text.indexOf("NEEDS INPUT"))
+    expect(text.indexOf("write the report")).toBeLessThan(text.indexOf("NEEDS YOU"))
     expect(JSON.parse(readFileSync(file, "utf8")).pinned.sort()).toEqual(["d1", "elsewhere-pin"])
   })
 
@@ -438,12 +438,13 @@ describe("the agent view", () => {
     renderer.setTerminalTitle = (t: string) => { titles.push(t); original(t) }
     push(summary("q2", { title: "second question", state: "needs_input", pending: 1, createdAt: 1004 }))
     await w.settle()
-    expect(panel()).toContain("◉ 2 waiting  · ")
-    expect(titles.at(-1)).toBe("◉ DELFIN · 2 need input")
+    // Quiet, at the right end of the hints line; the title counts them.
+    expect(panel()).toMatch(/← agents +◉ 2 *$/m)
+    expect(titles.at(-1)).toBe("(2) DELFIN · this window")
     push(summary("q1", { title: "plan the scan", state: "idle", pending: 0, createdAt: 1002 }))
     push(summary("q2", { title: "second question", state: "idle", pending: 0, createdAt: 1004 }))
     await w.settle()
-    expect(panel()).not.toContain("waiting ·")
+    expect(panel()).not.toMatch(/◉ \d/)
     // Back to the session in view, by its name.
     expect(titles.at(-1)).toBe("DELFIN · this window")
   })
@@ -454,7 +455,7 @@ describe("the agent view", () => {
     await w.settle()
     await left()
     expect(panel()).toMatch(/☾ old scan\s+asleep · The scan finished\./)
-    expect(panel()).toContain("5 sessions · 1 needs input · 1 working")
+    expect(panel()).toContain("5 sessions · 1 needs you · 1 working")
     w.keys.pressArrow("up")                             // DONE: z1 is the newest there
     w.keys.pressArrow("up")
     await w.settle()
