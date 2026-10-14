@@ -1618,7 +1618,7 @@ Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
 
 | Group | Commands |
 |-------|----------|
-| Session | `/help` `/status` `/cost` `/usage` `/context` `/compact` `/export` `/undo` `/clear` |
+| Session | `/help` `/status` `/cost` `/usage` `/context` `/compact` `/export` `/undo` `/bug` `/clear` |
 | Setup | `/model` `/mode` `/permissions` `/effort` `/doctor` `/init` `/mcp` `/trust` `/tools` `/agents` `/skills` |
 | History | `/session` `/rewind` `/tasks` `/memories` `/plans` |
 | Changes | `/pending` `/approve` `/reject` `/undo-file` |
@@ -1626,6 +1626,22 @@ Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
 | DELFIN (dashboard) | `/control key <key> <value>` · `/orca set` · `/calc ls\|read\|info\|tree` · `/analyze energy\|convergence\|errors` · `/recalc check-all\|auto` · `/submit` `/cancel` |
 
 `!` runs a shell command directly. A markdown file in `~/.delfin/commands/` (user-wide) or `<workspace>/.delfin/commands/` (project) becomes a slash command of its own; placeholders `$ARGUMENTS`, `$1`, `$2` are substituted. A **skill** (`~/.delfin/skills/<name>/SKILL.md`) can be invoked by you or chosen by the model; DELFIN ships skills for diagnosing a failed run, recalculating one, setting up TD-DFT and CASSCF, frequency thermochemistry, solvation, and tuning CONTROL.
+
+### Reporting a bug
+
+The dashboard has a **Bug Report** button. In the terminal, type `/bug` followed by one line saying what went wrong (or type `/bug` alone and you are asked for it). DELFIN lists what the report will contain (message, tool-call and refused-command counts, model, provider, mode, session, size) and where it will be written, and asks `File this report? [y/N]`. Anything but `y` writes nothing.
+
+For a session that has already ended, file it from a shell:
+
+```bash
+delfin-agent bug report --session latest -m "the plot came back empty"
+```
+
+`--session` takes `latest` (the newest session of the current directory, or of `--workspace`), a session id, or the first characters of one as `/session ls` prints them. Without `--yes` the same preview and question come first; with no terminal to ask on, `--yes` is required.
+
+All three ways write the same report: conversation, engine messages, tool trace, turn and request timings, refused commands, model/provider/mode/effort/permissions, an allow-listed settings excerpt, versions and git head. Each report records which way it came (`dashboard`, `terminal` or `cli`), and `delfin-agent bug ls` shows it. Before anything is written, every credential DELFIN holds (credential file, keyring, the well-known key variables in the environment) and anything shaped like a key, token or password is redacted; a `REDACTIONS.txt` in the report says how many.
+
+Reports go to `$DELFIN_BUG_ARCHIVE` if set, else to `agent.bug_archive_dir` in `~/.delfin_settings.json`, else to `~/.delfin/agent_bugs`. To send reports to your group's maintainers, point either one at the shared archive directory, for example `"agent": {"bug_archive_dir": "/path/to/shared/AGENT_BUGS"}`. When a transfer target is configured (`transfer.host`, `transfer.remote_path`), the report is also copied there over SSH; the local copy is always kept.
 
 ### MCP servers
 

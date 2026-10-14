@@ -22348,6 +22348,10 @@ class _DocToolExecutor:
                     "Commands off the auto-allow list are asked about for "
                     "the rest of this session; tell the user if they need "
                     "this one.")
+        if _push is None and proc.returncode != 0:
+            self._detach_at_held_branch(
+                cmd, proc, payload, run_cwd, perms, env, timeout,
+                caged_unasked)
         _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
         if _ssh_note:
             payload["hint"] = _ssh_note
@@ -22362,6 +22366,55 @@ class _DocToolExecutor:
                 "without polling. Do not loop on squeue."
             )
         return json.dumps(payload, ensure_ascii=False)
+
+    def _detach_at_held_branch(self, cmd, proc, payload, run_cwd, perms,
+                               env, timeout, caged_unasked) -> None:
+        """``git checkout <b>`` refused because another worktree holds *b*.
+
+        Input: the exact two-word ``git checkout|switch <b>`` that already
+        passed every gate and failed with git's "already used by worktree"
+        refusal. Output: *payload* rewritten in place. With no tracked
+        changes, ``git checkout --quiet --detach <b>`` runs through the same
+        isolation argv as the original command (no fetch, no network), and
+        the payload reports exit 0 with a note naming the holder. With
+        tracked changes nothing runs and a hint says why. Any other command
+        or failure is left exactly as git answered."""
+        try:
+            from . import held_branch as _hb
+            from . import contained_run as _contained
+            branch = _hb.plain_branch_move(cmd)
+            held = _hb.parse_held_error(
+                (proc.stderr or "") + "\n" + (proc.stdout or "")) if branch else None
+            if not held or held[0] != branch:
+                return
+            refusal = _hb.can_detach(run_cwd, branch)
+            if refusal:
+                payload["hint"] = (
+                    f"{branch} is checked out in {held[1]}. Running its "
+                    f"commit here detached was not done: {refusal}")
+                return
+            detach = f"git checkout --quiet --detach {shlex.quote(branch)}"
+            argv = (_bash_isolation_argv(detach, run_cwd, perms,
+                                         caged_unasked=True)
+                    if caged_unasked
+                    else _bash_isolation_argv(detach, run_cwd, perms))
+            p2 = _contained.run(argv, cwd=str(run_cwd), env=env,
+                                timeout=timeout,
+                                should_stop=getattr(perms, "should_stop", None),
+                                budget=True)
+            if p2.returncode != 0:
+                payload["hint"] = (
+                    f"{branch} is checked out in {held[1]}; detaching here "
+                    f"failed too: {(p2.stderr or p2.stdout or '').strip()[:300]}")
+                return
+            res = _hb.detached_result(run_cwd, branch, branch)
+            payload["exit_code"] = 0
+            payload["git_refusal"] = payload.get("stderr", "")
+            payload["stderr"] = ""
+            payload["stdout"] = res.message
+            payload["note"] = res.message
+        except Exception:
+            return
 
     # ------- Background bash jobs ----------------------------------------
 
