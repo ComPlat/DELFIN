@@ -350,3 +350,29 @@ def test_a_busy_session_is_not_put_to_sleep(monkeypatch):
     session, asked, before = asyncio.run(run())
     assert asked == [("session.shutdown", {"ifIdle": True})]
     assert session.sleeping is False and session.sleep_not_before >= before + 59
+
+
+def test_an_emergency_stop_is_said_to_the_windows_and_keeps_the_sessions(tmp_path):
+    import socket as _socket
+
+    svc = ServiceProcess(tmp_path)
+    try:
+        a = svc.client()
+        sid = svc.session(a)
+        turn(a, sid, "before the emergency stop")
+        mark = len(a.events)
+        # The stop file of this test's own private home -- never the user's.
+        stop = svc.home / ".delfin" / "stop_all.json"
+        assert str(stop).startswith(str(svc.tmp))
+        stop.parent.mkdir(parents=True, exist_ok=True)
+        stop.write_text(json.dumps({"at": time.time() + 1, "host": _socket.gethostname().split(".")[0],
+                                    "pid": os.getpid(), "reason": "test", "count": 1}))
+        said, _ = a.wait_for(lambda e: e.get("type") == "service.stopping", after=mark, timeout=60)
+        assert said["reason"] == "emergency stop" and said["restart"] is False
+        svc.proc.wait(timeout=90)
+        stop.unlink()
+        svc.start()
+        row = next(s for s in svc.client().hello["sessions"] if s["sessionId"] == sid)
+        assert row["state"] == "sleeping"
+    finally:
+        svc.stop()

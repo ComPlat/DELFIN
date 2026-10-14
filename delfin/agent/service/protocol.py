@@ -213,9 +213,11 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
 }
 
 SERVICE_RESULTS: dict[str, dict[str, str]] = {
+    # release: the DELFIN release the service runs (a window of a newer one
+    # moves an idle service over to it).
     "hello": {"protocolVersion": "integer", "serviceVersion": "integer",
-              "pid": "integer", "host": "string", "mayAct": "boolean",
-              "sessions": "[object]"},
+              "release": "string?", "pid": "integer", "host": "string",
+              "mayAct": "boolean", "sessions": "[object]"},
     "sessions.list": {"sessions": "[object]", "elsewhere": "[object]"},
     # events: what the session said since its worker started, up to the
     # point the window is subscribed at (later events arrive live).

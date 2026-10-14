@@ -127,6 +127,14 @@ for (const summary of (hello.sessions ?? []) as { sessionId?: string }[]) {
   }
 }
 for (const problem of [...loaded.problems, ...keymap.problems]) view.note(problem)
+// Where else this user's sessions are (other login nodes), from the launcher.
+try {
+  for (const said of JSON.parse(process.env.DELFIN_TUI_NOTES ?? "[]") as unknown[]) {
+    if (typeof said === "string" && said) view.note(said)
+  }
+} catch {
+  // none to say
+}
 
 /** Open the first session: a new one, or the one to resume if it runs here. */
 async function openFirst(): Promise<string> {

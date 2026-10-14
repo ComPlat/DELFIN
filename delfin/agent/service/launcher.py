@@ -10,6 +10,7 @@ sessions when the dashboard ends. An emergency stop still ends it
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -68,17 +69,31 @@ def ensure_service(*, timeout: float = START_TIMEOUT_S,
 
     A service that holds the host but does not answer yet is waited for:
     one that is starting answers soon, one that is stopping (`service
-    stop` a moment ago) is gone soon, and a new one is started then. One
-    that refuses this window's protocol version, or never answers, is
-    named, with how to end it -- never stopped from here, its sessions may
-    be at work.
+    stop` a moment ago) is gone soon, and a new one is started then.
+
+    One of an older DELFIN release, or of another protocol version (an
+    update), is moved over to this one when nothing in it would be cut --
+    no turn running, no question open: it stops (its sessions are saved
+    and come back asleep, its windows reconnect) and a new one starts. A
+    busy one of another protocol, or one that never answers, is named,
+    with how to end it -- never stopped from here; a busy one of the same
+    protocol is used as it is, and the note says how to move it over.
     """
     deadline = time.monotonic() + timeout
     hello, why = client.probe()
+    # A service being moved over to this release: never the one to use.
+    old = 0
     if hello is not None:
-        return hello
-    if why.startswith("it speaks another protocol"):
-        raise ServiceDidNotStart(_running_but(why))
+        if not _older_release(hello) or not _move_over(hello):
+            return hello
+        old, hello, why = int(hello.get("pid") or 0), None, "none"
+    elif why.startswith("it speaks another protocol"):
+        # Its protocol is not this one's: only its roster says whether it
+        # is idle. An idle one is moved over; a busy one is named.
+        old = rundir.service_pid()
+        if not _stop_idle_other_protocol():
+            raise ServiceDidNotStart(_running_but(why))
+        why = "none"
     proc: subprocess.Popen | None = None
     started = 0.0
     began = time.monotonic()
@@ -104,10 +119,15 @@ def ensure_service(*, timeout: float = START_TIMEOUT_S,
             # an old one to stop.
             deadline = max(deadline, min(started + timeout, began + STOP_WAIT_S + timeout))
         hello, why = client.probe(timeout=1.0)
+        if hello is not None and old and int(hello.get("pid") or 0) == old:
+            # Still answering on its way out: wait for it to go.
+            hello, why = None, "none"
         if hello is not None:
             return hello
         if why.startswith("it speaks another protocol"):
-            raise ServiceDidNotStart(_running_but(why))
+            if not (old and rundir.service_pid() == old):
+                raise ServiceDidNotStart(_running_but(why))
+            why = "none"                 # the old one, on its way out
         time.sleep(0.1)
     pid = rundir.service_pid()
     if pid:
@@ -115,6 +135,109 @@ def ensure_service(*, timeout: float = START_TIMEOUT_S,
     raise ServiceDidNotStart(f"the agent service did not answer within "
                              f"{timeout:.0f} s; its log: {service_log()}\n"
                              f"{_log_tail()}")
+
+
+def _release() -> str:
+    try:
+        from ... import __version__
+        return str(__version__)
+    except Exception:
+        return ""
+
+
+def _version_key(text: str):
+    try:
+        from packaging.version import Version
+        return Version(text)
+    except Exception:
+        return tuple(int(p) if p.isdigit() else 0 for p in str(text).split("."))
+
+
+def _older_release(hello: dict) -> bool:
+    """The running service is an older DELFIN release than this one."""
+    theirs, ours = str(hello.get("release") or ""), _release()
+    if not ours or theirs == ours:
+        return False
+    if not theirs:
+        return True                     # from before services said so
+    try:
+        return _version_key(theirs) < _version_key(ours)
+    except TypeError:
+        return False
+
+
+def _idle(sessions: list) -> bool:
+    """Nothing a restart would cut: no turn running, no question open."""
+    return all(isinstance(s, dict) and s.get("state") in ("idle", "sleeping", "ended")
+               and not s.get("pending") for s in sessions)
+
+
+def _move_over(hello: dict) -> bool:
+    """An older release that is idle restarts onto this one: its sessions
+    are saved and come back asleep; its windows reconnect. A busy one is
+    left as it is (said once): its turns must not be cut."""
+    pid = int(hello.get("pid") or 0)
+    sessions = list(hello.get("sessions") or [])
+    if not _idle(sessions):
+        print(f"note: the agent service runs DELFIN {hello.get('release') or 'of before'}, "
+              f"this is {_release()}; `delfin-agent service restart` moves it over once its "
+              "sessions are done", file=sys.stderr)
+        return False
+    print(f"moving the agent service from DELFIN {hello.get('release') or 'of before'} to "
+          f"{_release()} ({len(sessions)} session{'s' * (len(sessions) != 1)} kept)...",
+          file=sys.stderr, flush=True)
+    try:
+        with client.ServiceClient(client="delfin-agent tui") as svc:
+            svc.request("service.shutdown", {"restart": True})
+    except Exception:
+        return False
+    # Asked to stop: from here the start loop waits for it to be gone.
+    return bool(pid)
+
+
+def _stop_idle_other_protocol() -> bool:
+    """A service of another protocol version (an update): stopped when its
+    roster says it is idle -- SIGTERM ends and saves its sessions."""
+    import signal
+
+    pid = rundir.service_pid()
+    if not pid:
+        return False
+    try:
+        roster = json.loads(rundir.roster_file().read_text())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(roster, dict) or int(roster.get("pid") or 0) != pid \
+            or not _idle(list(roster.get("sessions") or [])):
+        return False
+    print("the agent service is of another DELFIN version and idle: restarting it...",
+          file=sys.stderr, flush=True)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    return True
+
+
+def other_host_notes() -> list[str]:
+    """What runs on the other login nodes (their run files and rosters on
+    the shared home): a window says where those sessions are."""
+    notes = []
+    for other in rundir.other_hosts():
+        host = str(other.get("host") or "")
+        try:
+            roster = json.loads(rundir.roster_file(host).read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(roster, dict) or time.time() - float(roster.get("updatedAt") or 0) > 7 * 86400:
+            continue
+        n = len(roster.get("sessions") or []) + len(roster.get("dormant") or [])
+        if n:
+            shown = "".join(ch for ch in host if ch.isprintable())[:60]
+            notes.append(f"{n} session{'s' * (n != 1)} of yours {'are' if n != 1 else 'is'} on "
+                         f"{shown} (another login node): log in there to open "
+                         f"{'them' if n != 1 else 'it'}")
+    return notes
 
 
 def main(argv: list[str] | None = None) -> int:

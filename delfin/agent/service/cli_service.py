@@ -84,6 +84,8 @@ def cmd_tui(args: argparse.Namespace) -> int:
     env["DELFIN_TUI_SOCKET"] = str(rundir.socket_path())
     # What starts the next service, should this one vanish under the window.
     env["DELFIN_TUI_SERVICE"] = json.dumps(launcher.service_command())
+    # Said in the window: where else sessions of this user are.
+    env["DELFIN_TUI_NOTES"] = json.dumps(launcher.other_host_notes())
     # Settings first: the workspace is where `delfin-agent tui` was typed.
     env["DELFIN_TUI_START"] = json.dumps(_start_settings(args))
     os.chdir(launcher.tui_root())

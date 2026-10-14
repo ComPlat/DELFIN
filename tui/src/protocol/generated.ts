@@ -427,6 +427,7 @@ export interface ServiceRequests {
 export interface HelloResult {
   "protocolVersion": number
   "serviceVersion": number
+  "release"?: string | null
   "pid": number
   "host": string
   "mayAct": boolean

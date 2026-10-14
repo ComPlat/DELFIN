@@ -608,8 +608,10 @@ class Supervisor:
         if self.closing:
             self.stopping.set()
         # Before the first window can ask: what a service before this one
-        # left to be woken.
-        self._load_dormant()
+        # left to be woken. The roster says from the start that this one
+        # runs, and what it holds (a launcher of another release reads it).
+        if self._load_dormant():
+            self._write_roster()
         try:
             path.unlink()                       # stale: the lock is ours
         except FileNotFoundError:
@@ -840,7 +842,7 @@ class Supervisor:
         client.greeted = True
         client.name = str(params.get("client") or "")[:64]
         return {"protocolVersion": protocol.PROTOCOL_VERSION,
-                "serviceVersion": SERVICE_VERSION, "pid": os.getpid(),
+                "serviceVersion": SERVICE_VERSION, "release": _release(), "pid": os.getpid(),
                 "host": rundir.hostname(), "mayAct": client.may_act,
                 "sessions": self._summaries()}
 
@@ -1222,21 +1224,22 @@ class Supervisor:
             if client.greeted:
                 client.send_bytes(data)
 
-    def _load_dormant(self) -> None:
+    def _load_dormant(self) -> bool:
         """What a service before this one left to be woken: its dormant
         sessions, and -- when it died without saying so -- the ones it ran
-        (their workers saved them when its pipes closed)."""
+        (their workers saved them when its pipes closed). False when the
+        roster is another live service's (not to be taken, nor written)."""
         try:
             data = json.loads(rundir.roster_file().read_text())
         except (OSError, ValueError):
-            return
+            return True
         if not isinstance(data, dict):
-            return
+            return True
         old = int(data.get("pid") or 0)
         if old and old != os.getpid() and _alive_service(old):
-            return                       # another service's, alive: not ours to take
+            return False                 # another service's, alive: not ours to take
         if data.get("socket") not in (None, str(rundir.socket_path())):
-            return
+            return False
         now = time.time()
         for record in data.get("dormant") or []:
             if isinstance(record, dict) and _usable_record(record) \
@@ -1253,7 +1256,7 @@ class Supervisor:
                       "oldPid": int(entry.get("pid") or 0)}
             if _usable_record(record):
                 self.dormant[record["summary"]["sessionId"]] = record
-        self._write_roster()
+        return True
 
     async def _old_worker_gone(self, record: dict) -> None:
         """A worker of a service that died saves its session as its pipe
@@ -1331,6 +1334,16 @@ class Supervisor:
         self.closing = True
         if self.stopping is not None:
             self.stopping.set()
+
+
+def _release() -> str:
+    """The DELFIN release this service runs: a launcher of another one
+    moves an idle service over (launcher.ensure_service)."""
+    try:
+        from ... import __version__
+        return str(__version__)
+    except Exception:
+        return ""
 
 
 def _usable_record(record: dict) -> bool:

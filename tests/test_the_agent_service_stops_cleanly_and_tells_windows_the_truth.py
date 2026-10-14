@@ -21,6 +21,7 @@ tells a window agrees with what it shows.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import subprocess
@@ -33,7 +34,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import child_env
-from delfin.agent.service import eventlog, protocol, supervisor
+from delfin.agent.service import eventlog, protocol, rundir, supervisor
 from delfin.agent.service.client import ServiceError
 from tui_service import ServiceProcess, of, turn
 
@@ -280,6 +281,13 @@ def test_a_service_of_another_protocol_version_is_named(tmp_path):
         deadline = time.monotonic() + 30
         while not svc.socket.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
+        # Busy, by its roster: a launcher of this version must not cut it.
+        roster = svc.scratch / ".delfin" / "agent_service" / "run" / f"{rundir.hostname()}.roster"
+        deadline = time.monotonic() + 30
+        while not roster.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        roster.write_text(json.dumps({"pid": proc.pid, "sessions": [
+            {"sessionId": "busy1", "state": "running", "pending": 0, "workspace": str(svc.tmp)}]}))
         probe = subprocess.run(
             [sys.executable, "-c",
              "from delfin.agent.service import launcher\n"
