@@ -52,6 +52,19 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
+
+# The modules behind DELFIN's console scripts (pyproject [project.scripts])
+# and the package itself. Importing one in a payload and calling into it
+# is the program by another name (`import delfin.cli; delfin.cli.main()`),
+# so such an import is opaque even when it resolves to a local package.
+# Shared with the bash gate (api_client._DELFIN_ENTRY_MODULE_RE), one
+# definition for both.
+DELFIN_ENTRY_MODULE_RE = (
+    r"delfin(?:\.(?:__main__|main|cli|cli_\w+|build_up_complex|"
+    r"cluster_bench\.cli|guppy_sampling|guppy_batch|"
+    r"doc_server(?:\.indexer|\.__main__)?|tools\.mcp_server|agent\.cli|"
+    r"ops_server(?:\.__main__)?))?(?![\w.])")
 
 __all__ = ["Effects", "analyze_payload", "extract_c_payloads"]
 
@@ -256,8 +269,16 @@ class _Walker(ast.NodeVisitor):
             return None
         return None
 
+    def _note_delfin_program(self, dotted: str) -> None:
+        # The bare package (`import delfin`) is not a program; its
+        # submodules that are console-script entry points are.
+        if dotted != "delfin" and re.fullmatch(DELFIN_ENTRY_MODULE_RE,
+                                               dotted or ""):
+            self.eff.opaque.append(f"imports {dotted}, a DELFIN program")
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
+            self._note_delfin_program(alias.name)
             self._note_module(alias.name, node)
         self.generic_visit(node)
 
@@ -265,6 +286,9 @@ class _Walker(ast.NodeVisitor):
         if node.level:
             self.eff.opaque.append("a relative import")
         else:
+            self._note_delfin_program(node.module or "")
+            for alias in node.names:
+                self._note_delfin_program(f"{node.module or ''}.{alias.name}")
             self._note_module(node.module or "", node)
         self.generic_visit(node)
 
