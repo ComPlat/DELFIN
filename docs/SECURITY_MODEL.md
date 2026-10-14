@@ -22,7 +22,7 @@ in the [User Manual](USER_MANUAL.md#seeing-the-boundary-before-a-session-starts)
 | Asset | The promise |
 |-------|-------------|
 | The operator's files outside the workspace roots | A command or file tool writes only inside the workspace and the directories granted with `--add-dir`; it reads outside only where `--read-dir` or an approval allows it. |
-| Secrets | The model provider's key, stored credentials (`~/.delfin/credentials.json`), SSH, cloud and package-index credentials are not readable by the agent's commands and do not reach a transcript. |
+| Secrets | The model provider's key, stored credentials (the OS keyring, or `~/.delfin/credentials.json`), SSH, cloud and package-index credentials are not readable by the agent's commands and do not reach a transcript. |
 | Other users | Every store the agent writes for approvals, the audit log and the egress proxy is created owner-only (0600 files, 0700 directories); an approval answer is accepted only from a file owned by the same account. |
 | The approval channel | A pending approval is answered by the person, never by the session that is waiting or by any process it started. |
 | Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked. |
@@ -58,7 +58,8 @@ interpreter, a symlink or an encoding can make differ from its *act*.
 ## The layers
 
 A tool call passes these layers in order. The first two are text-based and
-apply on every host; the third depends on what the host offers.
+apply on every host; the third depends on what the host offers. An
+administrator's managed policy (section 6) sets a floor at each of them.
 
 ### 1. Permission mode and launch posture
 
@@ -198,7 +199,22 @@ cannot provide it; `--no-isolate` (or `agent.bash_isolation` = `off`) runs
 them unisolated. A session locked to one folder is always isolated, and its
 commands are refused on a host where nothing can hold them.
 
-The mechanisms, in order of preference:
+`agent.bash_isolation` = `container` runs `bash`, `bash_background` and
+`run_tests` in a container instead (`container_exec`, Apptainer/Singularity,
+Podman or Docker, chosen by `agent.container.runtime`, image
+`agent.container.image`). The container mounts the writable roots and the
+git metadata read-write, the read-only roots, the git hooks and the
+approval answer locations read-only, covers the credential locations of
+`sandbox._HOME_SECRET_DIRS` that lie inside a mounted root, and mounts
+nothing else of `$HOME`. It runs as the user with no capabilities,
+no-new-privileges and a read-only root filesystem, never pulls an image at
+run time, and has no network unless `agent.sandbox_network.mode` is `open`
+(the egress proxy is not reachable from inside it, so `proxy` means none).
+Where no runtime or image is available, the mode falls back to `auto`
+below, with a recorded `isolation` event, never to a plain shell. A command
+admitted unasked inside the cage (layer 2) is never sent to a container.
+
+The mechanisms of `auto`, in order of preference:
 
 - **bubblewrap** — `/` read-only, the workspace roots and the repository's git
   metadata writable, a fresh `/tmp`, the credential locations of
@@ -237,9 +253,23 @@ Two guards complete the Linux mechanisms:
   cannot read their `/proc/<pid>/environ` or attach a debugger to read the
   key from memory. `DELFIN_PROCESS_GUARD` = `off` leaves them debuggable.
   At start-up a provider key exported in the shell environment is moved into
-  the 0600 credential store (`process_guard.put_exported_keys_away`), and
+  the credential store (`process_guard.put_exported_keys_away`), and
   every agent child gets an environment without provider keys and secrets
   (`api_client._scrubbed_bash_env`).
+
+The credential store is the operating system's keyring (macOS Keychain,
+Secret Service, Windows Credential Manager, through the optional `keyring`
+package) where a secure backend answers in time, and the 0600 file
+`~/.delfin/credentials.json` otherwise (`agent.credentials.store` = `auto`,
+`keyring` or `file`, read only from the user's settings file, never from a
+project's). The agent's tools reach neither store: the file and its name
+index are deny paths and masked in the cages; the shell deny patterns
+refuse the keyring clients (`secret-tool lookup`, `security
+find-generic-password`, `keyring get`, the Secret Service bus name); the
+session bus is unset and its socket refused by the socket guard; and every
+value the keyring holds is redacted from tool results like any other
+credential (`credentials.held_secret_values`). Moving keys between the
+stores happens only on request (`delfin-agent credentials`).
 
 ### 4. The egress proxy
 
@@ -295,6 +325,55 @@ security panel and `delfin-agent doctor` say so.
   `sandbox.run_agent_command`: an allow-list, then bubblewrap or firejail,
   selected with `DELFIN_AGENT_SANDBOX`.
 
+### 6. The managed policy
+
+On a shared installation an administrator can set restrictions that no
+user setting, project setting, flag or agent action loosens
+(`managed_policy`). The file is `/etc/delfin/managed_policy.json` (Linux),
+`/Library/Application Support/DELFIN/managed_policy.json` (macOS), or
+a file of that name beside the installed package; `DELFIN_MANAGED_POLICY`
+names one more file, which can only add restrictions. It applies at the
+points of layers 1 to 4:
+
+- `permissions` with `deny`, `ask` and `only_allow` lists, in the syntax
+  of the user's permission rules and matched by the same implementation
+  (`permission_rules.load` merges the managed deny and ask ahead of the
+  user's and the project's). A managed deny refuses before the session
+  lists, the mode, hooks, every allow and every approval, in every mode; a
+  managed ask asks in every mode and refuses with nobody to ask.
+  `only_allow` matches narrowly (`permission_rules.within_only_allow`) and
+  bounds the auto-allow list, the user's allow rules and the caged
+  admission alike;
+- `disallowed_modes`: a disallowed mode becomes `default` (or `plan`)
+  wherever a mode is set; an attended session that names one on the
+  command line refuses to start (`managed_policy.launch_decision`);
+- `require_isolation`: no shell command runs unsandboxed, `--no-isolate`
+  and `agent.bash_isolation` = `off` are ignored, and on a host with no
+  working layer an attended session refuses to start and an unattended one
+  is capped at `default`; `container_backend` = `bwrap` accepts only
+  bubblewrap as that layer;
+- the domain ceiling (`allowed_domains_max` under `network`): the egress
+  proxy and `web_fetch` refuse every host outside it before any user rule
+  or known host, and `agent.sandbox_network.mode` = `open` becomes `proxy`;
+- `disable_classifier_off`: the action classifier stays on against the
+  settings and `DELFIN_CLASSIFIER`;
+- `audit_log`: a copy of every audit line to the administrator's
+  destination.
+
+A file is trusted when it and every directory above it are owned by root
+or by the account that installed the package and none is group- or
+world-writable except a sticky directory. An untrusted file (user-owned,
+writable by others, or named by the environment variable) is still read,
+for restrictions only: several files merge by the union of restrictions
+and the intersection of `only_allow` and domain ceilings, so it never
+removes what a trusted file imposes, and it cannot set `audit_log`. A
+trusted file that cannot be read or parsed fails closed (`bypassPermissions`
+and `acceptEdits` disallowed). The policy file is unwritable through every
+write route (`managed_policy.is_policy_path`); `delfin-agent capabilities`,
+the start banner and `/permissions` name each file, its trust and what it
+enforces. Its refusals are recorded as `managed_policy_deny` and
+`managed_policy_ask`.
+
 ## What each layer guarantees on which host
 
 "Isolated command" below means a shell command under `agent.bash_isolation`
@@ -302,6 +381,7 @@ security panel and `delfin-agent doctor` say so.
 
 | Host | Writes | Credential reads | Sessions (tmux, SSH agent, systemd, D-Bus) | Network of an isolated command | Detached processes | Locked session / `--isolate` |
 |------|--------|------------------|------|---------|-----------|------|
+| **Container** (`agent.bash_isolation` = `container`, a runtime and image present) | roots + git metadata only; hooks and answer locations read-only; nothing else of `$HOME` mounted | covered where inside a mounted root, otherwise not mounted | not mounted | none; the runtime's own network only in `open` mode (the proxy is not reachable inside) | the container runs on if its Podman or Docker client is killed with SIGKILL; not in the process cage | runs in the container |
 | **Linux, bubblewrap** (with seccomp user notification) | roots + git metadata only; `.git/hooks` and answer locations read-only | masked | masked; with seccomp user notification, connects also judged by the socket guard | egress proxy only; without seccomp user notification, a network namespace whose only way out is a forwarder to the proxy | killed with the command (PID namespace) | runs isolated |
 | **Linux, Landlock** (bubblewrap refused; with seccomp user notification) | roots + git metadata + private temp + `/dev`; hooks writable (only the text check on hook paths stops a planted hook) | unreadable | refused by the socket guard | egress proxy only | can outlive the command; the lifeline and `delfin-agent stop-all` end what they find | runs isolated |
 | **Linux, partial** (Landlock without seccomp user notification) | as above | unreadable | every Unix socket refused by a plain seccomp filter | Landlock ABI 4: TCP only to the proxy's forwarder port and the direct endpoints (by port, not address; UDP not covered); older ABI: **not restricted** | can outlive the command | **refused** while the network mode is `proxy` or `none` |
@@ -326,6 +406,7 @@ most relevant to this model:
   `caged_unasked`
 - permission rules: `permission_rule_deny`, `permission_rule_ask`,
   `permission_rule_allow`
+- the managed policy: `managed_policy_deny`, `managed_policy_ask`
 - egress: `egress`, `egress_blocked`, `egress_asked`, `egress_upload`,
   `network`, `network_missing`
 - approvals: `approval_self_answer`, `approval_from_outside`,
@@ -374,6 +455,19 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
   roots unwritable, stops it. On the Landlock row, hooks are guarded by
   command text only.
 - **MCP servers** without declared roots are outside every containment.
+- **Containers.** Apptainer is covered only by argument tests, not by a
+  real run; Podman and Docker run for real in CI. Rootless Docker's
+  `--user` can map to a subordinate uid. A container outlives a client
+  killed with SIGKILL.
+- **The managed policy binds DELFIN's own gate**: native tools, MCP tools
+  and the CLI backend's hook. A program the user runs outside DELFIN is
+  governed by the operating system's permissions only. An untrusted policy
+  file can only add restrictions, and the user can delete it.
+- **The keyring.** On macOS a keychain item DELFIN created is readable by
+  the same interpreter without a prompt; a command that hides the call
+  from the shell deny patterns is stopped only where the cage blocks the
+  keychain, and its output is still redacted. A keyring call that times
+  out is abandoned, not cancelled.
 - **Kernel and sandbox bugs.** Bubblewrap, Landlock, seccomp and Seatbelt
   are only as strong as their implementations. DELFIN does not defend against
   a kernel exploit.
@@ -383,7 +477,8 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
 ## How to run safest
 
 1. Keep isolation on (the default). Run `delfin-agent capabilities` once per
-   host and check the isolation line names `bwrap`, `Landlock` or `Seatbelt`;
+   host and check the isolation line names `bwrap`, `Landlock`, `Seatbelt`
+   or a container;
    if it says `none`, use `--isolate` so commands are refused rather than run
    unisolated, or move to a host that offers one.
 2. Run unattended only with `--permission-mode bypassPermissions --unattended`
@@ -400,11 +495,14 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
 5. Leave `agent.sandbox_network.mode` at `proxy` and add only the domains a
    project needs to `agent.sandbox_network.allowed_domains`.
 6. Do not export provider keys in the shell; store them with
-   `delfin-agent credentials`. Keep the process guard and the process cage on.
+   `delfin-agent credentials` (in the OS keyring where one is usable). Keep
+   the process guard and the process cage on.
 7. Declare `roots` for every MCP server, and trust (`/trust`) only
    repositories whose `.delfin/` settings and hooks you have read.
 8. Read the containment panel (or the attention inbox) after an unattended
    run.
+9. On a shared installation, put the restrictions every user must keep
+   into a root-owned managed policy rather than into each user's settings.
 
 ## Changes in review
 
