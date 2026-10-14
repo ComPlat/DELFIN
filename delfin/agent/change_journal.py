@@ -73,12 +73,18 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
 MAX_PRE_IMAGE_BYTES = 2 * 1024 * 1024   # 2 MB
 MAX_ENTRIES_PER_SESSION = 500
+
+# seq is read-then-appended; a background job's watcher thread records
+# while the turn's own tools record (shell_changes), so one writer at a
+# time within the process.
+_WRITE_LOCK = threading.RLock()
 
 _JOURNAL_NAME = "journal.jsonl"
 
@@ -487,6 +493,23 @@ def _write_record(
 ) -> dict:
     """Store one byte-exact pre-image + journal line. Shared by the
     text, binary and deletion entry points."""
+    with _WRITE_LOCK:
+        return _write_record_locked(
+            session_id, sdir, target, tool=tool, pre_bytes=pre_bytes,
+            post_hash=post_hash, created=created, extra=extra)
+
+
+def _write_record_locked(
+    session_id: Any,
+    sdir: Path,
+    target: Path,
+    *,
+    tool: str,
+    pre_bytes: bytes,
+    post_hash: str,
+    created: bool,
+    extra: Optional[dict] = None,
+) -> dict:
     pre_hash = sha256_bytes(pre_bytes)
     truncated = len(pre_bytes) > MAX_PRE_IMAGE_BYTES
     stored = b"" if truncated else pre_bytes
@@ -611,6 +634,47 @@ def record_binary_change(
             post_hash=sha256_file_bytes(target) or "",
             created=created,
             extra={"binary": True},
+        )
+    except Exception:
+        return None
+
+
+def record_change_without_undo(
+    session_id: Any,
+    *,
+    tool: str,
+    path: Any,
+    reason: str,
+    created: bool = False,
+    deleted: bool = False,
+    post_hash: str = "",
+) -> Optional[dict]:
+    """Capture a change whose pre-image is not available.
+
+    A shell command changed the file, and no copy of it from before the
+    command was held (over the per-file cap, the held budget spent).
+    The change is recorded so the listing, the completion check and the
+    self-written detection see it; ``truncated: True`` makes
+    :func:`revert` refuse it, naming ``reason``. ``post_hash`` (the
+    file's sha256 now, "" if not computed) lets the self-written
+    detection match the file. Never raises.
+    """
+    try:
+        target = Path(str(path))
+        sdir = _session_dir(session_id)
+        sdir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(sdir, 0o700)
+        except OSError:
+            pass
+        extra: dict = {"raw": True, "truncated": True,
+                       "reason": str(reason)}
+        if deleted:
+            extra["deleted"] = True
+        return _write_record(
+            session_id, sdir, target,
+            tool=tool, pre_bytes=b"", post_hash=str(post_hash or ""),
+            created=bool(created), extra=extra,
         )
     except Exception:
         return None
@@ -795,8 +859,11 @@ def revert(
             if rec.get("truncated"):
                 result["skipped"].append({
                     "path": path_str,
-                    "reason": ("pre-image was stored truncated (>2 MB); "
-                               "revert refused to avoid corrupting the file"),
+                    "reason": (
+                        f"no pre-image: {rec['reason']}; revert refused"
+                        if rec.get("reason") else
+                        "pre-image was stored truncated (>2 MB); "
+                        "revert refused to avoid corrupting the file"),
                 })
                 continue
 
