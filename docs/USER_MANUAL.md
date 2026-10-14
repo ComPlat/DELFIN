@@ -1651,6 +1651,19 @@ A tool reached through MCP runs in a process DELFIN did not start a command line
 
 DELFIN ships three servers of its own: `delfin-tools-server` (the tool platform), `delfin-docs-server` (literature and calculation search) and `delfin-ops-server` (typed runtime actions). They can take their roots from your settings with `agent.mcp_isolation: "builtin"`.
 
+### Tool groups per workspace
+
+Two groups of tools are offered only where they apply, because every tool's description is sent with every request:
+
+| Group | Tools | Offered when |
+|-------|-------|--------------|
+| `chemistry` | the `delfin-ops` and `delfin-tools` server tools, `show_molecule` | the workspace is a DELFIN checkout, the session has a calculation folder (dashboard), or the workspace holds chemistry files within three folder levels (`.xyz`, `.gbw`, `.hess`, `CONTROL.txt`, ORCA/xTB/Gaussian output) |
+| `office` | `read_document`, `edit_sheet`, `create_docx`, `fill_pdf_form`, `merge_pdfs` and the other document tools | a DELFIN checkout, Office mode, or documents in the workspace (`.xlsx`, `.docx`, `.pdf`, `.ods` …) |
+
+The prompt text that describes a group follows it: the ORCA routing table and DELFIN's own conventions appear only with the chemistry group, and the verification advice matches the project's language (Python, JavaScript/TypeScript, Rust, Go). On a code repository outside DELFIN this makes each request about 10,600 tokens smaller.
+
+The decision is taken once, at the first message of a session, so the prompt stays identical from turn to turn. `/tools groups` shows it, with the reason. `/tools enable chemistry` (or `office`) adds a group from the next message on; a group is never taken away during a session, and a resumed conversation that already used one of its tools keeps it. To decide for every session, set `agent.toolsets` in your settings, for example `{"chemistry": "on", "office": "auto"}`; `"off"` hides a group even in a DELFIN checkout.
+
 ### Seeing what runs, and stopping it
 
 ```bash

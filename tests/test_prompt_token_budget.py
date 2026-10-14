@@ -180,17 +180,56 @@ def test_role_prompt_within_token_budget(filename, max_tokens):
     mechanism that SHRINKS the prompt read as growth, and would price a
     26-character comment against text the user actually pays for.
     """
-    import re as _re
-
     path = _PROMPT_DIR / filename
     assert path.exists(), f"missing prompt file: {path}"
-    text = _re.sub(r"^<!--\s*module:[a-zA-Z0-9_-]+\s*-->\s*$\n?", "",
-                   path.read_text(), flags=_re.M)
-    actual = _estimate_tokens(text)
+    actual = _estimate_tokens(_selected(path.read_text()))
     assert actual <= max_tokens, (
         f"{filename}: {actual} tokens (>{max_tokens} budget). "
         f"Trim before extending."
     )
+
+
+def _selected(text: str, *, delfin: bool = True,
+              stacks: frozenset = frozenset({"python"})) -> str:
+    """The file as one workspace receives it, module markers removed.
+
+    Workspace regions (``<!-- context:delfin -->``, ``<!-- stack:X -->``)
+    are selected the way PromptLoader._select_workspace_blocks selects
+    them. The default is the DELFIN tree (every DELFIN block, the Python
+    advice): the largest selection, and the one the budget numbers
+    above were measured on. Counting the raw file instead would charge
+    the DELFIN prompt for the TS/Rust/Go alternatives it never receives
+    (11,251 raw against 10,775 selected, measured 2026-10-14).
+    """
+    import re as _re
+
+    from delfin.agent.prompt_loader import PromptLoader
+
+    text = _re.sub(r"^<!--\s*module:[a-zA-Z0-9_-]+\s*-->\s*$\n?", "",
+                   text, flags=_re.M)
+
+    def _keep(m):
+        if m.group(1) == "context":
+            return m.group(3) if (m.group(2) == "delfin" and delfin) else ""
+        return m.group(3) if m.group(2) in stacks else ""
+
+    return PromptLoader._REGION_RE.sub(_keep, text)
+
+
+@pytest.mark.parametrize("stack", ["python", "node", "rust", "go", "generic"])
+def test_a_foreign_workspace_receives_less_than_the_delfin_tree(stack):
+    """Every foreign selection costs less than the DELFIN one: the
+    alternatives a stack adds must be paid for by the DELFIN blocks it
+    drops. Measured 2026-10-14: DELFIN 10,775; foreign python 10,167,
+    node 10,091, rust 10,042, go 10,040, generic 10,062."""
+    text = (_PROMPT_DIR / "solo_agent.md").read_text()
+    home = _estimate_tokens(_selected(text))
+    foreign = _estimate_tokens(
+        _selected(text, delfin=False, stacks=frozenset({stack})))
+    assert foreign < home, (stack, foreign, home)
+    # No region marker survives a selection (they would reach the model).
+    assert "<!--" not in _selected(
+        text, delfin=False, stacks=frozenset({stack}))
 
 
 # The file budgets above guard the markdown. This one guards what the model

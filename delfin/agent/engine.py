@@ -509,6 +509,11 @@ class AgentEngine:
             _ws = getattr(self.kit_permissions, "workspace", None)
             self.loader.workspace_root = Path(_ws) if _ws else Path(self.repo_dir)
             self.loader.is_delfin_workspace = self._is_delfin_workspace
+            # A getter, not the object: the permissions can be replaced
+            # after construction, and the prompt must follow the ones the
+            # tool list is filtered by.
+            self.loader.toolsets = lambda: getattr(
+                self.kit_permissions, "toolsets", None)
         except Exception:
             self.loader.workspace_root = None
         # Inject-once gating of stable prompt sections is only sound on the
