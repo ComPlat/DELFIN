@@ -24564,6 +24564,17 @@ class _DocToolExecutor:
             "answers": answers,
             "multiSelect": multi_select,
         }
+        # Typed into the chat instead of picked (approval_answers.typed_answer):
+        # the model is told so, and free text is named as possibly outside
+        # the options -- otherwise it reads as a label it never offered.
+        if result.get("answered_in_chat") and answers:
+            payload["answered_in_chat"] = True
+            if result.get("free_text"):
+                payload["free_text"] = True
+                payload["note"] = (
+                    "The user typed this answer in the chat instead of "
+                    "picking an option; it may lie outside the options "
+                    "offered. Take it as their answer and continue.")
         # Surface the UI's timeout flag: empty answers because the user is
         # AWAY must not read like the user actively chose nothing (weak
         # models re-ask the identical question in a loop otherwise).

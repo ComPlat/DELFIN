@@ -1465,6 +1465,16 @@ class TerminalAgent:
         if event.kind == rk.SUBMIT:
             text = event.text.strip()
             self._clear_input_line()
+            # A choice question that arrived while this line was being
+            # typed takes the line as its answer; it is then not queued.
+            if text and self.broker is not None:
+                try:
+                    took = self.broker.answer_question_with_text(text)
+                except Exception:
+                    took = False
+                if took:
+                    self._show_user_input(text)
+                    return
             if text:
                 self._show_user_input(text, queued=True)
                 self.queued.append(text)
@@ -1954,10 +1964,20 @@ class TerminalAgent:
         return self._read_key(raw, {"y", "n", "\x1b"}) == "y"
 
     def _answer_question(self, req, raw) -> None:
-        """ask_user_question: numbered options, one key."""
+        """ask_user_question: a number key picks, a typed line answers.
+
+        A digit on an empty line picks that option; any other printable
+        key starts a free-text answer, sent with Enter
+        (``approval_answers.typed_answer``: an option when the line names
+        one, free text otherwise). Esc on an empty line skips the
+        question; on a typed line it clears the line.
+        """
+        from .approval_answers import option_labels, typed_answer
         payload = req.payload or {}
         question = str(payload.get("question", "") or "(no question given)")
-        options = [str(o) for o in (payload.get("options") or [])][:9]
+        # Labels, never str(dict): the options arrive normalised as
+        # {label, description}, and their repr was shown AND returned.
+        options = option_labels(payload.get("options"))[:9]
         self.transcript.chrome(self.transcript.theme.bold(f"? {question}"))
         for i, opt in enumerate(options, 1):
             self.transcript.chrome(f"  {i}. {rr.strip_control(opt)}")
@@ -1969,6 +1989,9 @@ class TerminalAgent:
         if not options:
             self._apply(req, {"answers": []})
             return
+        self.transcript.chrome(self.transcript.theme.dim(
+            f"  1-{len(options)} picks · or type your own answer and press "
+            "Enter · esc skips"))
         allowed = {str(i) for i in range(1, len(options) + 1)} | {"\x1b"}
         while True:
             # Same as _answer_request: an answer from outside ends the
@@ -1976,14 +1999,75 @@ class TerminalAgent:
             if getattr(req, "resolved", False):
                 self._say_ended_elsewhere(req)
                 return
-            key = self._read_key(raw, allowed,
-                                 stop=lambda: getattr(req, "resolved", False))
+            key = self._read_answer(raw, allowed,
+                                    stop=lambda: getattr(req, "resolved", False))
             if not key:
                 continue                # answered while waiting
+            if isinstance(key, tuple):  # ("text", line)
+                if self._apply(req, typed_answer(key[1], payload)):
+                    self.transcript.chrome(
+                        f"  → {rr.strip_control(key[1])}")
+                return
             if key == "\x1b":
                 self._apply(req, {"answers": []})
                 return
             self._apply(req, {"answers": [options[int(key) - 1]]})
+            return
+
+    def _read_answer(self, raw, allowed: set[str], *, stop=None):
+        """One choice key, or a typed line, for a choice question.
+
+        Returns a key from ``allowed`` (a digit picks, Esc skips), a
+        ``("text", line)`` tuple for a line ended with Enter, or "" when
+        ``stop`` ended the wait. Digits only pick on an empty line; once
+        typing has started they belong to the text. Without a terminal it
+        is ``_read_key``: an unanswerable question is skipped, never
+        answered with invented text.
+        """
+        from . import repl_keys as rk
+
+        if raw is None or not getattr(raw, "active", False):
+            return self._read_key(raw, allowed, stop=stop)
+        line = ""
+        while True:
+            if stop is not None and stop():
+                return ""
+            chunk = raw.read_ready(0.1)
+            if not chunk:
+                continue
+            if chunk[0] == "\x1b":
+                if not line:
+                    return "\x1b"
+                line = ""                # Esc / an arrow clears the line
+                self._echo_answer(line)
+                continue
+            for ch in chunk:
+                if ch == "\x04":
+                    raise rk.TerminalLeft("ctrl+d", 0)
+                if ch in ("\r", "\n"):
+                    if line.strip():
+                        self._echo_answer("", done=True)
+                        return ("text", line.strip())
+                    continue
+                if ch in ("\x7f", "\x08"):
+                    line = line[:-1]
+                    continue
+                if not line and ch in allowed:
+                    return ch
+                if ch.isprintable():
+                    line += ch
+            self._echo_answer(line)
+
+    def _echo_answer(self, line: str, *, done: bool = False) -> None:
+        """Show the answer being typed on one redrawn row (terminals only)."""
+        if not self._can_redraw():
+            return
+        try:
+            row = "" if done else "  > " + rr.strip_control(line)
+            self.err.write("\r\x1b[2K" + row[: max(10, self.transcript.width - 1)])
+            self.err.flush()
+        except Exception:
+            pass
 
     def _read_key(self, raw, allowed: set[str], *, stop=None) -> str:
         """One keystroke, from the reader the key layer already owns.
