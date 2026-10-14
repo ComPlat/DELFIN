@@ -1707,6 +1707,61 @@ def _editor_round_trip(argv: list[str], var: str, path: Path,
         f"sending {len(body.splitlines())} line(s) from {argv[0]}"))
 
 
+_BUG_NOTHING = "nothing was written"
+
+
+def _bug(ctx, args: str) -> CommandResult:
+    """File a bug report with this conversation, as the dashboard button does.
+
+    Input: an optional one-line description; without one it is asked
+    for. Output: the report directory ``bug_report.write_bug_report``
+    produces in the archive ``resolve_archive_dir`` names
+    ($DELFIN_BUG_ARCHIVE > agent.bug_archive_dir > ~/.delfin/agent_bugs),
+    surface ``terminal``, then a copy to the transfer target when one is
+    configured.
+
+    Two questions, both defaulting to no: the description, then y/N after
+    a preview of what goes in (counts and size, not content). An empty
+    description, any answer but y/yes, Ctrl+C or end of input writes
+    nothing. A context without ``ask`` cannot confirm and refuses.
+    """
+    from . import bug_filing
+    from .bug_report import resolve_archive_dir
+    if ctx.ask is None:
+        return CommandResult(output=(
+            "this surface cannot ask for confirmation; file from a shell "
+            "with: delfin-agent bug report --session latest"))
+    try:
+        description = args.strip() or str(ctx.ask(
+            "Describe the problem in one line: ") or "").strip()
+    except (EOFError, KeyboardInterrupt):
+        return CommandResult(output=_BUG_NOTHING)
+    if not description:
+        return CommandResult(output=f"no description given; {_BUG_NOTHING}")
+    collected = bug_filing.collect_live(ctx.engine, ctx.workspace)
+    archive = resolve_archive_dir()
+    say = ctx.say or (lambda _s: None)
+    say(bug_filing.preview(collected, archive))
+    try:
+        answer = str(ctx.ask("File this report? [y/N] ") or "")
+    except (EOFError, KeyboardInterrupt):
+        return CommandResult(output=_BUG_NOTHING)
+    if answer.strip().lower() not in ("y", "yes"):
+        return CommandResult(output=_BUG_NOTHING)
+    try:
+        report_dir = bug_filing.file_report(
+            collected, description=description, surface="terminal")
+    except Exception as exc:
+        return CommandResult(output=f"bug report failed: {exc}")
+    lines = [f"bug report written: {report_dir}"]
+    if (report_dir / "REDACTIONS.txt").is_file():
+        lines.append("credential-shaped values were redacted (REDACTIONS.txt)")
+    remote = bug_filing.push_if_configured(report_dir)
+    if remote:
+        lines.append(remote)
+    return CommandResult(output="\n".join(lines))
+
+
 def _clear(ctx, _args: str) -> CommandResult:
     return CommandResult(output="starting a fresh conversation", clear=True)
 
@@ -1808,6 +1863,8 @@ BUILTINS: dict[str, ReplCommand] = {
                     _undo),
         ReplCommand("/trace", "session", "Tool calls made this session",
                     _trace, True),
+        ReplCommand("/bug", "session", "File a bug report with this "
+                    "conversation", _bug, True),
         ReplCommand("/clear", "session", "Start a fresh conversation", _clear),
         ReplCommand("/exit", "session", "Leave", _exit),
         ReplCommand("/quit", "session", "Leave", _exit),
@@ -1887,6 +1944,11 @@ class ReplContext:
     engine: Any = None
     workspace: Path = field(default_factory=Path.cwd)
     session_id: str = ""
+    # A handler that must ask before acting (/bug) reads a line through
+    # `ask` and prints through `say`; None on a surface that cannot ask,
+    # where such a handler refuses instead of acting unconfirmed.
+    ask: Callable[[str], str] | None = None
+    say: Callable[[str], None] | None = None
 
 
 def dispatch(text: str, ctx: ReplContext) -> CommandResult:

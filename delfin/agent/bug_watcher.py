@@ -212,6 +212,8 @@ def _report_body(report_dir: Path, report: dict, *, cap: int = 8000) -> str:
             if val:
                 parts.append(f"{key}: {val}")
         meta = {k: report.get(k) for k in ("mode", "provider", "model", "role")}
+        from delfin.agent.bug_report import report_surface
+        meta["surface"] = report_surface(report)
         parts.append("meta: " + json.dumps(meta, ensure_ascii=False))
     trace = report.get("tool_trace") or []
     if isinstance(trace, list) and trace:
