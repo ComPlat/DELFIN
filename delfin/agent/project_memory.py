@@ -23,6 +23,9 @@ files are read at most once per call.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
 from pathlib import Path
 from typing import Iterable
 
@@ -90,6 +93,36 @@ def discover_project_memory_files(
     return out
 
 
+#: Per-process key for the fence nonce. The nonce has to be (a) stable
+#: between prompt builds, or the cached prompt prefix changes every turn,
+#: and (b) unknowable to the file's author, or the file can close its own
+#: fence. HMAC(process key, content) is both; a content hash alone is (a)
+#: without (b) for any reader who can hash. A new process draws a new
+#: key, so the fence (and the cache) changes once per process.
+_FENCE_KEY = secrets.token_bytes(32)
+
+
+def _fence_nonce(body: str) -> str:
+    return hmac.new(_FENCE_KEY, body.encode("utf-8", "surrogateescape"),
+                    hashlib.sha256).hexdigest()[:16]
+
+
+def fence_project_text(body: str, sources: Iterable[str]) -> str:
+    """Wrap repository instruction text as reference, not as the user.
+
+    Input: the concatenated file blocks and the names they came from.
+    Output: one ``untrusted.wrap_reference`` fence, byte-stable within a
+    process for the same content. "" for empty input.
+    """
+    if not (body or "").strip():
+        return ""
+    from . import untrusted
+    names = ", ".join(dict.fromkeys(sources)) or "project files"
+    return untrusted.wrap_reference(
+        f"project instructions: {names}", body.strip(),
+        nonce=_fence_nonce(body.strip()))
+
+
 def load_project_memory(
     cwd: Path | str | None = None,
     *,
@@ -97,16 +130,21 @@ def load_project_memory(
     max_chars: int = _DEFAULT_MAX_CHARS,
     per_file_cap: int = _PER_FILE_CAP,
 ) -> str:
-    """Concatenate discovered project-memory files into a single string.
+    """Concatenate discovered project-memory files into one fenced block.
 
     Returns "" if no files are found. Truncates to ``max_chars`` total
     and ``per_file_cap`` per file so a misplaced wall-of-text doesn't
-    blow the system-prompt budget.
+    blow the system-prompt budget. The result is fenced by
+    :func:`fence_project_text`: the files are written by whoever wrote
+    the repository, so they reach the model as reference text, never as
+    a message from the user, and a reader that cuts at the untrusted
+    marker (the action classifier) never takes them for intent.
     """
     files = discover_project_memory_files(cwd, extra_roots=extra_roots)
     if not files:
         return ""
     parts: list[str] = []
+    names: list[str] = []
     used = 0
     home = str(Path.home())
     for p in files:
@@ -126,8 +164,10 @@ def load_project_memory(
         if used + len(block) > max_chars and parts:
             break
         parts.append(block)
+        names.append(p.name)
         used += len(block)
-    return "\n".join(parts).strip()
+    return fence_project_text("\n".join(parts), names)
 
 
-__all__ = ["discover_project_memory_files", "load_project_memory"]
+__all__ = ["discover_project_memory_files", "fence_project_text",
+           "load_project_memory"]
