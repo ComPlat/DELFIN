@@ -19,16 +19,16 @@ plus, optionally, the file named by ``DELFIN_MANAGED_POLICY``. Schema::
       "audit_log": "/var/log/delfin/{user}.jsonl"
     }
 
-Rule syntax is that of the user's permission rules: ``bash(git push)``,
-``bash(pytest:*)``, ``read(<glob>)``, ``write(<glob>)``,
+Rules are parsed and matched by ``permission_rules`` -- the syntax and
+the matcher of the user's permission rules, one implementation:
+``bash(git push)``, ``bash(pytest:*)``, ``read(<glob>)``, ``write(<glob>)``,
 ``web_fetch(domain:<host>)``, ``mcp__server[__tool|__*]`` and a bare tool
-name. A relative glob is anchored at the session's workspace; ``*`` is one
-path segment, ``**`` any number; a glob without a wildcard also covers
-everything below it.
+name. Each parsed rule is a ``permission_rules.Rule`` with
+``managed=True`` and ``source`` the policy file.
 
-Output: ``load()`` -> ``Policy`` and the questions the gate asks of it --
-``friction`` (the deny or ask rule a call meets), ``denies_path`` (a deny
-rule on a path a tool resolved), ``allow_may_grant_bash`` (``only_allow``),
+Output: ``load()`` -> ``Policy``; ``permission_rules.load()`` merges its
+``deny``/``ask`` ahead of the user's and the project's rules and its
+``only_allow`` as the bound on every allow. Asked of the policy here:
 ``coerce_mode`` / ``launch_decision`` (``disallowed_modes`` and
 ``require_isolation``), ``domain_within_max``, ``classifier_forced_on``,
 ``audit_destinations``, ``is_policy_path`` and ``summary_lines``.
@@ -42,12 +42,11 @@ Semantics:
   mode, hooks, user allow patterns and every approval, in every mode;
   a managed ask is put to the person in every mode and is a refusal with
   nobody to ask.
-* Deny and ask match generously: a bash rule matches its words anywhere in
-  any segment, quoted ``sh -c`` body or path-qualified program name; read
-  and write rules match every path argument of a tool and every non-option
-  word of a shell command. ``only_allow`` matches narrowly: a command is
-  auto-allowed only when each of its segments starts with the words of an
-  ``only_allow`` bash rule and it carries no substitution or redirection.
+* Deny and ask match as the user's do (generously, through chains,
+  ``sh -c`` bodies, wrappers and path-qualified program names).
+  ``only_allow`` matches narrowly (``permission_rules.within_only_allow``)
+  and bounds the auto-allow list, the user's allow rules and the caged
+  admission alike: outside it, none of them answers a question.
 * A disallowed mode is replaced by ``default`` (``plan`` when ``default``
   is disallowed too) wherever a mode is set: the permissions object, a
   mode adopted inside a call, ``/permissions``. An interactive session
@@ -94,14 +93,14 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import shlex
 import stat
 import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from .permission_rules import Rule, bare_tool_name, parse_rule
 
 ENV_VAR = "DELFIN_MANAGED_POLICY"
 FILE_NAME = "managed_policy.json"
@@ -122,86 +121,6 @@ _KEYS = {"version", "permissions", "disallowed_modes", "require_isolation",
 _PATHS_OVERRIDE: Optional[tuple] = None
 _ADMIN_UIDS_OVERRIDE: Optional[frozenset] = None
 _ISOLATION_PROBE: Optional[Callable[..., bool]] = None
-
-
-# ---------------------------------------------------------------------------
-# Rules
-# ---------------------------------------------------------------------------
-
-_KIND_ALIASES = {"bash": "bash", "shell": "bash", "read": "read",
-                 "write": "write", "edit": "write", "web_fetch": "web_fetch",
-                 "webfetch": "web_fetch"}
-_RULE_RE = re.compile(r"^([A-Za-z_]+)\((.*)\)$", re.DOTALL)
-_TOOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]*$")
-_MCP_RE = re.compile(r"^mcp__[A-Za-z0-9_\-]+(?:__(?:[A-Za-z0-9_\-]+|\*))?$")
-_HOST_RE = re.compile(r"^[a-z0-9*](?:[a-z0-9.\-]*[a-z0-9])?$")
-_NOT_SIMPLE = set("`$(){}<>\\\n\r")
-_SEGMENT_SPLIT = re.compile(r"\|\||&&|[;|&\n]")
-BASH_TOOLS = frozenset({"bash", "bash_background"})
-WRITE_TOOLS = frozenset({
-    "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
-    "make_plot", "edit_sheet", "fill_pdf_form", "fill_docx_template",
-    "create_docx", "fill_series", "merge_pdfs", "split_pdf", "create_pdf",
-    "draft_email",
-})
-_PATH_KEYS = ("path", "file_path", "filename", "file", "target",
-              "notebook_path", "directory", "dir", "root", "source", "src",
-              "dest", "destination", "output_path", "input_path", "pdf_path",
-              "template_path", "output", "paths", "files", "sources")
-
-
-@dataclass(frozen=True)
-class Rule:
-    """One parsed rule; ``value`` is words (bash), a glob (read/write), a
-    host (web_fetch) or a tool name (tool)."""
-    text: str
-    kind: str
-    value: Any
-    wildcard: bool = False
-    source: str = ""
-
-
-def parse_rule(text: Any) -> "Rule | str":
-    """A ``Rule``, or the reason ``text`` is not one."""
-    if not isinstance(text, str) or not text.strip():
-        return "a rule is a non-empty string"
-    raw = text.strip()
-    m = _RULE_RE.match(raw)
-    if m:
-        kind = _KIND_ALIASES.get(m.group(1).lower())
-        body = m.group(2).strip()
-        if kind is None:
-            return (f"unknown rule kind {m.group(1)!r} (bash, read, write, "
-                    "web_fetch, or a bare tool name)")
-        if not body:
-            return f"{kind}() needs a value"
-        if kind == "bash":
-            wildcard = body.endswith(":*")
-            if wildcard:
-                body = body[:-2].rstrip()
-            try:
-                words = tuple(shlex.split(body))
-            except ValueError as exc:
-                return f"bash rule does not parse: {exc}"
-            if not words or any(c in _NOT_SIMPLE or c in ";&|" for c in body):
-                return "a bash rule names the words of one command"
-            return Rule(raw, "bash", words, wildcard)
-        if kind in ("read", "write"):
-            return Rule(raw, kind, body)
-        if not body.lower().startswith("domain:"):
-            return "web_fetch rules are web_fetch(domain:<host>)"
-        host = body[len("domain:"):].strip().lower().rstrip(".")
-        if not host.isascii() or not _HOST_RE.match(host):
-            return f"{host!r} is not a host name"
-        return Rule(raw, "web_fetch", host)
-    if raw.startswith("mcp__"):
-        return (Rule(raw, "tool", raw) if _MCP_RE.match(raw) else
-                "an MCP rule is mcp__<server>, mcp__<server>__<tool> or "
-                "mcp__<server>__*")
-    if _TOOL_RE.match(raw):
-        return Rule(raw, "tool", raw)
-    return ("not a rule (bash(...), read(...), write(...), "
-            "web_fetch(domain:...), mcp__..., or a tool name)")
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +270,7 @@ def _rules(entries, label: str, source: str, errors: list) -> list:
             errors.append(f"{source}: {label} rule {entry!r} is not in force: {rule}")
             continue
         out.append(Rule(rule.text, rule.kind, rule.value, rule.wildcard,
-                        source))
+                        label, source, managed=True))
     return out
 
 
@@ -450,215 +369,14 @@ def load() -> Policy:
 
 
 # ---------------------------------------------------------------------------
-# Matching
+# The network ceiling. Rules are matched by permission_rules, not here.
 # ---------------------------------------------------------------------------
-
-def bare_tool_name(name: str) -> str:
-    text = str(name or "")
-    return text.rsplit("__", 1)[-1] if text.startswith("mcp__") else text
-
-
-def _tool_matches(value: str, name: str) -> bool:
-    if value.startswith("mcp__"):
-        if value.endswith("__*"):
-            return name.startswith(value[:-1])
-        if value.count("__") == 1:
-            return name.startswith(value + "__")
-        return name == value
-    return name == value or bare_tool_name(name) == value
-
-
-def _words(cmd: str) -> list:
-    """Every word of ``cmd`` and of any quoted body inside it."""
-    try:
-        lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        toks = list(lex)
-    except ValueError:
-        toks = cmd.split()
-    out = []
-    for tok in toks:
-        out.append(tok)
-        if any(c.isspace() for c in tok) and tok != cmd:
-            out.extend(_words(tok))
-    return out
-
-
-def _bash_hits(words: tuple, cmd: str) -> bool:
-    toks = _words(cmd)
-    norm = [os.path.basename(t) if "/" in t else t for t in toks]
-    n = len(words)
-    for seq in (toks, norm):
-        for i in range(len(seq) - n + 1):
-            if tuple(seq[i:i + n]) == words:
-                return True
-    return False
-
-
-def _glob_regex(glob: str) -> str:
-    out, i = [], 0
-    while i < len(glob):
-        if glob.startswith("**/", i):
-            out.append("(?:.*/)?")
-            i += 3
-            continue
-        if glob.startswith("**", i):
-            out.append(".*")
-            i += 2
-            continue
-        c = glob[i]
-        out.append("[^/]*" if c == "*" else "[^/]" if c == "?"
-                   else re.escape(c))
-        i += 1
-    return "".join(out)
-
-
-def _anchor(glob: str, workspace: Any) -> str:
-    g = os.path.expanduser(glob.strip())
-    if not g.startswith("/"):
-        base = Path(workspace or ".").expanduser()
-        try:
-            base = base.resolve()
-        except Exception:
-            pass
-        g = str(base).rstrip("/") + "/" + (g[2:] if g.startswith("./") else g)
-    parts = g.split("/")
-    head = []
-    for p in parts:
-        if any(ch in p for ch in "*?"):
-            break
-        head.append(p)
-    literal = "/".join(head) or "/"
-    try:
-        literal = os.path.realpath(literal)
-    except Exception:
-        pass
-    rest = parts[len(head):]
-    return literal if not rest else literal.rstrip("/") + "/" + "/".join(rest)
-
-
-def path_matches(glob: str, path: Any, workspace: Any) -> bool:
-    """True when ``path`` matches ``glob`` or lies below a literal glob."""
-    try:
-        p = os.path.realpath(os.path.expanduser(str(path)))
-    except Exception:
-        return False
-    pattern = _anchor(glob, workspace)
-    if not any(ch in pattern for ch in "*?"):
-        return p == pattern or p.startswith(pattern.rstrip("/") + "/")
-    return re.fullmatch(_glob_regex(pattern), p) is not None
-
-
-def _call_paths(bare: str, args: dict, workspace: Any) -> list:
-    base = Path(workspace or ".")
-    cwd = str(args.get("cwd") or "").strip()
-    if cwd:
-        base = (base / cwd) if not os.path.isabs(cwd) else Path(cwd)
-    raw: list = []
-    if bare in BASH_TOOLS:
-        for tok in _words(str(args.get("command") or "")):
-            if not tok or tok.startswith("-") and "=" not in tok:
-                continue
-            raw.append(tok.split("=", 1)[1] if tok.startswith("-") else tok)
-    else:
-        for key in _PATH_KEYS:
-            val = args.get(key)
-            if isinstance(val, str):
-                raw.append(val)
-            elif isinstance(val, (list, tuple)):
-                raw.extend(v for v in val if isinstance(v, str))
-    out = []
-    for r in raw:
-        r = os.path.expanduser(r)
-        out.append(r if os.path.isabs(r) else str(base / r))
-    return out
-
-
-def _url_host(url: str) -> str:
-    try:
-        from urllib.parse import urlsplit
-        return (urlsplit(str(url)).hostname or "").lower().rstrip(".")
-    except Exception:
-        return ""
-
 
 def _host_in(host: str, entry: str) -> bool:
     entry = entry.strip().lower().rstrip(".")
     if entry.startswith("*."):
         return host.endswith(entry[1:]) and host != entry[2:]
     return host == entry or host.endswith("." + entry)
-
-
-def _hits(rule: Rule, name: str, args: dict, workspace: Any) -> bool:
-    bare = bare_tool_name(name)
-    if rule.kind == "tool":
-        return _tool_matches(str(rule.value), name)
-    if rule.kind == "bash":
-        return (bare in BASH_TOOLS
-                and _bash_hits(rule.value, str(args.get("command") or "")))
-    if rule.kind in ("read", "write"):
-        if rule.kind == "write" and not (bare in WRITE_TOOLS
-                                         or bare in BASH_TOOLS):
-            return False
-        return any(path_matches(rule.value, p, workspace)
-                   for p in _call_paths(bare, args, workspace))
-    if rule.kind == "web_fetch":
-        return (bare == "web_fetch"
-                and _host_in(_url_host(args.get("url") or ""), rule.value))
-    return False
-
-
-def friction(name: str, args: dict, workspace: Any,
-             policy: Optional[Policy] = None) -> Optional[tuple]:
-    """("deny"|"ask", Rule) for this call, or None."""
-    pol = policy or load()
-    if not pol.active:
-        return None
-    args = args if isinstance(args, dict) else {}
-    for rule in pol.deny:
-        if _hits(rule, name, args, workspace):
-            return ("deny", rule)
-    if (pol.allowed_domains_max and bare_tool_name(name) == "web_fetch"
-            and not domain_within_max(_url_host(args.get("url") or ""), pol)):
-        return ("deny", Rule("network.allowed_domains_max", "web_fetch",
-                             "", source=_first_source(pol)))
-    for rule in pol.ask:
-        if _hits(rule, name, args, workspace):
-            return ("ask", rule)
-    return None
-
-
-def denies_path(kind: str, path: Any, workspace: Any) -> Optional[Rule]:
-    """The deny rule on ``path`` for a ``kind`` ("read"/"write") access."""
-    pol = load()
-    for rule in pol.deny:
-        if rule.kind in ("read", kind) and rule.kind in ("read", "write") \
-                and path_matches(rule.value, path, workspace):
-            return rule
-    return None
-
-
-def allow_may_grant_bash(cmd: str) -> bool:
-    """False when ``only_allow`` leaves ``cmd`` outside every grant."""
-    pol = load()
-    if not pol.only_allow:
-        return True
-    if any(c in _NOT_SIMPLE for c in cmd):
-        return False
-    segments = [s.strip() for s in _SEGMENT_SPLIT.split(cmd) if s.strip()]
-    if not segments:
-        return False
-    for rules in pol.only_allow:
-        for seg in segments:
-            try:
-                words = tuple(shlex.split(seg))
-            except ValueError:
-                return False
-            if not any(r.kind == "bash" and (
-                    words[:len(r.value)] == r.value if r.wildcard
-                    else words == r.value) for r in rules):
-                return False
-    return True
 
 
 def domain_within_max(host: str, policy: Optional[Policy] = None) -> bool:
@@ -838,8 +556,11 @@ def summary(policy: Optional[Policy] = None) -> dict:
     }
 
 
-def summary_lines(policy: Optional[Policy] = None) -> list:
-    """What the policy enforces, one line each; [] without a policy."""
+def summary_lines(policy: Optional[Policy] = None, *,
+                  include_rules: bool = True) -> list:
+    """What the policy enforces, one line each; [] without a policy.
+    ``include_rules=False`` leaves out deny/ask/only_allow (for a view that
+    lists them with the user's rules, ``permission_rules.describe``)."""
     s = summary(policy)
     if not s["active"] and not s["errors"]:
         return []
@@ -849,12 +570,12 @@ def summary_lines(policy: Optional[Policy] = None) -> list:
                      + ("trusted" if src["trusted"] else
                         f"NOT TRUSTED, restrictions only: {src['note']}")
                      + ")")
-    if s["deny"]:
+    if include_rules and s["deny"]:
         lines.append("managed deny   " + ", ".join(s["deny"]))
-    if s["ask"]:
+    if include_rules and s["ask"]:
         lines.append("managed ask    " + ", ".join(s["ask"]))
-    for group in s["only_allow"]:
-        lines.append("managed allow  auto-allow at most: "
+    for group in (s["only_allow"] if include_rules else ()):
+        lines.append("managed allow  any grant at most: "
                      + (", ".join(group) or "nothing"))
     if s["disallowed_modes"]:
         lines.append("managed modes  disallowed: "
@@ -886,11 +607,11 @@ def deny_text(name: str, rule: Rule) -> str:
 
 __all__ = [
     "ENV_VAR", "LINUX_PATH", "MACOS_PATH", "Policy", "Rule", "Source",
-    "allow_may_grant_bash", "append_audit_line", "audit_destinations",
+    "append_audit_line", "audit_destinations",
     "candidate_paths", "classifier_forced_on", "clear_cache", "coerce_mode",
-    "denies_path", "deny_text", "disallowed_modes", "domain_within_max",
-    "friction", "install_path", "is_policy_path", "isolation_available",
+    "deny_text", "disallowed_modes", "domain_within_max",
+    "install_path", "is_policy_path", "isolation_available",
     "isolation_unmet", "launch_decision", "load", "mode_refusal",
-    "network_ceiling_active", "parse_rule", "path_matches", "summary",
+    "network_ceiling_active", "parse_rule", "summary",
     "summary_lines", "trust_of",
 ]

@@ -50,9 +50,12 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # The keys `cli._run_once` returns, and therefore what --output-format json
 # promises. Named here so the two paths can be asserted equal instead of
-# drifting into two shapes of the same answer.
+# drifting into two shapes of the same answer. The last four are
+# turn_outcome's: what the turn ended as, for a program reading the result
+# (schema documented in docs/USER_MANUAL.md, "Headless runs").
 TURN_KEYS: frozenset[str] = frozenset({
     "text", "tool_calls", "input_tokens", "output_tokens", "error",
+    "schema_version", "stop_reason", "denials", "files_changed",
 })
 
 
@@ -379,6 +382,10 @@ class TurnResult:
     input_tokens: int = 0
     output_tokens: int = 0
     error: str = ""
+    schema_version: int = 1
+    stop_reason: str = "done"
+    denials: list[dict] = field(default_factory=list)
+    files_changed: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -387,6 +394,10 @@ class TurnResult:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "error": self.error,
+            "schema_version": self.schema_version,
+            "stop_reason": self.stop_reason,
+            "denials": self.denials,
+            "files_changed": self.files_changed,
         }
 
 
@@ -681,8 +692,14 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         if text:
             _emit(RenderItem("thinking", text=text))
 
+    from . import turn_outcome
+    observer = turn_outcome.TurnObserver(
+        workspace=getattr(getattr(engine, "kit_permissions", None),
+                          "workspace", None))
+
     def _on_tool_use(name: str, input_json: str) -> None:
         parsed = rr._as_dict(input_json)
+        observer.saw_tool_use(name)
         tool_calls.append({"name": name, "input": parsed})
         tool_inputs.append((name, parsed))
         _emit(RenderItem("tool_use", name=name, text=input_json or ""))
@@ -731,6 +748,7 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
 
     def _on_denied(name: str) -> None:
         _take_tool_input(name)
+        turn_outcome.denied(name, "backend_denied", "")
         _emit(RenderItem("denied", name=name))
 
     in_before, out_before = _usage(engine)
@@ -757,24 +775,33 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
             user_message = fresh + "\n\n" + prompt
             if isinstance(prompt, HarnessText):
                 user_message = HarnessText(user_message)
-    try:
-        full_text = engine.stream_response(
-            user_message=user_message,
-            memory_context=memory_context,
-            on_token=_on_token,
-            on_notice=_on_notice,
-            on_wait=_on_wait,
-            on_thinking=_on_thinking,
-            on_tool_use=_on_tool_use,
-            on_tool_result=_on_tool_result,
-            on_tool_result_meta=_on_tool_result_meta,
-            on_permission_denied=_on_denied,
-            max_tokens=max_tokens,
-        ) or ""
-    except Exception as exc:
-        result.error = str(exc)
-        full_text = ""
-        _emit(RenderItem("error", text=result.error))
+    with observer:
+        try:
+            full_text = engine.stream_response(
+                user_message=user_message,
+                memory_context=memory_context,
+                on_token=_on_token,
+                on_notice=_on_notice,
+                on_wait=_on_wait,
+                on_thinking=_on_thinking,
+                on_tool_use=_on_tool_use,
+                on_tool_result=_on_tool_result,
+                on_tool_result_meta=_on_tool_result_meta,
+                on_permission_denied=_on_denied,
+                max_tokens=max_tokens,
+            ) or ""
+        except Exception as exc:
+            result.error = str(exc)
+            full_text = ""
+            _emit(RenderItem("error", text=result.error))
+    _outcome = observer.summary(
+        error=result.error,
+        engine_stop_reason=str(
+            getattr(engine, "last_turn_stop_reason", "") or ""))
+    result.schema_version = _outcome["schema_version"]
+    result.stop_reason = _outcome["stop_reason"]
+    result.denials = _outcome["denials"]
+    result.files_changed = _outcome["files_changed"]
 
     _flush_pending()
     in_after, out_after = _usage(engine)
@@ -1563,7 +1590,8 @@ class TerminalAgent:
             self.transcript.chrome(self.transcript.theme.dim(
                 "nothing to expand yet"))
             return
-        for line in rr.strip_control(self._last_result_text).splitlines():
+        body = rr.result_body(self._last_result_text)
+        for line in rr.strip_control(body).splitlines():
             self.transcript.chrome("  " + line)
 
     # -- what a typed line means ------------------------------------------
@@ -1585,6 +1613,15 @@ class TerminalAgent:
 
         result = rc.dispatch(line, self._ctx())
         if not result.handled:
+            near = rc.nearest_builtin(line)
+            if near:
+                # A typo of a command is not a question for the model: it
+                # cost a turn and the answer was about the typo.
+                head = line.strip().split()[0]
+                self.transcript.chrome(self.transcript.theme.yellow(
+                    f"unknown command {head} — did you mean {near}? "
+                    "Nothing was sent; ↑ brings the line back."))
+                return ""
             return rc.expand_at_references(line, self.opts.cwd)
         if result.output:
             for out_line in result.output.splitlines():
@@ -3912,7 +3949,14 @@ class TerminalAgent:
                                 decoder.buffer = newer
                                 decoder.cursor = len(newer)
                             selected = None
-                    elif kind in (rk.STEER, rk.EXPAND, rk.TASKS):
+                    elif kind == rk.EXPAND:
+                        # The result is still there after the turn ends,
+                        # which is when there is time to read it. At the
+                        # idle prompt this key emptied nothing and showed
+                        # nothing; the box keeps what was typed.
+                        _clear_box(decoder)
+                        self._expand_last_result()
+                    elif kind in (rk.STEER, rk.TASKS):
                         # Turn-time keys. There is no turn here, and the
                         # decoder has already taken the line into the
                         # event — so without this branch Ctrl+G emptied

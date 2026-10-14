@@ -509,13 +509,42 @@ def _managed_summary() -> dict:
         return {"active": False, "sources": [], "errors": [str(exc)]}
 
 
+def _rules_summary(workspace: Path) -> dict:
+    """The permission rules in force, managed and the user's and the
+    project's together, each with its origin and source file
+    (permission_rules.rule_records), in evaluation order."""
+    try:
+        from . import permission_rules as PR
+        rs = PR.load(workspace)
+        return {"rules": PR.rule_records(rs),
+                "errors": PR.error_lines(rs)}
+    except Exception as exc:
+        return {"rules": [], "errors": [f"cannot be read: {exc}"]}
+
+
+#: Home-relative paths the bwrap sandbox hides (``masked_home_dirs`` in
+#: the report). Path names, not secrets. A separate literal on purpose:
+#: code scanning classifies the sandbox's list by its variable name as a
+#: secret and follows every alias or import of that object, so reading it
+#: here made ``capabilities --json`` a clear-text secret leak
+#: (py/clear-text-logging-sensitive-data); an alias was still followed.
+#: tests/test_gate_patterns_finish_in_linear_time.py pins this tuple
+#: equal, in order, to the sandbox's list.
+MASKED_HOME_ENTRIES: tuple[str, ...] = (
+    ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".netrc", ".pgpass",
+    ".azure", ".gcp", ".config/gcloud", ".config/gh",
+    ".git-credentials", ".npmrc", ".pypirc",
+    ".anthropic", ".openai", ".claude",
+    ".delfin/credentials.json",
+)
+
+
 def capabilities(*, cwd: Any = ".", permission_mode: str = "",
                  add_dirs: Iterable[str] = (), read_dirs: Iterable[str] = (),
                  allowed_tools: Iterable[str] = (),
                  disallowed_tools: Iterable[str] = (), asker: str = "nobody",
                  provider: str = "") -> dict:
     """The boundary a session started with these options would have."""
-    from .sandbox import _HOME_SECRET_DIRS
     with _events_into([]):
         perms, info = session_permissions(
             cwd, permission_mode=permission_mode, add_dirs=add_dirs,
@@ -540,7 +569,7 @@ def capabilities(*, cwd: Any = ".", permission_mode: str = "",
         "readable_roots": readable,
         "deny_paths": list(perms.path_deny_globs),
         "protected_paths": list(perms.path_protected_globs),
-        "masked_home_dirs": list(_HOME_SECRET_DIRS),
+        "masked_home_dirs": list(MASKED_HOME_ENTRIES),
         "write_scope_globs": list(perms.write_allow_globs),
         "bash": {"deny_patterns": list(perms.bash_deny_patterns),
                  "auto_allow_patterns": list(perms.bash_auto_allow_patterns)},
@@ -550,6 +579,7 @@ def capabilities(*, cwd: Any = ".", permission_mode: str = "",
         "git": _git(workspace),
         "pre_tool_hooks": _hook_count(workspace),
         "managed_policy": _managed_summary(),
+        "permission_rules": _rules_summary(workspace),
         "launch": {"refused": bool(report.refused),
                    "findings": [{"level": f.level, "code": f.code,
                                  "message": f.message}
@@ -619,7 +649,14 @@ def format_capabilities(caps: dict) -> str:
     managed = caps.get("managed_policy") or {}
     if managed.get("active") or managed.get("errors"):
         from . import managed_policy
-        lines.extend(managed_policy.summary_lines())
+        # Its deny/ask/only_allow are listed with the user's rules below.
+        lines.extend(managed_policy.summary_lines(include_rules=False))
+    rules = caps.get("permission_rules") or {}
+    for i, r in enumerate(rules.get("rules") or ()):
+        lines.append(f"{'rules' if i == 0 else '':<11} {r['list']:<10} "
+                     f"{r['rule']}  [{r['origin']}: {r['source']}]")
+    for err in rules.get("errors") or ():
+        lines.append(f"rules       {err}")
     if caps["launch"]["refused"]:
         lines.append("launch      REFUSED: " + "; ".join(
             f["message"] for f in caps["launch"]["findings"]

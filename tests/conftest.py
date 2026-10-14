@@ -273,6 +273,10 @@ def child_env(tmp_path) -> dict:
     env = dict(os.environ)
     env["HOME"] = str(home)
     env["DELFIN_SCRATCH_STATE"] = str(scratch)
+    # The OS keyring does not follow HOME (it is a D-Bus service or the
+    # login keychain): keyring's own override selects its null backend,
+    # which DELFIN refuses as a store.
+    env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
     return env
 
 
@@ -1113,9 +1117,22 @@ def _ci_parity_no_secrets(tmp_path, monkeypatch):
         from delfin.agent import credentials as _cred
         monkeypatch.setattr(_cred, "_DEFAULT_PATH",
                             tmp_path / "no_credentials.json")
+        # The OS keyring is the user's, on a desktop host reachable from
+        # this process: no test reads or writes it. Tests of the keyring
+        # path install a fake backend behind the real factory themselves.
+        if hasattr(_cred, "_disabled_keyring_factory"):
+            monkeypatch.setattr(_cred, "_keyring_factory",
+                                _cred._disabled_keyring_factory)
+            _cred.reset_keyring_state()
     except Exception:
         pass
     yield
+    try:
+        from delfin.agent import credentials as _cred
+        if hasattr(_cred, "reset_keyring_state"):
+            _cred.reset_keyring_state()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

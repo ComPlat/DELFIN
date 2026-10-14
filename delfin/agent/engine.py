@@ -1028,12 +1028,20 @@ class AgentEngine:
             return False
         return bool(getattr(client, "EFFORT_PER_REQUEST", False))
 
-    def set_kit_permission_mode(self, mode: str) -> bool:
+    def set_kit_permission_mode(self, mode: str, *,
+                                announce: bool = True) -> bool:
         """Switch the KIT permission mode at runtime.
 
         Accepts 'plan', 'default', 'acceptEdits', 'bypassPermissions'.
         Returns True on success, False if no KIT permissions are bound or
         the mode is unknown.
+
+        ``announce=False`` sets the mode without the mid-turn note. For
+        the posture a launch resolves before any turn: the first turn's
+        prompt already states it, and the note told the model the USER
+        had switched it mid-turn, which also cost the first turn a
+        second model request (measured on the pty, one typed line, two
+        requests).
         """
         perms = self.kit_permissions
         if perms is None:
@@ -1060,7 +1068,7 @@ class AgentEngine:
         # Delivered on the same rail as steering and finished jobs, so it
         # lands between tool rounds and again if the turn ends without
         # one.
-        if previous and previous != mode:
+        if announce and previous and previous != mode:
             self._tell_the_running_turn(
                     f"[permissions] The user switched this session from "
                     f"'{previous}' to '{mode}' just now, mid-turn. That is "
@@ -1312,7 +1320,20 @@ class AgentEngine:
             "total_cost_usd": self.cost_usd + _dl.session.cost_usd,
             "cycle_complete": self.is_cycle_complete,
             "session_id": self.session_id,
+            # The model second opinion: switch, model, scope, last failure.
+            "watcher": self._watcher_status(),
         }
+
+    def _watcher_status(self) -> str:
+        """``api_client.watcher_status_line`` for this session, or ""."""
+        try:
+            perms = self.kit_permissions
+            if perms is None:
+                return ""
+            from .api_client import watcher_status_line
+            return watcher_status_line(perms)
+        except Exception:
+            return ""
 
     def _refresh_context_window(self, *, background: bool = False) -> None:
         """Size the compaction budget to the ACTIVE model's real context.
@@ -2890,6 +2911,12 @@ class AgentEngine:
                     "hard_stop",
                     "Run stopped: budget ceiling reached",
                     _msg)
+                # The setting that stopped it, as the turn's stop reason
+                # (run_budget_usd / run_budget_s / run_budget_turns). Set
+                # here because this return precedes the per-turn reset
+                # below, so the previous turn's reason would stand.
+                self.last_turn_stop_reason = (
+                    (_bdim or "agent.run_budget_usd").rsplit(".", 1)[-1])
                 _notice(_msg)
                 return _msg
         except Exception:

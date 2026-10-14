@@ -200,6 +200,9 @@ def test_the_manual_example_is_a_policy_that_loads_clean(env):
     import re
     manual = (Path(__file__).resolve().parents[1] / "docs" / "USER_MANUAL.md"
               ).read_text(encoding="utf-8")
+    # The user's permission-rule example comes earlier in the manual and
+    # has the same opening; the managed one is in its own section.
+    manual = manual.split("### For administrators: a managed policy", 1)[-1]
     block = re.search(r"```json\n(\{\n  \"permissions\": \{\n    \"deny\".*?)```",
                       manual, re.DOTALL)
     assert block, "the managed policy example is gone from the manual"
