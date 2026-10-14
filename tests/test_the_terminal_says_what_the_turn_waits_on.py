@@ -103,7 +103,9 @@ def test_past_the_threshold_one_line_says_what_is_slow_and_how_to_stop(chat):
 
 
 def test_a_running_tool_is_named_with_its_argument_and_a_clock(chat):
-    session = chat(args=BYPASS)
+    # The action watcher is off: it may ask about any command it cannot
+    # judge, and an approval is the other test's phase, not this one's.
+    session = chat(args=BYPASS, env={"DELFIN_CLASSIFIER": "off"})
     t0 = time.monotonic()
     _start(session, "do-bash sleep 5")
     rows = []
@@ -118,7 +120,7 @@ def test_a_running_tool_is_named_with_its_argument_and_a_clock(chat):
 
 def test_an_approval_says_the_turn_waits_for_you(chat):
     session = chat()
-    _start(session, "do-bash sleep 0")
+    _start(session, "do-bash rm -f nothing.txt")
     assert session.wait_for("approval", 30) == "approval", (
         "\n".join(session.visible()))
     assert "waiting for your approval" in session.text(), (
