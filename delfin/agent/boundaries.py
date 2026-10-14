@@ -83,6 +83,7 @@ _READ_ONLY_SINKS = frozenset({
 #: Refusal text -> reason code, for refusals that record no security
 #: event. First match wins; matched case-insensitively.
 _TEXT_CODES: tuple[tuple[str, str], ...] = (
+    ("managed policy", "managed_policy"),
     ("plan mode", "plan_mode"),
     ("was excluded from this session", "session_tool_list"),
     ("is not available to the", "role"),
@@ -512,6 +513,28 @@ def _git(workspace: Path) -> dict:
     return {"repository_key": key or "", "role": role, "source": source}
 
 
+def _managed_summary() -> dict:
+    """managed_policy.summary(), or an inactive one when it cannot load."""
+    try:
+        from . import managed_policy
+        return managed_policy.summary()
+    except Exception as exc:
+        return {"active": False, "sources": [], "errors": [str(exc)]}
+
+
+def _rules_summary(workspace: Path) -> dict:
+    """The permission rules in force, managed and the user's and the
+    project's together, each with its origin and source file
+    (permission_rules.rule_records), in evaluation order."""
+    try:
+        from . import permission_rules as PR
+        rs = PR.load(workspace)
+        return {"rules": PR.rule_records(rs),
+                "errors": PR.error_lines(rs)}
+    except Exception as exc:
+        return {"rules": [], "errors": [f"cannot be read: {exc}"]}
+
+
 #: Home-relative paths the bwrap sandbox hides (``masked_home_dirs`` in
 #: the report). Path names, not secrets. A separate literal on purpose:
 #: code scanning classifies the sandbox's list by its variable name as a
@@ -526,6 +549,7 @@ MASKED_HOME_ENTRIES: tuple[str, ...] = (
     ".git-credentials", ".npmrc", ".pypirc",
     ".anthropic", ".openai", ".claude",
     ".delfin/credentials.json",
+    ".delfin/approval_codes",
 )
 
 
@@ -568,6 +592,8 @@ def capabilities(*, cwd: Any = ".", permission_mode: str = "",
         "sandbox": sandbox,
         "git": _git(workspace),
         "pre_tool_hooks": _hook_count(workspace),
+        "managed_policy": _managed_summary(),
+        "permission_rules": _rules_summary(workspace),
         "launch": {"refused": bool(report.refused),
                    "findings": [{"level": f.level, "code": f.code,
                                  "message": f.message}
@@ -639,6 +665,17 @@ def format_capabilities(caps: dict) -> str:
                     else "") + "]")
     if caps["pre_tool_hooks"]:
         lines.append(f"hooks       {caps['pre_tool_hooks']} PreToolUse")
+    managed = caps.get("managed_policy") or {}
+    if managed.get("active") or managed.get("errors"):
+        from . import managed_policy
+        # Its deny/ask/only_allow are listed with the user's rules below.
+        lines.extend(managed_policy.summary_lines(include_rules=False))
+    rules = caps.get("permission_rules") or {}
+    for i, r in enumerate(rules.get("rules") or ()):
+        lines.append(f"{'rules' if i == 0 else '':<11} {r['list']:<10} "
+                     f"{r['rule']}  [{r['origin']}: {r['source']}]")
+    for err in rules.get("errors") or ():
+        lines.append(f"rules       {err}")
     if caps["launch"]["refused"]:
         lines.append("launch      REFUSED: " + "; ".join(
             f["message"] for f in caps["launch"]["findings"]

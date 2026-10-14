@@ -230,6 +230,21 @@ def test_a_real_permission_rule_decides_in_the_proxy(proxy, web, tmp_path,
     assert out.startswith("403") and "web_fetch(domain:allowed.test)" in out, out
 
 
+def test_the_managed_domain_ceiling_holds_for_a_session(proxy, web, tmp_path,
+                                                        monkeypatch):
+    """The administrator's allowed_domains_max refuses an allow-listed host
+    on the per-session path too, even under bypass and with someone to
+    ask: no user layer and no question widens it."""
+    from delfin.agent import managed_policy as MP
+    monkeypatch.setattr(MP, "domain_within_max", lambda host: False)
+    port = web.server_address[1]
+    asker = _Asker(True)
+    out = _via(proxy, _perms(tmp_path, mode="bypassPermissions", asker=asker),
+               f"http://allowed.test:{port}/")
+    assert out.startswith("403") and "managed policy" in out, out
+    assert not asker.asked
+
+
 def test_a_token_without_a_session_keeps_the_old_answer(proxy, web):
     """The process-wide token (Seatbelt, older callers): allow-list only."""
     port = web.server_address[1]

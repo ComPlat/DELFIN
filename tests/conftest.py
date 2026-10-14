@@ -762,6 +762,21 @@ def _reset_workspace_trust_caches():
 
 
 @pytest.fixture(autouse=True)
+def _no_host_managed_policy(monkeypatch):
+    """The host's managed policy (/etc/delfin/managed_policy.json, the
+    package-side copy, DELFIN_MANAGED_POLICY) is shadowed, not read: a
+    policy an administrator installed would otherwise change what every
+    gate test decides on that machine and on no other. Tests of the
+    policy inject their own path."""
+    from delfin.agent import managed_policy as mp
+    monkeypatch.setattr(mp, "_PATHS_OVERRIDE", ())
+    monkeypatch.delenv(mp.ENV_VAR, raising=False)
+    mp.clear_cache()
+    yield
+    mp.clear_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_subagent_state(tmp_path, monkeypatch):
     from delfin.agent import subagents as sa
     monkeypatch.setattr(sa, "_RUNNING_DIR",
@@ -1026,6 +1041,22 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
         return settings_home / _user_settings.SETTINGS_FILE_NAME
 
     monkeypatch.setattr(_user_settings, "get_settings_path", _settings_path)
+
+    # The approval-code directory: beside tmp_path, as ~/.delfin lies
+    # beside a workspace in real use, not in it (the generic redirect above
+    # puts it under tmp_path, and a Landlock cage keeps no hide inside a
+    # write root). A test that moved Path.home gets that home's.
+    # tests/test_a_hidden_code_dir_keeps_its_root_writable.py puts it
+    # inside a workspace on purpose.
+    from delfin.agent import approval_code as _approval_code
+    codes_home = tmp_path.parent / f"{tmp_path.name}-approval-codes"
+
+    def _codes_dir():
+        if _already_isolated():
+            return pathlib.Path.home() / ".delfin" / "approval_codes"
+        return codes_home
+
+    monkeypatch.setattr(_approval_code, "codes_dir", _codes_dir)
 
 
 # ---------------------------------------------------------------------------

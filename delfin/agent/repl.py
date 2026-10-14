@@ -1561,6 +1561,11 @@ class TerminalAgent:
         """
         order = ["plan", "default", "acceptEdits"]
         try:
+            from . import managed_policy as _mp
+            order = [m for m in order if _mp.mode_refusal(m) is None] or order
+        except Exception:
+            pass
+        try:
             current = str(getattr(self.engine.kit_permissions, "mode", "")
                           or "default")
         except Exception:
@@ -1956,6 +1961,11 @@ class TerminalAgent:
         self.transcript.chrome(self.transcript.theme.bold(f"? {question}"))
         for i, opt in enumerate(options, 1):
             self.transcript.chrome(f"  {i}. {rr.strip_control(opt)}")
+        from . import terminal_confirm as tc
+        outside = tc.outside_answer_line(getattr(req, "published", None),
+                                         choice=True)
+        if outside and options:
+            self.transcript.chrome(self.transcript.theme.dim("  " + outside))
         if not options:
             self._apply(req, {"answers": []})
             return
@@ -2274,6 +2284,21 @@ class TerminalAgent:
         bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
         if mode:
             bits.append(mode)
+            # Said only when a command is not held by a layer; an
+            # isolated session's line is unchanged. Read once per session:
+            # this line is redrawn several times a second, and the
+            # isolation of a process does not change while it runs.
+            _iso = getattr(self, "_isolation_word", None)
+            if _iso is None:
+                try:
+                    from .isolation_posture import isolation_status
+                    _iso = isolation_status(
+                        self.engine.kit_permissions).short()
+                except Exception:
+                    _iso = ""
+                self._isolation_word = _iso
+            if _iso:
+                bits.append(_iso)
         bits.append(f"↑{tin} {out_bits}")
         if cost > 0:
             bits.append(f"${cost:.4f}")

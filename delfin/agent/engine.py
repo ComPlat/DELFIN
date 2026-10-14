@@ -1048,6 +1048,15 @@ class AgentEngine:
             return False
         if mode not in {"plan", "default", "diff_approval", "acceptEdits", "bypassPermissions"}:
             return False
+        # A mode the administrator's managed policy disallows is refused
+        # here, so no caller reports a switch that the permissions object
+        # (which coerces it) did not make.
+        try:
+            from . import managed_policy as _mp
+            if _mp.mode_refusal(mode):
+                return False
+        except Exception:
+            pass
         previous = str(getattr(perms, "mode", "") or "")
         perms.mode = mode
         # A turn already in flight is working to the rules it was told at

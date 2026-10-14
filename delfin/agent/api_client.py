@@ -6112,20 +6112,30 @@ def _mcp_call_refusal(fn_name: str, fn_args: dict,
     """
     base = (fn_name.rsplit("__", 1)[-1]
             if fn_name.startswith("mcp__") else fn_name)
+    # The permission rules (permission_rules.friction), as at execute():
+    # the administrator's managed rules for every name, the user's and the
+    # project's for an mcp__ name. A managed hit is decided before the
+    # hooks, in every mode; the user's after them. Deny refuses, ask asks,
+    # and the call is bound for the allow answers inside the gate.
+    asked = False
+    rule_hit = _permission_rule_hit(
+        permissions, fn_name, fn_args,
+        managed_only=not fn_name.startswith("mcp__"))
+    if rule_hit is not None and rule_hit[1].managed:
+        if rule_hit[0] == "deny":
+            return json.dumps({"error": _refuse_by_rule(fn_name, rule_hit[1])})
+        refusal = _doc_executor._ask_by_rule(permissions, fn_name,
+                                             fn_args, rule_hit[1])
+        if refusal is not None:
+            return json.dumps({"error": refusal})
+        asked = True
+        rule_hit = None
     hook_block = _doc_executor._run_pre_tool_hooks(base, fn_args, permissions)
     if hook_block is not None:
         return json.dumps({"error": "blocked_by_hook",
                            "reason": hook_block[:1200]})
-    # The user's permission rules, as at execute(): deny refuses, ask asks,
-    # and the call is bound for the allow answers inside the gate.
-    asked = False
-    rule_hit = (_permission_rule_hit(permissions, fn_name, fn_args)
-                if fn_name.startswith("mcp__") else None)
     if rule_hit is not None and rule_hit[0] == "deny":
-        _record_security_event("permission_rule_deny", fn_name,
-                               rule_hit[1].text[:120])
-        return json.dumps({"error": _permission_rule_deny_text(
-            fn_name, rule_hit[1])})
+        return json.dumps({"error": _refuse_by_rule(fn_name, rule_hit[1])})
     if rule_hit is not None:
         refusal = _doc_executor._ask_by_rule(permissions, fn_name,
                                              fn_args, rule_hit[1])
@@ -6686,8 +6696,11 @@ def _permission_rules(perms):
         return None, None
 
 
-def _permission_rule_hit(perms, name: str, args: dict):
-    """("deny"|"ask", Rule) for this call, or None."""
+def _permission_rule_hit(perms, name: str, args: dict, *,
+                         managed_only: bool = False):
+    """("deny"|"ask", Rule) for this call, or None: the administrator's
+    managed rules and the user's and the project's, one matcher
+    (permission_rules.friction). ``managed_only`` skips the latter."""
     if perms is None:
         return None
     pr, rs = _permission_rules(perms)
@@ -6695,7 +6708,7 @@ def _permission_rule_hit(perms, name: str, args: dict):
         return None
     try:
         return pr.friction(rs, name, args if isinstance(args, dict) else {},
-                           perms.workspace)
+                           perms.workspace, managed_only=managed_only)
     except Exception:
         return None
 
@@ -6704,7 +6717,18 @@ def _rule_source(rule) -> str:
     return str(getattr(rule, "source", "") or "the settings file")
 
 
+def _rule_event_kind(rule, which: str) -> str:
+    """The containment kind (and turn_outcome reason code) of a rule's
+    deny or ask: ``managed_policy_*`` for the administrator's rules,
+    ``permission_rule_*`` for the user's and the project's."""
+    return (f"managed_policy_{which}" if getattr(rule, "managed", False)
+            else f"permission_rule_{which}")
+
+
 def _permission_rule_deny_text(name: str, rule) -> str:
+    if getattr(rule, "managed", False):
+        from . import managed_policy as _mp
+        return _mp.deny_text(name, rule)
     return (f"'{_bare_tool_name(name)}' is refused by the permission rule "
             f"`{rule.text}` (deny, {_rule_source(rule)}). The rules are the "
             "user's and cannot be changed from inside the session. Do not "
@@ -6712,22 +6736,68 @@ def _permission_rule_deny_text(name: str, rule) -> str:
             "needed it for.")
 
 
-def _rule_denies_path(perms, kind: str, path) -> Optional[str]:
-    """The refusal for a deny rule on a path a tool resolved, or None."""
+def _refuse_by_rule(name: str, rule) -> str:
+    """Record a deny rule's refusal of ``name``; return its text."""
+    _record_security_event(_rule_event_kind(rule, "deny"), name,
+                           rule.text[:120])
+    return _permission_rule_deny_text(name, rule)
+
+
+def _rule_denies_path(perms, kind: str, path, *,
+                      managed_only: bool = False) -> Optional[str]:
+    """The refusal for the managed policy file itself (writes) or a deny
+    rule on a path a tool resolved, or None. ``managed_only``: only the
+    administrator's rules (a check made before the path is resolved)."""
+    if kind == "write":
+        try:
+            from . import managed_policy as _mp
+            is_policy = _mp.is_policy_path(path)
+        except Exception:
+            is_policy = False
+        if is_policy:
+            _record_security_event("managed_policy_deny", "write",
+                                   f"policy file: {path}"[:160])
+            return (f"write denied: '{path}' is the administrator's managed "
+                    "policy file. No session, mode or approval writes it.")
     pr, rs = _permission_rules(perms)
     if rs is None or not rs.deny:
         return None
     try:
-        rule = pr.denies_path(rs, kind, path, perms.workspace)
+        rule = pr.denies_path(rs, kind, path, perms.workspace,
+                              managed_only=managed_only)
     except Exception:
         return None
     if rule is None:
         return None
-    _record_security_event("permission_rule_deny", kind,
+    _record_security_event(_rule_event_kind(rule, "deny"), kind,
                            f"{rule.text}: {path}"[:160])
+    if getattr(rule, "managed", False):
+        return (f"{kind} denied: '{path}' is refused by the managed policy "
+                f"rule `{rule.text}` ({rule.source}), set by the "
+                "administrator, in every mode and whatever is approved. Do "
+                "not reach it through another tool.")
     return (f"{kind} denied: '{path}' is refused by the permission rule "
             f"`{rule.text}` (deny, {_rule_source(rule)}), in every mode and "
             "whatever is approved. Do not reach it through another tool.")
+
+
+def _managed_only_allow_admits(perms, cmd: str) -> bool:
+    """False when the managed ``only_allow`` leaves ``cmd`` outside every
+    grant (permission_rules.bash_within_only_allow): the auto-allow list
+    and the caged admission then answer nothing and the gate asks. True
+    without a bound. Fails closed when a bound exists but cannot be
+    evaluated."""
+    pr, rs = _permission_rules(perms)
+    if rs is None:
+        try:
+            from . import managed_policy as _mp
+            return not _mp.load().only_allow
+        except Exception:
+            return True
+    try:
+        return bool(pr.bash_within_only_allow(rs, cmd))
+    except Exception:
+        return not rs.only_allow
 
 
 def _rule_answers(perms, site: str, name: str, target=None) -> Optional[str]:
@@ -6985,6 +7055,12 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # Common SSH private-key names even outside a .ssh/ directory.
     "id_rsa", "id_rsa.*", "id_dsa", "id_ecdsa", "id_ed25519",
     "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
+    # One-time approval codes of runs with no terminal (approval_code):
+    # read by the person's `delfin-agent approvals`, never by an agent.
+    # By name, not under .delfin only: a test or benchmark run redirects
+    # the directory, and the name is DELFIN's own.
+    "approval_codes", "approval_codes/**",
+    "**/approval_codes", "**/approval_codes/**",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -7531,8 +7607,20 @@ def effective_mode(perms: Optional["KitToolPermissions"]) -> str:
     """The mode THIS call is being decided by."""
     pin = _MODE_PIN.get()
     if pin is not None:
-        return pin[0]
+        return _managed_mode(pin[0])
     return str(getattr(perms, "mode", "") or "")
+
+
+def _managed_mode(mode: str) -> str:
+    """``mode`` unless the administrator's managed policy disallows it
+    (managed_policy.coerce_mode); unchanged when there is no policy."""
+    if not mode:
+        return mode
+    try:
+        from . import managed_policy as _mp
+        return _mp.coerce_mode(mode)
+    except Exception:
+        return mode
 
 
 def repin_permission_mode(mode: str) -> None:
@@ -7637,6 +7725,13 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # Set by isolation_posture.apply_at_start when a bypass start was
+    # lowered to default because no layer isolates commands. With nobody
+    # to ask, a command off the auto-allow list is then judged by the
+    # action classifier instead of refused outright
+    # (_unisolated_fallback_verdict). A field, so a sub-agent's copy
+    # (dataclasses.replace) carries it.
+    unisolated_fallback: bool = False
     # The watcher's health for the whole session (not per turn):
     # consecutive failed model calls, down/up, last failure, pending user
     # notices. See _watcher_record.
@@ -7742,6 +7837,15 @@ class KitToolPermissions:
     # would be a route around the flag.
     skip_hook_discovery: bool = False
     skip_skill_discovery: bool = False
+
+    def __setattr__(self, key: str, value: Any) -> None:
+        # The mode an administrator's managed policy disallows is never
+        # held, whichever caller sets it (constructor, replace(), the
+        # engine, a plan approval, a dashboard): it becomes the fallback
+        # managed_policy.coerce_mode names. One attribute, every route.
+        if key == "mode" and isinstance(value, str):
+            value = _managed_mode(value)
+        object.__setattr__(self, key, value)
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).expanduser().resolve()
@@ -8155,6 +8259,11 @@ class KitToolPermissions:
 
     def matches_bash_auto_allow(self, cmd: str) -> bool:
         if self._interpreter_needs_confirm(cmd):
+            return False
+        # The administrator's ``only_allow`` bounds what any allow pattern
+        # (default, settings, remembered) may grant without asking -- the
+        # same bound the user's allow rules meet (permission_rules).
+        if not _managed_only_allow_admits(self, cmd):
             return False
         # The line-number lookup `$(grep -n PAT FILE | cut -d: -f1)` --
         # the largest group of avoidable dialogs (2026-09-25/26 audits) --
@@ -13045,6 +13154,14 @@ def _classifier_settings() -> Optional[dict]:
         enabled = True
     elif env == "all":
         enabled = broad = True
+    # The administrator's managed policy may keep the watcher on against
+    # both the settings file and the environment.
+    if not enabled:
+        try:
+            from . import managed_policy as _mp
+            enabled = _mp.classifier_forced_on()
+        except Exception:
+            pass
     if not enabled:
         return None
     from . import action_classifier as _ac
@@ -15095,8 +15212,12 @@ class _DocToolExecutor:
         # from this decision (see ``tool_unavailable_reason``), never the
         # other way round.
         session_refusal = _tool_denied_for_session(permissions, name)
-        # The user's permission rules (permission_rules.py): deny refuses
-        # here, in every mode; ask is put to the user just before dispatch.
+        # The permission rules (permission_rules.py), one matcher for the
+        # administrator's managed rules and the user's and the project's:
+        # a managed deny refuses right after the role check, before the
+        # session lists, the mode and the hooks; a user deny after the
+        # session lists; either holds in every mode. An ask is put to the
+        # person just before dispatch (_dispatch_under_rules).
         rule_hit = _permission_rule_hit(permissions, name, arguments)
         if permissions is not None and _tool_denied_for_role(auth_role, name):
             from . import action_protocol as _action_protocol
@@ -15117,6 +15238,9 @@ class _DocToolExecutor:
                     "and researches via search_docs — it does not read/edit source "
                     "or run shell commands."
                 )})
+        elif (rule_hit is not None and rule_hit[0] == "deny"
+                and rule_hit[1].managed):
+            result = json.dumps({"error": _refuse_by_rule(name, rule_hit[1])})
         elif session_refusal:
             # After the role check and before the mode check, by the same
             # rule the mode check states: report the more permanent reason
@@ -15129,10 +15253,7 @@ class _DocToolExecutor:
                 "started and cannot be changed from inside it."
             )})
         elif rule_hit is not None and rule_hit[0] == "deny":
-            _record_security_event("permission_rule_deny", name,
-                                   rule_hit[1].text[:120])
-            result = json.dumps({"error": _permission_rule_deny_text(
-                name, rule_hit[1])})
+            result = json.dumps({"error": _refuse_by_rule(name, rule_hit[1])})
         elif (getattr(permissions, "mode", "") == "plan"
                 and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
                 and not _plan_mode_admits_for_delegate(name, permissions)
@@ -15528,23 +15649,35 @@ class _DocToolExecutor:
                      args: dict, rule) -> Optional[str]:
         """Put a call an ask rule names to the user. None when approved,
         else the refusal. With nobody to ask it is refused: an ask rule
-        only adds friction, in every mode."""
+        only adds friction, in every mode. A managed rule (the
+        administrator's) is asked and reported as such."""
         bare = _bare_tool_name(name)
+        managed = bool(getattr(rule, "managed", False))
         if bare in ("bash", "bash_background"):
             body = f"$ {(args or {}).get('command') or ''}"
         else:
             body = f"{name}\n" + _preview_args(args or {})
         shown = body[:120]
-        _record_security_event("permission_rule_ask", bare,
+        _record_security_event(_rule_event_kind(rule, "ask"), bare,
                                f"{rule.text}: {shown}"[:160],
                                blocked=perms.confirm_callback is None)
         if perms.confirm_callback is None:
+            if managed:
+                return (f"'{bare}' meets the managed policy rule "
+                        f"`{rule.text}` (ask, {_rule_source(rule)}) and "
+                        "nobody can be asked here, so it is refused. Tell "
+                        "the user what the call is for.")
             return (f"'{bare}' meets the permission rule `{rule.text}` (ask, "
                     f"{_rule_source(rule)}) and nobody can be asked here, so "
                     "it is refused. Tell the user what the call is for.")
-        preview = ("[PERMISSION RULE: ask]\n"
-                   f"Your rule `{rule.text}` ({_rule_source(rule)}) asks "
-                   f"before this call.\n\n{body}")
+        if managed:
+            preview = ("[MANAGED POLICY: ask]\nThe administrator's rule "
+                       f"`{rule.text}` ({_rule_source(rule)}) asks before "
+                       f"this call.\n\n{body}")
+        else:
+            preview = ("[PERMISSION RULE: ask]\n"
+                       f"Your rule `{rule.text}` ({_rule_source(rule)}) asks "
+                       f"before this call.\n\n{body}")
         self._clear_refusal_reason(perms)
         try:
             ok = bool(perms.confirm_callback(name, args or {}, preview))
@@ -15557,7 +15690,8 @@ class _DocToolExecutor:
                     "TIMED OUT — the user is away, this is NOT a denial. Do "
                     "not retry it now; say what is waiting for them.")
         _record_security_event("denied_by_user", bare, shown)
-        return (f"user denied '{bare}' (asked by the rule `{rule.text}`). Do "
+        which = "the managed policy rule" if managed else "the rule"
+        return (f"user denied '{bare}' (asked by {which} `{rule.text}`). Do "
                 "NOT retry it or reach the same effect another way."
                 + self._said_why(perms))
 
@@ -18662,6 +18796,19 @@ class _DocToolExecutor:
                 blocked=True)
             return _approval_guard.refusal(
                 f"'{path_arg}' is where pending approvals are answered")
+        # The managed policy file, and a managed deny rule on the path, for
+        # every write tool and every shell write target, in every mode.
+        try:
+            _managed_target = Path(str(path_arg)).expanduser()
+            if not _managed_target.is_absolute():
+                _managed_target = Path(perms.workspace) / _managed_target
+        except Exception:
+            _managed_target = None
+        if _managed_target is not None:
+            _managed_refusal = _rule_denies_path(
+                perms, "write", _managed_target, managed_only=True)
+            if _managed_refusal:
+                return _managed_refusal
         # for_read=True: recognise every reachable root so the per-tier policy
         # below can fire (deny read-only, confirm calc). The write EXECUTOR
         # re-resolves writable-only — defense in depth.
@@ -19198,6 +19345,72 @@ class _DocToolExecutor:
         return _refused(reason, by_user=True) + self._said_why(perms)
 
     @staticmethod
+    def _unisolated_fallback_verdict(perms, name: str, args: dict
+                                     ) -> Optional[str]:
+        """None when the action classifier allows ``args['command']``,
+        else the refusal the model reads.
+
+        Reached only for a command off the auto-allow list in a session
+        whose bypass start was lowered to default (no layer isolates it)
+        and that has nobody to ask, after every hard tier. Judged as in
+        scope "all" through ``action_classifier.judge`` with
+        ``default_on_error="refuse"``; anything but allow -- doubt, refuse,
+        no runner, the classifier switched off, an error, no verdict within
+        ``_CLASSIFIER_TIMEOUT_S`` -- is a refusal naming what still works.
+        Rejected: ``_classifier_second_opinion``, which lets the rule
+        result stand when the classifier fails; here the rule result is a
+        refusal."""
+        cmd = str((args or {}).get("command") or "")
+        works = (" What still works with nobody to ask: read_file, "
+                 "write_file, edit_file, list_files and grep in the "
+                 "workspace, run_tests, and the auto-allowed commands.")
+        head = (f"blocked: '{cmd[:120]}' is not on the auto-allow list, and "
+                "this session runs without isolation in default mode with "
+                "nobody to ask")
+        runner = getattr(perms, "classifier_runner", None)
+        cfg = _classifier_settings() if runner is not None else None
+        if runner is None or cfg is None:
+            _record_security_event("classifier_error", "bash",
+                                   f"{cmd[:80]}: no classifier")
+            return head + ", and no action classifier is available." + works
+        box: dict = {}
+
+        def _work() -> None:
+            try:
+                from . import action_classifier as _ac
+                task, earlier = _classifier_context_users(
+                    _classifier_user_texts(
+                        getattr(perms, "classifier_messages", None)))
+                box["v"] = _ac.judge(
+                    _classifier_action(name, args),
+                    {"task": task, "recent_user": earlier,
+                     "recent_calls": []},
+                    model=cfg["model"], runner=runner, rules=cfg["rules"],
+                    default_on_error="refuse")
+            except BaseException as exc:          # noqa: BLE001
+                box["exc"] = exc
+
+        worker = threading.Thread(target=_work, daemon=True,
+                                  name="fallback-classifier")
+        worker.start()
+        worker.join(_CLASSIFIER_TIMEOUT_S)
+        verdict = box.get("v")
+        if verdict is not None and verdict.decision == "allow":
+            _record_security_event("classifier_allow", "bash", cmd[:80],
+                                   blocked=False)
+            return None
+        if verdict is not None:
+            reason = " ".join(str(verdict.reason or "").split())[:300]
+            why = f"the action classifier did not allow it ({verdict.decision}: {reason})"
+        elif "exc" in box:
+            why = f"the action classifier failed ({type(box['exc']).__name__})"
+        else:
+            why = "the action classifier gave no verdict in time"
+        _record_security_event("classifier_refuse", "bash",
+                               f"{cmd[:80]}: {why[:120]}")
+        return head + "; " + why + "." + works
+
+    @staticmethod
     def _own_written_file(path: "Path | None", perms) -> "Path | None":
         """``path`` resolved, when its current bytes are the ones this
         session last wrote to it (newest change-journal record of the file,
@@ -19670,6 +19883,63 @@ class _DocToolExecutor:
                         f"that could not be checked ('{cmd[:120]}'). Do NOT "
                         "retry it or work around it." + self._said_why(perms))
                 _approved_here = True
+            # A command this session promises to confine (locked scope,
+            # forced isolation) on a host where no layer can confine it.
+            # _bash_isolation_argv would refuse it at run time; asked here
+            # instead, in every mode, so a person present decides about
+            # this one command, and with nobody to ask it is refused with
+            # the routes that still work. The approval is for this command
+            # text once (_take_unconfined_approval). Placed after every
+            # other own-dialog check and not gated on _approved_here, so an
+            # approval given there never skips this consequence, and this
+            # approval never skips theirs.
+            _unconfinable = _isolation_refusal_reason(perms)
+            if _unconfinable:
+                _record_security_event("isolation_missing", "bash", cmd[:80],
+                                       blocked=perms.confirm_callback is None)
+                if perms.confirm_callback is None:
+                    return (
+                        f"blocked: {_unconfinable}, so this command cannot "
+                        "run confined, and nobody can be asked to run it "
+                        "unconfined. What works: read_file, write_file, "
+                        "edit_file, list_files and grep, whose gates do not "
+                        "depend on confining a command. A command needs an "
+                        "attended session (it is then asked) or a host "
+                        "with bubblewrap or Landlock; tell the user which "
+                        "command and why.")
+                # Asked even after another dialog approved this command:
+                # that one did not name this consequence.
+                try:
+                    ok = bool(perms.confirm_callback(
+                        "bash", {"command": cmd},
+                        "[NO ISOLATION]\n"
+                        f"{_unconfinable}. If approved, this one command "
+                        "runs unconfined and can write outside the "
+                        "workspace.\n\n$ " + cmd))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval to run this command unconfined TIMED "
+                            "OUT — the user is away, this is not a refusal. "
+                            "Do not run it now.")
+                    perms.record_denied_action("bash", cmd)
+                    _remember_refusal(perms, "bash", cmd,
+                                      self._refusal_reason(perms))
+                    return (
+                        f"user denied running '{cmd[:120]}' unconfined. "
+                        "Do NOT retry it or work around it."
+                        + self._said_why(perms))
+                _approved_here = True
+                try:
+                    approved = getattr(perms, "_unconfined_approved", None)
+                    if approved is None:
+                        approved = set()
+                        setattr(perms, "_unconfined_approved", approved)
+                    approved.add(cmd)
+                except Exception:
+                    pass
             # A push publishes. Report 20260915-085107 pushed the change it
             # was asked to, then chained a second commit and push onto a fix
             # nobody asked for -- in all_free, which asks nothing, so nothing
@@ -19885,6 +20155,15 @@ class _DocToolExecutor:
             # outside visible, network through the egress policy. Every tier
             # above has already passed; the classifier still has its look,
             # and the read and write path gates run in the executor.
+            # A deny rule (managed first) refuses here as at the entry
+            # points, should a route reach this point without them; an ask
+            # rule keeps the command off the caged admission and in the
+            # dialog below (_caged_command_may_run_unasked).
+            _caged_rule = (_permission_rule_hit(perms, "bash",
+                                                {"command": cmd})
+                           if caged_admission is not None else None)
+            if _caged_rule is not None and _caged_rule[0] == "deny":
+                return _refuse_by_rule("bash", _caged_rule[1])
             if (caged_admission is not None and not _approved_here
                     and _caged_command_may_run_unasked(cmd, perms, mode)):
                 verdict = self._classifier_second_opinion(
@@ -19967,6 +20246,12 @@ class _DocToolExecutor:
                     "it or work around it — ask the user what to do instead."
                     + self._said_why(perms)
                 )
+            # A bypass start lowered to default for want of isolation, with
+            # nobody to ask: every hard tier above has passed, and the
+            # action classifier decides instead of the outright refusal
+            # below, so a long unattended run keeps working.
+            if getattr(perms, "unisolated_fallback", False):
+                return self._unisolated_fallback_verdict(perms, name, args)
             # default / acceptEdits without a UI callback (head-less / CLI):
             # the command must match an auto-allow regex; otherwise tell the
             # user the exact command and let them add an allow_pattern or switch
@@ -24772,7 +25057,54 @@ def _home_secret_paths() -> list[str]:
             out.append(str((home / rel).resolve()))
         except OSError:
             continue
+    # The approval-code directory, created and at its redirected location.
+    try:
+        from delfin.agent.sandbox import runtime_masked_dirs
+        out += [d for d in runtime_masked_dirs() if d not in out]
+    except Exception:
+        pass
     return out
+
+
+def _landlock_hide_paths(write_roots) -> list[str]:
+    """``_home_secret_paths()`` for a Landlock cage with these write roots.
+
+    Landlock only grants, and a rule covers everything beneath its path:
+    ``landlock_exec._grant_except`` hides a path inside a write root by
+    granting that root entry by entry, so the root directory itself loses
+    the right to create files and every new top-level file there is
+    refused. For the approval-code directory (``runtime_masked_dirs`` and
+    ``~/.delfin/approval_codes``) inside a write root that cost is not
+    paid: the hide is dropped for this run, and the read gates (path deny
+    globs, the bash read scan, ``approval_guard``) protect the 0600,
+    short-lived code file there. That happens only for a granted
+    ``~/.delfin`` or a workspace holding ``$HOME``. The credential
+    locations keep their behaviour (hidden, at that cost)."""
+    hides = _home_secret_paths()
+    soft: set[str] = set()
+    try:
+        from delfin.agent.sandbox import runtime_masked_dirs
+        soft.update(runtime_masked_dirs())
+    except Exception:
+        pass
+    try:
+        from delfin.agent import approval_code as _ac
+        soft.add(str(_ac.home_codes_dir().resolve()))
+    except Exception:
+        pass
+    roots = []
+    for r in write_roots:
+        try:
+            roots.append(os.path.realpath(str(r)).rstrip("/") or "/")
+        except Exception:
+            continue
+
+    def _inside(path: str) -> bool:
+        real = os.path.realpath(path)
+        return any(real == r or real.startswith(r.rstrip("/") + "/")
+                   for r in roots)
+
+    return [h for h in hides if not (h in soft and _inside(h))]
 
 
 _GIT_ROOTS_CACHE: dict = {}
@@ -25075,9 +25407,11 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
         roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
     git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
     argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve())]
-    for r in list(roots) + [str(Path(p).resolve()) for p in extra_write] + git_roots:
+    write_roots = (list(roots) + [str(Path(p).resolve()) for p in extra_write]
+                   + git_roots)
+    for r in write_roots:
         argv += ["--write", r]
-    for h in _home_secret_paths():
+    for h in _landlock_hide_paths(write_roots + [_private_tmp_dir()]):
         argv += ["--hide", h]
     # git's hooks would run on the user's next git command. bubblewrap and
     # Seatbelt keep them readable-but-not-writable for free; Landlock cannot
@@ -25387,6 +25721,74 @@ def set_bash_isolation_override(mode: str) -> None:
     _BASH_ISOLATION_OVERRIDE = str(mode or "")
 
 
+def _bash_isolation_setting() -> tuple[str, str]:
+    """``(mode, source)`` of the shell-isolation mode for this process.
+
+    mode: "auto" (default), "off", "bwrap", or what the setting holds,
+    lower-cased. source: the flag (``--no-isolate``/``--isolate``) when
+    the process override is set, else ``agent.bash_isolation``. One
+    reading for ``_bash_isolation_argv`` and the session status
+    (``isolation_posture``), so the two cannot disagree."""
+    if _BASH_ISOLATION_OVERRIDE:
+        mode = _BASH_ISOLATION_OVERRIDE.strip().lower()
+        return mode, ("--no-isolate" if mode == "off" else "--isolate")
+    try:
+        from delfin.user_settings import load_settings
+        mode = str(((load_settings() or {}).get("agent") or {})
+                   .get("bash_isolation", "auto") or "auto")
+    except Exception:
+        mode = "auto"
+    return mode.strip().lower(), "agent.bash_isolation"
+
+
+_REFUSAL_LOCKED = ("this session is locked to its folder, and neither "
+                   "bubblewrap, Landlock nor Seatbelt can confine a command "
+                   "on this host")
+_REFUSAL_FORCED = ("filesystem isolation is switched on, and neither "
+                   "bubblewrap nor Landlock nor Seatbelt can provide it on "
+                   "this host")
+
+
+def _isolation_refusal_reason(perms, mode: str | None = None) -> str:
+    """Why ``_bash_isolation_argv`` would refuse every command, or "".
+
+    Input: the session's permissions; ``mode`` as the caller would pass it
+    (None reads ``_bash_isolation_setting``). Output: the refusal text for
+    a locked scope or a forced isolation on a host where no layer can
+    confine a command; "" where a command runs (confined, or unconfined by
+    the session's own posture). Read from ``_bash_isolation_decision``,
+    the answer ``_bash_isolation_argv`` builds its argv from, so the gate's
+    question and the run-time refusal cannot disagree; no announcement, no
+    proxy, no side effect. An error answers "": the argv then still
+    refuses at run time."""
+    try:
+        kind, mode = _bash_isolation_decision(perms, mode)
+        if kind != "refuse":
+            return ""
+        # The two branches of _bash_isolation_argv that turn "refuse" into
+        # a refusal argv; nowhere else does it refuse.
+        if getattr(perms, "scope_locked", False):
+            return _REFUSAL_LOCKED
+        if mode == "bwrap":
+            return _REFUSAL_FORCED
+        return ""
+    except Exception:
+        return ""
+
+
+def _take_unconfined_approval(perms, cmd: str) -> bool:
+    """Consume a one-command approval to run ``cmd`` unconfined.
+
+    Set by the bash gate when the user approved a command that no layer
+    can confine ([NO ISOLATION] dialog); used once, by the next
+    ``_bash_isolation_argv`` for exactly that command text."""
+    approved = getattr(perms, "_unconfined_approved", None)
+    if not approved or cmd not in approved:
+        return False
+    approved.discard(cmd)
+    return True
+
+
 def _handover_hint(resolved, workspace) -> str:
     """A clause naming the shared directory, when the refused path is
     another session's worktree. Otherwise "".
@@ -25540,16 +25942,34 @@ def _bash_isolation_decision(perms, mode: str | None = None) -> tuple[str, str]:
     auto-allow list may run unasked -- one decision, so the two cannot
     drift. No side effects beyond the cached host probes. Never raises.
     """
-    if mode is None and _BASH_ISOLATION_OVERRIDE:
-        mode = _BASH_ISOLATION_OVERRIDE
     if mode is None:
-        try:
-            from delfin.user_settings import load_settings
-            mode = str(((load_settings() or {}).get("agent") or {})
-                       .get("bash_isolation", "auto") or "auto")
-        except Exception:
-            mode = "auto"
-    mode = mode.strip().lower()
+        # The process override first, then the setting
+        # (_bash_isolation_setting, shared with the session status).
+        mode = _bash_isolation_setting()[0]
+    mode = str(mode or "").strip().lower()
+    # The administrator's managed policy: with require_isolation no setting
+    # or flag runs a command unsandboxed -- "off" and "auto" become the
+    # forced isolation, whose fallbacks are Landlock, Seatbelt or a
+    # refusal. container_backend "bwrap" accepts bubblewrap only. A user's
+    # "container" stays: it is stronger, and _bash_isolation_argv falls
+    # back to this forced decision when no container can run.
+    try:
+        from . import managed_policy as _mp
+        _managed = _mp.load()
+    except Exception:
+        _managed = None
+    if _managed is not None and _managed.require_isolation:
+        forced = ("container" if mode == "container"
+                  and _managed.container_backend != "bwrap" else "bwrap")
+        if _bwrap_functional():
+            return "bwrap", forced
+        if _managed.container_backend == "bwrap":
+            return "refuse", forced
+        if _landlock_functional():
+            return "landlock", forced
+        if _seatbelt_functional():
+            return "seatbelt", forced
+        return "refuse", forced
     if getattr(perms, "scope_locked", False):
         if _bwrap_functional():
             return "bwrap", mode
@@ -25648,6 +26068,8 @@ def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
     shell executor. True when all hold:
       - ``mode`` is "default" or "acceptEdits" (plan, diff_approval and
         bypass are unchanged);
+      - no deny or ask rule names it (permission_rules, the managed
+        policy's included) and the managed ``only_allow`` admits it;
       - ``agent.caged_commands_run_unasked`` is not false;
       - ``_bash_isolation_decision`` answers "bwrap" -- the decision
         ``_bash_isolation_argv`` builds the argv from -- the process cage
@@ -25667,6 +26089,14 @@ def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
     """
     try:
         if mode not in ("default", "acceptEdits"):
+            return False
+        # The permission rules hold here too (managed first): a command a
+        # deny or ask rule names is never admitted unasked, and neither is
+        # one outside the managed only_allow -- the cage is a grant like
+        # the auto-allow list, and only_allow bounds every grant.
+        if _permission_rule_hit(perms, "bash", {"command": cmd}) is not None:
+            return False
+        if not _managed_only_allow_admits(perms, cmd):
             return False
         try:
             from delfin.user_settings import load_settings
@@ -25886,6 +26316,20 @@ def _bash_isolation_argv(
         return _refusal_argv(
             "this command was admitted without a question because the "
             "filesystem cage holds it, and the cage is no longer available")
+    if kind == "refuse":
+        try:
+            from . import managed_policy as _mp
+            _managed = _mp.load()
+        except Exception:
+            _managed = None
+        if _managed is not None and _managed.require_isolation:
+            return _refusal_argv(
+                "the managed policy requires bubblewrap for every command, "
+                "and bubblewrap does not work on this host"
+                if _managed.container_backend == "bwrap" else
+                "the managed policy requires isolation for every command, "
+                "and neither bubblewrap nor Landlock nor Seatbelt works on "
+                "this host")
     # "auto" (default): hard-isolate ONLY in the unattended/permissive
     # permission mode (bypassPermissions) where no human approves each
     # command — that's where containment matters most. Interactive modes keep
@@ -25917,10 +26361,12 @@ def _bash_isolation_argv(
             _announce_isolation_unavailable(perms)
             # A locked scope promises one folder. With nothing on this host
             # able to hold a command to it, the command is not run: a
-            # parser of command text is no containment.
-            return _refusal_argv(
-                "this session is locked to its folder, and neither "
-                "bubblewrap, Landlock nor Seatbelt can confine a command on this host")
+            # parser of command text is no containment -- unless the user
+            # approved this one command unconfined ([NO ISOLATION] in the
+            # bash gate), which is a decision about this command only.
+            if _take_unconfined_approval(perms, cmd):
+                return _in_process_cage(plain, run_cwd)
+            return _refusal_argv(_REFUSAL_LOCKED)
     elif mode == "auto":
         # Wherever this host can actually hold a command, not only in the
         # unattended profile. "auto" used to isolate under bypass and for
@@ -25962,9 +26408,11 @@ def _bash_isolation_argv(
             return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
         if kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
-        return _refusal_argv(
-            "filesystem isolation is switched on, and neither bubblewrap "
-            "nor Landlock nor Seatbelt can provide it on this host")
+        # Unless the user approved this one command unconfined ([NO
+        # ISOLATION] in the bash gate), a decision about this command only.
+        if _take_unconfined_approval(perms, cmd):
+            return _in_process_cage(plain, run_cwd)
+        return _refusal_argv(_REFUSAL_FORCED)
     if kind != "bwrap":
         return _in_process_cage(plain, run_cwd)
 
@@ -26031,6 +26479,14 @@ def _bash_isolation_argv(
         for room in _approval_guard.answer_rooms():
             if any(room == b or b in room.parents for b in _bound):
                 args += ["--ro-bind-try", str(room), str(room)]
+    except Exception:
+        pass
+    # The approval-code directory is not readable at all, and masked after
+    # every bind so a granted ~/.delfin cannot re-expose it.
+    try:
+        from delfin.agent.sandbox import runtime_masked_dirs
+        for d in runtime_masked_dirs():
+            args += ["--tmpfs", d]
     except Exception:
         pass
     args += ["--chdir", str(Path(run_cwd).resolve())]

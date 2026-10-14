@@ -149,6 +149,7 @@ def _status(ctx, _args: str) -> CommandResult:
         f"provider   {st.get('provider', '?')}",
         f"mode       {st.get('mode', '?')}   role {st.get('role', '?')}",
         f"approval   {_mode(engine) or '(no gate on this backend)'}",
+        f"isolation  {_isolation(engine)}",
         f"watcher    {st.get('watcher') or 'off (no permission gate)'}",
         f"workspace  {ctx.workspace}",
         f"session    {st.get('session_id', '') or '(unsaved)'}",
@@ -258,13 +259,24 @@ def _permission_rules_view(ctx) -> str:
 
 def _permissions(ctx, args: str) -> CommandResult:
     name = args.strip()
+    try:
+        from . import managed_policy as _mp
+        # The managed rules are listed with the user's by the rules view;
+        # here the rest of the policy (modes, isolation, network, audit).
+        managed = _mp.summary_lines(include_rules=False)
+        refusal = _mp.mode_refusal(name) if name else None
+    except Exception:
+        managed, refusal = [], None
     if not name:
-        return CommandResult(output=(
-            f"approval is {_mode(ctx.engine) or '(no gate)'} — "
-            "/permissions plan|default|acceptEdits, or Shift+Tab\n"
-            + _permission_rules_view(ctx)))
+        return CommandResult(output="\n".join(
+            [f"approval is {_mode(ctx.engine) or '(no gate)'} — "
+             "/permissions plan|default|acceptEdits, or Shift+Tab"]
+            + managed + [_permission_rules_view(ctx)]))
     if name == "rules":
-        return CommandResult(output=_permission_rules_view(ctx))
+        return CommandResult(output="\n".join(
+            managed + [_permission_rules_view(ctx)]))
+    if refusal:
+        return CommandResult(output=f"not switched: {refusal}")
     if name == "bypassPermissions":
         return CommandResult(output=(
             "not from here. Unattended execution is reachable only by "
@@ -1765,6 +1777,15 @@ def _help(ctx, args: str) -> CommandResult:
 def _mode(engine) -> str:
     from .repl import permission_mode
     return permission_mode(engine)
+
+
+def _isolation(engine) -> str:
+    """The banner's isolation line, read now (isolation_posture)."""
+    try:
+        from .isolation_posture import isolation_status
+        return isolation_status(getattr(engine, "kit_permissions", None)).line()
+    except Exception:
+        return "unknown"
 
 
 BUILTINS: dict[str, ReplCommand] = {

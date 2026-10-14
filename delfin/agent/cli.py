@@ -582,6 +582,15 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
     elif not prepare(engine):
         # chat -p: the shared set-up binds --supervised (_bind_supervised).
         return 2
+    # The start check cmd_chat runs too (isolation_posture), once per run
+    # for both doors (`run` and chat -p; neither prepare path runs it):
+    # without a layer, bypass is confirmed when a terminal can answer,
+    # else the run continues in default and says so here. After the
+    # session is opened, as in cmd_chat, so it judges the mode the run
+    # will actually have.
+    from .isolation_posture import apply_at_start
+    for _note in apply_at_start(engine, can_ask=sys.stdin.isatty()):
+        print(_note, file=sys.stderr)
     import time as _time
     _t0 = _time.monotonic()
     stream_json = (getattr(args, "output_format", "text") == "stream-json")
@@ -1083,30 +1092,21 @@ def _startup_banner(engine, report, workspace: Path,
     if perms_mode:
         lines.append(f"approval   {perms_mode}"
                      + (f"  [{why}]" if why else ""))
-        if isolation_note:
+        if any(str(n).startswith("isolation  ") for n in notes or ()):
+            pass        # the start check's line says it, with its outcome
+        elif isolation_note:
             lines.append(isolation_note)
         else:
-            # Which mechanism will actually run, asked of the one place
-            # that knows -- the doctor reads the same three probes
-            # _bash_isolation_argv picks from, in the same order, so the
-            # line cannot drift from the behaviour it describes.
+            # isolation_status reads the mode (flag, then setting) and the
+            # same three probes _bash_isolation_argv picks from, so the
+            # line cannot drift from the behaviour it describes -- a
+            # setting that switched it off included.
             try:
-                from .doctor import _isolation_mechanism
-                held_by = _isolation_mechanism()
+                from .isolation_posture import isolation_status
+                lines.append(f"isolation  {isolation_status(engine.kit_permissions).line()}")
             except Exception:
-                held_by = ""
-            if held_by:
-                lines.append(
-                    f"isolation  on ({held_by}) — a command the agent runs "
-                    "writes only inside the workspace (--no-isolate)")
-            else:
-                # Not a detail to leave out. The agent starts at the safest
-                # posture the host can give; where that is none, the user
-                # is the one who has to know it.
-                lines.append(
-                    "isolation  off — neither bubblewrap, Landlock nor "
-                    "Seatbelt works here, so a command the agent runs can "
-                    "write outside the workspace")
+                lines.append("isolation  unknown — the status could not "
+                             "be read")
         # The network of what a command starts, said only where it is not
         # (fully) held: the line exists to keep the banner from implying
         # a protection this host does not give.
@@ -1413,6 +1413,24 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
     """
     notes: list[str] = []
 
+    # The administrator's managed policy: what it enforces, and a requested
+    # mode it replaced. Read from the policy itself, as the gate reads it.
+    try:
+        from . import managed_policy as _mp
+        requested = str(getattr(args, "permission_mode", "") or "")
+        if requested:
+            _m, _note, _refuse = _mp.launch_decision(
+                requested, explicit=True, attended=False)
+            if _note:
+                notes.append(_note)
+        if _mp.isolation_unmet():
+            notes.append("managed policy requires an isolation layer and "
+                         "none works here: this run is capped at default "
+                         "and every shell command is refused")
+        notes.extend(_mp.summary_lines())
+    except Exception:
+        pass
+
     try:
         usd = float(getattr(args, "max_budget_usd", 0.0) or 0.0)
     except (TypeError, ValueError):
@@ -1519,6 +1537,16 @@ def _apply_isolation_flags(args: argparse.Namespace) -> str:
     an interactive session and to stderr on a one-shot run, because a run
     without containment should not look like one that has it.
     """
+    try:
+        from . import managed_policy as _mp
+        _isolation_required = _mp.load().require_isolation
+    except Exception:
+        _isolation_required = False
+    if getattr(args, "no_isolate", False) and _isolation_required:
+        # The managed policy forces isolation in the shell gate whatever
+        # this flag says; say so rather than claim it is off.
+        return ("isolation  --no-isolate IGNORED: the managed policy "
+                "requires isolation for every command")
     if getattr(args, "no_isolate", False):
         from .api_client import set_bash_isolation_override
         set_bash_isolation_override("off")
@@ -1725,6 +1753,22 @@ def cmd_chat(args: argparse.Namespace) -> int:
         print("Nothing on stdin, and no -p. Nothing to do.", file=sys.stderr)
         return 2
 
+    # The administrator's managed policy, before anything is built: a mode
+    # the person named on the command line that the policy disallows, or a
+    # required isolation layer this host lacks, ends an attended start here
+    # with the reason. A mode from a settings file falls back instead.
+    try:
+        from . import managed_policy as _mp
+        _flag_mode = str(getattr(args, "permission_mode", "") or "")
+        _, _managed_note, _managed_refuse = _mp.launch_decision(
+            _flag_mode or "default", explicit=bool(_flag_mode),
+            attended=True)
+    except Exception:
+        _managed_note, _managed_refuse = "", False
+    if _managed_refuse:
+        print(_managed_note, file=sys.stderr)
+        return 2
+
     # An interactive session is a conversation, not a document. The flag
     # is accepted on this subcommand because the one-shot half lives here
     # too; taking it silently and then emitting text is the shape of a
@@ -1762,6 +1806,15 @@ def cmd_chat(args: argparse.Namespace) -> int:
         settings_path=persisted_from or "~/.delfin/settings.json",
     )
     try:
+        from . import managed_policy as _mp
+        _managed_posture = _mp.coerce_mode(posture)
+        if _managed_posture != posture:
+            why = (f"{why}; {posture} disallowed by the managed policy, "
+                   f"so {_managed_posture}")
+            posture = _managed_posture
+    except Exception:
+        pass
+    try:
         # The starting rule, not a switch: no turn is running to be told.
         try:
             engine.set_kit_permission_mode(posture, announce=False)
@@ -1772,6 +1825,10 @@ def cmd_chat(args: argparse.Namespace) -> int:
             engine.set_kit_permission_mode(posture)
     except Exception:
         pass          # a backend with no gate has no posture to set
+    # The same start check as cmd_run: bypass without isolation is
+    # confirmed once here, else the session starts in default.
+    from .isolation_posture import apply_at_start
+    start_notes = tuple(apply_at_start(engine, can_ask=sys.stdin.isatty()))
 
     from .repl import ReplOptions, TerminalAgent
     from .terminal_confirm import TerminalConfirmBroker
@@ -1828,7 +1885,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
         session_name=getattr(args, "session_name", "") or "",
         banner=(_startup_banner(engine, report, workspace, why,
                                 isolation_note,
-                                tuple(_bounding_notices(args, engine)))
+                                tuple(_bounding_notices(args, engine))
+                                + start_notes)
                 + (f"\n\n{notices}" if notices else "")),
     ))
     try:
@@ -2736,6 +2794,74 @@ def cmd_skills(args: argparse.Namespace) -> int:
     return 2
 
 
+def _code_file_line(request_id: str) -> str:
+    """"code ABC-DEF ..." for a run with no terminal whose code file this
+    person can read, else "". Never under the agent-session marker: the
+    agent's shell is refused the file, and this is the same refusal."""
+    from . import approval_code as _code
+    from .approval_guard import inside_agent_session
+    if inside_agent_session():
+        return ""
+    code = _code.read_code_file(request_id)
+    if not code:
+        return ""
+    return (f"{_code.display(code)} (the session has no terminal; "
+            "approve/deny read it, no --code needed)")
+
+
+def _approval_code_for(args: argparse.Namespace):
+    """The one-time code for answering ``args.request_id`` from here.
+
+    Output: the normalised code from ``--code`` or typed at this
+    terminal; None when no code is asked for (nothing waits under the id,
+    the request predates codes or is exempt, or this very process asked
+    it); False, with the refusal printed and recorded, when one is needed
+    and none was given. The code is checked by the waiting process, not
+    here: this process does not know it.
+    """
+    from . import approval_code as _code
+    from . import file_confirm as _fc
+    from . import terminal_confirm as _tc
+    rid = str(getattr(args, "request_id", "") or "")
+    given = _code.normalize(getattr(args, "code", "") or "")
+    if given:
+        return given
+    record = None
+    for row in list(_fc.pending()) + list(_tc.pending_for_supervisors()):
+        if str(row.get("id") or "") == rid:
+            record = row
+            break
+    if record is None or not record.get("needs_code") or _code.code_for(rid):
+        return None
+    # A run with no terminal left its code in the deny-read code file.
+    # Only the person reaches here: cmd_approvals refused the marker first.
+    from .approval_guard import inside_agent_session
+    if not inside_agent_session():
+        from_file = _code.read_code_file(rid)
+        if from_file:
+            return from_file
+    try:
+        if sys.stdin.isatty():
+            typed = _code.normalize(input(
+                f"code shown by the session waiting on {rid}: "))
+            if typed:
+                return typed
+    except (EOFError, KeyboardInterrupt, OSError):
+        pass
+    try:
+        from .api_client import _record_security_event
+        _record_security_event(
+            "approval_code_missing", "approvals",
+            f"{rid}: an answer without the session's code was not written",
+            blocked=True)
+    except Exception:
+        pass
+    print(f"ERROR: answering {rid} needs the one-time code the waiting "
+          "session shows (its terminal, or its row in the dashboard); "
+          "pass it with --code", file=sys.stderr)
+    return False
+
+
 def cmd_approvals(args: argparse.Namespace) -> int:
     """The questions a headless session waits on, and the answers.
 
@@ -2771,6 +2897,11 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 "`delfin-agent approvals "
                 f"{action}` was run by an agent session"), file=sys.stderr)
             return 2
+        code = _approval_code_for(args)
+        if code is False:
+            return 2
+    else:
+        code = None
 
     if action == "answer":
         # A choice question (ask_user_question) published by a terminal
@@ -2781,7 +2912,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         from . import approval_answers as _ans
         who = os.environ.get("USER", "")
         try:
-            picks = _ans.answer(args.request_id, args.choice, by=who)
+            picks = _ans.answer(args.request_id, args.choice, by=who,
+                                code=code)
         except _ans.ChoiceError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
@@ -2796,7 +2928,7 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         # differently, which is one more dialog for the person here.
         reason = (getattr(args, "reason", "") or "") if action == "deny" else ""
         ok = _fc.answer(args.request_id, action == "approve", by=who,
-                        reason=reason)
+                        reason=reason, code=code)
         if not ok:
             # The same id may belong to a session waiting at a terminal.
             # Answering it here is the point of publishing it whole: the
@@ -2804,7 +2936,7 @@ def cmd_approvals(args: argparse.Namespace) -> int:
             from . import terminal_confirm as _tc
             ok = _tc.answer_waiting(args.request_id,
                                     action == "approve", by=who,
-                                    reason=reason)
+                                    reason=reason, code=code)
         if not ok:
             print(f"ERROR: nothing waiting with id {args.request_id!r}",
                   file=sys.stderr)
@@ -2822,6 +2954,11 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print(f"session {row.get('session_id', '')}")
                 print(f"tool    {row.get('tool', '')}")
                 print(f"path    {row.get('path', '')}")
+                if row.get("needs_code"):
+                    print("code    " + (
+                        _code_file_line(row["id"]) or
+                        "shown on that session's terminal; pass it with "
+                        "--code"))
                 print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s"
                       f" of {int(row.get('timeout_s') or 0)}s")
                 print()
@@ -2842,6 +2979,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 print(f"tool    {row.get('tool', '')}")
                 print(f"command {row.get('command', '')}")
                 print(f"waited  {int(_time.time() - float(row.get('asked_at') or 0))}s")
+                if row.get("needs_code"):
+                    print(f"code    shown at {where}; pass it with --code")
                 print(f"answer  here or at {where} — "
                       "whichever comes first")
                 print()
@@ -2889,6 +3028,9 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         subject = _ans.preview_line(
             row, max(10, width - len(head) - len(tail)))
         print((head + subject + tail)[:width])
+        code_line = _code_file_line(str(row.get("id") or ""))
+        if code_line:
+            print(f"{'':<25}code {code_line}")
     def _group(heading: str, group_rows: list) -> None:
         if not group_rows:
             return
@@ -4381,6 +4523,12 @@ def build_parser() -> argparse.ArgumentParser:
     appr_ans.add_argument(
         "choice", help="The pick: an option's number (2) or its text, "
                        "comma-separated when the question allows more")
+    for _p in (appr_ok, appr_no, appr_ans):
+        _p.add_argument(
+            "--code", default="",
+            help="The one-time code the waiting session shows (its "
+                 "terminal, its dashboard row); asked for on a terminal "
+                 "when left out")
     appr_watch = appr_sub.add_parser(
         "watch", help="One line per new request, as they arrive")
     appr_watch.add_argument("--seconds", type=float, default=0.0,

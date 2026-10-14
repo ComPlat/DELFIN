@@ -130,6 +130,13 @@ def append(
         # Audit must not crash the agent. If the user removed the home
         # dir or ran out of disk, the action proceeds without logging.
         pass
+    # The administrator's destination (managed_policy ``audit_log``), in
+    # addition to the user's own log; never rotated here.
+    try:
+        from .managed_policy import append_audit_line
+        append_audit_line(line)
+    except Exception:
+        pass
 
 
 def read_last_n(n: int = 100, *, log_path: Optional[Path] = None) -> list[dict]:

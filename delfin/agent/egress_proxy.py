@@ -101,6 +101,15 @@ def network_mode() -> str:
     global _MODE_AT_START
     mode = str(_settings().get("mode") or "proxy").strip().lower()
     mode = mode if mode in _MODE_ORDER else "proxy"
+    # A managed domain ceiling holds only behind the proxy, so "open" is
+    # not available under one (managed_policy.allowed_domains_max).
+    if mode == "open":
+        try:
+            from . import managed_policy as _mp
+            if _mp.network_ceiling_active():
+                mode = "proxy"
+        except Exception:
+            mode = "proxy"
     if _MODE_AT_START is None:
         _MODE_AT_START = mode
         return mode
@@ -464,6 +473,20 @@ class EgressProxy:
                 f"blocked by DELFIN's egress proxy: port {port} is not allowed "
                 f"(allowed: {', '.join(map(str, self.allowed_ports))}; "
                 "setting agent.sandbox_network.allowed_ports)"), False
+        # The administrator's ceiling comes before every user rule, known
+        # host and question: outside it nothing reaches the host. An
+        # unreadable trusted policy is handled (closed) by managed_policy;
+        # an error here keeps main's previous answer.
+        try:
+            from . import managed_policy as _mp
+            within = _mp.domain_within_max(host)
+        except Exception:
+            within = True
+        if not within:
+            return "deny", (
+                f"blocked by DELFIN's egress proxy: {host} is outside the "
+                "domains the administrator's managed policy allows "
+                "(network.allowed_domains_max); no user setting adds it"), False
         method = (method or "").upper()
         rule = self._rule_verdict(host, perms)
         if rule and rule[0] == "deny":
