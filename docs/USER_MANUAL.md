@@ -1446,6 +1446,20 @@ Rules in `~/.delfin_settings.json` decide single actions in advance, in every le
 - **allow** only answers a question DELFIN would otherwise ask you about that exact call: the command dialog, a read outside the workspace (that one read; no directory is opened for the session), the write dialog in `default`, an MCP tool with side effects. It never lifts a refusal: secrets, outside-workspace writes, a locked folder, the agent's own configuration and safety files, git settings that name a program, a push or pull request you did not ask for, an upload, a command you refused earlier, the deny patterns, all stay as they are.
 - An allow covers one plain command: a command with `;`, `&`, `|`, `<`, `>`, `` ` ``, `$`, brackets, braces, a backslash or a newline is never covered, nor one that runs another program from its words (`env …`, `xargs …`, `timeout …`, `sudo …`, `python -c …`, `sh -c …`, `perl -e …`). `bash(make)` covers exactly `make`; `bash(make:*)` covers `make test`.
 - A repository can only add friction: `deny` and `ask` in its `.delfin/settings.json` apply, its `allow` is ignored.
+- **Scope allow rules to a repository** (recommended). Under `"repos"` in the same `permissions` block, each entry's rules apply only in the repository it names:
+
+  <!-- recipe: not-runnable — a settings file excerpt; tests/test_allow_rules_apply_per_repository.py pins what it means -->
+  ```json
+  "permissions": {
+    "deny": ["bash(git push)"],
+    "repos": {
+      "github.com/me/analysis": {"allow": ["bash(pytest:*)"]},
+      "~/scratch/*":            {"allow": ["bash(make:*)"], "ask": ["write(data/**)"]}
+    }
+  }
+  ```
+
+  A key is written like an `agent.git_roles` key: `github.com/owner/repo` or any remote URL, compared with the workspace's origin push URL (else its only remote, else the checkout's top-level path); or an absolute or `~` path, with `*`/`?` a glob over the checkout's top-level directory, without them that directory and everything below it. The top-level `deny` and `ask` apply in every repository. The top-level `allow` also still applies in every repository, and each start names those rules with a one-line notice: set `"global_allow": true` to keep them without the notice, or `"global_allow": false` to turn them off and rely on `repos` alone. `/permissions` names the repository of the workspace and, for every allow, the repository it applies in (`every repository` for the top-level list), and lists the entries for other repositories; `delfin-agent capabilities` shows the same.
 - A rule that cannot be read grants nothing. Broken rules, and rules naming a tool that does not exist, are listed when the terminal starts; a broken deny or ask is marked `ERROR`.
 - `/permissions` in the terminal shows the level, every rule in force with its file, and what is not in force; `/permissions rules` shows the rules alone. You edit the file yourself: the agent cannot write it from any tool or command.
 - On the CLI backend, deny and ask apply to its tools through the same hook that keeps its file boundary; allow is not used there.
@@ -1618,7 +1632,7 @@ Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
 
 | Group | Commands |
 |-------|----------|
-| Session | `/help` `/status` `/cost` `/usage` `/context` `/compact` `/export` `/undo` `/clear` |
+| Session | `/help` `/status` `/cost` `/usage` `/context` `/compact` `/export` `/undo` `/bug` `/clear` |
 | Setup | `/model` `/mode` `/permissions` `/effort` `/doctor` `/init` `/mcp` `/trust` `/tools` `/agents` `/skills` |
 | History | `/session` `/rewind` `/tasks` `/memories` `/plans` |
 | Changes | `/pending` `/approve` `/reject` `/undo-file` |
@@ -1626,6 +1640,22 @@ Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
 | DELFIN (dashboard) | `/control key <key> <value>` · `/orca set` · `/calc ls\|read\|info\|tree` · `/analyze energy\|convergence\|errors` · `/recalc check-all\|auto` · `/submit` `/cancel` |
 
 `!` runs a shell command directly. A markdown file in `~/.delfin/commands/` (user-wide) or `<workspace>/.delfin/commands/` (project) becomes a slash command of its own; placeholders `$ARGUMENTS`, `$1`, `$2` are substituted. A **skill** (`~/.delfin/skills/<name>/SKILL.md`) can be invoked by you or chosen by the model; DELFIN ships skills for diagnosing a failed run, recalculating one, setting up TD-DFT and CASSCF, frequency thermochemistry, solvation, and tuning CONTROL.
+
+### Reporting a bug
+
+The dashboard has a **Bug Report** button. In the terminal, type `/bug` followed by one line saying what went wrong (or type `/bug` alone and you are asked for it). DELFIN lists what the report will contain (message, tool-call and refused-command counts, model, provider, mode, session, size) and where it will be written, and asks `File this report? [y/N]`. Anything but `y` writes nothing.
+
+For a session that has already ended, file it from a shell:
+
+```bash
+delfin-agent bug report --session latest -m "the plot came back empty"
+```
+
+`--session` takes `latest` (the newest session of the current directory, or of `--workspace`), a session id, or the first characters of one as `/session ls` prints them. Without `--yes` the same preview and question come first; with no terminal to ask on, `--yes` is required.
+
+All three ways write the same report: conversation, engine messages, tool trace, turn and request timings, refused commands, model/provider/mode/effort/permissions, an allow-listed settings excerpt, versions and git head. Each report records which way it came (`dashboard`, `terminal` or `cli`), and `delfin-agent bug ls` shows it. Before anything is written, every credential DELFIN holds (credential file, keyring, the well-known key variables in the environment) and anything shaped like a key, token or password is redacted; a `REDACTIONS.txt` in the report says how many.
+
+Reports go to `$DELFIN_BUG_ARCHIVE` if set, else to `agent.bug_archive_dir` in `~/.delfin_settings.json`, else to `~/.delfin/agent_bugs`. To send reports to your group's maintainers, point either one at the shared archive directory, for example `"agent": {"bug_archive_dir": "/path/to/shared/AGENT_BUGS"}`. When a transfer target is configured (`transfer.host`, `transfer.remote_path`), the report is also copied there over SSH; the local copy is always kept.
 
 ### MCP servers
 
@@ -1635,6 +1665,19 @@ A tool reached through MCP runs in a process DELFIN did not start a command line
 
 DELFIN ships three servers of its own: `delfin-tools-server` (the tool platform), `delfin-docs-server` (literature and calculation search) and `delfin-ops-server` (typed runtime actions). They can take their roots from your settings with `agent.mcp_isolation: "builtin"`.
 
+### Tool groups per workspace
+
+Two groups of tools are offered only where they apply, because every tool's description is sent with every request:
+
+| Group | Tools | Offered when |
+|-------|-------|--------------|
+| `chemistry` | the `delfin-ops` and `delfin-tools` server tools, `show_molecule` | the workspace is a DELFIN checkout, the session has a calculation folder (dashboard), or the workspace holds chemistry files within three folder levels (`.xyz`, `.gbw`, `.hess`, `CONTROL.txt`, ORCA/xTB/Gaussian output) |
+| `office` | `read_document`, `edit_sheet`, `create_docx`, `fill_pdf_form`, `merge_pdfs` and the other document tools | a DELFIN checkout, Office mode, or documents in the workspace (`.xlsx`, `.docx`, `.pdf`, `.ods` …) |
+
+The prompt text that describes a group follows it: the ORCA routing table and DELFIN's own conventions appear only with the chemistry group, and the verification advice matches the project's language (Python, JavaScript/TypeScript, Rust, Go). On a code repository outside DELFIN this makes each request about 10,600 tokens smaller.
+
+The decision is taken once, at the first message of a session, so the prompt stays identical from turn to turn. `/tools groups` shows it, with the reason. `/tools enable chemistry` (or `office`) adds a group from the next message on; a group is never taken away during a session, and a resumed conversation that already used one of its tools keeps it. To decide for every session, set `agent.toolsets` in your settings, for example `{"chemistry": "on", "office": "auto"}`; `"off"` hides a group even in a DELFIN checkout.
+
 ### Seeing what runs, and stopping it
 
 ```bash
@@ -1642,7 +1685,17 @@ delfin-agent stop-all --check    # what is open, kept, scheduled or running; cha
 delfin-agent sessions            # earlier sessions: id, age, model, task
 delfin-agent where               # which node the dashboard runs on, and how to get back in
 delfin-agent jobs                # watched cluster jobs
+delfin-agent ops status          # checkouts, dashboard servers, session locks, leftovers; changes nothing
 ```
+
+`ops status` is the first thing to run when the dashboard or the agent behaves oddly around git or sessions (a branch switch that fails, a save that is refused, a git command that reports a lock). It lists:
+
+- **Checkouts:** the main checkout and every worktree, each with its branch, or `detached @ <sha> (from <branch>, held by <path>)`, clean or dirty, ahead/behind its upstream as of the last fetch, and its kind (main, session worktree under `.delfin/worktrees`, agent worktree, other). A worktree whose directory is gone is marked stale.
+- **Dashboard servers** of yours on this machine: port, the checkout it runs from, its reload grace (90 s by default), and its kernels, with the kept session or running turn that exempts a kernel from the grace.
+- **Sessions:** writer locks (live, stale, or held on another node), kept sessions.
+- **Leftovers:** `index.lock` files and whether a git process of yours is working in that checkout, stale session locks, agent worktrees that nothing uses and that hold nothing outside the main branch.
+
+Every problem ends in one line `problem → safe next step`, for example `main is held by <path>; this dashboard (pid N) runs detached at the same commit → to take the name here: git -C <path> checkout --detach, then git -C <here> switch main`. The command only prints; the steps are yours to run. `--json` prints the same as JSON (schema `delfin.ops_status/1`), `--repo <checkout>` inspects another repository. The agent may run it without asking in every mode that runs shell commands (plan mode runs none); a `--repo` outside its workspace still needs the usual read permission. Inside a sandbox that has its own process namespace, the process list is limited to that sandbox, and the output says so.
 
 `stop-all --check` reads open dashboard sessions, kept sessions, schedules and PID files from the **shared home**, so they are visible from any login node; **agent processes** it can only see on the machine you run it on. Run it on every login node you have used.
 

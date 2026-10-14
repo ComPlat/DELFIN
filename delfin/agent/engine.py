@@ -527,6 +527,11 @@ class AgentEngine:
             _ws = getattr(self.kit_permissions, "workspace", None)
             self.loader.workspace_root = Path(_ws) if _ws else Path(self.repo_dir)
             self.loader.is_delfin_workspace = self._is_delfin_workspace
+            # A getter, not the object: the permissions can be replaced
+            # after construction, and the prompt must follow the ones the
+            # tool list is filtered by.
+            self.loader.toolsets = lambda: getattr(
+                self.kit_permissions, "toolsets", None)
         except Exception:
             self.loader.workspace_root = None
         # Inject-once gating of stable prompt sections is only sound on the
@@ -2223,6 +2228,31 @@ class AgentEngine:
             "correction is about something else, do what the user asked "
             "and leave the skill alone.")
 
+    def _note_repo_errors(self, user_message: str) -> None:
+        """Set this turn's pointer to the git-errors skill, or clear it.
+
+        Input: the message that opens the turn. Output: none; the text
+        ``_build_repo_errors_block`` returns for this turn. Empty unless
+        the message names one of the skill's error texts or asks about
+        checkouts, worktrees, the dashboard's branch or ports, or a pull
+        request (``repo_error_hints.user_hint``), and empty in a session
+        that reads no skills. Cost: about 60 tokens in the turn's tail,
+        only in a turn that matched.
+        """
+        self._repo_errors_hint = ""
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and getattr(perms, "skip_skill_discovery", False):
+            return
+        try:
+            from .repo_error_hints import user_hint
+            self._repo_errors_hint = user_hint(user_message or "")
+        except Exception:
+            self._repo_errors_hint = ""
+
+    def _build_repo_errors_block(self) -> str:
+        """This turn's pointer to the git-errors skill (may be empty)."""
+        return str(getattr(self, "_repo_errors_hint", "") or "")
+
     def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
         """Say it mid-turn when a write lands outside the pinned directory.
 
@@ -2378,6 +2408,7 @@ class AgentEngine:
         pairs.append(("answered", self._build_answered_attention_block()))
         pairs.append(("skill_correction",
                       self._build_skill_correction_block()))
+        pairs.append(("repo_errors", self._build_repo_errors_block()))
         # One-time backend capability notice: reduced surfaces (no tool
         # loop, no verify enforcement, ...) are stated at session start
         # instead of failing silently mid-task. Best-effort — a missing
@@ -2960,6 +2991,9 @@ class AgentEngine:
             # Per turn: does what was just typed correct a skill the turn
             # before it used? Judged here, where a real turn begins.
             self._note_skill_correction(user_message or "")
+            # Per turn: does the message name a repository error or ask
+            # about DELFIN's checkouts? Then the turn points at git-errors.
+            self._note_repo_errors(user_message or "")
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -7821,6 +7855,12 @@ class AgentEngine:
         # from outside afterwards; the headless path did not, so a headless
         # resume filtered tasks on a throwaway id and saw zero open tasks.
         self._sync_task_session()
+        # The compaction record the session was saved with. The save guard
+        # treats a record that differs from the stored one as the
+        # explanation for a shorter history, so a resumed engine holding
+        # None against a stored record would let any shorter save pass.
+        _lci = data.get("last_compaction_info")
+        self.last_compaction_info = dict(_lci) if isinstance(_lci, dict) else None
 
         s_restored, s_missing, s_failed = self._load_declared_fields(
             data, section="state")

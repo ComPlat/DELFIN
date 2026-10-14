@@ -45,6 +45,9 @@ _FALLBACK_DIR = Path.home() / ".delfin" / "agent_bugs"
 # Conventional sub-folder appended to the configured transfer remote_path
 # when no explicit bug archive is set.
 _BUG_SUBDIR = "AGENT_BUGS"
+#: The entry points a report can be filed through, recorded per report so
+#: triage can tell a terminal session from a dashboard one.
+SURFACES = ("dashboard", "terminal", "cli")
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Caps for bundling referenced workspace files into a report — keep
@@ -424,16 +427,32 @@ def _guarded_write(path: Path, text: str) -> int:
     """
     guarded = text
     findings: list = []
+    exact = 0
+    # Exact values first: the credentials DELFIN holds (file store, keyring,
+    # well-known env variables). A KIT key has no prefix, so the shape
+    # checks below pass it unchanged; before this pass a key the user
+    # pasted, or one a tool printed, reached the shared archive verbatim.
+    # Same source as scrub_secrets and the web egress check.
+    try:
+        from .web_tools import _known_secret_values
+        for secret in sorted(set(_known_secret_values()), key=len,
+                             reverse=True):
+            n = guarded.count(secret)
+            if n:
+                guarded = guarded.replace(secret, "[redacted:credential]")
+                exact += n
+    except Exception:
+        pass
     try:
         from .output_guard import run_output_guards
-        result = run_output_guards(text)
+        result = run_output_guards(guarded)
         guarded = result.text
         findings = [f for f in result.findings
                     if f.get("check") == "secret_redaction"]
     except Exception:
-        guarded = text
+        pass
     path.write_text(guarded, encoding="utf-8")
-    return len(findings)
+    return exact + len(findings)
 
 
 def _report_dirname(user: str, session_id: str) -> str:
@@ -462,7 +481,8 @@ def _render_markdown(
     # Human report shows the USER-FACING mode name ("Code"), not the internal id
     # ("solo") — the raw value stays in report.json for maintainer tooling.
     _mode_display = {"solo": "Code", "dashboard": "Dashboard", "office": "Office", "research": "Research"}
-    for key in ("created_at", "user", "host", "mode", "provider", "model",
+    for key in ("created_at", "surface", "user", "host", "mode",
+                "provider", "model",
                 "effort", "perms", "backend", "role", "session_id",
                 "workspace", "input_tokens", "output_tokens", "cost_usd",
                 "delfin_version", "git_head", "python"):
@@ -571,6 +591,7 @@ def write_bug_report(
     extra: dict | None = None,
     settings: dict | None = None,
     archive_dir: str | Path | None = None,
+    surface: str = "",
 ) -> Path:
     """Write a self-contained bug report and return its directory.
 
@@ -582,6 +603,10 @@ def write_bug_report(
     ``referenced_files`` entries (raw tool-input strings) resolve against
     it before falling back to the report-writer's CWD (legacy).  When
     omitted, behaviour is unchanged (cwd-relative only).
+
+    ``surface`` names the entry point that filed it (one of
+    :data:`SURFACES`); empty is recorded as ``dashboard``, the only
+    writer before the field existed.
     """
     user = _current_user()
     root = Path(archive_dir).expanduser() if archive_dir else resolve_archive_dir(settings)
@@ -625,6 +650,7 @@ def write_bug_report(
 
     meta: dict[str, Any] = {
         "schema": "delfin-bug-report/1",
+        "surface": surface if surface in SURFACES else "dashboard",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user": user,
         "host": socket.gethostname(),
@@ -869,6 +895,15 @@ def push_report_to_remote(
 _TASK_DRAFTS_DIR = Path.home() / ".delfin" / "bug_tasks"
 
 
+def report_surface(report: dict) -> str:
+    """Which entry point filed *report*: ``dashboard``, ``terminal`` (the
+    REPL's /bug) or ``cli`` (``delfin-agent bug report``). A report
+    without the field predates it and came from the dashboard button, the
+    only writer at the time."""
+    value = str((report or {}).get("surface") or "").strip()
+    return value if value in SURFACES else "dashboard"
+
+
 def load_report(report_dir: str | Path) -> dict:
     """Load a report.json from a report directory (or the file itself)."""
     p = Path(report_dir).expanduser()
@@ -902,6 +937,7 @@ def list_reports(archive_dir: str | Path | None = None) -> list[dict]:
             "name": d.name,
             "path": str(d),
             "created_at": meta.get("created_at", ""),
+            "surface": report_surface(meta),
             "user": meta.get("user", ""),
             "mode": meta.get("mode", ""),
             "model": meta.get("model", ""),
