@@ -242,9 +242,14 @@ def test_a_steer_that_comes_after_the_answer_goes_out_next(tmp_path):
                 _, end = w.wait_for("turn.ended", after=start)
                 _, nxt = w.wait_for("turn.ended", after=end + 1, timeout=20)
             else:
-                assert got.get("queued")
+                # Queued behind the ending turn, or -- when the turn had
+                # already ended -- an ordinary message, handled next. Either
+                # way it is the next turn's.
+                assert got.get("queued") or got == {"accepted": True}
                 _, end = w.wait_for("turn.ended", after=start)
                 _, nxt = w.wait_for("turn.ended", after=end + 1, timeout=20)
+                said = [e["text"] for e in w.events[end:nxt] if e["type"] == "user.message"]
+                assert f"late steer {n}" in said or got.get("queued")
             _wait_idle(w, nxt)
             # Nothing of it is left to surface in an unrelated turn.
             s, e = w.turn("steer test")

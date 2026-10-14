@@ -47,7 +47,9 @@ def test_a_steered_message_reaches_the_running_turn(tmp_path):
         for n in range(5):
             start = len(w.events)
             w.request("session.prompt", {"text": "steer test"})
-            w.wait_for("turn.started", after=start)
+            # A steer is taken while the model's turn is live: from its
+            # first words on (before them it is queued, by design).
+            w.wait_for("text.delta", after=start)
             got = w.request("session.prompt", {"text": f"use the SMD model {n}",
                                                "how": "steer"})
             assert got["steered"] is True
