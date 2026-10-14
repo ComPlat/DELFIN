@@ -62,6 +62,9 @@ clean up on the VM. Each item says why it could not be closed here.
      The REPL does the same. `-P` in their args (Python 3.11+) closes it;
      the service and its workers now start in the runtime directory for
      the same reason (3475a86c);
+   - `--fork-session` resumes the original instead: `cli._open_session`
+     reads `session_store.fork_session`'s answer as a dict (it is the new
+     id), falls back, and leaves the fork's file behind;
    - tests that build an agent engine leave its MCP servers running when
      they end: one full run left 20 of them (from `test_mcp_http`,
      `test_the_rules_can_change_while_the_agent_works`,
@@ -100,8 +103,10 @@ clean up on the VM. Each item says why it could not be closed here.
     Nothing of yours was touched.
     Still running, not stopped here (the stop was not permitted in this
     session): 24 processes DELFIN's own test suite left on 2026-10-13
-    (20 MCP servers, three multiprocessing helpers, a jedi subprocess;
-    orphans under systemd --user, idle).
+    (20 MCP servers, three multiprocessing helpers, a jedi subprocess) and
+    two windows of the phase-0 spike (`bun spike/inline.tsx`), orphans
+    under systemd --user, idle. 250 stale tmux sockets of the test runs
+    were removed from `/tmp/tmux-1000`.
     `python3 /home/jonas/project/.scratch-tui/final/stop_test_leftovers.py`
     lists them, `--stop` ends them (each pid is checked again first); a
     reboot ends them too.

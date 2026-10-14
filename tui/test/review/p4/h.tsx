@@ -9,6 +9,7 @@ import { startSessionView } from "../../../src/session"
 import { ensureSession } from "../../../src/store/state"
 import { createAppStore } from "../../../src/store/store"
 import { DARK } from "../../../src/theme/theme"
+import { ungutter, ungutterFrame } from "../../gutter"
 
 export const FIXTURE = await Bun.file(`${import.meta.dir}/../../fixtures/fake-conversation.json`).json()
 
@@ -63,9 +64,9 @@ export async function mount(options: {
   }
   const footer = () => {
     const frame = t.captureCharFrame().split("\n")
-    return frame.slice(frame.length - t.renderer.footerHeight - 1)
+    return frame.slice(frame.length - t.renderer.footerHeight - 1).map(ungutter)
   }
-  const frame = () => t.captureCharFrame()
+  const frame = () => ungutterFrame(t.captureCharFrame())
   const escape = async () => {
     t.mockInput.pressEscape()
     await Bun.sleep(40)

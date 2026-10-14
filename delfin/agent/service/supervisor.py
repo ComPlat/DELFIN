@@ -112,7 +112,7 @@ SLEEP_AFTER_S = 3600.0
 DORMANT_KEEP_S = 7 * 86400.0
 
 #: The create settings a session is resumed with.
-RESUME_SETTINGS = ("cwd", "name", "model", "provider", "effort", "mode", "permissionMode",
+RESUME_SETTINGS = ("cwd", "name", "title", "model", "provider", "effort", "mode", "permissionMode",
                    "addDirs", "readDirs", "isolate", "noIsolate", "fake", "fakeDelay")
 
 #: How long a wake waits for the worker of a service that died to finish
@@ -426,7 +426,8 @@ class Session:
     # -- what windows see ---------------------------------------------------------------
     def summary(self) -> dict:
         return {"sessionId": self.id,
-                "title": self.info.get("title") or self.settings.get("name") or None,
+                "title": (self.info.get("title") or self.settings.get("title")
+                          or self.settings.get("name") or None),
                 "workspace": self.info.get("workspace") or self.settings.get("cwd", ""),
                 "provider": self.info.get("provider", ""),
                 "model": self.info.get("model", ""),
@@ -452,8 +453,9 @@ class Session:
                if k in RESUME_SETTINGS and v not in (None, "", [])}
         out["cwd"] = str(self.settings.get("cwd") or self.info.get("workspace") or "")
         # Renamed, or switched to another effort or agent mode since it
-        # started: it wakes as it is.
-        for key, info_key in (("name", "title"), ("effort", "effort"), ("mode", "mode")):
+        # started: it wakes as it is -- under the address it started with
+        # (``name``), called what it is called now (``title``).
+        for key, info_key in (("title", "title"), ("effort", "effort"), ("mode", "mode")):
             if self.info.get(info_key):
                 out[key] = str(self.info[info_key])
         approval = str(self.info.get("approval") or "")
@@ -859,13 +861,21 @@ class Supervisor:
                 return {"state": "sleeping", "approval": record["summary"].get("approval", ""),
                         "queued": 0}
             if method == "session.setTitle":
-                # Cut as the worker cuts it (its _m_session_setTitle).
-                title = " ".join(str(rest.get("title") or "").split())[:80]
+                # Kept as the worker keeps it (its _m_session_setTitle): the
+                # title changes, the address does not.
+                title = protocol.clean_title(rest.get("title"))
                 if not title:
                     raise _Refusal(protocol.INVALID_PARAMS, "a name needs some text")
                 record["summary"]["title"] = title
-                record["settings"]["name"] = title
+                record["settings"]["title"] = title
                 self._make_dormant(record)
+                # Saved under it too: stopped before it wakes, the session
+                # is still resumed by that name later.
+                try:
+                    from .. import session_store
+                    await asyncio.to_thread(session_store.rename_session, sid, title)
+                except Exception:
+                    pass
                 return {"title": title}
             if method == "session.setMode" and str(rest.get("mode") or "") in ("plan", "default", "acceptEdits"):
                 record["summary"]["approval"] = str(rest["mode"])
@@ -956,7 +966,7 @@ class Supervisor:
 
     async def _create(self, client: Client, params: dict, cwd: Path) -> dict:
         args = [*self.worker_cmd, "--cwd", str(cwd)]
-        for key, flag in (("name", "-n"), ("model", "--model"),
+        for key, flag in (("name", "-n"), ("title", "--title"), ("model", "--model"),
                           ("provider", "--provider"), ("effort", "--effort"),
                           ("mode", "--mode"), ("permissionMode", "--permission-mode"),
                           ("resume", "--resume")):

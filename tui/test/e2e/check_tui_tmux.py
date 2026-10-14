@@ -97,7 +97,13 @@ def main() -> int:
             problems.append(f"the window did not leave cleanly: {exited and exited.group(1)}")
         history = tmux.history().replace(str(ws), WORKSPACE)
         (tmp / "history.txt").write_text(history)
-        start = history.find("◆ DELFIN")
+        # The banner's first row: the dolphin's, the line above its words
+        # (the words alone, under ◆, in a narrow window).
+        words = history.find("DELFIN  ")
+        line = history.rfind("\n", 0, words) + 1
+        start = line if "◆" in history[line:words] or words < 0 else history.rfind("\n", 0, line - 1) + 1
+        if words < 0:
+            start = -1
         ends = [m.end() for m in re.finditer(r"[✓✗] \d+\.\ds · ↑\S+ ↓\S+", history)]
         shown = normalise(history[start:ends[-1]]) if start >= 0 and ends else ""
         if shown != expected:

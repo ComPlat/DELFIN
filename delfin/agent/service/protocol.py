@@ -190,7 +190,11 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "hello": {"protocolVersion": "integer", "client": "string?"},
     "sessions.list": {},
     # Start a session: a worker with these settings (chat's own flags).
-    "session.create": {"cwd": "string", "name": "string?", "model": "string?",
+    # name: the address the session is reached by (`-n`: mail, approvals,
+    # presence) for its whole life; title: what it is called (`/rename`),
+    # the name when not given.
+    "session.create": {"cwd": "string", "name": "string?", "title": "string?",
+                       "model": "string?",
                        "provider": "string?", "effort": "string?",
                        "mode": "string?", "permissionMode": "string?",
                        "resume": "string?", "continue": "boolean?",
@@ -288,6 +292,24 @@ DURABLE_EVENTS = frozenset({
 # ---------------------------------------------------------------------------
 # Building messages
 # ---------------------------------------------------------------------------
+
+#: The longest session title: what the session store keeps of one.
+TITLE_MAX = 80
+
+
+def clean_title(text: Any) -> str:
+    """A session title as it is kept: one line, control and invisible
+    characters (escapes, zero-width marks) made spaces, single spaces, at
+    most TITLE_MAX characters. "" when nothing printable is left."""
+    import re
+    import unicodedata
+
+    # Whole escape sequences first (a colour, a title, a cursor move), then
+    # any control character left.
+    plain = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|.?)", " ", str(text or ""))
+    chars = [" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch for ch in plain]
+    return " ".join("".join(chars).split())[:TITLE_MAX].rstrip()
+
 
 def request(msg_id: int | str, method: str, params: dict | None = None) -> dict:
     return {"jsonrpc": "2.0", "id": msg_id, "method": method,

@@ -19,7 +19,7 @@
  * session first) and the selection follows its session, so the list does
  * not move under the cursor while sessions work.
  */
-import { TextAttributes, type KeyEvent } from "@opentui/core"
+import type { KeyEvent } from "@opentui/core"
 import { For, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import type { Keymap } from "../keymap/keymap"
@@ -450,7 +450,7 @@ export function AgentViewPanel(props: { view: AgentView; theme: () => Theme; wid
   return (
     <box flexDirection="column" height={props.height()} flexShrink={0}>
       <text wrapMode="none">
-        <span style={{ fg: t().accent, attributes: TextAttributes.BOLD }}>{"◆ AGENTS  "}</span>
+        <span style={{ fg: t().accent, bold: true }}>{"◆ AGENTS  "}</span>
         <span style={{ fg: t().muted }}>{summary()}</span>
       </text>
       <For each={lines()}>
@@ -473,7 +473,7 @@ export function AgentViewPanel(props: { view: AgentView; theme: () => Theme; wid
             <text wrapMode="none">
               <span style={{ fg: on ? t().accent : t().faint }}>{on ? " › " : "   "}</span>
               <span style={{ fg: tone(row) }}>{glyph(row) + " "}</span>
-              <span style={{ fg: on ? t().bright : t().text, attributes: on || row.current ? TextAttributes.BOLD : 0 }}>{name()}</span>
+              <span style={{ fg: on ? t().bright : t().text, bold: Boolean(on || row.current) }}>{name()}</span>
               <span style={{ fg: armed() ? t().warn : renaming() ? t().accent : t().muted }}>{"  " + fit(activity(), room()).padEnd(room())}</span>
               <span style={{ fg: t().faint }}>{right ? "  " + right : ""}</span>
             </text>

@@ -378,6 +378,7 @@ export interface SessionsListParams {}
 export interface SessionCreateParams {
   "cwd": string
   "name"?: string | null
+  "title"?: string | null
   "model"?: string | null
   "provider"?: string | null
   "effort"?: string | null

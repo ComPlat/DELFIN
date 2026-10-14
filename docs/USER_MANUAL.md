@@ -1488,7 +1488,13 @@ ctrl+t toggles the task list, ↑/↓ and ctrl+r search the history, tab
 completes `/commands` and `@paths`, ctrl+l writes the session again. ctrl+p
 opens the command palette, with pickers for the model, the posture, the
 effort, the mode and a session to resume. `/keys` lists every key; `/editor`
-edits the prompt in `$EDITOR`. A question (an approval, a plan, a choice)
+edits the prompt in `$EDITOR`. `/rename <name>` names the session (without
+a name: after the opening words of its first prompt) -- the name stands on
+the prompt box's border, in the agent view and in the terminal's title,
+and the session is saved under it; the address other sessions and
+`delfin-agent message` reach it by stays the one it started with (`-n`,
+or its id). The approval posture shows at the bottom in a colour of its
+own: ⏸ plan, ⏵⏵ accept edits. A question (an approval, a plan, a choice)
 takes the keys the REPL offers for it (`y n A k R e a`, `?` explains them,
 `N` refuses with a reason).
 

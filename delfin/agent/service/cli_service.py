@@ -45,12 +45,18 @@ def _start_settings(args: argparse.Namespace) -> dict:
 
 def _security_preamble() -> None:
     """What `delfin-agent` chat does before a session, said before the TUI
-    takes the terminal: the principles check, security notices, and an
-    exported provider key put away (cli.main's own steps)."""
+    takes the terminal: security notices, and an exported provider key put
+    away (cli.main's own steps).
+
+    Not the principles check: it costs every launch 80 ms (it reads the
+    digest's copy in api_client), and it is made where it protects -- the
+    agent service checks at its start, each session's worker at its own,
+    and every agent where it is born (AgentEngine.__init__). A window over
+    tampered principles opens, and its session says why it cannot start.
+    """
     from .. import cli as _cli
     from .. import process_guard as _process_guard
 
-    _cli.guard_principles_or_exit()
     try:
         _cli._show_security_notices()
     except Exception:

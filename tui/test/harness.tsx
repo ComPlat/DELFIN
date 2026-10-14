@@ -13,6 +13,7 @@ import { startSessionView } from "../src/session"
 import { ensureSession } from "../src/store/state"
 import { createAppStore } from "../src/store/store"
 import { DARK } from "../src/theme/theme"
+import { ungutter } from "./gutter"
 
 export const FIXTURE = await Bun.file(`${import.meta.dir}/fixtures/fake-conversation.json`).json()
 
@@ -69,7 +70,7 @@ export async function mountWindow(options: {
   }
   const footer = () => {
     const frame = t.captureCharFrame().split("\n")
-    return frame.slice(frame.length - t.renderer.footerHeight - 1)
+    return frame.slice(frame.length - t.renderer.footerHeight - 1).map(ungutter)
   }
   const close = async () => {
     view.stop()

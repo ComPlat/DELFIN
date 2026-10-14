@@ -22,8 +22,8 @@ import { AgentViewPanel, agentHelp, type AgentView } from "../agents/view"
 import { ComposerView, type Composer } from "../composer/composer"
 import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
-import { SPINNER, markdownStyles, type Theme } from "../theme/theme"
-import { fit } from "../text"
+import { GUTTER, SPINNER, markdownStyles, postureLook, type Theme } from "../theme/theme"
+import { fit, width } from "../text"
 import { ApprovalPanel, approvalRows, type ApprovalUi } from "./approval"
 import { PickerView, type Picker } from "./picker"
 
@@ -80,7 +80,7 @@ export function footerRows(s: SessionState | null, term: { width: number; height
   // With a question open the turn waits: its tail is empty (a question
   // closes the text part), and the panel has the room.
   if (s && !asked) rows += tailRows(s.tail)
-  rows += approvalRows(asked, approval?.state ?? null, term.width,
+  rows += approvalRows(asked, approval?.state ?? null, term.width - GUTTER,
                        approvalBudget(s, term, message, composerRows, pickerRows))
   return Math.max(4, Math.min(rows, Math.max(4, term.height - 1)))
 }
@@ -156,8 +156,21 @@ export function Footer(props: FooterProps): JSX.Element {
 
   const style = createMemo(() => SyntaxStyle.fromStyles(markdownStyles(t()), props.renderer.nativeScene!))
   const asked = () => props.session()?.pending[0]
-  const cols = () => Math.max(10, term().width)
+  // What the footer draws in: the terminal's width less the gutter at the
+  // left; every line is cut a column short of the right edge as well.
+  const cols = () => Math.max(10, term().width - GUTTER)
   const rule = () => "─".repeat(Math.max(1, cols() - 1))
+  /** The prompt box's top border, with the session's name on it at the
+   *  right (/rename, -n), as Claude Code shows it; not in the agent view,
+   *  whose box is for another session. */
+  const topRule = () => {
+    const s = props.session()
+    const name = viewOpen() ? "" : (s?.title || s?.summary?.title || "")
+    const total = Math.max(1, cols() - 1)
+    if (!name || total < 12) return { left: rule(), chip: "", right: "" }
+    const chip = ` ${fit(name, Math.max(4, Math.floor(total / 2)))} `
+    return { left: "─".repeat(Math.max(1, total - width(chip) - 1)), chip, right: "─" }
+  }
 
   createEffect(() => {
     props.renderer.footerHeight = viewOpen() && !props.agentsOnOwnScreen
@@ -207,7 +220,8 @@ export function Footer(props: FooterProps): JSX.Element {
   }
 
   return (
-    <box flexDirection="column" width="100%" height="100%" justifyContent="flex-end" overflow="hidden">
+    <box flexDirection="column" width="100%" height="100%" justifyContent="flex-end" overflow="hidden"
+         paddingLeft={GUTTER}>
       <Show when={viewOpen()}>
         <AgentViewPanel view={props.agents!} theme={t} width={cols} height={panelRows} tick={tick} now={clock}
                         keymap={props.keymap} />
@@ -240,11 +254,20 @@ export function Footer(props: FooterProps): JSX.Element {
         <PickerView picker={props.picker!} theme={t} width={cols} />
       </Show>
       </Show>
-      <text flexShrink={0} fg={t().faint} wrapMode="none">{rule()}</text>
+      <text flexShrink={0} wrapMode="none">
+        <span style={{ fg: t().faint }}>{topRule().left}</span>
+        <span style={{ fg: t().accentSoft }}>{topRule().chip}</span>
+        <span style={{ fg: t().faint }}>{topRule().right}</span>
+      </text>
       <ComposerView
         composer={props.composer}
         theme={t}
         width={cols}
+        mark={() => {
+          // The prompt marker in the posture's colour (plan, accept edits).
+          const look = postureLook(viewOpen() ? "" : props.session()?.approval ?? "", t())
+          return look.marked ? look.color : t().accent
+        }}
         focused={() => props.focused() && (viewOpen() || !asked())}
         pasteActive={() => props.focused() && (viewOpen() || !asked())}
         placeholder={placeholder}
@@ -263,24 +286,40 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
     const n = props.othersWaiting?.() ?? 0
     return n ? `  ◉ ${n} waiting` : ""
   }
-  const text = () => {
-    if (props.agents?.state.open) return "  " + agentHelp(props.agents, props.keymap, props.cols() - 3)
+  /** The line in three parts -- what is wrong first, then the posture in
+   *  its colour, then the model and the keys -- cut from the right. */
+  const line = createMemo(() => {
+    const room = Math.max(0, props.cols() - 1 - width(badge()))
+    if (props.agents?.state.open) {
+      return { lead: fit("  " + agentHelp(props.agents, props.keymap, props.cols() - 3), room), posture: null, rest: "" }
+    }
     const s = props.session()
-    const parts: string[] = []
+    const lead: string[] = []
     const conn = props.connection()
-    if (conn !== "up") parts.push(conn === "reconnecting" ? "reconnecting to the agent service…" : conn)
-    if (props.starting?.()) parts.push("starting the session…")
-    if (s?.state === "ended") parts.push("session ended")
-    if (s?.approval) parts.push(s.approval)
-    if (s?.model) parts.push(s.model)
-    if (s?.usage.costUsd && !s.turn) parts.push(`$${s.usage.costUsd.toFixed(4)}`)
-    parts.push(`${props.keymap.label("cycleMode")} mode`, `${props.keymap.label("agents")} agents`)
-    return fit((badge() ? "  · " : "  ") + parts.join(" · "), Math.max(0, props.cols() - 1 - badge().length))
-  }
+    if (conn !== "up") lead.push(conn === "reconnecting" ? "reconnecting to the agent service…" : conn)
+    if (props.starting?.()) lead.push("starting the session…")
+    if (s?.state === "ended") lead.push("session ended")
+    const rest: string[] = []
+    if (s?.model) rest.push(s.model)
+    if (s?.usage.costUsd && !s.turn) rest.push(`$${s.usage.costUsd.toFixed(4)}`)
+    rest.push(`${props.keymap.label("cycleMode")} mode`, `${props.keymap.label("agents")} agents`)
+    const look = s?.approval ? postureLook(s.approval, t()) : null
+    const head = (badge() ? "  · " : "  ") + lead.map((part) => `${part} · `).join("")
+    if (!look) return { lead: fit(head + rest.join(" · "), room), posture: null, rest: "" }
+    // The posture keeps its room: a note before it is cut first.
+    const postureText = fit(look.text, Math.max(0, room - 2))
+    const leadText = fit(head, Math.max(0, room - width(postureText)))
+    const restText = fit(rest.length ? ` · ${rest.join(" · ")}` : "", Math.max(0, room - width(leadText) - width(postureText)))
+    return { lead: leadText, posture: postureText ? { ...look, text: postureText } : null, rest: restText }
+  })
   return (
     <text flexShrink={0} wrapMode="none">
       <span style={{ fg: t().warn }}>{badge()}</span>
-      <span style={{ fg: t().faint }}>{text()}</span>
+      <span style={{ fg: t().faint }}>{line().lead}</span>
+      <span style={{ fg: line().posture?.color ?? t().faint, bold: Boolean(line().posture?.marked) }}>
+        {line().posture?.text ?? ""}
+      </span>
+      <span style={{ fg: t().faint }}>{line().rest}</span>
     </text>
   )
 }

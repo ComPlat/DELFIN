@@ -14,7 +14,8 @@
  * app can route keys to it in the right order (an open question first);
  * `ComposerView` draws it.
  */
-import { decodePasteBytes, stripAnsiSequences, TextAttributes, type KeyEvent, type TextareaRenderable } from "@opentui/core"
+import { decodePasteBytes, stripAnsiSequences, TextAttributes, type ColorInput, type KeyEvent,
+         type TextareaRenderable } from "@opentui/core"
 import { usePaste } from "@opentui/solid"
 import { For, Show, createSignal, type JSX } from "solid-js"
 import type { Keymap } from "../keymap/keymap"
@@ -26,6 +27,7 @@ import {
 } from "./complete"
 import { HistoryWalk, type Entry, type History } from "./history"
 import { Pastes, normalisePaste, shouldCollapse } from "./paste"
+import { WINDOW_COMMANDS } from "../commands"
 
 /** The prompt grows to this many rows, then scrolls. */
 export const COMPOSER_MAX_ROWS = 8
@@ -128,11 +130,15 @@ export function createComposer(deps: ComposerDeps): Composer {
     if (commands && commandsFor === sid && Date.now() - commandsAt < 60_000) return commands
     try {
       const got = await deps.request("session.commands", { sessionId: sid })
-      commands = (got?.commands ?? []) as Command[]
+      const theirs = (got?.commands ?? []) as Command[]
+      // The window's own (/rename) win over the session's of the same name,
+      // as the REPL's builtins win over a user's: what enter runs is listed.
+      const mine = new Set(WINDOW_COMMANDS.map((c) => c.name))
+      commands = [...(WINDOW_COMMANDS as Command[]), ...theirs.filter((c) => !mine.has(c.name))]
       commandsAt = Date.now()
       commandsFor = sid
     } catch {
-      commands = commands ?? []
+      commands = commands ?? (WINDOW_COMMANDS as Command[])
     }
     return commands
   }
@@ -425,6 +431,8 @@ export interface ComposerViewProps {
   focused: () => boolean
   /** The paste handler is active only while the prompt has the keys. */
   pasteActive: () => boolean
+  /** The prompt marker's colour (the posture's); the accent when not given. */
+  mark?: () => ColorInput
 }
 
 /** The completion list, the search line and the prompt itself. */
@@ -453,7 +461,7 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
           return (
             <text wrapMode="none">
               <span style={{ fg: row.selected ? t().accent : t().faint }}>{row.selected ? "  › " : "    "}</span>
-              <span style={{ fg: row.selected ? t().bright : t().text, attributes: row.selected ? TextAttributes.BOLD : 0 }}>
+              <span style={{ fg: row.selected ? t().bright : t().text, bold: Boolean(row.selected) }}>
                 {label}
               </span>
               <span style={{ fg: t().faint }}>{detail}</span>
@@ -479,7 +487,7 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
         }}
       </Show>
       <box flexDirection="row">
-        <text flexShrink={0} width={2} fg={t().accent} attributes={TextAttributes.BOLD}>{"❯ "}</text>
+        <text flexShrink={0} width={2} fg={props.mark?.() ?? t().accent} attributes={TextAttributes.BOLD}>{"❯ "}</text>
         <textarea
           flexBasis={0}
           flexShrink={1}

@@ -441,7 +441,7 @@ def test_the_roster_says_at_once_what_a_window_sees_and_a_crash_keeps_its_postur
         a.request("session.setTitle", {"sessionId": sid, "title": "renamed scan"})
         entry = seen(a, mark, sid, approval="plan", title="renamed scan")
         assert entry["approval"] == "plan" and entry["title"] == "renamed scan"
-        assert entry["settings"]["permissionMode"] == "plan" and entry["settings"]["name"] == "renamed scan"
+        assert entry["settings"]["permissionMode"] == "plan" and entry["settings"]["title"] == "renamed scan"
         # A question: what a launcher of another release must not cut.
         other = svc.session(a, permissionMode="default")
         mark = len(a.events)
@@ -468,7 +468,7 @@ def test_a_sleeping_session_is_renamed_without_waking_and_wakes_under_its_name(t
         _wait_state(a, sid, "sleeping")
         # Kept as an awake session keeps a name: one line, at most 80 characters.
         assert a.request("session.setTitle", {"sessionId": sid, "title": " long\nname " * 20}) \
-            == {"title": " ".join(["long name"] * 20)[:80]}
+            == {"title": " ".join(["long name"] * 20)[:80].rstrip()}
         assert a.request("session.setTitle", {"sessionId": sid, "title": "second name"}) == {"title": "second name"}
         assert _listed(a, sid)["state"] == "sleeping"                 # not woken for that
         a.request("session.attach", {"sessionId": sid, "turns": 0}, timeout=120)

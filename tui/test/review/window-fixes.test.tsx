@@ -15,6 +15,7 @@ import { ensureSession } from "../../src/store/state"
 import { withReplay } from "../../src/store/store"
 import { RpcClient } from "../../src/transport/rpc"
 import { FIXTURE, mountWindow } from "../harness"
+import { GUTTER } from "../../src/theme/theme"
 
 type Window = Awaited<ReturnType<typeof mountWindow>>
 let open: Window | null = null
@@ -252,7 +253,8 @@ describe("the footer", () => {
     const footer = w.footer()
     const rules = footer.filter((l) => /^─{10,}/.test(l))
     expect(rules.length).toBe(2)
-    for (const rule of rules) expect(rule.trimEnd().length).toBe(69)
+    // From the gutter to a column short of the right edge.
+    for (const rule of rules) expect(rule.trimEnd().length).toBe(70 - GUTTER - 1)
     expect(footer.some((l) => l.startsWith("❯"))).toBe(true)
     expect(footer.some((l) => l.includes("shift+tab"))).toBe(true)
   })

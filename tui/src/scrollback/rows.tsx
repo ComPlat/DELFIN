@@ -10,8 +10,9 @@
 import { TextAttributes, type CliRenderer } from "@opentui/core"
 import { writeSolidToScrollback } from "@opentui/solid"
 import { For, Show, type JSX } from "solid-js"
-import { fit, middle } from "../text"
-import { markdownStyles, type Theme } from "../theme/theme"
+import { fit, middle, width } from "../text"
+import { DOLPHIN, DOLPHIN_WIDTH } from "../theme/logo"
+import { GUTTER, markdownStyles, type Theme } from "../theme/theme"
 import type { DiffRow, ToolResult } from "./tools"
 import type { Item } from "./transcript"
 import { commitSurface, markdownBlock } from "./writers"
@@ -27,6 +28,11 @@ export function cappedLines(text: string, max: number): string {
   return [...lines.slice(0, max - 1), `… ${lines.length - max + 1} more lines`].join("\n")
 }
 
+/** The banner: the dolphin, this much space, then the words (which need
+ *  about this many columns beside it, or the dolphin is left out). */
+const LOGO_GAP = 3
+const BANNER_TEXT_MIN = 32
+
 /** The marker in front of a message, by who sent it. */
 const SOURCE_MARK: Record<string, string> = {
   user: "❯ ", queued: "❯ ", steer: "↳ ", harness: "◇ ",
@@ -36,18 +42,31 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
   const f = props.item as Fields
   const t = props.theme
   switch (props.item.kind) {
-    case "banner":
+    case "banner": {
+      // The dolphin beside what the session is, where both have room;
+      // the words alone (under the mark ◆) where they do not.
+      const logo = props.width >= DOLPHIN_WIDTH + LOGO_GAP + BANNER_TEXT_MIN
       return (
-        <box flexDirection="column" paddingTop={1} paddingBottom={1}>
-          <text>
-            <span style={{ fg: t.accent, attributes: TextAttributes.BOLD }}>{"◆ DELFIN"}</span>
-            <span style={{ fg: t.muted }}>{"  " + String(f.head ?? "")}</span>
-          </text>
-          <For each={(f.lines ?? []) as string[]}>
-            {(line) => <text fg={t.faint}>{"  " + line}</text>}
-          </For>
+        <box flexDirection="row" paddingTop={1} paddingBottom={1}>
+          <Show when={logo}>
+            <box flexDirection="column" flexShrink={0} width={DOLPHIN_WIDTH + LOGO_GAP}>
+              <For each={DOLPHIN}>{(row) => <text fg={t.accent} wrapMode="none">{row}</text>}</For>
+            </box>
+          </Show>
+          {/* A basis of 0: the words wrap at what is left, and every wrapped
+              row is counted (an auto basis measured them unwrapped). */}
+          <box flexDirection="column" flexGrow={1} flexShrink={1} flexBasis={0} paddingTop={logo ? 1 : 0}>
+            <text>
+              <span style={{ fg: t.accent, bold: true }}>{logo ? "DELFIN" : "◆ DELFIN"}</span>
+              <span style={{ fg: t.muted }}>{"  " + String(f.head ?? "")}</span>
+            </text>
+            <For each={(f.lines ?? []) as string[]}>
+              {(line) => <text fg={t.faint}>{(logo ? "" : "  ") + line}</text>}
+            </For>
+          </box>
         </box>
       )
+    }
     case "user": {
       const source = String(f.source ?? "user")
       const tint = source === "harness" ? t.muted : t.bright
@@ -74,7 +93,7 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
         <box flexDirection="column">
           <text wrapMode="none">
             <span style={{ fg: failed ? t.err : t.ok }}>{"⏺ "}</span>
-            <span style={{ fg: t.text, attributes: TextAttributes.BOLD }}>{name}</span>
+            <span style={{ fg: t.text, bold: true }}>{name}</span>
             <span style={{ fg: t.muted }}>{f.arg ? "  " + middle(String(f.arg), props.width - name.length - 5) : ""}</span>
           </text>
           <ToolResultRows result={r} theme={t} width={props.width} />
@@ -85,7 +104,7 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
       return (
         <text>
           <span style={{ fg: t.err }}>{"⏺ "}</span>
-          <span style={{ fg: t.text, attributes: TextAttributes.BOLD }}>{String(f.name ?? "")}</span>
+          <span style={{ fg: t.text, bold: true }}>{String(f.name ?? "")}</span>
           <span style={{ fg: t.err }}>{"  refused"}</span>
         </text>
       )
@@ -114,14 +133,17 @@ function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
     case "turnEnd":
       return <text fg={f.ok === false ? t.err : f.stopped ? t.warn : t.faint}>{"  " + String(f.text ?? "")}</text>
     case "divider": {
-      const label = ` ${String(f.text ?? "")} `
-      const side = Math.max(2, Math.floor((props.width - label.length) / 2))
+      // A column short of the right edge, as the gutter is at the left;
+      // the label in columns (a name in CJK takes two each), cut to fit.
+      const span = props.width - GUTTER
+      const label = ` ${fit(String(f.text ?? ""), Math.max(4, span - 6))} `
+      const side = Math.max(2, Math.floor((span - width(label)) / 2))
       return (
         <box paddingTop={1}>
           <text>
             <span style={{ fg: t.accent }}>{"━".repeat(side)}</span>
-            <span style={{ fg: t.accentSoft, attributes: TextAttributes.BOLD }}>{label}</span>
-            <span style={{ fg: t.accent }}>{"━".repeat(Math.max(0, props.width - side - label.length))}</span>
+            <span style={{ fg: t.accentSoft, bold: true }}>{label}</span>
+            <span style={{ fg: t.accent }}>{"━".repeat(Math.max(0, span - side - width(label)))}</span>
           </text>
         </box>
       )
@@ -156,7 +178,7 @@ function ToolResultRows(props: { result: ToolResult; theme: Theme; width: number
       <box flexDirection="column">
         <text wrapMode="none">
           <span style={{ fg: t.muted }}>{"  ⎿ "}</span>
-          <span style={{ fg: t.text, attributes: TextAttributes.BOLD }}>{`${r.action} ${middle(r.label, Math.max(8, props.width - 18 - r.action.length))}`}</span>
+          <span style={{ fg: t.text, bold: true }}>{`${r.action} ${middle(r.label, Math.max(8, props.width - 18 - r.action.length))}`}</span>
           <span style={{ fg: t.muted }}>{" ("}</span>
           <span style={{ fg: t.ok }}>{`+${r.adds}`}</span>
           <span style={{ fg: t.err }}>{` -${r.dels}`}</span>
@@ -206,9 +228,15 @@ export function itemWriter(renderer: CliRenderer, theme: () => Theme) {
     const f = item as Fields
     const t = theme()
     if (item.kind === "markdown") {
-      await commitSurface(renderer, markdownBlock(String(f.text ?? ""), { styles: markdownStyles(t), marginTop: 1 }))
+      await commitSurface(renderer, markdownBlock(String(f.text ?? ""),
+                                                  { styles: markdownStyles(t), marginTop: 1, gutter: GUTTER }))
       return
     }
-    writeSolidToScrollback(renderer, (ctx) => <Row item={item} theme={t} width={ctx.width} />)
+    // Every row starts a column in (the gutter); its width is what is left.
+    writeSolidToScrollback(renderer, (ctx) => (
+      <box paddingLeft={GUTTER} flexDirection="column">
+        <Row item={item} theme={t} width={ctx.width - GUTTER} />
+      </box>
+    ))
   }
 }

@@ -9,6 +9,7 @@
  * that does not answer must cost colour, not the rest of the transcript.
  */
 import {
+  BoxRenderable,
   DiffRenderable,
   MarkdownRenderable,
   SyntaxStyle,
@@ -66,13 +67,15 @@ export type StyleMap = Parameters<typeof SyntaxStyle.fromStyles>[0]
 export interface MarkdownOptions {
   styles: StyleMap
   marginTop?: number
+  /** Columns kept free at the left (the theme's GUTTER). */
+  gutter?: number
 }
 
 /** One complete markdown block (see blocks.ts), as a committable surface. */
 export function markdownBlock(raw: string, options: MarkdownOptions) {
   return (ctx: RenderContext): Built => {
     const style = SyntaxStyle.fromStyles(options.styles, ctx.nativeScene!)
-    const root = new MarkdownRenderable(ctx, {
+    const markdown = new MarkdownRenderable(ctx, {
       content: raw,
       syntaxStyle: style,
       width: "100%",
@@ -82,6 +85,11 @@ export function markdownBlock(raw: string, options: MarkdownOptions) {
       tableOptions: { widthMode: "content" },
       treeSitterClient: getTreeSitterClient(),
     })
+    if (!options.gutter) return { root: markdown, dispose: () => style.destroy() }
+    // In a box that keeps the gutter free: the markdown wraps at what is
+    // left, as the live tail in the footer does.
+    const root = new BoxRenderable(ctx, { width: "100%", flexDirection: "column", paddingLeft: options.gutter })
+    root.add(markdown)
     return { root, dispose: () => style.destroy() }
   }
 }

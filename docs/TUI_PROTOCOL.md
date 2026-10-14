@@ -80,7 +80,7 @@ types are generated from that. This page explains what the messages mean.
 | `session.completePath` | `fragment` | `paths[]` | What `@fragment` completes to, under the workspace only. |
 | `session.choices` | `what`: `model`, `effort` or `mode` | `current`, `choices[]`: `value`, `detail?` | What a picker offers. |
 | `session.toggleTasks` | | `showTasks` | ctrl+t: the open task list at the end of each turn, on or off, as in the REPL (a notice says which). |
-| `session.setTitle` | `title` | `title` | The session's name: what it is saved under (a `session.updated` follows). |
+| `session.setTitle` | `title` | `title` | What the session is called: what it is saved under and every window shows (a `session.updated` follows); one plain line of at most 80 characters (escapes and control characters become spaces). Its address -- the `name` it started with, or its id, by which mail, approvals and its presence record reach it -- does not change. Answered for a sleeping session too, without waking it. |
 
 ### Completion and pickers
 
@@ -319,7 +319,7 @@ closes; the next window attaches to them again.
 |---|---|---|
 | `hello` | `protocolVersion`, `client?` | `protocolVersion`, `serviceVersion`, `release`, `pid`, `host`, `mayAct`, `sessions[]`. Must come first. `serviceVersion` says what the service does beyond the protocol (2: a dry-run `session.shutdown`; a service before it ignores `dryRun` and would end the session, so a launcher never asks it). |
 | `sessions.list` | | `sessions[]` (summaries), `elsewhere[]`: other open DELFIN sessions (dashboards, terminals) with `key`, `sessionId?`, `title?`, `workspace`, `host` |
-| `session.create` | `cwd`, `name?`, `model?`, `provider?`, `effort?`, `mode?`, `permissionMode?`, `resume?`, `continue?`, `fork?`, `addDirs?`, `readDirs?`, `isolate?`, `noIsolate?`, `fake?`, `fakeDelay?`, `attach?` | `sessionId`, `session`, `state`, `pending[]`. Starts a worker with chat's own flags; the creating window is attached unless `attach: false`. A session that cannot start is refused with its reason (-32005). |
+| `session.create` | `cwd`, `name?`, `title?`, `model?`, `provider?`, `effort?`, `mode?`, `permissionMode?`, `resume?`, `continue?`, `fork?`, `addDirs?`, `readDirs?`, `isolate?`, `noIsolate?`, `fake?`, `fakeDelay?`, `attach?` | `sessionId`, `session`, `state`, `pending[]`. Starts a worker with chat's own flags; the creating window is attached unless `attach: false`. `name` is the session's address (chat's `-n`), `title` what it is called (the name when not given; a session resumed without either comes back under the title it was saved with, never under the store's stand-in, its first message). A session that cannot start is refused with its reason (-32005). |
 | `session.attach` | `sessionId`, `turns?` | `session`, `state`, `pending[]`, `summary`, `events[]`: the replay of the last `turns` turns (all for 0), then live events. |
 | `session.detach` | `sessionId` | `detached` |
 | `session.message` | `key`, `text` | `sent`: the text goes into that session's inbox, as a message from another session (`session_messages`) |

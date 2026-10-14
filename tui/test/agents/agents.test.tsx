@@ -33,7 +33,7 @@ const summary = (id: string, extra: Record<string, unknown> = {}) => ({
 /** The window with three more sessions in the service, as main.tsx
  *  registers them from the hello. */
 async function mount(options: { client?: (call: Call) => unknown; pins?: Pins; onNewSession?: () => Promise<string | null>;
-                                height?: number } = {}) {
+                                height?: number; elsewhere?: Record<string, unknown>[] } = {}) {
   const opened: [string, string][] = []
   const calls: Call[] = []
   // What the fake service runs: what the test announced (a real one lists
@@ -45,7 +45,7 @@ async function mount(options: { client?: (call: Call) => unknown; pins?: Pins; o
       calls.push(call)
       const own = options.client?.(call)
       if (own !== undefined) return own
-      if (method === "sessions.list") return { sessions: [...running.values()], elsewhere: [] }
+      if (method === "sessions.list") return { sessions: [...running.values()], elsewhere: options.elsewhere ?? [] }
       if (method === "session.replay") return { events: [] }
       if (method === "session.setTitle") return { title: params.title }
       return { accepted: true, applied: true, message: "" }
@@ -261,6 +261,58 @@ describe("the agent view", () => {
     expect(panel()).toContain("◆ AGENTS")
   })
 
+  test("/rename as a reply names the peeked session, and sends it no prompt", async () => {
+    const { w, calls } = await mount()
+    await left()
+    w.keys.pressArrow("down")
+    w.keys.pressArrow("down")                           // working: optimise benzene
+    await w.settle()
+    w.keys.pressKey(" ")
+    await Bun.sleep(10)
+    await w.settle()
+    await w.keys.typeText("/rename benzene opt")
+    await w.settle()
+    w.keys.pressEnter()
+    await w.settle()
+    expect(called(calls, "session.setTitle")).toEqual([{ sessionId: "w1", title: "benzene opt" }])
+    expect(called(calls, "session.prompt")).toEqual([])
+  })
+
+  test("/rename in the view with nothing peeked names the selected session, and starts none", async () => {
+    let started = 0
+    const { w, calls } = await mount({ onNewSession: async () => { started++; return null } })
+    await left()
+    w.keys.pressArrow("up")                             // write the report
+    await w.settle()
+    await w.keys.typeText("/rename the report")
+    await w.settle()
+    w.keys.pressEnter()
+    await w.settle()
+    expect(called(calls, "session.setTitle")).toEqual([{ sessionId: "d1", title: "the report" }])
+    expect(called(calls, "session.prompt")).toEqual([])
+    expect(started).toBe(0)
+  })
+
+  test("/rename to a session elsewhere is not mailed to it", async () => {
+    const { w, calls } = await mount({ elsewhere: [{ key: "dash1", title: "dashboard scan", workspace: "/w", host: "here" }] })
+    await Bun.sleep(50)                                 // the view's poll of the list is in
+    await w.settle()
+    await left()
+    for (let i = 0; i < 8 && !/›\s+\S\s+dashboard scan/.test(panel()); i++) {
+      w.keys.pressArrow("down")
+      await w.settle()
+    }
+    w.keys.pressKey(" ")
+    await Bun.sleep(10)
+    await w.settle()
+    await w.keys.typeText("/rename x")
+    await w.settle()
+    w.keys.pressEnter()
+    await w.settle()
+    expect(called(calls, "session.message")).toEqual([])
+    expect(panel()).toContain("renamed where it runs")
+  })
+
   test("ctrl+x twice stops a session; an ended one leaves the list", async () => {
     const { w, calls } = await mount()
     await left()
@@ -392,7 +444,8 @@ describe("the agent view", () => {
     push(summary("q2", { title: "second question", state: "idle", pending: 0, createdAt: 1004 }))
     await w.settle()
     expect(panel()).not.toContain("waiting ·")
-    expect(titles.at(-1)).toBe("DELFIN")
+    // Back to the session in view, by its name.
+    expect(titles.at(-1)).toBe("DELFIN · this window")
   })
 
   test("a sleeping session is listed as asleep, and enter wakes it in this window", async () => {

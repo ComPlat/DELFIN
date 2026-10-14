@@ -9,7 +9,7 @@
  * sessions.past) and may take a moment: the picker opens at once and says
  * "loading…" until it is there.
  */
-import { TextAttributes, type KeyEvent } from "@opentui/core"
+import type { KeyEvent } from "@opentui/core"
 import { For, Show, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { fit, width } from "../text"
@@ -168,7 +168,7 @@ export function PickerView(props: { picker: Picker; theme: () => Theme; width: (
               return (
                 <text wrapMode="none">
                   <span style={{ fg: row.on ? t().accent : t().faint }}>{l.mark}</span>
-                  <span style={{ fg: row.on ? t().bright : t().text, attributes: row.on ? TextAttributes.BOLD : 0 }}>{l.label}</span>
+                  <span style={{ fg: row.on ? t().bright : t().text, bold: Boolean(row.on) }}>{l.label}</span>
                   <span style={{ fg: t().ok }}>{l.now}</span>
                   <span style={{ fg: t().faint }}>{l.detail ? `  ${l.detail}` : ""}</span>
                 </text>

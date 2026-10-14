@@ -27,6 +27,8 @@ export interface Theme {
   string: ColorInput        // string literals in code
   added: ColorInput         // diff: added line background
   removed: ColorInput       // diff: removed line background
+  plan: ColorInput          // the plan posture (shift+tab): read and plan only
+  edits: ColorInput         // the acceptEdits posture: writes go through
 }
 
 export const DARK: Theme = {
@@ -34,6 +36,7 @@ export const DARK: Theme = {
   accent: "#6290C0", accentSoft: "#8FB2DA", text: "#D5DAE1", bright: "#F1F4F8",
   muted: "#8B94A3", faint: "#555D6B", ok: "#7FB685", warn: "#D9A65B", err: "#D46F6A",
   code: "#C9B98F", string: "#A9C28E", added: "#1D2B22", removed: "#2E1F22",
+  plan: "#5FB3A9", edits: "#B48EAD",
 }
 
 export const LIGHT: Theme = {
@@ -41,6 +44,7 @@ export const LIGHT: Theme = {
   accent: "#3A6EA5", accentSoft: "#4F7FB3", text: "#2B3038", bright: "#0F1216",
   muted: "#5D6573", faint: "#9AA1AD", ok: "#3E7D47", warn: "#9A6A1C", err: "#B23B36",
   code: "#7A5E1E", string: "#4E6B2E", added: "#E3F1E5", removed: "#F6E3E3",
+  plan: "#2F7F76", edits: "#8A5A87",
 }
 
 /** The terminal's own foreground; no background of the window's own. */
@@ -51,6 +55,22 @@ export const MONO: Theme = {
   name: "mono",
   accent: own, accentSoft: own, text: own, bright: own, muted: own, faint: own,
   ok: own, warn: own, err: own, code: own, string: own, added: none, removed: none,
+  plan: own, edits: own,
+}
+
+/**
+ * How the approval posture shows at the bottom, as Claude Code's do: plan
+ * and acceptEdits each in a colour of their own with its mark, the
+ * unattended bypass in red, default plain. The mark (and bold) carries it
+ * where there is no colour (mono).
+ */
+export function postureLook(approval: string, t: Theme): { text: string; color: ColorInput; marked: boolean } {
+  switch (approval) {
+    case "plan": return { text: "⏸ plan", color: t.plan, marked: true }
+    case "acceptEdits": return { text: "⏵⏵ accept edits", color: t.edits, marked: true }
+    case "bypassPermissions": return { text: "⏵⏵ bypass permissions", color: t.err, marked: true }
+    default: return { text: approval, color: t.faint, marked: false }
+  }
 }
 
 /** NO_COLOR (no-color.org): set and not empty. */
@@ -111,3 +131,9 @@ export function diffColors(t: Theme) {
 }
 
 export const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+/** The column kept free at the left of everything the window draws --
+ *  scrollback, footer, agent view -- as Claude Code keeps one: text never
+ *  starts at the terminal's edge. What spans the width (rules, dividers)
+ *  ends a column early on the right too. */
+export const GUTTER = 1

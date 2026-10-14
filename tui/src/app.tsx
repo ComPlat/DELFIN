@@ -13,6 +13,7 @@ import type { CliRenderer, KeyEvent } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
+import { WINDOW_COMMANDS, nameFromPrompt, renameOf } from "./commands"
 import type { AgentScreen } from "./agents/screen"
 import { createAgentView, needsInput, peekLines, type AgentRow } from "./agents/view"
 import { createComposer } from "./composer/composer"
@@ -99,6 +100,22 @@ export function App(props: AppProps): JSX.Element {
   }
   const sid = () => store.state.current ?? ""
 
+  /** /rename: what a session is called -- the prompt box, the agent view
+   *  and the terminal's title show it; without a name, after what it was
+   *  first asked. Done at once, also while a turn runs. */
+  const rename = async (id: string, asked: string): Promise<boolean> => {
+    const s = store.state.sessions[id]
+    const title = asked || nameFromPrompt(String(s?.summary?.firstPrompt ?? ""))
+    if (!title) {
+      say("nothing to name it after yet: /rename <name>")
+      return true
+    }
+    const result = await call("session.setTitle", { sessionId: id, title })
+    if (!result) return false                   // not asked (the note says why): the line stays
+    say(`renamed: ${result.title}`)
+    return true
+  }
+
   const picker = createPicker()
 
   // Prompts sent while a session starts (the first one, or a new one from
@@ -114,6 +131,22 @@ export function App(props: AppProps): JSX.Element {
   const send = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
     if (agents.state.open) {
       typingAt = 0
+      // /rename here names the session peeked at, else the one selected --
+      // it is never a new session's first prompt (nor a model's turn).
+      const named = renameOf(text)
+      if (named !== null && !agents.state.renaming) {
+        const list = agents.rows()
+        const row = agents.state.peek ? list.find((r) => r.id === agents.state.peek!.id) : list[agents.selected(list)]
+        if (!row) {
+          say("select a session to rename (↑ ↓), then /rename <name>")
+          return false
+        }
+        if (row.kind === "elsewhere") {
+          say(`${row.name} runs elsewhere: it is renamed where it runs`)
+          return true
+        }
+        return rename(row.id, named)
+      }
       return agents.submit(text)
     }
     return deliver(text, how, shown)
@@ -147,6 +180,9 @@ export function App(props: AppProps): JSX.Element {
       props.onLines?.("keys in this window", keyTable(props.keymap))
       return true
     }
+    // Also with the key that steers: a rename is the window's, never the turn's.
+    const named = renameOf(text)
+    if (named !== null) return rename(sid(), named)
     // The session strips the text it shows, as a typed line is stripped.
     if (shown) props.sentAs?.set(text.trim(), shown)
     const result = await call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })
@@ -166,6 +202,13 @@ export function App(props: AppProps): JSX.Element {
   const pins = props.pins ?? new Pins()
   const [pinned, setPinned] = createSignal(0)
   const sendTo = async (row: AgentRow, text: string) => {
+    const named = renameOf(text)
+    if (named !== null) {
+      // Not mailed: a session elsewhere is renamed where it runs.
+      if (row.kind === "elsewhere") say(`${row.name} runs elsewhere: it is renamed where it runs`)
+      else await rename(row.id, named)
+      return
+    }
     if (row.kind === "elsewhere") {
       if (await call("session.message", { key: row.id, text })) say(`sent to ${row.name}`)
       return
@@ -278,7 +321,10 @@ export function App(props: AppProps): JSX.Element {
   let shownTitle = ""
   createEffect(() => {
     const waiting = Object.values(store.state.sessions).filter(needsInput).length
-    const title = waiting ? `◉ DELFIN · ${waiting} need${waiting === 1 ? "s" : ""} input` : shownTitle ? "DELFIN" : ""
+    // Named (/rename, -n): the tab says which session it is, as Claude Code's does.
+    const name = session()?.title || session()?.summary?.title || ""
+    const title = waiting ? `◉ DELFIN · ${waiting} need${waiting === 1 ? "s" : ""} input`
+      : name ? `DELFIN · ${name}` : shownTitle ? "DELFIN" : ""
     if (title === shownTitle) return
     shownTitle = title
     try {
@@ -351,14 +397,18 @@ export function App(props: AppProps): JSX.Element {
       { label: "effort…", detail: "reasoning effort", value: "pick:effort" },
       { label: "mode…", detail: "the agent mode", value: "pick:mode" },
       { label: "resume…", detail: "a saved session, in this window", value: "pick:resume" },
+      { label: "rename…", detail: "name this session (/rename)", value: "type:/rename" },
       { label: props.thinking?.() ? "hide thinking" : "show thinking", detail: "the model's thinking, dimmed", value: "do:thinking" },
       { label: "expand the last result", detail: props.keymap.label("expand"), value: "do:expand" },
       { label: "task list on/off", detail: props.keymap.label("tasks"), value: "do:tasks" },
       { label: "redraw", detail: props.keymap.label("redraw"), value: "do:redraw" },
       { label: "leave the window", detail: `${props.keymap.label("quit")} — the session keeps running`, value: "do:quit" },
     ]
+    // The window's own command (rename…, above) wins over one of the
+    // session's of the same name, as the REPL's builtins win over a user's.
+    const windowNames = new Set(WINDOW_COMMANDS.map((c) => c.name))
     const commands = props.client.request("session.commands", { sessionId: sid() })
-      .then((got) => ((got?.commands ?? []) as any[]).map((c) => ({
+      .then((got) => ((got?.commands ?? []) as any[]).filter((c) => !windowNames.has(c.name)).map((c) => ({
         label: c.name, detail: c.summary, value: `${c.takesArgs ? "type" : "run"}:${c.name}`,
       })))
     picker.open("commands", actions, (c) => {

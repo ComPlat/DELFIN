@@ -22,7 +22,7 @@
  * The panel is built as a list of lines that each fit the width, so the
  * footer knows exactly how many rows it takes (`approvalLines`).
  */
-import { TextAttributes, type KeyEvent } from "@opentui/core"
+import type { KeyEvent } from "@opentui/core"
 import { For, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import type { Asked } from "../store/state"
@@ -384,7 +384,7 @@ export function ApprovalPanel(props: { asked: Asked; ui: ApprovalUi; theme: () =
         {(line) => (
           <text wrapMode="none">
             <For each={line}>
-              {(span) => <span style={{ fg: tone(span), attributes: span.bold ? TextAttributes.BOLD : 0 }}>{span.text}</span>}
+              {(span) => <span style={{ fg: tone(span), bold: Boolean(span.bold) }}>{span.text}</span>}
             </For>
           </text>
         )}

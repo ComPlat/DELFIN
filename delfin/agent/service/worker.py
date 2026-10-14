@@ -477,9 +477,35 @@ def _agent_class():
             if cleaned:
                 self._emit("user.message", text=cleaned, source=source)
 
+        #: What the session is called (the worker's title): what the
+        #: checkpoints save it under and what its presence record shows.
+        #: Its address (``_presence_key``) stays the name it started with.
+        session_title = ""
+
         def _checkpoint_session(self) -> None:
-            if self._checkpoint:
-                super()._checkpoint_session()
+            """The REPL's turn-end save, with the session's title: without
+            one the store names the session after its first message, and
+            a crash would lose a rename."""
+            if not self._checkpoint:
+                return
+            try:
+                from ..cli import _save_session
+                _save_session(self.engine, Path(self.opts.cwd), title=self.session_title)
+            except Exception:
+                pass
+
+        def _announce_presence(self) -> None:
+            """The REPL's announcement, with the title the session has now
+            under the address it started with. Never raises."""
+            try:
+                from .. import session_presence
+                session_presence.announce(
+                    self._presence_key(),
+                    session_id=str(getattr(self.engine, "session_id", "") or ""),
+                    title=self.session_title or str(getattr(self.opts, "session_name", "") or ""),
+                    workspace=str(getattr(self.opts, "cwd", "") or ""))
+            except Exception:
+                pass
 
         # -- the stream: the turn's output and what other threads say --------
         def post(self, fn: Callable[[], None]) -> None:
@@ -872,6 +898,35 @@ def open_real_session(args: argparse.Namespace, workspace: Path):
     return engine, ns, banner, notices
 
 
+def stored_title(session_id: str) -> str:
+    """The title a saved session was given -- by `-n` or a rename -- or ""
+    when it has only the store's stand-in, the start of its first message
+    (session_store.save_session names an untitled session that way)."""
+    try:
+        from .. import session_store
+        data = session_store.load_session(session_id) or {}
+    except Exception:
+        return ""
+    title = str(data.get("title") or "").strip()
+    first = next((str(m.get("content") or "") for m in data.get("chat_messages") or []
+                  if isinstance(m, dict) and m.get("role") == "user"), None)
+    if first is not None:
+        stand_in = first[:80].replace("\n", " ").strip() + ("..." if len(first) > 80 else "")
+        if title == stand_in:
+            return ""
+    return protocol.clean_title(title) if title not in ("", "Untitled") else ""
+
+
+def initial_title(args: argparse.Namespace, engine) -> str:
+    """What a session is called when it starts: the title or the name given;
+    resumed, continued or forked without one, the one it was saved under
+    (if it was given one -- never the store's stand-in, its first message)."""
+    title = args.title or args.name
+    if not title and (args.resume or args.continue_session or args.fork_session):
+        title = stored_title(str(getattr(engine, "session_id", "") or args.resume))
+    return title
+
+
 def end_real_session(engine, workspace: Path, title: str, *,
                      learn: bool = True) -> None:
     """cmd_chat's finally: save, report, learn, index. Never raises."""
@@ -908,14 +963,19 @@ class Worker:
 
     def __init__(self, engine, *, writer: protocol.LineWriter, reader,
                  workspace: Path, banner: list[str], notices: list[str],
-                 name: str = "", fake: bool = False, save: bool = True):
+                 name: str = "", title: str = "", fake: bool = False, save: bool = True):
         from ..repl import ReplOptions
 
         self.engine = engine
         self.writer = writer
         self.reader = reader
         self.workspace = workspace
+        #: The address: the name it started with (mail, approvals and presence
+        #: reach the session by it, or by its id when there is none).
         self.name = name
+        #: What it is called: the title given, else that name; a rename
+        #: changes this, never the address.
+        self.title = protocol.clean_title(title or name)
         self.fake = fake
         self.save = save
         sid = str(getattr(engine, "session_id", "") or "")
@@ -939,6 +999,7 @@ class Worker:
         self.agent = _agent_class()(
             engine, broker=self.broker, emit=emit, checkpoint=save,
             opts=ReplOptions(cwd=workspace, session_name=name, banner=""))
+        self.agent.session_title = self.title
         # Turn ids stay unique in the session's log across resumes.
         self.agent._turn_seq = self.log.turns
         self.banner = banner
@@ -1019,7 +1080,7 @@ class Worker:
                 "model": facts["model"],
                 "mode": str(getattr(self.engine, "mode", "") or ""),
                 "approval": facts["approval"],
-                "title": self.name or None,
+                "title": self.title or None,
                 "banner": [l for l in self.banner if l is not None],
                 "notices": list(self.notices)}
 
@@ -1237,17 +1298,26 @@ class Worker:
         return {"showTasks": on}
 
     def _m_session_setTitle(self, params: dict) -> dict:
-        """The session's name: what the store saves it under, what its
-        checkpoints carry, what every window shows."""
-        title = " ".join(str(params.get("title") or "").split())[:80]
+        """What the session is called: what the store saves it under, what
+        its checkpoints carry, what every window shows. Its address -- the
+        name it started with, or its id -- stays: mail, approvals and its
+        presence keep reaching it by that."""
+        title = protocol.clean_title(params.get("title"))
         if not title:
             raise _Refusal(protocol.INVALID_PARAMS, "a name needs some text")
-        self.name = title
-        try:
-            self.agent.opts.session_name = title
-        except Exception:
-            pass
-        self.agent.post(lambda: self.emitter.emit("session.updated", title=title))
+        self.title = title
+        self.agent.session_title = title
+
+        def say() -> None:
+            self.emitter.emit("session.updated", title=title)
+            self.agent._announce_presence()
+            # Saved at once when nothing runs -- a turn's end saves it
+            # otherwise -- so a session killed before its next turn keeps
+            # the name; under the loop's lock, so no turn starts meanwhile.
+            with self.agent.cond:
+                if not self.agent.busy:
+                    self.agent._checkpoint_session()
+        self.agent.post(say)
         return {"title": title}
 
     def _m_session_choices(self, params: dict) -> dict:
@@ -1388,7 +1458,7 @@ class Worker:
                 self.agent.closing.set()
                 self.agent.cond.notify_all()
             if self.save:
-                end_real_session(self.engine, self.workspace, self.name,
+                end_real_session(self.engine, self.workspace, self.title,
                                  learn=not self.fake)
             # A request being handled right now gets its answer out first.
             if self._handling.acquire(timeout=2.0):
@@ -1419,7 +1489,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--resume", default="", help="session id to resume")
     p.add_argument("--continue", dest="continue_session", action="store_true")
     p.add_argument("--fork-session", action="store_true")
-    p.add_argument("-n", "--name", default="")
+    p.add_argument("-n", "--name", default="",
+                   help="the address the session is reached by (mail, approvals)")
+    p.add_argument("--title", default="",
+                   help="what the session is called (`/rename`); the name when not given")
     p.add_argument("--model", default="")
     p.add_argument("--provider", default="")
     p.add_argument("--effort", default="")
@@ -1557,6 +1630,7 @@ def main(argv: list[str] | None = None) -> int:
                       f"{type(exc).__name__}: {exc}", 3)
     worker = Worker(engine, writer=writer, reader=reader, workspace=workspace,
                     banner=banner, notices=notes + notices, name=args.name,
+                    title=initial_title(args, engine),
                     fake=args.fake, save=(not args.fake) or args.fake_save)
     return worker.run()
 
