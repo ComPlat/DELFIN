@@ -45,9 +45,11 @@ def _all(tab):
 
 
 def _working_text(html_widgets) -> str:
+    # The working line's own element; the tab's stylesheet widget names
+    # the same class in its rules.
     for w in html_widgets:
         value = str(w.value or "")
-        if "delfin-agent-working" in value:
+        if value.startswith('<div class="delfin-agent-working'):
             return html.unescape(re.sub(r"<[^>]+>", " ", value)).strip()
     return ""
 
@@ -127,14 +129,42 @@ def test_a_late_first_token_is_counted_from_the_send(tab, monkeypatch):
                  cost_usd=0.0, stop_reason="end_turn", text="")
 
     _script(monkeypatch, _late)
-    t0 = time.monotonic()
     _send(found)
+    # From the return of the click: the first send builds the engine
+    # inside the click handler, before the line is drawn at all.
+    t0 = time.monotonic()
     early, late = _sample(html_widgets, (1.8, 4.2), t0)
     a, b = _secs(early, f"waiting for {MODEL}"), _secs(late, f"waiting for {MODEL}")
     assert a is not None and b is not None, (early, late)
     assert b > a, (early, late)
     _ended(refs)
     assert _working_text(html_widgets) == "", "the line outlived the turn"
+
+
+def test_past_the_threshold_a_second_row_says_what_is_slow_and_stop(
+        tab, monkeypatch):
+    from types import SimpleNamespace as NS
+    refs, found, html_widgets = tab
+    monkeypatch.setenv("DELFIN_SLOW_FIRST_TOKEN_S", "2")
+
+    def _late(self, system="", messages=None, **kw):
+        time.sleep(4.5)
+        yield NS(type="text_delta", text="hello")
+        yield NS(type="message_delta", input_tokens=1, output_tokens=1,
+                 cost_usd=0.0, stop_reason="end_turn", text="")
+
+    _script(monkeypatch, _late)
+    _send(found)
+    # From the return of the click: the first send builds the engine
+    # inside the click handler, before the line is drawn at all.
+    t0 = time.monotonic()
+    (text,) = _sample(html_widgets, (3.6,), t0)
+    assert "slow:" in text and "Stop" in text and MODEL in text, text
+    raw = next(str(w.value) for w in html_widgets if str(w.value).startswith(
+        '<div class="delfin-agent-working'))
+    assert 'class="delfin-activity-hint"' in raw, raw
+    assert "delfin-agent-working--stale" in raw, "drawn in the stale colour"
+    _ended(refs)
 
 
 def test_a_running_tool_has_its_name_argument_and_clock(tab, monkeypatch):
@@ -153,8 +183,10 @@ def test_a_running_tool_has_its_name_argument_and_clock(tab, monkeypatch):
                  cost_usd=0.0, stop_reason="end_turn", text="")
 
     _script(monkeypatch, _tool)
-    t0 = time.monotonic()
     _send(found)
+    # From the return of the click: the first send builds the engine
+    # inside the click handler, before the line is drawn at all.
+    t0 = time.monotonic()
     rows = _sample(html_widgets, (1.2, 2.6, 4.6), t0)
     secs = [_secs(r, "running bash: sleep 3") for r in rows[:2]]
     assert None not in secs and secs[1] > secs[0], rows
