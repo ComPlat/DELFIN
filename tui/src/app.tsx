@@ -15,7 +15,8 @@ import { History } from "./composer/history"
 import { createApprovalUi } from "./footer/approval"
 import { Footer } from "./footer/footer"
 import { createPicker, type Choice } from "./footer/picker"
-import type { Keymap } from "./keymap/keymap"
+import { editPrompt } from "./composer/editor"
+import { keyTable, type Keymap } from "./keymap/keymap"
 import type { Asked, SessionState } from "./store/state"
 import type { AppStore } from "./store/store"
 import type { Theme } from "./theme/theme"
@@ -44,6 +45,8 @@ export interface AppProps {
   /** Thinking shown or hidden from here on (the palette). */
   onThinking?: (show: boolean) => void
   thinking?: () => boolean
+  /** Lines of the window's own, into the scrollback (/keys). */
+  onLines?: (title: string, lines: string[]) => void
   /** The pause before a key answers a question (approval.tsx); tests set 0. */
   answerPauseMs?: number
 }
@@ -90,6 +93,18 @@ export function App(props: AppProps): JSX.Element {
     const bare = /^\/(model|effort|mode|resume)$/.exec(text.trim())
     if (bare && !how) {
       openPicker(bare[1]!)
+      return true
+    }
+    // The window's own: the session has no terminal to open an editor in,
+    // and the keys are the window's.
+    const editor = /^\/editor(?:\s+([\s\S]*))?$/.exec(text.trim())
+    if (editor && !how) {
+      const outcome = await editPrompt(props.renderer, editor[1] ?? "")
+      say(outcome.note)
+      return outcome.text ? send(outcome.text) : true
+    }
+    if (/^\/keys$/.test(text.trim()) && !how) {
+      props.onLines?.("keys in this window", keyTable(props.keymap))
       return true
     }
     // The session strips the text it shows, as a typed line is stripped.
@@ -207,6 +222,11 @@ export function App(props: AppProps): JSX.Element {
     const asked = session()?.pending[0]
     approval.sync(asked)
     if (asked) picker.close()             // a question takes the footer from a picker
+  })
+  // /exit (or /quit) ends the session, and the window with it, as in the
+  // REPL. A session that ended another way stays in view, saying so.
+  createEffect(() => {
+    if (session()?.ended?.reason === "exit") props.onQuit()
   })
 
   const cycleMode = () => {

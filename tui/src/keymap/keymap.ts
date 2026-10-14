@@ -117,3 +117,33 @@ export class Keymap {
       && b.alt === alt && b.shift === Boolean(key.shift))
   }
 }
+
+/** What each key does, for /keys: the REPL's table (repl_commands._keys),
+ *  in its order, then the keys only the TUI has. A row names an action
+ *  (its keys come from the keymap, so a rebinding shows) or a fixed key. */
+export const KEY_HELP: readonly { action?: Action; keys?: string; does: string }[] = [
+  { action: "interrupt", does: "End this turn. A running tool call finishes first. With a question open: refuse it, as n does." },
+  { action: "submit", does: "Send what you typed; during a turn it is queued and goes out when the turn ends." },
+  { action: "steer", does: "Send what you typed INTO the running turn; the model reads it on its next round." },
+  { action: "cycleMode", does: "Next approval posture (never onto bypass)." },
+  { action: "expand", does: "Show the last tool result in full." },
+  { action: "tasks", does: "Show or hide the open task list at the end of each turn." },
+  { action: "redraw", does: "Write the session again at the terminal's width." },
+  { keys: "backspace / ctrl+u", does: "Edit or clear the line you are typing (ctrl+w a word, ctrl+k to the end)." },
+  { action: "historyPrev", does: "On the prompt's first line: the previous prompt from the history." },
+  { action: "historyNext", does: "On the prompt's last line: the next prompt, back to what you were typing." },
+  { keys: "tab", does: "Complete a /command or an @path; with a list open, take the selected one." },
+  { action: "historySearch", does: "Search the history backwards; again for the next older match; enter takes it." },
+  { action: "quit", does: "On an empty prompt: leave the window. The session keeps running in the agent service." },
+  { action: "newline", does: "A new line in the prompt (so does a trailing \\ before enter)." },
+  { action: "palette", does: "The command palette: commands, and pickers for model, posture, effort, mode, resume." },
+  { keys: "ctrl+c", does: "End the turn; else clear what is typed; else, twice, leave the window." },
+  { keys: "y n A k R e a ?", does: "With a question open: the answers the session offers (? explains each). N refuses with a reason." },
+]
+
+/** The key table as lines, with the keys this keymap binds. */
+export function keyTable(km: Keymap): string[] {
+  const rows = KEY_HELP.map((row) => [row.keys ?? km.keys(row.action!).map(describe).join(" / "), row.does] as const)
+  const width = Math.max(...rows.map(([keys]) => keys.length))
+  return rows.map(([keys, does]) => `  ${keys.padEnd(width)}  ${does}`)
+}

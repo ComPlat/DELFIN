@@ -42,6 +42,8 @@ export interface SessionView {
   note(text: string): void
   /** ctrl+o: the last tool result of the session in view, in full. */
   expandLast(): void
+  /** Lines of the window's own (/keys), under a title. */
+  lines(title: string, lines: string[]): void
   /** Thinking shown or hidden from now on. */
   setShowThinking(show: boolean): void
   readonly showThinking: boolean
@@ -119,6 +121,9 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
     },
     note,
     expandLast: () => presenter?.expandLast(),
+    lines(title, lines) {
+      void transcript.append(own("lines", { title, lines }))
+    },
     setShowThinking(show) {
       presentOptions.showThinking = show
     },

@@ -196,6 +196,7 @@ if (current) {
     <App renderer={renderer} store={store} keymap={keymap} theme={theme} history={History.load()} sentAs={view.sentAs}
          client={connection.rpc} onQuit={quit} onRedraw={() => void view.redraw()}
          onExpand={() => view.expandLast()} onResume={(id, ws) => void switchTo(id, ws)}
-         onThinking={(on) => view.setShowThinking(on)} thinking={() => view.showThinking} />
+         onThinking={(on) => view.setShowThinking(on)} thinking={() => view.showThinking}
+         onLines={(title, lines) => view.lines(title, lines)} />
   ), renderer)
 }
