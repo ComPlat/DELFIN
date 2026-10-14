@@ -317,10 +317,12 @@ def test_the_allowance_does_not_widen_the_read_roots(tmp_path):
     "delfin-agent ops stop",
 ])
 def test_nothing_rides_along_on_the_pattern(cmd):
+    # No auto-allow entry at all may take these: matching on "ops" in the
+    # pattern text picked up unrelated entries once #245 listed the
+    # read-only delfin-agent subcommands.
     from delfin.agent.api_client import _DEFAULT_BASH_AUTO_ALLOW
-    ops = [p for p in _DEFAULT_BASH_AUTO_ALLOW if "ops" in p]
-    assert len(ops) == 1
-    assert re.search(ops[0], cmd) is None, cmd
+    hits = [p for p in _DEFAULT_BASH_AUTO_ALLOW if re.search(p, cmd)]
+    assert not hits, (cmd, hits)
 
 
 def test_a_compound_is_judged_by_its_other_half(tmp_path):
