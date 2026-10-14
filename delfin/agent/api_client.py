@@ -3338,11 +3338,51 @@ def _delfin_cli_read_only_patterns(agent_prog: str,
 # another name, so the general `python -m <module>` entry below excludes
 # them and only their read-only forms are listed (in every workspace, as
 # `python -m delfin` was before).
-_DELFIN_ENTRY_MODULE_RE = (
-    r"delfin(?:\.(?:__main__|main|cli|cli_\w+|build_up_complex|"
-    r"cluster_bench\.cli|guppy_sampling|guppy_batch|"
-    r"doc_server(?:\.indexer|\.__main__)?|tools\.mcp_server|agent\.cli|"
-    r"ops_server(?:\.__main__)?))?(?![\w.])")
+_DELFIN_ENTRY_MODULE_RE = _inline_payload.DELFIN_ENTRY_MODULE_RE
+# The same modules as files (`python3 delfin/cli_pipeline.py`, or the
+# installed copy under site-packages): the program by its path.
+_DELFIN_ENTRY_SCRIPT_BODY = (
+    r"delfin/(?:__main__|main|cli|cli_\w+|build_up_complex|"
+    r"cluster_bench/cli|guppy_sampling|guppy_batch|"
+    r"doc_server/(?:indexer|__main__)|tools/mcp_server|agent/cli|"
+    r"ops_server/__main__)\.py")
+_DELFIN_ENTRY_SCRIPT_RE = re.compile(
+    r"(?:^|/)" + _DELFIN_ENTRY_SCRIPT_BODY + r"$", re.IGNORECASE)
+_DELFIN_PROGRAM_NAME_RE = re.compile(r"delfin(?:[-_][a-z0-9_-]+)?",
+                                     re.IGNORECASE)
+
+
+def _names_a_delfin_program(cmd: str) -> bool:
+    """True when a shell word of ``cmd`` is one of DELFIN's programs: a
+    console script by name or path (``delfin``, ``delfin-agent``,
+    ``~/bin/delfin-pipeline``, any ``delfin-*`` / ``delfin_*``), a
+    console-script module (``delfin.agent.cli`` after ``-m``) or its file
+    (``delfin/cli_pipeline.py``). Used by the caged rule, which must not
+    admit them unasked: a workflow run, ``stop-all`` or ``bench run`` is
+    an act whether or not a cage holds the files. Over-matches a word
+    that is only an argument (``echo delfin``), which costs a dialog,
+    never a grant. A path below ``delfin/`` that is not an entry file
+    (``delfin/agent/x.py``) does not match."""
+    for w in re.split(r"[\s;&|()`<>]+|\$\(", cmd or ""):
+        w = w.strip("'\"")
+        if not w:
+            continue
+        if w.startswith("-m") and len(w) > 2:
+            w = w[2:]
+        if _DELFIN_PROGRAM_NAME_RE.fullmatch(w.rsplit("/", 1)[-1]):
+            return True
+        if re.fullmatch(_DELFIN_ENTRY_MODULE_RE, w):
+            return True
+        if _DELFIN_ENTRY_SCRIPT_RE.search(w):
+            return True
+    # `from delfin.agent import cli` in an inline payload: the module is
+    # the two words joined.
+    for m in re.finditer(r"\bfrom\s+(delfin[\w.]*)\s+import\s+\(?([\w\s,]+)",
+                         cmd or ""):
+        for name in re.findall(r"\w+", m.group(2)):
+            if re.fullmatch(_DELFIN_ENTRY_MODULE_RE, f"{m.group(1)}.{name}"):
+                return True
+    return False
 
 # Bash patterns that are auto-approved in mode="default" without callback.
 # Two categories:
@@ -3528,7 +3568,10 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"[A-Za-z_][\w.]*",
     *_delfin_cli_read_only_patterns(_PY_M + r"delfin\.agent\.cli",
                                     _PY_M + r"delfin(?:\.cli|\.main|\.__main__)?"),
-    r"^\s*python(?:3(?:\.\d+)?)?\s+\S+\.py\b",                             # run a script in repo
+    # run a script in repo -- not one of DELFIN's console-script files,
+    # which is the program by its path (_DELFIN_ENTRY_SCRIPT_BODY).
+    r"^\s*python(?:3(?:\.\d+)?)?\s+(?!(?:\S*/)?" + _DELFIN_ENTRY_SCRIPT_BODY
+    + r"(?:\s|$))\S+\.py\b",
     r"^\s*pip\s+(?:--version|-V|show|list|freeze|check)\b",
     r"^\s*conda\s+(?:info|list|env\s+list|search)\b",
     r"^\s*(?:pytest|py\.test)\b",
@@ -26393,8 +26436,12 @@ _CAGED_UNASKED_AUTHORING_RE = re.compile(
 def _caged_command_names_excluded(cmd: str) -> bool:
     """True when ``cmd`` names anything the caged rule leaves to the
     existing dialog (``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``), or
-    authors a file in its own text (``_CAGED_UNASKED_AUTHORING_RE``)."""
+    authors a file in its own text (``_CAGED_UNASKED_AUTHORING_RE``), or
+    runs one of DELFIN's own programs (``_names_a_delfin_program``; their
+    read-only forms are on the auto-allow list and never get here)."""
     if _CAGED_UNASKED_EXCLUDED_RE.search(cmd):
+        return True
+    if _names_a_delfin_program(cmd):
         return True
     if _CAGED_UNASKED_AUTHORING_RE.search(cmd):
         return True
