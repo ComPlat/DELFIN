@@ -174,6 +174,9 @@ export interface AgentView {
   submit(text: string): boolean
   /** Fetch the peek again (its session moved on). */
   refreshPeek(): void
+  /** ctrl+c: end a rename (the draft from before it comes back); false
+   *  when there was none. */
+  cancelRename(): boolean
 }
 
 export function createAgentView(deps: AgentViewDeps): AgentView {
@@ -181,7 +184,17 @@ export function createAgentView(deps: AgentViewDeps): AgentView {
     open: false, selectedId: null, selectedAt: 0, peek: null, armed: null, renaming: null, hidden: [],
   })
   const km = deps.keymap
-  const rows = (now?: number) => agentRows(deps.state(), deps.pins(), now).filter((r) => !state.hidden.includes(r.id))
+  // A row taken out stays out while its session has ended; one that runs
+  // again (resumed, woken) is listed again.
+  const rows = (now?: number) => agentRows(deps.state(), deps.pins(), now)
+    .filter((r) => !(state.hidden.includes(r.id) && r.status === "ended"))
+  /** What was typed when a rename began: it comes back when the rename ends. */
+  let stash = ""
+  const endRename = () => {
+    setState({ renaming: null })
+    deps.setDraft(stash)
+    stash = ""
+  }
   const selected = (list = rows()) => {
     const at = list.findIndex((r) => r.id === state.selectedId)
     return at >= 0 ? at : Math.min(state.selectedAt, Math.max(0, list.length - 1))
@@ -199,7 +212,7 @@ export function createAgentView(deps: AgentViewDeps): AgentView {
     select(list, current)
   }
   const close = () => {
-    if (state.renaming) deps.setDraft("")
+    if (state.renaming) endRename()
     setState({ open: false, peek: null, armed: null, renaming: null })
   }
 
@@ -229,14 +242,14 @@ export function createAgentView(deps: AgentViewDeps): AgentView {
     // Keys that edit text are the composer's while something is typed.
     const typing = deps.draft().length > 0
     if (key.name === "escape" || (km.matches("agentsBack", key) && !typing)) {
-      if (state.renaming) {
-        setState({ renaming: null })
-        deps.setDraft("")
-      } else if (state.peek) setState({ peek: null })
+      if (state.renaming) endRename()
+      else if (state.peek) setState({ peek: null })
       else close()
       return true
     }
     if (km.matches("agentsUp", key) || km.matches("agentsDown", key)) {
+      // A reply being typed stays with the session it is for.
+      if (typing && state.peek) return true
       if (list.length) {
         const n = list.length
         select(list, (selected(list) + (km.matches("agentsUp", key) ? n - 1 : 1)) % n)
@@ -252,12 +265,19 @@ export function createAgentView(deps: AgentViewDeps): AgentView {
       }
       return true
     }
+    if (km.matches("agentsRename", key) || km.matches("agentsPin", key)) {
+      // The view's keys on every row (never the prompt's history search).
+      if (!row || row.kind !== "session") {
+        deps.say(row ? "a session elsewhere is renamed and pinned where it runs" : "no session to rename or pin")
+        return true
+      }
+    }
     if (!row) return false
     if (state.renaming && km.matches("submit", key)) {
+      const id = state.renaming
       const name = deps.draft().trim()
-      if (name) deps.rename(state.renaming, name)
-      setState({ renaming: null })
-      deps.setDraft("")
+      if (name) deps.rename(id, name)
+      endRename()
       return true
     }
     if (km.matches("agentsOpen", key) && !typing) {
@@ -294,12 +314,13 @@ export function createAgentView(deps: AgentViewDeps): AgentView {
       }
       return true
     }
-    if (km.matches("agentsRename", key) && row.kind === "session") {
+    if (km.matches("agentsRename", key)) {
+      if (!state.renaming) stash = deps.draft()
       setState({ renaming: row.id, peek: null })
       deps.setDraft(row.name)
       return true
     }
-    if (km.matches("agentsPin", key) && row.kind === "session") {
+    if (km.matches("agentsPin", key)) {
       deps.togglePin(row.id)
       return true
     }
@@ -315,9 +336,14 @@ export function createAgentView(deps: AgentViewDeps): AgentView {
       setState({ renaming: null })
       return true
     }
-    const row = selectedRow()
-    if (state.peek && row && state.peek.id === row.id && row.status !== "ended") {
-      deps.message(row, body)
+    if (state.peek) {
+      // A reply: to the session peeked at, whatever is selected now.
+      const target = rows().find((r) => r.id === state.peek!.id)
+      if (!target || target.status === "ended") {
+        deps.say(`${target?.name ?? "that session"} has ended: → resumes it, then send this again`)
+        return false                      // not sent: the text comes back
+      }
+      deps.message(target, body)
       return true
     }
     close()
@@ -332,7 +358,13 @@ export function createAgentView(deps: AgentViewDeps): AgentView {
     if (row) peekAt(row, true)
   }
 
-  return { state, rows, selected, open, close, handleKey, submit, refreshPeek }
+  const cancelRename = () => {
+    if (!state.renaming) return false
+    endRename()
+    return true
+  }
+
+  return { state, rows, selected, open, close, handleKey, submit, refreshPeek, cancelRename }
 }
 
 /** The hints line while the view is open: what the keys do now, as many

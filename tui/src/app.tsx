@@ -23,7 +23,7 @@ import { createPicker, type Choice } from "./footer/picker"
 import { editPrompt } from "./composer/editor"
 import { keyTable, type Keymap } from "./keymap/keymap"
 import type { Asked, SessionState } from "./store/state"
-import type { AppStore } from "./store/store"
+import { listed, type AppStore } from "./store/store"
 import type { Theme } from "./theme/theme"
 
 export interface Requester {
@@ -48,9 +48,10 @@ export interface AppProps {
   /** Show another session in this window -- one that runs in the agent
    *  service, or a saved one (the resume picker, the agent view). */
   onResume?: (sessionId: string, workspace: string) => void
-  /** Start a new session and show it (the agent view); false when it did
-   *  not start. Prompts sent meanwhile wait for it (`starting`). */
-  onNewSession?: () => Promise<boolean>
+  /** Start a new session and show it (the agent view): its id, or null
+   *  when it did not start (the reason is noted). The session in view stays
+   *  in view, and takes what is typed, until the new one is up. */
+  onNewSession?: () => Promise<string | null>
   /** Pinned sessions (the agent view's); in memory only when not given. */
   pins?: Pins
   /** The agent view on the alternate screen (agents/screen.ts); without
@@ -174,13 +175,25 @@ export function App(props: AppProps): JSX.Element {
     say(result.queued ? `queued for ${row.name}: it goes out when its turn ends` : `sent to ${row.name}`)
   }
   const startNew = async (text: string) => {
-    early.push({ text })
-    const started = await (props.onNewSession?.() ?? Promise.resolve(false))
-    if (!started) {
-      // Not started (the note says why): what was typed for it comes back.
-      const back = early.splice(0).map((e) => e.shown ?? e.text).join("\n\n")
-      if (back && !composer.value()) composer.setText(back)
+    if (store.state.starting) {
+      // The first session is still starting: this one follows it (the
+      // window then shows this one, the latest asked for).
+      say("a new session starts as soon as the first one is up…")
+      const until = Date.now() + 180_000
+      while (store.state.starting && Date.now() < until) await Bun.sleep(100)
     }
+    say("starting a new session…")
+    const id = await (props.onNewSession?.() ?? Promise.resolve(null))
+    if (id) {
+      // Its own prompt, to it -- not to whatever is in view by then.
+      await call("session.prompt", { sessionId: id, text })
+      return
+    }
+    // Not started (the note says why): back in the view, so enter tries
+    // again -- never sent to the session in view; what was typed meanwhile
+    // is kept.
+    agents.open()
+    composer.setText(composer.value() ? `${composer.value()}\n${text}` : text)
   }
   const agents = createAgentView({
     state: () => store.state,
@@ -237,15 +250,13 @@ export function App(props: AppProps): JSX.Element {
     if (!agents.state.open) return
     let gone = false
     const poll = async () => {
-      const listed = await props.client.request("sessions.list", {}).catch(() => null)
-      if (gone || !listed) return
-      for (const summary of (listed.sessions ?? []) as any[]) {
-        if (summary?.sessionId && !store.state.sessions[summary.sessionId]) {
-          store.push({ type: "session.summary", session: summary.sessionId, ts: Date.now() / 1000, summary } as never)
-        }
-      }
+      const got = await props.client.request("sessions.list", {}).catch(() => null)
+      if (gone || !got) return
+      // Every listed session as the service has it; one no longer listed
+      // has ended (a summary missed while disconnected, a restart).
+      listed(store, (got.sessions ?? []) as { sessionId?: string }[])
       store.update((d) => {
-        d.elsewhere = ((listed.elsewhere ?? []) as any[]).filter((e) => e?.key).map((e) => ({
+        d.elsewhere = ((got.elsewhere ?? []) as any[]).filter((e) => e?.key).map((e) => ({
           key: String(e.key), sessionId: e.sessionId ?? null, title: e.title ?? null,
           workspace: String(e.workspace ?? ""), host: String(e.host ?? ""),
         }))
@@ -389,9 +400,21 @@ export function App(props: AppProps): JSX.Element {
     }
   })
   // /exit (or /quit) ends the session, and the window with it, as in the
-  // REPL. A session that ended another way stays in view, saying so.
+  // REPL: when it happens -- a session shown that had ended with /exit
+  // before (resumed from the agent view) is no reason to leave. A session
+  // that ended another way stays in view, saying so.
+  let shownId = ""
+  let exitedBefore = false
   createEffect(() => {
-    if (session()?.ended?.reason === "exit") props.onQuit()
+    const s = session()
+    const exited = s?.ended?.reason === "exit"
+    if ((s?.id ?? "") !== shownId) {
+      shownId = s?.id ?? ""
+      exitedBefore = exited
+      return
+    }
+    if (exited && !exitedBefore) props.onQuit()
+    exitedBefore = exited
   })
 
   const cycleMode = () => {
@@ -433,6 +456,7 @@ export function App(props: AppProps): JSX.Element {
       // in view waits; its row says so.
       if (key.ctrl && key.name === "c" && !composer.search()) {
         key.preventDefault()
+        if (agents.cancelRename()) return
         if (draft()) composer.clear()
         else agents.close()
         return

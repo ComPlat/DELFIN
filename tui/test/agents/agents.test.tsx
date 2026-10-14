@@ -32,17 +32,20 @@ const summary = (id: string, extra: Record<string, unknown> = {}) => ({
 
 /** The window with three more sessions in the service, as main.tsx
  *  registers them from the hello. */
-async function mount(options: { client?: (call: Call) => unknown; pins?: Pins; onNewSession?: () => Promise<boolean>;
+async function mount(options: { client?: (call: Call) => unknown; pins?: Pins; onNewSession?: () => Promise<string | null>;
                                 height?: number } = {}) {
   const opened: [string, string][] = []
   const calls: Call[] = []
+  // What the fake service runs: what the test announced (a real one lists
+  // every session it has; one not listed has ended).
+  const running = new Map<string, Record<string, unknown>>()
   const client = {
     request: async (method: string, params: Record<string, any> = {}) => {
       const call = { method, params }
       calls.push(call)
       const own = options.client?.(call)
       if (own !== undefined) return own
-      if (method === "sessions.list") return { sessions: [], elsewhere: [] }
+      if (method === "sessions.list") return { sessions: [...running.values()], elsewhere: [] }
       if (method === "session.replay") return { events: [] }
       if (method === "session.setTitle") return { title: params.title }
       return { accepted: true, applied: true, message: "" }
@@ -50,8 +53,10 @@ async function mount(options: { client?: (call: Call) => unknown; pins?: Pins; o
   }
   w = await mountWindow({ width: 100, height: options.height ?? 30, client, pins: options.pins,
                           onResume: (id, ws) => { opened.push([id, ws]) }, onNewSession: options.onNewSession })
-  const push = (s: Record<string, unknown>) =>
+  const push = (s: Record<string, unknown>) => {
+    running.set(String(s.sessionId), s)
     w!.store.push({ type: "session.summary", session: s.sessionId, ts: 0, summary: s } as never)
+  }
   push(summary("s1", { title: "this window", createdAt: 900 }))
   push(summary("w1", { title: "optimise benzene", state: "running", activity: "bash  orca opt.inp", createdAt: 1001 }))
   push(summary("q1", { title: "plan the scan", state: "needs_input", pending: 1, waiting: "bash: sbatch scan.sh", createdAt: 1002 }))
@@ -171,7 +176,7 @@ describe("the agent view", () => {
           d.current = "n1"
           d.starting = false
         })
-        return true
+        return "n1"
       },
     })
     await left()
@@ -199,7 +204,7 @@ describe("the agent view", () => {
           d.current = "n1"
           d.starting = false
         })
-        return true
+        return "n1"
       },
     })
     await left()
@@ -216,7 +221,7 @@ describe("the agent view", () => {
   })
 
   test("a new session that does not start gives the prompt back", async () => {
-    const { w, calls } = await mount({ onNewSession: async () => false })
+    const { w, calls } = await mount({ onNewSession: async () => null })
     await left()
     await w.keys.typeText("start the opt")
     w.keys.pressEnter()

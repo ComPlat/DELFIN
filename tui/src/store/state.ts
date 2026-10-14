@@ -152,6 +152,8 @@ export function applyEvent(state: AppState, event: AnyEvent, now: number = Date.
     const s = ensureSession(state, summary.sessionId, summary as unknown as Record<string, unknown>)
     s.summary = summary
     s.state = summary.state
+    // Listed as running (resumed, woken): what ended it is history.
+    if (summary.state !== "ended") s.ended = null
     return
   }
   if (type === "session.removed") {

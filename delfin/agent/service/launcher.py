@@ -286,16 +286,49 @@ def tui_root() -> Path:
     return Path(__file__).resolve().parents[3] / "tui"
 
 
-def tui_command() -> list[str] | None:
-    """How to run the terminal UI from this checkout, or None.
+def platform_name() -> str:
+    """This machine as the window's binaries are named: linux-x64, ..."""
+    import platform
 
-    Until the TUI ships as one binary (phase 7) it runs from source with
-    Bun: ``tui/src/main.tsx`` next to the ``delfin`` package, started in
-    ``tui/`` -- Bun reads its configuration (the Solid JSX preload) and
-    tsconfig from the working directory.
-    """
+    system = {"Linux": "linux", "Darwin": "darwin"}.get(platform.system(), platform.system().lower())
+    machine = platform.machine().lower()
+    arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine, machine)
+    return f"{system}-{arch}"
+
+
+def tui_binary() -> Path | None:
+    """The window as one executable, when there is one to use: named by
+    DELFIN_TUI_BINARY, shipped with the package (``service/bin``), or built
+    in this checkout (``tui/dist``, by ``bun scripts/build-binary.ts``) --
+    that one only while it is newer than every source file of the window,
+    or it would run code that is not the checkout's any more."""
+    named = os.environ.get("DELFIN_TUI_BINARY", "").strip()
+    if named:
+        path = Path(named).expanduser()
+        return path if path.is_file() and os.access(path, os.X_OK) else None
+    name = f"delfin-tui-{platform_name()}"
+    shipped = Path(__file__).resolve().parent / "bin" / name
+    if shipped.is_file() and os.access(shipped, os.X_OK):
+        return shipped
+    built = tui_root() / "dist" / name
+    if built.is_file() and os.access(built, os.X_OK):
+        newest = max((f.stat().st_mtime for f in (tui_root() / "src").rglob("*") if f.is_file()),
+                     default=0.0)
+        if built.stat().st_mtime >= newest:
+            return built
+    return None
+
+
+def tui_command() -> list[str] | None:
+    """How to run the terminal UI, or None: its binary when there is one
+    (tui_binary), else from source with Bun -- ``tui/src/main.tsx`` next
+    to the ``delfin`` package, started in ``tui/``, where Bun reads its
+    configuration (the Solid JSX preload) and tsconfig."""
     import shutil
 
+    binary = tui_binary()
+    if binary is not None:
+        return [str(binary)]
     main = tui_root() / "src" / "main.tsx"
     bun = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun")
     if main.is_file() and Path(bun).is_file():

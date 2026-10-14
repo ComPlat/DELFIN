@@ -88,7 +88,9 @@ def cmd_tui(args: argparse.Namespace) -> int:
     env["DELFIN_TUI_NOTES"] = json.dumps(launcher.other_host_notes())
     # Settings first: the workspace is where `delfin-agent tui` was typed.
     env["DELFIN_TUI_START"] = json.dumps(_start_settings(args))
-    os.chdir(launcher.tui_root())
+    if command[-1].endswith("main.tsx"):
+        # From source: Bun reads its configuration in tui/.
+        os.chdir(launcher.tui_root())
     sys.stdout.flush()
     sys.stderr.flush()
     # The TUI takes this process (and its terminal) over: no Python stays

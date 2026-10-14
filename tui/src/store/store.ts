@@ -42,18 +42,25 @@ export interface AppStore {
   /** Run for every batch, inside the same produce, after the reducer. */
   onBatch(listener: BatchListener): () => void
   /**
-   * Hold every event pushed from now on, until `release`: while a request
-   * that brings a replay (create, attach) is in flight. Its answer and the
-   * live events behind it can arrive in one read; the live ones would
-   * otherwise be applied first -- a durable one making the whole replay
-   * look seen, a delta landing before the answer it belongs to.
+   * Hold the events `test` picks (every one by default) from now on, until
+   * this hold's `release`: while a request that brings a replay (create,
+   * attach) is in flight. Its answer and the live events behind it can
+   * arrive in one read; the live ones would otherwise be applied first --
+   * a durable one making the whole replay look seen, a delta landing
+   * before the answer it belongs to. Only the session the replay is about
+   * is held: a create may take minutes, and the other sessions go on.
    */
-  hold(): void
-  /** The replay first, then what was held (each hold has its release). */
-  release(replay?: AnyEvent[]): void
+  hold(test?: (event: AnyEvent) => boolean): Hold
+  /** Its replay first, then what it held (other holds keep theirs). */
+  release(hold: Hold, replay?: AnyEvent[]): void
   /** Forget which of a session's events were seen: its replay is shown
    *  again (switching back to a session shown before). */
   unsee(session: string): void
+}
+
+/** One hold: what it holds. */
+export interface Hold {
+  test: (event: AnyEvent) => boolean
 }
 
 export function createAppStore(clock: Clock = realClock, frameMs = 16): AppStore {
@@ -67,7 +74,7 @@ function wrap(state: AppState, setState: SetStoreFunction<AppState>,
   let timer: unknown = null
   const seen = new Map<string, number>()
   const listeners = new Set<BatchListener>()
-  let holds = 0
+  let holds: Hold[] = []
   let held: AnyEvent[] = []
 
   const flush = () => {
@@ -90,7 +97,7 @@ function wrap(state: AppState, setState: SetStoreFunction<AppState>,
   const store: AppStore = {
     state,
     push(event) {
-      if (holds > 0) {
+      if (holds.some((h) => h.test(event))) {
         held.push(event)
         return
       }
@@ -111,21 +118,23 @@ function wrap(state: AppState, setState: SetStoreFunction<AppState>,
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
-    hold() {
-      holds++
+    hold(test = () => true) {
+      const hold: Hold = { test }
+      holds.push(hold)
+      return hold
     },
     unsee(session) {
       seen.delete(session)
     },
-    release(replay = []) {
-      // In front of everything held: a replay must precede its session's
-      // live events; other sessions keep their own order.
-      held = [...replay, ...held]
-      holds = Math.max(0, holds - 1)
-      if (holds > 0) return
-      const all = held
-      held = []
-      for (const event of all) store.push(event)
+    release(hold, replay = []) {
+      holds = holds.filter((h) => h !== hold)
+      // In front of what it held: a replay must precede its session's live
+      // events. What another hold still wants stays held, in order.
+      const keep: AnyEvent[] = []
+      const go: AnyEvent[] = []
+      for (const event of held) (holds.some((h) => h.test(event)) ? keep : go).push(event)
+      held = keep
+      for (const event of [...replay, ...go]) store.push(event)
     },
   }
   return store
@@ -137,15 +146,55 @@ function wrap(state: AppState, setState: SetStoreFunction<AppState>,
  * `register` puts the session in place and returns the replay.
  */
 export async function withReplay<T>(store: AppStore, ask: () => Promise<T>,
-                                    register: (answer: T) => AnyEvent[]): Promise<T> {
-  store.hold()
+                                    register: (answer: T) => AnyEvent[],
+                                    test?: (event: AnyEvent) => boolean): Promise<T> {
+  const hold = store.hold(test)
   let replay: AnyEvent[] = []
   try {
     const answer = await ask()
     replay = register(answer)
     return answer
   } finally {
-    store.release(replay)
+    store.release(hold, replay)
+  }
+}
+
+/** What a hold for one session picks: its own events. */
+export function eventsOf(session: string): (event: AnyEvent) => boolean {
+  return (event) => (event as { session?: string }).session === session
+}
+
+/** What a hold for a session still to be created picks: the worker
+ *  events of a session this window does not know yet -- the new one's,
+ *  which can come in the same read as the answer. The service's own
+ *  (summaries, removals) pass: they register a session, and another
+ *  window's new session must not wait for this one's start. */
+export function eventsOfUnknown(store: AppStore): (event: AnyEvent) => boolean {
+  return (event) => {
+    const e = event as { session?: string; type?: string }
+    return Boolean(e.session) && !store.state.sessions[e.session!]
+      && e.type !== "session.summary" && e.type !== "session.removed"
+  }
+}
+
+/**
+ * What the service lists (a hello, sessions.list) is what this window
+ * knows: each listed session's summary applied, and a session it knew
+ * that is no longer listed ended -- after a service restart its rows
+ * would otherwise stay, waiting and working for ever.
+ */
+export function listed(store: AppStore, summaries: { sessionId?: string }[], now: number = Date.now()): void {
+  const ids = new Set<string>()
+  for (const summary of summaries) {
+    if (!summary?.sessionId) continue
+    ids.add(summary.sessionId)
+    store.push({ type: "session.summary", session: summary.sessionId, ts: now / 1000, summary } as never)
+  }
+  for (const [id, s] of Object.entries(store.state.sessions)) {
+    if (!ids.has(id) && s.state !== "ended") {
+      store.push({ type: "session.removed", session: id, ts: now / 1000,
+                   reason: "not in the agent service any more" } as never)
+    }
   }
 }
 

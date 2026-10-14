@@ -1,0 +1,139 @@
+name: TUI
+
+# The terminal window (tui/, TypeScript on Bun and OpenTUI) and the agent
+# service behind it (delfin/agent/service/): unit tests on both sides, the
+# protocol types in step with the Python definition, the live checks in
+# tmux, and the window as one executable per platform.
+#
+# Informational beside CI, on changes to what it covers and on demand.
+on:
+  push:
+    branches: [main, tui-rewrite]
+    paths:
+      - "tui/**"
+      - "delfin/agent/service/**"
+      - "tests/test_a_tui_*.py"
+      - "tests/test_the_tui_*.py"
+      - "tests/test_the_agent_service_*.py"
+      - "tests/tui_service.py"
+      - ".github/workflows/tui.yml"
+  pull_request:
+    paths:
+      - "tui/**"
+      - "delfin/agent/service/**"
+      - "tests/test_a_tui_*.py"
+      - "tests/test_the_tui_*.py"
+      - "tests/test_the_agent_service_*.py"
+      - "tests/tui_service.py"
+      - ".github/workflows/tui.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: tui-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: window and service
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install DELFIN
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[agent,dev]"
+
+      - name: Set up Bun 1.4.3
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+
+      - name: The window's dependencies, with OpenTUI's patched native library
+        # The prebuilt library loses scrollback rows in xterm.js when the
+        # footer grows (opentui#1630); the build script builds the pinned
+        # source with the fix and checks it (docs/TUI_REWRITE.md).
+        working-directory: tui
+        run: |
+          bun install --frozen-lockfile
+          scripts/build-opentui-native.sh
+
+      - name: Window tests, types and protocol
+        working-directory: tui
+        run: |
+          bun test
+          bun x tsc --noEmit
+          DELFIN_PYTHON="$(command -v python)" bun scripts/gen-protocol.ts --check
+
+      - name: Service tests
+        run: >
+          pytest -q --timeout=300 --timeout-method=signal
+          tests/test_a_tui_*.py tests/test_the_tui_*.py tests/test_the_agent_service_*.py
+
+      - name: Live checks in tmux
+        run: |
+          sudo apt-get install -y -q tmux
+          for check in check_tui_tmux check_composer_tmux check_switch_tmux check_agents_tmux \
+                       check_lifecycle_tmux check_resize_tmux check_startup_tmux; do
+            echo "== $check"
+            DELFIN_PYTHON="$(command -v python)" python "tui/test/e2e/$check.py"
+          done
+
+  binary:
+    name: binary (${{ matrix.target }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: bun-linux-x64, patched: true }
+          - { os: ubuntu-24.04-arm, target: bun-linux-arm64, patched: true }
+          # macOS: the prebuilt native library for now -- the patched build
+          # script does not build Darwin yet (on the user checklist).
+          - { os: macos-14, target: bun-darwin-arm64, patched: false }
+          - { os: macos-13, target: bun-darwin-x64, patched: false }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun 1.4.3
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+
+      - name: Build
+        working-directory: tui
+        run: |
+          bun install --frozen-lockfile
+          if [ "${{ matrix.patched }}" = "true" ]; then scripts/build-opentui-native.sh; fi
+          bun scripts/build-binary.ts "${{ matrix.target }}"
+
+      - name: Smoke test
+        # Started without the service it names nothing to talk to: it must
+        # load (the native library, the embedded worker) and say so.
+        working-directory: tui
+        run: |
+          set +e
+          out=$(./dist/delfin-tui-* 2>&1); code=$?
+          echo "$out"
+          [ "$code" = 2 ] && echo "$out" | grep -q "delfin-agent tui"
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: delfin-tui-${{ matrix.target }}
+          path: tui/dist/delfin-tui-*
+          retention-days: 14

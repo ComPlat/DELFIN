@@ -1326,6 +1326,7 @@ and permissions — so a session is usually several agents, not one.
 
 ```bash
 delfin-agent                     # chat in the current directory
+delfin-agent tui                 # the terminal window over all sessions (below)
 delfin-agent run "<task>"        # one turn, headless
 delfin-agent init                # scaffold AGENTS.md + .delfin/ in a project
 delfin-agent doctor              # models, keys, sandbox, MCP servers
@@ -1447,6 +1448,125 @@ A push publishes, so the agent pushes only after you asked for one, one push per
 The role is set per repository, in the terminal, inside the repository: `/git role` shows it, `/git role maintainer` or `/git role contributor` sets it. That writes `agent.git_roles` in `~/.delfin_settings.json`, keyed by the normalised URL of `origin` (`github.com/<owner>/<repo>`; a repository without a remote by its path). Repositories without an entry use `agent.git_role`; an entry wins over it in both directions. The agent cannot set either: the settings file is outside every directory it may write. A push to a URL given on the command line, or through `git -C <dir>`, is judged by that repository; a command whose repository cannot be told for certain counts as `contributor`.
 
 If you ask for the pull-request route in a message ("über PR", "per Pull Request", "nicht direkt auf main", "via a PR", "don't push to main"), the agent keeps to it in that repository for the rest of the session, even as maintainer: branch, push the branch, pull-request link. A later message asking for the direct push ("push directly to main", "direkt auf main pushen") lifts it.
+
+### The terminal window: `delfin-agent tui`
+
+`delfin-agent tui` is a terminal window over all your agent sessions. It
+draws inline, like `delfin-agent chat`: finished output goes into the
+terminal's own scrollback, only the bottom of the screen is live. Unlike
+`chat`, the sessions do not live in the window: they run in the **agent
+service**, one background process per user and host, so closing the window
+(ctrl+d, or ctrl+c twice) leaves them running, and the next window finds
+them again.
+
+```bash
+delfin-agent tui                       # a new session in the current folder
+delfin-agent tui --resume <id>         # a saved session (or one that runs)
+delfin-agent tui --model kit.deepseek-v4-flash --permission-mode acceptEdits
+delfin-agent service status            # the service, its sessions, its windows
+delfin-agent service stop              # end it; sessions are saved
+delfin-agent service restart           # e.g. after an update
+delfin-agent service logs
+```
+
+`delfin-agent tui` takes `chat`'s session flags (`--cwd`, `-n`, `--model`,
+`--provider`, `--effort`, `--permission-mode`, `--continue`, `--add-dir`,
+`--read-dir`, `--isolate`, `-v`). The terminal REPL is unchanged: `chat`,
+`-p` and pipes work as before.
+
+The window runs as one executable when there is one -- `DELFIN_TUI_BINARY`,
+one shipped with the package, or one built in a checkout with
+`cd tui && bun scripts/build-binary.ts` (used while it is newer than the
+sources) -- and otherwise from source with [Bun](https://bun.sh) (`tui/`,
+`bun install` once). The executable needs no Bun and opens in about a
+third of a second.
+
+**In a session** the REPL's keys apply: enter sends (during a turn it is
+queued), ctrl+g sends into the running turn, esc ends the turn, shift+tab
+cycles the approval posture, ctrl+o shows the last tool result in full,
+ctrl+t toggles the task list, ↑/↓ and ctrl+r search the history, tab
+completes `/commands` and `@paths`, ctrl+l writes the session again. ctrl+p
+opens the command palette, with pickers for the model, the posture, the
+effort, the mode and a session to resume. `/keys` lists every key; `/editor`
+edits the prompt in `$EDITOR`. A question (an approval, a plan, a choice)
+takes the keys the REPL offers for it (`y n A k R e a`, `?` explains them,
+`N` refuses with a reason).
+
+**The agent view.** ← on an empty prompt opens the oversight of every
+session, grouped as NEEDS INPUT, WORKING and DONE (pinned ones on top),
+plus the other open DELFIN sessions (the dashboard, other terminals,
+other login nodes) under ELSEWHERE, to watch and message. Each row says
+what the session needs or does in a few words.
+
+| Key | In the agent view |
+|-----|-------------------|
+| ↑ ↓ | select |
+| → or enter | open it in this window (a divider, then its last turns) |
+| space | peek at its last turn; type and enter to reply to it without opening it |
+| typing + enter | start a new session in this window's folder |
+| ctrl+x twice | stop it (it ends and is saved); once more on an ended row removes the row |
+| ctrl+r | rename it |
+| ctrl+t | pin it to the top (kept across windows) |
+| alt+1 … alt+9 | open the n-th session |
+| esc or ← | back |
+
+The view uses the terminal's alternate screen, so esc gives the screen back
+exactly as it was. Under GNU screen, whose alternate screen is off unless
+`altscreen on` is in your `.screenrc`, it grows the footer instead (set
+`DELFIN_TUI_AGENTS_SCREEN=alternate` if yours is on). When a session other
+than the one in view waits for you, the hints line says so (◉) and so does
+the terminal's title.
+
+**Sleeping sessions.** A session that no window shows, with nothing to do
+and nothing to ask, sleeps after an hour: its process ends, it is saved,
+and its row says "asleep". It wakes when you open it, send it a message or
+resume it; a peek does not wake it. A session never sleeps while a turn
+runs, a question is open or a background shell of it runs.
+`DELFIN_AGENT_SLEEP_AFTER_S` sets the time (0: never).
+
+**When the service stops or dies.** `delfin-agent service stop` (or an
+emergency stop) tells the windows first: they leave, saying that the
+sessions are saved. The next service offers those sessions again, asleep.
+If the service dies without a word, an open window starts a new one by
+itself and goes on with its session. After an update, a window of the new
+release moves an idle service over to it; a busy one is left running, and
+`delfin-agent service restart` moves it once its sessions are done.
+
+**On a cluster.** Each login node runs its own service; the window tells
+you when sessions of yours are on another login node. Logging out leaves
+the service and its sessions running for as long as the node allows;
+`delfin-agent service stop` before you log out ends them cleanly. A
+window whose SSH connection drops ends; its sessions run on.
+
+**Resizing.** After the terminal's width changes, the window erases the
+scrollback and writes the last `replayTurns` turns again at the new width
+(under GNU screen, which cannot erase its scrollback, a divider says the
+width changed instead).
+
+**Settings: `~/.delfin/tui.json`** (`DELFIN_TUI_CONFIG` moves it):
+
+```json
+{
+  "theme": "auto",
+  "colors": { "accent": "#6290C0" },
+  "keys": { "steer": ["ctrl+g"], "agentsPeek": ["space"] },
+  "replayTurns": 20,
+  "showThinking": false
+}
+```
+
+| Setting | Meaning |
+|---------|---------|
+| `theme` | `auto` (from the terminal's background), `dark`, `light`, or `mono` (the terminal's own colours; also chosen when `NO_COLOR` is set and the theme is `auto`) |
+| `colors` | overrides for theme tokens: `accent`, `accentSoft`, `text`, `bright`, `muted`, `faint`, `ok`, `warn`, `err`, `code`, `string`, `added`, `removed` (`#rrggbb`) |
+| `keys` | rebinds actions: `submit`, `newline`, `interrupt`, `steer`, `cycleMode`, `expand`, `tasks`, `redraw`, `agents`, `palette`, `quit`, `historyPrev`, `historyNext`, `historySearch`, `agentsUp`, `agentsDown`, `agentsOpen`, `agentsPeek`, `agentsBack`, `agentsStop`, `agentsRename`, `agentsPin`; a key is `ctrl+g`, `shift+tab`, `escape`, `left`, `alt+return`, … |
+| `replayTurns` | turns written again on opening a session or after a resize (0: all) |
+| `showThinking` | show the model's thinking (as `-v`) |
+
+A setting that cannot be read is reported in the window and the default
+applies. The window keeps its prompt history in `~/.delfin/tui_history.jsonl`
+(it also reads the REPL's history) and its pins in `~/.delfin/tui_state.json`.
+`DELFIN_RUNTIME_DIR` moves the service's socket (default `/tmp`).
 
 ### Subagents
 

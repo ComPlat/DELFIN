@@ -2,7 +2,7 @@
  * The user's TUI settings: `~/.delfin/tui.json` (DELFIN_TUI_CONFIG moves it).
  *
  *   {
- *     "theme": "auto" | "dark" | "light",
+ *     "theme": "auto" | "dark" | "light" | "mono",
  *     "colors": { "accent": "#6290C0", ... },       // theme token overrides
  *     "keys": { "steer": ["ctrl+g"], ... },          // keymap overrides
  *     "replayTurns": 20,                              // turns shown on attach
@@ -16,7 +16,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 export interface Config {
-  theme: "auto" | "dark" | "light"
+  theme: "auto" | "dark" | "light" | "mono"
   colors: Record<string, string>
   keys: Record<string, string[]>
   replayTurns: number
@@ -57,8 +57,8 @@ export function parseConfig(text: string): Loaded {
   for (const [key, value] of Object.entries(src)) {
     switch (key) {
       case "theme":
-        if (value === "auto" || value === "dark" || value === "light") config.theme = value
-        else problems.push(`theme must be "auto", "dark" or "light"`)
+        if (value === "auto" || value === "dark" || value === "light" || value === "mono") config.theme = value
+        else problems.push(`theme must be "auto", "dark", "light" or "mono"`)
         break
       case "colors":
         if (value && typeof value === "object" && !Array.isArray(value)) {

@@ -22,8 +22,9 @@ import { Keymap } from "./keymap/keymap"
 import type { AnyEvent } from "./protocol/generated"
 import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
-import { createAppStore, withReplay } from "./store/store"
-import { themeFor } from "./theme/theme"
+import { createAppStore, eventsOf, eventsOfUnknown, listed, withReplay } from "./store/store"
+import { readState, updateState } from "./config/state"
+import { noColor, themeFor } from "./theme/theme"
 import { bounded } from "./scrollback/queue"
 import { ServiceConnection, type ServiceHello } from "./transport/rpc"
 
@@ -108,10 +109,25 @@ const renderer = await createCliRenderer({
   useKittyKeyboard: {},
 })
 step("renderer created")
-const mode = loaded.config.theme === "auto"
-  ? await renderer.waitForThemeMode(300).catch(() => null)
-  : loaded.config.theme
-const [theme] = createSignal(themeFor(mode, loaded.config.colors))
+// NO_COLOR asks for no colours of the window's own, unless tui.json names
+// a theme. "auto" draws at once with the theme the terminal said last time
+// and asks it again meanwhile: waiting for the answer before the first
+// frame cost 300 ms of every start where none comes (tmux).
+const auto = loaded.config.theme === "auto" && !noColor()
+const remembered = readState().themeMode
+let mode: "dark" | "light" | "mono" = loaded.config.theme !== "auto" ? loaded.config.theme
+  : noColor() ? "mono"
+  : remembered === "light" ? "light" : "dark"
+const [theme, setTheme] = createSignal(themeFor(mode, loaded.config.colors))
+if (auto) {
+  void renderer.waitForThemeMode(1500).then((said) => {
+    if (said !== "dark" && said !== "light") return
+    if (said !== remembered) updateState({ themeMode: said })
+    if (said === mode) return
+    mode = said
+    setTheme(themeFor(said, loaded.config.colors))
+  }).catch(() => undefined)
+}
 // `--verbose` shows the thinking, as in chat; tui.json can make it the default.
 const showThinking = loaded.config.showThinking || Boolean(start.verbose)
 const view = startSessionView(renderer, store, theme, { showThinking, replayTurns: loaded.config.replayTurns })
@@ -121,11 +137,7 @@ store.update((d) => {
 })
 // Every session the service runs, for the agent view (each summary that
 // follows keeps its row up to date).
-for (const summary of (hello.sessions ?? []) as { sessionId?: string }[]) {
-  if (summary?.sessionId) {
-    store.push({ type: "session.summary", session: summary.sessionId, ts: Date.now() / 1000, summary } as never)
-  }
-}
+listed(store, (hello.sessions ?? []) as { sessionId?: string }[])
 for (const problem of [...loaded.problems, ...keymap.problems]) view.note(problem)
 // Where else this user's sessions are (other login nodes), from the launcher.
 try {
@@ -136,18 +148,43 @@ try {
   // none to say
 }
 
+/**
+ * Which session the window shows is the latest one asked for: opening the
+ * first, switching (the resume picker, the agent view) and starting a new
+ * one each take a number, and one that comes back after a later request
+ * is not put in view -- it runs on in the service, in the agent view.
+ */
+let wanted = 0
+
+/** What a resume needs of the window's settings: a --fake window resumes
+ *  fake sessions (never a real model in one started for tests). */
+function resumeSettings(): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (start.fake) out.fake = true
+  if (start.fakeDelay !== undefined) out.fakeDelay = start.fakeDelay
+  return out
+}
+
 /** Open the first session: a new one, or the one to resume if it runs here. */
 async function openFirst(): Promise<string> {
+  const mine = ++wanted
   const running = (hello.sessions ?? []) as { sessionId: string }[]
   const resume = String(start.resume ?? "")
   if (resume && running.some((s) => s.sessionId === resume)) {
     await withReplay(store,
       () => connection.rpc.request("session.attach", { sessionId: resume, turns: loaded.config.replayTurns }),
       (attached) => {
-        store.update((d) => { ensureSession(d, resume, attached.session) })
+        store.update((d) => {
+          const s = ensureSession(d, resume, attached.session)
+          s.state = attached.state
+          s.pending = attached.pending as unknown as Asked[]
+          s.ended = null
+        })
+        if (mine !== wanted) return []
         view.show(resume)
+        current = resume
         return attached.events as unknown as AnyEvent[]
-      })
+      }, eventsOf(resume))
     return resume
   }
   const { verbose: _verbose, ...settings } = start
@@ -160,22 +197,25 @@ async function openFirst(): Promise<string> {
         s.state = answer.state
         s.pending = answer.pending as unknown as Asked[]
       })
+      if (mine !== wanted) return []
       view.show(id)
+      current = id
       // The banner (the session as the service saw it start), then what
       // the session has said since its worker started.
       return [{ type: "session.info", session: id, ts: Date.now() / 1000, seq: 0, ...answer.session } as never,
               ...((answer.events ?? []) as unknown as AnyEvent[])]
-    })
+    }, eventsOfUnknown(store))
   return created.sessionId as string
 }
 
 /**
- * Show another session in this window (the resume picker): a divider, its
- * last turns, then its live events. One that runs in the service is
- * attached; a saved one is started again from the session store first.
- * The session left keeps running in the service.
+ * Show another session in this window (the resume picker, the agent
+ * view): a divider, its last turns, then its live events. One that runs
+ * in the service (or sleeps there) is attached; a saved one is started
+ * again from the session store first. The session left keeps running.
  */
 async function switchTo(id: string, workspace: string): Promise<void> {
+  const mine = ++wanted
   try {
     const listed = await connection.rpc.request("sessions.list", {})
     const running = (listed.sessions as { sessionId: string }[]).some((s) => s.sessionId === id)
@@ -183,10 +223,12 @@ async function switchTo(id: string, workspace: string): Promise<void> {
     if (!running) {
       // The id the resumed session runs under is the one to attach to.
       const created = await connection.rpc.request("session.create",
-                                                   { cwd: workspace || process.cwd(), resume: id, attach: false })
+                                                   { cwd: workspace || process.cwd(), resume: id, attach: false,
+                                                     ...resumeSettings() })
       target = String(created.sessionId)
     }
-    const previous = current
+    if (mine !== wanted) return
+    let shown = false
     // Shown before in this window: its replay is new rows again.
     store.unsee(target)
     await withReplay(store,
@@ -196,13 +238,18 @@ async function switchTo(id: string, workspace: string): Promise<void> {
           const s = ensureSession(d, target, attached.session)
           s.state = attached.state
           s.pending = attached.pending as unknown as Asked[]
+          s.ended = null
         })
+        if (mine !== wanted) return []
+        const previous = current
         const title = String(attached.session?.title || "") || target.slice(0, 8)
         view.show(target, { divider: `${running ? "now" : "resumed"}: ${title}` })
         current = target
+        shown = true
+        if (previous && previous !== target) void leave(previous)
         return attached.events as unknown as AnyEvent[]
-      })
-    if (previous && previous !== target) await leave(previous)
+      }, eventsOf(target))
+    if (!shown) await leave(target)
   } catch (error) {
     view.note(`could not open that session: ${(error as Error).message}`)
   }
@@ -228,36 +275,41 @@ async function leave(id: string): Promise<void> {
 
 /**
  * A new session (the agent view's typing + enter), in this window's
- * folder with the first session's settings, shown after a divider. The
- * session in view until now keeps running in the service. Prompts typed
- * meanwhile wait for it (`starting`).
+ * folder with the first session's settings, shown after a divider -- if
+ * nothing else was asked for meanwhile. The session in view until then
+ * stays in view and keeps running in the service. Its id, or null when it
+ * did not start (the note says why).
  */
-async function newSession(): Promise<boolean> {
+async function newSession(): Promise<string | null> {
+  const mine = ++wanted
   const { verbose: _verbose, resume: _resume, continue: _continue, fork: _fork, name: _name, ...settings } = start
-  const previous = current
-  store.update((d) => { d.starting = true })
+  let id = ""
+  let shown = false
   try {
     await withReplay(store,
       () => connection.rpc.request("session.create", { ...settings, cwd: String(start.cwd ?? process.cwd()) }),
       (answer) => {
-        const id = answer.sessionId as string
+        id = answer.sessionId as string
         store.update((d) => {
           const s = ensureSession(d, id, answer.session)
           s.state = answer.state
           s.pending = answer.pending as unknown as Asked[]
         })
+        if (mine !== wanted) return []
+        const previous = current
         view.show(id, { divider: "a new session" })
         current = id
+        shown = true
+        if (previous && previous !== id) void leave(previous)
         return [{ type: "session.info", session: id, ts: Date.now() / 1000, seq: 0, ...answer.session } as never,
                 ...((answer.events ?? []) as unknown as AnyEvent[])]
-      })
-    if (previous && previous !== current) await leave(previous)
-    return true
+      }, eventsOfUnknown(store))
+    // Asked for something else meanwhile: it runs on, in the agent view.
+    if (!shown) await leave(id)
+    return id
   } catch (error) {
     view.note(`the new session could not start: ${(error as Error).message}`)
-    return false
-  } finally {
-    store.update((d) => { d.starting = false })
+    return null
   }
 }
 
@@ -338,7 +390,7 @@ await render(() => (
 step("window rendered")
 store.update((d) => { d.starting = true })
 try {
-  current = await openFirst()
+  await openFirst()
 } catch (error) {
   if (quitting) {
     // Left while it started: nothing to say (the session, if it started,
@@ -362,11 +414,8 @@ try {
 // not shown twice (the store drops seen sequence numbers), and what it
 // knew of a turn that ended meanwhile is let go.
 connection.onUp(async (again) => {
-  for (const summary of (again.sessions ?? []) as { sessionId?: string }[]) {
-    if (summary?.sessionId) {
-      store.push({ type: "session.summary", session: summary.sessionId, ts: Date.now() / 1000, summary } as never)
-    }
-  }
+  // What this (maybe new) service runs is what the window knows now.
+  listed(store, (again.sessions ?? []) as { sessionId?: string }[])
   if (!current) return
   const id = current
   try {
@@ -377,6 +426,7 @@ connection.onUp(async (again) => {
           const s = ensureSession(d, id, attached.session)
           s.state = attached.state
           s.pending = attached.pending as unknown as Asked[]
+          s.ended = null
           if (attached.state !== "running") {
             s.turn = null
             s.tail = ""
@@ -385,7 +435,7 @@ connection.onUp(async (again) => {
           }
         })
         return attached.events as unknown as AnyEvent[]
-      })
+      }, eventsOf(id))
   } catch (error) {
     view.note(`the session is not in the agent service any more: ${(error as Error).message}`)
   }

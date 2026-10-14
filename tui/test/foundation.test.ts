@@ -165,3 +165,18 @@ describe("what the presenter says about questions", () => {
     expect(askedWhat({ kind: "plan" })).toBe("the plan")
   })
 })
+
+describe("NO_COLOR", () => {
+  test("mono draws in the terminal's own colours, and NO_COLOR asks for it", async () => {
+    const { MONO, noColor, themeFor } = await import("../src/theme/theme")
+    const { RGBA } = await import("@opentui/core")
+    expect(themeFor("mono", { accent: "#ff0000" })).toBe(MONO)          // no colours of its own
+    for (const key of ["accent", "text", "faint", "warn", "err"] as const) {
+      expect((MONO[key] as InstanceType<typeof RGBA>).intent).toBe("default")
+    }
+    expect(noColor({ NO_COLOR: "1" })).toBe(true)
+    expect(noColor({ NO_COLOR: "" })).toBe(false)
+    expect(noColor({})).toBe(false)
+    expect(parseConfig(JSON.stringify({ theme: "mono" })).config.theme).toBe("mono")
+  })
+})

@@ -1,17 +1,11 @@
 /**
  * Pinned sessions (the agent view's ctrl+t), kept across windows in the
- * window's own state file, `~/.delfin/tui_state.json` (DELFIN_SCRATCH_STATE
- * moves it, as it moves every ~/.delfin sink). A file that cannot be read
+ * window's own state file (config/state.ts). A file that cannot be read
  * costs the pins, never the start.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { readState, statePath, updateState } from "../config/state"
 
-export function statePath(env: Record<string, string | undefined> = process.env): string {
-  const home = env.DELFIN_SCRATCH_STATE || env.HOME || homedir()
-  return env.DELFIN_TUI_STATE || join(home, ".delfin", "tui_state.json")
-}
+export { statePath }
 
 export class Pins {
   private readonly set: Set<string>
@@ -21,15 +15,8 @@ export class Pins {
   }
 
   static load(path = statePath()): Pins {
-    try {
-      if (existsSync(path)) {
-        const data = JSON.parse(readFileSync(path, "utf8"))
-        if (Array.isArray(data?.pinned)) return new Pins(path, data.pinned.filter((p: unknown) => typeof p === "string"))
-      }
-    } catch {
-      // unreadable: no pins
-    }
-    return new Pins(path)
+    const pinned = readState(path).pinned
+    return new Pins(path, Array.isArray(pinned) ? pinned.filter((p): p is string => typeof p === "string") : [])
   }
 
   has(id: string): boolean {
@@ -59,15 +46,7 @@ export class Pins {
   }
 
   private save(): void {
-    if (!this.path) return
-    try {
-      mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 })
-      const tmp = `${this.path}.${process.pid}.tmp`
-      writeFileSync(tmp, JSON.stringify({ pinned: [...this.set] }, null, 2) + "\n", { mode: 0o600 })
-      renameSync(tmp, this.path)
-    } catch {
-      // a read-only home keeps the pins for this window only
-    }
+    if (this.path) updateState({ pinned: [...this.set] }, this.path)
   }
 }
 

@@ -29,7 +29,7 @@ export async function mountWindow(options: {
   show?: boolean
   answerPauseMs?: number
   onResume?: (id: string, workspace: string) => void
-  onNewSession?: () => Promise<boolean>
+  onNewSession?: () => Promise<string | null>
   pins?: Pins
 } = {}) {
   const t = await createTestRenderer({
