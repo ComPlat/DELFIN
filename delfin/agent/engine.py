@@ -2993,8 +2993,16 @@ class AgentEngine:
         # One-shot: the flag clears so the next turn resumes a normal (now
         # tiny) history; it never assembles state from model text and never
         # needs a model call.
+        # What a fresh start below cuts, held for THIS turn only: a turn
+        # that ends without an answer gives it back (_take_back_turn_row).
+        self._fresh_cut_this_turn = None
         if getattr(self, "start_fresh", False):
             self.start_fresh = False
+            self._fresh_cut_this_turn = (
+                list(self.messages[:-1]),
+                getattr(self, "_last_input_tokens", 0),
+                getattr(self, "_trimmed_chars_since_floor", 0),
+            )
             # Archive everything BEFORE this turn's message so the cut
             # history stays recoverable (the session record is never
             # silently dropped) - the same append-only store compaction
@@ -3658,7 +3666,7 @@ class AgentEngine:
             # if the classification below fails.
             _turn_error = f"{type(_turn_exc).__name__}: {_turn_exc}"
             if not chunks:
-                self.messages.pop()
+                self._take_back_turn_row(require_user=False)
             else:
                 # Text streamed and then the turn died. Re-raising here
                 # skips the append below, so the history ended on a user
@@ -3971,8 +3979,7 @@ class AgentEngine:
             #
             # Same repair as the empty-turn branch below, which already
             # names what it took out.
-            if self.messages and self.messages[-1].get("role") == "user":
-                self.messages.pop()
+            if self._take_back_turn_row():
                 full_response = (
                     "[stopped] Stopped before any answer text. Nothing was "
                     "added to the history and your message is not in it "
@@ -4000,8 +4007,7 @@ class AgentEngine:
             # message back out, and say what was observed instead of
             # returning "" for the caller to interpret as an answer.
             _empty_turn = True
-            if self.messages and self.messages[-1].get("role") == "user":
-                self.messages.pop()
+            self._take_back_turn_row()
             _empty_elapsed = _time.monotonic() - _turn_t0
             if _sanitised_to_nothing:
                 full_response = (
@@ -5170,6 +5176,38 @@ class AgentEngine:
             return {"role": "user", "content": content}
         except Exception:
             return {"role": "user", "content": text}
+
+    def _take_back_turn_row(self, *, require_user: bool = True) -> bool:
+        """Remove this turn's own user row from a turn that produced no
+        answer, and give back the history a fresh start cut for it.
+
+        Input: the history as the unanswered turn left it. Output: True
+        when a row was removed. Semantics: the turn did not happen, so the
+        history is the one it started from. After a fresh start that is
+        the cut history, not an empty list -- the fused row was the only
+        thing standing in for it, and taking that out alone left the
+        engine with nothing, which the next save wrote to disk
+        (engine_messages: [] beside the full transcript). Restored only
+        when nothing but the fused row was there: a turn whose tool rounds
+        were already appended did work against the fresh block.
+
+        ``require_user=False`` is the exception path's unconditional pop.
+        Rejected: re-deciding the fresh start lazily after the first token
+        -- every transport would then need to see the cut, and a turn that
+        is answered must start from the same history either way.
+        """
+        msgs = self.messages
+        if not msgs or (require_user and msgs[-1].get("role") != "user"):
+            return False
+        msgs.pop()
+        cut = getattr(self, "_fresh_cut_this_turn", None)
+        self._fresh_cut_this_turn = None
+        if cut is not None and not self.messages:
+            history, floor, trimmed = cut
+            self.messages = list(history)
+            self._last_input_tokens = floor
+            self._trimmed_chars_since_floor = trimmed
+        return True
 
     def _take_turn_rows(self) -> list:
         """The rows the client's tool loop added this turn, as history.
