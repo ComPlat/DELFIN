@@ -526,6 +526,7 @@ MASKED_HOME_ENTRIES: tuple[str, ...] = (
     ".git-credentials", ".npmrc", ".pypirc",
     ".anthropic", ".openai", ".claude",
     ".delfin/credentials.json",
+    ".delfin/approval_codes",
 )
 
 
