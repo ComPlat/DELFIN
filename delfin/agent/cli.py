@@ -2490,6 +2490,72 @@ def _print_behavior_rates(_bm, records) -> None:
             print(f"  {flag:<9} {r['rate']:>4.0%}  (n={r['n']})")
 
 
+def _cmd_bug_report(args: argparse.Namespace) -> int:
+    """``bug report``: file a report for a session that already ended.
+
+    Input: --session (``latest`` = newest session of --workspace, an id,
+    or a unique id prefix), -m description, --yes. Output: the report
+    directory, printed; surface ``cli``. Exit 0 written, 1 declined or
+    failed, 2 no such session or no way to confirm.
+
+    Without --yes the description and a y/N confirmation are read from
+    the terminal after a preview of what goes in. With no terminal and no
+    --yes nothing is written: a pipe cannot see the preview it would be
+    agreeing to.
+    """
+    from . import bug_filing
+    from .bug_report import resolve_archive_dir
+    workspace = Path(getattr(args, "workspace", "") or os.getcwd()
+                     ).expanduser().resolve()
+    ref = str(getattr(args, "session", "") or "latest")
+    data = bug_filing.resolve_session(ref, workspace)
+    if data is None:
+        where = (f"in {workspace}" if ref == "latest"
+                 else f"matching {ref!r} (unknown or ambiguous)")
+        print(f"ERROR: no saved session {where}", file=sys.stderr)
+        return 2
+    assume_yes = bool(getattr(args, "yes", False))
+    interactive = False
+    try:
+        interactive = sys.stdin.isatty()
+    except Exception:
+        interactive = False
+    if not assume_yes and not interactive:
+        print("ERROR: confirmation needs a terminal; pass --yes to file "
+              "without one", file=sys.stderr)
+        return 2
+    description = str(getattr(args, "message", "") or "").strip()
+    if not description and not assume_yes:
+        try:
+            description = input("Describe the problem in one line: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            description = ""
+        if not description:
+            print("no description given; nothing was written")
+            return 1
+    collected = bug_filing.collect_saved(data)
+    print(bug_filing.preview(collected, resolve_archive_dir()))
+    if not assume_yes:
+        try:
+            answer = input("File this report? [y/N] ")
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("nothing was written")
+            return 1
+    try:
+        report_dir = bug_filing.file_report(
+            collected, description=description, surface="cli")
+    except Exception as exc:
+        print(f"ERROR: bug report failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"bug report written: {report_dir}")
+    remote = bug_filing.push_if_configured(report_dir)
+    if remote:
+        print(remote)
+    return 0
+
+
 def cmd_bug(args: argparse.Namespace) -> int:
     """Triage / watch the user bug-report archive (auto-analyse → Solved)."""
     from . import bug_watcher as _bw
@@ -2498,6 +2564,9 @@ def cmd_bug(args: argparse.Namespace) -> int:
     archive_arg = getattr(args, "archive", "") or ""
     archive = (Path(archive_arg).expanduser() if archive_arg
                else _bw.resolve_watch_archive())
+
+    if action == "report":
+        return _cmd_bug_report(args)
 
     if action == "ls":
         pending = _bw.find_unsolved(archive)
@@ -2509,8 +2578,9 @@ def cmd_bug(args: argparse.Namespace) -> int:
                 rep = _br.load_report(d)
             except Exception:
                 rep = {}
-            desc = str(rep.get("description") or "").replace(chr(10), " ")[:56]
-            print(f"  {d.name:<44} {str(rep.get('model', '?')):<22} {desc}")
+            desc = str(rep.get("description") or "").replace(chr(10), " ")[:48]
+            print(f"  {d.name:<44} {_br.report_surface(rep):<9} "
+                  f"{str(rep.get('model', '?')):<22} {desc}")
         print(f"\n{len(pending)} pending in {archive}")
         return 0
 
@@ -4564,10 +4634,27 @@ def build_parser() -> argparse.ArgumentParser:
     # bug — triage / watch the user bug-report archive (maintainer tool)
     bug = sub.add_parser(
         "bug",
-        help="Triage the bug-report archive: auto-analyse + propose a fix "
-             "(read-only; never moves to Solved automatically)",
+        help="File a bug report (bug report) or triage the archive: "
+             "auto-analyse + propose a fix (read-only; never moves to "
+             "Solved automatically)",
     )
     bug_sub = bug.add_subparsers(dest="bug_action", required=False)
+
+    bug_rep = bug_sub.add_parser(
+        "report",
+        help="File a bug report for a saved session (the dashboard's "
+             "report, from a shell)")
+    bug_rep.add_argument("--session", default="latest",
+                         help="Session id, unique id prefix, or 'latest' "
+                              "(newest session of --workspace)")
+    bug_rep.add_argument("-m", "--message", default="",
+                         help="One-line description (asked for when absent)")
+    bug_rep.add_argument("--yes", action="store_true",
+                         help="Write without the preview confirmation")
+    bug_rep.add_argument("--workspace", default="",
+                         help="Workspace whose latest session is meant "
+                              "(default: current directory)")
+    bug_rep.set_defaults(bug_action="report")
 
     bug_ls = bug_sub.add_parser("ls", help="List un-triaged reports")
     bug_ls.add_argument("--archive", default="",
@@ -4822,6 +4909,37 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_watch.add_argument("--status", action="store_true",
                             help="Report daemon, setting and watched count "
                                  "(default)")
+
+    # ops status -- checkouts, dashboard servers, sessions and leftovers in
+    # one read-only view (delfin/agent/ops_status.py). Every flag reads:
+    # the bash auto-allow entry for this command depends on that, and
+    # tests/test_ops_status_reads_the_machinery.py pins the flag set.
+    def _cmd_ops(args):
+        from delfin.agent import ops_status
+        return ops_status.main(json_out=bool(args.json),
+                               repo=str(args.repo or ""))
+
+    ops_p = sub.add_parser(
+        "ops",
+        help="DELFIN's own machinery: `ops status` lists checkouts and "
+             "worktrees, dashboard servers, sessions and leftovers with a "
+             "safe next step per problem (read-only)",
+    )
+    ops_sub = ops_p.add_subparsers(dest="ops_action", required=True)
+    ops_status_p = ops_sub.add_parser(
+        "status",
+        help="Read-only overview: checkouts (branch / detached / held by), "
+             "dashboard servers of yours, session locks, stale locks and "
+             "worktrees; one 'problem → next step' line each; changes nothing",
+    )
+    ops_status_p.add_argument("--json", action="store_true",
+                              help="Print the status as JSON "
+                                   "(schema delfin.ops_status/1)")
+    ops_status_p.add_argument("--repo", default="",
+                              help="A checkout of the repository to inspect "
+                                   "(default: the current directory, else "
+                                   "the checkout DELFIN runs from)")
+    ops_status_p.set_defaults(func=_cmd_ops)
 
     # T6: run a session's tests on a SLURM compute node from a node-local
     # copy. The handler lives in delfin/agent/slurm_tests.py; it is imported

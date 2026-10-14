@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 from delfin.dashboard import session as _session
 from delfin.dashboard import turn_record as _turns
+from delfin.dashboard import window_state as _windows
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +383,7 @@ def resume_kernel_manager_class(base: type) -> type:
             self._delfin_unwatched().pop(kernel_id, None)
             self._delfin_waiting_for_turn.discard(kernel_id)
             self._delfin_closed().pop(kernel_id, None)
+            _windows.mark(kernel_id, False)
 
         def notify_disconnect(self, kernel_id):
             super().notify_disconnect(kernel_id)
@@ -391,6 +393,10 @@ def resume_kernel_manager_class(base: type) -> type:
                 left = 0
             if left <= 0:
                 self._delfin_unwatched()[kernel_id] = (time.monotonic(), True)
+                # Written for the kernels, which cannot see this count: a
+                # reload's new kernel takes the conversation over from a
+                # windowless one (window_state.may_take_over).
+                _windows.mark(kernel_id, True)
 
         def _delfin_seconds_unwatched(self, kernel_id) -> Optional[tuple]:
             """(seconds, had_a_window), or None while a window is there."""
@@ -551,6 +557,7 @@ def resume_kernel_manager_class(base: type) -> type:
                                     str(kernel_id)[:8], name)
                     _session.drop_record(name)
             self._delfin_unwatched().pop(kernel_id, None)
+            _windows.mark(kernel_id, False)
             result = await super().shutdown_kernel(kernel_id, *args, **kwargs)
             # The page's goodbye ends an un-kept kernel through here, not
             # through the cull rule -- and for one run the server then sat
