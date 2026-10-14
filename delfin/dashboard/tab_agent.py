@@ -5466,6 +5466,15 @@ def create_tab(ctx):
 
     Returns ``(tab_widget, refs_dict)``.
     """
+    # Every writer lock this kernel takes names the kernel, so the page
+    # that replaces it on a reload can ask the server whether it still has
+    # a window (window_state.may_take_over). Empty outside a kernel.
+    try:
+        from delfin.agent.session_store import set_lock_identity
+        from delfin.dashboard.session import kernel_id as _own_kernel_id
+        set_lock_identity(kernel=_own_kernel_id())
+    except Exception:
+        pass
     # -- check if pyyaml is available (needed for prompt loading) ----------
     try:
         import yaml  # noqa: F401
@@ -9347,6 +9356,20 @@ def create_tab(ctx):
                 _holder = session_lock_holder(session_id)
             except Exception:
                 _holder = None
+            if _holder:
+                # A reload: the holder is this dashboard's previous kernel,
+                # kept by the server for the grace with no window and no
+                # turn running. The conversation goes to the page the
+                # person is looking at, and the old kernel's saves stop.
+                try:
+                    from delfin.dashboard.window_state import may_take_over
+                    from delfin.agent.session_store import (
+                        take_over_session_lock)
+                    if (may_take_over(_holder) and take_over_session_lock(
+                            session_id, _holder["pid"])):
+                        _holder = None
+                except Exception:
+                    pass
             if _holder:
                 _where = (f" on {_holder['host']}" if _holder.get("elsewhere")
                           else "")
