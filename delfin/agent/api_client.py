@@ -5273,6 +5273,7 @@ def _run_github_push(plan: dict, run_cwd, env: dict,
     way the shell command it came from would have."""
     push_env = {k: v for k, v in env.items()
                 if not k.startswith("GIT_") and k not in ("SSH_ASKPASS",)}
+    push_env["GIT_TERMINAL_PROMPT"] = "0"
     proc = subprocess.run(plan["argv"], cwd=str(run_cwd), env=push_env,
                           capture_output=True, text=True, timeout=timeout,
                           stdin=subprocess.DEVNULL, start_new_session=True,
@@ -7647,6 +7648,11 @@ def _next_turn_token() -> int:
 #: is read at the next round anyway; above it the message waited longer
 #: than a reply takes. The 2026-09-30 case: three messages over 30 min.
 USER_INTERRUPT_AFTER_S = 30.0
+
+#: Seconds a git push may take in the foreground before it is ended as
+#: waiting for a credential. Field pushes that went through took 2-5 s
+#: (bug archive, 28 of 63); the 9 that hung ran to 120-600 s.
+PUSH_TIMEOUT_S = 60
 
 _USER_INTERRUPT_NOTE = (
     "ended after {secs:.0f}s because the user sent a message while it ran; "
@@ -22480,6 +22486,11 @@ class _DocToolExecutor:
         # were cut at 600s, and lost ten minutes each following that advice
         # (2026-09-18).
         timeout_was_capped = requested_timeout > timeout
+        # A push that has not finished in PUSH_TIMEOUT_S is waiting for a
+        # credential nobody can give here; it is ended then and says so.
+        _is_push = _is_git_push(cmd)
+        if _is_push:
+            timeout = max(1, min(timeout, int(PUSH_TIMEOUT_S)))
         cwd_arg = arguments.get("cwd", "") or ""
 
         if cwd_arg:
@@ -22596,6 +22607,24 @@ class _DocToolExecutor:
             # What it wrote before it was ended is still its work.
             self._journal_shell_changes("bash", _snap, perms)
             self._note_timed_out(cmd, perms, timeout)
+            if _is_push:
+                return json.dumps({
+                    "error": (
+                        f"git push did not finish in {timeout}s and was "
+                        "ended. A push that waits this long is waiting for "
+                        "a credential that cannot be given here: commands "
+                        "run without a terminal, and an editor's credential "
+                        "helper is not reachable from them. Another TMPDIR, "
+                        "transport or proxy does not change that, and "
+                        "nothing was pushed. Tell the user what is ready to "
+                        "push and where: they push it themselves, or give "
+                        "this checkout a credential that needs no prompt "
+                        "(an SSH remote on github.com, or `gh auth login` "
+                        "then `gh auth setup-git`)."),
+                    "command": cmd[:200],
+                    "push_timeout_s": timeout,
+                    "description": description,
+                })
             # Say what to do instead. The default window is a minute or
             # two, and a run that needs longer has two sanctioned ways
             # to be run -- neither of which the refusal named, so a
@@ -22691,6 +22720,18 @@ class _DocToolExecutor:
         _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
         if _ssh_note:
             payload["hint"] = _ssh_note
+        elif _is_push:
+            # The one-line cause of a failed push (push_diagnosis), so the
+            # first refusal is read as final instead of re-spelled.
+            _ptext = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            if proc.returncode != 0 or "fatal:" in _ptext:
+                try:
+                    from .push_diagnosis import explain as _push_explain
+                    _pd = _push_explain(_ptext)
+                except Exception:
+                    _pd = ""
+                if _pd:
+                    payload["hint"] = _pd
         if _journal_notes:
             payload["untracked_changes"] = " ".join(_journal_notes)
         watched = _auto_watch_submitted_jobs(proc.stdout or "", perms)
@@ -26069,6 +26110,20 @@ def _scrubbed_bash_env() -> dict:
     # shell tool, background job, test run, external agent CLI.
     from .approval_guard import ENV_MARKER as _agent_marker
     env[_agent_marker] = str(os.getpid())
+    # Nobody answers a prompt here: no terminal, and the editor's askpass
+    # socket is refused inside the cage. git that asks anyway waits: the
+    # editor's askpass makes a temp file, fails on a read-only TMPDIR, and
+    # runs `cat` on the empty name -- reading the remote helper's open
+    # stdin forever (9 push timeouts, 37 min, bug archive 2026-09-16..
+    # 10-14). Fail instead; nothing here adds a credential.
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "never"
+    _editor = any(k.startswith("VSCODE_GIT_") for k in env)
+    for k in [k for k in env if k.startswith("VSCODE_GIT_")]:
+        env.pop(k, None)
+    for k in ("GIT_ASKPASS", "SSH_ASKPASS"):
+        if k in env and (_editor or "vscode" in env[k].lower()):
+            env.pop(k, None)
     return env
 
 
@@ -27015,6 +27070,12 @@ def _bash_isolation_argv(
         "--dev", "/dev",
         "--proc", "/proc",
         "--tmpfs", "/tmp",
+        # The host's TMPDIR (a cluster scratch path) is read-only under the
+        # "/" bind; the cage's own /tmp is the writable one. Landlock and
+        # Seatbelt set their private directory the same way.
+        "--setenv", "TMPDIR", "/tmp",
+        "--setenv", "TMP", "/tmp",
+        "--setenv", "TEMP", "/tmp",
     ]
     for rel in _HOME_SECRET_DIRS:
         p = home / rel
