@@ -16,6 +16,7 @@ stamped with the override in its profile name.
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import pytest
@@ -224,6 +225,17 @@ def test_another_session_gets_another_route_key(kit_client):
     b, sent_b = kit_client(_GLM, session="trace-b")
     _turn(b)
     assert sent_a[0]["user"] != sent_b[0]["user"]
+
+
+def test_the_route_key_is_not_computed_from_the_session(monkeypatch):
+    # Drawn at random per key, not derived: the same key in a fresh
+    # registry gets another id, so no digest of session data is sent.
+    first = mp.session_route_key(_GLM, "trace-same")
+    monkeypatch.setattr(mp, "_ROUTE_IDS", {})
+    second = mp.session_route_key(_GLM, "trace-same")
+    assert first.startswith("delfin-") and second.startswith("delfin-")
+    assert first != second
+    assert "hashlib" not in inspect.getsource(mp.session_route_key)
 
 
 def test_deepseek_requests_are_unchanged(kit_client):

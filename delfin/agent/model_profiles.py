@@ -21,6 +21,7 @@ something useful turns up, not preemptively.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -464,14 +465,23 @@ MODEL_NOTES: dict[str, str] = {
 }
 
 
+_ROUTE_IDS: dict[str, str] = {}
+_ROUTE_IDS_MAX = 4096
+_ROUTE_IDS_LOCK = threading.Lock()
+
+
 def session_route_key(model: str, session: str) -> str:
     """The ``user`` value for *model*'s requests in *session*, or "".
 
     Input: a model name and the engine's per-session key (its trace
-    session). Output: ``delfin-`` plus 16 hex characters of a SHA-256 over
-    the key, the same for every request of the session; "" when the
-    profile has session_affinity off or there is no key. The key itself
-    never leaves the machine. Never raises.
+    session). Output: ``delfin-`` plus 16 random hex characters, drawn
+    once per key and process and the same for every later request of the
+    session; "" when the profile has session_affinity off or there is no
+    key. Nothing is derived from the key, so neither it nor any digest of
+    it leaves the machine (a hash of the key was rejected: it is a value
+    computed from session data, and code scanning flags it). Cost: a
+    session resumed in a new process gets a new id, so its first request
+    misses the backend's prefix cache once. Never raises.
     """
     key = str(session or "").strip()
     if not key:
@@ -481,9 +491,14 @@ def session_route_key(model: str, session: str) -> str:
             return ""
     except Exception:
         return ""
-    import hashlib
-    digest = hashlib.sha256(("delfin-route\0" + key).encode("utf-8")).hexdigest()
-    return "delfin-" + digest[:16]
+    with _ROUTE_IDS_LOCK:
+        rid = _ROUTE_IDS.get(key)
+        if rid is None:
+            if len(_ROUTE_IDS) >= _ROUTE_IDS_MAX:
+                _ROUTE_IDS.pop(next(iter(_ROUTE_IDS)))
+            import secrets
+            rid = _ROUTE_IDS[key] = "delfin-" + secrets.token_hex(8)
+    return rid
 
 
 def model_notes(model: str) -> str:
