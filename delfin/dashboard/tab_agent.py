@@ -4853,7 +4853,9 @@ def _format_solo_domain_state(snapshot: dict) -> str:
         - ``control`` (dict): {functional, basis, pal, charge, mult, ...}
         - ``orca_builder`` (dict): {method, basis, charge, mult, ...}
         - ``job_summary`` (str): one-line job overview ("2 RUNNING, 5 PENDING")
-        - ``workspace_files`` (list[str]): file names in agent_workspace/
+        - ``workspace_dir`` (str): the session's workspace (where its
+          tools resolve relative paths)
+        - ``workspace_files`` (list[str]): top-level file names in it
         - ``active_tab`` (str): currently open dashboard tab
         - ``perm_profile`` (str): active permission profile
     """
@@ -4906,11 +4908,15 @@ def _format_solo_domain_state(snapshot: dict) -> str:
     if job_summary:
         lines.append(f"jobs: {job_summary}")
 
+    ws_dir = str(snapshot.get("workspace_dir") or "").strip()
     ws = snapshot.get("workspace_files") or []
     if isinstance(ws, list) and ws:
         preview = ", ".join(str(f) for f in ws[:8])
         tail = f" (+{len(ws) - 8} more)" if len(ws) > 8 else ""
-        lines.append(f"workspace: {preview}{tail}")
+        where = f" {ws_dir} --" if ws_dir else ""
+        lines.append(f"workspace:{where} {preview}{tail}")
+    elif ws_dir:
+        lines.append(f"workspace: {ws_dir}")
 
     active_tab = (snapshot.get("active_tab") or "").strip()
     if active_tab:
@@ -5460,6 +5466,15 @@ def create_tab(ctx):
 
     Returns ``(tab_widget, refs_dict)``.
     """
+    # Every writer lock this kernel takes names the kernel, so the page
+    # that replaces it on a reload can ask the server whether it still has
+    # a window (window_state.may_take_over). Empty outside a kernel.
+    try:
+        from delfin.agent.session_store import set_lock_identity
+        from delfin.dashboard.session import kernel_id as _own_kernel_id
+        set_lock_identity(kernel=_own_kernel_id())
+    except Exception:
+        pass
     # -- check if pyyaml is available (needed for prompt loading) ----------
     try:
         import yaml  # noqa: F401
@@ -9341,6 +9356,20 @@ def create_tab(ctx):
                 _holder = session_lock_holder(session_id)
             except Exception:
                 _holder = None
+            if _holder:
+                # A reload: the holder is this dashboard's previous kernel,
+                # kept by the server for the grace with no window and no
+                # turn running. The conversation goes to the page the
+                # person is looking at, and the old kernel's saves stop.
+                try:
+                    from delfin.dashboard.window_state import may_take_over
+                    from delfin.agent.session_store import (
+                        take_over_session_lock)
+                    if (may_take_over(_holder) and take_over_session_lock(
+                            session_id, _holder["pid"])):
+                        _holder = None
+                except Exception:
+                    pass
             if _holder:
                 _where = (f" on {_holder['host']}" if _holder.get("elsewhere")
                           else "")
@@ -16559,13 +16588,19 @@ def create_tab(ctx):
         except Exception:
             pass
 
-        # Workspace inventory (small)
+        # Workspace inventory (small): the SESSION's workspace, the one its
+        # tools resolve relative paths against (_agent_workspace_path reads
+        # the engine's permission workspace first). It listed ctx.agent_dir,
+        # shared by every session of the dashboard and possibly the launch
+        # checkout: a session in a worktree was told about a task file that
+        # did not exist where it works, and went looking for it.
         try:
-            files = sorted(
-                p.name for p in ctx.agent_dir.iterdir() if p.is_file()
-            )
-            if files:
-                snap["workspace_files"] = files[:20]
+            _ws = Path(_agent_workspace_path())
+            if _ws.is_dir():
+                snap["workspace_dir"] = str(_ws)
+                files = sorted(p.name for p in _ws.iterdir() if p.is_file())
+                if files:
+                    snap["workspace_files"] = files[:20]
         except Exception:
             pass
 
@@ -16730,11 +16765,18 @@ def create_tab(ctx):
 
         commits: list[str] = []
         branch_name = ""
+        # Branch and commits of the session's workspace, not ctx.repo_dir
+        # (the launch checkout): a session in a worktree works on the
+        # worktree's branch.
+        try:
+            _git_cwd = _agent_workspace_path() or str(ctx.repo_dir or Path.cwd())
+        except Exception:
+            _git_cwd = str(ctx.repo_dir or Path.cwd())
         try:
             import subprocess as _sp
             _r = _sp.run(
                 ["git", "log", "-3", "--oneline"],
-                cwd=str(ctx.repo_dir or Path.cwd()),
+                cwd=_git_cwd,
                 capture_output=True, text=True, timeout=2,
             )
             if _r.returncode == 0:
@@ -16743,7 +16785,7 @@ def create_tab(ctx):
                 ]
             _b = _sp.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=str(ctx.repo_dir or Path.cwd()),
+                cwd=_git_cwd,
                 capture_output=True, text=True, timeout=2,
             )
             if _b.returncode == 0:
@@ -17894,6 +17936,7 @@ def create_tab(ctx):
                            or str(getattr(engine, "repo_dir", "") or "")
                            or None),
                 repo_dir=str(ctx.repo_dir) if ctx.repo_dir else None,
+                surface="dashboard",
             )
             short = str(report_dir).replace(str(Path.home()), "~")
             # Ship it to the shared remote archive over SSH (same transfer
