@@ -25558,7 +25558,10 @@ def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
             pass
         if _caged_command_names_excluded(cmd):
             return False
-        if _bash_isolation_decision(perms)[0] != "bwrap":
+        _kind, _iso_mode = _bash_isolation_decision(perms)
+        # A container session runs its commands in the container, whose
+        # mounts are not the cage this admission relies on: asked instead.
+        if _kind != "bwrap" or _iso_mode == "container":
             return False
         if not _process_cage_enabled():
             return False
@@ -25744,6 +25747,21 @@ def _bash_isolation_argv(
     # session-scoped choice must not have to write a setting that outlives
     # the session making it. Resolved in _bash_isolation_decision.
     kind, mode = _bash_isolation_decision(perms, mode)
+    if mode == "container":
+        # A container where one can run (container_exec); otherwise the
+        # layers "auto" picks, with a recorded notice -- never a plain shell.
+        # Never for a caged_unasked command: that admission was made for
+        # the bubblewrap cage, which the container is not.
+        boxed = None
+        if not caged_unasked:
+            try:
+                from . import container_exec as _ce
+                boxed = _ce.session_argv(cmd, run_cwd, perms, extra_write)
+            except Exception:
+                boxed = None
+        if boxed:
+            return boxed
+        kind, mode = _bash_isolation_decision(perms, "auto")
     if caged_unasked and (kind != "bwrap" or not _landlock_functional()):
         return _refusal_argv(
             "this command was admitted without a question because the "
