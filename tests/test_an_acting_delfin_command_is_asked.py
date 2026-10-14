@@ -38,6 +38,8 @@ import pytest
 
 import delfin.agent.api_client as A
 
+_REAL_CAGED_RULE = A._caged_command_may_run_unasked
+
 MODES = ("default", "acceptEdits")
 
 ACTING = [
@@ -123,6 +125,16 @@ ACTING = [
     "python3 -m delfin.agent.cli stop-all --yes",
     "python -m delfin.agent.cli bench run",
     "python3.11 -m delfin.cli_pipeline run",
+    # ... and by file path
+    "python3 delfin/cli_pipeline.py run",
+    "python3 ./delfin/agent/cli.py stop-all --yes",
+    "python /opt/env/lib/python3.11/site-packages/delfin/cli.py",
+    # ... and imported into an inline payload (in this workspace delfin/
+    # is a local package, which the payload analyser otherwise treats as
+    # a local file to scan, like `python3 <file>.py`)
+    'python3 -c "import delfin.cli; delfin.cli.main()"',
+    'python3 -c "from delfin.agent import cli; cli.main()"',
+    'python3 -c "from delfin.agent.cli import main; main()"',
 ]
 
 READ_ONLY = [
@@ -366,9 +378,98 @@ def test_every_console_script_module_is_asked_by_module_name(
     "python -m molkit run",
     "python3 -m delfin_tools_x",
     "python -m delfin.agent.bench_tasks",
+    "python3 delfin/agent/other_tool.py",
+    'python3 -c "import delfin; print(delfin.__file__)"',
 ])
 def test_another_module_still_runs_unasked(ws, ran, cmd):
     """Control: the exclusion is the entry modules, not every module whose
     name starts with delfin."""
     out = _bash(_perms(ws, "default", None), cmd)
     assert ran == [cmd], out
+
+
+# ---------------------------------------------------------------------------
+# On a host whose bubblewrap cage admits an unlisted command unasked
+# (_caged_command_may_run_unasked): DELFIN's own programs are not admitted.
+# The cage bounds files and processes; a workflow run, `bench run` or
+# `scheduler start` is an act inside it all the same.
+# ---------------------------------------------------------------------------
+
+#: Lines the cage would otherwise admit. `delfin/scripts/run_all.sh` is a
+#: repository script like any other, not a DELFIN program, and stays
+#: admitted (control below); credentials and approvals are refused by
+#: earlier tiers.
+CAGED_ACTING = [c for c in ACTING
+                if c != "delfin/scripts/run_all.sh"
+                and "credentials" not in c
+                and not c.startswith("delfin-agent approvals ")] + [
+    "~/bin/delfin-agent stop-all --yes",
+    "/opt/env/bin/delfin --recalc",
+    "timeout 60 delfin-agent bench run",
+    "env FOO=1 delfin cleanup",
+    "cd . && delfin",
+    "python3 -mdelfin.agent.cli scheduler start",
+]
+
+
+@pytest.fixture
+def caged(monkeypatch):
+    """The caged rule's own logic, on a host pinned to: bubblewrap chosen,
+    process cage on, Landlock working, network not open."""
+    monkeypatch.setattr(A, "_caged_command_may_run_unasked", _REAL_CAGED_RULE)
+    monkeypatch.setattr(A, "_bash_isolation_decision",
+                        lambda perms, mode=None: ("bwrap", "auto"))
+    monkeypatch.setattr(A, "_process_cage_enabled", lambda: True)
+    monkeypatch.setattr(A, "_landlock_functional", lambda: True)
+    monkeypatch.setattr(A, "_BWRAP_RUNTIME_FAILURE", None)
+    from delfin.agent import egress_proxy as EP
+    monkeypatch.setattr(EP, "network_mode", lambda: "proxy")
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_the_cage_admits_an_ordinary_unlisted_command(ws, ran, caged, mode):
+    """Control: the pinned host does admit; without it the tests below
+    would pass for the wrong reason."""
+    (ws / "run.sh").write_text("#!/bin/sh\necho hi\n")
+    for cmd in ("./run.sh", "bash delfin/scripts/run_all.sh"):
+        ran.clear()
+        out = _bash(_perms(ws, mode, None), cmd)
+        assert ran == [cmd], out
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("cmd", CAGED_ACTING)
+def test_a_caged_acting_command_is_asked_attended(ws, ran, caged, mode, cmd):
+    asked: list = []
+    out = _bash(_perms(ws, mode, asked), cmd)
+    assert ran == [], f"{cmd!r} admitted caged in {mode}: {out}"
+    assert [c for (_n, c) in asked] == [cmd], (cmd, mode, asked, out)
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("cmd", CAGED_ACTING)
+def test_a_caged_acting_command_is_refused_headless(ws, ran, caged, mode, cmd):
+    out = _bash(_perms(ws, mode, None), cmd)
+    assert ran == [], f"{cmd!r} admitted caged headless in {mode}: {out}"
+    assert '"error"' in out, out
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("cmd", READ_ONLY[::4])
+def test_a_read_only_command_still_runs_on_a_caged_host(
+        ws, ran, caged, mode, cmd):
+    asked: list = []
+    out = _bash(_perms(ws, mode, asked), cmd)
+    assert ran == [cmd], out
+    assert asked == []
+
+
+@pytest.mark.parametrize("word,expected", [
+    ("delfin", True), ("delfin-agent", True), ("~/bin/delfin-guppy", True),
+    ("delfin_ESD", True), ("delfin.agent.cli", True),
+    ("delfin/cli_step.py", True), ("x/site-packages/delfin/main.py", True),
+    ("delfin/agent/api_client.py", False), ("delfin/", False),
+    ("delfinite", False), ("delfin.agent.bench_tasks", False),
+])
+def test_which_words_name_a_delfin_program(word, expected):
+    assert A._names_a_delfin_program(f"run {word} now") is expected
