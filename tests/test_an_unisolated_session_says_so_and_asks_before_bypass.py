@@ -233,8 +233,9 @@ def _one_shot(monkeypatch, tmp_path, run_once, *, mode="bypassPermissions"):
     monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(b"")))
     # cmd_run moves into --cwd and stays there.
     monkeypatch.chdir(Path.cwd())
+    # --unattended: a headless bypass run needs it (_headless_posture).
     rc = agent_cli.main(["-p", "do it", "--permission-mode", mode,
-                         "--cwd", str(ws)])
+                         "--unattended", "--cwd", str(ws)])
     return rc, holder["engine"]
 
 
@@ -357,6 +358,32 @@ def test_an_unconfinable_command_with_nobody_to_ask_names_what_works(
         "bash", {"command": "ls"}, perms)
     assert err and err.startswith("blocked")
     assert "read_file" in err and "write_file" in err
+
+
+@pytest.mark.parametrize("deny", [None, "[SCRIPT IN AN UNKNOWN DIRECTORY]",
+                                  "[NO ISOLATION]"])
+def test_an_unknown_script_dir_and_no_isolation_are_both_asked(
+        monkeypatch, tmp_path, deny):
+    """Two consequences, two dialogs: approving the unknown-directory
+    script does not skip the [NO ISOLATION] question, and a no to either
+    refuses the command."""
+    _host(monkeypatch)
+    asked = []
+
+    def _cb(tool, args, preview):
+        asked.append(preview)
+        return not (deny and preview.startswith(deny))
+
+    perms = _locked(tmp_path, "default", _cb)
+    verdict = A._DocToolExecutor()._run_permission_gate(
+        "bash", {"command": "cd $D && python3 y.py"}, perms)
+    heads = [p.split("\n", 1)[0] for p in asked]
+    if deny is None:
+        assert heads[:2] == ["[SCRIPT IN AN UNKNOWN DIRECTORY]",
+                             "[NO ISOLATION]"], heads
+    else:
+        assert verdict and "denied" in verdict, verdict
+        assert heads[-1] == deny, heads
 
 
 def test_a_confinable_command_asks_nothing_extra(monkeypatch, tmp_path):

@@ -23,7 +23,7 @@ from typing import Any, Callable
 __all__ = [
     "CommandResult", "ReplCommand", "BUILTINS", "dispatch",
     "looks_like_command", "palette_rows", "expand_at_references",
-    "complete_path", "SHELL_PREFIX", "MEMORY_PREFIX",
+    "complete_path", "SHELL_PREFIX", "MEMORY_PREFIX", "nearest_builtin",
 ]
 
 SHELL_PREFIX = "!"
@@ -150,6 +150,7 @@ def _status(ctx, _args: str) -> CommandResult:
         f"mode       {st.get('mode', '?')}   role {st.get('role', '?')}",
         f"approval   {_mode(engine) or '(no gate on this backend)'}",
         f"isolation  {_isolation(engine)}",
+        f"watcher    {st.get('watcher') or 'off (no permission gate)'}",
         f"workspace  {ctx.workspace}",
         f"session    {st.get('session_id', '') or '(unsaved)'}",
         f"tokens     ↑{st.get('input_tokens', 0)} ↓{st.get('output_tokens', 0)}"
@@ -246,12 +247,25 @@ def _mode_cmd(ctx, args: str) -> CommandResult:
     return CommandResult(output=f"mode → {name}")
 
 
+def _permission_rules_view(ctx) -> str:
+    """The rules in force, read-only; editing is the user's, in the file."""
+    try:
+        from . import permission_rules
+        return permission_rules.describe(
+            permission_rules.load(ctx.workspace))
+    except Exception as exc:
+        return f"permission rules could not be read: {exc}"
+
+
 def _permissions(ctx, args: str) -> CommandResult:
     name = args.strip()
     if not name:
         return CommandResult(output=(
             f"approval is {_mode(ctx.engine) or '(no gate)'} — "
-            "/permissions plan|default|acceptEdits, or Shift+Tab"))
+            "/permissions plan|default|acceptEdits, or Shift+Tab\n"
+            + _permission_rules_view(ctx)))
+    if name == "rules":
+        return CommandResult(output=_permission_rules_view(ctx))
     if name == "bypassPermissions":
         return CommandResult(output=(
             "not from here. Unattended execution is reachable only by "
@@ -1789,8 +1803,8 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/model", "setup", "Show or switch the model", _model, True),
         ReplCommand("/mode", "setup", "Show or switch the agent mode",
                     _mode_cmd, True),
-        ReplCommand("/permissions", "setup", "Show or switch the approval "
-                    "posture", _permissions, True),
+        ReplCommand("/permissions", "setup", "Approval posture and "
+                    "permission rules", _permissions, True),
         ReplCommand("/effort", "setup", "Show or set reasoning effort",
                     _effort, True),
         ReplCommand("/doctor", "setup", "Check the setup", _doctor),
@@ -1915,3 +1929,33 @@ def dispatch(text: str, ctx: ReplContext) -> CommandResult:
     # Unknown: the literal text goes to the model, which is what the
     # dashboard does. Refusing here would make a typo unanswerable.
     return CommandResult(handled=False)
+
+
+#: difflib ratio a token must reach to count as a typo of a builtin.
+#: Measured over the 42 builtins: 0.75 maps hlep, hepl, stat, stauts,
+#: modle, comapct, exti, clera, toosl, sesion to their command, and none
+#: of tmp, etc, usr, opt, data, home, scratch, work, mnt, srv, var, root,
+#: proc, sys, dev, bin, lib, pfs, media to anything. 0.8 loses hlep/exti.
+_NEAR_CUTOFF = 0.75
+
+
+def nearest_builtin(text: str) -> str:
+    """The builtin a command-shaped line was probably meant to be, or "".
+
+    Input: a line ``dispatch`` did not handle. Output: ``/name`` of the
+    closest builtin when the first token is command-shaped (see
+    ``looks_like_command``), not itself a builtin, and within
+    ``_NEAR_CUTOFF``; otherwise "". The caller decides what to do; the
+    dashboard keeps sending unknown lines to the model.
+    """
+    raw = (text or "").strip()
+    if not looks_like_command(raw):
+        return ""
+    head = raw.split()[0].lower()
+    if head in BUILTINS:
+        return ""
+    import difflib
+    names = [n.lstrip("/") for n in BUILTINS]
+    hit = difflib.get_close_matches(head.lstrip("/"), names, n=1,
+                                    cutoff=_NEAR_CUTOFF)
+    return f"/{hit[0]}" if hit else ""

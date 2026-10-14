@@ -309,7 +309,7 @@ def test_a_persisted_bypass_is_not_inherited():
     """
     mode, why = lg.resolve_posture(
         flag_mode="", persisted_mode="bypassPermissions")
-    assert mode == "plan"
+    assert mode == "default"
     assert "settings.json" in why
     assert "unattended" in why
 
@@ -317,7 +317,7 @@ def test_a_persisted_bypass_is_not_inherited():
 def test_bypass_on_the_command_line_needs_the_second_flag():
     mode, _ = lg.resolve_posture(
         flag_mode="bypassPermissions", unattended_opt_in=False)
-    assert mode == "plan"
+    assert mode == "default"
     mode, why = lg.resolve_posture(
         flag_mode="bypassPermissions", unattended_opt_in=True)
     assert mode == "bypassPermissions"
@@ -338,9 +338,9 @@ def test_an_ordinary_persisted_mode_is_honoured():
         assert "settings.json" in why
 
 
-def test_nothing_configured_starts_read_only():
+def test_nothing_configured_starts_in_default():
     mode, why = lg.resolve_posture()
-    assert mode == "plan"
+    assert mode == "default"
     # The banner prints this beside "approval plan"; the bare word
     # "default" there reads as the name of a mode, not as the reason.
     assert why == "nothing configured it"

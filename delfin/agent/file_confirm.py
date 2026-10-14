@@ -106,6 +106,15 @@ class FileConfirmBroker:
         except OSError:
             # No way to ask is not permission to act.
             return False
+        # The question exists now, under this id: the moment a headless
+        # run's stream-json reader is told a human is being asked.
+        try:
+            from . import turn_outcome
+            turn_outcome.requested(request_id=request_id, tool=tool_name,
+                                   args=args, preview=preview,
+                                   approvals_dir=True)
+        except Exception:
+            pass
         answer = self._wait_for(request_id, path)
         if answer is None:
             self.last_timed_out = True
@@ -205,7 +214,24 @@ def answer(request_id: str, decision: bool, *, room: Optional[Path] = None,
     what the refusing person wants the agent to do instead, and it reaches
     the model in the same turn as the refusal -- see ``_read_answer`` for
     the checks it is read under.
+
+    False, and nothing written, when this process was started by an agent
+    session (``approval_guard.ENV_MARKER``): the person answers, not the
+    session that waits nor another one.
     """
+    from .approval_guard import inside_agent_session
+    if inside_agent_session():
+        return False
+    return _write_answer(request_id, decision, room=room, by=by,
+                         reason=reason)
+
+
+def _write_answer(request_id: str, decision: bool, *,
+                  room: Optional[Path] = None, by: str = "",
+                  reason: str = "") -> bool:
+    """``answer`` without the agent-session check, for the CLI backend's
+    Relay: it writes what the person clicked in this process's own dialog,
+    and a DELFIN started from an agent's shell must still be able to."""
     room = Path(room) if room else requests_dir()
     request_path = room / f"{request_id}.request.json"
     if not request_path.is_file():

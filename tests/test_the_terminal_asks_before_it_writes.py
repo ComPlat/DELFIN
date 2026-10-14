@@ -421,7 +421,12 @@ def test_a_diff_cannot_draw_its_own_approval_prompt():
     assert "\x1b" not in frame, "no escape from tool content may survive"
     # The forged line is still visible as text — the point is that it
     # cannot move the cursor or clear the screen to hide the real one.
-    assert frame.rstrip().splitlines()[-1].startswith("└─ [y]")
+    # The real key rows close the frame: the last "└─ [y]" row and only
+    # its indented continuation rows after it.
+    rows = frame.rstrip().splitlines()
+    last = max(i for i, r in enumerate(rows) if r.startswith("└─ [y]"))
+    assert not rows[last].startswith("│"), "the forged row is not the real one"
+    assert all(r.startswith("   [") for r in rows[last + 1:]), rows
 
 
 def test_the_frame_names_the_tool_and_stays_within_the_width():
@@ -479,7 +484,7 @@ def test_an_absent_settings_file_is_not_a_decision(tmp_path, monkeypatch):
     kit_settings.load() returns default_mode="default" with no settings
     anywhere. Asking the merged view therefore reports a decision nobody
     made — and because resolve_posture correctly honours anything a user
-    configured, that silently defeated plan-first on every machine without
+    configured, that silently decided the start posture on every machine without
     a settings file, which is most of them. Caught by watching a live run
     open in "default" and print the isolation warning.
     """
@@ -522,8 +527,8 @@ def test_a_settings_file_about_something_else_declares_no_mode(
     assert agent_cli._persisted_default_mode(ws) == ("", "")
 
 
-def test_nothing_configured_starts_in_plan(tmp_path, monkeypatch):
-    """End to end: no files, no flag, therefore read-only first."""
+def test_nothing_configured_starts_in_default(tmp_path, monkeypatch):
+    """End to end: no files, no flag, therefore default (plan only when asked)."""
     from delfin.agent import cli as agent_cli, kit_settings, launch_guard
 
     monkeypatch.setattr(kit_settings, "USER_SETTINGS_PATH",
@@ -532,7 +537,7 @@ def test_nothing_configured_starts_in_plan(tmp_path, monkeypatch):
     mode, why = launch_guard.resolve_posture(
         flag_mode="", persisted_mode=declared,
         settings_path=source or "~/.delfin/settings.json")
-    assert mode == "plan"
+    assert mode == "default"
     # Not the bare word "default", which sits next to "approval plan" in
     # the banner and reads as a statement about the mode.
     assert why == "nothing configured it"
