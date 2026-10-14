@@ -932,8 +932,12 @@ class ReplOptions:
     #: Above this CURRENT-context token budget (per ``_estimate_context_tokens``)
     #: the terminal starts the next turn from a small fresh context (engine
     #: ``start_fresh`` one-shot) instead of re-sending the whole history.
-    #: 0 disables the restart hook (default).
-    context_budget: int = 0
+    #: None (default) resolves it as the dashboard and ``cmd_run`` do:
+    #: the engine's ``context_budget``, else min(900k, the model's window)
+    #: (``_resolve_fresh_budget``). 0 disables the restart hook. The
+    #: default was 0, so the terminal was the one surface that never
+    #: started fresh.
+    context_budget: int | None = None
 
 
 def _is_a_note(text: str) -> bool:

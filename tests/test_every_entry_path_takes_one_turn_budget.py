@@ -179,7 +179,9 @@ def test_a_session_over_its_budget_starts_fresh(drive, door):
     request, engine = drive(door, over_budget=True)
     sent = json.dumps(_sent(request, drive.home))
     assert _OLD not in sent, "the history over the budget was re-sent"
-    assert engine.cut_history(), "the dropped history was not archived"
+    # repl._archive_cut_history: the real engine keeps it in _archived.
+    archived = json.dumps(getattr(engine, "_archived", None) or [])
+    assert _OLD in archived, "the dropped history was not archived"
 
 
 def test_both_paths_send_the_same_fresh_turn(drive):

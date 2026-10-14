@@ -645,8 +645,21 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
     _memory = turn_context.memory_context(engine, prompt)
     if _memory:
         _emit = {**_emit, "memory_context": _memory}
-    out = _run_once(engine, turn_context.user_message(prompt),
-                    max_tokens=args.max_tokens or 4096, **_emit)
+    # Over the context budget, the turn starts from a small fresh block,
+    # as it does in the terminal (repl.run_turn) and the dashboard: the
+    # same helper, under the budget a no-op. A restored session (--session,
+    # --continue, --resume) is the case it exists for. Applied after the
+    # hint, in run_turn's order.
+    from .repl import prepare_fresh_turn
+    prompt_sent = prepare_fresh_turn(
+        engine, turn_context.user_message(prompt), workspace=repo)
+    # 0 is "the role decides" (the engine's max_tokens_for_role), the value
+    # chat declares as its default and run --max-tokens 0 asks for. It used
+    # to be replaced by 4096 here, so chat -p ran at an eighth of the
+    # terminal's solo budget. run keeps 4096 through its parser default.
+    out = _run_once(engine, prompt_sent,
+                    max_tokens=int(getattr(args, "max_tokens", 0) or 0),
+                    **_emit)
     sid = _save_session(engine, repo)
 
     def _session_end_stage(name: str, fn) -> None:
