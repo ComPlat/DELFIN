@@ -1213,6 +1213,10 @@ class TerminalAgent:
         # Typed during a turn: queued, never injected. A queued message
         # cannot be lost and cannot land in a context nobody could see.
         self.queued: list[str] = []
+        # The first prompt the user gave this process (not a wake, not a
+        # continuation): the task the session end records an outcome and
+        # an episode for (cli._end_session). "" until one is sent.
+        self.first_task = ""
         self._quit = False
 
     # -- input -----------------------------------------------------------
@@ -1325,6 +1329,8 @@ class TerminalAgent:
             return ""
 
     def turn(self, prompt: str) -> TurnResult:
+        if not self.first_task and not isinstance(prompt, HarnessText):
+            self.first_task = str(prompt)
         # The fresh-start decision lives in run_turn (the public turn path),
         # which both the interactive and the headless route share: it judges
         # the CURRENT context, ARCHIVES the history it drops, arms the
