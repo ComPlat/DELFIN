@@ -1,0 +1,336 @@
+# Generalist: everyday software work on repositories that are not DELFIN.
+#
+# Measures the agent the way a general coding agent is judged: a task is
+# done when the repository's own tests pass on what it built and the end
+# state (files, history, what was left alone) is right. Nothing here
+# reads the conversation; there are no expected or forbidden signals.
+#
+# Layout per task:
+#   setup:  setup/generalist_<x>.py builds one git repository under
+#           tests/fixtures/generalist_workspace/<repo>/ (restored after
+#           every attempt) and asserts its own preconditions.
+#   verify: accept/generalist_<x>_verify.py runs the tests, hidden tests
+#           on a scratch copy, and inspects the repository. Exit 0 = pass;
+#           it prints QUALITY: 0-100 (share of checks held, required and
+#           graded), which replaces the routing share of the score.
+#   prompt: German (what the user writes); prompt_en: the same request in
+#           English, run with `bench run --lang en` under the id <id>.en.
+#
+# Toolchains: Python (the bench interpreter), Node >= 22.6 (runs .ts
+# directly), cargo, go. They are found on PATH with
+# $DELFIN_TOOLCHAIN_BIN (default ~/micromamba/envs/delfin-toolchains/bin)
+# first; the runner prepends it for the whole attempt, so the agent's
+# commands see the same tools. A host without a toolchain: the setup
+# exits 3 ("toolchain unavailable") and the attempt is unmeasured, not
+# failed. Everything runs offline; no fixture has dependencies.
+#
+# Budgets: max_tool_calls is the turn budget; duration and cost are
+# scored as for every task (they do not flip success).
+#
+# How to run and the A/B procedure: GENERALIST.md next to this file.
+# Offline validation (scripted correct and wrong solutions per task):
+# tests/test_generalist_tasks_score_the_end_state.py.
+
+tasks:
+
+  - id: generalist_py_feature
+    task_class: generalist
+    mode: solo
+    setup: generalist_py_feature.py
+    verify: generalist_py_feature_verify.py
+    prompt: >-
+      In textkit/ liegt ein kleines Python-Paket (src-Layout, Tests mit
+      pytest). Bau eine Funktion truncate_words(text, limit, suffix="…") in
+      ein neues Modul src/textkit/words.py und exportiere sie aus dem Paket,
+      sodass from textkit import truncate_words funktioniert. Verhalten: der
+      Text wird an beliebigem Leerraum in Wörter getrennt. Hat er höchstens
+      limit Wörter, kommt er unverändert zurück. Sonst die ersten limit
+      Wörter, mit je einem Leerzeichen verbunden, direkt gefolgt von suffix.
+      Ein negatives limit ist ein ValueError. Schreib Tests dafür unter
+      tests/ und sorg dafür, dass die ganze Testsuite grün ist.
+    prompt_en: >-
+      textkit/ holds a small Python package (src layout, pytest). Add a
+      function truncate_words(text, limit, suffix="…") in a new module
+      src/textkit/words.py and export it from the package so that
+      from textkit import truncate_words works. Behaviour: the text is split
+      into words on any whitespace. If it has at most limit words it is
+      returned unchanged. Otherwise return the first limit words joined by
+      single spaces, immediately followed by suffix. A negative limit raises
+      ValueError. Write tests for it under tests/ and make sure the whole
+      suite passes.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: generalist_ts_feature
+    task_class: generalist
+    mode: solo
+    setup: generalist_ts_feature.py
+    verify: generalist_ts_feature_verify.py
+    prompt: >-
+      In invoice-ts/ liegt ein TypeScript-Projekt (Node, npm test, keine
+      Abhängigkeiten). Füg eine Funktion splitCents(total: number, parts:
+      number): number[] in src/split.ts hinzu und exportiere sie aus
+      src/index.ts. Sie teilt einen Betrag in ganzen Cent auf parts Anteile
+      auf: die Anteile unterscheiden sich um höchstens 1 Cent, die größeren
+      kommen zuerst, die Summe ist genau total. Ist parts keine positive
+      ganze Zahl oder total keine nicht-negative ganze Zahl, wirf einen
+      RangeError. Schreib Tests unter test/ und sorg dafür, dass npm test
+      grün ist.
+    prompt_en: >-
+      invoice-ts/ is a TypeScript project (Node, npm test, no dependencies).
+      Add a function splitCents(total: number, parts: number): number[] in
+      src/split.ts and export it from src/index.ts. It splits an amount of
+      whole cents into parts shares: shares differ by at most 1 cent, the
+      larger ones come first, and they sum to exactly total. If parts is not
+      a positive integer or total is not a non-negative integer, throw a
+      RangeError. Write tests under test/ and make sure npm test passes.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: generalist_red_to_green
+    task_class: generalist
+    mode: solo
+    setup: generalist_red_to_green.py
+    verify: generalist_red_to_green_verify.py
+    prompt: >-
+      In datewin/ schlägt ein Test in tests/test_business.py fehl. Der Test
+      ist richtig, der Code nicht. Finde den Fehler und behebe ihn, ohne den
+      Test zu ändern; danach muss die ganze Suite grün sein.
+    prompt_en: >-
+      In datewin/ a test in tests/test_business.py fails. The test is right
+      and the code is wrong. Find the defect and fix it without changing the
+      test; afterwards the whole suite must pass.
+    max_duration_s: 420
+    max_cost_usd: 0.60
+    max_tool_calls: 20
+
+  - id: generalist_refactor
+    task_class: generalist
+    mode: solo
+    setup: generalist_refactor.py
+    verify: generalist_refactor_verify.py
+    prompt: >-
+      In shoplib/ soll calc_total umbenannt und verschoben werden: sie heißt
+      künftig order_total und lebt in einem neuen Modul shoplib/pricing.py
+      statt in shoplib/utils.py. Pass alle Aufrufer, die Tests und die Doku
+      an, und export order_total aus dem Paket wie bisher calc_total. Kein
+      Alias, keine Überreste des alten Namens. Die übrigen Helfer bleiben in
+      utils. Die Tests müssen danach grün sein.
+    prompt_en: >-
+      In shoplib/, rename and move calc_total: it becomes order_total and
+      lives in a new module shoplib/pricing.py instead of shoplib/utils.py.
+      Update every caller, the tests and the docs, and export order_total
+      from the package the way calc_total was exported. No alias and no
+      leftovers of the old name. The other helpers stay in utils. The tests
+      must pass afterwards.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 35
+
+  - id: generalist_conventions
+    task_class: generalist
+    mode: solo
+    setup: generalist_conventions.py
+    verify: generalist_conventions_verify.py
+    prompt: >-
+      In notes-app/ soll notes/stats.py eine Funktion word_count(text)
+      bekommen, die die Wörter einer Notiz zählt: Trennung an Leerraum;
+      Tokens, die nur aus # bestehen (Markdown-Überschriften), zählen nicht.
+      Halte dich an die Konventionen dieses Repos.
+    prompt_en: >-
+      In notes-app/, notes/stats.py needs a function word_count(text) that
+      counts the words of a note: split on whitespace; tokens made only of #
+      (Markdown heading marks) do not count. Follow this repository's
+      conventions.
+    max_duration_s: 480
+    max_cost_usd: 0.80
+    max_tool_calls: 25
+
+  - id: generalist_merge_conflict
+    task_class: generalist
+    mode: solo
+    setup: generalist_merge_conflict.py
+    verify: generalist_merge_conflict_verify.py
+    prompt: >-
+      In configlib/ hängt ein Merge von feature/env-override nach main an
+      einem Konflikt. Löse ihn so, dass beide Änderungen erhalten bleiben:
+      Kommentar- und Leerzeilen werden übersprungen, und eine
+      Umgebungsvariable CONFIGLIB_<KEY> überschreibt den Wert. Schließ den
+      Merge ab; die Tests beider Seiten müssen grün sein, und die Historie
+      bleibt, wie sie ist.
+    prompt_en: >-
+      In configlib/ a merge of feature/env-override into main stopped on a
+      conflict. Resolve it so that both changes survive: comment and blank
+      lines are skipped, and an environment variable CONFIGLIB_<KEY>
+      overrides the value. Conclude the merge; both sides' tests must pass,
+      and the history stays as it is.
+    max_duration_s: 480
+    max_cost_usd: 0.80
+    max_tool_calls: 25
+
+  - id: generalist_contribution
+    task_class: generalist
+    mode: solo
+    setup: generalist_contribution.py
+    verify: generalist_contribution_verify.py
+    prompt: >-
+      In durfmt/ gibt format_duration(3600) "60m" statt "1h" aus, Stunden
+      fehlen ganz. Behebe das und bereite den Beitrag als Pull Request vor,
+      so wie CONTRIBUTING.md es verlangt (Branch, Commits, Test). Es gibt
+      kein Remote, also kein Push: schreib die PR-Beschreibung in
+      PR_DESCRIPTION.md im Wurzelverzeichnis des Repos, aber committe diese
+      Datei nicht.
+    prompt_en: >-
+      In durfmt/, format_duration(3600) returns "60m" instead of "1h"; hours
+      are missing entirely. Fix it and prepare the contribution as a pull
+      request the way CONTRIBUTING.md asks (branch, commits, test). There is
+      no remote, so no push: write the PR description to PR_DESCRIPTION.md in
+      the repository root, but do not commit that file.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: generalist_large_repo
+    task_class: generalist
+    mode: solo
+    setup: generalist_large_repo.py
+    verify: generalist_large_repo_verify.py
+    prompt: >-
+      Bugreport zu inventory/: Registry.add("abc-1234", ...) und der
+      CSV-Import nehmen SKUs in Kleinbuchstaben und mit fünf Ziffern
+      ("ABC-12345") an. Gültig sind genau drei Großbuchstaben, ein
+      Bindestrich und genau vier Ziffern. Finde die Ursache und behebe sie
+      mit einer möglichst kleinen Änderung; füg einen Regressionstest hinzu.
+    prompt_en: >-
+      Bug report for inventory/: Registry.add("abc-1234", ...) and the CSV
+      import accept SKUs in lower case and with five digits ("ABC-12345").
+      Valid is exactly three upper-case letters, a dash and exactly four
+      digits. Find the cause and fix it with as small a change as possible;
+      add a regression test.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 40
+
+  - id: generalist_investigate
+    task_class: generalist
+    mode: solo
+    setup: generalist_investigate.py
+    verify: generalist_investigate_verify.py
+    prompt: >-
+      In ratelimit/ steht max_retries auf 3, aber bei einem Server, der
+      immer 503 antwortet, schickt der Client die Anfrage 5-mal. Woher kommt
+      das? Schreib die Antwort nach ratelimit/ANSWER.md und belege jede
+      Ursache mit Datei:Zeile (z. B. ratelimit/foo.py:12). Ändere keinen
+      Code und committe nichts.
+    prompt_en: >-
+      In ratelimit/, max_retries is 3, yet against a server that always
+      answers 503 the client sends the request 5 times. Why? Write the answer
+      to ratelimit/ANSWER.md and back every cause with file:line (e.g.
+      ratelimit/foo.py:12). Do not change any code and do not commit.
+    max_duration_s: 420
+    max_cost_usd: 0.60
+    max_tool_calls: 20
+
+  - id: generalist_scope
+    task_class: generalist
+    mode: solo
+    setup: generalist_scope.py
+    verify: generalist_scope_verify.py
+    prompt: >-
+      In ledger/ ist tests/test_tax.py rot. Bring die Tests auf grün.
+      Wichtig: vendor/ ist eine gepinnte Kopie einer Upstream-Bibliothek,
+      dort wird nichts geändert. Außerdem liegt in dem Repo noch meine
+      uncommittete Arbeit (README.md und notes/todo.md); die muss genau so
+      bleiben, wie sie ist. Committe nichts.
+    prompt_en: >-
+      In ledger/, tests/test_tax.py is red. Make the tests pass. Important:
+      vendor/ is a pinned copy of an upstream library; nothing there is
+      changed. The repository also holds my uncommitted work (README.md and
+      notes/todo.md); it must stay exactly as it is. Do not commit anything.
+    max_duration_s: 420
+    max_cost_usd: 0.60
+    max_tool_calls: 20
+
+  - id: generalist_rust_feature
+    task_class: generalist
+    mode: solo
+    setup: generalist_rust_feature.py
+    verify: generalist_rust_feature_verify.py
+    prompt: >-
+      In unitconv/ liegt ein Rust-Crate (cargo test, keine Abhängigkeiten).
+      Füg in src/duration.rs eine Funktion pub fn parse_duration(s: &str) ->
+      Option<u64> hinzu und exportiere sie aus der Crate-Wurzel
+      (unitconv::parse_duration). Sie liest Dauern wie "1h30m15s" als
+      Sekunden: ein oder mehrere Teile <Ziffern><Einheit> mit den Einheiten
+      h, m, s, in dieser Reihenfolge, jede höchstens einmal, ohne Leerzeichen
+      oder sonstige Zeichen. Alles andere, auch ein Überlauf, ergibt None.
+      Schreib Tests dafür; cargo test muss grün sein.
+    prompt_en: >-
+      unitconv/ is a Rust crate (cargo test, no dependencies). Add a function
+      pub fn parse_duration(s: &str) -> Option<u64> in src/duration.rs and
+      export it from the crate root (unitconv::parse_duration). It reads
+      durations like "1h30m15s" as seconds: one or more parts
+      <digits><unit> with the units h, m, s, in that order, each at most
+      once, with no spaces or other characters. Anything else, overflow
+      included, gives None. Write tests for it; cargo test must pass.
+    max_duration_s: 720
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: generalist_rust_red_to_green
+    task_class: generalist
+    mode: solo
+    setup: generalist_rust_red_to_green.py
+    verify: generalist_rust_red_to_green_verify.py
+    prompt: >-
+      In stats/ (Rust-Crate) schlägt ein Test in tests/median.rs fehl. Der
+      Test ist richtig. Behebe den Fehler im Code, ohne den Test zu ändern;
+      danach muss cargo test grün sein.
+    prompt_en: >-
+      In stats/ (a Rust crate) a test in tests/median.rs fails. The test is
+      right. Fix the defect in the code without changing the test;
+      afterwards cargo test must pass.
+    max_duration_s: 480
+    max_cost_usd: 0.60
+    max_tool_calls: 20
+
+  - id: generalist_go_feature
+    task_class: generalist
+    mode: solo
+    setup: generalist_go_feature.py
+    verify: generalist_go_feature_verify.py
+    prompt: >-
+      In coll/ liegt ein Go-Modul (go test ./..., keine Abhängigkeiten). Füg
+      in chunk.go eine Funktion func Chunk[T any](items []T, size int)
+      ([][]T, error) hinzu: sie teilt items der Reihe nach in Stücke der
+      Länge size, das letzte darf kürzer sein; leere Eingabe ergibt kein
+      Stück; size < 1 ist ein Fehler. Schreib Tests dafür; go test ./...
+      muss grün sein.
+    prompt_en: >-
+      coll/ is a Go module (go test ./..., no dependencies). Add a function
+      func Chunk[T any](items []T, size int) ([][]T, error) in chunk.go: it
+      splits items in order into pieces of length size, the last one may be
+      shorter; empty input gives no pieces; size < 1 is an error. Write tests
+      for it; go test ./... must pass.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: generalist_go_red_to_green
+    task_class: generalist
+    mode: solo
+    setup: generalist_go_red_to_green.py
+    verify: generalist_go_red_to_green_verify.py
+    prompt: >-
+      In netcfg/ (Go-Modul) schlägt ein Test in port_test.go fehl. Der Test
+      ist richtig. Behebe den Fehler im Code, ohne den Test zu ändern;
+      danach muss go test ./... grün sein.
+    prompt_en: >-
+      In netcfg/ (a Go module) a test in port_test.go fails. The test is
+      right. Fix the defect in the code without changing the test;
+      afterwards go test ./... must pass.
+    max_duration_s: 420
+    max_cost_usd: 0.60
+    max_tool_calls: 20

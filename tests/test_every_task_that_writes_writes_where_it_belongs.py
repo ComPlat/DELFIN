@@ -59,6 +59,7 @@ def _tasks():
     ("behavior_verify", "behavior_workspace"),
     ("generic_project", "user_project_workspace"),
     ("science_analysis", "science_workspace"),
+    ("generalist", "generalist_workspace"),
 ])
 def test_a_writing_class_is_confined_to_its_fixture(task_class, expected):
     ws = workspace_for(_ROOT, task_class=task_class)
@@ -119,7 +120,7 @@ def test_every_packaged_writing_class_has_a_workspace():
         if (str(t.get("task_class", "")).startswith("behavior")
             or str(t.get("task_class", "")).startswith("science")
             or t.get("task_class") in ("office", "generic_project",
-                                        "chemistry"))
+                                        "chemistry", "generalist"))
         and workspace_for(_ROOT, mode=t.get("mode", ""),
                           task_class=t.get("task_class", "")) is None
     })
@@ -130,7 +131,7 @@ def test_the_counts_still_match_what_was_measured():
     """If a task file grows a new writing class, this says so rather than
     letting it inherit the checkout unnoticed."""
     counts = {"office": 0, "behavior": 0, "generic_project": 0,
-              "science": 0, "chemistry": 0, "other": 0}
+              "science": 0, "chemistry": 0, "generalist": 0, "other": 0}
     for t in _tasks():
         c = str(t.get("task_class", ""))
         if c == "office":
@@ -141,6 +142,8 @@ def test_the_counts_still_match_what_was_measured():
             counts["behavior"] += 1
         elif c == "generic_project":
             counts["generic_project"] += 1
+        elif c == "generalist":
+            counts["generalist"] += 1
         elif c.startswith("science"):
             counts["science"] += 1
         else:
@@ -245,8 +248,14 @@ def test_the_counts_still_match_what_was_measured():
     # (tasks_a_fix_claim.yaml), one false and one true claim over the
     # fixture repo from setup/a_fix_claim_repo.py, which writes only
     # into its own folder under the workspace.
+    #
+    # generalist 0 -> 14 on 2026-10-14: tasks_generalist.yaml. Each setup
+    # builds one git repository in its own subdirectory of
+    # generalist_workspace and refuses an existing one; the acceptance
+    # scripts run hidden tests on scratch copies only.
     assert counts == {"office": 13, "behavior": 16, "generic_project": 17,
-                      "science": 23, "chemistry": 5, "other": 52}, counts
+                      "science": 23, "chemistry": 5, "generalist": 14,
+                      "other": 52}, counts
 
 
 # ---------------------------------------------------------------------------
