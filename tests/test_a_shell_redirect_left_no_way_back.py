@@ -176,36 +176,29 @@ def test_a_write_outside_the_workspace_never_gets_that_far(session):
 # The limit, stated and checked
 # ---------------------------------------------------------------------------
 #
-# `bash` came off `_UNJOURNALLED_WRITE_TOOLS`, so the declaration now
-# claims it journals. It journals what the TARGET SCANNER can see, which
-# is not everything, and the declaration says so. This checks that the
-# stated limit is the real one rather than a guess — a declaration that
-# overclaims is worse than one that admits a gap, because the report then
-# offers an undo that cannot happen.
+# What the target scanner cannot see -- a program the shell runs that
+# writes files of its own -- is journalled from a snapshot of the roots
+# taken around the command (shell_changes). This test used to pin that
+# gap as the stated limit; it now pins that the gap is closed.
 
-def test_a_program_the_shell_runs_writes_outside_the_journal(session):
+def test_a_program_the_shell_runs_writes_into_the_journal(session):
     """`python3 build.py` writes files of its own. No redirect names
-    them, so no pre-image exists and the file has no journal entry — the
-    per-file lookup is what reports it as unrecoverable."""
+    them; the snapshot of the roots does, and undo removes the file."""
     ws, perms = session
     (ws / "build.py").write_text("open('made_by_program.txt','w').write('x')\n")
     _call(perms, "bash", {"command": "python3 build.py", "description": "d"})
     assert (ws / "made_by_program.txt").is_file()
 
     out = _undo(perms)
-    assert str(ws / "made_by_program.txt") not in out.get("reverted", [])
-    assert (ws / "made_by_program.txt").is_file(), (
-        "undo claimed a file it has no pre-image for")
+    assert str(ws / "made_by_program.txt") in out.get("reverted", []), out
+    assert not (ws / "made_by_program.txt").exists()
 
 
-def test_bash_is_no_longer_declared_unjournalled():
-    """The declaration is the only consumer of that set, so it is a note
-    somebody has to keep true. Its old reason — 'the write targets are
-    not known before the command runs' — was never right: the write GATE
-    decides on exactly those targets."""
+def test_neither_shell_tool_is_declared_unjournalled():
+    """The declaration is a note somebody has to keep true. bash came off
+    it when the executor journalled its redirect targets; bash_background
+    came off when the files a job changed were journalled at its end."""
     from delfin.agent import audit_log as al
 
     assert "bash" not in al._UNJOURNALLED_WRITE_TOOLS
-    assert "bash_background" in al._UNJOURNALLED_WRITE_TOOLS, (
-        "the background variant returns before anything is written, so "
-        "there is no moment to compare a pre-image against")
+    assert "bash_background" not in al._UNJOURNALLED_WRITE_TOOLS
