@@ -9590,6 +9590,25 @@ def create_tab(ctx):
         title = data.get("title", "")[:50] or session_id[:12]
         _record_cycle_event("session", "Session restored", title)
         _append_system_message(f"Session restored: {title}")
+        # The transcript and the model's history are two records in one
+        # file. When the second is empty while the first holds turns, the
+        # chat shows a conversation the model does not have -- say so, or
+        # the next answer reads as the model having forgotten.
+        if (not list(getattr(engine, "messages", None) or ())
+                and any(m.get("role") == "user"
+                        for m in state.get("chat_messages") or ())):
+            _archived = ""
+            try:
+                from delfin.agent.session_store import load_transcript_archive
+                if load_transcript_archive(session_id):
+                    _archived = (" Earlier history of this session is in the "
+                                 f"archive: /session archive {session_id}.")
+            except Exception:
+                pass
+            _append_system_message(
+                "⚠️ This session was saved without the model's side of the "
+                "conversation: the chat above is shown, but the model starts "
+                "without it. Restate what it needs to know." + _archived)
 
     # -- helpers -----------------------------------------------------------
 
@@ -9729,7 +9748,11 @@ def create_tab(ctx):
             except Exception:
                 pass
         state["engine"] = None
-        if carry and carry.get("engine_messages"):
+        # Carried when there is a conversation OR an identity. An engine
+        # with no messages still names the session it belongs to; dropped,
+        # the next engine minted a fresh id and its first save copied the
+        # whole chat transcript into a second session file.
+        if carry and (carry.get("engine_messages") or carry.get("session_id")):
             state["_engine_carry_over"] = carry
         else:
             state.pop("_engine_carry_over", None)
@@ -21271,7 +21294,8 @@ def create_tab(ctx):
             _append_system_message(
                 f"Model switched to {change['new']}. The next message uses it"
                 + (", with the conversation so far."
-                   if state.get("_engine_carry_over") else ".")
+                   if (state.get("_engine_carry_over") or {}).get(
+                       "engine_messages") else ".")
             )
         # Persist the choice
         chosen_effort = ""
