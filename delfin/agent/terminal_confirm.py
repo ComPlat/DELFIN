@@ -862,6 +862,26 @@ class TerminalConfirmBroker:
         req.event.set()
         return True
 
+    def answer_question_with_text(self, text: str) -> bool:
+        """Resolve the oldest waiting ask_user_question with a typed line.
+
+        Input: a line the user typed while the question was open. Output:
+        True when a question took it (the line is then the answer and must
+        not also be sent as a message), False when none was waiting. The
+        decision is ``approval_answers.typed_answer``: an option when the
+        line names one, free text otherwise. Approvals (CONFIRM) and plan
+        approvals are never answered this way -- a typed sentence is not
+        a yes.
+        """
+        from .approval_answers import typed_answer
+        with self._lock:
+            req = next((r for r in self._queue
+                        if r.kind == ASK and not r.resolved), None)
+        if req is None or not str(text or "").strip():
+            return False
+        # The waiting thread writes the dialog's audit record when it wakes.
+        return self.resolve(req, typed_answer(text, req.payload))
+
     def abort_all(self) -> list[ConfirmRequest]:
         """Deny everything in flight, and everything that arrives after."""
         with self._lock:
