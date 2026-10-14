@@ -60,13 +60,17 @@ def test_a_literal_backslash_u_in_json_is_left_alone():
 
 @pytest.mark.parametrize("cmd", [
     "grep -n foo delfin/agent/x.py",
-    "cd /ws && grep -rn 'def foo' delfin | head -20",
+    "cd delfin && grep -rn 'def foo' . | head -20",
     "rg foo",
     "cat README.md",
     "head -50 a.py && tail -20 b.py",
     "ls -la delfin/agent",
     "find . -name '*.py'",
     "sed -n 10,40p delfin/agent/x.py",
+    # Field shapes: a quoted \| inside a grep pattern, echo separators,
+    # stderr discarded.
+    'grep -n "def \\|^class " a.py | tail -20; echo ---; '
+    'grep -n x b.py 2>/dev/null',
 ])
 def test_a_plain_read_or_search_names_the_dedicated_tool(cmd, tmp_path):
     hint = shell_tool_hint(cmd, tmp_path)

@@ -27,6 +27,7 @@ from . import pricing
 from . import text_files as _text_files
 from . import edit_engine as _edit_engine
 from . import tool_args as _tool_args
+from . import tool_output_hygiene as _hygiene
 from .harness_rows import (
     HarnessRow as _HarnessRow, HarnessText as _HarnessText,
     harness_row as _harness_row, is_harness_row as _is_harness_row,
@@ -28277,6 +28278,9 @@ class OpenAIClient(_BaseClient):
         # Thrash detector state (cleanup loops, same-file rewrites) — soft
         # nudges the model to change approach when it's spinning. Per turn.
         _thrash_state: dict = {}
+        # Which shell-tool hints (read/search, pytest) this turn already
+        # carried: one line per kind and turn, not per call.
+        _shell_hints_shown: set = set()
         # Auto-continue: some models (o3) end the turn after each batch + a
         # "I'll continue" line. When the model stops with tasks still open AND
         # it made fresh progress this round, we inject a continue and keep the
@@ -29373,6 +29377,10 @@ class OpenAIClient(_BaseClient):
                     # the 2000-char preview, which is why it travels as a
                     # field instead of a substring to be re-detected.
                     _redacted = _redact_tool_result(result)
+                    # Terminal escapes in command output are bytes the
+                    # model re-reads every round and never needs.
+                    if fn_name.rsplit("__", 1)[-1] in _hygiene.COMMAND_OUTPUT_TOOLS:
+                        _redacted = _hygiene.strip_ansi(_redacted)
                     # A JSON table is cut at a row boundary and says how
                     # many rows went; everything else keeps head and tail.
                     _cap_here = (max(_tool_result_cap, _SUBAGENT_REPORT_CAP)
@@ -29422,6 +29430,17 @@ class OpenAIClient(_BaseClient):
                     _thrash_note = _thrash_check(_thrash_state, fn_name, fn_args)
                     if _thrash_note:
                         context_result = _thrash_note + "\n\n" + context_result
+                    # A bash call that only read/searched, or ran pytest:
+                    # the result as it is, plus one line naming the
+                    # dedicated tool, once per kind and turn.
+                    if (fn_name.rsplit("__", 1)[-1] == "bash"
+                            and isinstance(fn_args, dict)):
+                        _sh_hint = _hygiene.shell_tool_hint(
+                            fn_args.get("command"),
+                            getattr(self._permissions, "workspace", None))
+                        if _sh_hint and _sh_hint not in _shell_hints_shown:
+                            _shell_hints_shown.add(_sh_hint)
+                            context_result = context_result + "\n" + _sh_hint
                     # A show_molecule card reaches the model as its plain
                     # summary line only, wrapped as untrusted; the path and
                     # title stay in the tool-result event the dashboard
