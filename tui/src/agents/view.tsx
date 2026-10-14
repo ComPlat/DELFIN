@@ -484,6 +484,15 @@ export function AgentViewPanel(props: { view: AgentView; theme: () => Theme; wid
   )
 }
 
+/** A line of an answer as a peek shows it: without the markdown that
+ *  marks headings, emphasis and code (a peek is plain text). */
+export function plainLine(line: string): string {
+  return line.trim()
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^[-*+]\s+/, "• ")
+    .replace(/\*\*|__|`/g, "")
+}
+
 /** A peek at a session: its last turn as a few lines (session.replay). */
 export function peekLines(events: Record<string, any>[]): string[] {
   const out: string[] = []
@@ -504,7 +513,7 @@ export function peekLines(events: Record<string, any>[]): string[] {
         break
       }
       case "text.ended":
-        for (const line of String(e.text ?? "").split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 6)) out.push(line)
+        for (const line of String(e.text ?? "").split("\n").map(plainLine).filter(Boolean).slice(0, 6)) out.push(line)
         break
       case "notice":
         for (const line of String(e.text ?? "").split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 3)) out.push(line)

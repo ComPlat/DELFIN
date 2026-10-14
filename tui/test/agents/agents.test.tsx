@@ -98,6 +98,11 @@ describe("the agent view's rows", () => {
     expect(rows.find((r) => r.id === "ask")!.activity).toContain("waiting for you")
   })
 
+  test("a peek shows an answer as plain text", () => {
+    expect(peekLines([{ type: "text.ended", text: "## Summary\n\nThe workspace holds **one** `README`.\n- first\n* second" }]))
+      .toEqual(["Summary", "The workspace holds one README.", "• first", "• second"])
+  })
+
   test("a peek reads a turn as a few lines", () => {
     expect(peekLines([
       { type: "user.message", text: "run it\nplease" },

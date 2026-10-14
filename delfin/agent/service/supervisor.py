@@ -36,6 +36,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import signal
 import socket
 import sys
@@ -161,6 +162,19 @@ def _gist(text: str, limit: int = 120) -> str:
         if line:
             return line if len(line) <= limit else line[:limit - 1] + "…"
     return ""
+
+
+def _answer_gist(text: str, limit: int = 120) -> str:
+    """An answer in a line: its first sentence rather than its heading (an
+    answer opens with "## Summary" as often as not), without the markdown
+    that marks emphasis or code."""
+    lines = [" ".join(line.split()) for line in str(text or "").splitlines()]
+    lines = [line for line in lines if line.strip("#*->` ")]
+    if not lines:
+        return ""
+    prose = [line for line in lines if not line.startswith("#")]
+    line = re.sub(r"\*\*|__|`", "", (prose or lines)[0].lstrip("#*->` ")).strip()
+    return line if len(line) <= limit else line[:limit - 1] + "…"
 
 
 def _tool_gist(event: dict) -> str:
@@ -367,7 +381,7 @@ class Session:
             self.activity = "writing…"
             return True
         if kind == "text.ended":
-            gist = _gist(str(event.get("text") or ""))
+            gist = _answer_gist(str(event.get("text") or ""))
             if gist:
                 self.answer = gist
             return False

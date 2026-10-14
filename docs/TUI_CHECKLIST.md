@@ -64,8 +64,10 @@ clean up on the VM. Each item says why it could not be closed here.
 12. The SSH test key `~/.ssh/delfin_tui_localhost_test` and its
     `from="127.0.0.1,::1"` line in `~/.ssh/authorized_keys`.
 13. In the real `~/.delfin`: two old test session records (0cc8db05…,
-    32cfddf4…), and four audit-log entries of test session e974faa0 --
-    kept on purpose: an audit log is not edited.
+    32cfddf4…), and audit-log entries of the real-model test sessions
+    (four of e974faa0, two of the agent-view check's) -- kept on purpose:
+    an audit log is not edited. The tests' session reports and
+    session-index rows were removed after each run.
 14. `/home/jonas/project/.scratch-tui` (scripts, review repros, logs) and
     the test folders under `/tmp` (gone at the next reboot).
 15. Processes: during the work, three orphaned test windows of an earlier

@@ -35,7 +35,8 @@ def test_a_summary_says_what_was_asked_what_runs_and_what_came_back(service):
     turn(a, sid, "hello there")
     s = _summary(a, sid)
     assert s["lastPrompt"] == "hello there"
-    assert s["answer"] == "Summary"                          # the first line that says something
+    # Its first sentence, not its heading ("## Summary"), without markdown.
+    assert s["answer"] == "The workspace holds one README and nothing else to change."
     assert s["activity"] is None and s["waiting"] is None
     mark = len(a.events)
     a.request("session.prompt", {"sessionId": sid, "text": "please edit the parser"})
