@@ -8015,6 +8015,9 @@ class KitToolPermissions:
     # until a later typed message asks for the direct push. Shared by
     # reference with sub-agents, whose prompts never change it.
     pr_route_repos: set = field(default_factory=set)
+    #: Headings of the git-errors skill already quoted into a tool result
+    #: in this session (repo_error_hints.tool_hint): each is said once.
+    repo_error_hints_shown: set = field(default_factory=set)
     #: Asked while a command or a test run is waited on, so Stop reaches
     #: work that is already running. Installed by the engine; None in a
     #: caller that has no session, which behaves exactly as before.
@@ -22548,6 +22551,22 @@ class _DocToolExecutor:
         _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
         if _ssh_note:
             payload["hint"] = _ssh_note
+        # A known repository error: its section of the git-errors skill
+        # (cause, fix, what not to do), once per session. Scanned on the
+        # raw streams, so truncation cannot cut the line git printed last.
+        # A session without skill discovery reads no skill from disk.
+        if not getattr(perms, "skip_skill_discovery", False):
+            try:
+                from . import repo_error_hints as _reh
+                _seen = getattr(perms, "repo_error_hints_shown", None)
+                _skill_hint = _reh.tool_hint(
+                    (proc.stderr or "") + "\n" + (proc.stdout or ""),
+                    _seen if isinstance(_seen, set) else None,
+                    str(perms.workspace))
+                if _skill_hint:
+                    payload["skill_hint"] = _skill_hint
+            except Exception:
+                pass
         if _journal_notes:
             payload["untracked_changes"] = " ".join(_journal_notes)
         watched = _auto_watch_submitted_jobs(proc.stdout or "", perms)
