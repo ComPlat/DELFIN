@@ -6694,7 +6694,11 @@ def create_tab(ctx):
         if perms is None:
             return
         cur = perms.mode if perms.mode in _KIT_MODE_ORDER else "default"
-        nxt = _KIT_MODE_ORDER[(_KIT_MODE_ORDER.index(cur) + 1) % len(_KIT_MODE_ORDER)]
+        # Passes over plan while a turn runs (mode_cycle): every step
+        # takes effect at once, and a call landing mid-cycle was refused.
+        from delfin.agent.mode_cycle import next_in_cycle
+        nxt = next_in_cycle(_KIT_MODE_ORDER, cur, turn_running=bool(
+            getattr(eng, "turn_in_flight", False)))
         ok = bool(eng.set_kit_permission_mode(nxt))
         if ok:
             _append_system_message(
@@ -9562,10 +9566,20 @@ def create_tab(ctx):
                     f"anything — /changes lists what was written."
                 )
             else:
-                _append_system_message(
-                    "📋 A pending plan was restored from the saved session. "
-                    "Switch to /mode plan to review + approve it."
-                )
+                # Once per plan: every restore announced it again, ten
+                # times in two sessions (session_store keeps the mark).
+                from delfin.agent.session_store import (
+                    mark_pending_plan_noticed, pending_plan_needs_notice)
+                if pending_plan_needs_notice(data):
+                    _append_system_message(
+                        "📋 A pending plan was restored from the saved session. "
+                        "Switch to /mode plan to review + approve it."
+                    )
+                    try:
+                        mark_pending_plan_noticed(
+                            str(data.get("session_id") or session_id))
+                    except Exception:
+                        pass
         # Active gate — restoring lets a paused approval keep its banner.
         saved_gate = data.get("active_gate")
         if isinstance(saved_gate, dict) and saved_gate.get("type"):
@@ -14398,11 +14412,15 @@ def create_tab(ctx):
             # case that would need a new engine.
             perm_values = [v for _, v in perm_dropdown.options]
             perm_labels = {v: label for label, v in perm_dropdown.options}
-            idx = perm_values.index(perm_dropdown.value) if perm_dropdown.value in perm_values else 0
-            next_idx = (idx + 1) % len(perm_values)
-            perm_dropdown.value = perm_values[next_idx]
+            # A step taken while a turn runs passes over plan (mode_cycle).
+            from delfin.agent.mode_cycle import next_in_cycle
+            _cur = (perm_dropdown.value if perm_dropdown.value in perm_values
+                    else perm_values[0])
+            _nxt = next_in_cycle(perm_values, _cur, turn_running=bool(
+                getattr(state.get("engine"), "turn_in_flight", False)))
+            perm_dropdown.value = _nxt
             _append_system_message(
-                f"Permission: {perm_labels[perm_values[next_idx]]} (Shift+Tab to cycle)"
+                f"Permission: {perm_labels[_nxt]} (Shift+Tab to cycle)"
             )
             return True
 

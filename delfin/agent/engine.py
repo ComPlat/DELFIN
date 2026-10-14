@@ -6568,6 +6568,13 @@ class AgentEngine:
                 )
                 return
 
+    @property
+    def turn_in_flight(self) -> bool:
+        """True while a turn holds this engine's one-turn gate. Read by
+        the mode cycles (mode_cycle.next_in_cycle), which pass over plan
+        while a turn runs."""
+        return bool(getattr(self, "_turn_in_flight", False))
+
     def request_stop(self) -> None:
         """Request the current streaming response to stop.
 
