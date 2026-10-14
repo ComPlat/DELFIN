@@ -8397,6 +8397,7 @@ def create_tab(ctx):
         result = {"answers": []}
         state["_ask_user_event"] = ev
         state["_ask_user_result"] = result
+        state["_ask_user_args"] = dict(args or {})
         from html import escape as _esc
         header_html = (f"<span style='background:#0a84ff;color:white;"
                        f"padding:2px 6px;border-radius:3px;font-size:11px;"
@@ -8405,6 +8406,8 @@ def create_tab(ctx):
         ask_user_label.value = (
             f"<div style='font-size:14px;'>{header_html}"
             f"<b>{_esc(question)}</b></div>"
+            "<div style='color:#888;font-size:11px;margin-top:2px;'>"
+            "Pick an option, or type your own answer in the chat.</div>"
         )
         chosen: set[str] = set()
         button_widgets: list = []
@@ -8529,14 +8532,53 @@ def create_tab(ctx):
         ask_user_box.layout.display = ""
         # Block up to 5 minutes
         ev.wait(timeout=300)
+        _close_ask_user_modal(ev)
+        if not result["answers"]:
+            return {"answers": [], "timed_out": True}
+        return result
+
+    def _close_ask_user_modal(ev) -> None:
+        """Take the question widget off screen and forget the question.
+
+        Called by the asking thread when it wakes and by a chat answer on
+        the UI thread. Only the question ``ev`` belongs to is cleared, so
+        a late call cannot wipe a newer question's state.
+        """
+        if state.get("_ask_user_event") not in (None, ev):
+            return
         ask_user_box.layout.display = "none"
         ask_user_label.value = ""
         ask_user_buttons.children = ()
         state["_ask_user_event"] = None
         state["_ask_user_result"] = None
-        if not result["answers"]:
-            return {"answers": [], "timed_out": True}
-        return result
+        state["_ask_user_args"] = None
+
+    def _answer_ask_from_chat(text: str) -> bool:
+        """A chat line sent while ask_user_question waits is its answer.
+
+        Input: the stripped line from the chat input. Output: True when a
+        question was waiting and took the line (the caller then shows it
+        once in the chat and starts no turn and no steer -- the turn is
+        blocked inside this question and continues with the answer);
+        False when nothing waited. The result is
+        ``approval_answers.typed_answer``, the same one the terminal
+        dialog produces. Measured before: the line was steered into the
+        blocked turn and the question stayed on screen until its 300 s
+        expiry, then returned timed_out.
+        """
+        ev = state.get("_ask_user_event")
+        result = state.get("_ask_user_result")
+        if ev is None or result is None or ev.is_set() or not text:
+            return False
+        from delfin.agent.approval_answers import typed_answer
+        answer = typed_answer(text, state.get("_ask_user_args") or {})
+        if not answer.get("answers"):
+            return False
+        result.clear()
+        result.update(answer)
+        _close_ask_user_modal(ev)
+        ev.set()
+        return True
 
     # exit_plan_mode approval — uses existing plan_accept_btn but flips perms
     # via the structured callback so the tool result reflects the choice.
@@ -18079,6 +18121,17 @@ def create_tab(ctx):
 
         # Hide any pending question UI when user sends a message
         _hide_question_ui()
+
+        # An open ask_user_question takes the line as its answer. Not a
+        # built-in slash command (/stop must still stop), and not what the
+        # session sends on its own -- only the user answers a question.
+        if (not state.get("_on_its_own")
+                and user_text.split()[0].lower()
+                not in _BUILTIN_SLASH_PREFIXES
+                and _answer_ask_from_chat(user_text)):
+            input_textarea.value = ""
+            _append_chat_message("user", user_text)
+            return
 
         # Slash commands execute immediately, even during streaming.
         # But file paths like /home/... are NOT slash commands — only

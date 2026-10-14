@@ -14893,6 +14893,89 @@ class _DocToolExecutor:
         except Exception:
             pass
 
+    def _shell_snapshot(self, perms: "KitToolPermissions"):
+        """The writable roots before a shell command (shell_changes).
+        None when it cannot be taken. Never raises."""
+        try:
+            from . import change_journal as _cj
+            from . import shell_changes as _sc
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            recs = _cj.list_changes(sid) or []
+            start = max((int(r.get("seq", 0) or 0) for r in recs),
+                        default=0)
+            # Read-only and calc roots: the cage refuses writes there,
+            # and calc folders are the largest trees a session has.
+            skip = (tuple(getattr(perms, "read_only_workspace_dirs", ())
+                          or ())
+                    + tuple(getattr(perms, "confirm_write_dirs", ()) or ()))
+            return _sc.before(perms.all_workspace_roots(),
+                              session_id=sid, start_seq=start, skip=skip)
+        except Exception:
+            return None
+
+    def _journal_shell_changes(
+        self, tool: str, snap, perms: "KitToolPermissions",
+    ) -> list[str]:
+        """Journal what a shell command changed under the roots, one
+        entry per file, and return the notes to show (roots or
+        directories not tracked, each said once per session).
+
+        A path the session journalled itself while the command ran (a
+        redirect target the executor captured, a write_file during a
+        background job: seq after the snapshot) is not journalled twice.
+        Never raises."""
+        if snap is None:
+            return []
+        try:
+            from . import change_journal as _cj
+            from . import shell_changes as _sc
+            changes = _sc.after(snap)
+            notes = _sc.take_notes(snap)
+            if not changes:
+                return notes
+            sid = snap.session_id
+            already = {
+                os.path.realpath(str(r.get("path", "")))
+                for r in (_cj.list_changes(sid) or [])
+                if int(r.get("seq", 0) or 0) > snap.start_seq
+                and r.get("path")}
+            for ch in changes:
+                if ch.path in already:
+                    continue
+                p = Path(ch.path)
+                if ch.reason:
+                    post = ""
+                    if ch.kind != "deleted":
+                        try:
+                            if p.stat().st_size <= _sc.MAX_HASH_BYTES:
+                                post = _cj.sha256_file_bytes(p) or ""
+                        except OSError:
+                            post = ""
+                    _report_file_changed(p)
+                    rec = _cj.record_change_without_undo(
+                        sid, tool=tool, path=str(p), reason=ch.reason,
+                        created=ch.kind == "created",
+                        deleted=ch.kind == "deleted", post_hash=post)
+                    self._note_change_seq(rec, perms)
+                elif ch.kind == "deleted":
+                    self._capture_raw_change(tool, p, ch.pre, perms,
+                                             deleted=True)
+                else:
+                    self._capture_raw_change(tool, p, ch.pre, perms)
+                # The session's own write moves its edit baseline, as for
+                # a redirect -- only for a file it had read: a file it
+                # never read keeps needing a read before an edit.
+                tracker = getattr(perms, "read_tracker", None)
+                if (ch.kind != "deleted" and isinstance(tracker, dict)
+                        and str(p) in tracker):
+                    try:
+                        tracker[str(p)] = p.stat().st_mtime
+                    except OSError:
+                        pass
+            return notes
+        except Exception:
+            return []
+
     def _note_change_seq(
         self, rec: "Optional[dict]", perms: "KitToolPermissions",
     ) -> None:
@@ -18067,6 +18150,17 @@ class _DocToolExecutor:
     # Commands that run whatever they are handed. The token after one of
     # these -- past its own flags and arguments -- is in execution
     # position exactly as the head of a segment is.
+    #: An interpreter's -c/-e argument that is exactly one file's text
+    #: substituted in: ``$(cat f)``, ``$(< f)``, `` `cat f` ``. Group 1
+    #: (``$(...)``) or 2 (backticks) is the file operand, still
+    #: shell-quoted. Anything else in the
+    #: substitution (a pipe, a second file, a flag) is not matched: the
+    #: scan stays a heuristic, and opaque spellings are left to the cage.
+    _SUBSTITUTED_FILE_RE = re.compile(
+        r"(?:\$\(\s*(?:cat\s+(?:--\s+)?|<\s*)([^()`|;&<>$]+?)\s*\)"
+        r"|`\s*cat\s+(?:--\s+)?([^()`|;&<>$]+?)\s*`)"
+    )
+
     _EXEC_WRAPPER_RE = re.compile(
         r"^(?:env|nohup|time|timeout|nice|ionice|setsid|stdbuf|exec|xargs|"
         r"sudo|doas|watch|source|\.)$"
@@ -18129,6 +18223,20 @@ class _DocToolExecutor:
                         inline = True
                         break
                     if nt in ("-m", "-c", "-e", "-"):  # inline → no file
+                        # ...unless the inline program is a file's text
+                        # substituted in: `sh -c "$(cat f)"` runs f.
+                        if nt in ("-c", "-e") and j + 1 < len(toks):
+                            sub = self._SUBSTITUTED_FILE_RE.fullmatch(
+                                toks[j + 1].strip())
+                            if sub:
+                                import shlex as _shlex
+                                try:
+                                    named = _shlex.split(
+                                        sub.group(1) or sub.group(2))
+                                except ValueError:
+                                    named = []
+                                if len(named) == 1:
+                                    out.append(("file", named[0]))
                         inline = True
                         break
                     if nt.startswith("-"):
@@ -22106,6 +22214,9 @@ class _DocToolExecutor:
                     _pre_shell[_tp] = None
         except Exception:
             _pre_shell = {}
+        # Everything else it may change under the roots: an interpreter,
+        # a script or a compiler writes past any reading of the text.
+        _snap = self._shell_snapshot(perms)
 
         t0 = time.monotonic()
         try:
@@ -22121,11 +22232,12 @@ class _DocToolExecutor:
                 # group, no terminal, the whole group ended at exit and
                 # at the timeout. subprocess.run killed only bash itself.
                 from . import contained_run as _contained
+                _run_argv = (_bash_isolation_argv(cmd, run_cwd, perms)
+                             if not caged_unasked
+                             else _bash_isolation_argv(cmd, run_cwd, perms,
+                                                       caged_unasked=True))
                 proc = _contained.run(
-                    _bash_isolation_argv(cmd, run_cwd, perms)
-                    if not caged_unasked
-                    else _bash_isolation_argv(cmd, run_cwd, perms,
-                                              caged_unasked=True),
+                    _run_argv,
                     cwd=str(run_cwd),
                     env=env,
                     timeout=timeout,
@@ -22133,6 +22245,8 @@ class _DocToolExecutor:
                     budget=True,
                 )
         except subprocess.TimeoutExpired:
+            # What it wrote before it was ended is still its work.
+            self._journal_shell_changes("bash", _snap, perms)
             # Say what to do instead. The default window is a minute or
             # two, and a run that needs longer has two sanctioned ways
             # to be run -- neither of which the refusal named, so a
@@ -22197,6 +22311,7 @@ class _DocToolExecutor:
                 perms.read_tracker[str(_tp)] = _tp.stat().st_mtime
             except Exception:
                 pass
+        _journal_notes = self._journal_shell_changes("bash", _snap, perms)
 
         out = proc.stdout or ""
         err = proc.stderr or ""
@@ -22214,9 +22329,21 @@ class _DocToolExecutor:
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
+        if _push is None:
+            _wrap_err = _note_wrap_failure(_run_argv, proc.returncode,
+                                           proc.stderr or "")
+            if _wrap_err:
+                payload["error"] = (
+                    "the sandbox could not be applied, so the command did "
+                    f"not run ({_wrap_err}). It is not run without it. "
+                    "Commands off the auto-allow list are asked about for "
+                    "the rest of this session; tell the user if they need "
+                    "this one.")
         _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
         if _ssh_note:
             payload["hint"] = _ssh_note
+        if _journal_notes:
+            payload["untracked_changes"] = " ".join(_journal_notes)
         watched = _auto_watch_submitted_jobs(proc.stdout or "", perms)
         if watched:
             payload["watched_slurm_jobs"] = watched
@@ -22276,6 +22403,14 @@ class _DocToolExecutor:
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
 
+        # The job's file changes are journalled when it ends, in its
+        # watcher thread, against the roots as they were at its start.
+        _snap = self._shell_snapshot(perms)
+
+        def _journal_job_changes():
+            return self._journal_shell_changes(
+                "bash_background", _snap, perms)
+
         try:
             from . import bash_jobs as _bj
             _job_sid = str(getattr(perms, "task_session_id", "") or "")
@@ -22296,6 +22431,7 @@ class _DocToolExecutor:
                 else _bash_isolation_argv(cmd, run_cwd, perms,
                                           caged_unasked=True),
                 **({"session_id": _job_sid} if _job_sid else {}),
+                on_finish=_journal_job_changes,
             )
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
@@ -24428,6 +24564,17 @@ class _DocToolExecutor:
             "answers": answers,
             "multiSelect": multi_select,
         }
+        # Typed into the chat instead of picked (approval_answers.typed_answer):
+        # the model is told so, and free text is named as possibly outside
+        # the options -- otherwise it reads as a label it never offered.
+        if result.get("answered_in_chat") and answers:
+            payload["answered_in_chat"] = True
+            if result.get("free_text"):
+                payload["free_text"] = True
+                payload["note"] = (
+                    "The user typed this answer in the chat instead of "
+                    "picking an option; it may lie outside the options "
+                    "offered. Take it as their answer and continue.")
         # Surface the UI's timeout flag: empty answers because the user is
         # AWAY must not read like the user actively chose nothing (weak
         # models re-ask the identical question in a loop otherwise).
@@ -25008,6 +25155,50 @@ def _bwrap_functional() -> bool:
         ok = False
     _BWRAP_FUNCTIONAL = ok
     return ok
+
+
+# bwrap's own diagnostic from the first wrap that failed at run time in
+# this process, or None. Set by _note_wrap_failure; read by
+# _caged_command_may_run_unasked and the caged argv.
+_BWRAP_RUNTIME_FAILURE: Optional[str] = None
+
+
+def _note_wrap_failure(argv, returncode, stderr: str) -> Optional[str]:
+    """bwrap's message when ``argv`` was a bubblewrap wrap that failed
+    before the command started, else None.
+
+    Input: the argv the executor started, its exit status and stderr.
+    Semantics: argv[0] is ``bwrap``, the status is non-zero and stderr
+    opens with bwrap's own ``bwrap: `` prefix (setup failures such as a
+    nested namespace, "Device or resource busy"). The command did not run
+    and is not retried without the wrap. Effect: ``_BWRAP_RUNTIME_FAILURE``
+    is set, which withdraws the caged admission for the process -- later
+    off-list commands are asked about. A security event is recorded.
+
+    Rejected: resetting ``_BWRAP_FUNCTIONAL`` to False. The stderr prefix
+    can be printed by the command itself, and that reset would move
+    "auto" from bwrap to Landlock or to no filesystem isolation; withdrawing
+    the admission only adds questions. Never raises.
+    """
+    global _BWRAP_RUNTIME_FAILURE
+    try:
+        if (not argv or os.path.basename(str(argv[0])) != "bwrap"
+                or not returncode):
+            return None
+        first = (stderr or "").lstrip().splitlines()
+        if not first or not first[0].startswith("bwrap: "):
+            return None
+        msg = first[0][:300]
+        if _BWRAP_RUNTIME_FAILURE is None:
+            _BWRAP_RUNTIME_FAILURE = msg
+            _record_security_event(
+                "isolation", "bash",
+                f"bubblewrap failed at run time ({msg}); the command did not "
+                "run, and commands off the auto-allow list are asked about "
+                "from now on", blocked=True)
+        return msg
+    except Exception:
+        return None
 
 
 _LANDLOCK_FUNCTIONAL: Optional[bool] = None
@@ -26082,7 +26273,9 @@ def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
         ``_bash_isolation_argv`` builds the argv from -- the process cage
         is active (``--unshare-pid``: no process outside the command is
         visible to signal) and the network mode is not "open";
-      - the text names nothing in ``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``.
+      - the text names nothing in ``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``;
+      - no wrap has failed at run time in this process
+        (``_BWRAP_RUNTIME_FAILURE``, set by ``_note_wrap_failure``).
     The command then runs with ``caged_unasked=True``: protected files
     read-only, no SLURM route, refused if the cage is gone by then.
 
@@ -26118,6 +26311,10 @@ def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
         # A container session runs its commands in the container, whose
         # mounts are not the cage this admission relies on: asked instead.
         if _kind != "bwrap" or _iso_mode == "container":
+            return False
+        # A wrap already failed at run time in this process
+        # (_note_wrap_failure): the cage cannot be relied on, so ask.
+        if _BWRAP_RUNTIME_FAILURE is not None:
             return False
         if not _process_cage_enabled():
             return False
@@ -26319,7 +26516,8 @@ def _bash_isolation_argv(
         if boxed:
             return boxed
         kind, mode = _bash_isolation_decision(perms, "auto")
-    if caged_unasked and (kind != "bwrap" or not _landlock_functional()):
+    if caged_unasked and (kind != "bwrap" or not _landlock_functional()
+                          or _BWRAP_RUNTIME_FAILURE is not None):
         return _refusal_argv(
             "this command was admitted without a question because the "
             "filesystem cage holds it, and the cage is no longer available")

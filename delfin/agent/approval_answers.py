@@ -118,6 +118,56 @@ def resolve_choice(record: dict, choice: str) -> list[str]:
     return out
 
 
+def option_labels(options: Any) -> list[str]:
+    """Display labels of an ask_user_question option list.
+
+    Input: the normalised list of ``{label, description}`` dicts, or plain
+    strings (older callers and test doubles). Output: the labels in order,
+    blanks dropped. A dict is never rendered through ``str()``: that put
+    ``{'label': ..., 'description': ''}`` on the terminal and returned it
+    to the model as the picked answer.
+    """
+    out: list[str] = []
+    for opt in options if isinstance(options, list) else []:
+        label = opt.get("label") if isinstance(opt, dict) else opt
+        if isinstance(label, str) and label.strip():
+            out.append(label)
+    return out
+
+
+def typed_answer(text: str, payload: Optional[dict] = None) -> dict:
+    """The ask_user_question result for a line typed into the chat.
+
+    Input: the line the user sent while the question waited, and the
+    question's payload. Output: ``{"answers": [...], "answered_in_chat":
+    True}``, plus ``"free_text": True`` when the line is not an option.
+    A line that names an option -- its label (case-insensitive) or its
+    number, as ``resolve_choice`` reads an outside answer -- is that
+    option; anything else is kept verbatim as the single answer, also
+    for a question whose options were meant to be exhaustive, so the
+    model receives what the user said instead of an empty choice.
+
+    Used by both surfaces (dashboard chat input, terminal dialog), so the
+    tool result does not depend on where the line was typed. Rejected:
+    refusing free text for a fixed-option question -- the user has
+    already answered, and an empty result reads as "chose nothing".
+    """
+    line = str(text or "").strip()
+    record = {"kind": "ask", "payload": {
+        "options": [{"label": l} for l in
+                    option_labels((payload or {}).get("options"))],
+        "multiSelect": bool((payload or {}).get("multiSelect"))}}
+    try:
+        picks = (resolve_choice(record, " ".join(line.split()))
+                 if line and "\n" not in line else [])
+    except ChoiceError:
+        picks = []
+    if picks:
+        return {"answers": picks, "answered_in_chat": True}
+    return {"answers": [line] if line else [], "answered_in_chat": True,
+            "free_text": True}
+
+
 def write_choice_answer(record: dict, answers: list[str], *,
                         room: Optional[Path] = None,
                         by: str = "", code: Optional[str] = None) -> Path:

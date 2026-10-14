@@ -82,7 +82,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from delfin.agent import proc_identity
 from delfin.agent import process_budget
@@ -1252,11 +1252,18 @@ class _Registry:
         workspace: str | Path | None = None,
         session_id: str = "",
         argv: Optional[list[str]] = None,
+        on_finish: Optional[Callable[[], Optional[list]]] = None,
     ) -> BashJob:
         """Start ``command``. ``argv`` is what actually runs, when the caller
         wraps the command -- the agent's shell tool puts it in the process
         cage (``api_client._bash_isolation_argv``); ``command`` stays what
-        the job is known, capped and shown by."""
+        the job is known, capped and shown by.
+
+        ``on_finish``: called once in the watcher thread after the job's
+        process has been reaped and before its exit code is recorded (the
+        shell tool journals the files the job changed). Lines it returns
+        are appended to the job's stderr log. Its failure is noted there
+        and does not keep the exit code from being recorded."""
         if not command.strip():
             raise ValueError("command must be non-empty")
         if timeout_s <= 0:
@@ -1485,6 +1492,14 @@ class _Registry:
                     pass
                 if job.finished_at is None:
                     job.finished_at = time.monotonic()
+                if on_finish is not None:
+                    try:
+                        for line in on_finish() or ():
+                            _note_on_the_job(job, str(line))
+                    except Exception as exc:
+                        _note_on_the_job(
+                            job, f"recording the job's file changes "
+                                 f"failed: {exc}")
                 # The wrapper shell exiting is not the work finishing when
                 # the command queued a cluster job: register what it
                 # submitted so the completion is watched by someone.

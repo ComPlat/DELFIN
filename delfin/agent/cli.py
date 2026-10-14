@@ -2698,8 +2698,10 @@ def cmd_credentials(args: argparse.Namespace) -> int:
             print(f"Not stored: {exc}", file=sys.stderr)
             return 1
         if ok:
-            print(f"Stored {name} = {_cred.mask(value)} "
-                  f"in {_cred.describe_store(name)}")
+            # No part of the value, not even a masked one: the first and
+            # last four characters of a key stay in the terminal's
+            # scrollback (alert 58). `credentials list` shows which key it is.
+            print(f"Stored {name} in {_cred.describe_store(name)}")
             if _cred.stored_in(name) == ["keyring", "file"]:
                 print(f"An older copy of {name} is still in "
                       f"{_cred.credentials_path()}; `delfin-agent credentials "
