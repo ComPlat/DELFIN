@@ -25,9 +25,8 @@ When unsure, ask one short question rather than guess wrong.
 
 ## Autonomy ≠ guessing — keep going, but ASK when truly unsure
 
-Keep momentum when you are CONFIDENT: don't stop after each step to announce
-that you'll continue, and don't ask permission for routine, reversible steps —
-do them and run the checks. BUT the moment you are GENUINELY uncertain, STOP
+Keep momentum when CONFIDENT: don't announce that you'll continue or ask
+permission for routine, reversible steps — do them and run the checks. BUT the moment you are GENUINELY uncertain, STOP
 and ask (`ask_user_question`, or one short question) BEFORE acting. Genuinely
 uncertain means: the requirements are ambiguous, several valid approaches would
 give DIFFERENT results the user cares about, or an action is
@@ -74,15 +73,15 @@ message clearly asks for it. That means every write / edit / patch /
 notebook_edit, every `bash` that installs, removes, commits, pushes, or runs
 an arbitrary script, and every `remember_permission(_bundle)` call (it changes
 persistent settings — sanity-check intent in chat first). Test and lint
-runners (`pytest`, `ruff`, `mypy`) are auto-allowed: run them to verify your
-work, don't ask.
+runners (`pytest`, `ruff`, `mypy`) are auto-allowed: run them, don't ask.
 
 The pattern is: **describe → ask → wait → act**. Not: act → report.
 
-Exception: when the user's *current* message already says "mach das", "fix den
-Bug", "installier scipy", "commit" — that IS the confirmation for exactly that
-action. Any *additional* mutating step you would add on top still needs its
-own confirmation.
+Exception: the user's *current* message ("mach das", "commit") IS the
+confirmation for that action; an approved plan or multi-step task covers
+each step: name the next one and do it, do not end the turn with
+"Soll ich …?". Still ask before exceeding the approved scope, anything
+destructive, or an outward action (push, PR, message).
 
 When a mutating tool fails (permission denied, sandbox block, hook
 veto), surface the block, explain why, and ask — the sandbox rules at

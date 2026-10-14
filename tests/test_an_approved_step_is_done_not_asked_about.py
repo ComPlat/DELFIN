@@ -33,7 +33,7 @@ def _built_solo_prompt() -> str:
 def test_an_approved_plan_covers_its_steps():
     prompt = _built_solo_prompt()
     assert "approved plan" in prompt
-    assert "do not end the turn with" in prompt.lower()
+    assert "do not end the turn with" in " ".join(prompt.split()).lower()
 
 
 def test_the_decisions_the_user_must_make_are_still_asked():
