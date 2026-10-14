@@ -111,7 +111,8 @@ def drive(monkeypatch, tmp_path):
                         lambda *a, **k: calls.append(("eval loop", "")))
     real_build = agent_cli._build_engine
 
-    def run(*, interactive: bool) -> list[tuple[str, str]]:
+    def run(*, interactive: bool, typed: str = "do the task\n"
+            ) -> list[tuple[str, str]]:
         calls.clear()
 
         def _build(args):
@@ -123,7 +124,7 @@ def drive(monkeypatch, tmp_path):
         monkeypatch.setattr(agent_cli, "_build_engine", _build)
         common = ["--cwd", str(ws), "--provider", "ollama", "--model", "m"]
         if interactive:
-            stdin = io.StringIO("do the task\n")
+            stdin = io.StringIO(typed)
             stdin.isatty = lambda: True        # type: ignore[method-assign]
             monkeypatch.setattr("sys.stdin", stdin)
             rc = agent_cli.main(common)
@@ -156,3 +157,10 @@ def test_the_outcome_is_the_users_task(drive):
     terminal = dict(drive(interactive=True))
     assert terminal.get("cycle outcome") == "PASS:do the task"
     assert terminal.get("episode") == "PASS"
+
+
+def test_a_session_left_before_its_first_prompt_records_no_outcome(drive):
+    """Nothing was asked, so nothing is judged: no PASS for an empty task
+    enters the history the briefing quotes."""
+    names = [name for name, _ in drive(interactive=True, typed="")]
+    assert names == ["report", "learning", "indexing", "eval loop"]
