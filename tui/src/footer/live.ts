@@ -47,18 +47,21 @@ function drawn(line: string): string {
     .replace(/`+/g, "")
 }
 
-/** Rows `line` takes wrapped at a word to `cols` columns. */
+/** Rows `line` takes wrapped at a word to `cols` columns (its indent
+ *  counted, a tab as four). */
 export function wrapRows(line: string, cols: number): number {
   if (cols < 2) return 1
+  const text = line.replace(/\t/g, "    ")
+  const indent = text.length - text.trimStart().length
   let rows = 1
-  let at = 0
-  for (const word of line.split(" ")) {
+  let at = Math.min(indent, cols - 1)
+  for (const word of text.trimStart().split(/ +/)) {
     const w = width(word)
     if (at > 0 && at + 1 + w <= cols) {
       at += 1 + w
       continue
     }
-    if (at > 0) rows++
+    if (at > indent || (at > 0 && at + w > cols)) rows++
     // A word longer than a row is cut into rows of its own.
     rows += Math.max(0, Math.ceil(w / cols) - 1)
     at = w > cols ? w % cols || cols : w
@@ -66,25 +69,38 @@ export function wrapRows(line: string, cols: number): number {
   return rows
 }
 
+/** The fence that opens a code block on `line`, if one does (backticks
+ *  in a ``` fence's info string make it inline code instead). */
+function fenceMark(line: string): string | null {
+  const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+  if (!open) return null
+  return open[1]![0] === "`" && open[2]!.includes("`") ? null : open[1]!
+}
+
 /** Rows a block takes at `cols` columns. */
 export function blockRows(text: string, cols: number): number {
   const room = Math.max(2, cols - 1)
   const lines = text.replace(/\s+$/, "").split("\n")
   while (lines.length > 0 && !lines[0]!.trim()) lines.shift()
+  // A table: a border above and below, and a rule between every two rows.
+  const table = lines.filter((l) => l.trim().startsWith("|")).length
+  if (table >= 2 && table === lines.filter((l) => l.trim()).length) return 2 * table - 1
   let rows = 0
   let fence: string | null = null
   for (const line of lines) {
-    const mark = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1]
+    const mark = fenceMark(line)
     if (fence === null && mark) {
       fence = mark
       continue
     }
-    if (fence !== null && mark && mark[0] === fence[0] && mark.length >= fence.length) {
+    if (fence !== null && mark && mark[0] === fence[0] && mark.length >= fence.length && !line.trim().slice(mark.length)) {
       fence = null
       continue
     }
     if (fence !== null) rows += wrapRows(line, room)
-    else rows += line.trim() ? wrapRows(drawn(line), room) : 1
+    else if (!line.trim()) rows += 1
+    // A quote's bar and its space take two columns.
+    else rows += wrapRows(drawn(line), /^\s*>/.test(line) ? Math.max(2, room - 2) : room)
   }
   return rows
 }

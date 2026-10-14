@@ -10,7 +10,7 @@
 import type { KeyEvent } from "@opentui/core"
 
 export type Action =
-  | "submit" | "newline" | "interrupt" | "steer" | "cycleMode" | "expand"
+  | "submit" | "newline" | "interrupt" | "steer" | "cycleMode" | "details" | "expand"
   | "tasks" | "redraw" | "agents" | "palette" | "quit" | "historyPrev"
   | "historyNext" | "historySearch" | "agentsUp" | "agentsDown" | "agentsOpen"
   | "agentsPeek" | "agentsBack" | "agentsStop" | "agentsRename" | "agentsPin"
@@ -24,7 +24,10 @@ export const DEFAULT_KEYS: Readonly<Record<Action, readonly string[]>> = {
   interrupt: ["escape"],
   steer: ["ctrl+g"],
   cycleMode: ["shift+tab"],
-  expand: ["ctrl+o"],
+  // A tool call is its headline and what came back; ctrl+o shows what it
+  // printed (Claude Code's key). The last result in full: the palette.
+  details: ["ctrl+o"],
+  expand: [],
   tasks: ["ctrl+t"],
   redraw: ["ctrl+l"],
   agents: ["left"],                 // with nothing typed
@@ -88,11 +91,19 @@ export function describe(binding: Binding): string {
           SHOWN[binding.name] ?? binding.name].filter(Boolean).join("+")
 }
 
+function same(a: Binding, b: Binding): boolean {
+  return a.name === b.name && a.ctrl === b.ctrl && a.alt === b.alt && a.shift === b.shift
+}
+
+/** Actions the palette offers too: without a key they are still there. */
+const IN_PALETTE: ReadonlySet<Action> = new Set(["details", "expand", "tasks", "redraw", "quit"])
+
 export class Keymap {
   private readonly bindings = new Map<Action, Binding[]>()
   readonly problems: string[] = []
 
   constructor(overrides: Record<string, string[]> = {}) {
+    const explicit = new Set<Action>()
     for (const [action, keys] of Object.entries(DEFAULT_KEYS) as [Action, readonly string[]][]) {
       this.bindings.set(action, keys.map((k) => parseBinding(k)!))
     }
@@ -108,6 +119,19 @@ export class Keymap {
         continue
       }
       this.bindings.set(action as Action, parsed.map(([, b]) => b!))
+      explicit.add(action as Action)
+    }
+    // A key bound on purpose is that action's: another action that only
+    // has it by default lets it go (a tui.json written with the old
+    // `"expand": ["ctrl+o"]` keeps ctrl+o for expand).
+    for (const action of explicit) {
+      for (const key of this.bindings.get(action)!) {
+        for (const [other, keys] of this.bindings) {
+          if (other === action || explicit.has(other)) continue
+          const kept = keys.filter((k) => !same(k, key))
+          if (kept.length !== keys.length) this.bindings.set(other, kept)
+        }
+      }
     }
   }
 
@@ -137,7 +161,8 @@ export const KEY_HELP: readonly { action?: Action; keys?: string; does: string }
   { action: "submit", does: "Send what you typed; during a turn it is queued and goes out when the turn ends." },
   { action: "steer", does: "Send what you typed INTO the running turn; the model reads it on its next round." },
   { action: "cycleMode", does: "Next approval posture (never onto bypass)." },
-  { action: "expand", does: "Show the last tool result in full." },
+  { action: "details", does: "Show or hide the tool calls' details: what each printed, an edit's diff. Full screen: a click on one shows just its own. Under GNU screen, inline: the last result in full." },
+  { action: "expand", does: "The last tool result in full, written into the conversation." },
   { action: "tasks", does: "Show or hide the open task list at the end of each turn." },
   { action: "redraw", does: "Write the session again at the terminal's width." },
   { keys: "backspace / ctrl+u", does: "Edit or clear the line you are typing (ctrl+w a word, ctrl+k to the end)." },
@@ -166,7 +191,10 @@ export const KEY_HELP: readonly { action?: Action; keys?: string; does: string }
 
 /** The key table as lines, with the keys this keymap binds. */
 export function keyTable(km: Keymap): string[] {
-  const rows = KEY_HELP.map((row) => [row.keys ?? km.keys(row.action!).map(describe).join(" / "), row.does] as const)
+  // An action with no key: the palette has it, or it has none.
+  const rows = KEY_HELP.map((row) => [row.keys ?? (km.keys(row.action!).map(describe).join(" / ")
+                                                    || (IN_PALETTE.has(row.action!) ? "palette" : "(no key)")),
+                                      row.does] as const)
   const width = Math.max(...rows.map(([keys]) => keys.length))
   return rows.map(([keys, does]) => `  ${keys.padEnd(width)}  ${does}`)
 }

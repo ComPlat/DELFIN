@@ -37,6 +37,9 @@ export async function mountWindow(options: {
   full?: boolean
   /** The theme, as a signal (dark by default). */
   theme?: () => Theme
+  /** Inline under GNU screen: a resize (or ctrl+o) cannot write the
+   *  session again. */
+  divider?: boolean
 } = {}) {
   const t = await createTestRenderer({
     width: options.width ?? 100, height: options.height ?? 30,
@@ -49,7 +52,8 @@ export async function mountWindow(options: {
   const store = createAppStore()
   const theme = options.theme ?? (() => DARK)
   const screen = options.full ? createScreenItems() : undefined
-  const view = startSessionView(t.renderer, store, theme, { showThinking: false, replayTurns: 20, screen })
+  const view = startSessionView(t.renderer, store, theme, { showThinking: false, replayTurns: 20, screen,
+                                                           dividerOnResize: Boolean(options.divider) })
   const calls: Call[] = []
   const client = options.client ?? {
     request: async (method: string, params: Record<string, any> = {}) => {
@@ -66,6 +70,7 @@ export async function mountWindow(options: {
   await render(() => (
     <App renderer={t.renderer} store={store} keymap={new Keymap()} theme={theme} client={client}
          onQuit={() => { quits++ }} onRedraw={() => {}} onExpand={() => view.expandLast()}
+         details={view.details} canShowDetails={() => view.canShowDetails} onDetails={() => view.toggleDetails()}
          onLines={(title, lines) => view.lines(title, lines)}
          onResume={options.onResume} onNewSession={options.onNewSession} pins={options.pins}
          answerPauseMs={options.answerPauseMs ?? 0} screen={screen} />

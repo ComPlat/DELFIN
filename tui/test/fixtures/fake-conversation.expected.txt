@@ -8,7 +8,6 @@
  ❯ hello there
  ⏺ read_file  README.md
    ⎿ 1 line, 11 B
-       # tui_demo
 
  Summary
 
@@ -20,20 +19,9 @@
  ❯ please edit the parser
  ⏺ read_file  delfin/xtb.py
    ⎿ 1 line, 9 B
-       212 lines
    ✓ approved: edit_file delfin/xtb.py
  ⏺ edit_file  delfin/xtb.py
    ⎿ Edited delfin/xtb.py (+4 -1)
-       @@ -41,5 +41,8 @@ def read_final_energy(path):
-          41      for line in lines:
-          42          if "FINAL SINGLE POINT ENERGY" in line:
-          43 -            energy = float(line.split()[3])
-          43 +            match = _ENERGY_RE.search(line)
-          44 +            if match is None:
-          45 +                raise ValueError(f"no energy on line: {line!r}")
-          46 +            energy = float(match.group(1))
-          47              break
-          48      return energy
 
  The parser now reads the energy with a regular expression.
    ✓ N.Ns · ↑N ↓N

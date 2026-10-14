@@ -70,9 +70,10 @@ describe("a recorded conversation", () => {
 
   test("shows every part of the conversation, in order", async () => {
     const { text } = await renderFixture(100)
-    const order = ["DELFIN  fake/fake-model", "❯ hello there", "⏺ read_file", "The workspace holds", "✓",
+    // A tool call is its headline and what came back (its details: ctrl+o).
+    const order = ["DELFIN  fake/fake-model", "❯ hello there", "⏺ read_file", "⎿ 1 line, 11 B", "The workspace holds", "✓",
                    "❯ please edit the parser", "approved: edit_file delfin/xtb.py", "⏺ edit_file",
-                   "match = _ENERGY_RE.search(line)", "regular expression",
+                   "⎿ Edited delfin/xtb.py (+4 -1)", "regular expression",
                    "❯ ask me which solvent", "answered: Which solvent model?", "Using SMD."]
     let at = 0
     for (const part of order) {

@@ -153,6 +153,14 @@ describe("the live blocks' rows", () => {
     expect(blockRows("- one\n- two\n- three", 80)).toBe(3)
   })
 
+  test("tables, indents, tabs, quotes and inline backticks get the rows they are drawn in", () => {
+    expect(blockRows("| Name | Value |\n|---|---|\n| alpha | 1 |", 80)).toBe(5)       // borders and a rule
+    expect(blockRows("def f():\n" + " ".repeat(8) + "x".repeat(72), 80)).toBe(3)
+    expect(wrapRows("\t" + "y".repeat(76), 79)).toBe(2)
+    expect(blockRows("> " + "w".repeat(78), 80)).toBe(2)
+    expect(blockRows("```inline``` is how you write it", 80)).toBe(1)
+  })
+
   test("only the trailing blocks that fill the footer are drawn", () => {
     const s = newSession("s1")
     s.held = Array.from({ length: 20 }, (_, i) => ({ key: `k${i}`, text: `block number ${i}` }))
@@ -168,6 +176,16 @@ describe("the live blocks' rows", () => {
     expect(fenceOf("```py")).toEqual({ lang: "py", code: "" })
     expect(fenceOf("Some ```inline``` text")).toBeNull()
     expect(fenceOf("```a`b\nx")).toBeNull()
+  })
+})
+
+describe("the room an open question gets", () => {
+  test("is less the rows of a block on its way into the rows, so the panel does not push it out", async () => {
+    const { approvalBudget } = await import("../../src/footer/footer")
+    const s = newSession("s1")
+    const without = approvalBudget(s, { width: 80, height: 30 }, "")
+    s.held = [{ key: "k", text: "Before the question, two lines\nof text." }]
+    expect(approvalBudget(s, { width: 80, height: 30 }, "")).toBe(without - 2)
   })
 })
 

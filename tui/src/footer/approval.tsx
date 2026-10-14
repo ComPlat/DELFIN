@@ -89,13 +89,20 @@ export function flow(spans: Span[], max: number): Line[] {
 
 // -- what the panel shows --------------------------------------------------------
 
+/** The key that writes an open question's whole preview out (ctrl+o, as
+ *  the keymap has it). */
+let fullPreviewKey = "ctrl+o"
+export function setFullPreviewKey(label: string): void {
+  fullPreviewKey = label
+}
+
 /** The preview, at most `rows` lines, each cut in its MIDDLE -- the end of
  *  a command or a path says what is about to be done (the REPL's rule). */
 function previewLines(asked: Asked, max: number, rows: number = PREVIEW_MAX): Line[] {
   const lines = String(asked.preview ?? "").split("\n")
   const room = Math.max(1, Math.min(rows, PREVIEW_MAX))
-  const shown = lines.length <= room ? lines
-    : [...lines.slice(0, Math.max(0, room - 1)), `… ${lines.length - room + 1} more lines (ctrl+o shows all)`]
+  const more = `… ${lines.length - room + 1} more lines` + (fullPreviewKey ? ` (${fullPreviewKey} shows all)` : "")
+  const shown = lines.length <= room ? lines : [...lines.slice(0, Math.max(0, room - 1)), more]
   return shown.map((line, i) => [{
     text: i === shown.length - 1 && line.startsWith("… ") && lines.length > room ? fit(line, max) : middle(line, max),
     tone: line.startsWith("+") && !line.startsWith("+++") ? "ok"

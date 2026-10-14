@@ -50,8 +50,8 @@ test("a session of 1,000 rows is written again in under 1 s", async () => {
   let seq = 0
   const push = (type: string, fields: Record<string, unknown>) =>
     w!.store.push({ type, session: sid, ts: 0, seq: ++seq, ...fields } as never)
-  // 30 turns of about 34 rows each: a prompt, a tool row, an answer.
-  for (let n = 1; n <= 30; n++) {
+  // 32 turns of about 33 rows each: a prompt, a tool call, an answer.
+  for (let n = 1; n <= 32; n++) {
     push("user.message", { text: `turn ${n}`, source: "user" })
     push("turn.started", { turnId: `t${n}`, source: "user" })
     push("tool.started", { turnId: `t${n}`, callId: `c${n}`, name: "read_file", input: { path: "README.md" } })
@@ -71,6 +71,6 @@ test("a session of 1,000 rows is written again in under 1 s", async () => {
   for (const item of w.view.transcript.items) await write(item)
   const took = performance.now() - t0
   console.log(`writing ${rows} rows again: ${took.toFixed(0)} ms`)
-  expect(w.t.externalOutput.takeText()).toContain("Line 14 of the answer to turn 30.")
+  expect(w.t.externalOutput.takeText()).toContain("Line 14 of the answer to turn 32.")
   expect(took).toBeLessThan(1000)
 })

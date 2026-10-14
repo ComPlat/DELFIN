@@ -2,6 +2,8 @@
 
 - it takes the whole terminal: the shell's lines are gone while it runs,
   the composer is at the bottom, the conversation above it;
+- a tool call is its headline and what came back; ctrl+o shows its
+  details in place and hides them again;
 - PgUp scrolls back to the session's banner, ctrl+end to its end;
 - the agent view takes the same screen and gives it back;
 - after a resize every row fits the new width and the composer is still
@@ -89,6 +91,17 @@ def main() -> int:
             time.sleep(0.4)
         if "(re: turn number 3)" not in tmux.screen():
             problems.append("the latest answer is not in view")
+        # A tool call is its headline and what came back; ctrl+o shows what
+        # it printed, in place, and again hides it.
+        if "# tui_demo" in tmux.screen():
+            problems.append("a tool call's details were shown before ctrl+o")
+        tmux.key("C-o")
+        if not tmux.wait_for(r"# tui_demo", 10):
+            problems.append(f"ctrl+o did not show the tool calls' details:\n{tmux.screen()}")
+        tmux.key("C-o")
+        time.sleep(0.8)
+        if "# tui_demo" in tmux.screen():
+            problems.append("ctrl+o again did not hide them")
         # Back to the start, and to the end again.
         tmux.key("C-Home")
         time.sleep(0.6)

@@ -17,6 +17,7 @@
  * starts the list again -- its own rows, not a divider under another's.
  */
 import type { CliRenderer } from "@opentui/core"
+import { createSignal } from "solid-js"
 import { CommitQueue } from "./scrollback/queue"
 import { Presenter } from "./scrollback/present"
 import { replayOnWidthChange } from "./scrollback/resize"
@@ -48,8 +49,17 @@ export interface SessionView {
   /** A note of the window's own (a config problem, a lost session), as a
    *  row in the scrollback, after what is already queued. */
   note(text: string): void
-  /** ctrl+o: the last tool result of the session in view, in full. */
+  /** The last tool result of the session in view, in full (the palette). */
   expandLast(): void
+  /** Every tool call's details shown. */
+  details(): boolean
+  /** Whether they can be shown (not under GNU screen, inline: the rows
+   *  above cannot be written again). */
+  readonly canShowDetails: boolean
+  /** ctrl+o: every tool call's details on or off -- in place on the full
+   *  screen; inline the session is written again with them (under GNU
+   *  screen, which cannot, the last result is shown in full instead). */
+  toggleDetails(): void
   /** Lines of the window's own (/keys), under a title. */
   lines(title: string, lines: string[]): void
   /** Thinking shown or hidden from now on. */
@@ -58,6 +68,10 @@ export interface SessionView {
   redraw(): Promise<void>
   stop(): void
 }
+
+/** How long ctrl+o waits, inline, before it writes the session again: a
+ *  second press meanwhile takes the first back. */
+export const DETAILS_SETTLE_MS = 150
 
 /** Full screen's ctrl+l: every cell written again, so what a terminal left
  *  of an earlier frame goes (xterm leaves pixels of a block glyph beside
@@ -94,6 +108,12 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
     void transcript.append(own("notice", { text: `could not draw a row: ${String(error)}` }))
       .finally(() => { reporting = false })
   })
+  // Inline: whether rows are written with their details (full screen: the
+  // list's own, see screenview.tsx), and with which the scrollback was
+  // last written as a whole.
+  const [details, setDetails] = createSignal(false)
+  let written = false
+  let detailsTimer: ReturnType<typeof setTimeout> | undefined
   /** A finished block's rows are drawn: the footer lets go of it. */
   const release = (session: string, key: string) => {
     if (!store.state.sessions[session]?.held.some((h) => h.key === key)) return
@@ -108,6 +128,7 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
     ? new Transcript(queue, { resetSplitFooterForReplay: () => {} }, (item) => screen.push(item), false)
     : new Transcript(queue, target, itemWriter(renderer, theme, {
         release: (item) => release(String(item.session ?? ""), String(item.held ?? "")),
+        details,
       }))
   const presentOptions = { showThinking: options.showThinking, shownAs: (text: string) => {
     const shown = sentAs.get(text)
@@ -121,7 +142,7 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
     const kept = transcript.items.filter((i) => (i.group ?? 0) >= cut + 1)
     const firstKept = transcript.items.indexOf(kept[0]!)
     const banner = [...transcript.items.slice(0, Math.max(0, firstKept))].reverse().find((i) => i.kind === "banner")
-    const say = own("notice", { text: `(${cut} earlier turn${cut === 1 ? "" : "s"} not shown again after the resize)` })
+    const say = own("notice", { text: `(${cut} earlier turn${cut === 1 ? "" : "s"} not written again)` })
     return banner ? [banner, say] : [say]
   }
   const replay = () => transcript.replay(options.replayTurns, "turns", lead)
@@ -163,6 +184,26 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
     },
     note,
     expandLast: () => presenter?.expandLast(),
+    details: () => (screen ? screen.details : details()),
+    get canShowDetails() {
+      return Boolean(screen) || !divider
+    },
+    toggleDetails() {
+      if (screen) screen.setDetails(!screen.details)
+      else if (divider) presenter?.expandLast()
+      else {
+        setDetails(!details())
+        // Pressed again and again: written once, when the presses stop --
+        // a replay is the whole session (resizes settle the same way).
+        clearTimeout(detailsTimer)
+        detailsTimer = setTimeout(() => {
+          if (details() === written) return
+          written = details()
+          void replay()
+        }, DETAILS_SETTLE_MS)
+        ;(detailsTimer as { unref?: () => void }).unref?.()
+      }
+    },
     lines(title, lines) {
       void transcript.append(own("lines", { title, lines }))
     },

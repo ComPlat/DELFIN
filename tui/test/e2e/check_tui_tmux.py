@@ -90,6 +90,25 @@ def main() -> int:
                 time.sleep(0.2)
             else:
                 problems.append(f"turn {turns} did not end")
+        # ctrl+o: the session written again with every tool call's details
+        # (the edit's diff), and once more without them -- what is left is
+        # the snapshot again.
+        time.sleep(0.5)
+        if "_ENERGY_RE.search(line)" in tmux.history():
+            problems.append("a tool call's details were shown before ctrl+o")
+        tmux.key("C-o")
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and "_ENERGY_RE.search(line)" not in tmux.history():
+            time.sleep(0.2)
+        if "_ENERGY_RE.search(line)" not in tmux.history():
+            problems.append("ctrl+o did not show the tool calls' details")
+        time.sleep(0.5)
+        tmux.key("C-o")
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and "_ENERGY_RE.search(line)" in tmux.history():
+            time.sleep(0.2)
+        if "_ENERGY_RE.search(line)" in tmux.history():
+            problems.append("ctrl+o again did not hide them")
         time.sleep(0.5)
         tmux.key("C-d")
         exited = tmux.wait_for(r"TUI_EXIT=(\d+)", 30)
@@ -128,7 +147,7 @@ def main() -> int:
         for p in problems:
             print(f"  - {p}")
         return 1
-    print("PASS: the live window shows the snapshot, and the session runs on")
+    print("PASS: the live window shows the snapshot, ctrl+o its details and back, and the session runs on")
     return 0
 
 

@@ -224,8 +224,8 @@ export class Presenter {
     }
   }
 
-  /** ctrl+o: the last tool result in full, as its output (not its
-   *  packaging) -- what the session forwarded of it. */
+  /** The last tool result in full (the palette; ctrl+o under GNU screen),
+   *  as its output (not its packaging) -- what the session forwarded. */
   expandLast(): void {
     if (!this.lastOutput) {
       this.add("notice", { text: "nothing to expand yet" })

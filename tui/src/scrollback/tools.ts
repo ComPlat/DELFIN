@@ -146,7 +146,8 @@ export function cutEnvelopeCarrying(output: string): [string, boolean] | null {
   return null
 }
 
-/** A result as its output, not its packaging (what ctrl+o shows). */
+/** A result as its output, not its packaging (what "expand the last
+ *  result" shows). */
 export function resultBody(output: string): string {
   const carrying = envelopeCarrying(output ?? "")
   if (carrying !== null) return carrying
@@ -360,7 +361,7 @@ export function toolResult(name: string, output: string, meta: Fields = {}, inpu
     }
     // The output itself was cut: its last lines here are not its last lines.
     const head = lines.slice(0, RESULT_TAIL_LINES).map(oneLine)
-    return { kind: "text", summary: `${lines.length}+ lines, cut for display (ctrl+o shows what was kept)`,
+    return { kind: "text", summary: `${lines.length}+ lines, cut for display`,
              lines: head, ok: true }
   }
   const lines = out.replace(/\n+$/, "").split("\n")

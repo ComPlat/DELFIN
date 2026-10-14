@@ -474,7 +474,9 @@ const agentScreen = full || (process.env.DELFIN_TUI_AGENTS_SCREEN ?? (process.en
 await render(() => (
   <App renderer={renderer} store={store} keymap={keymap} theme={theme} history={History.load()} sentAs={view.sentAs}
        client={connection.rpc} onQuit={quit} onRedraw={() => void view.redraw()}
-       onExpand={() => view.expandLast()} onResume={(id, ws) => void switchTo(id, ws)}
+       onExpand={() => view.expandLast()} details={view.details} canShowDetails={() => view.canShowDetails}
+       onDetails={() => view.toggleDetails()}
+       onResume={(id, ws) => void switchTo(id, ws)}
        onNewSession={newSession} pins={pins} agentScreen={agentScreen} screen={screen}
        onThinking={(on) => view.setShowThinking(on)} thinking={() => view.showThinking}
        onLines={(title, lines) => view.lines(title, lines)} />

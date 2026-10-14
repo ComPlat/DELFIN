@@ -1490,8 +1490,7 @@ third of a second.
 
 **In a session** the REPL's keys apply: enter sends (during a turn it is
 queued), ctrl+g sends into the running turn, esc ends the turn, shift+tab
-cycles the approval posture, ctrl+o shows the last tool result in full,
-ctrl+t toggles the task list, ↑/↓ and ctrl+r search the history, tab
+cycles the approval posture, ctrl+t toggles the task list, ↑/↓ and ctrl+r search the history, tab
 completes `/commands` and `@paths`, ctrl+l writes the session again. ctrl+p
 opens the command palette, with pickers for the model, the posture, the
 effort, the mode and a session to resume. `/keys` lists every key; `/editor`
@@ -1504,6 +1503,17 @@ or its id). The approval posture shows at the bottom in a colour of its
 own: ⏸ plan, ⏵⏵ accept edits. A question (an approval, a plan, a choice)
 takes the keys the REPL offers for it (`y n A k R e a`, `?` explains them,
 `N` refuses with a reason).
+
+**Tool calls** show their headline and one line on what came back (`⎿ 1
+line, 11 B`, `⎿ Edited parser.py (+4 -1)`, `⎿ exit 1 · 3 lines`). ctrl+o
+shows what each one printed, and an edit's diff, and hides it again: full
+screen in place, where a click on one call shows just its own. Inline,
+ctrl+o writes the session again, as a resize does: the terminal's
+scrollback is cleared -- the shell's lines above the window too -- and the
+last turns (`replayTurns`, 20) are written with or without the details;
+under GNU screen, which cannot clear it, ctrl+o shows the last result in
+full instead. The whole of the last result: "expand the last result" in
+the palette. With a question open, ctrl+o writes out its whole preview.
 
 **The agent view.** ← on an empty prompt opens the oversight of every
 session, grouped as NEEDS INPUT, WORKING and DONE (pinned ones on top),
@@ -1575,7 +1585,7 @@ scrollback, a divider says the width changed instead).
 |---------|---------|
 | `theme` | `auto` (from the terminal's background), `dark`, `light`, or `mono` (the terminal's own colours; also chosen when `NO_COLOR` is set and the theme is `auto`) |
 | `colors` | overrides for theme tokens: `accent`, `accentSoft`, `text`, `bright`, `muted`, `faint`, `ok`, `warn`, `err`, `code`, `string`, `added`, `removed` (`#rrggbb`) |
-| `keys` | rebinds actions: `submit`, `newline`, `interrupt`, `steer`, `cycleMode`, `expand`, `tasks`, `redraw`, `agents`, `palette`, `quit`, `historyPrev`, `historyNext`, `historySearch`, `agentsUp`, `agentsDown`, `agentsOpen`, `agentsPeek`, `agentsBack`, `agentsStop`, `agentsRename`, `agentsPin`, `scrollUp`, `scrollDown`, `scrollTop`, `scrollBottom`; a key is `ctrl+g`, `shift+tab`, `escape`, `left`, `alt+return`, … |
+| `keys` | rebinds actions: `submit`, `newline`, `interrupt`, `steer`, `cycleMode`, `details`, `expand`, `tasks`, `redraw`, `agents`, `palette`, `quit`, `historyPrev`, `historyNext`, `historySearch`, `agentsUp`, `agentsDown`, `agentsOpen`, `agentsPeek`, `agentsBack`, `agentsStop`, `agentsRename`, `agentsPin`, `scrollUp`, `scrollDown`, `scrollTop`, `scrollBottom`; a key is `ctrl+g`, `shift+tab`, `escape`, `left`, `alt+return`, …; a key bound here is that action's alone (another action that has it by default lets it go) |
 | `replayTurns` | turns written again on opening a session or after a resize (0: all) |
 | `showThinking` | show the model's thinking (as `-v`) |
 | `screen` | `auto` (the whole terminal; inline under GNU screen), `full` or `inline`; `DELFIN_TUI_SCREEN` and `--inline` come first |

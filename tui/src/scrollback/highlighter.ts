@@ -85,3 +85,52 @@ export function drawPlain(root: Renderable): void {
     start(code)
   }
 }
+
+/** How long a live block may wait for its first colours before it is
+ *  drawn plain: less than this, nobody sees it is late. */
+export const LIVE_PLAIN_MS = 200
+
+const watched = new WeakSet<CodeRenderable>()
+
+/**
+ * A live block (the footer's, drawn without OpenTUI's raw streaming
+ * preview): a code block in it that is not highlighted `ms` after it was
+ * made draws its text plain until it is -- a busy highlighter would leave
+ * it blank -- and from its first colours on keeps its last highlighted
+ * text through each delta again. Called when the block is made and when
+ * its text changes; only code blocks not seen before are looked at.
+ */
+export function plainIfLate(root: Renderable, ms = LIVE_PLAIN_MS): void {
+  for (const code of codeBlocks(root)) {
+    if (watched.has(code)) continue
+    watched.add(code)
+    start(code)
+    if (!code.isHighlighting) continue
+    let landed = false
+    void code.highlightingDone.then(() => { landed = true })
+    const timer = setTimeout(() => {
+      if (landed || code.isDestroyed || code.drawUnstyledText) return
+      code.drawUnstyledText = true
+      start(code)
+      void bounded(code.highlightingDone, 10_000).then(() => {
+        if (!code.isDestroyed) code.drawUnstyledText = false
+      })
+    }, ms)
+    ;(timer as { unref?: () => void }).unref?.()
+  }
+}
+
+/** Starts asked for in one go (a replay mounts hundreds of blocks, one
+ *  queue task after another): the newest first -- the end of the
+ *  conversation is what is in view, and the highlighter answers in the
+ *  order it is asked. Gathered until the next turn of the event loop. */
+let starting: (() => void)[] = []
+export function startNewestFirst(go: () => void): void {
+  starting.push(go)
+  if (starting.length > 1) return
+  setImmediate(() => {
+    const all = starting
+    starting = []
+    for (let i = all.length - 1; i >= 0; i--) all[i]!()
+  })
+}

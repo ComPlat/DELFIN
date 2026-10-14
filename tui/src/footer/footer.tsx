@@ -17,14 +17,16 @@
  * how many rows it takes (`footerRows`), at any width: a footer taller
  * than its content wastes rows, a shorter one draws over itself.
  */
-import { infoStringToFiletype, type CliRenderer, type ScrollBoxRenderable, type SyntaxStyle } from "@opentui/core"
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, type Accessor, type JSX } from "solid-js"
+import { infoStringToFiletype, type CliRenderer, type Renderable, type ScrollBoxRenderable,
+         type SyntaxStyle } from "@opentui/core"
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type Accessor, type JSX } from "solid-js"
 import { AgentViewPanel, agentHelp, type AgentView } from "../agents/view"
 import { ComposerView, type Composer } from "../composer/composer"
 import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
 import { GUTTER, SPINNER, postureLook, type Theme } from "../theme/theme"
 import { fit, width } from "../text"
+import { plainIfLate } from "../scrollback/highlighter"
 import { TranscriptView, themedStyle, type ScreenItems } from "../scrollback/screenview"
 import { fenceOf, liveBlocks, liveRows } from "./live"
 import { ApprovalPanel, approvalRows, type ApprovalUi } from "./approval"
@@ -75,9 +77,12 @@ function fixedRows(s: SessionState | null, message: string, composerRows: number
 
 /** What the approval panel may take: the rest of the terminal (less one
  *  row: the footer never fills it), so its keys are always on screen. */
-export function approvalBudget(s: SessionState | null, term: { height: number }, message: string,
+export function approvalBudget(s: SessionState | null, term: { width: number; height: number }, message: string,
                                composerRows = 1, pickerRows = 0): number {
-  return Math.max(3, term.height - 1 - fixedRows(s, message, composerRows, pickerRows))
+  // Less a block on its way into the rows (there for a moment): the panel
+  // must not push it out of sight.
+  const live = s ? liveRows(s, term.width - GUTTER) : 0
+  return Math.max(3, term.height - 1 - fixedRows(s, message, composerRows, pickerRows) - live)
 }
 
 /** Rows the footer needs; never more than the terminal has (less one). */
@@ -321,14 +326,21 @@ export function Footer(props: FooterProps): JSX.Element {
  */
 function LiveBlockView(props: { text: () => string; first: () => boolean; syntax: () => SyntaxStyle }): JSX.Element {
   const fence = () => fenceOf(props.text())
+  // Drawn without a preview, a block shows nothing until its colours come:
+  // if they are late (a busy highlighter), plain text meanwhile.
+  let element: Renderable | undefined
+  const take = (r: Renderable) => { element = r }
+  createEffect(on(props.text, () => queueMicrotask(() => {
+    if (element && !element.isDestroyed) plainIfLate(element)
+  })))
   return (
     // Content last: an element builds its blocks when it is set, with the
     // style it has by then (props go in in order).
     <Show when={fence()} fallback={
-      <markdown syntaxStyle={props.syntax()} conceal width="100%" flexShrink={0} marginTop={props.first() ? 0 : 1}
-                tableOptions={{ widthMode: "content" }} content={props.text()} />
+      <markdown ref={take} syntaxStyle={props.syntax()} conceal width="100%" flexShrink={0}
+                marginTop={props.first() ? 0 : 1} tableOptions={{ widthMode: "content" }} content={props.text()} />
     }>
-      <code syntaxStyle={props.syntax()} streaming drawUnstyledText={false} conceal={false} width="100%"
+      <code ref={take} syntaxStyle={props.syntax()} streaming drawUnstyledText={false} conceal={false} width="100%"
             flexShrink={0} marginTop={props.first() ? 0 : 1} filetype={infoStringToFiletype(fence()?.lang ?? "")}
             content={fence()?.code ?? ""} />
     </Show>

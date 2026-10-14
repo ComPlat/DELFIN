@@ -158,6 +158,7 @@ describe("full screen", () => {
 
   test("a resize re-wraps the rows without a replay: a tool's lines follow the width both ways", async () => {
     w = await mountWindow({ full: true, width: 60, height: 30 })
+    w.screen!.setDetails(true)                                      // what the tool printed, shown
     const long = "x".repeat(40) + " the end of a long result line " + "y".repeat(30)
     w.store.push({ type: "tool.started", session: "s1", ts: 0, seq: 1, turnId: "t1", callId: "c1", name: "bash",
                    input: { command: "cat log" } } as never)
@@ -233,9 +234,10 @@ describe("full screen", () => {
   test("closing the agent view gives the conversation back where it was", async () => {
     await conversation({ height: 20 })
     await key(CTRL_HOME)
-    // The conversation and the composer (the hints line under them says
-    // what changed meanwhile: the fixture's session ends).
-    const conversationRows = () => rows().slice(0, -1).join("\n")
+    // The conversation and the composer -- not the hints line under them,
+    // nor the scroll bar at the right, which say what changed meanwhile
+    // (the fixture's session ends: a row more at the end).
+    const conversationRows = () => rows().slice(0, -1).map((l) => l.slice(0, -1)).join("\n")
     const before = conversationRows()
     w!.keys.pressArrow("left")
     await w!.settle()

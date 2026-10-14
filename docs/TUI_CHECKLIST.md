@@ -139,3 +139,10 @@ clean up on the VM. Each item says why it could not be closed here.
     moved over by itself once nothing would be cut; one from before this
     branch's last review cannot be asked (it would end the session it is
     asked about) and is moved over only when no session of it is live.
+23. Code in an answer is coloured only for the grammars OpenTUI ships
+    (JavaScript, TypeScript, Markdown, Zig): Python, shell and ORCA input
+    are drawn plain. Adding them means shipping their tree-sitter grammars
+    (a `.wasm` and its highlight queries each) with the window.
+24. ctrl+o differs from the REPL on purpose: it shows or hides every tool
+    call's details (the window draws a call as its headline and what came
+    back); the last result in full is in the palette.

@@ -11,14 +11,14 @@
  */
 import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import { createEffect, createSignal, onCleanup, type JSX } from "solid-js"
+import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
 import { WINDOW_COMMANDS, nameFromPrompt, renameOf } from "./commands"
 import type { AgentScreen } from "./agents/screen"
 import { createAgentView, needsInput, peekLines, type AgentRow } from "./agents/view"
 import { createComposer } from "./composer/composer"
 import { History } from "./composer/history"
-import { createApprovalUi } from "./footer/approval"
+import { createApprovalUi, setFullPreviewKey } from "./footer/approval"
 import { Footer } from "./footer/footer"
 import { createPicker, type Choice } from "./footer/picker"
 import { editPrompt } from "./composer/editor"
@@ -45,8 +45,13 @@ export interface AppProps {
   sentAs?: Map<string, string>
   onQuit: () => void
   onRedraw: () => void
-  /** ctrl+o: the last tool result in full (the session view does it). */
+  /** The last tool result in full (the palette; the session view does it). */
   onExpand?: () => void
+  /** Every tool call's details shown (ctrl+o toggles them). */
+  details?: () => boolean
+  /** Whether they can be (not under GNU screen, inline). */
+  canShowDetails?: () => boolean
+  onDetails?: () => void
   /** Show another session in this window -- one that runs in the agent
    *  service, or a saved one (the resume picker, the agent view). */
   onResume?: (sessionId: string, workspace: string) => void
@@ -194,8 +199,11 @@ export function App(props: AppProps): JSX.Element {
   // Prompts sent while a session starts (the first one, or a new one from
   // the agent view): they go out to it once it is up.
   const early: { text: string; shown?: string }[] = []
+  const EARLY_NOTE = "the session is starting: this goes out as soon as it is up"
   createEffect(() => {
     if (!sid() || store.state.starting || !early.length) return
+    // Gone out: the note saying it would is not true any more.
+    if (untrack(message) === EARLY_NOTE) setMessage("")
     for (const { text, shown } of early.splice(0)) void deliver(text, undefined, shown)
   })
 
@@ -231,7 +239,7 @@ export function App(props: AppProps): JSX.Element {
     if (!sid() || store.state.starting) {
       if (!store.state.starting) return false
       early.push({ text, shown })
-      say("the session is starting: this goes out as soon as it is up")
+      say(EARLY_NOTE)
       return true
     }
     // A bare /model, /effort, /mode or /resume opens its picker; with an
@@ -472,7 +480,10 @@ export function App(props: AppProps): JSX.Element {
       { label: "resume…", detail: "a saved session, in this window", value: "pick:resume" },
       { label: "rename…", detail: "name this session (/rename)", value: "type:/rename" },
       { label: props.thinking?.() ? "hide thinking" : "show thinking", detail: "the model's thinking, dimmed", value: "do:thinking" },
-      { label: "expand the last result", detail: props.keymap.label("expand"), value: "do:expand" },
+      ...(props.canShowDetails?.() === false ? [] : [{ label: props.details?.() ? "hide tool details" : "show tool details",
+        detail: props.keymap.label("details"), value: "do:details" }]),
+      { label: "expand the last result", detail: props.keymap.label("expand") || "the whole output, into the conversation",
+        value: "do:expand" },
       { label: "task list on/off", detail: props.keymap.label("tasks"), value: "do:tasks" },
       { label: "redraw", detail: props.keymap.label("redraw"), value: "do:redraw" },
       { label: "leave the window", detail: `${props.keymap.label("quit")} — the session keeps running`, value: "do:quit" },
@@ -493,6 +504,7 @@ export function App(props: AppProps): JSX.Element {
       else if (kind === "type") composer.setText(composer.value().trim() ? `${what} ${composer.value()}` : `${what} `)
       else if (what === "thinking") props.onThinking?.(!props.thinking?.())
       else if (what === "expand") props.onExpand?.()
+      else if (what === "details") props.onDetails?.()
       else if (what === "tasks") void call("session.toggleTasks", { sessionId: sid() })
       else if (what === "redraw") props.onRedraw()
       else if (what === "quit") props.onQuit()
@@ -510,6 +522,7 @@ export function App(props: AppProps): JSX.Element {
   // Sending a prompt ends the typing (a question its turn asks a moment
   // later is answered by the next key).
   let typingAt = 0
+  setFullPreviewKey(props.keymap.label("details") || props.keymap.label("expand"))
   const approval = createApprovalUi({ reply, say, lastKey: () => typingAt,
                                       pauseMs: props.answerPauseMs })
   // The question's own state starts when it appears (its typeahead pause
@@ -632,7 +645,7 @@ export function App(props: AppProps): JSX.Element {
       }
       // ctrl+o: the whole preview, into the scrollback (the panel shows 24
       // lines, fewer on a short terminal).
-      if (km.matches("expand", key)) {
+      if (km.matches("details", key) || km.matches("expand", key)) {
         const what = asked.kind === "plan" ? "the plan" : asked.kind === "ask" ? "the question" : `${asked.tool}, in full`
         const body = asked.kind === "ask"
           ? [String(asked.question ?? ""), ...(asked.choices ?? []).map((c, i) => `${i + 1}. ${c}`)]
@@ -675,6 +688,11 @@ export function App(props: AppProps): JSX.Element {
     if (km.matches("redraw", key)) {
       key.preventDefault()
       props.onRedraw()
+      return
+    }
+    if (km.matches("details", key)) {
+      key.preventDefault()
+      props.onDetails?.()
       return
     }
     if (km.matches("expand", key)) {

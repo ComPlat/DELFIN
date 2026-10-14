@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { DEFAULTS, parseConfig, screenModeOf } from "../src/config/config"
-import { Keymap, describe as describeKey, parseBinding } from "../src/keymap/keymap"
+import { Keymap, describe as describeKey, keyTable, parseBinding } from "../src/keymap/keymap"
 import { askedWhat } from "../src/scrollback/present"
 import { applyEvent, emptyState, ensureSession } from "../src/store/state"
 import { createAppStore, type Clock } from "../src/store/store"
@@ -31,6 +31,29 @@ describe("the keymap", () => {
     expect(km.matches("quit", key("d", { ctrl: true }))).toBe(true)  // the bad one is not taken
     expect(km.problems.join(" ")).toContain("nonsense")
     expect(km.problems.join(" ")).toContain("super+q")
+  })
+
+  test("ctrl+o shows the tool calls' details; the last result in full has no key of its own", () => {
+    const km = new Keymap()
+    expect(km.matches("details", key("o", { ctrl: true }))).toBe(true)
+    expect(km.keys("expand")).toEqual([])
+    expect(keyTable(km).find((l) => l.includes("The last tool result in full"))).toContain("palette")
+  })
+
+  test("a key bound on purpose is that action's alone: the one that had it by default lets it go", () => {
+    // A tui.json written with the old default.
+    const km = new Keymap({ expand: ["ctrl+o"] })
+    expect(km.matches("expand", key("o", { ctrl: true }))).toBe(true)
+    expect(km.matches("details", key("o", { ctrl: true }))).toBe(false)
+    expect(km.label("details")).toBe("")
+    // Two bound on purpose to the same key: both keep it (the user's say).
+    const both = new Keymap({ expand: ["ctrl+o"], details: ["ctrl+o"] })
+    expect(both.matches("details", key("o", { ctrl: true }))).toBe(true)
+  })
+
+  test("an action left without a key reads as such in /keys -- \"palette\" only where the palette has it", () => {
+    const km = new Keymap({ historySearch: [] })
+    expect(keyTable(km).find((l) => l.includes("Search the history"))).toContain("(no key)")
   })
 
   test("reads and writes bindings the way a hint shows them", () => {

@@ -7,7 +7,7 @@
  * settle before the rows are committed (writers.ts); everything else is a
  * few styled lines.
  */
-import { TextAttributes, type CliRenderer } from "@opentui/core"
+import { TextAttributes, type CliRenderer, type MouseEvent, type Renderable } from "@opentui/core"
 import { writeSolidToScrollback } from "@opentui/solid"
 import { For, Show, type JSX } from "solid-js"
 import { fit, middle, width } from "../text"
@@ -38,7 +38,18 @@ const SOURCE_MARK: Record<string, string> = {
   user: "❯ ", queued: "❯ ", steer: "↳ ", harness: "◇ ",
 }
 
-export function Row(props: { item: Item; theme: Theme; width: number }): JSX.Element {
+export interface RowProps {
+  item: Item
+  theme: Theme
+  width: number
+  /** A tool call's details: what it printed, an edit's diff (ctrl+o). */
+  expanded?: boolean
+  /** A click on a tool call (full screen): its details on or off; the
+   *  row clicked, to keep it where it is. */
+  onToggle?: (row: Renderable) => void
+}
+
+export function Row(props: RowProps): JSX.Element {
   const f = props.item as Fields
   const t = props.theme
   switch (props.item.kind) {
@@ -91,14 +102,31 @@ export function Row(props: { item: Item; theme: Theme; width: number }): JSX.Ele
       const r = (f.result ?? { kind: "text", summary: "", lines: [], ok: true }) as ToolResult
       const failed = r.kind === "blocked" || (r.kind === "text" && !r.ok)
       const name = String(f.name ?? "")
+      // A click toggles its details: the left button pressed and let go on
+      // the same cell of this row -- not a release that ends a drag begun
+      // elsewhere, nor another button. (OpenTUI starts a selection when
+      // the button goes down on text, so a release always looks like a
+      // drag's end; the view also checks that nothing was selected.)
+      let row: Renderable | undefined
+      let press: { x: number; y: number; at: number } | null = null
+      const down = (event: MouseEvent) => {
+        press = event.button === 0 ? { x: event.x, y: event.y, at: Date.now() } : null
+      }
+      const up = (event: MouseEvent) => {
+        const was = press
+        press = null
+        if (!was || !row || event.button !== 0 || event.x !== was.x || event.y !== was.y) return
+        if (Date.now() - was.at < 1500) props.onToggle?.(row)
+      }
       return (
-        <box flexDirection="column">
+        <box ref={(r: Renderable) => { row = r }} flexDirection="column"
+             onMouseDown={props.onToggle ? down : undefined} onMouseUp={props.onToggle ? up : undefined}>
           <text wrapMode="none">
             <span style={{ fg: failed ? t.err : t.ok }}>{"⏺ "}</span>
             <span style={{ fg: t.text, bold: true }}>{name}</span>
             <span style={{ fg: t.muted }}>{f.arg ? "  " + middle(String(f.arg), props.width - name.length - 5) : ""}</span>
           </text>
-          <ToolResultRows result={r} theme={t} width={props.width} />
+          <ToolResultRows result={r} theme={t} width={props.width} expanded={Boolean(props.expanded)} />
         </box>
       )
     }
@@ -164,8 +192,9 @@ export function Row(props: { item: Item; theme: Theme; width: number }): JSX.Ele
   }
 }
 
-/** Under a tool's headline: what it did, then the lines that say most. */
-function ToolResultRows(props: { result: ToolResult; theme: Theme; width: number }): JSX.Element {
+/** Under a tool's headline: what it did -- then, with its details, the
+ *  lines that say most (what it printed, the diff). */
+function ToolResultRows(props: { result: ToolResult; theme: Theme; width: number; expanded: boolean }): JSX.Element {
   const t = props.theme
   const r = props.result
   const room = () => Math.max(10, props.width - 6)
@@ -186,16 +215,18 @@ function ToolResultRows(props: { result: ToolResult; theme: Theme; width: number
           <span style={{ fg: t.err }}>{` -${r.dels}`}</span>
           <span style={{ fg: t.muted }}>{")"}</span>
         </text>
-        <For each={r.rows}>
-          {(row) => (
-            <text wrapMode="none">
-              <span>{"      "}</span>
-              <span style={{ fg: tone(row), bg: bg(row) }}>{fit(row.text, room())}</span>
-            </text>
-          )}
-        </For>
-        <Show when={r.omitted > 0}>
-          <text fg={t.faint}>{`      … ${r.omitted} more diff lines (ctrl+o shows the result)`}</text>
+        <Show when={props.expanded}>
+          <For each={r.rows}>
+            {(row) => (
+              <text wrapMode="none">
+                <span>{"      "}</span>
+                <span style={{ fg: tone(row), bg: bg(row) }}>{fit(row.text, room())}</span>
+              </text>
+            )}
+          </For>
+          <Show when={r.omitted > 0}>
+            <text fg={t.faint}>{`      … ${r.omitted} more diff lines`}</text>
+          </Show>
         </Show>
       </box>
     )
@@ -203,7 +234,9 @@ function ToolResultRows(props: { result: ToolResult; theme: Theme; width: number
   return (
     <box flexDirection="column">
       <text fg={r.ok ? t.muted : t.err} wrapMode="none">{"  ⎿ " + fit(r.summary, props.width - 4)}</text>
-      <For each={r.lines}>{(line) => <text fg={t.faint} wrapMode="none">{"      " + fit(line, room())}</text>}</For>
+      <Show when={props.expanded}>
+        <For each={r.lines}>{(line) => <text fg={t.faint} wrapMode="none">{"      " + fit(line, room())}</text>}</For>
+      </Show>
     </box>
   )
 }
@@ -226,7 +259,7 @@ export function shownText(item: Item): string {
 }
 
 export function itemWriter(renderer: CliRenderer, theme: () => Theme,
-                           options: { release?: (item: Item) => void } = {}) {
+                           options: { release?: (item: Item) => void; details?: () => boolean } = {}) {
   return async (item: Item, how?: { first: boolean }): Promise<void> => {
     const f = item as Fields
     const t = theme()
@@ -242,9 +275,10 @@ export function itemWriter(renderer: CliRenderer, theme: () => Theme,
       return
     }
     // Every row starts a column in (the gutter); its width is what is left.
+    const expanded = Boolean(options.details?.())
     writeSolidToScrollback(renderer, (ctx) => (
       <box paddingLeft={GUTTER} flexDirection="column">
-        <Row item={item} theme={t} width={ctx.width - GUTTER} />
+        <Row item={item} theme={t} width={ctx.width - GUTTER} expanded={expanded} />
       </box>
     ))
   }

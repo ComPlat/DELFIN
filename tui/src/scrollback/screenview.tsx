@@ -12,10 +12,10 @@
  * session goes on; scrolled back to the end, it follows again.
  */
 import { SyntaxStyle, type CliRenderer, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
-import { For, Show, createEffect, createMemo, on, onCleanup, onMount, type Accessor, type JSX } from "solid-js"
+import { For, Show, createEffect, createMemo, on, onCleanup, onMount, untrack, type Accessor, type JSX } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { markdownStyles, type Theme } from "../theme/theme"
-import { HIGHLIGHT_WAIT_MS, whenHighlighted } from "./highlighter"
+import { HIGHLIGHT_WAIT_MS, startNewestFirst, whenHighlighted } from "./highlighter"
 import { Row } from "./rows"
 import type { Item } from "./transcript"
 
@@ -45,11 +45,26 @@ export interface ScreenItems {
   push(item: Item): Promise<void>
   reveal(id: string): void
   clear(): void
+  /** Every tool call's details shown (ctrl+o). */
+  readonly details: boolean
+  /** A tool call's details shown: as all of them are -- or the other way
+   *  for one a click turned. */
+  expanded(id: string): boolean
+  /** ctrl+o: every tool call's details on or off (what clicks turned is
+   *  forgotten). */
+  setDetails(on: boolean): void
+  /** A click: one tool call's details the other way. */
+  flip(id: string): void
+  /** Counts the changes of shown details: the view keeps the reader's
+   *  place through each. */
+  readonly reshaped: number
 }
 
 export function createScreenItems(max = MAX_ITEMS, holdMs = HOLD_MS): ScreenItems {
-  const [state, setState] = createStore<{ items: Item[]; dropped: number; cleared: number; held: Record<string, boolean> }>(
-    { items: [], dropped: 0, cleared: 0, held: {} })
+  const [state, setState] = createStore<{
+    items: Item[]; dropped: number; cleared: number; held: Record<string, boolean>
+    details: boolean; flipped: Record<string, boolean>; reshaped: number
+  }>({ items: [], dropped: 0, cleared: 0, held: {}, details: false, flipped: {}, reshaped: 0 })
   const waiting = new Map<string, { done: () => void; timer: ReturnType<typeof setTimeout> }>()
   const reveal = (id: string) => {
     const wait = waiting.get(id)
@@ -87,8 +102,21 @@ export function createScreenItems(max = MAX_ITEMS, holdMs = HOLD_MS): ScreenItem
     reveal,
     clear() {
       for (const id of [...waiting.keys()]) reveal(id)
-      setState((s) => ({ items: [], dropped: 0, cleared: s.cleared + 1, held: {} }))
+      setState((s) => ({ items: [], dropped: 0, cleared: s.cleared + 1, held: {}, flipped: {} }))
     },
+    get details() { return state.details },
+    expanded: (id) => state.details !== Boolean(state.flipped[id]),
+    setDetails(on) {
+      setState((s) => ({ details: on, flipped: {}, reshaped: s.reshaped + 1 }))
+    },
+    flip(id) {
+      setState(produce((s) => {
+        if (s.flipped[id]) delete s.flipped[id]
+        else s.flipped[id] = true
+        s.reshaped++
+      }))
+    },
+    get reshaped() { return state.reshaped },
   }
 }
 
@@ -124,6 +152,67 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
     box.stickyScroll = true
     box.scrollTo(box.scrollHeight)
   }, { defer: true }))
+  // Details shown or hidden (ctrl+o, a click): the row at the top of the
+  // view stays where it is -- rows above it grow or shrink. Read now,
+  // while the layout is still the one on the screen; corrected in the
+  // layout pass that changes it (its new place is known there), so no
+  // frame shows the jump. At the end, OpenTUI keeps the end in view.
+  // The row a click turned (kept where it is), until the effect below
+  // has read it.
+  let clicked: Renderable | null = null
+  createEffect(on(() => props.screen.reshaped, () => {
+    const row = clicked
+    clicked = null
+    // Hidden (the agent view has the screen): no place on the screen to keep.
+    if (!box || box.isDestroyed || !untrack(props.visible)) return
+    const view = box.viewport
+    let anchor: Renderable | undefined
+    let offset = 0
+    if (row && !row.isDestroyed) {
+      // A click: that row stays where it is, its headline in view (also
+      // at the end: its details open under it, not above the view).
+      anchor = row
+      offset = Math.max(0, row.y - view.y)
+    } else {
+      // ctrl+o at the end: the end stays in view (OpenTUI keeps it there).
+      if (box.scrollTop >= box.scrollHeight - view.height - 1) return
+      // The first row that starts in the view stays where it is; rows
+      // above it -- one cut by the view's top among them -- may grow or
+      // shrink.
+      const kids = box.content.getChildren() as Renderable[]
+      anchor = kids.find((r) => r.y >= view.y) ?? kids.find((r) => r.y + r.height > view.y)
+      if (!anchor) return
+      offset = anchor.y - view.y
+    }
+    const scrolled = box
+    const kept = anchor
+    const keep = () => {
+      disarm()
+      if (kept.isDestroyed || scrolled.isDestroyed) return
+      try {
+        scrolled.scrollTop = Math.max(0, kept.getComputedLayout().top - offset)
+      } catch {
+        // The row went meanwhile (dropped at the cap, the list cleared).
+      }
+    }
+    // Only for the layout pass of this change: a change that resizes
+    // nothing must leave no hook for a later one.
+    const disarm = () => {
+      if (!scrolled.isDestroyed) scrolled.content.off("resize", keep)
+      props.renderer.off("frame", disarm)
+    }
+    scrolled.content.on("resize", keep)
+    props.renderer.once("frame", disarm)
+    const timer = setTimeout(disarm, 250)
+    ;(timer as { unref?: () => void }).unref?.()
+  }, { defer: true }))
+  // A click on a tool call shows its details -- not one that ends a
+  // selection (the drag copies).
+  const toggle = (id: string, row: Renderable) => {
+    if (props.renderer.getSelection()?.getSelectedText()) return
+    clicked = row
+    props.screen.flip(id)
+  }
   return (
     <scrollbox ref={(b: ScrollBoxRenderable) => { box = b; props.ref?.(b) }} flexGrow={1} flexShrink={1} stickyScroll stickyStart="bottom" viewportCulling
                verticalScrollbarOptions={bar()} visible={props.visible()} focusable={false}
@@ -138,7 +227,10 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
           ? <Block item={item} screen={props.screen} syntax={style} />
           // A row takes its colours when it is made: made again when the
           // theme changes (the terminal said light after the first frame).
-          : <Show when={t()} keyed>{(theme: Theme) => <Row item={item} theme={theme} width={inner()} />}</Show>}
+          : <Show when={t()} keyed>
+              {(theme: Theme) => <Row item={item} theme={theme} width={inner()} expanded={props.screen.expanded(item.id)}
+                                      onToggle={item.kind === "tool" ? (row) => toggle(item.id, row) : undefined} />}
+            </Show>}
       </For>
     </scrollbox>
   )
@@ -152,7 +244,7 @@ function Block(props: { item: Item; screen: ScreenItems; syntax: Accessor<Syntax
   const held = () => props.screen.held(props.item.id)
   let markdown: Renderable | undefined
   onMount(() => {
-    void whenHighlighted(markdown!).then(() => props.screen.reveal(props.item.id))
+    startNewestFirst(() => void whenHighlighted(markdown!).then(() => props.screen.reveal(props.item.id)))
   })
   return (
     <box flexShrink={0} height={held() ? 0 : "auto"} overflow="hidden" marginTop={held() ? 0 : 1}>

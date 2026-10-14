@@ -218,6 +218,27 @@ for (const full of [true, false]) {
       expect(seen).toEqual(seen.map(() => 1))
     })
 
+    test("a live block whose colours are late shows its words plain meanwhile, then keeps its colours", async () => {
+      await streaming(full)
+      gate!.hold((content) => content.includes("Streaming words arrive"))
+      delta("Streaming words arrive here")
+      const t0 = Date.now()
+      let shownAt = -1
+      for (let i = 0; i < 80 && shownAt < 0; i++) {
+        if ((await frame()).includes("Streaming words arrive here")) shownAt = Date.now() - t0
+        else await Bun.sleep(10)
+      }
+      expect(shownAt).toBeGreaterThanOrEqual(0)                  // never blank for long
+      expect(shownAt).toBeLessThan(800)
+      gate!.open()
+      await highlighted()
+      // From its first colours on, a delta keeps the last highlighted text.
+      delta(" and **more** after")
+      expect(await frame()).not.toContain("**")
+      await highlighted()
+      expect(await frame()).toContain("Streaming words arrive here and more after")
+    })
+
     test("a highlighter that does not answer costs the block its colours, not its words", async () => {
       await streaming(full)
       delta("Words before the stall.")
@@ -304,6 +325,22 @@ describe("full screen, out of sight", () => {
     expect(f).not.toContain("◆ AGENTS")
     expect(f).toContain("Heading while away")
     expect(f).not.toContain("## Heading")
+  })
+
+  test("a replay asks for the newest blocks' colours first: the end is what is in view", async () => {
+    await streaming(true)
+    const asked: string[] = []
+    const real = getTreeSitterClient() as unknown as { highlightOnce(c: string, f: string): Promise<unknown> }
+    const wrapped = real.highlightOnce
+    real.highlightOnce = (content: string, filetype: string) => {
+      const n = /answer number (\d+)/.exec(content)?.[1]
+      if (n) asked.push(n)
+      return wrapped.call(real, content, filetype)
+    }
+    for (let n = 1; n <= 6; n++) answer(`r${n}`, `The answer number ${n}, replayed.`)
+    await w!.settle()
+    await Bun.sleep(30)
+    expect(asked.slice(0, 6)).toEqual(["6", "5", "4", "3", "2", "1"])
   })
 
   test("a replayed answer does not wait for its highlighting: the rows after it come at once", async () => {
