@@ -190,6 +190,9 @@ def _assigned_attributes(node: ast.AST) -> set[str]:
 # "does a resumed session need this?" to be answered here, in one line,
 # instead of being answered by silence three releases later.
 _NOT_CARRIED = {
+    # The git-errors steering block of the current turn: rebuilt from each
+    # user message, nothing a resumed session needs.
+    "_repo_errors_hint",
     # U5: per-turn DSML re-request latches, re-armed by every real user turn.
     "_dsml_leak_spent", "_dsml_guard_active",
     # Per turn: the history a fresh start cut in THIS turn, given back only
