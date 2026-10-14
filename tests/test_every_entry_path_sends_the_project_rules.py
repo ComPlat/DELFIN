@@ -94,7 +94,8 @@ def drive(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     from delfin.agent import provider_profile as PP
     baseline = tmp_path / "learned_profiles.json"
-    baseline.write_bytes(PP._DEFAULT_PATH.read_bytes())
+    pristine = PP._DEFAULT_PATH.read_bytes()
+    baseline.write_bytes(pristine)
     monkeypatch.setattr(PP, "_DEFAULT_PATH", baseline)
     from delfin.agent import model_capabilities as mc
     caps = mc.ModelCapabilities(model="m", provider="ollama",
@@ -106,12 +107,24 @@ def drive(monkeypatch, tmp_path):
     real_build = agent_cli._build_engine
 
     def _fresh_home() -> None:
-        # Each run starts from the same empty home at the same path: what
-        # one run's session end writes (outcome history, episodes) is read
-        # by the next run's briefing, and two runs compared must not see
-        # each other.
+        # Each run starts from the same empty home at the same path and the
+        # packaged provider profile: what one run's session end writes
+        # (outcome history, episodes, the profile's cycle count and local
+        # state) is read into the next run's prompt, and two runs compared
+        # must not see each other.
         import shutil
+        import sys
         shutil.rmtree(home)
+        baseline.write_bytes(pristine)
+        # The import-time ~/.delfin sinks (state_paths.USER_STATE_SINKS,
+        # e.g. the provider profile's local state) go into this home too;
+        # the suite's own redirect puts them beside it, where they would
+        # outlive the wipe. The resolvers follow Path.home already.
+        from delfin.agent.state_paths import USER_STATE_SINKS
+        for mod_name, attr, rel in USER_STATE_SINKS:
+            mod = sys.modules.get(mod_name)
+            if mod is not None and hasattr(mod, attr):
+                monkeypatch.setattr(mod, attr, home / ".delfin" / rel)
         ws.mkdir(parents=True)
         (ws / "AGENTS.md").write_text(f"# Project rules\n\n{_RULE}\n")
         monkeypatch.chdir(ws)
