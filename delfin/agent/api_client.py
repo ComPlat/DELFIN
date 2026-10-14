@@ -7,6 +7,7 @@ import contextvars as _contextvars
 import difflib
 import fnmatch
 import importlib
+import itertools
 import json
 import os
 import re
@@ -7630,6 +7631,91 @@ def repin_permission_mode(mode: str) -> None:
         pin[0] = str(mode or "")
 
 
+_TURN_TOKENS = itertools.count(1)
+
+
+def _next_turn_token() -> int:
+    """A process-unique id for the turn that starts now (KitToolPermissions.
+    turn_token). A counter rather than the engine's turn serial: a
+    sub-agent's turns are counted by another engine, and both write into
+    permissions that share their per-turn ledgers."""
+    return next(_TURN_TOKENS)
+
+
+#: Seconds a foreground command or test run has to have lasted before a
+#: waiting user message ends it. Below it the run finishes and the message
+#: is read at the next round anyway; above it the message waited longer
+#: than a reply takes. The 2026-09-30 case: three messages over 30 min.
+USER_INTERRUPT_AFTER_S = 30.0
+
+_USER_INTERRUPT_NOTE = (
+    "ended after {secs:.0f}s because the user sent a message while it ran; "
+    "the message follows this result. Read it before anything else. "
+    "Nothing about the run's outcome follows from this, and it is not run "
+    "again unless the message asks for it.")
+
+
+def _long_run_probe(perms):
+    """(should_stop, state) for a foreground command or test run.
+
+    Input: the session's permissions. Output: a probe for contained_run
+    that is True on Stop, or once the run has lasted
+    ``USER_INTERRUPT_AFTER_S`` while ``perms.user_message_waiting()`` is
+    True; ``state["by_user"]`` records that the second ended it. Without
+    a ``user_message_waiting`` probe the plain should_stop is returned
+    unchanged (and so is a should_stop that is not callable, which
+    contained_run reports itself)."""
+    stop = getattr(perms, "should_stop", None)
+    waiting = getattr(perms, "user_message_waiting", None)
+    state = {"by_user": False}
+    if not callable(waiting) or (stop is not None and not callable(stop)):
+        return stop, state
+    t0 = time.monotonic()
+
+    def _probe() -> bool:
+        if stop is not None and stop():
+            return True
+        if time.monotonic() - t0 < USER_INTERRUPT_AFTER_S:
+            return False
+        try:
+            hit = bool(waiting())
+        except Exception:
+            hit = False
+        if hit:
+            state["by_user"] = True
+        return hit
+
+    return _probe, state
+
+
+def _watch_started_job(perms, job_id: str, description: str) -> bool:
+    """Put a background job on the session's watch list (what watch_job
+    does), so it is named after a compaction and reported when it ends.
+    True when registered. Never raises."""
+    try:
+        ws = getattr(perms, "workspace", None)
+        if not ws or not job_id:
+            return False
+        from .job_monitor import register_agent_job
+        sid = str(getattr(perms, "task_session_id", "") or "")
+        register_agent_job(ws, job_id, str(description or "")[:200],
+                           **({"extra": {"session_id": sid}} if sid else {}))
+        return True
+    except Exception:
+        return False
+
+
+def _suite_handover_note(n_files: int, job_id: str, watched: bool) -> str:
+    return (
+        f"This runs the whole test suite (at least {n_files} test files), "
+        "which is not waited out in the foreground: it was started as "
+        f"background job {job_id}" + (" and is watched" if watched else "")
+        + ". When it ends this session is told; bash_output("
+        f"'{job_id}') reads what it wrote. Do not start it again and do "
+        "not poll. For a check now, run the tests that cover your change "
+        "in the foreground: run_tests(target='tests/test_<module>.py').")
+
+
 @dataclass
 class KitToolPermissions:
     """Permission policy for KIT-Toolbox coding-agent tools.
@@ -7817,6 +7903,19 @@ class KitToolPermissions:
     #: work that is already running. Installed by the engine; None in a
     #: caller that has no session, which behaves exactly as before.
     should_stop: Optional[Callable[[], bool]] = None
+    #: True while a message the user typed waits to be read by the
+    #: running turn (``OpenAIClient._user_steer_waiting``). A foreground
+    #: command or test run that has lasted ``USER_INTERRUPT_AFTER_S`` is
+    #: ended when it turns True, so the message is read now and not after
+    #: a 30-minute run. Installed by the engine; None leaves runs as they
+    #: were.
+    user_message_waiting: Optional[Callable[[], bool]] = None
+    #: Identity of the turn this session is in (``_next_turn_token``),
+    #: set by the client at every turn start. Keys what holds "for the
+    #: rest of this turn": a command that timed out, an approval nobody
+    #: answered. Globally unique, so a sub-agent's turn (a copy of these
+    #: permissions) never shares its parent's token.
+    turn_token: int = 0
     # Directories a single approved outside-workspace READ opened for the
     # rest of the session. Readable, never writable, never persisted -- see
     # ``add_session_read_dir``.
@@ -22104,6 +22203,98 @@ class _DocToolExecutor:
             return None
         return None
 
+    def _hand_suite_to_background(
+        self, cmd: str, run_cwd, arguments: dict,
+        perms: "KitToolPermissions", caged_unasked: bool,
+    ) -> Optional[str]:
+        """Start a whole-suite pytest run as a watched background job.
+
+        Input: a foreground bash call whose gates have all passed. Output:
+        the bash_background result with ``moved_to_background`` and a
+        note, or None when the command is not a run over at least
+        ``long_runs.LARGE_SUITE_MIN_FILES`` test files, when the caller is
+        a sub-agent (its result is awaited synchronously), or when
+        bash_background is not on this session's tool list.
+
+        The same command, cage and gates as bash_background; only the
+        caller's ``timeout_s`` is dropped, since it is the foreground
+        ceiling the move exists to avoid.
+
+        Rejected: refusing with advice (one more round per suite, and the
+        five-reruns case shows the advice is not followed); clamping
+        (spends the ceiling first, which is what cost 144 minutes)."""
+        if int(getattr(perms, "subagent_depth", 0) or 0) > 0:
+            return None
+        if _tool_denied_for_session(perms, "bash_background") is not None:
+            return None
+        from . import long_runs as _lr
+        n_files = _lr.suite_files_in_command(cmd, run_cwd)
+        if not n_files:
+            return None
+        args = {k: v for k, v in (arguments or {}).items() if k != "timeout_s"}
+        raw = self._execute_bash_background(
+            args, perms, caged_unasked=caged_unasked)
+        try:
+            out = json.loads(raw)
+        except Exception:
+            return raw
+        if not isinstance(out, dict) or out.get("status") != "started":
+            return raw
+        job_id = str(out.get("job_id") or "")
+        watched = _watch_started_job(perms, job_id, f"test suite: {cmd[:80]}")
+        out["moved_to_background"] = True
+        out["watched"] = watched
+        out["note"] = _suite_handover_note(n_files, job_id, watched)
+        return json.dumps(out, ensure_ascii=False)
+
+    def _timed_out_again(self, cmd: str,
+                         perms: "KitToolPermissions") -> Optional[str]:
+        """Refuse a foreground re-run of a command that ran into the
+        ceiling earlier in this turn, compared without its waiting
+        prefixes and output filters (long_runs.strip_command_prefixes).
+        None when it did not. A new turn starts clean: the user may have
+        changed what made it hang."""
+        try:
+            from . import long_runs as _lr
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            rec = getattr(self, "_timed_out_by_session", {}).get(sid)
+            if not rec or rec[0] != getattr(perms, "turn_token", 0):
+                return None
+            secs = rec[1].get(_lr.strip_command_prefixes(cmd))
+        except Exception:
+            return None
+        if secs is None:
+            return None
+        return json.dumps({
+            "error": (
+                f"this command already ran into the {secs}s foreground "
+                "ceiling earlier in this turn and was ended; a different "
+                "timeout prefix or output filter does not change that. "
+                "Start it with bash_background and end your turn (a "
+                "finished job wakes this session), or run a narrower part "
+                "of it."),
+            "command": cmd[:200],
+            "earlier_timeout_s": secs,
+        })
+
+    def _note_timed_out(self, cmd: str, perms: "KitToolPermissions",
+                        secs: int) -> None:
+        """Remember, for this session's current turn only, that ``cmd``
+        ran into the ceiling. Bounded: one turn per session is kept."""
+        try:
+            from . import long_runs as _lr
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            table = getattr(self, "_timed_out_by_session", None)
+            if table is None:
+                table = self._timed_out_by_session = {}
+            token = getattr(perms, "turn_token", 0)
+            rec = table.get(sid)
+            if not rec or rec[0] != token:
+                rec = table[sid] = (token, {})
+            rec[1][_lr.strip_command_prefixes(cmd)] = int(secs)
+        except Exception:
+            pass
+
     def _execute_bash(
         self, arguments: dict, perms: "KitToolPermissions",
         caged_unasked: bool = False,
@@ -22178,6 +22369,18 @@ class _DocToolExecutor:
             _obj["argv_head"] = [str(a) for a in _would[:5]]
             return json.dumps(_obj)
 
+        # A run over a whole large test suite is started, not waited out;
+        # a command that already ran into the ceiling this turn is not
+        # waited out again under another prefix (long_runs).
+        _handed = self._hand_suite_to_background(
+            cmd, run_cwd, arguments, perms, caged_unasked)
+        if _handed is not None:
+            return _handed
+        _again = self._timed_out_again(cmd, perms)
+        if _again is not None:
+            return _again
+        _probe, _probe_state = _long_run_probe(perms)
+
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
         env.setdefault("LANG", "C.UTF-8")
@@ -22241,12 +22444,13 @@ class _DocToolExecutor:
                     cwd=str(run_cwd),
                     env=env,
                     timeout=timeout,
-                    should_stop=getattr(perms, "should_stop", None),
+                    should_stop=_probe,
                     budget=True,
                 )
         except subprocess.TimeoutExpired:
             # What it wrote before it was ended is still its work.
             self._journal_shell_changes("bash", _snap, perms)
+            self._note_timed_out(cmd, perms, timeout)
             # Say what to do instead. The default window is a minute or
             # two, and a run that needs longer has two sanctioned ways
             # to be run -- neither of which the refusal named, so a
@@ -22352,6 +22556,9 @@ class _DocToolExecutor:
                 "their completion reaches you at the start of a later turn, "
                 "without polling. Do not loop on squeue."
             )
+        if _probe_state.get("by_user"):
+            payload["interrupted_by_user_message"] = True
+            payload["note"] = _USER_INTERRUPT_NOTE.format(secs=elapsed)
         return json.dumps(payload, ensure_ascii=False)
 
     # ------- Background bash jobs ----------------------------------------
@@ -22904,19 +23111,50 @@ class _DocToolExecutor:
             return self._run_tests_in_background(
                 target, pytest_args, timeout, ceiling, env, perms)
 
+        # A run over the whole of a large suite is handed over too, at any
+        # timeout: inside the ceiling it still holds the turn for up to
+        # ten minutes (long_runs). Not for a sub-agent, whose result is
+        # awaited, nor where bash_background is off this session's list.
+        if (int(getattr(perms, "subagent_depth", 0) or 0) == 0
+                and _tool_denied_for_session(perms, "bash_background") is None):
+            from . import long_runs as _lr
+            _n_files = _lr.suite_files_in_run(target, pytest_args,
+                                              perms.workspace)
+            if _n_files:
+                raw = self._run_tests_in_background(
+                    target, pytest_args, timeout, ceiling, env, perms)
+                try:
+                    out = json.loads(raw)
+                except Exception:
+                    return raw
+                if out.get("status") != "started":
+                    return raw
+                _jid = str(out.get("job_id") or "")
+                _watched = _watch_started_job(
+                    perms, _jid, f"pytest {target or 'tests'} (whole suite)")
+                out["moved_to_background"] = True
+                out["watched"] = _watched
+                out["note"] = _suite_handover_note(_n_files, _jid, _watched)
+                return json.dumps(out, ensure_ascii=False)
+
+        # Stop has to reach a run that lasts half an hour: the worker is
+        # inside it, and nothing else looks at the flag until it returns.
+        # A message the user typed meanwhile ends it too (_long_run_probe).
+        _probe, _probe_state = _long_run_probe(perms)
         result = _tr.run_tests(
             workspace=perms.workspace,
             target=target,
             pytest_args=[str(a) for a in pytest_args],
             timeout_s=timeout,
             env=env,
-            # Stop has to reach a run that lasts half an hour: the worker
-            # is inside it, and nothing else looks at the flag until it
-            # returns.
-            should_stop=getattr(perms, "should_stop", None),
+            should_stop=_probe,
             wrap=lambda argv, report_dir: _test_run_argv(
                 argv, perms, report_dir),
         )
+        if _probe_state.get("by_user") and isinstance(result, dict):
+            result["interrupted_by_user_message"] = True
+            result["note"] = _USER_INTERRUPT_NOTE.format(
+                secs=float(result.get("elapsed_s") or 0))
         return json.dumps(result, ensure_ascii=False)
 
     def _execute_apply_patch(
@@ -27322,6 +27560,23 @@ class OpenAIClient(_BaseClient):
                         hooks = self._steer_hooks = []
                     hooks.append(on_delivered)
 
+    def _user_steer_waiting(self) -> bool:
+        """True when a message the USER typed is queued for this turn.
+
+        Harness text (a finished job, a wake-up, another session's
+        message) does not count: it is not someone waiting for an answer.
+        Read by the executor's long-run probe (user_message_waiting).
+        Never raises."""
+        try:
+            with self._steer_lock:
+                msgs = list(getattr(self, "_steer_msgs", None) or ())
+        except Exception:
+            return False
+        return any(
+            not isinstance(m, _HarnessText)
+            and not str(m).lstrip().startswith(_MACHINE_MESSAGE_PREFIXES)
+            for m in msgs)
+
     def _turn_cost_cap(self) -> float:
         """This turn's spending ceiling in USD, or 0.0 for no ceiling.
 
@@ -28220,6 +28475,13 @@ class OpenAIClient(_BaseClient):
         # Undo journal: new turn — reset the turn-scope seq window so
         # undo_changes(scope="turn") only covers this turn's changes.
         _doc_executor._turn_change_seqs = []
+        # A new turn: what was latched "for this turn" (a timed-out
+        # command, an approval nobody answered) is open again.
+        if getattr(self, "_permissions", None) is not None:
+            try:
+                self._permissions.turn_token = _next_turn_token()
+            except Exception:
+                pass
         _stream_attempt = 0    # transient-API-error retries (reset per response)
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
