@@ -1376,8 +1376,27 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         if view["restoring"]:
             return
         save_open_sessions([
-            {"session_id": _session_id(rec), "workspace": rec["workspace"]}
-            for rec in sessions if _session_id(rec)])
+            {"session_id": sid, "workspace": rec["workspace"]}
+            for rec in sessions for sid in [_remembered_id(rec)] if sid])
+
+    def _remembered_id(rec: dict) -> str:
+        """The conversation this session stands for in the open list.
+
+        Its own id once it has one. Before that, the conversation it was
+        asked to open, while a live writer still holds it: that one is
+        open in another view, and leaving it out of the list meant the
+        next start did not reopen it anywhere."""
+        sid = _session_id(rec)
+        if sid:
+            return sid
+        wanted = str(getattr(rec["ctx"], "initial_session_id", "") or "")
+        if not wanted:
+            return ""
+        try:
+            from delfin.agent.session_store import session_lock_holder
+            return wanted if session_lock_holder(wanted) else ""
+        except Exception:
+            return ""
 
     def _refresh_resume_options() -> None:
         try:
