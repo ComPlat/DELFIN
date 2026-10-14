@@ -322,6 +322,14 @@ _CHAMPION_FLAGS = (
     # severity profile (0.70 x vdW, lone-pair cones) may not get worse or the frame falls
     # back; H_SP3_ONLY = the rotor turns only tetrahedral / pyramidal centres.
     "H_PLACEMENT", "H_CONTACT_GATE", "H_PARENT_REGAIN", "H_EYE_GATE", "H_SP3_ONLY",
+    # LANDING 7 (2026-10-14, AB:lonepair6k3, #525): the lone pairs of a coordinating sp3
+    # group-16 donor (aqua, alcohol, hydroxo, thiol) sit on free tetrahedral corners and the
+    # metal takes one of them, instead of the bisector in the substituent plane; the M-O(H)
+    # length is the ionic one for the oxidation state read by cutting the M-D bonds of the
+    # SMILES (Zn-OH2 1.88 -> 2.04 A, Cu 1.98 -> 2.09 A).  6000-pool A/B: 5850 byte-identical,
+    # 63 affected, every never-worse term 0, absolute hard frames 485 -> 446 and no system with
+    # more hard frames.  Impl delfin/manta/_lone_pair_space.py, _oxidation_state.py.
+    "LONE_PAIR_SPACE", "LONE_PAIR_MD",
                           # #31: ring-pucker symmetry reduction WITH the add guard in front of it --
                           # landed 2026-09-07, label symmfoldadd6k, pool_6000, both historic floors.
                           #   n_compared 5819, affected 123, judged intersection 107,
