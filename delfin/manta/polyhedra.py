@@ -529,6 +529,15 @@ def md_distance(metal: str, donor: str, atom=None, mol=None, cn=None) -> float:
     #   1286 axis files set it -- renaming would make those archives
     #   unreproducible.  Default OFF under BOTH names -> byte-identical.
     #   Same repair as `assemble_complex._ffree_flag`; the derivation is there.
+    # NEUTRAL O-H DONOR AT IONIC CONTACT (DELFIN_FFFREE_LONE_PAIR_MD, default OFF ->
+    # byte-identical): aqua / alcohol O at Shannon r(M^n+, CN) + r(O, CN 3) instead of the
+    # covalent sum; see _lone_pair_space.dative_oh_md.
+    if atom is not None:
+        from delfin.manta import _lone_pair_space as _lps
+        if _lps.lone_pair_md_enabled():
+            _d = _lps.dative_oh_md(metal, atom, cn if cn else _CURRENT_CN)
+            if _d is not None:
+                return float(min(4.0, max(0.8, _d)))
     if (os.environ.get("DELFIN_FFFREE_MD_MEASURED", "0") == "1"
             or os.environ.get("DELFIN_FFREE_MD_MEASURED", "0") == "1"):
         _m = _measured_md(metal, donor, cn=(cn if cn else _CURRENT_CN))
