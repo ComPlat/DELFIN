@@ -352,13 +352,24 @@ def _engine(world):
 
 
 def test_the_turn_carries_the_pointer_only_when_called_for(world):
-    engine, seen = _engine(world)
+    # The steering list of the interactive role, as the L2 correction test
+    # reads it: the blocks the solo agent's turn tail is built from.
+    engine, _seen = _engine(world)
     engine.stream_response(
         "git says: fatal: 'main' is already used by worktree at '/x/dash'")
-    assert "[git-errors]" in seen[-1]
-    assert "Branch held by another worktree" in seen[-1]
+    blocks = dict(engine._steering_blocks("solo_agent"))
+    assert "[git-errors]" in blocks.get("repo_errors", "")
+    assert "Branch held by another worktree" in blocks["repo_errors"]
     engine.stream_response("Optimise the geometry of the Cr complex.")
-    assert "[git-errors]" not in seen[-1].split("Optimise the geometry")[-1]
+    assert "repo_errors" not in dict(engine._steering_blocks("solo_agent"))
+
+
+def test_a_session_without_skills_gets_no_pointer(world):
+    engine, _seen = _engine(world)
+    engine.kit_permissions.skip_skill_discovery = True
+    engine.stream_response(
+        "git says: fatal: 'main' is already used by worktree at '/x/dash'")
+    assert "repo_errors" not in dict(engine._steering_blocks("solo_agent"))
 
 
 # ---------------------------------------------------------------------------
